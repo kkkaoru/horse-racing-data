@@ -4,6 +4,9 @@
 -- and updated_at were added to its canonical definition. Because destructive DDL is prohibited,
 -- an empty pre-upgrade table is preserved under the oversea_runner_identity_v0 name instead of
 -- dropping or rewriting it. The canonical table is then created with the complete source-scoped PK.
+-- oversea_runner_identity_v0 is an intentionally empty retained backup and, when created, must have
+-- the same definition in local PostgreSQL and Neon because PK-bearing public tables are synchronized. It is a
+-- future removal candidate only if the user explicitly approves destructive cleanup.
 --
 -- The guard makes this safe on fresh databases: when race_source already exists, no rename occurs
 -- and every following CREATE is a no-op. Apply manually to BOTH local PostgreSQL and Neon;
