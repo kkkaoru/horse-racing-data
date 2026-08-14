@@ -219,6 +219,8 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
 ] as const;
 
 const RATE_STATS_CANDIDATE_BATCH_SIZE = 3;
+const RATE_STATS_MAX_FALLBACK_CANDIDATES = 1;
+const RATE_STATS_FALLBACK_TIMEOUT_MS = 2_000;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
 const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
 
@@ -840,6 +842,12 @@ const hasBloodlineScoreCoverage = (
   return coveredCount >= requiredCount;
 };
 
+const getBloodlineIncompletePayload = (
+  rows: readonly BloodlineStatsRow[],
+  runners: readonly Runner[],
+): { bloodlineStatsIncomplete: true } | Record<string, never> =>
+  hasBloodlineScoreCoverage(rows, runners) ? {} : { bloodlineStatsIncomplete: true };
+
 const hasSimilarJockeyTrainerCoverage = (
   rows: readonly SimilarRaceStatsRow[],
   runners: readonly Runner[],
@@ -915,18 +923,29 @@ const findRateStatsCandidate = async <
   hasEnoughStats: (stats: R) => boolean = hasRateRows,
   index = 0,
 ): Promise<{ settings: T; stats: R } | null> => {
-  const candidateBatch = candidates.slice(index, index + RATE_STATS_CANDIDATE_BATCH_SIZE);
+  const boundedCandidates = candidates.slice(0, RATE_STATS_MAX_FALLBACK_CANDIDATES);
+  const candidateBatch = boundedCandidates.slice(index, index + RATE_STATS_CANDIDATE_BATCH_SIZE);
 
   if (candidateBatch.length === 0) {
     return null;
   }
 
-  const batchStats = await Promise.all(
+  const batchStatsPromise = Promise.all(
     candidateBatch.map(async (settings) => ({
       settings,
       stats: await getStats(settings),
     })),
   );
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const batchStats = await Promise.race([
+    batchStatsPromise,
+    new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), RATE_STATS_FALLBACK_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timeout));
+  if (batchStats === null) {
+    return null;
+  }
 
   const matched = batchStats.find(({ stats }) => hasEnoughStats(stats));
   if (matched) {
@@ -934,7 +953,7 @@ const findRateStatsCandidate = async <
   }
 
   return findRateStatsCandidate(
-    candidates,
+    boundedCandidates,
     getStats,
     hasEnoughStats,
     index + RATE_STATS_CANDIDATE_BATCH_SIZE,
@@ -1055,7 +1074,7 @@ export const getDetailStatsContext = async ({
   );
   const hasExplicitBloodlineVenue =
     getStatsQueryParam(query, "bloodline", "statsVenue") !== undefined;
-  const bloodlineStatsSettings: SimilarRaceStatsSettings = {
+  const baseResolvedBloodlineStatsSettings: SimilarRaceStatsSettings = {
     ...baseBloodlineStatsSettings,
     includeBloodlineAncestors: !getOptionalFlag(
       getStatsQueryParam(query, "bloodline", "statsOffspringOnly"),
@@ -1067,6 +1086,13 @@ export const getDetailStatsContext = async ({
         : baseBloodlineStatsSettings.includeVenue,
     runnerCount: null,
   };
+  const bloodlineStatsSettings =
+    isOverseasKeibajoCode(race.keibajoCode) && !hasExplicitStatsState(query, "bloodline")
+      ? {
+          ...relaxAllConditionAnalysisSettings(baseResolvedBloodlineStatsSettings),
+          includeDistance: baseResolvedBloodlineStatsSettings.includeDistance,
+        }
+      : baseResolvedBloodlineStatsSettings;
   const statsConditionLabels = {
     age: getAgeLabel(race.kyosoShubetsuCode),
     class: statsClassConditionLabel,
@@ -1536,6 +1562,7 @@ export const getDetailSectionPayload = async (
       await getBloodlineStats(race, resolvedBloodlineSettings),
     );
     if (
+      !isOverseasKeibajoCode(race.keibajoCode) &&
       !hasExplicitStatsState(query, "bloodline") &&
       !hasBloodlineScoreCoverage(bloodlineRows, runners)
     ) {
@@ -1559,6 +1586,7 @@ export const getDetailSectionPayload = async (
     );
     return {
       bloodlineRows,
+      ...getBloodlineIncompletePayload(bloodlineRows, runners),
       bloodlineSettings: resolvedBloodlineSettings,
       ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
       conditionLabels: context.statsConditionLabels,
@@ -1691,29 +1719,13 @@ export const getDetailSectionPayload = async (
       getTimeScoreRows(race, context.conditionAnalysisSettings),
       getRaceTimeStats(race, context.conditionAnalysisSettings),
     ]);
-    let resolvedBloodlineSettings = context.bloodlineStatsSettings;
-    let bloodlineRows = getEligibleBloodlineRows(
+    const resolvedBloodlineSettings = context.bloodlineStatsSettings;
+    const bloodlineRows = getEligibleBloodlineRows(
       race,
       await getBloodlineStats(race, resolvedBloodlineSettings),
     );
-    if (
-      isOverseasKeibajoCode(race.keibajoCode) &&
-      !hasExplicitStatsState(query, "bloodline") &&
-      !hasBloodlineScoreCoverage(bloodlineRows, runners)
-    ) {
-      const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineSettings).slice(1);
-      const matched = await findRateStatsCandidate(
-        candidates,
-        async (candidate) =>
-          getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
-        (stats) => hasBloodlineScoreCoverage(stats, runners),
-      );
-      if (matched) {
-        resolvedBloodlineSettings = matched.settings;
-        bloodlineRows = matched.stats;
-      }
-    }
     return {
+      ...getBloodlineIncompletePayload(bloodlineRows, runners),
       ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
       rows: buildOverallScoreRows({
         bloodlineRows,
@@ -1791,7 +1803,11 @@ export const getDetailSectionPayload = async (
   if (section === "bloodline") {
     let resolvedSettings = context.bloodlineStatsSettings;
     let rows = getEligibleBloodlineRows(race, await getBloodlineStats(race, resolvedSettings));
-    if (!hasExplicitStatsState(query, "bloodline") && !hasBloodlineScoreCoverage(rows, runners)) {
+    if (
+      !isOverseasKeibajoCode(race.keibajoCode) &&
+      !hasExplicitStatsState(query, "bloodline") &&
+      !hasBloodlineScoreCoverage(rows, runners)
+    ) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
       const matched = await findRateStatsCandidate(
         candidates,
@@ -1805,6 +1821,7 @@ export const getDetailSectionPayload = async (
       }
     }
     return {
+      ...getBloodlineIncompletePayload(rows, runners),
       ...getBloodlineVenueFallbackPayload(race, resolvedSettings),
       conditionLabels: context.statsConditionLabels,
       rows,
@@ -1836,6 +1853,7 @@ export const getDetailSectionPayload = async (
     await getBloodlineStats(race, resolvedBloodlineSettings),
   );
   if (
+    !isOverseasKeibajoCode(race.keibajoCode) &&
     !hasExplicitStatsState(query, "bloodline") &&
     !hasBloodlineScoreCoverage(bloodlineRows, runners)
   ) {
@@ -1853,6 +1871,7 @@ export const getDetailSectionPayload = async (
 
   return {
     bloodlineRows,
+    ...getBloodlineIncompletePayload(bloodlineRows, runners),
     bloodlineSettings: resolvedBloodlineSettings,
     ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
     conditionLabels: context.statsConditionLabels,

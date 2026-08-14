@@ -122,6 +122,7 @@ type ConditionPayload = {
 };
 
 type BloodlinePayload = {
+  bloodlineStatsIncomplete?: boolean;
   bloodlineVenueFallback?: boolean;
   conditionLabels: ConditionLabels;
   rows: BloodlineStatsRow[];
@@ -133,6 +134,7 @@ type BloodlinePayload = {
 
 type SimilarPayload = {
   bloodlineRows: BloodlineStatsRow[];
+  bloodlineStatsIncomplete?: boolean;
   bloodlineVenueFallback?: boolean;
   bloodlineSettings: SimilarRaceStatsSettings;
   conditionLabels: ConditionLabels;
@@ -146,6 +148,7 @@ type SimilarPayload = {
 
 type TimeScorePayload = {
   bloodlineRows: BloodlineStatsRow[];
+  bloodlineStatsIncomplete?: boolean;
   bloodlineVenueFallback?: boolean;
   bloodlineSettings: SimilarRaceStatsSettings;
   conditionLabels: ConditionLabels;
@@ -160,6 +163,7 @@ type TimeScorePayload = {
 };
 
 type OverallScorePayload = {
+  bloodlineStatsIncomplete?: boolean;
   bloodlineVenueFallback?: boolean;
   rows: OverallScoreRow[];
   type: "overall-score";
@@ -167,6 +171,8 @@ type OverallScorePayload = {
 
 const BLOODLINE_VENUE_FALLBACK_NOTICE =
   "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。";
+const BLOODLINE_STATS_INCOMPLETE_NOTICE =
+  "十分な血統成績がない競走馬は血統スコアを算出できないため、該当項目を空欄として表示します。";
 const SIMILAR_STATS_FALLBACK_NOTICE =
   "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。";
 
@@ -695,6 +701,9 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
         {payload.bloodlineVenueFallback ? (
           <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
         ) : null}
+        {payload.bloodlineStatsIncomplete ? (
+          <p className="stats-scope-note">{BLOODLINE_STATS_INCOMPLETE_NOTICE}</p>
+        ) : null}
         <OverallScoreTable
           expandAll={sectionExpanded}
           realtimeRequest={{
@@ -969,6 +978,9 @@ export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
         <div className="stats-category-list">
           {payload.bloodlineVenueFallback ? (
             <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
+          ) : null}
+          {payload.bloodlineStatsIncomplete ? (
+            <p className="stats-scope-note">{BLOODLINE_STATS_INCOMPLETE_NOTICE}</p>
           ) : null}
           {payload.similarStatsFallback ? (
             <p className="stats-scope-note">{SIMILAR_STATS_FALLBACK_NOTICE}</p>

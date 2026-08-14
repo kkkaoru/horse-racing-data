@@ -383,6 +383,63 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
     type: "similar",
   });
   expect(getSimilarRaceStatsMock).toHaveBeenCalledOnce();
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+});
+
+it("times out bounded domestic bloodline fallback and discloses incomplete coverage", async () => {
+  vi.useFakeTimers();
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock.mockResolvedValueOnce([]).mockReturnValueOnce(new Promise(() => undefined));
+
+  try {
+    const payloadPromise = getDetailSectionPayload("similar", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const payload = await payloadPromise;
+
+    expect(payload).toMatchObject({ bloodlineRows: [], bloodlineStatsIncomplete: true });
+    expect(getBloodlineStatsMock).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("running-style payload returns empty values when getRaceDetail resolves null", async () => {
