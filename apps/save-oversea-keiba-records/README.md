@@ -66,6 +66,8 @@ Do not commit a real profile. Do not paste live selectors into tests, docs, or c
 
 `src/sources/secondary-result-parser.ts` also parses cached horse, jockey, trainer, and owner result tables. Its table marker, identity-route prefixes, URL template, and cell indexes are supplied by an operator-owned ignored profile. The parser does not contain live source markup.
 
+`src/sources/secondary-pedigree-parser.ts` parses cached pedigree AJAX JSON only; it does not perform network requests. The operator-owned ignored profile supplies the pedigree table marker, horse identity route prefix, and source URL template. The stored output keeps the source-native IDs and spellings for sire, sire-sire, dam, and dam-sire so later JV name matching remains auditable.
+
 Horse rows map to `oversea_horse_race_history` with explicit source provenance. Person rows map to `oversea_person_race_history`; a missing source horse link remains null and the published horse name is retained. Empty source fields are never replaced with synthetic JV identifiers.
 
 ## Data flow

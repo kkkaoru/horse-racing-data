@@ -122,6 +122,7 @@ type ConditionPayload = {
 };
 
 type BloodlinePayload = {
+  bloodlineVenueFallback?: boolean;
   conditionLabels: ConditionLabels;
   rows: BloodlineStatsRow[];
   runners: Runner[];
@@ -132,6 +133,7 @@ type BloodlinePayload = {
 
 type SimilarPayload = {
   bloodlineRows: BloodlineStatsRow[];
+  bloodlineVenueFallback?: boolean;
   bloodlineSettings: SimilarRaceStatsSettings;
   conditionLabels: ConditionLabels;
   rows: SimilarRaceStatsRow[];
@@ -143,6 +145,7 @@ type SimilarPayload = {
 
 type TimeScorePayload = {
   bloodlineRows: BloodlineStatsRow[];
+  bloodlineVenueFallback?: boolean;
   bloodlineSettings: SimilarRaceStatsSettings;
   conditionLabels: ConditionLabels;
   correlationRows: ConditionCorrelationRow[];
@@ -155,9 +158,13 @@ type TimeScorePayload = {
 };
 
 type OverallScorePayload = {
+  bloodlineVenueFallback?: boolean;
   rows: OverallScoreRow[];
   type: "overall-score";
 };
+
+const BLOODLINE_VENUE_FALLBACK_NOTICE =
+  "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。";
 
 type FinishPredictionPayload = {
   bucket: FinishPositionBucketSectionData;
@@ -681,6 +688,9 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
         title="総合スコア"
         onOpenChange={setSectionExpanded}
       >
+        {payload.bloodlineVenueFallback ? (
+          <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
+        ) : null}
         <OverallScoreTable
           expandAll={sectionExpanded}
           realtimeRequest={{
@@ -953,6 +963,9 @@ export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
         title="総合評価スコア"
       >
         <div className="stats-category-list">
+          {payload.bloodlineVenueFallback ? (
+            <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
+          ) : null}
           <BloodlineSimilarCombinedTable
             bloodlineRows={payload.bloodlineRows}
             correlationRows={payload.correlationRows}

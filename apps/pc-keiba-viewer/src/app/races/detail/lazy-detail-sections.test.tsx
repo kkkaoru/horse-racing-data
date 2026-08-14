@@ -73,6 +73,7 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
         JSON.stringify({
           bloodlineRows: [],
           bloodlineSettings: {},
+          bloodlineVenueFallback: true,
           conditionLabels: {
             age: null,
             class: null,
@@ -277,6 +278,11 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
   await waitFor(() => {
     expect(screen.getByTestId("bloodline-similar-combined-stub")).toBeDefined();
   });
+  expect(
+    screen.getByText(
+      "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。",
+    ),
+  ).toBeDefined();
   const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");
   const bodyContent = screen.getByTestId("bloodline-similar-combined-stub");

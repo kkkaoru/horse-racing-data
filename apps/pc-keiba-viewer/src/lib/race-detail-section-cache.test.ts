@@ -43,14 +43,28 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "A8",
         section: "results",
       }),
-    ).toBe("race-detail-section:v4:2026:5:23:A8:12:results:default");
+    ).toBe("race-detail-section:v6:2026:5:23:A8:12:results:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "A8",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v4:2026:5:23:A8:12:time-score:default");
+    ).toBe("race-detail-section:v6:2026:5:23:A8:12:time-score:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "A8",
+        section: "bloodline",
+      }),
+    ).toBe("race-detail-section:v6:2026:5:23:A8:12:bloodline:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "44",
+        section: "bloodline",
+      }),
+    ).toBe("race-detail-section:v3:2026:5:23:44:12:bloodline:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,

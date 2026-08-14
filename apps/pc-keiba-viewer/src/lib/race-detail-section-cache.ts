@@ -14,7 +14,7 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // to be called race-by-race to work around it. Bumping here invalidates every
 // section's cache at once instead.
 export const DETAIL_SECTION_CACHE_VERSION = "v3";
-const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v4";
+const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v6";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
@@ -42,7 +42,10 @@ export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
 export type DetailSectionCacheableSection = (typeof DETAIL_SECTION_CACHEABLE_SECTIONS)[number];
 
 const usesOverseasHistory = (section: DetailSectionCacheableSection): boolean =>
-  section === "overall-score" || section === "results" || section === "time-score";
+  section === "bloodline" ||
+  section === "overall-score" ||
+  section === "results" ||
+  section === "time-score";
 
 const getDetailSectionCacheVersion = (
   section: DetailSectionCacheableSection,

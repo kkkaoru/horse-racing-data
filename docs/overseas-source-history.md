@@ -79,3 +79,28 @@ Of the stored recent rows, source race identifiers classified the following as o
 - owners: 58/78 rows across 5 owners.
 
 This is the information not reliably available from domestic JV histories, including all 20 stored results for C. Lee, who has no resolved JV jockey code in the target race.
+
+## Pedigree display completeness
+
+Cached netkeiba pedigree AJAX responses supplied source-native IDs and names for sire, sire-sire, dam, and dam-sire for all ten runners. They are stored in `oversea_horse_pedigree`; they do not replace JV horse masters and are joined only through a complete `oversea_runner_source_id` race-entry mapping.
+
+`getBloodlineStats` already identifies ancestors by exact pedigree name for domestic horses. Overseas placeholder runners use the same exact-name path: no alias, case-insensitive, partial, or fuzzy matching is added. A foreign ancestor need not have its own `jvd_um.ketto_toroku_bango`; a name absent from JV pedigree fields simply contributes no statistics. For overseas venues only, a target name resolving to more than one distinct JV horse code is excluded. This suppresses the ambiguous `キズナ` target rather than mixing two same-named identities.
+
+Deauville (`A8`) cannot have a domestic same-venue population. Its default bloodline aggregation therefore sets `includeVenue=false` and returns `bloodlineVenueFallback=true`. The UI explains that the value uses JV/NAR results from all Japanese venues. The formula and category weights are unchanged. A category is eligible only with at least 20 starts: the existing reliability term reaches 20/30 at that threshold, while a ten-start row would supply only one third of its calibrated reliability input. Numeric JRA/NAR venue behavior is unchanged.
+
+The final relaxed population is the prior ten years at 1600 metres, before 2026-08-16. Counts below are JV/NAR progeny starts used by the existing query; `0` means no exact match or fewer qualifying results. A JV code describes the ancestor itself, not the source-native external identity.
+
+| Runner               | Sire (JV code; starts)                                   | Sire-sire (JV code; starts)              | Dam-sire (JV code; starts)                                |
+| -------------------- | -------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------- |
+| Zeus Olympios        | Night of Thunder (none; 0)                               | Dubawi (none; 2042)                      | Siyouni (none; 47)                                        |
+| Dreamliner           | Adlerflug (none; 0)                                      | In the Wings (none; 0)                   | Aussie Rules (none; 0)                                    |
+| Sixpence             | キズナ (`2010105827`, but same-name ambiguity; excluded) | ディープインパクト (`2002100816`; 14337) | Twirling Candy (none; 0)                                  |
+| Strauss              | モーリス (`2011100655`; 1441)                            | スクリーンヒーロー (`2004103328`; 1703)  | アドマイヤベガ (`1996107396`; 876)                        |
+| More Thunder         | Night of Thunder (none; 0)                               | Dubawi (none; 2042)                      | ハットトリック (`2001103018`; 0; no alias to `Hat Trick`) |
+| No Lunch             | Dubawi (none; 64)                                        | Dubai Millennium (none; 64)              | Shamardal (none; 332)                                     |
+| Sir Tommy Cen        | Dark Angel (none; 50)                                    | Acclamation (none; 51)                   | Haafhd (none; 0)                                          |
+| Life                 | Sea The Moon (none; 0)                                   | Sea The Stars (none; 0)                  | Holy Roman Emperor (none; 156)                            |
+| The Secret Adversary | St Mark's Basilica (none; 0)                             | Siyouni (none; 0)                        | Gleneagles (none; 0)                                      |
+| Precise              | Starspangledbanner (none; 0)                             | Choisir (none; 0)                        | Galileo (none; 552)                                       |
+
+Data-supported bloodline scores are available for six of the eight placeholder runners. Dreamliner and The Secret Adversary remain at the neutral `0.5` because none of their ancestor categories meet the threshold. This improves display completeness only; it does not retrain a model or claim improved prediction accuracy.

@@ -83,6 +83,22 @@ export const jvdUm = pgTable("jvd_um", horseMasterColumns);
 export const nvdNu = pgTable("nvd_nu", horseMasterColumns);
 export const nvdUm = pgTable("nvd_um", horseMasterColumns);
 
+export const overseaHorsePedigree = pgTable("oversea_horse_pedigree", {
+  source: text("source").notNull(),
+  sourceHorseId: text("source_horse_id").notNull(),
+  sireSourceId: text("sire_source_id"),
+  sireName: text("sire_name").notNull(),
+  sireSireSourceId: text("sire_sire_source_id"),
+  sireSireName: text("sire_sire_name").notNull(),
+  damSourceId: text("dam_source_id"),
+  damName: text("dam_name").notNull(),
+  damSireSourceId: text("dam_sire_source_id"),
+  damSireName: text("dam_sire_name").notNull(),
+  sourceUrl: text("source_url").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
 export const overseaHorseRaceHistory = pgTable("oversea_horse_race_history", {
   source: text("source").notNull(),
   sourceHorseId: text("source_horse_id").notNull(),

@@ -33,6 +33,7 @@ import {
   getHorseDetailData,
   getHorseList,
   getHorseRaceResults,
+  getBloodlineStats,
   getRaceAbilityTests,
   getRaceRunners,
   getRaceTimeStats,
@@ -572,6 +573,51 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     /else concat_ws\(\s*':'\s*,\s*'entry'\s*,\s*ranked_grouped_entries\.race_source\s*,\s*ranked_grouped_entries\.kaisai_nen/u,
   );
   expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
+});
+
+it("getBloodlineStats supplies source-native pedigree names only through complete runner mappings", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getBloodlineStats(PERCLASS_703_RACE, {
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: true,
+    includeClass: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: null,
+  });
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(collectTableNames(queryArg)).toContain("oversea_runner_source_id");
+  expect(collectTableNames(queryArg)).toContain("oversea_horse_pedigree");
+  expect(queryText).toMatch(/pedigree_mapping\.source = 'netkeiba'/u);
+  expect(queryText).toMatch(/pedigree\.source_horse_id = pedigree_mapping\.source_horse_id/u);
+  expect(queryText).toMatch(/nullif\(btrim\(pedigree\.sire_name\), ''\)/u);
+  expect(queryText).toMatch(/nullif\(btrim\(pedigree\.sire_sire_name\), ''\)/u);
+  expect(queryText).toMatch(/nullif\(btrim\(pedigree\.dam_sire_name\), ''\)/u);
+  expect(queryText).toMatch(/select count\(distinct ancestor_identity\.ketto_toroku_bango\)/u);
+  expect(queryText).toMatch(/\) <= 1/u);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getBloodlineStats",
+    "v3",
+    PERCLASS_703_RACE,
+    expect.any(Object),
+  ]);
 });
 
 it("getTimeScoreRows resolves mapped overseas histories without sharing placeholder identities", async () => {

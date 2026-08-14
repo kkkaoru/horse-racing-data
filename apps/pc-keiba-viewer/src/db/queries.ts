@@ -77,11 +77,13 @@ import {
   nvdRa,
   nvdSe,
   nvdUm,
+  overseaHorsePedigree,
   overseaHorseRaceHistory,
   overseaRunnerIdentity,
   overseaRunnerSourceId,
 } from "./schema";
 
+const BLOODLINE_STATS_QUERY_VERSION = "v3";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
 const TIME_SCORE_QUERY_VERSION = "v2";
 
@@ -4114,31 +4116,33 @@ const getSingleStatsSource = (
 
 export const getBloodlineStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<BloodlineStatsRow[]> => {
-    return withDbQueryCache(["getBloodlineStats", race, settings], async () => {
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-      const primaryHorseTable = race.source === "jra" ? jvdUm : nvdNu;
-      const secondaryHorseTable = nvdUm;
-      const tertiaryHorseTable = race.source === "jra" ? nvdNu : jvdUm;
-      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
-      const result = await getDb().execute<{
-        category: "damSire" | "sire" | "sireSire";
-        currentHorseNumbers: string;
-        name: string;
-        details: unknown;
-        starts: string;
-        horseCount: string;
-        winCount: string;
-        quinellaCount: string;
-        showCount: string;
-        winRate: string;
-        quinellaRate: string;
-        showRate: string;
-      }>(sql`
+    return withDbQueryCache(
+      ["getBloodlineStats", BLOODLINE_STATS_QUERY_VERSION, race, settings],
+      async () => {
+        const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+        const primaryHorseTable = race.source === "jra" ? jvdUm : nvdNu;
+        const secondaryHorseTable = nvdUm;
+        const tertiaryHorseTable = race.source === "jra" ? nvdNu : jvdUm;
+        const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+        const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+        const classCondition = getStatsClassCondition(race, settings.classConditionName);
+        const raceTitleCondition = getStatsRaceTitleCondition(race);
+        const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
+        const result = await getDb().execute<{
+          category: "damSire" | "sire" | "sireSire";
+          currentHorseNumbers: string;
+          name: string;
+          details: unknown;
+          starts: string;
+          horseCount: string;
+          winCount: string;
+          quinellaCount: string;
+          showCount: string;
+          winRate: string;
+          quinellaRate: string;
+          showRate: string;
+        }>(sql`
       with current_entries as (
         select
           coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') as umaban,
@@ -4149,18 +4153,21 @@ export const getBloodlineStats = cache(
             nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(btrim(pedigree.sire_name), ''),
             '不明'
           ) as sire,
           coalesce(
             nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(btrim(pedigree.sire_sire_name), ''),
             '不明'
           ) as "sireSire",
           coalesce(
             nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(btrim(pedigree.dam_sire_name), ''),
             '不明'
           ) as "damSire"
         from ${runnerTable} se
@@ -4170,6 +4177,17 @@ export const getBloodlineStats = cache(
           on secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
         left join ${tertiaryHorseTable} tertiary_um
           on tertiary_um.ketto_toroku_bango = se.ketto_toroku_bango
+        left join ${overseaRunnerSourceId} pedigree_mapping
+          on pedigree_mapping.race_source = ${race.source}
+          and pedigree_mapping.kaisai_nen = se.kaisai_nen
+          and pedigree_mapping.kaisai_tsukihi = se.kaisai_tsukihi
+          and pedigree_mapping.keibajo_code = se.keibajo_code
+          and pedigree_mapping.race_bango = se.race_bango
+          and pedigree_mapping.umaban = se.umaban
+          and pedigree_mapping.source = 'netkeiba'
+        left join ${overseaHorsePedigree} pedigree
+          on pedigree.source = pedigree_mapping.source
+          and pedigree.source_horse_id = pedigree_mapping.source_horse_id
         where
           se.kaisai_nen = ${race.kaisaiNen}
           and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
@@ -4801,7 +4819,16 @@ export const getBloodlineStats = cache(
         left join ranked_details
           on ranked_details.category = targets.category
           and ranked_details.name = targets.name
-        where targets.name <> '不明'
+        where
+          targets.name <> '不明'
+          and (
+            ${!isOverseasKeibajoCode(race.keibajoCode)}
+            or (
+              select count(distinct ancestor_identity.ketto_toroku_bango)
+              from ${jvdUm} ancestor_identity
+              where regexp_replace(ancestor_identity.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g') = targets.name
+            ) <= 1
+          )
         group by
           targets.category,
           targets.name,
@@ -4834,21 +4861,22 @@ export const getBloodlineStats = cache(
       order by category asc, rank asc
     `);
 
-      return result.rows.map((row) => ({
-        category: row.category,
-        currentHorseNumbers: row.currentHorseNumbers,
-        details: toStatsDetails(row.details),
-        horseCount: toCount(row.horseCount),
-        name: row.name,
-        quinellaCount: toCount(row.quinellaCount),
-        quinellaRate: toRate(row.quinellaRate),
-        showCount: toCount(row.showCount),
-        showRate: toRate(row.showRate),
-        starts: toCount(row.starts),
-        winCount: toCount(row.winCount),
-        winRate: toRate(row.winRate),
-      }));
-    });
+        return result.rows.map((row) => ({
+          category: row.category,
+          currentHorseNumbers: row.currentHorseNumbers,
+          details: toStatsDetails(row.details),
+          horseCount: toCount(row.horseCount),
+          name: row.name,
+          quinellaCount: toCount(row.quinellaCount),
+          quinellaRate: toRate(row.quinellaRate),
+          showCount: toCount(row.showCount),
+          showRate: toRate(row.showRate),
+          starts: toCount(row.starts),
+          winCount: toCount(row.winCount),
+          winRate: toRate(row.winRate),
+        }));
+      },
+    );
   },
 );
 

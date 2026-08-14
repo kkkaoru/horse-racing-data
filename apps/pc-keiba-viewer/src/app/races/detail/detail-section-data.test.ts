@@ -41,12 +41,14 @@ type GetFinishPositionBucketEvaluationFn = (args: {
 }) => Promise<FinishPositionBucketMetrics | null>;
 
 const {
+  getBloodlineStatsMock,
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceTrainingsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
 } = vi.hoisted(() => ({
+  getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
   getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
   getRaceTrainingsMock: vi.fn<() => Promise<unknown[]>>(),
@@ -57,7 +59,7 @@ const {
 vi.mock("../../../db/queries", () => ({
   getActiveFinishPositionPredictions: vi.fn<() => Promise<unknown[]>>(),
   getActiveFinishPredictionEvaluation: vi.fn<() => Promise<unknown>>(),
-  getBloodlineStats: vi.fn<() => Promise<unknown[]>>(),
+  getBloodlineStats: getBloodlineStatsMock,
   getFinishPositionBucketEvaluation: getFinishPositionBucketEvaluationMock,
   getFinishPositionSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
   getFinishPositionStats: vi.fn<() => Promise<unknown[]>>(),
@@ -151,6 +153,35 @@ const NAR_RACE: RaceDetail = {
   trackCode: null,
 };
 
+const OVERSEAS_RUNNER: Runner = {
+  banushimei: "Owner",
+  barei: "4",
+  bamei: "Overseas Runner",
+  bataiju: null,
+  chokyoshimeiRyakusho: "Trainer",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  damSireName: null,
+  futanJuryo: "570",
+  kakuteiChakujun: "00",
+  kettoTorokuBango: "0000000000",
+  kishumeiRyakusho: "Jockey",
+  kohan3f: null,
+  seibetsuCode: "1",
+  sireName: null,
+  sireSireName: null,
+  sohaTime: null,
+  tanshoNinkijun: "00",
+  tanshoOdds: "0000",
+  timeSa: null,
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: null,
+  zogenSa: null,
+};
+
 const BAN_EI_RACE: RaceDetail = {
   babajotaiCodeDirt: null,
   babajotaiCodeShiba: null,
@@ -228,11 +259,65 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 };
 
 beforeEach(() => {
+  getBloodlineStatsMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceTrainingsMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
   getFinishPositionBucketEvaluationMock.mockReset();
+});
+
+it("bloodline payload filters thin overseas samples and discloses the venue fallback", async () => {
+  getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getBloodlineStatsMock.mockResolvedValueOnce([
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 10,
+      name: "Thin Sire",
+      quinellaCount: 2,
+      quinellaRate: 10,
+      showCount: 3,
+      showRate: 15,
+      starts: 19,
+      winCount: 1,
+      winRate: 5,
+    },
+    {
+      category: "sireSire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 10,
+      name: "Eligible Sire Sire",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+
+  const payload = await getDetailSectionPayload("bloodline", {
+    day: "28",
+    keibajoCode: "A8",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    bloodlineVenueFallback: true,
+    rows: [{ name: "Eligible Sire Sire", starts: 20 }],
+    settings: { includeVenue: false },
+    type: "bloodline",
+  });
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
 it("running-style payload returns empty values when getRaceDetail resolves null", async () => {
