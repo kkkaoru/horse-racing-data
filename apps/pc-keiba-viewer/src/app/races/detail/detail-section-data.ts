@@ -220,6 +220,7 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
 
 const RATE_STATS_CANDIDATE_BATCH_SIZE = 3;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
+const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
 
 type ConditionAnalysisStats = [
   RaceTimeStats,
@@ -752,6 +753,15 @@ const hasCompleteConditionAnalysisRows = (stats: ConditionAnalysisStats): boolea
   );
 };
 
+const relaxAllConditionAnalysisSettings = <T extends SimilarRaceStatsSettings>(settings: T): T => {
+  const relaxedSettings = { ...settings };
+  for (const key of CONDITION_ANALYSIS_RELAX_KEYS) {
+    relaxedSettings[key] = false;
+  }
+  relaxedSettings.includeVenue = false;
+  return relaxedSettings;
+};
+
 const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSettings>(
   settings: T,
 ): T[] => {
@@ -771,6 +781,24 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
 
 const hasRateRows = (rows: readonly (BloodlineStatsRow | SimilarRaceStatsRow)[]): boolean =>
   rows.some((row) => row.starts > 0);
+
+const getEligibleSimilarStatsRows = (
+  race: RaceDetail,
+  rows: SimilarRaceStatsRow[],
+): SimilarRaceStatsRow[] =>
+  isOverseasKeibajoCode(race.keibajoCode)
+    ? rows.filter((row) => row.starts >= OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS)
+    : rows;
+
+const getSimilarStatsFallbackPayload = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+): { similarStatsFallback: true } | Record<string, never> =>
+  isOverseasKeibajoCode(race.keibajoCode) &&
+  !settings.includeVenue &&
+  CONDITION_ANALYSIS_RELAX_KEYS.every((key) => !settings[key])
+    ? { similarStatsFallback: true }
+    : {};
 
 const getEligibleBloodlineRows = (
   race: RaceDetail,
@@ -1011,11 +1039,15 @@ export const getDetailStatsContext = async ({
     years: getStatsYears(getStatsQueryParam(query, prefix, "statsYears"), defaultYearsForPrefix),
   });
 
-  const statsSettings = buildStatsSettings(
+  const baseStatsSettings = buildStatsSettings(
     "similar",
     defaultStatsYears,
     defaultSimilarStatsIncludeSex,
   );
+  const statsSettings: SimilarRaceStatsSettings =
+    isOverseasKeibajoCode(race.keibajoCode) && !hasExplicitStatsState(query, "similar")
+      ? relaxAllConditionAnalysisSettings(baseStatsSettings)
+      : baseStatsSettings;
   const baseBloodlineStatsSettings = buildStatsSettings(
     "bloodline",
     defaultBloodlineStatsYears,
@@ -1478,7 +1510,10 @@ export const getDetailSectionPayload = async (
       getOrComputeRaceTimeStats({ race, settings: context.conditionAnalysisSettings }),
     ]);
     let resolvedSimilarSettings = context.statsSettings;
-    let similarRows = await getSimilarRaceStats(race, resolvedSimilarSettings);
+    let similarRows = getEligibleSimilarStatsRows(
+      race,
+      await getSimilarRaceStats(race, resolvedSimilarSettings),
+    );
     if (
       !hasExplicitStatsState(query, "similar") &&
       !hasSimilarJockeyTrainerCoverage(similarRows, runners)
@@ -1486,7 +1521,8 @@ export const getDetailSectionPayload = async (
       const candidates = getConditionAnalysisSettingCandidates(resolvedSimilarSettings).slice(1);
       const matched = await findRateStatsCandidate(
         candidates,
-        (candidate) => getSimilarRaceStats(race, candidate),
+        async (candidate) =>
+          getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, candidate)),
         (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
       );
       if (matched) {
@@ -1536,6 +1572,7 @@ export const getDetailSectionPayload = async (
       runners,
       settings: resolvedSimilarSettings,
       similarRows,
+      ...getSimilarStatsFallbackPayload(race, resolvedSimilarSettings),
       source: race.source,
       type: section,
     };
@@ -1779,12 +1816,13 @@ export const getDetailSectionPayload = async (
   }
 
   let resolvedSettings = context.statsSettings;
-  let rows = await getSimilarRaceStats(race, resolvedSettings);
+  let rows = getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, resolvedSettings));
   if (!hasExplicitStatsState(query, "similar") && !hasSimilarJockeyTrainerCoverage(rows, runners)) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
     const matched = await findRateStatsCandidate(
       candidates,
-      (candidate) => getSimilarRaceStats(race, candidate),
+      async (candidate) =>
+        getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, candidate)),
       (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
     );
     if (matched) {
@@ -1821,6 +1859,7 @@ export const getDetailSectionPayload = async (
     rows,
     runners,
     settings: resolvedSettings,
+    ...getSimilarStatsFallbackPayload(race, resolvedSettings),
     source: race.source,
     type: "similar" satisfies DetailSection,
   };

@@ -94,6 +94,7 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
           runners: [],
           settings: {},
           similarRows: [],
+          similarStatsFallback: true,
           source: "jra",
           type: "time-score",
         }),
@@ -281,6 +282,11 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
   expect(
     screen.getByText(
       "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。",
+    ),
+  ).toBeDefined();
+  expect(
+    screen.getByText(
+      "海外競馬場の同場母集団がないため、勝率は日本全場における過去10年のJV成績です。20走未満は表示しません。",
     ),
   ).toBeDefined();
   const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });

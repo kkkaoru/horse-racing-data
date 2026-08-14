@@ -573,6 +573,9 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     /else concat_ws\(\s*':'\s*,\s*'entry'\s*,\s*ranked_grouped_entries\.race_source\s*,\s*ranked_grouped_entries\.kaisai_nen/u,
   );
   expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
+  expect(queryText).toMatch(/select name from target_entries where category = 'jockey'/u);
+  expect(queryText).toMatch(/select name from target_entries where category = 'trainer'/u);
+  expect(queryText).toMatch(/select name from target_entries where category = 'owner'/u);
 });
 
 it("getBloodlineStats supplies source-native pedigree names only through complete runner mappings", async () => {

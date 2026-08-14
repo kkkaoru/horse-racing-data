@@ -4977,7 +4977,19 @@ export const getSimilarRaceStats = cache(
             and se.kaisai_tsukihi = ra.kaisai_tsukihi
             and se.keibajo_code = ra.keibajo_code
             and se.race_bango = ra.race_bango
-          where ${shouldUseJraStats(race, settings)} = true
+          where
+            ${shouldUseJraStats(race, settings)} = true
+            and (
+              coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'jockey'
+              )
+              or coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'trainer'
+              )
+              or coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'owner'
+              )
+            )
           union all
           select
             'nar'::text race_source,
@@ -5017,7 +5029,19 @@ export const getSimilarRaceStats = cache(
             and se.kaisai_tsukihi = ra.kaisai_tsukihi
             and se.keibajo_code = ra.keibajo_code
             and se.race_bango = ra.race_bango
-          where ${shouldUseNarStats(race, settings)} = true
+          where
+            ${shouldUseNarStats(race, settings)} = true
+            and (
+              coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'jockey'
+              )
+              or coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'trainer'
+              )
+              or coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
+                select name from target_entries where category = 'owner'
+              )
+            )
         ) history
         where
           history.kaisai_nen || history.kaisai_tsukihi < ${raceDate}

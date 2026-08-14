@@ -14,7 +14,7 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // to be called race-by-race to work around it. Bumping here invalidates every
 // section's cache at once instead.
 export const DETAIL_SECTION_CACHE_VERSION = "v3";
-const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v6";
+const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v7";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
@@ -45,6 +45,7 @@ const usesOverseasHistory = (section: DetailSectionCacheableSection): boolean =>
   section === "bloodline" ||
   section === "overall-score" ||
   section === "results" ||
+  section === "similar" ||
   section === "time-score";
 
 const getDetailSectionCacheVersion = (

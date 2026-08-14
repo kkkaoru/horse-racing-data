@@ -139,6 +139,7 @@ type SimilarPayload = {
   rows: SimilarRaceStatsRow[];
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
+  similarStatsFallback?: boolean;
   source: RaceSource;
   type: "similar";
 };
@@ -153,6 +154,7 @@ type TimeScorePayload = {
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
   similarRows: SimilarRaceStatsRow[];
+  similarStatsFallback?: boolean;
   source: RaceSource;
   type: "time-score";
 };
@@ -165,6 +167,8 @@ type OverallScorePayload = {
 
 const BLOODLINE_VENUE_FALLBACK_NOTICE =
   "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。";
+const SIMILAR_STATS_FALLBACK_NOTICE =
+  "海外競馬場の同場母集団がないため、勝率は日本全場における過去10年のJV成績です。20走未満は表示しません。";
 
 type FinishPredictionPayload = {
   bucket: FinishPositionBucketSectionData;
@@ -965,6 +969,9 @@ export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
         <div className="stats-category-list">
           {payload.bloodlineVenueFallback ? (
             <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
+          ) : null}
+          {payload.similarStatsFallback ? (
+            <p className="stats-scope-note">{SIMILAR_STATS_FALLBACK_NOTICE}</p>
           ) : null}
           <BloodlineSimilarCombinedTable
             bloodlineRows={payload.bloodlineRows}

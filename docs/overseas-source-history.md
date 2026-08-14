@@ -80,6 +80,10 @@ Of the stored recent rows, source race identifiers classified the following as o
 
 This is the information not reliably available from domestic JV histories, including all 20 stored results for C. Lee, who has no resolved JV jockey code in the target race.
 
+The 454 source-person rows are recent profile lists, not a complete and consistently timed statistical population. They are suitable for race-list display but are not used to calculate a comparable win rate. For `A8`, the win-rate tables retain the existing JV exact-name aggregation and broaden only the structurally impossible venue/condition scope: the default is the preceding ten years across all Japanese venues and conditions. The API returns `similarStatsFallback=true`, and the UI discloses that scope. Overseas rows with fewer than 20 JV starts are suppressed.
+
+The resulting target coverage is nine of ten jockeys, five of ten trainers, and the shared Carrot Farm owner row for horses 3 and 4. C. Lee, four unmatched foreign trainers, S. Wattel with only three JV starts, and owners without JV histories remain empty. This is intentional: recent capped source rows are not substituted into the same percentage column with a different scale.
+
 ## Pedigree display completeness
 
 Cached netkeiba pedigree AJAX responses supplied source-native IDs and names for sire, sire-sire, dam, and dam-sire for all ten runners. They are stored in `oversea_horse_pedigree`; they do not replace JV horse masters and are joined only through a complete `oversea_runner_source_id` race-entry mapping.

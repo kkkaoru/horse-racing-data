@@ -45,6 +45,7 @@ const {
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceTrainingsMock,
+  getSimilarRaceStatsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
 } = vi.hoisted(() => ({
@@ -52,6 +53,7 @@ const {
   getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
   getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
   getRaceTrainingsMock: vi.fn<() => Promise<unknown[]>>(),
+  getSimilarRaceStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
   getFinishPositionBucketEvaluationMock: vi.fn<GetFinishPositionBucketEvaluationFn>(),
 }));
@@ -74,7 +76,7 @@ vi.mock("../../../db/queries", () => ({
   getRaceTimeStats: vi.fn<() => Promise<unknown>>(),
   getRaceTrainings: getRaceTrainingsMock,
   getRunningStyleBucketEvaluation: getRunningStyleBucketEvaluationMock,
-  getSimilarRaceStats: vi.fn<() => Promise<unknown[]>>(),
+  getSimilarRaceStats: getSimilarRaceStatsMock,
   getTimeScoreRows: vi.fn<() => Promise<unknown[]>>(),
 }));
 
@@ -263,6 +265,7 @@ beforeEach(() => {
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceTrainingsMock.mockReset();
+  getSimilarRaceStatsMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
   getFinishPositionBucketEvaluationMock.mockReset();
 });
@@ -318,6 +321,68 @@ it("bloodline payload filters thin overseas samples and discloses the venue fall
     type: "bloodline",
   });
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+});
+
+it("similar payload uses broad JV stats for overseas races and suppresses samples below 20 starts", async () => {
+  getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 10,
+      name: "Thin Jockey",
+      quinellaCount: 2,
+      quinellaRate: 10,
+      showCount: 3,
+      showRate: 15,
+      starts: 19,
+      winCount: 1,
+      winRate: 5,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 10,
+      name: "Eligible Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock.mockResolvedValue([]);
+
+  const payload = await getDetailSectionPayload("similar", {
+    day: "28",
+    keibajoCode: "A8",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    rows: [{ name: "Eligible Trainer", starts: 20 }],
+    settings: {
+      includeAge: false,
+      includeClass: false,
+      includeDistance: false,
+      includeRaceTitle: false,
+      includeSurface: false,
+      includeTurn: false,
+      includeVenue: false,
+    },
+    similarStatsFallback: true,
+    type: "similar",
+  });
+  expect(getSimilarRaceStatsMock).toHaveBeenCalledOnce();
 });
 
 it("running-style payload returns empty values when getRaceDetail resolves null", async () => {
