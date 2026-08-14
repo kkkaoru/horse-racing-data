@@ -4,9 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 POSTGRES_APP_DIR="$ROOT_DIR/apps/local-postgresql"
 VIEWER_APP_DIR="$ROOT_DIR/apps/pc-keiba-viewer"
+POSTGRES_CONTAINER_NAME="horse-racing-local-postgresql"
 VIEWER_PORT=443
 LIVE_RELAY_PORT="${PC_KEIBA_PRODUCTION_LIVE_RELAY_PORT:-3010}"
 VIEWER_DATABASE_TARGET="${PC_KEIBA_DATABASE_TARGET:-local}"
+POSTGRES_USER="${POSTGRES_USER:-horse_racing}"
+POSTGRES_DB="${POSTGRES_DB:-horse_racing}"
 POSTGRES_START_PID=""
 POSTGRES_START_LOG=""
 
@@ -15,6 +18,15 @@ load_viewer_env() {
     set -a
     # shellcheck disable=SC1091
     source "$VIEWER_APP_DIR/.env.local"
+    set +a
+  fi
+}
+
+load_postgres_env() {
+  if [[ -f "$POSTGRES_APP_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$POSTGRES_APP_DIR/.env"
     set +a
   fi
 }
@@ -40,12 +52,35 @@ wait_for_postgres_ready() {
   if [[ -z "$POSTGRES_START_PID" ]]; then
     return 0
   fi
+  # local-postgresql/start.sh keeps running its index-health repair after the
+  # database is ready. The viewer only needs a live database, so poll pg_isready
+  # instead of waiting for that longer maintenance step to finish.
   echo "Waiting for local-postgresql to become ready..."
-  if wait "$POSTGRES_START_PID"; then
-    echo "local-postgresql is ready."
-    return 0
-  fi
-  echo "ERROR: local-postgresql failed to start. Last lines of $POSTGRES_START_LOG:" >&2
+  local retries="${POSTGRES_HEALTH_RETRIES:-120}"
+  local attempt=0
+  while [[ "$attempt" -lt "$retries" ]]; do
+    if container exec "$POSTGRES_CONTAINER_NAME" pg_isready \
+      -U "$POSTGRES_USER" \
+      -d "$POSTGRES_DB" >/dev/null 2>&1; then
+      echo "local-postgresql is ready."
+      return 0
+    fi
+
+    if ! kill -0 "$POSTGRES_START_PID" 2>/dev/null; then
+      if wait "$POSTGRES_START_PID"; then
+        echo "ERROR: local-postgresql exited before becoming ready." >&2
+      else
+        echo "ERROR: local-postgresql failed to start. Last lines of $POSTGRES_START_LOG:" >&2
+      fi
+      tail -n 30 "$POSTGRES_START_LOG" >&2 || true
+      return 1
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  echo "ERROR: local-postgresql did not become ready within ${retries}s. Last lines of $POSTGRES_START_LOG:" >&2
   tail -n 30 "$POSTGRES_START_LOG" >&2 || true
   return 1
 }
@@ -65,6 +100,7 @@ start_live_relay_in_background() {
 }
 
 load_viewer_env
+load_postgres_env
 
 start_postgres_in_background
 
