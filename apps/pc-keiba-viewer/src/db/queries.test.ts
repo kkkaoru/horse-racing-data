@@ -329,6 +329,10 @@ it("getHorseRaceResults excludes empty and all-zero identities for a JRA current
 
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
+    "getHorseRaceResults",
+    "v2",
+  ]);
   expect(collectTableNames(queryArg)[0]).toBe("jvd_se");
   expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) not in \('\s*'\)/u);
   expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) !~ '\s*\^0\+\$\s*'/u);
@@ -570,7 +574,7 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
   expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
 });
 
-it("getTimeScoreRows excludes all-zero current identities before history matching", async () => {
+it("getTimeScoreRows resolves mapped overseas histories without sharing placeholder identities", async () => {
   executeMock.mockResolvedValue({ rows: [] });
 
   await getTimeScoreRows(PERCLASS_703_RACE, {
@@ -596,8 +600,31 @@ it("getTimeScoreRows excludes all-zero current identities before history matchin
     years: null,
   });
 
-  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
-  expect(queryText).toMatch(/btrim\(coalesce\(se\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
+    "getTimeScoreRows",
+    "v2",
+  ]);
+  expect(collectTableNames(queryArg)).toStrictEqual([
+    "jvd_se",
+    "oversea_runner_source_id",
+    "jvd_ra",
+    "jvd_se",
+    "jvd_se",
+    "jvd_se",
+    "jvd_ra",
+    "nvd_se",
+    "nvd_ra",
+    "oversea_horse_race_history",
+  ]);
+  expect(queryText).toMatch(/when btrim\(se\.ketto_toroku_bango\) ~ '\^0\+\$'/u);
+  expect(queryText).toMatch(/then mapping\.source_horse_id/u);
+  expect(queryText).toMatch(/mapping\.source = '\s*netkeiba\s*'/u);
+  expect(queryText).toMatch(/or mapping\.source_horse_id is not null/u);
+  expect(queryText).toMatch(/past\.source = '\s*netkeiba\s*'/u);
+  expect(queryText).toMatch(/past\.source_horse_id in \(select history_horse_id/u);
+  expect(queryText).toMatch(/filter \(where history\.keibajo_code is not null\)/u);
 });
 
 it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse history joins", async () => {

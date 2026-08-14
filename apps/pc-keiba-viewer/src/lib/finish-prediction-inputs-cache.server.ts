@@ -4,6 +4,7 @@ import type { FinishPredictionBuildInputs } from "./finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "./finish-position-prediction-evaluation";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 import type { RaceDetail } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
 
 // Bumped v2->v3 on 2026-07-18 for the emergency finish-position quality gate
 // rollout, then v3->v4 the same day when the gate was replaced with the
@@ -17,6 +18,7 @@ import type { RaceDetail } from "./race-types";
 // scheme) and independent of query-cache.ts's own namespace (separate cache
 // layer entirely) -- any future change to this shape needs its own bump here.
 const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v4";
+const OVERSEAS_HISTORY_CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v5";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/finish-prediction-inputs-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
@@ -87,7 +89,7 @@ export const buildFinishPredictionInputsCacheKey = ({
   year: string;
 }): string =>
   [
-    CACHE_NAMESPACE,
+    isOverseasKeibajoCode(keibajoCode) ? OVERSEAS_HISTORY_CACHE_NAMESPACE : CACHE_NAMESPACE,
     year,
     padCacheKeyPart(month, CACHE_KEY_PART_WIDTH),
     padCacheKeyPart(day, CACHE_KEY_PART_WIDTH),

@@ -1,4 +1,5 @@
 import type { RaceSource } from "./codes";
+import { isOverseasKeibajoCode } from "./runner-format";
 
 export const DETAIL_SECTION_CACHE_WARM_PARAM = "__cacheWarm";
 export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
@@ -13,6 +14,7 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // to be called race-by-race to work around it. Bumping here invalidates every
 // section's cache at once instead.
 export const DETAIL_SECTION_CACHE_VERSION = "v3";
+const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v4";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
@@ -39,9 +41,18 @@ export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
 
 export type DetailSectionCacheableSection = (typeof DETAIL_SECTION_CACHEABLE_SECTIONS)[number];
 
-const getDetailSectionCacheVersion = (section: DetailSectionCacheableSection): string => {
+const usesOverseasHistory = (section: DetailSectionCacheableSection): boolean =>
+  section === "overall-score" || section === "results" || section === "time-score";
+
+const getDetailSectionCacheVersion = (
+  section: DetailSectionCacheableSection,
+  keibajoCode: string,
+): string => {
   if (section === "premium-data-top") {
     return PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION;
+  }
+  if (isOverseasKeibajoCode(keibajoCode) && usesOverseasHistory(section)) {
+    return OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION;
   }
   return DETAIL_SECTION_CACHE_VERSION;
 };
@@ -71,7 +82,7 @@ export const buildDetailSectionCacheKey = ({
 }: Omit<DetailSectionCacheWarmMessage, "source">): string =>
   [
     "race-detail-section",
-    getDetailSectionCacheVersion(section),
+    getDetailSectionCacheVersion(section, keibajoCode),
     year,
     month,
     day,

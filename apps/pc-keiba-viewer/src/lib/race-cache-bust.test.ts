@@ -31,6 +31,24 @@ it("parseRaceCacheBustRequest accepts a well-formed JRA body", () => {
   });
 });
 
+it("parseRaceCacheBustRequest accepts an overseas alphanumeric venue", () => {
+  expect(
+    parseRaceCacheBustRequest({
+      keibajoCode: "A8",
+      mmdd: "0816",
+      raceBango: "04",
+      source: "jra",
+      year: "2026",
+    }),
+  ).toStrictEqual({
+    keibajoCode: "A8",
+    mmdd: "0816",
+    raceBango: "04",
+    source: "jra",
+    year: "2026",
+  });
+});
+
 it("parseRaceCacheBustRequest rejects null", () => {
   expect(parseRaceCacheBustRequest(null)).toBeNull();
 });
@@ -172,6 +190,16 @@ it("parseRaceKey accepts the JRA raceKey shape", () => {
     keibajoCode: "05",
     mmdd: "0628",
     raceBango: "11",
+    source: "jra",
+    year: "2026",
+  });
+});
+
+it("parseRaceKey accepts an overseas JRA raceKey shape", () => {
+  expect(parseRaceKey("jra:20260816:A8:04")).toStrictEqual({
+    keibajoCode: "A8",
+    mmdd: "0816",
+    raceBango: "04",
     source: "jra",
     year: "2026",
   });

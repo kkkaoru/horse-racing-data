@@ -41,7 +41,7 @@ export interface RaceCacheBustKeySet {
 
 const YYYY_PATTERN = /^\d{4}$/u;
 const MMDD_PATTERN = /^\d{4}$/u;
-const KEIBAJO_PATTERN = /^\d{2}$/u;
+const KEIBAJO_PATTERN = /^[0-9A-Z]{2}$/u;
 const RACE_BANGO_PATTERN = /^\d{2}$/u;
 
 const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
@@ -108,7 +108,7 @@ export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCache
 // shape (e.g. `nar:20260628:50:07`). The regex enforces alternative
 // `(jra|nar)` and non-optional fixed-width capture groups so each `match[N]!`
 // is statically guaranteed to be defined.
-const RACE_KEY_PATTERN = /^(jra|nar):(\d{4})(\d{4}):(\d{2}):(\d{2})$/u;
+const RACE_KEY_PATTERN = /^(jra|nar):(\d{4})(\d{4}):([0-9A-Z]{2}):(\d{2})$/u;
 
 export const parseRaceKey = (raceKey: string): RaceCacheBustRequest | null => {
   const match = RACE_KEY_PATTERN.exec(raceKey);

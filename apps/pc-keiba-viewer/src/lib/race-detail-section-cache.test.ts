@@ -36,6 +36,30 @@ describe("race detail section cache helpers", () => {
     );
   });
 
+  it("uses new overseas history keys without invalidating domestic sections", () => {
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "A8",
+        section: "results",
+      }),
+    ).toBe("race-detail-section:v4:2026:5:23:A8:12:results:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "A8",
+        section: "time-score",
+      }),
+    ).toBe("race-detail-section:v4:2026:5:23:A8:12:time-score:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "A8",
+        section: "condition",
+      }),
+    ).toBe("race-detail-section:v3:2026:5:23:A8:12:condition:default");
+  });
+
   it("validates cacheable sections and default warm targets", () => {
     expect(isDetailSectionCacheableSection("results")).toBe(true);
     expect(isDetailSectionCacheableSection("unknown")).toBe(false);

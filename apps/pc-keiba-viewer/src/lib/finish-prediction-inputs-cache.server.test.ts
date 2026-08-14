@@ -62,6 +62,18 @@ it("buildFinishPredictionInputsCacheKey zero-pads month day venue and race", () 
   ).toBe("pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:01:inputs");
 });
 
+it("buildFinishPredictionInputsCacheKey isolates overseas history inputs", () => {
+  expect(
+    buildFinishPredictionInputsCacheKey({
+      day: "16",
+      keibajoCode: "A8",
+      month: "08",
+      raceNumber: "04",
+      year: "2026",
+    }),
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v5:2026:08:16:A8:04:inputs");
+});
+
 it("buildFinishPredictionInputsCacheKeyFromRaceParts matches the section key", () => {
   expect(
     buildFinishPredictionInputsCacheKeyFromRaceParts({

@@ -82,6 +82,9 @@ import {
   overseaRunnerSourceId,
 } from "./schema";
 
+const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
+const TIME_SCORE_QUERY_VERSION = "v2";
+
 export interface ActiveRunningStylePrediction {
   horseNumber: number;
   predictedLabel: RunningStyleLabel;
@@ -2287,7 +2290,17 @@ export const getHorseRaceResults = async (
   sourceScope: RaceSource | "all" = "all",
 ): Promise<HorseRaceResult[]> => {
   return withDbQueryCache(
-    ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber, sourceScope],
+    [
+      "getHorseRaceResults",
+      HORSE_RACE_RESULTS_QUERY_VERSION,
+      source,
+      year,
+      month,
+      day,
+      keibajoCode,
+      raceNumber,
+      sourceScope,
+    ],
     async () => {
       const currentRunnerTable = source === "jra" ? jvdSe : nvdSe;
       const includeJraHistory = sourceScope === "all" || sourceScope === "jra";
@@ -5208,33 +5221,51 @@ export const getSimilarRaceStats = cache(
 
 export const getTimeScoreRows = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<TimeScoreRow[]> => {
-    return withDbQueryCache(["getTimeScoreRows", race, settings], async () => {
-      const statsSource = getSingleStatsSource(race, settings);
-      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
-      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
-      const currentRunnerTable = race.source === "jra" ? jvdSe : nvdSe;
-      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
-      const result = await getDb().execute<{ rows: unknown }>(sql`
+    return withDbQueryCache(
+      ["getTimeScoreRows", TIME_SCORE_QUERY_VERSION, race, settings],
+      async () => {
+        const statsSource = getSingleStatsSource(race, settings);
+        const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+        const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+        const currentRunnerTable = race.source === "jra" ? jvdSe : nvdSe;
+        const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+        const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+        const classCondition = getStatsClassCondition(race, settings.classConditionName);
+        const raceTitleCondition = getStatsRaceTitleCondition(race);
+        const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
+        const result = await getDb().execute<{ rows: unknown }>(sql`
       with current_horses as (
         select
           coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') horse_number,
           se.umaban::int horse_number_sort,
           coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') horse_name,
           se.ketto_toroku_bango,
+          case
+            when btrim(se.ketto_toroku_bango) ~ '^0+$' then mapping.source_horse_id
+            else se.ketto_toroku_bango
+          end history_horse_id,
           nullif(regexp_replace(coalesce(se.barei, ''), '[^0-9]', '', 'g'), '')::numeric current_age
         from ${currentRunnerTable} se
+        left join ${overseaRunnerSourceId} mapping
+          on mapping.race_source = ${race.source}
+          and mapping.kaisai_nen = se.kaisai_nen
+          and mapping.kaisai_tsukihi = se.kaisai_tsukihi
+          and mapping.keibajo_code = se.keibajo_code
+          and mapping.race_bango = se.race_bango
+          and mapping.umaban = se.umaban
+          and mapping.source = 'netkeiba'
+          and btrim(se.ketto_toroku_bango) ~ '^0+$'
         where
           se.kaisai_nen = ${race.kaisaiNen}
           and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
           and se.keibajo_code = ${race.keibajoCode}
           and se.race_bango = ${race.raceBango}
           and btrim(coalesce(se.ketto_toroku_bango, '')) <> ''
-          and btrim(coalesce(se.ketto_toroku_bango, '')) !~ '^0+$'
+          and (
+            btrim(se.ketto_toroku_bango) !~ '^0+$'
+            or mapping.source_horse_id is not null
+          )
       ),
       matched_races as (
         select
@@ -5331,7 +5362,7 @@ export const getTimeScoreRows = cache(
             and ra.kaisai_tsukihi = se.kaisai_tsukihi
             and ra.keibajo_code = se.keibajo_code
             and ra.race_bango = se.race_bango
-          where se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+          where se.ketto_toroku_bango in (select history_horse_id from current_horses)
           union all
           select
             se.ketto_toroku_bango,
@@ -5349,9 +5380,24 @@ export const getTimeScoreRows = cache(
             and ra.kaisai_tsukihi = se.kaisai_tsukihi
             and ra.keibajo_code = se.keibajo_code
             and ra.race_bango = se.race_bango
-          where se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+          where se.ketto_toroku_bango in (select history_horse_id from current_horses)
+          union all
+          select
+            past.source_horse_id ketto_toroku_bango,
+            to_char(past.race_date, 'YYYYMMDD') race_date,
+            null::text keibajo_code,
+            past.distance_metres::numeric distance,
+            null::numeric race_time,
+            null::numeric last3f,
+            null::numeric body_weight,
+            null::numeric carried_weight,
+            null::numeric margin
+          from ${overseaHorseRaceHistory} past
+          where
+            past.source = 'netkeiba'
+            and past.source_horse_id in (select history_horse_id from current_horses)
         ) past
-          on past.ketto_toroku_bango = current_horses.ketto_toroku_bango
+          on past.ketto_toroku_bango = current_horses.history_horse_id
         where past.race_date < ${raceDate}
       ),
       current_profile as (
@@ -5386,7 +5432,11 @@ export const getTimeScoreRows = cache(
           ) weighted_margin,
           coalesce(
             sum(case when history.keibajo_code = ${race.keibajoCode} then history.recency_weight * (0.5 + history.distance_score * 0.5) else 0 end)
-              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)), 0),
+              / nullif(
+                sum(history.recency_weight * (0.5 + history.distance_score * 0.5))
+                  filter (where history.keibajo_code is not null),
+                0
+              ),
             0.5
           ) venue_score,
           coalesce(
@@ -5528,8 +5578,9 @@ export const getTimeScoreRows = cache(
       from score_base
     `);
 
-      return toTimeScoreRows(result.rows[0]?.rows);
-    });
+        return toTimeScoreRows(result.rows[0]?.rows);
+      },
+    );
   },
 );
 
