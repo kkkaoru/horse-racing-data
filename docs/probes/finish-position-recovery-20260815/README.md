@@ -1,6 +1,23 @@
 # 2026-08-15 finish-position recovery preparation
 
-Read-only snapshot taken around 2026-08-15 00:03 JST. No production write or trigger was executed.
+This document began as a read-only snapshot taken around 2026-08-15 00:03
+JST. The snapshot sections are retained as incident history, but the recovery
+was subsequently executed and completed.
+
+## Final outcome (updated 2026-08-15 07:03 JST)
+
+- Running-style prerequisites: **68/68 complete**.
+- Finish-position predictions: **68/68 races and 822/822 runners complete**:
+  JRA 36/487, ordinary NAR 20/216, and ban-ei 12/119.
+- Quality gates: zero null rank/score, invalid rank range, all-equal/all-zero,
+  or NaN failures in the final fixed-inventory check.
+- The final reconciliation tracked nine transient failed writes: eight
+  `ReadOnlySqlTransaction` and one `pg_closed`. Every named race subsequently
+  passed the fixed-inventory check; none remains failed.
+- Viewer cache warm: **68/68 complete**, with zero warm failures. Details and
+  production cache-hit measurements are recorded below.
+
+Do not use the historical 00:03 and 00:10 counts below as current status.
 
 ## Fixed race inventory
 
@@ -17,7 +34,7 @@ The remote `sync-realtime-data` D1 has exactly 68 distinct `(source, keibajo_cod
 
 Important join trap: D1 `realtime_race_sources.race_key` uses `jra:2026:0815:01:01`, while `running_style_inference_state.race_key` uses `jra:20260815:01:01`. Join RS state by date/source/venue/race fields, not `race_key`.
 
-## Prerequisite snapshot
+## Historical prerequisite snapshot
 
 At approximately 00:10 JST, `running_style_inference_state` was:
 
@@ -46,12 +63,14 @@ feat-cache/catalog-v1/{category}/20260815/{keibajoCode}/{raceBango}/features.par
 
 This is not, by itself, a full-generation blocker. The focused `mode=full` pipeline builds the features and seeds this object; the container code explicitly treats absent R2 cache credentials/objects as degraded-but-functional for full generation. It does mean all 68 currently lack the fast rescore cache and must take the full path. Raw entrant availability was separately confirmed by the 68-race Neon query above.
 
-Strict current classification:
+Historical classification at the snapshot time:
 
 - Ready from RS perspective: 49 races
 - Blocked on RS: 19 races (the failed/processing/pending list above)
 - Existing fast per-race R2 rescore cache: 0 races
 - Full generation possible after RS completion: all races with completed RS and raw entries; the full path creates its own feature cache
+
+All 19 historical RS blockers subsequently recovered; final RS state is 68/68.
 
 ## Submission
 
@@ -91,6 +110,22 @@ Run `check-completion.sql` repeatedly against Neon. It reports:
 - generation timestamps restricted to the 2026-08-15 JST day.
 
 At preparation time it returned 0/68 races with any finish-position prediction.
+The final fixed-inventory result was 68/68 races, 822/822 runners, with the
+category split and zero quality failures shown in the final-outcome section.
+An accepted submission was not used as evidence; completion was verified from
+Neon rows and then checked by named race.
+
+The emergency local-generation artifacts also preserve operational failure
+evidence. Among 68 base log files, six races contain local PostgreSQL
+`server closed the connection unexpectedly` errors (8.82%) and eight contain
+Neon `ReadOnlySqlTransaction` errors (11.76%). Fourteen `retry2` logs have no
+Traceback, although two stop before their completion JSON. Therefore the final
+68/68 Neon inventory—not an assumption that every retry log completed—is the
+recovery proof. The six connection-close log events are a different artifact
+count from the final reconciliation's single `pg_closed` failed write; do not
+merge those denominators. The underlying local PostgreSQL reset cause and the
+read-only transaction cause remain unresolved. The recovery owner observed an
+approximately 16% ReadOnly rate in the affected local-write cohort.
 
 The target list is fixed and does not infer result finality. If a future query adds a result-code predicate, use both `btrim(code) <> ''` and `btrim(code) !~ '^0+$'`; do not treat `IS NOT NULL` as confirmed.
 
@@ -117,8 +152,42 @@ Cloudflare's pause documentation describes explicit control-plane pause/resume o
 
 ## Viewer cache warm after prediction completion
 
-Only after `check-completion.sql` reports all 68 races healthy, warm the viewer's
-race pages and major detail sections with the reusable low-concurrency script:
+Cache warm completed before the first race. The initial process started around
+04:30 JST after its model-feature preflight passed all 68 races, but its outer
+process stopped around 04:40 with no recorded request failure: three races had
+all major sections complete and five had page warm/verify artifacts. The empty
+`failures.tsv`, final timing, and absence of a live process indicate external
+process termination rather than a script-classified HTTP failure; the exact
+external cause is not proven.
+
+The resumed run at concurrency 2 skipped the three fully completed races,
+skipped only the already-completed page step for two more, and processed the
+remaining work from 06:07:32 to 06:30:04 JST:
+
+- `tmp/race-detail-cache-warm-resume/20260815/tasks.tsv`: 65 tasks;
+- `results.tsv`: 65 successful tasks;
+- `failures.tsv`: empty;
+- `timings.tsv`: all 906 requests returned HTTP 200.
+
+Together with the original three complete races, this proves **68/68 warm
+completion**. Major-section verify averages included 0.089 seconds for
+`overall-score`. Access-token production GET checks after completion returned:
+
+| Category | Race                         |          Page |                      `overall-score` |
+| -------- | ---------------------------- | ------------: | -----------------------------------: |
+| JRA      | 04/01 (09:40, earliest post) | 200 / 1.696 s | 200 / 0.071 s; repeats 0.062/0.061 s |
+| NAR      | 44/05                        | 200 / 2.007 s |        200 / 1.336 s; repeat 0.060 s |
+| ban-ei   | 83/12                        | 200 / 1.899 s |        200 / 0.070 s; repeat 0.072 s |
+
+Race 83/12 had returned `section_unavailable` with HTTP 503 in 15.997 seconds
+before warming, so its HTTP 200 response in 0.070 seconds is the decisive
+cold-to-warm recovery check.
+
+After the subsequent viewer pedigree deployment (`74f9030b`), the numeric-venue
+cache was checked again rather than assumed to persist. JRA 04/01, NAR 44/05,
+and ban-ei 83/12 returned HTTP 200 with valid 9-, 5-, and 10-row payloads. Final
+repeat times were 0.065, 0.092, and 0.075 seconds with no 503, so another
+68-race warm was not required. The reusable command remains:
 
 ```bash
 EXPECTED_RACE_COUNT=68 CONCURRENCY=2 \
@@ -127,11 +196,11 @@ EXPECTED_RACE_COUNT=68 CONCURRENCY=2 \
 
 The script performs its own non-empty model-feature preflight and aborts before
 warming other sections if any race is incomplete. See
-`docs/probes/pc-keiba-viewer-cache-warm/README.md` for artifacts and safety
-behavior. Do not run it merely because queue submissions were accepted; wait
-for prediction completion.
+`docs/probes/pc-keiba-viewer-cache-warm/README.md` for safety behavior. Do not
+repeat it merely because queue submissions were accepted; require a healthy
+fixed-inventory check and a demonstrated need to refresh the cache.
 
-## Duration estimate
+## Historical duration estimate
 
 Production has three deterministic shards per category, nine total, and one full pipeline slot per shard. For this exact race list, the FNV shard distribution is:
 

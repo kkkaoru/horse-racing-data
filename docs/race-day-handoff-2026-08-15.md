@@ -1,6 +1,6 @@
 # 2026-08-15 race-day handoff
 
-Last updated: 2026-08-15 02:20 JST
+Last updated: 2026-08-15 07:03 JST
 
 This document is the standalone handoff for the finish-position prediction
 incident, the 2026-08-15 recovery, and the overseas-race viewer work. Automated
@@ -40,17 +40,38 @@ an open incident item.
 - The fixed inventory is 36 JRA, 20 ordinary NAR, and 12 ban-ei races, with 822
   expected runners total. It is recorded in
   `docs/probes/finish-position-recovery-20260815/races-20260815.tsv`.
-- Finish-position recovery is running through both the production per-race path
-  and an emergency local generation path. At 02:20 JST, 28/68 races were fully
-  healthy: JRA 16, ordinary NAR 6, and ban-ei 6. Null rank/score failures were
-  zero and generation was still advancing. The final production/local split
-  and final `68/68` completion result must be inserted here after the recovery
-  owner gives completion GO. Do not infer completion from HTTP `accepted`;
-  verify the Neon rows with `check-completion.sql`.
+- Finish-position recovery is **complete**. The final fixed-inventory check
+  verified 68/68 races and 822/822 runners: JRA 36/487, ordinary NAR 20/216,
+  and ban-ei 12/119. Null rank/score, invalid rank range, all-equal/all-zero,
+  and NaN quality failures were zero. This result came from Neon row checks and
+  named-race verification, not from HTTP `accepted` responses.
+- The final reconciliation tracked nine transient failed writes: eight
+  `ReadOnlySqlTransaction` and one `pg_closed`. All nine named races recovered
+  and passed the final inventory check.
 - The emergency local path was validated on JRA 04/01: 9 expected entries, 9
   rows, ranks 1-9, 9 distinct horses, and non-degenerate scores. This proves the
   emergency path can write valid rows; it does not make local generation an
   approved recurring architecture.
+
+### Emergency local-generation operational evidence
+
+The 68 base log artifacts contain more first-attempt process failures than the
+nine-item final reconciliation, because they count a different execution
+stage and denominator:
+
+- local PostgreSQL `server closed the connection unexpectedly`: 6/68 base logs
+  (8.82%);
+- Neon `ReadOnlySqlTransaction`: 8/68 base logs (11.76%);
+- total base logs with either terminal error: 14/68 (20.59%).
+
+There are 14 `retry2` logs with no Traceback, but only 12 end with a completion
+JSON; the remaining two stop mid-run. Do not claim 14/14 retry-log completion.
+The definitive recovery evidence is the later 68/68, 822/822 Neon inventory.
+The six base-log connection closes are not the same metric as the one
+`pg_closed` item in the final failed-write reconciliation. The recovery owner
+also observed an approximately 16% ReadOnly rate in the affected local-write
+cohort. The causes of both local PostgreSQL resets and read-only transactions
+remain unresolved.
 
 ### Running-style repair for venue 55
 
@@ -73,14 +94,37 @@ not committed production code. No source row or existing object was deleted.
 
 ### Viewer deployments
 
-The viewer was deployed twice:
+The viewer deployment chain is:
 
 1. Primary overseas identity fix:
    - version: `d687b68b-f033-4888-afea-14e92e3f14e0`;
    - rollback anchor at that time: `aea68ad3-b901-452c-b47b-3c0240074905`.
 2. Presentation follow-up:
-   - current active version: `5e7c8a7b-c7e0-42e1-91ca-ebf7a83dc3a9`;
-   - current rollback anchor: `d687b68b-f033-4888-afea-14e92e3f14e0`.
+   - version: `5e7c8a7b-c7e0-42e1-91ca-ebf7a83dc3a9`;
+   - rollback anchor at that time: `d687b68b-f033-4888-afea-14e92e3f14e0`.
+3. Mapped overseas-history and time-score fix from commit `a0a573be`:
+   - version: `e924f7ee-da84-4f7b-86e9-22f74453b3dd`;
+   - rollback anchor at that time:
+     `5e7c8a7b-c7e0-42e1-91ca-ebf7a83dc3a9`.
+4. Overseas pedigree migration/seed and viewer support from commit `d015055e`:
+   - **current active version**:
+     `74f9030b-3a90-48e7-8f77-92e50f54c4a6`;
+   - **current rollback anchor**:
+     `e924f7ee-da84-4f7b-86e9-22f74453b3dd`.
+
+The e924 version loads A8 mapped netkeiba history and time scores and uses cache
+v4 only for alphabetic overseas venues. Production checks returned 104 A8/04
+result rows covering 10 horses and time scores for all 10; representative JRA,
+ordinary NAR, and ban-ei response bodies remained byte-identical.
+
+For the current pedigree version, the Neon migration and ten-row seed committed
+in one successful transaction. Raw verification returned 10 rows for 10 horses
+with zero missing IDs. The A8 page returned HTTP 200 with pedigree fallback
+active: six placeholder-derived scores, neutral handling for horses 2 and 9,
+and the ambiguous Kizuna mapping excluded. Pedigree cache v6 applies only to
+alphabetic overseas venues; numeric domestic venues retain their prior cache
+version. Normal 2026-08-15 JRA 01/01, NAR 44/01, and ban-ei 83/01
+`overall-score` bodies were byte-identical before and after deploy.
 
 Production checks passed for the Jacques le Marois page: ten English horse
 names, full jockey/trainer/owner names, eight external JRA-VAN profile links,
@@ -88,12 +132,45 @@ two real JV horse links, paddock and prediction/statistical sections, and a 404
 for `/horses/0000000000`. A normal domestic JRA race with no supplemental
 identity also passed, proving the JV fallback remains intact.
 
-The first cold `overall-score` request returned a transient 503 and immediate
-retries succeeded. This is not a regression: the `section_unavailable` fallback
-has existed since commit `c7defe8d` (2026-05-28). A reusable low-concurrency
-cache warm script is available at
-`docs/probes/pc-keiba-viewer-cache-warm/warm-race-detail-cache.sh`. Run it only
-after all 68 prediction races are verified complete.
+Viewer cache warm is also **complete for 68/68 races**. An initial process
+completed three races before external termination around 04:40 JST; it recorded
+no request failure. A resumed concurrency-2 run skipped completed work and
+finished 65/65 remaining tasks from 06:07:32 to 06:30:04, with an empty
+`failures.tsv` and all 906 timing rows at HTTP 200. Artifacts are under
+`tmp/race-detail-cache-warm-resume/20260815/`.
+
+Access-token GET checks demonstrated the resulting behavior:
+
+- JRA 04/01, the 09:40 earliest-post race: page 200/1.696 s;
+  `overall-score` 200/0.071 s and repeats 0.062/0.061 s;
+- NAR 44/05: page 200/2.007 s; `overall-score` 200/1.336 s and repeat
+  0.060 s;
+- ban-ei 83/12: page 200/1.899 s; `overall-score` 200/0.070 s and repeat
+  0.072 s.
+
+Before warming, 83/12 `overall-score` returned `section_unavailable` with HTTP
+503 in 15.997 seconds. Its later 200 in 0.070 seconds is the decisive cache-hit
+proof. The page responses intentionally remain `private, no-cache, no-store`;
+the warm primarily prepares the application detail-section caches. The
+`section_unavailable` fallback itself has existed since commit `c7defe8d`
+(2026-05-28).
+
+The cache was independently rechecked after deployment of viewer version
+`74f9030b`. JRA 04/01, NAR 44/05, and ban-ei 83/12 all returned HTTP 200 with
+valid `overall-score` payloads and 9, 5, and 10 rows. After initial edge/isolate
+requests of at most 0.478 seconds, the final repeated measurements were 0.065,
+0.092, and 0.075 seconds respectively. There was no multi-second cold response
+or 503. Numeric-venue caches therefore remained warm and no second 68-race warm
+was required.
+
+### Open incident items
+
+- The actor or mechanism that set queue delivery to PAUSED remains unknown.
+- The cause of intermittent local PostgreSQL connection resets remains unknown.
+- The cause of the approximately 16% ReadOnly rate in the affected local-write
+  cohort remains unknown.
+- The first warm process appears to have been externally terminated because it
+  stopped with an empty failure file; the exact external cause is not proven.
 
 ## 3. Required checks during the 2026-08-15 meetings
 
@@ -184,7 +261,11 @@ races, and enqueue only those races.
 
 ### Viewer cache warm
 
-After, and only after, all 68 races are healthy:
+The pre-race warm is already complete for all 68 races; do not rerun it merely
+as a routine check. Use the representative GET results in the current-state
+section as the completed baseline. If a later cache invalidation makes a
+carefully targeted rerun necessary, first require all 68 races to remain
+healthy, then use:
 
 ```bash
 EXPECTED_RACE_COUNT=68 CONCURRENCY=2 \
@@ -192,8 +273,7 @@ EXPECTED_RACE_COUNT=68 CONCURRENCY=2 \
 ```
 
 The script independently aborts if any race lacks non-empty model prediction
-features, then warms the race page and overall/pace/finish/similar/bloodline/
-time/premium sections. Keep concurrency low.
+features. Keep concurrency low and retain its failure/timing artifacts.
 
 ## 4. Work required after all meetings end
 
@@ -228,6 +308,9 @@ Deploy and validate it only after all meetings end.
 
 ### Resolve prediction quality/data issues
 
+- Complete and deploy the market-feature gate correction only after the
+  meetings. Commit `5cabe484` preserves odds behind a flag, but race-day
+  coverage does not prove the market-feature semantics are correct.
 - Investigate why canonical `tansho_ninkijun`/odds values are not reaching the
   feature rows. Odds/popularity features directly affect finish-position
   quality; coverage can be complete while these inputs are wrong.
@@ -240,6 +323,15 @@ Deploy and validate it only after all meetings end.
   itself alert and must not suppress readiness or canary checks.
 - Obtain Cloudflare Audit Logs Read access if identifying who or what paused the
   queue remains required.
+
+### Make viewer cache invalidation durable
+
+The warm recovered today's cache, but it is not the permanent cache lifecycle.
+After the meetings, implement and validate an explicit invalidation/versioning
+mechanism for detail sections when overseas mappings, histories, scores, or
+prediction inputs change. Preserve the deployment-specific, alphabetic-venue
+cache-version precaution (currently pedigree cache v6) until that mechanism is
+proven. Do not solve this by blanket race-day cache deletion.
 
 ### Repository publication
 
