@@ -8,6 +8,8 @@ For the 2026 Prix Jacques le Marois viewer path, `getHorseRaceResults` explicitl
 
 The viewer change has not been deployed. Deployment is deferred until after the 2026-08-15 race-day operations window.
 
+A production data sync on 2026-08-15 warmed the 2026-08-16 race-detail section and SSR caches while the deployed viewer still lacked this history path. Before deploying the history change, confirm that its DB-query and race-detail cache namespaces differ from those used by that warm. If they do not, bump the relevant cache versions or purge the affected race-detail caches; deployment alone must not be assumed to invalidate them.
+
 ## Scraping boundary
 
 Source-specific table markers, route prefixes, and cell positions are supplied through an operator-owned ignored profile. They are not committed. Cached documents are reused, and requests for the target race were throttled.
