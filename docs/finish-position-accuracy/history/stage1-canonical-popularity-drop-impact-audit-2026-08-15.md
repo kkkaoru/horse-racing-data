@@ -175,7 +175,7 @@ Commit `5cabe484` implements the routing-only candidate without activating it:
 Post-meeting canary sequence:
 
 1. Deploy with the flag absent/off and verify identical Stage-1 behavior.
-2. Ensure no broad scheduler/recovery batch can run, enable the flag, and trigger exactly one explicitly selected completed/non-live race through focused full.
+2. In a controlled future window where one selected upcoming race has a populated board, ensure no broad scheduler/recovery batch can run, enable the flag, and trigger focused full for only that race. Do not use a completed race: the full builder's upcoming-source filter would not exercise the target path.
 3. Confirm logs report `reason=fresh`, the champion artifact loads, row count/rank uniqueness are complete, score spread is non-degenerate, and no unexpected model version is selected.
 4. Repeat with a deliberately odds-absent fixture/request and confirm `reason=odds-missing` still selects Stage-1.
 5. Disable the flag immediately on any mismatch and destroy the canary container before broader cell-by-cell evaluation.
