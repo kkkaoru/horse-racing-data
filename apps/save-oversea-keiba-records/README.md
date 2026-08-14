@@ -62,6 +62,12 @@ Profile fields:
 
 Do not commit a real profile. Do not paste live selectors into tests, docs, or chat logs that will be archived in the public tree.
 
+### Source result profiles
+
+`src/sources/secondary-result-parser.ts` also parses cached horse, jockey, trainer, and owner result tables. Its table marker, identity-route prefixes, URL template, and cell indexes are supplied by an operator-owned ignored profile. The parser does not contain live source markup.
+
+Horse rows map to `oversea_horse_race_history` with explicit source provenance. Person rows map to `oversea_person_race_history`; a missing source horse link remains null and the published horse name is retained. Empty source fields are never replaced with synthetic JV identifiers.
+
 ## Data flow
 
 1. Load both documents concurrently, preferring the supplied local files and otherwise making one HTTP request per source.

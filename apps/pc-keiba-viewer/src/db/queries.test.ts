@@ -355,6 +355,7 @@ it("getHorseRaceResults joins source-mapped overseas histories without treating 
   expect(queryText).toMatch(/past\.source = mapping\.source/u);
   expect(queryText).toMatch(/past\.source_horse_id = mapping\.source_horse_id/u);
   expect(queryText).toMatch(/mapping\.race_source = '\s*jra\s*'/u);
+  expect(queryText).toMatch(/mapping\.source = '\s*netkeiba\s*'/u);
   expect(queryText).toMatch(/mapping\.umaban as "currentUmaban"/u);
   expect(queryText).toMatch(/mapping\.source_horse_id as "kettoTorokuBango"/u);
   expect(queryText).toMatch(/btrim\(current_se\.ketto_toroku_bango\) ~ '\s*\^0\+\$\s*'/u);

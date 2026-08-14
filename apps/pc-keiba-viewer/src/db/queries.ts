@@ -2560,6 +2560,7 @@ export const getHorseRaceResults = async (
           and identity.umaban = mapping.umaban
         where
           mapping.race_source = ${source}
+          and mapping.source = 'netkeiba'
           and mapping.kaisai_nen = ${year}
           and mapping.kaisai_tsukihi = ${monthDay}
           and mapping.keibajo_code = ${keibajoCode}

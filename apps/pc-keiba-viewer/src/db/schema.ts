@@ -102,6 +102,26 @@ export const overseaHorseRaceHistory = pgTable("oversea_horse_race_history", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 
+export const overseaPersonRaceHistory = pgTable("oversea_person_race_history", {
+  source: text("source").notNull(),
+  personKind: text("person_kind").notNull(),
+  sourcePersonId: text("source_person_id").notNull(),
+  sourceRaceId: text("source_race_id").notNull(),
+  raceDate: date("race_date").notNull(),
+  venue: text("venue").notNull(),
+  raceNumber: text("race_number").notNull(),
+  raceName: text("race_name").notNull(),
+  sourceRaceUrl: text("source_race_url").notNull(),
+  sourceHorseId: text("source_horse_id"),
+  horseName: text("horse_name").notNull(),
+  finishPosition: smallint("finish_position"),
+  finishPositionText: text("finish_position_text").notNull(),
+  surface: text("surface").notNull(),
+  distanceMetres: integer("distance_metres").notNull(),
+  going: text("going"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
 export const overseaRunnerSourceId = pgTable("oversea_runner_source_id", {
   raceSource: text("race_source").notNull(),
   kaisaiNen: text("kaisai_nen").notNull(),
