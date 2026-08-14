@@ -199,10 +199,31 @@ class ValidationTests(unittest.TestCase):
                 "nvd_nu",
                 "jvd_hn",
                 "jvd_bt",
+                "oversea_runner_identity",
+                "oversea_runner_source_id",
+                "oversea_horse_race_history",
+                "oversea_person_race_history",
+                "oversea_horse_pedigree",
+                "oversea_person_win_rate_stats",
             ],
         )
         masters = {spec.name for spec in subject.TABLE_SPECS.values() if spec.is_master}
-        self.assertEqual(masters, {"jvd_um", "nvd_um", "nvd_nu", "jvd_hn", "jvd_bt"})
+        self.assertEqual(
+            masters,
+            {
+                "jvd_um",
+                "nvd_um",
+                "nvd_nu",
+                "jvd_hn",
+                "jvd_bt",
+                "oversea_runner_identity",
+                "oversea_runner_source_id",
+                "oversea_horse_race_history",
+                "oversea_person_race_history",
+                "oversea_horse_pedigree",
+                "oversea_person_win_rate_stats",
+            },
+        )
 
     def test_parse_date_rejects_format_and_calendar_errors(self) -> None:
         self.assertEqual(subject.parse_date("20260715"), "20260715")

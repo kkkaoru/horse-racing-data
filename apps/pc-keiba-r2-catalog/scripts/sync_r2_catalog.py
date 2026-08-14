@@ -144,6 +144,44 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
         TableSpec("nvd_nu", ("ketto_toroku_bango",)),
         TableSpec("jvd_hn", ("hanshoku_toroku_bango",)),
         TableSpec("jvd_bt", ("hanshoku_toroku_bango",)),
+        TableSpec(
+            "oversea_runner_identity",
+            (
+                "race_source",
+                "kaisai_nen",
+                "kaisai_tsukihi",
+                "keibajo_code",
+                "race_bango",
+                "umaban",
+            ),
+        ),
+        TableSpec(
+            "oversea_runner_source_id",
+            (
+                "race_source",
+                "kaisai_nen",
+                "kaisai_tsukihi",
+                "keibajo_code",
+                "race_bango",
+                "umaban",
+                "source",
+            ),
+        ),
+        TableSpec("oversea_horse_race_history", ("history_id",)),
+        TableSpec("oversea_person_race_history", ("history_id",)),
+        TableSpec("oversea_horse_pedigree", ("source", "source_horse_id")),
+        TableSpec(
+            "oversea_person_win_rate_stats",
+            (
+                "race_source",
+                "kaisai_nen",
+                "kaisai_tsukihi",
+                "keibajo_code",
+                "race_bango",
+                "category",
+                "name",
+            ),
+        ),
     )
 }
 

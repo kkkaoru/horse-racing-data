@@ -12,6 +12,9 @@ inputs.
 
 The published Iceberg tables preserve the local PostgreSQL table names and
 primary keys in namespace `pc_keiba`. Date-keyed tables use identity partitions.
+The source-separated `oversea_*` tables are also published as small, full-table
+snapshots so overseas identities, histories, pedigrees, and auditable person
+statistics are available from the Catalog without treating Neon as a source.
 Each write verifies row count, primary-key uniqueness, and a deterministic
 fingerprint before recording a snapshot manifest.
 
@@ -42,6 +45,14 @@ viewer projection sync to Neon. For a focused partition verification:
 
 ```sh
 bun run --cwd apps/pc-keiba-r2-catalog sync --date 20260715
+```
+
+Overseas supplemental tables are intentionally master-style snapshots and must
+be selected explicitly in full mode after local PostgreSQL is updated:
+
+```sh
+bun run --cwd apps/pc-keiba-r2-catalog sync --full --tables \
+  oversea_runner_identity,oversea_runner_source_id,oversea_horse_race_history,oversea_person_race_history,oversea_horse_pedigree,oversea_person_win_rate_stats
 ```
 
 Required Catalog credentials are `R2_CATALOG_TOKEN`, `R2_CATALOG_URI`, and

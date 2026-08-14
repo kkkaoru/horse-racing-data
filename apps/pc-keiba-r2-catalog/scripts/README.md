@@ -39,8 +39,14 @@ uv run sync_r2_catalog.py --date 20260715 --tables nvd_se,nvd_ra
 uv run sync_r2_catalog.py --full --tables jvd_um,nvd_um,nvd_nu,jvd_hn,jvd_bt
 uv run sync_r2_catalog.py --full --tables jvd_ra --year-scope 2010-2014
 uv run sync_r2_catalog.py --full --force
+uv run sync_r2_catalog.py --full --tables oversea_runner_identity,oversea_runner_source_id,oversea_horse_race_history,oversea_person_race_history,oversea_horse_pedigree,oversea_person_win_rate_stats
 uv run test_sync_r2_catalog.py
 ```
+
+The `oversea_*` tables are small source-separated raw tables. They are treated
+as explicit full-table snapshots: local PostgreSQL remains the sole authority,
+while Neon and existing Catalog objects are never used to complete or repair
+them.
 
 `--year-scope` narrows a `--full` run to one five-year scope and therefore also
 suppresses stale-scope deletion for that run, since every unexamined scope would
