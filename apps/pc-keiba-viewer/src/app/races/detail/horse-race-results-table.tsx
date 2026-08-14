@@ -20,6 +20,7 @@ import {
   RACE_PACE_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/race-pace-prediction";
 import type { HorseRaceResult, Runner } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -1188,7 +1189,7 @@ export function HorseRaceResultsTable({
             {debutRunners.map((runner) => (
               <span key={runner.umaban ?? runner.kettoTorokuBango ?? runner.bamei}>
                 <strong>{formatRunnerNumber(runner.umaban)}</strong>
-                {cleanText(runner.bamei)}
+                {getRunnerDisplayNames(runner).horse}
               </span>
             ))}
           </div>

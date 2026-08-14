@@ -101,13 +101,22 @@ describe("buildFinishPredictionRowsFromResults", () => {
         result({ currentUmaban: "02", kakuteiChakujun: "09", shussoTosu: "10" }),
       ],
       runners: [
-        runner({ bamei: "先着馬", tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" }),
+        runner({
+          bamei: "先着馬",
+          horseNameFull: "LEADING HORSE",
+          jockeyNameFull: "FULL JOCKEY",
+          tanshoNinkijun: "01",
+          tanshoOdds: "0020",
+          umaban: "01",
+        }),
         runner({ bamei: "後着馬", tanshoNinkijun: "08", tanshoOdds: "0120", umaban: "02" }),
       ],
     });
 
     expect(rows.map((row) => row.horseNumber)).toEqual(["1", "2"]);
     expect(rows[0]?.predictedRank).toBe(1);
+    expect(rows[0]?.horseName).toBe("LEADING HORSE");
+    expect(rows[0]?.jockeyName).toBe("FULL JOCKEY");
     expect(rows[0]?.score).toBeGreaterThan(rows[1]?.score ?? 0);
     expect(rows[0]?.storedPopularity).toBe(1);
     expect(rows[0]?.storedOdds).toBe(2);

@@ -7,6 +7,7 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
@@ -254,7 +255,7 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
         categoryRows,
         categoryScores,
         horseCount: categoryRowValues.reduce((total, row) => total + row.horseCount, 0),
-        horseName: cleanText(runner.bamei),
+        horseName: getRunnerDisplayNames(runner).horse,
         horseNumber,
         rawScore,
         starts: categoryRowValues.reduce((total, row) => total + row.starts, 0),

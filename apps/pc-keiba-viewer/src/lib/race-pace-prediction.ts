@@ -8,6 +8,7 @@ import type {
   RacePaceSimilarityFeature,
   Runner,
 } from "./race-types";
+import { getRunnerDisplayNames } from "./runner-display";
 import { isBanEiKeibajoCode } from "./runner-format";
 
 interface BuildRacePacePredictionRowsParams {
@@ -666,7 +667,7 @@ export const buildRacePacePredictionRowsFromResults = ({
         corner3: predictedCorners[2] ?? null,
         corner4: predictedCorners[3] ?? null,
         details,
-        horseName: cleanText(runner.bamei, "-"),
+        horseName: getRunnerDisplayNames(runner).horse || "-",
         horseNumber,
         predictedCorners: formatPredictedCorners(predictedCorners),
       };

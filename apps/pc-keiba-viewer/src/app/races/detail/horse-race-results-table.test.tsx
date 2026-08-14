@@ -223,6 +223,26 @@ describe("horse race results table", () => {
     expect(screen.queryByText("条件に一致する競走成績はありません。")).toBeNull();
   });
 
+  it("uses the supplemental horse name for a debut runner", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1600"
+        currentKeibajoCode="A8"
+        currentRaceDate="20260816"
+        currentTrackCode="17"
+        defaultIncludeClass={false}
+        results={[]}
+        runners={[runner({ bamei: "補助前馬名", horseNameFull: "FULL HORSE NAME" })]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByText("FULL HORSE NAME")).toBeTruthy();
+    expect(screen.queryByText("補助前馬名")).toBeNull();
+  });
+
   it("defaults recent months to 7", () => {
     render(
       <HorseRaceResultsTable

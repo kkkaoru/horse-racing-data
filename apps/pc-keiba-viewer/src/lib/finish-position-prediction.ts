@@ -10,6 +10,7 @@ import type {
   Runner,
   SameDayVenueJockeyWinFeature,
 } from "./race-types";
+import { getRunnerDisplayNames } from "./runner-display";
 import { isBanEiKeibajoCode } from "./runner-format";
 
 type FinishPredictionCategory = "ban-ei" | "jra" | "nar";
@@ -769,12 +770,13 @@ export const buildFinishPredictionRowsFromResults = ({
       ...getModelCandidates(models, config.modelWeight),
     ];
     const { confidence, score } = calculateScore(candidates);
+    const displayNames = getRunnerDisplayNames(runner);
     return {
       confidence,
       details: candidates.map(toDetail),
-      horseName: cleanText(runner.bamei, ""),
+      horseName: displayNames.horse,
       horseNumber,
-      jockeyName: cleanText(runner.kishumeiRyakusho, ""),
+      jockeyName: displayNames.jockey,
       predictedRank: 0,
       score,
       showProbability: 0,

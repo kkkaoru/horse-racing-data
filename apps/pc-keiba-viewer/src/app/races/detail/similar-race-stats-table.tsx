@@ -11,6 +11,7 @@ import type {
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
 } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
@@ -267,7 +268,7 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
         categoryRows,
         categoryScores,
         horseCount: categoryRowValues.reduce((total, row) => total + row.horseCount, 0),
-        horseName: cleanText(runner.bamei, "-"),
+        horseName: getRunnerDisplayNames(runner).horse || "-",
         horseNumber,
         rawScore:
           (categoryScores.jockey + categoryScores.trainer + categoryScores.owner) /

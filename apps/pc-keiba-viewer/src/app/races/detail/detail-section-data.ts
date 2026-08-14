@@ -78,6 +78,7 @@ import type {
   TimeScoreRow,
   PremiumDataTopHorse,
 } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "../../../lib/runner-format";
 import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import {
@@ -420,7 +421,7 @@ const enrichPremiumDataTopHorses = (
     const runner = runnerByHorse.get(formatRunnerNumber(horse.horseNumber));
     return {
       ...horse,
-      jockeyName: runner?.kishumeiRyakusho?.trim() || null,
+      jockeyName: runner ? getRunnerDisplayNames(runner).jockey || null : null,
       storedOdds: parseStoredOdds(runner?.tanshoOdds),
       storedPopularity: parseStoredPopularity(runner?.tanshoNinkijun),
     };
@@ -537,11 +538,12 @@ const buildOverallScoreRows = ({
           weight: OVERALL_SCORE_WEIGHTS.owner,
         },
       ];
+      const displayNames = getRunnerDisplayNames(runner);
       return {
         details,
-        horseName: runner.bamei?.trim() || "-",
+        horseName: displayNames.horse || "-",
         horseNumber,
-        jockeyName: runner.kishumeiRyakusho?.trim() || "-",
+        jockeyName: displayNames.jockey || "-",
         score: roundScore(
           details.reduce((total, detail) => total + detail.score * detail.weight, 0),
         ),
@@ -1483,7 +1485,7 @@ export const getDetailSectionPayload = async (
     const jockeyNameByHorse = new Map(
       context.runners.map((runner) => [
         normalizeHorseNumber(runner.umaban),
-        cleanText(runner.kishumeiRyakusho, "-"),
+        getRunnerDisplayNames(runner).jockey || "-",
       ]),
     );
     return {
@@ -1494,7 +1496,7 @@ export const getDetailSectionPayload = async (
       rows: rows.map((row) =>
         Object.assign(row, {
           jockeyName:
-            row.jockeyName || jockeyNameByHorse.get(normalizeHorseNumber(row.horseNumber)) || "-",
+            jockeyNameByHorse.get(normalizeHorseNumber(row.horseNumber)) || row.jockeyName || "-",
         }),
       ),
       runners,

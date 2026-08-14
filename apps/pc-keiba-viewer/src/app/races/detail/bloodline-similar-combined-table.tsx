@@ -13,6 +13,7 @@ import type {
   TimeScoreDetail,
   TimeScoreRow,
 } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -342,14 +343,15 @@ export const buildCombinedScoreRows = ({
       selectedSimilarCategories.length > 0 ? similarScore : null,
     ].filter((score): score is number => score !== null);
 
+    const displayNames = getRunnerDisplayNames(runner);
     return {
       bloodline,
       bloodlineScore,
       correlationDetails: correlationRow?.details ?? [],
       correlationScore: clampScore(correlationRow?.score ?? 0.5),
-      horseName: cleanText(runner.bamei, "-"),
+      horseName: displayNames.horse || "-",
       horseNumber,
-      jockeyName: cleanText(timeRow?.jockeyName ?? runner.kishumeiRyakusho, "-") || "-",
+      jockeyName: displayNames.jockey || cleanText(timeRow?.jockeyName, "-") || "-",
       rawScore:
         selectedGroupScores.length > 0
           ? selectedGroupScores.reduce((total, score) => total + score, 0) /

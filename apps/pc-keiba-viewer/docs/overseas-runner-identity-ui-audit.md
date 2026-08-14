@@ -18,23 +18,18 @@ This is the follow-up audit for the defect pattern "the database query returns s
 
 This is the only table in the initial server-rendered page that displays horse, jockey, trainer, and owner together, and it satisfies the reported user-facing issue.
 
-## Other display-only consumers still using JV text
+## Closed display-only consumers
 
-These consumers do not merge horse histories, but their labels can remain abbreviated or omit an owner even after supplemental data is present:
+The presentation follow-up now routes all audited current-runner labels through the shared `getRunnerDisplayNames` helper (`full -> JV -> empty`):
 
-| Consumer                                                 | Current use                                       | Impact                                                           | Recommendation                                                     |
-| -------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `race-detail-page.tsx` `baseProcessedData.runnerRows`    | `bamei`, abbreviated jockey/trainer, `banushimei` | AI JSON export contains Japanese/abbreviated names and `-` owner | Prefer supplemental display fields in a follow-up                  |
-| `race-ai-data.ts` standard prompt rows                   | JV horse/jockey/trainer; no owner                 | AI prompt does not see canonical overseas identity               | Serialize supplemental fields in AI API and prefer them            |
-| AI data route `pickRunner`                               | Drops every supplemental identity field           | Downstream AI cannot recover canonical names or profile URL      | Add optional fields without removing current keys                  |
-| `paddock-section.tsx` runner rows                        | JV horse/jockey/trainer                           | Paddock labels remain abbreviated when paddock data exists       | Prefer supplemental display fields                                 |
-| `realtime-race-section.tsx` odds labels                  | JV horse name                                     | Odds chart uses Japanese card label, not full profile name       | Prefer `horseNameFull`                                             |
-| `detail-section-data.ts` display rows                    | JV horse/jockey labels                            | Overall-score/current-entry labels remain abbreviated            | Prefer supplemental fields only in output labels                   |
-| `race-pace-prediction.ts` output label                   | JV horse name                                     | Pace output can show card label                                  | Prefer supplemental horse label after computation                  |
-| `finish-position-prediction.ts` output label             | JV horse/jockey label                             | Prediction output can show abbreviated labels                    | Prefer supplemental fields only after matching/scoring             |
-| current-runner labels in similar/bloodline/result tables | JV horse/jockey labels                            | Secondary tables can disagree with the runners table             | Prefer supplemental fields where the input is the current `Runner` |
+- `race-detail-page.tsx` processed runner rows and running-style labels;
+- `race-ai-data.ts` prompt rows and the AI data route serializer;
+- paddock rows and realtime odds labels;
+- overall-score, premium-data-top, and time-score labels in `detail-section-data.ts`;
+- pace and finish-position prediction output labels, after computation;
+- similar-race, bloodline, combined-score, and newcomer/result current-runner labels.
 
-These are presentation-consistency follow-ups, not a reason to delay the primary runners-table deploy. They should use one shared display helper to avoid another partial rollout.
+The AI serializer retains the existing fixed-width JV keys for compatibility and adds supplemental fields alongside them. Realtime jockey updates compare against the JV abbreviation but preserve the full supplemental name when the realtime value identifies the same jockey. A genuinely changed jockey still replaces the stored display value.
 
 ## Consumers that must continue to use JV values for computation
 
@@ -47,10 +42,10 @@ Do **not** blindly replace every grep match. The following values are identity/j
 
 Changing these to profile display names would make a full foreign name fail to match historical rows keyed by a JV abbreviation. Compute with the existing JV value, then substitute the supplemental value only in the final presentation object.
 
-## Recommended implementation boundary
+## Implemented boundary
 
-1. Add tested helpers for the four presentation names (`full -> JV -> fallback`).
-2. Use them only at UI/export output boundaries.
-3. Preserve raw JV fields in API output for compatibility and add supplemental fields alongside them.
-4. Test a placeholder overseas runner and a domestic runner without supplemental data in every changed consumer.
-5. Do not change score lookup, historical joins, or fixed-width JV columns.
+1. The four presentation names use one tested helper (`full -> JV -> empty`).
+2. The helper is called only at UI/export output boundaries.
+3. Raw JV fields remain in API output; supplemental fields are additive.
+4. Placeholder overseas and domestic fallback behavior is covered by helper and integration tests.
+5. Score lookup, historical joins, and fixed-width JV columns remain unchanged.

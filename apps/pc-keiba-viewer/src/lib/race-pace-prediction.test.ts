@@ -141,13 +141,14 @@ describe("race pace prediction", () => {
         }),
       ],
       runners: [
-        runner({ bamei: "テストホース", umaban: "01" }),
+        runner({ bamei: "テストホース", horseNameFull: "TEST HORSE", umaban: "01" }),
         runner({ bamei: "外枠ホース", kettoTorokuBango: "2020000002", umaban: "02" }),
       ],
     });
 
     expect(rows).toHaveLength(2);
     expect(rows[0]?.horseNumber).toBe("1");
+    expect(rows[0]?.horseName).toBe("TEST HORSE");
     expect(rows[0]?.predictedCorners).not.toBe("-");
     expect(rows[0]?.confidence).toBeGreaterThan(0);
     expect(rows[0]?.details.map((detail) => detail.label)).toEqual([
