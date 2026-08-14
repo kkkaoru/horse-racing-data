@@ -387,10 +387,13 @@ export function RunnersTable({
     const horseHref = isLinkableHorseId(horseId)
       ? `/horses/${encodeURIComponent(horseId)}`
       : getSourceHorseHref(runner);
-    const jockeyName = cleanText(runner.jockeyNameFull, cleanText(runner.kishumeiRyakusho));
-    const displayJockeyName = realtimeEntry?.jockeyName
-      ? getPreferredJockeyName(jockeyName, realtimeEntry.jockeyName)
-      : jockeyName;
+    const storedJockeyName = cleanText(runner.kishumeiRyakusho);
+    const jockeyName = cleanText(runner.jockeyNameFull, storedJockeyName);
+    const realtimeJockeyName = realtimeEntry?.jockeyName;
+    const displayJockeyName =
+      realtimeJockeyName && !isSameJockeyName(storedJockeyName, realtimeJockeyName)
+        ? getPreferredJockeyName(storedJockeyName, realtimeJockeyName)
+        : jockeyName;
     const trainerName = cleanText(runner.trainerNameFull, cleanText(runner.chokyoshimeiRyakusho));
     const ownerName = cleanText(runner.ownerNameFull, cleanText(runner.banushimei));
     const entryStatus = realtimeEntry?.status || "";
@@ -450,7 +453,7 @@ export function RunnersTable({
           ) : (
             displayJockeyName
           )}
-          {isChangedJockey(jockeyName, realtimeEntry?.jockeyName, displayJockeyName) ? (
+          {isChangedJockey(storedJockeyName, realtimeEntry?.jockeyName, displayJockeyName) ? (
             <small className="runner-change-note">元 {jockeyName}</small>
           ) : null}
         </td>

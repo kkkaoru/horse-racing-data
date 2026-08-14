@@ -115,6 +115,25 @@ describe("runners table", () => {
   it("shows full source people names instead of fixed-width abbreviations", () => {
     render(
       <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: {
+            fetchedAt: "2026-08-16T20:00:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-08-16T20:00:00+09:00",
+                horseName: "テストホース",
+                horseNumber: "1",
+                jockeyName: "A．ルメ",
+                status: null,
+              },
+            ],
+          },
+          raceKey: "jra:2026:0816:A8:04",
+          raceResults: null,
+          source: null,
+        }}
         runners={[
           runner({
             banushimei: "",
