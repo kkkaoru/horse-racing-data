@@ -54,7 +54,7 @@ Allowing a one-day date difference matches all 104 netkeiba horse rows to JRA-VA
 - Strauss is dated 2025-10-31 in the netkeiba horse table and 2025-11-01 in JRA-VAN. The netkeiba race page itself says 2025-11-01.
 - More Thunder's Prix de la Forêt is dated 2025-10-06 in the netkeiba horse table and 2025-10-05 in JRA-VAN. Both source race pages identify the local date as 2025-10-05; JRA-VAN separately publishes a 2025-10-06 00:25 JST start.
 
-Thus a profile date is not a stable cross-source race identity, and the normalization direction differs by record. Cross-source consumers must not use exact date alone as a join key.
+Thus a profile date is not a stable cross-source race identity, and the normalization direction differs by record. The More Thunder shift is explained by local date versus JST; the opposite Strauss shift remains unexplained and conflicts with netkeiba's own race page. Cross-source consumers must not use exact date alone as a join key.
 
 ## Person-result value
 
