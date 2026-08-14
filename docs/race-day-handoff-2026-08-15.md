@@ -1,6 +1,6 @@
 # 2026-08-15 race-day handoff
 
-Last updated: 2026-08-15 07:03 JST
+Last updated: 2026-08-15 07:56 JST
 
 This document is the standalone handoff for the finish-position prediction
 incident, the 2026-08-15 recovery, and the overseas-race viewer work. Automated
@@ -99,32 +99,54 @@ The viewer deployment chain is:
 1. Primary overseas identity fix:
    - version: `d687b68b-f033-4888-afea-14e92e3f14e0`;
    - rollback anchor at that time: `aea68ad3-b901-452c-b47b-3c0240074905`.
-2. Presentation follow-up:
+2. Placeholder correction and identity-display follow-up (approximately 01:25
+   JST):
    - version: `5e7c8a7b-c7e0-42e1-91ca-ebf7a83dc3a9`;
    - rollback anchor at that time: `d687b68b-f033-4888-afea-14e92e3f14e0`.
-3. Mapped overseas-history and time-score fix from commit `a0a573be`:
+3. Mapped overseas-history/time-score correction and removal of 4,451
+   incorrect rows from commit `a0a573be`:
    - version: `e924f7ee-da84-4f7b-86e9-22f74453b3dd`;
    - rollback anchor at that time:
      `5e7c8a7b-c7e0-42e1-91ca-ebf7a83dc3a9`.
 4. Overseas pedigree migration/seed and viewer support from commit `d015055e`:
-   - **current active version**:
-     `74f9030b-3a90-48e7-8f77-92e50f54c4a6`;
-   - **current rollback anchor**:
+   - version: `74f9030b-3a90-48e7-8f77-92e50f54c4a6`;
+   - rollback anchor at that time:
      `e924f7ee-da84-4f7b-86e9-22f74453b3dd`.
+5. Overseas person JV fallback and precomputed snapshot from commits `e69c9023`
+   and `3b2575e7`:
+   - **current active version**:
+     `06fd3c24-9ed2-4ee5-9bb4-80583c010198`;
+   - **current rollback anchor**:
+     `74f9030b-3a90-48e7-8f77-92e50f54c4a6`.
+
+The short race-night chain is therefore `5e7c8a7b` (placeholder and identity
+display) -> `e924f7ee` (mapped history/time score and removal of 4,451 incorrect
+rows) -> `74f9030b` (pedigree) -> `06fd3c24` (person win rates and snapshot).
+Rolling the current version back one step removes only the person-rate/snapshot
+changes while retaining pedigree;
+rolling 74f back to e924 also removes pedigree; rolling e924 back to 5e7 removes
+the mapped-history/time-score correction.
 
 The e924 version loads A8 mapped netkeiba history and time scores and uses cache
 v4 only for alphabetic overseas venues. Production checks returned 104 A8/04
 result rows covering 10 horses and time scores for all 10; representative JRA,
 ordinary NAR, and ban-ei response bodies remained byte-identical.
 
-For the current pedigree version, the Neon migration and ten-row seed committed
-in one successful transaction. Raw verification returned 10 rows for 10 horses
+For the 74f pedigree version, the Neon migration and ten-row seed committed in
+one successful transaction. Raw verification returned 10 rows for 10 horses
 with zero missing IDs. The A8 page returned HTTP 200 with pedigree fallback
 active: six placeholder-derived scores, neutral handling for horses 2 and 9,
 and the ambiguous Kizuna mapping excluded. Pedigree cache v6 applies only to
 alphabetic overseas venues; numeric domestic venues retain their prior cache
 version. Normal 2026-08-15 JRA 01/01, NAR 44/01, and ban-ei 83/01
-`overall-score` bodies were byte-identical before and after deploy.
+`overall-score` bodies were byte-identical before and after that deploy.
+
+For the current 06fd person-rate/snapshot version, the deploy owner's postcheck
+found byte-identical pre/post bodies for the `similar`, `time-score`, and
+`overall-score` sections of JRA 01/01, NAR 44/05, and ban-ei 83/12. The three
+`overall-score` requests returned in 0.040, 0.027, and 0.032 seconds. A8 warm
+checks returned `similar` in 0.072 seconds, `time-score` in 0.071 seconds, and
+`overall-score` in 0.033 seconds.
 
 Production checks passed for the Jacques le Marois page: ten English horse
 names, full jockey/trainer/owner names, eight external JRA-VAN profile links,
@@ -155,13 +177,16 @@ the warm primarily prepares the application detail-section caches. The
 `section_unavailable` fallback itself has existed since commit `c7defe8d`
 (2026-05-28).
 
-The cache was independently rechecked after deployment of viewer version
-`74f9030b`. JRA 04/01, NAR 44/05, and ban-ei 83/12 all returned HTTP 200 with
-valid `overall-score` payloads and 9, 5, and 10 rows. After initial edge/isolate
-requests of at most 0.478 seconds, the final repeated measurements were 0.065,
-0.092, and 0.075 seconds respectively. There was no multi-second cold response
-or 503. Numeric-venue caches therefore remained warm and no second 68-race warm
-was required.
+The cache was independently rechecked after both later viewer deployments. For
+version `74f9030b`, JRA 04/01, NAR 44/05, and ban-ei 83/12 returned HTTP 200
+with valid 9-, 5-, and 10-row `overall-score` payloads; final repeated times
+were 0.065, 0.092, and 0.075 seconds.
+
+After the current `06fd3c24` deploy, the same three races again returned HTTP
+200 with valid 9-, 5-, and 10-row payloads in 0.078, 0.066, and 0.073 seconds.
+Repeated body SHA-256 values were stable within each race. There was no 503 or
+multi-second cold response. Numeric-venue caches therefore remained warm and no
+second 68-race warm was required.
 
 ### Open incident items
 
