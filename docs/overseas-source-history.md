@@ -43,11 +43,18 @@ For all five distance differences, JRA-VAN retained a ten-metre conversion (1630
 JRA-VAN contained 13 starts that netkeiba did not publish for these profiles:
 
 - More Thunder: five 2024 maiden/condition/handicap starts;
-- No Lunch: five French starts from 2025-09-28 through 2026-05-01;
+- No Lunch: two condition races, two listed races, and the 2026 Prix du Muguet (G2);
 - Sir Tommy Cen: two 2024 maiden/condition starts;
-- Precise: one 2025 Breeders' Cup cancellation.
+- Precise: one 2025 Breeders' Cup G1 cancellation.
 
-There was no result-page pagination marker, and each netkeiba profile's published career total matched the parsed row count. The difference is therefore a source coverage limitation, not a missed second page. Two additional apparent date-only differences were retained separately: Strauss was dated 2025-10-31 versus 2025-11-01, and More Thunder's Prix de la Forêt was dated 2025-10-06 versus 2025-10-05.
+The missing set is not limited to lower-class races: it includes listed, G2, and G1-cancellation records. There was no result-page pagination marker, and each netkeiba profile's published career total matched the parsed row count. The difference is therefore a source coverage limitation, not a missed second page.
+
+Allowing a one-day date difference matches all 104 netkeiba horse rows to JRA-VAN with identical finishes. Two rows require that tolerance:
+
+- Strauss is dated 2025-10-31 in the netkeiba horse table and 2025-11-01 in JRA-VAN. The netkeiba race page itself says 2025-11-01.
+- More Thunder's Prix de la Forêt is dated 2025-10-06 in the netkeiba horse table and 2025-10-05 in JRA-VAN. Both source race pages identify the local date as 2025-10-05; JRA-VAN separately publishes a 2025-10-06 00:25 JST start.
+
+Thus a profile date is not a stable cross-source race identity, and the normalization direction differs by record. Cross-source consumers must not use exact date alone as a join key.
 
 ## Person-result value
 
