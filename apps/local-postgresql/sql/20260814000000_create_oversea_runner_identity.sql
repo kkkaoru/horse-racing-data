@@ -7,11 +7,12 @@
 -- issued later and contaminate horse history and prediction features.
 --
 -- Scope:
--- Each row augments one race entry, identified by the JV race key plus umaban, with an identity
--- from an external source. The source and source_horse_id remain separate from JV identifiers;
--- full display names and provenance can therefore be retained without mutating jvd_se. The primary
--- key is intentionally the complete race-entry key. Tables without a primary key are silently
--- omitted from Neon synchronization.
+-- Each row augments one race entry, identified by race source, race key, and umaban, with an
+-- identity from an external source. race_source distinguishes JRA and NAR key spaces even though
+-- the initial data population is limited to JRA overseas races. source and source_horse_id remain
+-- separate from JV identifiers; full display names and provenance can therefore be retained without
+-- mutating jvd_se. The primary key is intentionally the complete race-entry key. Tables without a
+-- primary key are silently omitted from Neon synchronization.
 --
 -- Precedent:
 -- 20260725000000_hand_ingest_ascot_king_george.sql preserves unresolved all-zero JV identifiers
@@ -29,6 +30,7 @@
 begin;
 
 create table if not exists oversea_runner_identity (
+  race_source text not null check (race_source in ('jra', 'nar')),
   kaisai_nen text not null,
   kaisai_tsukihi text not null,
   keibajo_code text not null,
@@ -42,7 +44,8 @@ create table if not exists oversea_runner_identity (
   owner_name_full text,
   source_url text,
   created_at timestamptz not null default now(),
-  primary key (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban)
+  updated_at timestamptz not null default now(),
+  primary key (race_source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban)
 );
 
 create index if not exists oversea_runner_identity_source_horse_idx
