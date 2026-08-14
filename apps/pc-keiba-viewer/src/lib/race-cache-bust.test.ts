@@ -145,7 +145,7 @@ it("buildRaceCacheBustKeys generates main + stale entries for every cacheable se
     "race-detail-section:v3:2026:06:28:05:11:overall-score:default",
     "race-detail-section:v3:2026:06:28:05:11:pace-prediction:default",
     "race-detail-section:v3:2026:06:28:05:11:results:default",
-    "race-detail-section:v3:2026:06:28:05:11:similar:default",
+    "race-detail-section:v4:2026:06:28:05:11:similar:default",
     "race-detail-section:v3:2026:06:28:05:11:time-score:default",
     "race-detail-section:v3:2026:06:28:05:11:training:default",
   ]);
@@ -167,7 +167,7 @@ it("buildRaceCacheBustKeys staleKeys prepend the stale: prefix to each main key"
     "stale:race-detail-section:v3:2026:06:28:05:11:overall-score:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:pace-prediction:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:results:default",
-    "stale:race-detail-section:v3:2026:06:28:05:11:similar:default",
+    "stale:race-detail-section:v4:2026:06:28:05:11:similar:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:time-score:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:training:default",
   ]);

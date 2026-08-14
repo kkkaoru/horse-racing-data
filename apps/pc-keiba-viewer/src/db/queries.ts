@@ -4906,9 +4906,12 @@ const usesOverseasPersonStatsSnapshot = (
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
     const useSnapshot = usesOverseasPersonStatsSnapshot(race, settings);
-    const cacheKey = useSnapshot
-      ? ["getSimilarRaceStats", "overseas-person-snapshot-v2", race, settings]
-      : ["getSimilarRaceStats", race, settings];
+    let cacheKey = ["getSimilarRaceStats", race, settings];
+    if (useSnapshot) {
+      cacheKey = ["getSimilarRaceStats", "overseas-person-snapshot-v2", race, settings];
+    } else if (!isOverseasKeibajoCode(race.keibajoCode)) {
+      cacheKey = ["getSimilarRaceStats", "domestic-person-code-v1", race, settings];
+    }
     return withDbQueryCache(cacheKey, async () => {
       if (useSnapshot) {
         const snapshot = await getDb().execute<{
@@ -4970,6 +4973,7 @@ export const getSimilarRaceStats = cache(
       }
 
       const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const usePersonCodes = !isOverseasKeibajoCode(race.keibajoCode);
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
@@ -4988,13 +4992,40 @@ export const getSimilarRaceStats = cache(
         quinellaRate: string;
         showRate: string;
       }>(sql`
-      with current_entries as (
+      with person_master_names as (
+        select 'jockey'::text category, btrim(kishu_code) person_code,
+          nullif(btrim(kishumei_ryakusho, ' 　'), '') name from jvd_ks
+        union all
+        select 'jockey', btrim(kishu_code), nullif(btrim(kishumei_ryakusho, ' 　'), '') from nvd_ks
+        union all
+        select 'trainer', btrim(chokyoshi_code), nullif(btrim(chokyoshimei_ryakusho, ' 　'), '') from jvd_ch
+        union all
+        select 'trainer', btrim(chokyoshi_code), nullif(btrim(chokyoshimei_ryakusho, ' 　'), '') from nvd_ch
+      ),
+      unique_person_names as (
+        select category, name
+        from person_master_names
+        where name is not null and person_code <> '' and person_code !~ '^0+$'
+        group by category, name
+        having count(distinct person_code) = 1
+      ),
+      current_entries as (
         select
           coalesce(nullif(regexp_replace(umaban, '^0+', ''), ''), '0') as umaban,
           umaban::int as "umabanSort",
           wakuban,
           coalesce(nullif(regexp_replace(kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as jockey,
+          case
+            when ${usePersonCodes} and btrim(coalesce(kishu_code, '')) <> '' and btrim(kishu_code) !~ '^0+$'
+              then btrim(kishu_code)
+            else null
+          end as jockey_code,
           coalesce(nullif(regexp_replace(chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as trainer,
+          case
+            when ${usePersonCodes} and btrim(coalesce(chokyoshi_code, '')) <> '' and btrim(chokyoshi_code) !~ '^0+$'
+              then btrim(chokyoshi_code)
+            else null
+          end as trainer_code,
           coalesce(nullif(regexp_replace(banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as owner
         from ${runnerTable}
         where
@@ -5004,22 +5035,34 @@ export const getSimilarRaceStats = cache(
           and race_bango = ${race.raceBango}
       ),
       target_entries as (
-        select 'jockey'::text as category, jockey as name, umaban, "umabanSort", wakuban
+        select 'jockey'::text as category, jockey as name, jockey_code as person_code,
+          (${usePersonCodes} = false or exists (
+            select 1 from unique_person_names
+            where unique_person_names.category = 'jockey' and unique_person_names.name = current_entries.jockey
+          )) as name_is_unique,
+          umaban, "umabanSort", wakuban
         from current_entries
         union all
-        select 'trainer'::text as category, trainer as name, umaban, "umabanSort", wakuban
+        select 'trainer'::text, trainer, trainer_code,
+          (${usePersonCodes} = false or exists (
+            select 1 from unique_person_names
+            where unique_person_names.category = 'trainer' and unique_person_names.name = current_entries.trainer
+          )),
+          umaban, "umabanSort", wakuban
         from current_entries
         union all
-        select 'owner'::text as category, owner as name, umaban, "umabanSort", wakuban
+        select 'owner'::text, owner, null::text, true, umaban, "umabanSort", wakuban
         from current_entries
       ),
       targets as (
         select
           category,
           name,
+          person_code,
+          name_is_unique,
           string_agg(umaban, ', ' order by "umabanSort") as "currentHorseNumbers"
         from target_entries
-        group by category, name
+        group by category, name, person_code, name_is_unique
       ),
       matched_entries as (
         select
@@ -5055,7 +5098,9 @@ export const getSimilarRaceStats = cache(
             se.tansho_odds,
             se.ketto_toroku_bango,
             coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') jockey,
+            nullif(btrim(se.kishu_code), '') jockey_code,
             coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') trainer,
+            nullif(btrim(se.chokyoshi_code), '') trainer_code,
             coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') owner
           from ${jvdRa} ra
           join ${jvdSe} se
@@ -5095,7 +5140,9 @@ export const getSimilarRaceStats = cache(
             se.tansho_odds,
             se.ketto_toroku_bango,
             coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') jockey,
+            nullif(btrim(se.kishu_code), '') jockey_code,
             coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') trainer,
+            nullif(btrim(se.chokyoshi_code), '') trainer_code,
             coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') owner
           from ${nvdRa} ra
           join ${nvdSe} se
@@ -5136,6 +5183,7 @@ export const getSimilarRaceStats = cache(
         select
           'jockey'::text as category,
           jockey as name,
+          jockey_code as person_code,
           race_source,
           kaisai_nen,
           kaisai_tsukihi,
@@ -5155,6 +5203,7 @@ export const getSimilarRaceStats = cache(
         select
           'trainer'::text as category,
           trainer as name,
+          trainer_code as person_code,
           race_source,
           kaisai_nen,
           kaisai_tsukihi,
@@ -5174,6 +5223,7 @@ export const getSimilarRaceStats = cache(
         select
           'owner'::text as category,
           owner as name,
+          null::text as person_code,
           race_source,
           kaisai_nen,
           kaisai_tsukihi,
@@ -5201,8 +5251,15 @@ export const getSimilarRaceStats = cache(
               from target_entries
               where
                 target_entries.category = grouped_entries.category
-                and target_entries.name = grouped_entries.name
                 and target_entries.wakuban = grouped_entries.wakuban
+                and (
+                  (target_entries.person_code is not null and target_entries.person_code = grouped_entries.person_code)
+                  or (
+                    target_entries.person_code is null
+                    and target_entries.name_is_unique
+                    and target_entries.name = grouped_entries.name
+                  )
+                )
             )
           )
           and (${settings.includeRaceNumber} = false or grouped_entries.race_bango = ${race.raceBango})
@@ -5211,7 +5268,7 @@ export const getSimilarRaceStats = cache(
         select
           *,
           row_number() over (
-            partition by category, name
+            partition by category, coalesce(person_code, 'name:' || name)
             order by kaisai_nen desc, kaisai_tsukihi desc, race_bango asc, umaban asc
           ) as "detailRank"
         from filtered_grouped_entries
@@ -5282,10 +5339,19 @@ export const getSimilarRaceStats = cache(
         from targets
         left join ranked_grouped_entries
           on ranked_grouped_entries.category = targets.category
-          and ranked_grouped_entries.name = targets.name
+          and (
+            (targets.person_code is not null and targets.person_code = ranked_grouped_entries.person_code)
+            or (
+              targets.person_code is null
+              and targets.name_is_unique
+              and targets.name = ranked_grouped_entries.name
+            )
+          )
         group by
           targets.category,
           targets.name,
+          targets.person_code,
+          targets.name_is_unique,
           targets."currentHorseNumbers"
       ),
       ranked as (
