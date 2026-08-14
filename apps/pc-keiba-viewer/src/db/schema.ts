@@ -1,5 +1,5 @@
 import "server-only";
-import { pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { date, integer, pgTable, smallint, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 const raceColumns = {
   kaisaiNen: varchar("kaisai_nen", { length: 4 }).notNull(),
@@ -82,6 +82,43 @@ export const nvdSe = pgTable("nvd_se", runnerColumns);
 export const jvdUm = pgTable("jvd_um", horseMasterColumns);
 export const nvdNu = pgTable("nvd_nu", horseMasterColumns);
 export const nvdUm = pgTable("nvd_um", horseMasterColumns);
+
+export const overseaHorseRaceHistory = pgTable("oversea_horse_race_history", {
+  source: text("source").notNull(),
+  sourceHorseId: text("source_horse_id").notNull(),
+  sourceRaceId: text("source_race_id"),
+  raceDate: date("race_date").notNull(),
+  venue: text("venue").notNull(),
+  raceDaySequence: smallint("race_day_sequence").notNull(),
+  raceName: text("race_name").notNull(),
+  sourceRaceUrl: text("source_race_url"),
+  finishPosition: smallint("finish_position"),
+  finishPositionText: text("finish_position_text").notNull(),
+  jockeyName: text("jockey_name").notNull(),
+  sourceJockeyId: text("source_jockey_id"),
+  surface: text("surface").notNull(),
+  distanceMetres: integer("distance_metres").notNull(),
+  going: text("going").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const overseaRunnerSourceId = pgTable("oversea_runner_source_id", {
+  raceSource: text("race_source").notNull(),
+  kaisaiNen: text("kaisai_nen").notNull(),
+  kaisaiTsukihi: text("kaisai_tsukihi").notNull(),
+  keibajoCode: text("keibajo_code").notNull(),
+  raceBango: text("race_bango").notNull(),
+  umaban: text("umaban").notNull(),
+  source: text("source").notNull(),
+  sourceHorseId: text("source_horse_id").notNull(),
+  sourceJockeyId: text("source_jockey_id"),
+  sourceTrainerId: text("source_trainer_id"),
+  sourceOwnerId: text("source_owner_id"),
+  gateNumber: smallint("gate_number"),
+  sourceUrl: text("source_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
 
 export const overseaRunnerIdentity = pgTable("oversea_runner_identity", {
   raceSource: text("race_source").notNull(),

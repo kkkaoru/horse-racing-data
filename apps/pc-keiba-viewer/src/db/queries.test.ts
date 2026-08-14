@@ -334,6 +334,33 @@ it("getHorseRaceResults excludes empty and all-zero identities for a JRA current
   expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) !~ '\s*\^0\+\$\s*'/u);
 });
 
+it("getHorseRaceResults joins source-mapped overseas histories without treating placeholders as JV identities", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getHorseRaceResults("jra", "2026", "08", "16", "A8", "04");
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(collectTableNames(queryArg)).toStrictEqual([
+    "jvd_se",
+    "jvd_se",
+    "jvd_ra",
+    "nvd_se",
+    "nvd_ra",
+    "oversea_runner_source_id",
+    "jvd_se",
+    "oversea_horse_race_history",
+    "oversea_runner_identity",
+  ]);
+  expect(queryText).toMatch(/past\.source = mapping\.source/u);
+  expect(queryText).toMatch(/past\.source_horse_id = mapping\.source_horse_id/u);
+  expect(queryText).toMatch(/mapping\.race_source = '\s*jra\s*'/u);
+  expect(queryText).toMatch(/mapping\.umaban as "currentUmaban"/u);
+  expect(queryText).toMatch(/mapping\.source_horse_id as "kettoTorokuBango"/u);
+  expect(queryText).toMatch(/btrim\(current_se\.ketto_toroku_bango\) ~ '\s*\^0\+\$\s*'/u);
+  expect(queryText).toMatch(/past\.race_date < '\s*20260816\s*'::date/u);
+});
+
 it("getHorseRaceResults uses NAR runners for the current identity set", async () => {
   executeMock.mockResolvedValue({ rows: [] });
 

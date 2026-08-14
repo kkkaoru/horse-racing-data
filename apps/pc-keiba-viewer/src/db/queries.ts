@@ -77,7 +77,9 @@ import {
   nvdRa,
   nvdSe,
   nvdUm,
+  overseaHorseRaceHistory,
   overseaRunnerIdentity,
+  overseaRunnerSourceId,
 } from "./schema";
 
 export interface ActiveRunningStylePrediction {
@@ -2311,7 +2313,7 @@ export const getHorseRaceResults = async (
           and btrim(ketto_toroku_bango) not in ('')
           and btrim(ketto_toroku_bango) !~ '^0+$'
       ),
-      history as (
+      domestic_history as (
         select
           ch."currentJockey",
           ch."currentBarei",
@@ -2481,6 +2483,95 @@ export const getHorseRaceResults = async (
         ) past
           on past."kettoTorokuBango" = ch.ketto_toroku_bango
         where past.raceDate < ${raceDate}
+      ),
+      supplemental_history as (
+        select
+          coalesce(identity.jockey_name_full, nullif(btrim(current_se.kishumei_ryakusho), ''), '不明') as "currentJockey",
+          current_se.barei as "currentBarei",
+          current_se.seibetsu_code as "currentSeibetsuCode",
+          mapping.umaban as "currentUmaban",
+          to_char(past.race_date, 'YYYY') as "kaisaiNen",
+          to_char(past.race_date, 'MMDD') as "kaisaiTsukihi",
+          past.venue as "keibajoCode",
+          lpad(past.race_day_sequence::text, 2, '0') as "raceBango",
+          past.race_name as "kyosomeiHondai",
+          null::text as "kyosomeiFukudai",
+          concat_ws(' ', past.surface, past.going) as "kyosomeiKakkonai",
+          null::text as "gradeCode",
+          null::text as "kyosoShubetsuCode",
+          null::text as "kyosoKigoCode",
+          null::text as "juryoShubetsuCode",
+          null::text as "kyosoJokenCode",
+          null::text as "kyosoJokenMeisho",
+          past.distance_metres::text as kyori,
+          null::text as "trackCode",
+          null::text as "hassoJikoku",
+          null::text as "shussoTosu",
+          null::text as "tenkoCode",
+          null::text as "babajotaiCodeShiba",
+          null::text as "babajotaiCodeDirt",
+          null::text as wakuban,
+          null::text as umaban,
+          mapping.source_horse_id as "kettoTorokuBango",
+          identity.horse_name_full as bamei,
+          current_se.seibetsu_code as "seibetsuCode",
+          current_se.barei,
+          null::text as "futanJuryo",
+          past.jockey_name as "kishumeiRyakusho",
+          identity.trainer_name_full as "chokyoshimeiRyakusho",
+          identity.owner_name_full as banushimei,
+          null::text as bataiju,
+          null::text as "zogenFugo",
+          null::text as "zogenSa",
+          case
+            when past.finish_position is null then past.finish_position_text
+            else lpad(past.finish_position::text, 2, '0')
+          end as "kakuteiChakujun",
+          null::text as "tanshoOdds",
+          null::text as "tanshoNinkijun",
+          null::text as "sohaTime",
+          null::text as "timeSa",
+          null::text as "corner1",
+          null::text as "corner2",
+          null::text as "corner3",
+          null::text as "corner4",
+          null::text as "kohan3f",
+          null::text as "blinkerShiyoKubun",
+          row_number() over (
+            partition by mapping.umaban
+            order by past.race_date desc, past.race_day_sequence desc
+          ) as rn
+        from ${overseaRunnerSourceId} mapping
+        join ${currentRunnerTable} current_se
+          on current_se.kaisai_nen = mapping.kaisai_nen
+          and current_se.kaisai_tsukihi = mapping.kaisai_tsukihi
+          and current_se.keibajo_code = mapping.keibajo_code
+          and current_se.race_bango = mapping.race_bango
+          and current_se.umaban = mapping.umaban
+        join ${overseaHorseRaceHistory} past
+          on past.source = mapping.source
+          and past.source_horse_id = mapping.source_horse_id
+        left join ${overseaRunnerIdentity} identity
+          on identity.race_source = mapping.race_source
+          and identity.kaisai_nen = mapping.kaisai_nen
+          and identity.kaisai_tsukihi = mapping.kaisai_tsukihi
+          and identity.keibajo_code = mapping.keibajo_code
+          and identity.race_bango = mapping.race_bango
+          and identity.umaban = mapping.umaban
+        where
+          mapping.race_source = ${source}
+          and mapping.kaisai_nen = ${year}
+          and mapping.kaisai_tsukihi = ${monthDay}
+          and mapping.keibajo_code = ${keibajoCode}
+          and mapping.race_bango = ${raceNumber}
+          and btrim(current_se.ketto_toroku_bango) ~ '^0+$'
+          and ${sourceScope === "all" || sourceScope === source} = true
+          and past.race_date < ${raceDate}::date
+      ),
+      history as (
+        select * from domestic_history
+        union all
+        select * from supplemental_history
       )
       select
         "currentJockey",
