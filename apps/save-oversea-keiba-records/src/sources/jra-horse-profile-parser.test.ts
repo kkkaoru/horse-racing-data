@@ -38,6 +38,7 @@ describe("parseJraVanHorseProfile", () => {
       results: [
         {
           raceDate: "2026-07-11",
+          raceDaySequence: 1,
           venue: "アスコット",
           raceName: "クイーンアンステークス（G1）",
           sourceRaceId: "R1019335",
@@ -68,6 +69,16 @@ describe("parseJraVanHorseProfile", () => {
       sourceJockeyId: null,
       distanceMetres: null,
     });
+  });
+
+  it("assigns a stable source-order sequence within the same horse, date, and venue", () => {
+    const secondCells = [...completeCells];
+    secondCells[2] = "別のレース";
+    expect(
+      parseJraVanHorseProfile(profile(`${row(completeCells)}${row(secondCells)}`)).results.map(
+        (result) => result.raceDaySequence,
+      ),
+    ).toStrictEqual([1, 2]);
   });
 
   it("accepts a profile with no historical starts", () => {

@@ -2,6 +2,7 @@
 
 export interface ParsedOverseaHorseResult {
   raceDate: string;
+  raceDaySequence: number;
   venue: string;
   raceName: string;
   sourceRaceId: string | null;
@@ -14,6 +15,8 @@ export interface ParsedOverseaHorseResult {
   distanceMetres: number | null;
   going: string;
 }
+
+type ParsedResultWithoutSequence = Omit<ParsedOverseaHorseResult, "raceDaySequence">;
 
 export interface ParsedJraVanHorseProfile {
   sourceHorseId: string;
@@ -79,7 +82,7 @@ const parseDate = (html: string): string => {
 const optionalId = (html: string, pattern: RegExp): string | null =>
   pattern.exec(html)?.[1] ?? null;
 
-const parseResultRow = (html: string, sourceUrl: string): ParsedOverseaHorseResult | null => {
+const parseResultRow = (html: string, sourceUrl: string): ParsedResultWithoutSequence | null => {
   const cells: RegExpMatchArray[] = Array.from(html.matchAll(CELL_PATTERN));
   if (cells.length === 0) return null;
   if (cells.length !== 9) {
@@ -113,11 +116,20 @@ export const parseJraVanHorseProfile = (html: string): ParsedJraVanHorseProfile 
   const horseName: string = cleanText(
     captureRequired(html, HORSE_NAME_PATTERN, "English horse name")[1] as string,
   );
-  const results: ParsedOverseaHorseResult[] = Array.from(
+  const parsedResults: ParsedResultWithoutSequence[] = Array.from(
     resultSection(html).matchAll(ROW_PATTERN),
-  ).flatMap((row: RegExpMatchArray): ParsedOverseaHorseResult[] => {
-    const parsed: ParsedOverseaHorseResult | null = parseResultRow(row[1] as string, sourceUrl);
+  ).flatMap((row: RegExpMatchArray): ParsedResultWithoutSequence[] => {
+    const parsed: ParsedResultWithoutSequence | null = parseResultRow(row[1] as string, sourceUrl);
     return parsed === null ? [] : [parsed];
   });
+  const sequenceByDateVenue = new Map<string, number>();
+  const results: ParsedOverseaHorseResult[] = parsedResults.map(
+    (result: ParsedResultWithoutSequence): ParsedOverseaHorseResult => {
+      const key: string = `${result.raceDate}\u0000${result.venue}`;
+      const raceDaySequence: number = (sequenceByDateVenue.get(key) ?? 0) + 1;
+      sequenceByDateVenue.set(key, raceDaySequence);
+      return { ...result, raceDaySequence };
+    },
+  );
   return { horseName, results, sourceHorseId, sourceUrl };
 };
