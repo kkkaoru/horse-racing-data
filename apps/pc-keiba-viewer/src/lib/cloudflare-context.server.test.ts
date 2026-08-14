@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 
 const { getCloudflareContextMock } = vi.hoisted(() => ({
-  getCloudflareContextMock: vi.fn<() => Promise<unknown>>(),
+  getCloudflareContextMock: vi.fn<(options: { async: boolean }) => unknown>(),
 }));
 
 vi.mock("@opennextjs/cloudflare", () => ({
@@ -17,6 +17,43 @@ import {
 
 afterEach(() => {
   getCloudflareContextMock.mockReset();
+  vi.unstubAllEnvs();
+});
+
+it("safeGetCloudflareRuntime uses the synchronous global context in production", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  const ctx = { waitUntil: vi.fn<(promise: Promise<unknown>) => void>() };
+  const env = { DETAIL_SECTION_CACHE_KV: { mark: "kv" } };
+  getCloudflareContextMock.mockReturnValue({ ctx, env });
+  const runtime = await safeGetCloudflareRuntime();
+  expect(runtime).toStrictEqual({ ctx, env });
+  expect(getCloudflareContextMock).toHaveBeenCalledWith({ async: false });
+});
+
+it("safeGetCloudflareRuntime does not start a Wrangler context when production global lookup fails", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  getCloudflareContextMock.mockImplementation(() => {
+    throw new Error("missing production context");
+  });
+  const runtime = await safeGetCloudflareRuntime();
+  expect(runtime).toStrictEqual({ ctx: null, env: null });
+  expect(getCloudflareContextMock).toHaveBeenCalledTimes(1);
+  expect(getCloudflareContextMock).toHaveBeenCalledWith({ async: false });
+});
+
+it("safeGetCloudflareRuntime falls back to the asynchronous Wrangler context in development", async () => {
+  vi.stubEnv("NODE_ENV", "development");
+  const ctx = { waitUntil: vi.fn<(promise: Promise<unknown>) => void>() };
+  const env = { DETAIL_SECTION_CACHE_KV: { mark: "kv" } };
+  getCloudflareContextMock
+    .mockImplementationOnce(() => {
+      throw new Error("missing development global context");
+    })
+    .mockResolvedValueOnce({ ctx, env });
+  const runtime = await safeGetCloudflareRuntime();
+  expect(runtime).toStrictEqual({ ctx, env });
+  expect(getCloudflareContextMock).toHaveBeenNthCalledWith(1, { async: false });
+  expect(getCloudflareContextMock).toHaveBeenNthCalledWith(2, { async: true });
 });
 
 it("safeGetCloudflareRuntime returns ctx and env when wrangler resolves successfully", async () => {
