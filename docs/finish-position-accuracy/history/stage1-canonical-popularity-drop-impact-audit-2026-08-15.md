@@ -136,7 +136,9 @@ The canonical rank is **not a model feature**:
 - NAR champion metadata contains neither canonical nor suffixed rank; it consumes derived market features.
 - Both Stage-1 artifacts intentionally contain no market fields.
 
-The champions were built from the same layer family after `cc6e7f6f`; canonical rank's absence from final training parquet therefore matches full-build serving parquet. Restoring canonical `tansho_ninkijun` as an additive non-feature routing field does not change the trained model vector.
+The champions were built from the same layer family after `cc6e7f6f`; canonical rank's absence from final training parquet therefore matches full-build serving parquet. Although model projection is name-based, changing the parquet schema is unnecessarily risky because this pipeline has known schema/order-sensitive legacy contracts (`shusso_tosu` is the concrete example). **The rejected first fix is therefore to re-emit canonical `tansho_ninkijun` from near-miss.** The first fix must stay in the routing layer and leave feature parquet unchanged.
+
+The best existing cross-category gate candidate found in this audit is canonical `tansho_odds`: near-miss does not exclude it, the base builder fills it from the same realtime snapshot, and both JRA and NAR carry it. `tansho_ninkijun_1` is not suitable for upcoming races because `stage_race_history()` is settled-only (`finish_position is not null`); `tansho_ninkijun_raw` is not suitable as a cross-category signal because only JRA runs the market layer that adds it. Any routing change must validate `tansho_odds > 0` parity against the original realtime rank signal for full, rescore, partial-board, and scratch cases before adoption.
 
 The meaningful train/serve mismatch is elsewhere: historical training rows have populated derived market features, while morning full builds may legitimately have NULL/median market fields before odds publication. That is the incident the gate was designed to insure against.
 
@@ -144,20 +146,21 @@ The meaningful train/serve mismatch is elsewhere: historical training rows have 
 
 These are separate from the canonical-drop root cause but must be addressed before a safe correction is deployed:
 
-1. **Python runner-count skew.** Near-miss intentionally emits canonical `shusso_tosu` as NULL and keeps the real value in `shusso_tosu_1`. Python `late_binding.py:219` reads only canonical `shusso_tosu`, so rescore recomputes `popularity_score` to the 0.5 median even when fresh rank exists. The TypeScript twin already works around this by deriving runner count from live odds.
+1. **Python runner-count skew.** Near-miss intentionally emits canonical `shusso_tosu` as NULL and keeps the real value in `shusso_tosu_1`. Python `late_binding.py:219` reads only canonical `shusso_tosu`, so rescore recomputes `popularity_score` to the 0.5 median even when fresh rank exists. The TypeScript twin already works around this by deriving runner count from live odds. Training/full-build behavior is confirmed different: `finish_position_features_duckdb.py:2387-2405` computes `popularity_score` before near-miss from `rec.shusso_tosu`, and the upcoming base source populates field size from race metadata or a race-partition count. Thus Python rescore's constant-median behavior is serve skew, not the trained distribution.
 2. **Only 2 of the champion's market features are refreshed.** Python rescore updates canonical odds/rank, `odds_score`, `popularity_score`, and weight diff. It does not recompute JRA's other 13 market features (`*_raw`, inverse-odds features, ranks/diffs/disagreement, field dominance, horse popularity, similar-odds correlations). If the morning full cache predates odds publication, those remain NULL/stale while canonical rank makes the gate declare Stage-2 healthy. NAR likewise leaves two of its four market features (`field_dominant_favorite_indicator`, `horse_popularity_vs_field`) stale.
 
-Accordingly, simply restoring one canonical column fixes the false Stage-1 decision on full builds but does not by itself establish healthy Stage-2 feature parity on rescore.
+Accordingly, correcting the gate alone fixes false Stage-1 selection on a full build whose market features are already populated, but it does not establish healthy Stage-2 feature parity on rescore. Expanding rescore's update set is a separate evaluation project, not part of the first routing fix.
 
 ## 7. Safe post-meeting validation plan (not executed)
 
-1. Add an integration assertion spanning base -> market (JRA) -> near-miss -> gate, proving fetched rank survives as canonical and routes fresh odds to Stage-2.
-2. Prove trained model projection is byte/order-equivalent when the additive routing-only column is present.
-3. Fix Python runner-count sourcing with the same live-field-size contract already used by TypeScript.
-4. Recompute every market-derived feature used by each champion during rescore, or rerun the market-dependent race chain after injecting snapshots.
-5. Evaluate current behavior versus corrected behavior on blind race/cell cohorts; specifically guard the expected +4.75pp JRA / +6.07pp NAR healthy-regime recovery and incident fallback correctness.
-6. Shadow-log gate inputs/reason/model choice before changing production selection.
-7. Deploy only after 2026-08-15 meetings end and independently verify fresh, missing, partial, stale, and scratch cases.
+1. Leave feature parquet unchanged. Change only the gate's freshness input after validating a preserved, cross-category signal. The leading candidate is canonical `tansho_odds > 0`; do not use settled-only `tansho_ninkijun_1`, and do not assume JRA-only `tansho_ninkijun_raw` covers NAR.
+2. Add an integration assertion spanning base -> market (JRA) -> near-miss -> gate, proving a fetched board routes to Stage-2 while an absent board routes to Stage-1. Include NAR without the market layer.
+3. Reject re-emitting canonical `tansho_ninkijun` as the first fix: it changes final parquet schema in a pipeline with known trained-schema legacy constraints, while a routing-only correction can avoid that risk.
+4. Fix Python runner-count sourcing with the same live-field-size contract already used by TypeScript; first lock parity against the builder's confirmed pre-near-miss `rec.shusso_tosu` calculation.
+5. Treat recomputation of all champion market-derived features during rescore as a separate evaluated change. Do not bundle it with the gate correction.
+6. Evaluate current behavior versus corrected behavior on blind race/cell cohorts; specifically guard the expected +4.75pp JRA / +6.07pp NAR healthy-regime recovery and incident fallback correctness.
+7. Shadow-log gate inputs/reason/model choice before changing production selection.
+8. Deploy only after 2026-08-15 meetings end and independently verify fresh, missing, partial, stale, and scratch cases.
 
 ## Reproduction queries
 
