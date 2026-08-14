@@ -48,6 +48,7 @@ import {
 import { getPaddockLiveUrl, getPaddockRequestUrl } from "../../../lib/paddock-client-url";
 import { getRaceTags } from "../../../lib/race-classification";
 import type { HorseRaceResult, PremiumPaddockBulletin, Runner } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
   formatHorseWeight,
   formatRunnerNumber,
@@ -107,6 +108,7 @@ interface PaddockHorseRowProps {
   horseName: string;
   horseNumber: string;
   frameNumber: string | null;
+  jockeyMatchName: string;
   jockeyName: string;
   moshokuCode?: string | null;
   onScore: (action: PaddockAction) => void;
@@ -143,6 +145,7 @@ interface PaddockRunnerRow {
   horseNumber: string;
   frameNumber: string | null;
   index: number;
+  jockeyMatchName: string;
   jockeyName: string;
   moshokuCode?: string | null;
   runningStyleLabel: PaddockRunningStyleLabel | null;
@@ -1018,6 +1021,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   frameNumber,
   horseName,
   horseNumber,
+  jockeyMatchName,
   jockeyName,
   moshokuCode,
   onScore,
@@ -1044,7 +1048,10 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   };
   const upcomingWeightValues = parseUpcomingWeightValues(weight);
   const blinkerPattern = resolveBlinkerPattern(currentBlinker, recentResults);
-  const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
+  const displayJockeyName =
+    realtimeJockeyName && !isSameJockeyName(jockeyMatchName, realtimeJockeyName)
+      ? getPreferredJockeyName(jockeyMatchName, realtimeJockeyName)
+      : jockeyName;
   const isScratched = Boolean(status);
   const startsLabel =
     recentResults === null ? (recentResultsLoading ? "…" : "-") : `${recentResults.length}回`;
@@ -1768,14 +1775,16 @@ export function PaddockSection({
       runners
         .map((runner, index) => {
           const horseNumber = formatRunnerNumber(runner.umaban);
+          const displayNames = getRunnerDisplayNames(runner);
           return {
             currentBlinker: runner.blinkerShiyoKubun ?? null,
             damSireName: cleanText(runner.damSireName, ""),
-            horseName: cleanText(runner.bamei),
+            horseName: displayNames.horse,
             horseNumber,
             frameNumber: cleanText(runner.wakuban, ""),
             index,
-            jockeyName: cleanText(runner.kishumeiRyakusho),
+            jockeyMatchName: cleanText(runner.kishumeiRyakusho, ""),
+            jockeyName: displayNames.jockey,
             moshokuCode: runner.moshokuCode,
             runningStyleLabel: runningStyleLabelsByHorse?.[horseNumber] ?? null,
             sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
@@ -1786,7 +1795,7 @@ export function PaddockSection({
               raceTrackCode,
               (recentResultsByHorse?.get(horseNumber) ?? []).map((result) => result.trackCode),
             ),
-            trainerName: cleanText(runner.chokyoshimeiRyakusho, ""),
+            trainerName: displayNames.trainer,
             weight:
               realtimeWeightByHorse.get(horseNumber) ??
               formatHorseWeight(
@@ -2113,10 +2122,11 @@ export function PaddockSection({
       setDiscordStatus("sending");
       const horses = ratedHorses.map(({ runner, scores }) => {
         const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
-        const displayJockeyName = getPreferredJockeyName(
-          runner.jockeyName,
-          realtimeEntry?.jockeyName || null,
-        );
+        const realtimeJockeyName = realtimeEntry?.jockeyName || null;
+        const displayJockeyName =
+          realtimeJockeyName && !isSameJockeyName(runner.jockeyMatchName, realtimeJockeyName)
+            ? getPreferredJockeyName(runner.jockeyMatchName, realtimeJockeyName)
+            : runner.jockeyName;
         const realtimeOdds = realtimeOddsByHorse.get(runner.horseNumber);
         return {
           attention: scores.attention,
@@ -2266,6 +2276,7 @@ export function PaddockSection({
                 frameNumber={runner.frameNumber}
                 horseName={runner.horseName}
                 horseNumber={runner.horseNumber}
+                jockeyMatchName={runner.jockeyMatchName}
                 jockeyName={runner.jockeyName}
                 moshokuCode={runner.moshokuCode}
                 key={runner.horseNumber}

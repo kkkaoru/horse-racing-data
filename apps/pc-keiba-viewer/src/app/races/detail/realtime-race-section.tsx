@@ -19,6 +19,7 @@ import {
 
 import { cleanText } from "../../../lib/format";
 import type { Runner } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { getFrameColor, PlainHorseNumberBadge } from "./frame-number-badge";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -121,7 +122,7 @@ const runnerNameByNumber = (runners: Runner[]): Map<string, string> =>
   new Map(
     runners.map((runner) => [
       formatRunnerNumber(runner.umaban),
-      cleanText(runner.bamei, formatRunnerNumber(runner.umaban)),
+      cleanText(getRunnerDisplayNames(runner).horse, formatRunnerNumber(runner.umaban)),
     ]),
   );
 

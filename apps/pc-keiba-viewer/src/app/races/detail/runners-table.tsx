@@ -18,6 +18,7 @@ import {
 } from "../../../lib/jockey-name";
 import { buildD1FinishMap } from "../../../lib/race-finish-position";
 import type { Runner } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -382,20 +383,20 @@ export function RunnersTable({
     const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
     const realtimeFinishPosition = realtimeResultByHorse.get(horseNumber);
     const realtimeEntry = realtimeEntryByHorse.get(horseNumber);
-    const horseName = cleanText(runner.horseNameFull, cleanText(runner.bamei));
+    const displayNames = getRunnerDisplayNames(runner);
+    const horseName = displayNames.horse;
     const horseId = cleanText(runner.kettoTorokuBango);
     const horseHref = isLinkableHorseId(horseId)
       ? `/horses/${encodeURIComponent(horseId)}`
       : getSourceHorseHref(runner);
     const storedJockeyName = cleanText(runner.kishumeiRyakusho);
-    const jockeyName = cleanText(runner.jockeyNameFull, storedJockeyName);
     const realtimeJockeyName = realtimeEntry?.jockeyName;
     const displayJockeyName =
       realtimeJockeyName && !isSameJockeyName(storedJockeyName, realtimeJockeyName)
         ? getPreferredJockeyName(storedJockeyName, realtimeJockeyName)
-        : jockeyName;
-    const trainerName = cleanText(runner.trainerNameFull, cleanText(runner.chokyoshimeiRyakusho));
-    const ownerName = cleanText(runner.ownerNameFull, cleanText(runner.banushimei));
+        : displayNames.jockey;
+    const trainerName = displayNames.trainer;
+    const ownerName = displayNames.owner;
     const entryStatus = realtimeEntry?.status || "";
     const blinkerPattern = blinkerPatternByHorse.get(cleanText(runner.kettoTorokuBango, ""));
     const surfaceSwitch = surfaceSwitchByHorse.get(cleanText(runner.kettoTorokuBango, ""));
@@ -454,7 +455,7 @@ export function RunnersTable({
             displayJockeyName
           )}
           {isChangedJockey(storedJockeyName, realtimeEntry?.jockeyName, displayJockeyName) ? (
-            <small className="runner-change-note">元 {jockeyName}</small>
+            <small className="runner-change-note">元 {displayNames.jockey}</small>
           ) : null}
         </td>
         <td>

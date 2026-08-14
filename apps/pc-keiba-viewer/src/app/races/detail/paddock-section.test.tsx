@@ -333,6 +333,37 @@ test("PaddockSection renders trainer name in horse row when chokyoshimeiRyakusho
   });
 });
 
+test("PaddockSection prefers supplemental overseas horse, jockey, and trainer names", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "短縮馬名",
+          chokyoshimeiRyakusho: "P．ヴァ",
+          horseNameFull: "Sir Tommy Cen",
+          jockeyNameFull: "A．ルメートル",
+          kishumeiRyakusho: "A．ルメ",
+          trainerNameFull: "P．ヴァルディヴィエルソ",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Sir Tommy Cen")).toBeTruthy();
+  });
+  expect(screen.getByText("A．ルメートル")).toBeTruthy();
+  expect(screen.getByLabelText("調教師 P．ヴァルディヴィエルソ").textContent).toBe(
+    "調教師P．ヴァルディヴィエルソ",
+  );
+  expect(screen.queryByText("短縮馬名")).toBeNull();
+});
+
 test("PaddockSection renders dash for trainer when chokyoshimeiRyakusho is null", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));

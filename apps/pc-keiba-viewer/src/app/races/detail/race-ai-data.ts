@@ -31,6 +31,7 @@ import type {
   SimilarRaceStatsRow,
   TimeScoreRow,
 } from "../../../lib/race-types";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { buildCombinedScoreRows, type CombinedScoreRow } from "./bloodline-similar-combined-table";
 import { buildRealtimeUrl, isRealtimeRacePayload } from "./realtime-client";
@@ -831,19 +832,23 @@ const buildRaceContextForPrompt = (data: RaceAiExportData): Record<string, unkno
 };
 
 const buildStandardRunnerRowsForPrompt = (data: RaceAiExportData): Record<string, unknown>[] =>
-  data.postgresql.base.runners.map((runner) => ({
-    age: cleanRaceContextText(runner.barei),
-    bodyWeight: cleanRaceContextText(runner.bataiju),
-    carriedWeight: cleanRaceContextText(runner.futanJuryo),
-    frameNumber: cleanRaceContextText(runner.wakuban),
-    horseName: cleanRaceContextText(runner.bamei),
-    horseNumber: cleanRaceContextText(runner.umaban),
-    jockeyName: cleanRaceContextText(runner.kishumeiRyakusho),
-    sexCode: cleanRaceContextText(runner.seibetsuCode),
-    storedOdds: cleanRaceContextText(runner.tanshoOdds),
-    storedPopularity: cleanRaceContextText(runner.tanshoNinkijun),
-    trainerName: cleanRaceContextText(runner.chokyoshimeiRyakusho),
-  }));
+  data.postgresql.base.runners.map((runner) => {
+    const displayNames = getRunnerDisplayNames(runner);
+    return {
+      age: cleanRaceContextText(runner.barei),
+      bodyWeight: cleanRaceContextText(runner.bataiju),
+      carriedWeight: cleanRaceContextText(runner.futanJuryo),
+      frameNumber: cleanRaceContextText(runner.wakuban),
+      horseName: cleanRaceContextText(displayNames.horse),
+      horseNumber: cleanRaceContextText(runner.umaban),
+      jockeyName: cleanRaceContextText(displayNames.jockey),
+      ownerName: cleanRaceContextText(displayNames.owner),
+      sexCode: cleanRaceContextText(runner.seibetsuCode),
+      storedOdds: cleanRaceContextText(runner.tanshoOdds),
+      storedPopularity: cleanRaceContextText(runner.tanshoNinkijun),
+      trainerName: cleanRaceContextText(displayNames.trainer),
+    };
+  });
 
 export const buildRaceAiDataCatalogForPrompt = (
   data: RaceAiExportData,

@@ -55,6 +55,7 @@ import {
   isConfirmedPastRaceRequest,
   loadInitialRealtimePayloadServer,
 } from "../../../lib/realtime-payload.server";
+import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -520,24 +521,27 @@ export async function RaceDetailView({
       )}発走`,
       tags: raceTags,
     },
-    runnerRows: runners.map((runner) => ({
-      carriedWeight: formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight),
-      finishOrder: formatRunnerValue(runner.kakuteiChakujun, "00"),
-      frameNumber: cleanText(runner.wakuban),
-      horseName: cleanText(runner.bamei),
-      horseNumber: formatRunnerNumber(runner.umaban),
-      horseWeight: formatHorseWeight(
-        runner.bataiju,
-        runner.zogenFugo,
-        runner.zogenSa,
-        decodeHexHorseWeight,
-      ),
-      jockeyName: cleanText(runner.kishumeiRyakusho),
-      ownerName: cleanText(runner.banushimei),
-      sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
-      storedWinOdds: formatStoredOddsForExport(runner.tanshoOdds),
-      trainerName: cleanText(runner.chokyoshimeiRyakusho),
-    })),
+    runnerRows: runners.map((runner) => {
+      const displayNames = getRunnerDisplayNames(runner);
+      return {
+        carriedWeight: formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight),
+        finishOrder: formatRunnerValue(runner.kakuteiChakujun, "00"),
+        frameNumber: cleanText(runner.wakuban),
+        horseName: displayNames.horse,
+        horseNumber: formatRunnerNumber(runner.umaban),
+        horseWeight: formatHorseWeight(
+          runner.bataiju,
+          runner.zogenFugo,
+          runner.zogenSa,
+          decodeHexHorseWeight,
+        ),
+        jockeyName: displayNames.jockey,
+        ownerName: displayNames.owner,
+        sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
+        storedWinOdds: formatStoredOddsForExport(runner.tanshoOdds),
+        trainerName: displayNames.trainer,
+      };
+    }),
     sharePath,
   };
   return (
@@ -827,13 +831,16 @@ export async function RaceDetailView({
             raceBango={raceNumber}
             raceNumber={raceNumber}
             runnersByUmaban={Object.fromEntries(
-              runners.map((runner) => [
-                Number(runner.umaban ?? "0"),
-                {
-                  bamei: cleanText(runner.bamei, "") || null,
-                  jockey: cleanText(runner.kishumeiRyakusho, "") || null,
-                },
-              ]),
+              runners.map((runner) => {
+                const displayNames = getRunnerDisplayNames(runner);
+                return [
+                  Number(runner.umaban ?? "0"),
+                  {
+                    bamei: displayNames.horse || null,
+                    jockey: displayNames.jockey || null,
+                  },
+                ];
+              }),
             )}
             searchParams={searchParams}
             source={raceSource}
