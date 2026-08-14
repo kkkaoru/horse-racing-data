@@ -35,8 +35,10 @@ RUN_DIR=$OUTPUT_DIR/$RUN_YMD
 RACES_FILE=$RUN_DIR/races.txt
 RESULTS_FILE=$RUN_DIR/results.tsv
 FAILURES_FILE=$RUN_DIR/failures.tsv
+TIMINGS_FILE=$RUN_DIR/timings.tsv
 : >"$RESULTS_FILE"
 : >"$FAILURES_FILE"
+printf 'race\ttarget\tphase\thttp_status\ttime_seconds\n' >"$TIMINGS_FILE"
 
 curl_auth=(
   -H "CF-Access-Client-Id: $PC_KEIBA_ACCESS_CLIENT_ID"
@@ -68,8 +70,10 @@ echo "discovered $race_count races; checking finish-position readiness before wa
 while IFS= read -r race_path; do
   route=${race_path#"/races/"}
   payload=$RUN_DIR/preflight-${route//\//-}.json
-  curl "${curl_common[@]}" "${curl_auth[@]}" \
-    "$VIEWER_ORIGIN/api/races/$route/sections/finish-prediction" -o "$payload"
+  timing=$(curl "${curl_common[@]}" "${curl_auth[@]}" \
+    "$VIEWER_ORIGIN/api/races/$route/sections/finish-prediction" -o "$payload" \
+    -w '%{http_code}\t%{time_total}')
+  printf '%s\tfinish-prediction\tpreflight\t%s\n' "$race_path" "$timing" >>"$TIMINGS_FILE"
   if ! jq -e '
     .type == "finish-prediction" and
     (.inputs.runners | length) > 0 and
@@ -85,33 +89,42 @@ if [[ -s $FAILURES_FILE ]]; then
   exit 1
 fi
 
-export VIEWER_ORIGIN PC_KEIBA_ACCESS_CLIENT_ID PC_KEIBA_ACCESS_CLIENT_SECRET RUN_DIR RESULTS_FILE FAILURES_FILE
+export VIEWER_ORIGIN PC_KEIBA_ACCESS_CLIENT_ID PC_KEIBA_ACCESS_CLIENT_SECRET RUN_DIR RESULTS_FILE FAILURES_FILE TIMINGS_FILE
 warm_one() {
   local race_path=$1
   local route=${race_path#"/races/"}
   local sections=(overall-score pace-prediction similar bloodline time-score premium-data-top)
-  local url status started elapsed
+  local url status timing started elapsed phase
   started=$(date +%s)
   url="$VIEWER_ORIGIN$race_path"
-  if ! curl --fail --silent --show-error --location --connect-timeout 10 --max-time 180 \
-    --retry 3 --retry-all-errors --retry-delay 5 \
-    -H "CF-Access-Client-Id: $PC_KEIBA_ACCESS_CLIENT_ID" \
-    -H "CF-Access-Client-Secret: $PC_KEIBA_ACCESS_CLIENT_SECRET" \
-    "$url" -o "$RUN_DIR/page-${route//\//-}.html"; then
-    printf '%s\t%s\n' "$race_path" "page" >>"$FAILURES_FILE"
-    return 1
-  fi
-  for section in "${sections[@]}"; do
-    url="$VIEWER_ORIGIN/api/races/$route/sections/$section"
-    status=$(curl --silent --show-error --location --connect-timeout 10 --max-time 180 \
+  for phase in warm verify; do
+    timing=$(curl --silent --show-error --location --connect-timeout 10 --max-time 180 \
       --retry 3 --retry-all-errors --retry-delay 5 \
       -H "CF-Access-Client-Id: $PC_KEIBA_ACCESS_CLIENT_ID" \
       -H "CF-Access-Client-Secret: $PC_KEIBA_ACCESS_CLIENT_SECRET" \
-      -o "$RUN_DIR/${section}-${route//\//-}.json" -w '%{http_code}' "$url")
+      -o "$RUN_DIR/page-${phase}-${route//\//-}.html" -w '%{http_code}\t%{time_total}' "$url")
+    status=${timing%%$'\t'*}
+    printf '%s\tpage\t%s\t%s\n' "$race_path" "$phase" "$timing" >>"$TIMINGS_FILE"
     if [[ $status != 200 ]]; then
-      printf '%s\t%s\t%s\n' "$race_path" "$section" "$status" >>"$FAILURES_FILE"
+      printf '%s\tpage-%s\t%s\n' "$race_path" "$phase" "$status" >>"$FAILURES_FILE"
       return 1
     fi
+  done
+  for section in "${sections[@]}"; do
+    url="$VIEWER_ORIGIN/api/races/$route/sections/$section"
+    for phase in warm verify; do
+      timing=$(curl --silent --show-error --location --connect-timeout 10 --max-time 180 \
+        --retry 3 --retry-all-errors --retry-delay 5 \
+        -H "CF-Access-Client-Id: $PC_KEIBA_ACCESS_CLIENT_ID" \
+        -H "CF-Access-Client-Secret: $PC_KEIBA_ACCESS_CLIENT_SECRET" \
+        -o "$RUN_DIR/${section}-${phase}-${route//\//-}.json" -w '%{http_code}\t%{time_total}' "$url")
+      status=${timing%%$'\t'*}
+      printf '%s\t%s\t%s\t%s\n' "$race_path" "$section" "$phase" "$timing" >>"$TIMINGS_FILE"
+      if [[ $status != 200 ]]; then
+        printf '%s\t%s-%s\t%s\n' "$race_path" "$section" "$phase" "$status" >>"$FAILURES_FILE"
+        return 1
+      fi
+    done
   done
   elapsed=$(( $(date +%s) - started ))
   printf '%s\tok\t%ss\n' "$race_path" "$elapsed" >>"$RESULTS_FILE"
@@ -132,4 +145,14 @@ if [[ $completed -ne $race_count ]]; then
   exit 1
 fi
 
-echo "cache warm passed: date=$RUN_YMD races=$completed concurrency=$CONCURRENCY results=$RESULTS_FILE"
+awk -F '\t' '
+  NR > 1 && ($3 == "warm" || $3 == "verify") {
+    sum[$3] += $5; count[$3] += 1
+  }
+  END {
+    printf "response-time average: warm=%.3fs verify=%.3fs samples=%d/%d\\n",
+      sum["warm"] / count["warm"], sum["verify"] / count["verify"],
+      count["warm"], count["verify"]
+  }
+' "$TIMINGS_FILE"
+echo "cache warm passed: date=$RUN_YMD races=$completed concurrency=$CONCURRENCY results=$RESULTS_FILE timings=$TIMINGS_FILE"

@@ -43,13 +43,22 @@ Warm targets per race:
 
 `CONCURRENCY` defaults to 2. Keep it low: this is cache preparation, not a load
 test. Curl uses bounded timeouts and three retries, including `503` responses.
+Each page/section receives a warm request followed by a verification request.
+With 68 races this is 68 sequential readiness preflights plus 952 bounded warm/
+verify requests at concurrency 2. Budget 20-45 minutes; cached verification
+requests should be much faster than cold requests.
 
 Artifacts are written under `tmp/race-detail-cache-warm/YYYYMMDD/`:
 
 - discovered race list;
 - preflight and warmed JSON bodies;
 - rendered page bodies;
-- `results.tsv` and `failures.tsv`.
+- `results.tsv` and `failures.tsv`;
+- `timings.tsv`, containing every preflight/warm/verify HTTP status and response
+  time.
 
 Success requires the discovered count (when `EXPECTED_RACE_COUNT` is set),
-preflight count, and completed warm count to agree with no failed endpoint.
+preflight count, and completed warm count to agree with no failed endpoint. The
+final output reports warm versus verify average response time; retain
+`timings.tsv` as evidence that second reads actually hit prepared paths rather
+than merely trusting a successful script exit.
