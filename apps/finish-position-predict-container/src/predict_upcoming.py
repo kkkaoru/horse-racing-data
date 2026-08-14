@@ -2513,7 +2513,10 @@ def main() -> int:
     is passed.  Otherwise, the one-shot CLI batch run is executed (Mac launchd
     cron path — unchanged).
     """
-    if _is_serve_mode(sys.argv):
+    serve_mode = _is_serve_mode(sys.argv)
+    startup_mode = "serve" if serve_mode else "one-shot"
+    print(f"[predict-startup] mode={startup_mode}", file=sys.stderr, flush=True)
+    if serve_mode:
         try:
             database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
             source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV))
@@ -2530,6 +2533,11 @@ def main() -> int:
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
         focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
         prewarm_fn = _make_prewarm_fn(source_url, r2)
+        print(
+            f"[predict-startup] binding HTTP server on :{HTTP_PORT}",
+            file=sys.stderr,
+            flush=True,
+        )
         serve_http(
             HTTP_PORT,
             predict_fn,
@@ -2558,6 +2566,7 @@ def main() -> int:
         # write connection is opened lazily inside _predict_category, after the
         # feature build, so Neon autosuspend during the long feature-build phase
         # cannot kill the write connection before the first UPSERT.
+        print("[predict-startup] connecting to Neon", file=sys.stderr, flush=True)
         probe = _connect(database_url)
         probe.close()
     except BaseException as bootstrap_error:

@@ -11,13 +11,16 @@ from __future__ import annotations
 import contextlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from db_driver import (
     CONNECT_MAX_RETRIES,
+    CONNECT_TIMEOUT_SECONDS,
     ConnectionLike,
+    connect_postgres,
     connect_postgres_with_retry,
     is_transient_error,
 )
@@ -82,6 +85,11 @@ def test_is_transient_could_not_connect() -> None:
     assert is_transient_error(exc) is True
 
 
+def test_is_transient_connection_timeout_expired() -> None:
+    exc = Exception("connection timeout expired")
+    assert is_transient_error(exc) is True
+
+
 def test_is_transient_server_closed_unexpectedly() -> None:
     exc = Exception("server closed the connection unexpectedly")
     assert is_transient_error(exc) is True
@@ -112,6 +120,19 @@ def test_is_not_transient_programming_error() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_connect_postgres_sets_a_finite_timeout() -> None:
+    mock_conn = MagicMock(spec=ConnectionLike)
+    connect_mock = MagicMock(return_value=mock_conn)
+    module = SimpleNamespace(connect=connect_mock)
+    with patch("db_driver.importlib.import_module", return_value=module):
+        result = connect_postgres("postgresql://host/db")
+    assert result is mock_conn
+    connect_mock.assert_called_once_with(
+        "postgresql://host/db", connect_timeout=CONNECT_TIMEOUT_SECONDS
+    )
+    assert CONNECT_TIMEOUT_SECONDS == 10
+
+
 def _make_mock_connection() -> MagicMock:
     conn = MagicMock(spec=ConnectionLike)
     return conn
@@ -123,6 +144,19 @@ def test_connect_succeeds_first_attempt() -> None:
         result = connect_postgres_with_retry("postgresql://host/db", max_retries=3)
     assert result is mock_conn
     patched.assert_called_once_with("postgresql://host/db")
+
+
+def test_connect_retries_after_connection_timeout_then_succeeds() -> None:
+    timeout_exc = Exception("connection timeout expired")
+    mock_conn = _make_mock_connection()
+    with (
+        patch("db_driver.connect_postgres", side_effect=[timeout_exc, mock_conn]) as patched,
+        patch("db_driver.time.sleep") as mock_sleep,
+    ):
+        result = connect_postgres_with_retry("postgresql://h/db", max_retries=1)
+    assert result is mock_conn
+    assert patched.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
 
 
 def test_connect_retries_on_dns_failure_then_succeeds() -> None:
@@ -144,8 +178,7 @@ def test_connect_retries_on_temporary_failure_in_name_resolution_then_succeeds()
     # EAI_AGAIN variant must also drive the retry loop, not just EAI_NONAME.
     # Mirrors the 2026-06-28 NAR failure scenario.
     dns_exc = Exception(
-        "failed to resolve host 'ep.neon.tech': "
-        "[Errno -3] Temporary failure in name resolution"
+        "failed to resolve host 'ep.neon.tech': [Errno -3] Temporary failure in name resolution"
     )
     mock_conn = _make_mock_connection()
     side_effects: list[Exception | MagicMock] = [dns_exc, mock_conn]

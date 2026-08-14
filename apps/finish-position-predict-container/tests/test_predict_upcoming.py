@@ -3287,3 +3287,62 @@ def test_build_feature_rows_skips_split_during_scoped_rescore_cache_miss_fallbac
 
     assert result == {"jra:2026:0712:05:11": [{"umaban": 1}]}
     assert full_called == ["05:11"]
+
+
+def test_main_logs_serve_mode_before_binding(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PREDICT_SERVE_MODE", "http")
+    monkeypatch.setenv("NEON_DATABASE_URL", "postgresql://secret@host/db")
+    monkeypatch.setenv("SOURCE_DATABASE_URL", "r2-catalog://pc-keiba")
+    monkeypatch.setattr(sys, "argv", ["predict_upcoming.py"])
+
+    def empty_fn(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        return 0
+
+    def empty_payload() -> None:
+        return None
+
+    with (
+        patch("predict_upcoming._load_r2_config", return_value=None),
+        patch(
+            "predict_upcoming._make_predict_fn",
+            return_value=(empty_fn, empty_payload, empty_payload, lambda params: None),
+        ),
+        patch("predict_upcoming._make_rescore_factory", return_value=lambda scope: None),
+        patch(
+            "predict_upcoming._make_focused_full_completion_fn", return_value=lambda params: False
+        ),
+        patch("predict_upcoming._make_prewarm_fn", return_value=empty_fn),
+        patch("predict_upcoming.serve_http") as serve_mock,
+    ):
+        assert predict_upcoming.main() == 0
+    stderr = capsys.readouterr().err
+    assert "[predict-startup] mode=serve" in stderr
+    assert "[predict-startup] binding HTTP server on :8080" in stderr
+    assert "secret" not in stderr
+    serve_mock.assert_called_once()
+
+
+def test_main_logs_one_shot_mode_before_neon_connect(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("PREDICT_SERVE_MODE", raising=False)
+    monkeypatch.setenv("NEON_DATABASE_URL", "postgresql://secret@host/db")
+    monkeypatch.setenv("SOURCE_DATABASE_URL", "r2-catalog://pc-keiba")
+    monkeypatch.setenv("RUN_DATE", "20260815")
+    monkeypatch.setattr(sys, "argv", ["predict_upcoming.py"])
+    probe = SimpleNamespace(close=lambda: None)
+    with (
+        patch("predict_upcoming._start_liveness_thread"),
+        patch("predict_upcoming._connect", return_value=probe) as connect_mock,
+        patch("predict_upcoming._resolve_categories", return_value=()),
+        patch("predict_upcoming._try_record_audit"),
+    ):
+        assert predict_upcoming.main() == 0
+    stderr = capsys.readouterr().err
+    assert "[predict-startup] mode=one-shot" in stderr
+    assert "[predict-startup] connecting to Neon" in stderr
+    assert "secret" not in stderr
+    connect_mock.assert_called_once_with("postgresql://secret@host/db")

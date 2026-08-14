@@ -57,6 +57,7 @@ _TRANSIENT_ERROR_TOKENS: tuple[str, ...] = (
     "connection is closed",
     "connection refused",
     "could not connect to server",
+    "connection timeout expired",
     "server closed the connection unexpectedly",
     "ssl connection has been closed",
     # psycopg surfaces a mid-query SSL hangup as "consuming input failed:
@@ -68,6 +69,7 @@ _TRANSIENT_ERROR_TOKENS: tuple[str, ...] = (
 
 CONNECT_MAX_RETRIES: int = 4
 CONNECT_BACKOFF_BASE_SECONDS: float = 1.0
+CONNECT_TIMEOUT_SECONDS: int = 10
 
 
 class CursorLike(Protocol):
@@ -94,7 +96,10 @@ def connect_postgres(database_url: str) -> ConnectionLike:
     # cursor_factory keyword argument that widens its signature beyond what our
     # minimal CursorLike protocol declares.  The runtime behaviour is identical;
     # we narrow the view here so the rest of the codebase can stay strictly typed.
-    return cast("ConnectionLike", connect_fn(database_url))
+    return cast(
+        "ConnectionLike",
+        connect_fn(database_url, connect_timeout=CONNECT_TIMEOUT_SECONDS),
+    )
 
 
 def is_transient_error(exc: BaseException) -> bool:
@@ -124,8 +129,9 @@ def connect_postgres_with_retry(
     immediately without retrying.
 
     Backoff schedule: ``backoff_base * 2**attempt`` seconds between attempts
-    (1s, 2s, 4s, 8s for the defaults), capped at 16s to keep total added
-    latency under ~30s for the worst case.
+    (1s, 2s, 4s, 8s for the defaults), capped at 16s. Together with the 10-second
+    timeout on each of five connection attempts, the default worst-case bound is
+    65 seconds (50 seconds connecting plus 15 seconds backoff).
     """
     last_exc: BaseException | None = None
     for attempt in range(max_retries + 1):
