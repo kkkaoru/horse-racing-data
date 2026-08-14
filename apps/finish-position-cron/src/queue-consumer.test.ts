@@ -761,6 +761,22 @@ test("calls completeRun with error and calls message.retry on failure", async ()
   expect(ackMock).not.toHaveBeenCalled();
 });
 
+test("consumes a delivery canary without claiming a run or starting a container", async () => {
+  const canary = {
+    ack: ackMock,
+    body: {
+      enqueuedAt: "2026-08-15T00:00:00Z",
+      id: "canary-id",
+      type: "delivery-canary",
+    },
+    retry: retryMock,
+  };
+  await handleQueue({ messages: [canary] } as never, makeEnv());
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+});
+
 test("processes multiple messages in batch", async () => {
   const msg1 = makeMessage({ category: "jra" });
   const msg2 = makeMessage({ category: "nar" });
@@ -784,8 +800,9 @@ test("processes batch messages sequentially", async () => {
     ]),
     makeEnv(),
   );
-  await Promise.resolve();
-  expect(claimRunMock).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => {
+    expect(claimRunMock).toHaveBeenCalledTimes(1);
+  });
   expect(stubFetchMock).not.toHaveBeenCalled();
 
   resolveFirstClaim({ proceed: true });

@@ -96,7 +96,7 @@ export interface Env {
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
-  PREDICT_QUEUE: Queue<PredictQueueMessage>;
+  PREDICT_QUEUE: Queue<PredictQueueMessage | DeliveryCanaryMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;
   // R2 S3 credentials forwarded into the container env so the Python rescore path
@@ -161,6 +161,12 @@ export interface RunDates {
   runYmd: string;
 }
 
+export interface DeliveryCanaryMessage {
+  type: "delivery-canary";
+  id: string;
+  enqueuedAt: string;
+}
+
 export interface PredictQueueMessage {
   runDate: string;
   runDateIso: string;
@@ -181,6 +187,9 @@ export interface PredictQueueMessage {
   // consumer skips the per-category claimRun dedup gate. Absent/false keeps the
   // normal dedup path.
   skipDedup?: boolean;
+  // Durable lifecycle ID for self-heal detection -> enqueue -> consume ->
+  // prediction completion accounting. Absent on unrelated legacy messages.
+  deliveryTrackingId?: string;
   // Number of times this focused per-race full message has been re-enqueued
   // because the container's single per-process pipeline slot was busy with a
   // DIFFERENT race. Each busy re-enqueue creates a fresh message (resetting the

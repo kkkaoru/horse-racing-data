@@ -384,6 +384,7 @@ const enqueueGapFill = async (
   await enqueuePredict({
     category: candidate.category,
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+    deliveryTrackingId: crypto.randomUUID(),
     env,
     keibajoCode: candidate.keibajoCode,
     mode: FULL_MODE,

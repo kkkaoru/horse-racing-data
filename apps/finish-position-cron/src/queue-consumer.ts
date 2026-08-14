@@ -2,6 +2,12 @@
 // For each message: dedup via DO coordinator (strong consistency), call the Container
 // DO stub's fetch, track state.
 
+import {
+  consumeDeliveryCanary,
+  isDeliveryCanaryQueueMessage,
+  isPredictQueueMessage,
+} from "./delivery-canary";
+import { recordDeliveryConsumed, recordPredictionCompleted } from "./delivery-lifecycle";
 import { claimFocusedFullRace, claimRun, completeFocusedFullRace, completeRun } from "./do-state";
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import { pickUpFocusedFullCache } from "./focused-full-cache-pickup";
@@ -34,7 +40,7 @@ import {
   buildRetryErrorInsertSql,
   buildRetryErrorRecord,
 } from "./retry-errors";
-import type { Env, PredictQueueMessage } from "./types";
+import type { DeliveryCanaryMessage, Env, PredictQueueMessage } from "./types";
 
 const RUN_YMD_YEAR_START = 0;
 const RUN_YMD_YEAR_END = 4;
@@ -339,6 +345,7 @@ const ackIfFocusedFullAlreadyComplete = async (
       message.body,
       `Skipping focused full already complete category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}`,
     );
+    await recordCompletedBestEffort(env, message.body);
     message.ack();
     warmPredictionCacheForFocusedRace(message.body);
     await publishPredictionKvForFocusedRace(env, message.body, false);
@@ -349,6 +356,22 @@ const ackIfFocusedFullAlreadyComplete = async (
       String(err),
     );
     return false;
+  }
+};
+
+const recordConsumedBestEffort = async (env: Env, message: PredictQueueMessage): Promise<void> => {
+  try {
+    await recordDeliveryConsumed(env, message, new Date());
+  } catch (error) {
+    console.error("[predict-queue] failed to record consumed lifecycle", String(error));
+  }
+};
+
+const recordCompletedBestEffort = async (env: Env, message: PredictQueueMessage): Promise<void> => {
+  try {
+    await recordPredictionCompleted(env, message, new Date());
+  } catch (error) {
+    console.error("[predict-queue] failed to record completed lifecycle", String(error));
   }
 };
 
@@ -536,6 +559,7 @@ const handleFocusedFullStatus = async (
         status: "success",
       });
     }
+    await recordCompletedBestEffort(env, message.body);
     message.ack();
     if (isFocusedSkipDedupMessage(message.body)) {
       warmPredictionCacheForFocusedRace(message.body);
@@ -724,6 +748,7 @@ const handleMissingPerRaceScopeSkip = (message: Message<PredictQueueMessage>): v
 };
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
+  await recordConsumedBestEffort(env, message.body);
   if (
     !hasRequiredPerRaceScope({
       keibajoCode: message.body.keibajoCode,
@@ -834,6 +859,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         status: "success",
       });
     }
+    await recordCompletedBestEffort(env, message.body);
     message.ack();
     console.log(
       `[predict-queue] ack ${describePredictMessage(message.body)} status=${
@@ -890,10 +916,15 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
 };
 
 export const handleQueue = async (
-  batch: MessageBatch<PredictQueueMessage>,
+  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
   env: Env,
 ): Promise<void> => {
   for (const message of batch.messages) {
-    await processMessage(message, env);
+    if (isDeliveryCanaryQueueMessage(message)) {
+      await consumeDeliveryCanary(env, message.body, new Date());
+      message.ack();
+    } else if (isPredictQueueMessage(message)) {
+      await processMessage(message, env);
+    }
   }
 };

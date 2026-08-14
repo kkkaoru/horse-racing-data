@@ -2,6 +2,7 @@
 // Production generation is per-race only: both keibajoCode and raceBango are
 // required on every enqueue (see per-race-scope-guard.ts).
 
+import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
@@ -21,6 +22,7 @@ interface EnqueuePredictParams {
   skipDedup?: boolean;
   debug?: boolean;
   force?: boolean;
+  deliveryTrackingId?: string;
 }
 
 export const enqueuePredict = async (params: EnqueuePredictParams): Promise<PredictCategory[]> => {
@@ -29,7 +31,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
   }
   const categories = params.category ? [params.category] : ALL_CATEGORIES;
   for (const cat of categories) {
-    await params.env.PREDICT_QUEUE.send({
+    const message = {
       category: cat,
       daysAhead: params.daysAhead,
       keibajoCode: params.keibajoCode,
@@ -41,7 +43,12 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
       ...(params.skipDedup ? { skipDedup: true } : {}),
       ...(params.debug ? { debug: true } : {}),
       ...(params.force ? { force: true } : {}),
-    } satisfies PredictQueueMessage);
+      ...(params.deliveryTrackingId ? { deliveryTrackingId: params.deliveryTrackingId } : {}),
+    } satisfies PredictQueueMessage;
+    const now = new Date();
+    await recordDeliveryDetected(params.env, message, now);
+    await params.env.PREDICT_QUEUE.send(message);
+    await recordDeliveryEnqueued(params.env, message, new Date());
   }
   return categories;
 };

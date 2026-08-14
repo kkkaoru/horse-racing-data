@@ -15,12 +15,18 @@ import {
   shouldRunWarmCron,
 } from "./cron-decision";
 import { runDayBasePrewarm } from "./day-base-prewarm";
+import {
+  enqueueDeliveryCanary,
+  listDeliveryCanaries,
+  shouldRunDeliveryCanaryCron,
+} from "./delivery-canary";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { PREDICT_DO_NAME_PREFIX, resolvePredictDoName } from "./predict-do-shard";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
+import { getPredictionReadiness } from "./prediction-readiness";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
 import {
@@ -36,7 +42,14 @@ import {
 } from "./running-style-kick";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
-import type { Env, PredictCategory, PredictMode, PredictQueueMessage, RunDates } from "./types";
+import type {
+  DeliveryCanaryMessage,
+  Env,
+  PredictCategory,
+  PredictMode,
+  PredictQueueMessage,
+  RunDates,
+} from "./types";
 
 // Conservative default (no backward window) when env.CORNER_FEATURES_LOOKBACK_DAYS
 // is unset -- matches refreshCornerFeatures's own forward-only default so an
@@ -70,6 +83,9 @@ const PREDICT_DO_HOST = "http://do";
 const PREDICT_PATH = "/predict";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
+const INTERNAL_READINESS_PATH = "/api/internal/prediction-readiness";
+const INTERNAL_CANARY_PATH = "/api/internal/delivery-canaries";
+const INTERNAL_MONITOR_METHOD = "GET";
 const INTERNAL_RESCORE_RACE_METHOD = "POST";
 const RUN_YMD_LENGTH = 8;
 const RUN_YMD_YEAR_END = 4;
@@ -222,6 +238,12 @@ const guardedTrigger = async (request: Request, env: Env): Promise<Response> => 
 // with fresh weights without waiting for the 5-min coordinator cron poll.
 export const isInternalRescoreRaceRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === INTERNAL_RESCORE_RACE_PATH;
+
+export const isInternalPredictionReadinessRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_MONITOR_METHOD && pathname === INTERNAL_READINESS_PATH;
+
+export const isInternalDeliveryCanaryRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_MONITOR_METHOD && pathname === INTERNAL_CANARY_PATH;
 
 export const isAdminStopContainersRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_STOP_CONTAINERS_PATH;
@@ -536,6 +558,28 @@ const guardedAdminCompleteFocusedFullRace = async (
   }
 };
 
+const isMonitorAuthorized = (request: Request, env: Env): boolean =>
+  isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN);
+
+const handlePredictionReadiness = async (request: Request, env: Env): Promise<Response> => {
+  if (!isMonitorAuthorized(request, env)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const now = new Date();
+  const readiness = await getPredictionReadiness({ env, now, runYmd: getRunYmdJst(now) });
+  return Response.json(readiness);
+};
+
+const handleDeliveryCanaries = async (request: Request, env: Env): Promise<Response> => {
+  if (!isMonitorAuthorized(request, env)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  return Response.json({
+    canaries: await listDeliveryCanaries(env),
+    checkedAt: new Date().toISOString(),
+  });
+};
+
 export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
   if (isTriggerRequest(request.method, url.pathname)) {
@@ -553,10 +597,20 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);
   }
+  if (isInternalPredictionReadinessRequest(request.method, url.pathname)) {
+    return handlePredictionReadiness(request, env);
+  }
+  if (isInternalDeliveryCanaryRequest(request.method, url.pathname)) {
+    return handleDeliveryCanaries(request, env);
+  }
   return healthResponse();
 };
 
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
+  if (shouldRunDeliveryCanaryCron(event.cron)) {
+    await enqueueDeliveryCanary(env, new Date(event.scheduledTime));
+    return;
+  }
   if (shouldRunWarmCron(event.cron)) {
     await warmNeon(env.NEON_DATABASE_URL);
     return;
@@ -662,7 +716,7 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
 // came from, so route accordingly instead of running the two independent
 // consumer implementations against the wrong batch shape.
 export const handleQueueBatch = async (
-  batch: MessageBatch<PredictQueueMessage>,
+  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
   env: Env,
 ): Promise<void> => {
   if (batch.queue === DLQ_QUEUE_NAME) {
@@ -679,7 +733,10 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env);
   },
-  async queue(batch: MessageBatch<PredictQueueMessage>, env: Env): Promise<void> {
+  async queue(
+    batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
+    env: Env,
+  ): Promise<void> {
     await handleQueueBatch(batch, env);
   },
 };

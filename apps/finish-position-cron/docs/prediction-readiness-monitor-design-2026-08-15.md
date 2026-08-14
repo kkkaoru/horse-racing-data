@@ -2,7 +2,7 @@
 
 Date: 2026-08-15 JST
 
-Status: design approved in principle; implementation and production changes are deferred until the 2026-08-15 meetings finish
+Status: A/B/D implementation committed for validation; migration, secrets, deploy, and forced human-notification test remain deferred until the 2026-08-15 meetings finish
 
 ## Incident lesson
 
@@ -147,6 +147,26 @@ Compared with container starts and Neon prediction work, canary cost is negligib
 6. Canary handling never starts a container or contacts Neon.
 7. Forced critical and recovery tests are acknowledged by the named primary and backup recipients.
 8. No DSN, hostname, credential, or webhook URL appears in responses or logs.
+
+## Implemented components (not deployed)
+
+- `finish-position-cron` exposes authenticated batched prediction-readiness and
+  delivery-canary endpoints.
+- A dedicated five-minute canary traverses the primary prediction queue, records
+  enqueue and consume timestamps separately in D1, and never enters container or
+  Neon prediction dispatch.
+- Self-heal messages carry a durable tracking ID with detected, enqueued,
+  consumed, and prediction-completed timestamps.
+- `pipeline-health-monitor` polls canary state every five minutes and readiness
+  every fifteen minutes through a service binding.
+- Critical incidents use a direct notifier with KV incident/outbox state,
+  acknowledgement API, 10/30-minute then hourly unacknowledged resends, hourly
+  acknowledged reminders, and one recovery notification.
+- Endpoint failures fail closed as incidents.
+
+Migration `0006_create_prediction_monitoring.sql`, secrets, responder names,
+Discord channel ownership, witnessed forced tests, and both Worker deploys are
+still blocked by the completion gate and post-meeting deployment decision.
 
 ## Implementation order after meetings
 

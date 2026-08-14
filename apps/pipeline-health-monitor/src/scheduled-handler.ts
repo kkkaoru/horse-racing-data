@@ -2,6 +2,14 @@
 import { buildAlertMessage } from "./alert-message";
 import { getFailureCount, incrementFailureCounter, resetFailureCounter } from "./alert-state";
 import { evaluateChecks } from "./checks";
+import { fetchDeliveryCanaries, fetchPredictionReadiness } from "./finish-position-client";
+import {
+  buildCanarySignal,
+  buildEndpointFailureSignal,
+  buildEndpointRecoverySignal,
+  buildReadinessSignals,
+} from "./finish-position-signals";
+import { processIncidentSignal } from "./incident-engine";
 import { fetchQueueHealth } from "./queue-health-client";
 import type { AlertSeverity, Env, HealthCheck } from "./types";
 
@@ -101,8 +109,59 @@ const processCheck = async (input: ProcessCheckInput): Promise<void> => {
   await handleNotOkPath(input);
 };
 
-export const runScheduled = async (input: RunScheduledInput): Promise<void> => {
+const QUARTER_HOUR_MINUTES = 15;
+
+export const isQuarterHourTick = (now: Date): boolean =>
+  now.getUTCMinutes() % QUARTER_HOUR_MINUTES === 0;
+
+const processCanary = async (input: RunScheduledInput): Promise<void> => {
+  try {
+    const response = await fetchDeliveryCanaries(input.env);
+    await processIncidentSignal(
+      input.env,
+      buildEndpointRecoverySignal("delivery-canaries"),
+      input.now,
+    );
+    await processIncidentSignal(input.env, buildCanarySignal(response, input.now), input.now);
+  } catch (error) {
+    await processIncidentSignal(
+      input.env,
+      buildEndpointFailureSignal("delivery-canaries", error),
+      input.now,
+    );
+  }
+};
+
+const processReadiness = async (input: RunScheduledInput): Promise<void> => {
+  try {
+    const response = await fetchPredictionReadiness(input.env);
+    await processIncidentSignal(
+      input.env,
+      buildEndpointRecoverySignal("prediction-readiness"),
+      input.now,
+    );
+    await Promise.all(
+      buildReadinessSignals(response).map((signal) =>
+        processIncidentSignal(input.env, signal, input.now),
+      ),
+    );
+  } catch (error) {
+    await processIncidentSignal(
+      input.env,
+      buildEndpointFailureSignal("prediction-readiness", error),
+      input.now,
+    );
+  }
+};
+
+const processExistingChecks = async (input: RunScheduledInput): Promise<void> => {
   const metrics = await fetchQueueHealth(input.env);
   const checks = evaluateChecks({ metrics, nowJst: input.now });
   await Promise.all(checks.map((check) => processCheck({ env: input.env, check, now: input.now })));
+};
+
+export const runScheduled = async (input: RunScheduledInput): Promise<void> => {
+  await processCanary(input);
+  if (!isQuarterHourTick(input.now)) return;
+  await Promise.all([processExistingChecks(input), processReadiness(input)]);
 };

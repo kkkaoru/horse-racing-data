@@ -9,9 +9,10 @@
     "enabled": true,
     "head_sampling_rate": 0.1,
   },
-  // Every 15 min across the JST race-day window (JST 09:00–22:45 = UTC 00–13).
+  // Every 5 min for the queue-delivery canary; readiness and existing checks
+  // remain quarter-hourly in scheduled-handler.ts (JST 09:00–22:55 = UTC 00–13).
   "triggers": {
-    "crons": ["0,15,30,45 0-13 * * *"],
+    "crons": ["*/5 0-13 * * *"],
   },
   "queues": {
     "producers": [
@@ -34,6 +35,10 @@
     {
       "binding": "REALTIME",
       "service": "sync-realtime-data",
+    },
+    {
+      "binding": "FINISH_POSITION_CRON",
+      "service": "finish-position-cron",
     },
   ],
   // Operator must run:

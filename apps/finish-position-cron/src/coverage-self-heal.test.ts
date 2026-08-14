@@ -426,6 +426,7 @@ test("runCoverageSelfHeal enqueues a fresh skipDedup focused-full message and re
   expect(enqueuePredictMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 2,
+    deliveryTrackingId: expect.any(String),
     env: expect.anything(),
     keibajoCode: "05",
     mode: "full",
@@ -629,6 +630,7 @@ test("runCoverageSelfHeal enqueues pre-race incomplete races as mode=full skipDe
   expect(enqueuePredictMock).toHaveBeenCalledWith({
     category: "nar",
     daysAhead: 2,
+    deliveryTrackingId: expect.any(String),
     env: expect.anything(),
     keibajoCode: "44",
     mode: "full",

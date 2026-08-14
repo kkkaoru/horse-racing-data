@@ -404,6 +404,29 @@ test("enqueuePredict omits skipDedup when skipDedup is undefined", async () => {
   });
 });
 
+test("enqueuePredict records tracked self-heal lifecycle around queue send", async () => {
+  const runMock = vi.fn(async () => undefined);
+  const prepareMock = vi.fn(() => ({ bind: vi.fn(() => ({ run: runMock })) }));
+  const env = {
+    ...makeEnv(),
+    FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
+  };
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    deliveryTrackingId: "tracking-id",
+    env,
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+    ...basePerRace,
+  });
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ deliveryTrackingId: "tracking-id" }),
+  );
+  expect(prepareMock).toHaveBeenCalledTimes(2);
+});
+
 test("enqueuePredict multi-category path still requires per-race fields", async () => {
   await enqueuePredict({
     daysAhead: 2,

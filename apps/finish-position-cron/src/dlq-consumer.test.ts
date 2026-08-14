@@ -70,6 +70,30 @@ test("DLQ_QUEUE_NAME matches the dead-letter queue name in wrangler.jsonc", () =
   expect(DLQ_QUEUE_NAME).toBe("finish-position-predict-dlq");
 });
 
+test("acks a delivery canary in the DLQ without recording primary consumption", async () => {
+  const ack = vi.fn();
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleDlqQueue(
+    {
+      messages: [
+        {
+          ack,
+          body: {
+            enqueuedAt: "2026-08-15T00:00:00Z",
+            id: "canary-id",
+            type: "delivery-canary",
+          },
+          retry: vi.fn(),
+        },
+      ],
+    } as never,
+    makeEnv(),
+  );
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith("[predict-dlq] delivery canary reached DLQ id=canary-id");
+});
+
 test("records a durable event row for a focused-full message", async () => {
   await handleDlqQueue(
     makeBatch([

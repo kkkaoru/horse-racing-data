@@ -5,9 +5,12 @@ export type AlertSeverity = "warning" | "critical" | "recovery";
 
 export interface Env {
   REALTIME: { fetch: typeof fetch };
+  FINISH_POSITION_CRON: { fetch: typeof fetch };
   ALERT_QUEUE: Queue<AlertMessage>;
   STATE_KV: KVNamespace;
   REALTIME_ADMIN_TOKEN: string;
+  FINISH_POSITION_CRON_TOKEN: string;
+  ALERT_ACK_TOKEN: string;
   DISCORD_ALERT_WEBHOOK_URL?: string;
   SLACK_ALERT_WEBHOOK_URL?: string;
   CUSTOM_ALERT_WEBHOOK_URL?: string;
@@ -36,6 +39,7 @@ export interface AlertField {
 
 export interface AlertMessage {
   checkName: string;
+  incidentId?: string;
   severity: AlertSeverity;
   title: string;
   description: string;
@@ -46,4 +50,38 @@ export interface AlertMessage {
 export interface CheckEvaluationInput {
   metrics: QueueHealthMetrics;
   nowJst: Date;
+}
+
+export interface PredictionReadinessRace {
+  raceKey: string;
+  source: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceStartAtJst: string;
+  minutesToPost: number;
+  deadline: "T-120" | "T-60" | "T-30" | "post";
+  expectedCount: number;
+  predictionCount: number;
+  missingCount: number;
+  oldestPredictionAt: string | null;
+  newestPredictionAt: string | null;
+  complete: boolean;
+}
+
+export interface PredictionReadinessResponse {
+  checkedAt: string;
+  runYmd: string;
+  races: PredictionReadinessRace[];
+}
+
+export interface DeliveryCanaryRecord {
+  id: string;
+  enqueuedAt: string;
+  consumedAt: string | null;
+  deliveryLagMs: number | null;
+}
+
+export interface DeliveryCanaryResponse {
+  checkedAt: string;
+  canaries: DeliveryCanaryRecord[];
 }

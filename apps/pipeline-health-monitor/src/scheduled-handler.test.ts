@@ -1,12 +1,23 @@
 // Run with: bun run --filter pipeline-health-monitor test
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("./queue-health-client", () => ({
   fetchQueueHealth: vi.fn(),
 }));
 
+vi.mock("./finish-position-client", () => ({
+  fetchDeliveryCanaries: vi.fn(),
+  fetchPredictionReadiness: vi.fn(),
+}));
+
+vi.mock("./incident-engine", () => ({
+  processIncidentSignal: vi.fn(async () => undefined),
+}));
+
+import { fetchDeliveryCanaries, fetchPredictionReadiness } from "./finish-position-client";
+import { processIncidentSignal } from "./incident-engine";
 import { fetchQueueHealth } from "./queue-health-client";
-import { runScheduled } from "./scheduled-handler";
+import { isQuarterHourTick, runScheduled } from "./scheduled-handler";
 import type { AlertMessage, Env, QueueHealthMetrics } from "./types";
 
 interface KvState {
@@ -52,8 +63,42 @@ const FAILING_RESULTS_METRICS: QueueHealthMetrics = {
   racesStuckOverThirtyMin: 0,
 };
 
+beforeEach(() => {
+  vi.mocked(fetchDeliveryCanaries).mockResolvedValue({
+    canaries: [
+      {
+        consumedAt: ON_WINDOW_NOW.toISOString(),
+        deliveryLagMs: 1,
+        enqueuedAt: ON_WINDOW_NOW.toISOString(),
+        id: "canary",
+      },
+    ],
+    checkedAt: ON_WINDOW_NOW.toISOString(),
+  });
+  vi.mocked(fetchPredictionReadiness).mockResolvedValue({
+    checkedAt: ON_WINDOW_NOW.toISOString(),
+    races: [],
+    runYmd: "20260628",
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("recognizes quarter-hour ticks", () => {
+  expect(isQuarterHourTick(new Date("2026-06-28T06:15:00Z"))).toBe(true);
+  expect(isQuarterHourTick(new Date("2026-06-28T06:10:00Z"))).toBe(false);
+});
+
+it("runs only the canary monitor on a five-minute non-quarter tick", async () => {
+  const state = buildKvState();
+  const env = buildEnv(state);
+  await runScheduled({ env, now: new Date("2026-06-28T06:10:00Z") });
+  expect(fetchDeliveryCanaries).toHaveBeenCalledTimes(1);
+  expect(fetchPredictionReadiness).not.toHaveBeenCalled();
+  expect(fetchQueueHealth).not.toHaveBeenCalled();
+  expect(processIncidentSignal).toHaveBeenCalledTimes(2);
 });
 
 it("runScheduled produces no alert messages when all checks pass and no prior failures exist", async () => {
@@ -126,6 +171,23 @@ it("runScheduled produces a recovery alert and resets the counter when a previou
   const sent = state.send.mock.calls[0]?.[0] as AlertMessage;
   expect(sent.severity).toBe("recovery");
   expect(sent.checkName).toBe("fetch-results-staleness");
+});
+
+it("turns finish-position endpoint failures into incident signals", async () => {
+  vi.mocked(fetchDeliveryCanaries).mockRejectedValue(new Error("canary unavailable"));
+  vi.mocked(fetchPredictionReadiness).mockRejectedValue(new Error("readiness unavailable"));
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  await runScheduled({ env: buildEnv(buildKvState()), now: ON_WINDOW_NOW });
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ key: "finish-position-monitor-endpoint:delivery-canaries" }),
+    ON_WINDOW_NOW,
+  );
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ key: "finish-position-monitor-endpoint:prediction-readiness" }),
+    ON_WINDOW_NOW,
+  );
 });
 
 it("runScheduled skips processing for checks outside their JST window", async () => {

@@ -9,6 +9,7 @@
 // re-enqueues it once, bounded by dlqRedriveCount on the message body so a
 // poison-pill message cannot bounce between the two queues forever.
 
+import { isDeliveryCanaryQueueMessage, isPredictQueueMessage } from "./delivery-canary";
 import {
   buildDlqEventBindParams,
   buildDlqEventInsertSql,
@@ -24,7 +25,7 @@ import {
   retryErrorLookupRowToSnapshot,
   type RetryErrorLookupRow,
 } from "./retry-errors";
-import type { Env, PredictQueueMessage } from "./types";
+import type { DeliveryCanaryMessage, Env, PredictQueueMessage } from "./types";
 
 export const DLQ_QUEUE_NAME = "finish-position-predict-dlq";
 const MAX_DLQ_REDRIVES = 1;
@@ -193,10 +194,15 @@ const processDlqMessage = async (
 };
 
 export const handleDlqQueue = async (
-  batch: MessageBatch<PredictQueueMessage>,
+  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
   env: Env,
 ): Promise<void> => {
   for (const message of batch.messages) {
-    await processDlqMessage(message, env);
+    if (isDeliveryCanaryQueueMessage(message)) {
+      console.error(`[predict-dlq] delivery canary reached DLQ id=${message.body.id}`);
+      message.ack();
+    } else if (isPredictQueueMessage(message)) {
+      await processDlqMessage(message, env);
+    }
   }
 };

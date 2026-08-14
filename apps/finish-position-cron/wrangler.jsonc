@@ -21,6 +21,9 @@
   // are safe to run inside a Worker (no container involved).
   "triggers": {
     "crons": [
+      // Tiny queue-delivery canary only: no container or Neon access. Covers
+      // JST 09:00-22:55 so a primary delivery pause is detectable within 10m.
+      "*/5 0-13 * * *",
       "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
       // JST 09:30 — day-base PREWARM only (shared feature artifact via

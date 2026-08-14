@@ -19,6 +19,9 @@ const {
   refreshCornerFeaturesMock,
   runRunningStyleKickMorningGapMock,
   runRunningStyleKickTomorrowPrewarmMock,
+  enqueueDeliveryCanaryMock,
+  listDeliveryCanariesMock,
+  getPredictionReadinessMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -32,6 +35,26 @@ const {
   const refreshCornerFeatures = vi.fn(async () => undefined);
   const runRunningStyleKickMorningGap = vi.fn(async () => undefined);
   const runRunningStyleKickTomorrowPrewarm = vi.fn(async () => undefined);
+  const enqueueDeliveryCanary = vi.fn(async () => ({
+    enqueuedAt: "2026-08-15T00:00:00Z",
+    id: "canary-id",
+    type: "delivery-canary" as const,
+  }));
+  const listDeliveryCanaries = vi.fn(
+    async (): Promise<
+      Array<{
+        consumedAt: string | null;
+        deliveryLagMs: number | null;
+        enqueuedAt: string;
+        id: string;
+      }>
+    > => [],
+  );
+  const getPredictionReadiness = vi.fn(async () => ({
+    checkedAt: "2026-08-15T00:00:00Z",
+    races: [],
+    runYmd: "20260815",
+  }));
   const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
   const runCoverageSelfHeal = vi.fn(async () => ({
     alreadyComplete: 0,
@@ -58,6 +81,9 @@ const {
     refreshCornerFeaturesMock: refreshCornerFeatures,
     runRunningStyleKickMorningGapMock: runRunningStyleKickMorningGap,
     runRunningStyleKickTomorrowPrewarmMock: runRunningStyleKickTomorrowPrewarm,
+    enqueueDeliveryCanaryMock: enqueueDeliveryCanary,
+    listDeliveryCanariesMock: listDeliveryCanaries,
+    getPredictionReadinessMock: getPredictionReadiness,
   };
 });
 
@@ -71,6 +97,16 @@ vi.mock("./neon-warm", () => ({
 }));
 
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueueMock }));
+
+vi.mock("./delivery-canary", () => ({
+  enqueueDeliveryCanary: enqueueDeliveryCanaryMock,
+  listDeliveryCanaries: listDeliveryCanariesMock,
+  shouldRunDeliveryCanaryCron: (cron: string) => cron === "*/5 0-13 * * *",
+}));
+
+vi.mock("./prediction-readiness", () => ({
+  getPredictionReadiness: getPredictionReadinessMock,
+}));
 
 vi.mock("./queue-consumer", () => ({ handleQueue: handleQueueMock }));
 
@@ -125,7 +161,12 @@ vi.mock("./running-style-kick", () => ({
 }));
 
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
-import workerDefault, { handleFetch, handleScheduled } from "./worker";
+import workerDefault, {
+  handleFetch,
+  handleScheduled,
+  isInternalDeliveryCanaryRequest,
+  isInternalPredictionReadinessRequest,
+} from "./worker";
 import type { Env } from "./types";
 
 const PER_RACE_SCOPE = { keibajoCode: "05", raceBango: "11" };
@@ -193,6 +234,9 @@ beforeEach(() => {
   runCoverageSelfHealMock.mockClear();
   runRunningStyleKickMorningGapMock.mockClear();
   runRunningStyleKickTomorrowPrewarmMock.mockClear();
+  enqueueDeliveryCanaryMock.mockClear();
+  listDeliveryCanariesMock.mockClear();
+  getPredictionReadinessMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
@@ -234,6 +278,42 @@ const adminRunFocusedFullRaceRequest = (token: string | null, body: string): Req
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
   });
+
+test("monitor endpoint predicates require GET and exact paths", () => {
+  expect(isInternalPredictionReadinessRequest("GET", "/api/internal/prediction-readiness")).toBe(
+    true,
+  );
+  expect(isInternalPredictionReadinessRequest("POST", "/api/internal/prediction-readiness")).toBe(
+    false,
+  );
+  expect(isInternalDeliveryCanaryRequest("GET", "/api/internal/delivery-canaries")).toBe(true);
+  expect(isInternalDeliveryCanaryRequest("GET", "/wrong")).toBe(false);
+});
+
+test("monitor endpoints authenticate and return readiness/canary payloads", async () => {
+  const env = makeEnv();
+  const readinessUrl = "https://cron.example/api/internal/prediction-readiness";
+  const unauthorized = await handleFetch(new Request(readinessUrl), env);
+  expect(unauthorized.status).toBe(401);
+  const readiness = await handleFetch(
+    new Request(readinessUrl, { headers: { authorization: "Bearer secret-token" } }),
+    env,
+  );
+  expect(readiness.status).toBe(200);
+  await expect(readiness.json()).resolves.toMatchObject({ runYmd: "20260815" });
+  expect(getPredictionReadinessMock).toHaveBeenCalledTimes(1);
+
+  listDeliveryCanariesMock.mockResolvedValue([
+    { consumedAt: null, deliveryLagMs: null, enqueuedAt: "now", id: "id" },
+  ]);
+  const canaryUrl = "https://cron.example/api/internal/delivery-canaries";
+  const canaries = await handleFetch(
+    new Request(canaryUrl, { headers: { authorization: "Bearer secret-token" } }),
+    env,
+  );
+  expect(canaries.status).toBe(200);
+  await expect(canaries.json()).resolves.toMatchObject({ canaries: [{ id: "id" }] });
+});
 
 test("fetch returns a health payload for GET", async () => {
   const response = await workerDefault.fetch(healthRequest(), makeEnv());
@@ -431,12 +511,22 @@ test("handleScheduled runs the per-race coordinator for the coordinator cron", a
   expect(coordinatorTickMock).toHaveBeenCalledWith(expect.objectContaining({ leadMinutes: 25 }));
 });
 
-test("handleScheduled coordinator cron does not start container or warm or enqueue per-category", async () => {
+test("handleScheduled coordinator cron does not start container or enqueue canaries", async () => {
   await handleScheduled(makeEvent("*/10 1-11 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
   expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(predictQueueSendMock).not.toHaveBeenCalled();
   expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled delivery-canary cron only persists and sends a canary", async () => {
+  const env = makeEnv();
+  await handleScheduled(makeEvent("*/5 0-13 * * *"), env);
+  expect(enqueueDeliveryCanaryMock).toHaveBeenCalledWith(env, new Date("2026-06-02T18:00:00.000Z"));
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+  expect(startMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled does not run the coordinator for the rescore cron", async () => {
