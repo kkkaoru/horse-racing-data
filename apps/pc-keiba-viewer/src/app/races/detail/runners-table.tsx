@@ -156,6 +156,10 @@ const formatCornerRanks = (runner: Runner): string => {
 };
 
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
+const isLinkableHorseId = (value: string): boolean => {
+  const cleaned = value.trim();
+  return isLinkableText(cleaned) && !/^0+$/u.test(cleaned);
+};
 
 const isChangedJockey = (
   storedName: string,
@@ -390,7 +394,7 @@ export function RunnersTable({
           <span>{horseNumber}</span>
         </td>
         <td className="runner-horse-cell">
-          {isLinkableText(horseName) && isLinkableText(horseId) ? (
+          {isLinkableText(horseName) && isLinkableHorseId(horseId) ? (
             <Link href={`/horses/${encodeURIComponent(horseId)}`}>
               <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
             </Link>

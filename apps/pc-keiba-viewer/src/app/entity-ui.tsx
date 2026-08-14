@@ -451,6 +451,11 @@ const isLinkableText = (value: string | null | undefined): boolean => {
   return cleaned !== "" && cleaned !== "-";
 };
 
+const isLinkableHorseId = (value: string | null | undefined): boolean => {
+  const cleaned = cleanText(value, "");
+  return isLinkableText(cleaned) && !/^0+$/u.test(cleaned);
+};
+
 const getEntityResultRowClassName = (row: EntityRaceResult): string | undefined => {
   if (row.isUpcoming) {
     return "entity-result-row-upcoming";
@@ -525,7 +530,7 @@ export function EntityRaceResultsTable({
               </td>
               <td>{formatRaceNumber(row.raceBango)}</td>
               <td className="entity-name-cell">
-                {isLinkableText(row.horseName) && isLinkableText(row.kettoTorokuBango) ? (
+                {isLinkableText(row.horseName) && isLinkableHorseId(row.kettoTorokuBango) ? (
                   <Link href={`/horses/${encodeURIComponent(cleanText(row.kettoTorokuBango))}`}>
                     {row.horseName}
                   </Link>

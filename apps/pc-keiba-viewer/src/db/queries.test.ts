@@ -1,5 +1,6 @@
 // Run with bun (bunx vitest)
 
+import { getTableName, isTable } from "drizzle-orm";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -29,6 +30,7 @@ import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-d
 import {
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
+  getHorseRaceResults,
   getRaceRunners,
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
@@ -85,6 +87,16 @@ const stringifyQuery = (value: unknown): string => {
   }
   const chunks = value.queryChunks ?? [];
   return chunks.map((chunk) => stringifyChunk(chunk)).join("");
+};
+
+const collectTableNames = (value: unknown): string[] => {
+  if (isTable(value)) {
+    return [getTableName(value)];
+  }
+  if (!isDrizzleSqlLike(value)) {
+    return [];
+  }
+  return (value.queryChunks ?? []).flatMap((chunk) => collectTableNames(chunk));
 };
 
 const ALL_FLAGS_ON_FILTER: RunningStyleBucketFilter = {
@@ -279,6 +291,27 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("getHorseRaceResults excludes empty and all-zero identities for a JRA current race", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getHorseRaceResults("jra", "2026", "08", "16", "A8", "04");
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(collectTableNames(queryArg)[0]).toBe("jvd_se");
+  expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) not in \('\s*'\)/u);
+  expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) !~ '\s*\^0\+\$\s*'/u);
+});
+
+it("getHorseRaceResults uses NAR runners for the current identity set", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getHorseRaceResults("nar", "2026", "08", "16", "A8", "04");
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  expect(collectTableNames(queryArg)[0]).toBe("nvd_se");
 });
 
 it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when all flags are on", async () => {

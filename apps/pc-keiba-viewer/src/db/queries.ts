@@ -2270,7 +2270,8 @@ export const getHorseRaceResults = async (
           and keibajo_code = ${keibajoCode}
           and race_bango = ${raceNumber}
           and ketto_toroku_bango is not null
-          and btrim(ketto_toroku_bango) <> ''
+          and btrim(ketto_toroku_bango) not in ('')
+          and btrim(ketto_toroku_bango) !~ '^0+$'
       ),
       history as (
         select

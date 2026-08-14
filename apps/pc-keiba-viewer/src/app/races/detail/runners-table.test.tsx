@@ -57,6 +57,39 @@ describe("runners table", () => {
     expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("renders a trimmed all-zero horse identity as plain text", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "海外馬",
+            kettoTorokuBango: " 000000 ",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("海外馬")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "海外馬" })).toBeNull();
+  });
+
+  it("links a horse with a real registration identity", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "国内馬",
+            kettoTorokuBango: "2023100001",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "国内馬" }).getAttribute("href")).toBe(
+      "/horses/2023100001",
+    );
+  });
+
   it("sorts by runner number, odds, and finish order", () => {
     render(
       <RunnersTable

@@ -73,4 +73,27 @@ describe("entity race results table", () => {
     expect(screen.getByRole("columnheader", { name: "コーナー順位" })).toBeTruthy();
     expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
+
+  it("renders a trimmed all-zero horse identity as plain text", () => {
+    render(
+      <EntityRaceResultsTable
+        rows={[row({ horseName: "海外馬", kettoTorokuBango: " 000000 " })]}
+      />,
+    );
+
+    expect(screen.getByText("海外馬")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "海外馬" })).toBeNull();
+  });
+
+  it("links a horse with a real registration identity", () => {
+    render(
+      <EntityRaceResultsTable
+        rows={[row({ horseName: "国内馬", kettoTorokuBango: "2023100438" })]}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "国内馬" }).getAttribute("href")).toBe(
+      "/horses/2023100438",
+    );
+  });
 });
