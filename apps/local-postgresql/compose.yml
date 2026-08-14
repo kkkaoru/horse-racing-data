@@ -5,7 +5,7 @@
 # resurrect that shadow automatically.
 services:
   postgres:
-    image: pgvector/pgvector:0.8.1-pg18
+    image: pgvector/pgvector:0.8.6-pg18
     container_name: horse-racing-local-postgresql
     restart: "no"
     env_file:
