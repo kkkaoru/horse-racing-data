@@ -127,7 +127,8 @@ WITH targets(category, source, keibajo_code, race_bango, expected_runners) AS (
 SELECT
   count(*) FILTER (WHERE complete_and_healthy) OVER () AS healthy_races_of_68,
   count(*) FILTER (WHERE prediction_rows > 0) OVER () AS races_with_any_prediction_of_68,
-  count(*) FILTER (WHERE NOT runner_count_matches) OVER () AS runner_count_mismatches,
+  count(*) FILTER (WHERE prediction_rows = 0) OVER () AS not_generated,
+  count(*) FILTER (WHERE prediction_rows > 0 AND NOT runner_count_matches) OVER () AS runner_count_mismatches,
   count(*) FILTER (
     WHERE prediction_rows > 0
       AND (all_scores_zero OR has_nan_score OR NOT scores_not_collapsed)
