@@ -3514,7 +3514,7 @@ export const getRaceTrainings = cache(
         select
           *,
           row_number() over (
-            partition by ketto_toroku_bango, "trainingType"
+            partition by umaban, "trainingType"
             order by "chokyoNengappi" desc, "chokyoJikoku" desc
           ) as rn
         from all_workouts
@@ -5568,7 +5568,9 @@ export const getRaceTimeStats = cache(
           count(hist.*) filter (where hist.kakutei_chakujun in ('01', '02', '03')) show_count
         from current_entries
         left join ${runnerTable} hist
-          on hist.ketto_toroku_bango = current_entries.ketto_toroku_bango
+          on btrim(coalesce(current_entries.ketto_toroku_bango, '')) <> ''
+          and btrim(coalesce(current_entries.ketto_toroku_bango, '')) !~ '^0+$'
+          and hist.ketto_toroku_bango = current_entries.ketto_toroku_bango
           and (
             hist.kaisai_nen < ${race.kaisaiNen}
             or (hist.kaisai_nen = ${race.kaisaiNen} and hist.kaisai_tsukihi < ${race.kaisaiTsukihi})

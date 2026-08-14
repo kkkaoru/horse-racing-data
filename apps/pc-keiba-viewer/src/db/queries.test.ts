@@ -34,6 +34,7 @@ import {
   getHorseRaceResults,
   getRaceAbilityTests,
   getRaceRunners,
+  getRaceTimeStats,
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
   getTimeScoreRows,
@@ -462,6 +463,41 @@ it("getTimeScoreRows excludes all-zero current identities before history matchin
 
   const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
   expect(queryText).toMatch(/btrim\(coalesce\(se\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u);
+});
+
+it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse history joins", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceTimeStats(PERCLASS_703_RACE, {
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: null,
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(
+    /on btrim\(coalesce\(current_entries\.ketto_toroku_bango, ''\)\) <> ''/u,
+  );
+  expect(queryText).toMatch(
+    /btrim\(coalesce\(current_entries\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u,
+  );
 });
 
 it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when all flags are on", async () => {
@@ -1865,6 +1901,15 @@ it("get-race-trainings-sql-left-joins-runners-with-no-workout-rows", async () =>
   // of showing one placeholder row per entrant.
   expect(/no_workout_runners as \(/u.test(queryText)).toBe(true);
   expect(/from all_workouts/u.test(queryText)).toBe(true);
+});
+
+it("get-race-trainings-partitions workout rows by runner number for real and placeholder IDs", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceTrainings("jra", "2026", "07", "18", "02", "04");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/partition by umaban, "trainingType"/u);
+  expect(queryText).not.toMatch(/partition by ketto_toroku_bango, "trainingType"/u);
 });
 
 it("get-race-trainings-returns-one-row-per-entrant-including-those-without-official-workouts", async () => {
