@@ -99,6 +99,14 @@ Use a **private Discord race-operations alert channel** as the primary human des
 
 Do not send readiness alerts through `finish-position-predict-queue`. Prefer direct HTTPS delivery from `pipeline-health-monitor` with a short timeout, while first writing alert state/outbox durably. Retry notifier failures from the durable outbox. The existing separate `pipeline-health-alerts` queue can remain a secondary fan-out path, but must not be the only path because queue delivery itself is the incident class being monitored.
 
+### Acknowledgement and resend escalation
+
+Every critical alert has an incident ID and remains unacknowledged until the primary or backup operator uses an authenticated acknowledgement action recorded in durable state. Discord delivery success is not acknowledgement.
+
+While the failure persists and no human has acknowledged it, resend the critical alert after 10 minutes, again 30 minutes after the initial alert, and then hourly. Send it through direct Discord and the configured secondary destination; notifier failure leaves the outbox pending for bounded delivery retries. Once acknowledged, stop acknowledgement-driven resends but send an hourly still-failing reminder while the SLO remains violated. This prevents a silent multi-day incident without producing a message every monitor tick.
+
+Recovery closes the incident, cancels pending resends, and sends one direct recovery notification to the same destinations. If recovery delivery fails, keep retrying it from the outbox until delivered. A later recurrence creates a new incident ID rather than reopening an acknowledged/closed incident.
+
 ### Completion gate
 
 The repository cannot reveal secret values or prove readership. Before enabling alerts, an operator must record in the runbook:
