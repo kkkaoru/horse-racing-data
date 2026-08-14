@@ -161,6 +161,17 @@ const isLinkableHorseId = (value: string): boolean => {
   return isLinkableText(cleaned) && !/^0+$/u.test(cleaned);
 };
 
+const getSourceHorseHref = (runner: Runner): string | null => {
+  const identitySource = cleanText(runner.identitySource, "");
+  const sourceHorseId = cleanText(runner.sourceHorseId, "");
+  const sourceUrl = cleanText(runner.sourceUrl, "");
+  return isLinkableText(identitySource) &&
+    isLinkableText(sourceHorseId) &&
+    /^https?:\/\//u.test(sourceUrl)
+    ? sourceUrl
+    : null;
+};
+
 const isChangedJockey = (
   storedName: string,
   realtimeName: string | null | undefined,
@@ -371,8 +382,11 @@ export function RunnersTable({
     const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
     const realtimeFinishPosition = realtimeResultByHorse.get(horseNumber);
     const realtimeEntry = realtimeEntryByHorse.get(horseNumber);
-    const horseName = cleanText(runner.bamei);
+    const horseName = cleanText(runner.horseNameFull, cleanText(runner.bamei));
     const horseId = cleanText(runner.kettoTorokuBango);
+    const horseHref = isLinkableHorseId(horseId)
+      ? `/horses/${encodeURIComponent(horseId)}`
+      : getSourceHorseHref(runner);
     const jockeyName = cleanText(runner.kishumeiRyakusho);
     const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeEntry?.jockeyName);
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
@@ -394,8 +408,8 @@ export function RunnersTable({
           <span>{horseNumber}</span>
         </td>
         <td className="runner-horse-cell">
-          {isLinkableText(horseName) && isLinkableHorseId(horseId) ? (
-            <Link href={`/horses/${encodeURIComponent(horseId)}`}>
+          {isLinkableText(horseName) && horseHref ? (
+            <Link href={horseHref}>
               <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
             </Link>
           ) : (

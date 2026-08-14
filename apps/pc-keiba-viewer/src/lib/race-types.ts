@@ -55,6 +55,13 @@ export interface Runner {
   umaban: string | null;
   kettoTorokuBango: string | null;
   bamei: string | null;
+  identitySource?: string | null;
+  sourceHorseId?: string | null;
+  sourceUrl?: string | null;
+  horseNameFull?: string | null;
+  jockeyNameFull?: string | null;
+  trainerNameFull?: string | null;
+  ownerNameFull?: string | null;
   moshokuCode?: string | null;
   seibetsuCode: string | null;
   barei: string | null;

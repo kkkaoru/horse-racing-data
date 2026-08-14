@@ -68,7 +68,17 @@ import {
 import { getDb } from "./client";
 import { isRunningStyleLabel, type RunningStyleLabel } from "./corner-running-style-parsers";
 import { withDbQueryCache } from "./query-cache";
-import { jvdCs, jvdRa, jvdSe, jvdUm, nvdNu, nvdRa, nvdSe, nvdUm } from "./schema";
+import {
+  jvdCs,
+  jvdRa,
+  jvdSe,
+  jvdUm,
+  nvdNu,
+  nvdRa,
+  nvdSe,
+  nvdUm,
+  overseaRunnerIdentity,
+} from "./schema";
 
 export interface ActiveRunningStylePrediction {
   horseNumber: number;
@@ -595,6 +605,13 @@ export const getRaceRunners = cache(
             se.umaban,
             se.ketto_toroku_bango as "kettoTorokuBango",
             se.bamei,
+            identity.source as "identitySource",
+            identity.source_horse_id as "sourceHorseId",
+            identity.source_url as "sourceUrl",
+            nullif(btrim(identity.horse_name_full), '') as "horseNameFull",
+            nullif(btrim(identity.jockey_name_full), '') as "jockeyNameFull",
+            nullif(btrim(identity.trainer_name_full), '') as "trainerNameFull",
+            nullif(btrim(identity.owner_name_full), '') as "ownerNameFull",
             se.moshoku_code as "moshokuCode",
             se.seibetsu_code as "seibetsuCode",
             se.barei,
@@ -622,6 +639,12 @@ export const getRaceRunners = cache(
           from ${table} se
           left join ${jvdUm} um
             on um.ketto_toroku_bango = se.ketto_toroku_bango
+          left join ${overseaRunnerIdentity} identity
+            on identity.kaisai_nen = se.kaisai_nen
+            and identity.kaisai_tsukihi = se.kaisai_tsukihi
+            and identity.keibajo_code = se.keibajo_code
+            and identity.race_bango = se.race_bango
+            and identity.umaban = se.umaban
           where
             se.kaisai_nen = ${year}
             and se.kaisai_tsukihi = ${monthDay}

@@ -90,6 +90,66 @@ describe("runners table", () => {
     );
   });
 
+  it("shows the full source name and links a source-identified placeholder horse", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "短縮名",
+            horseNameFull: "OVERSEAS HORSE FULL NAME",
+            identitySource: "netkeiba",
+            kettoTorokuBango: "0000000000",
+            sourceHorseId: "horse-42",
+            sourceUrl: "https://example.test/horse/42",
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "OVERSEAS HORSE FULL NAME" }).getAttribute("href"),
+    ).toBe("https://example.test/horse/42");
+    expect(screen.queryByText("短縮名")).toBeNull();
+  });
+
+  it("does not link a source identity without a source horse ID", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "IDなし海外馬",
+            identitySource: "netkeiba",
+            kettoTorokuBango: "0000000000",
+            sourceHorseId: "",
+            sourceUrl: "https://example.test/horse/unknown",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("IDなし海外馬")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "IDなし海外馬" })).toBeNull();
+  });
+
+  it("does not link an unsafe source identity URL", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "URL不正海外馬",
+            identitySource: "netkeiba",
+            kettoTorokuBango: "0000000000",
+            sourceHorseId: "horse-43",
+            sourceUrl: "javascript:alert(1)",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("URL不正海外馬")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "URL不正海外馬" })).toBeNull();
+  });
+
   it("sorts by runner number, odds, and finish order", () => {
     render(
       <RunnersTable

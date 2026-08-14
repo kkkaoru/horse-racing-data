@@ -293,6 +293,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("getRaceRunners joins JRA overseas identities by the complete race-entry key", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceRunners("jra", "2026", "08", "16", "A8", "04");
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(collectTableNames(queryArg)).toStrictEqual([
+    "jvd_se",
+    "jvd_um",
+    "oversea_runner_identity",
+  ]);
+  expect(queryText).toMatch(/identity\.kaisai_nen = se\.kaisai_nen/u);
+  expect(queryText).toMatch(/identity\.kaisai_tsukihi = se\.kaisai_tsukihi/u);
+  expect(queryText).toMatch(/identity\.keibajo_code = se\.keibajo_code/u);
+  expect(queryText).toMatch(/identity\.race_bango = se\.race_bango/u);
+  expect(queryText).toMatch(/identity\.umaban = se\.umaban/u);
+  expect(queryText).toMatch(/identity\.horse_name_full/u);
+  expect(queryText).toMatch(/identity\.source_horse_id/u);
+});
+
 it("getHorseRaceResults excludes empty and all-zero identities for a JRA current race", async () => {
   executeMock.mockResolvedValue({ rows: [] });
 

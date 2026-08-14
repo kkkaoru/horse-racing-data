@@ -1,5 +1,5 @@
 import "server-only";
-import { pgTable, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 const raceColumns = {
   kaisaiNen: varchar("kaisai_nen", { length: 4 }).notNull(),
@@ -82,3 +82,19 @@ export const nvdSe = pgTable("nvd_se", runnerColumns);
 export const jvdUm = pgTable("jvd_um", horseMasterColumns);
 export const nvdNu = pgTable("nvd_nu", horseMasterColumns);
 export const nvdUm = pgTable("nvd_um", horseMasterColumns);
+
+export const overseaRunnerIdentity = pgTable("oversea_runner_identity", {
+  kaisaiNen: text("kaisai_nen").notNull(),
+  kaisaiTsukihi: text("kaisai_tsukihi").notNull(),
+  keibajoCode: text("keibajo_code").notNull(),
+  raceBango: text("race_bango").notNull(),
+  umaban: text("umaban").notNull(),
+  source: text("source").notNull(),
+  sourceHorseId: text("source_horse_id").notNull(),
+  horseNameFull: text("horse_name_full").notNull(),
+  jockeyNameFull: text("jockey_name_full"),
+  trainerNameFull: text("trainer_name_full"),
+  ownerNameFull: text("owner_name_full"),
+  sourceUrl: text("source_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
