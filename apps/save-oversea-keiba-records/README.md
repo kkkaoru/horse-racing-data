@@ -19,7 +19,8 @@ Options:
 
 - `--apply`: write only after the diff gate reports `safe`.
 - `--dry-run`: explicitly select the default no-write mode.
-- `--jra-file <path>`: read the JRA card from a local file and skip its HTTP request.
+- `--jra-file <path>`: read the JRA or JRA-VAN World card from a local file and skip its HTTP request.
+- `--jra-url <url>`: explicitly fetch a `https://world.jra-van.jp/race/<race>/<year>/racecard/` card while the official JRA CNAME is unavailable. Without this option, the existing official JRA URL path remains the default.
 - `--secondary-file <path>`: read the secondary card from a local file and skip its HTTP request.
 - `--venue-code <code>`: required JV venue code used in the storage key.
 - `--race-number <number>`: required JV race number used in the storage key.
@@ -64,8 +65,8 @@ Do not commit a real profile. Do not paste live selectors into tests, docs, or c
 ## Data flow
 
 1. Load both documents concurrently, preferring the supplied local files and otherwise making one HTTP request per source.
-2. Parse the JRA card and the secondary source.
-3. Reconcile runners by horse number, never by row order. JRA data is authoritative for descriptive fields; the secondary source contributes only horse, jockey, and trainer entity identifiers.
+2. Parse the official JRA card or the explicitly selected JRA-VAN World card and the secondary source.
+3. Reconcile runners by horse number, never by row order. If a preliminary secondary card has not published horse numbers, use only a unique exact horse-name match after NFKC normalization and whitespace removal. Duplicate or unmatched names remain unresolved. JRA/JRA-VAN data is authoritative for descriptive fields; the secondary source contributes only horse, jockey, and trainer entity identifiers. The dry-run report prints every accepted horse-name-to-secondary-ID mapping for operator review.
 4. Verify entity identifiers against the local JV horse, jockey, trainer, and owner masters.
 5. **Numeric-only master backfill (option 1):** when a secondary id already has a valid JV primary-key shape (pure ASCII digits, exact width) and that code is absent from the local master, plan an insert of a minimal overseas-visitor master row (`jvd_um` / `jvd_ks` / `jvd_ch`). Never mint synthetic or alphanumeric keys. Never UPDATE or DELETE existing masters. Owner master (`jvd_bn`) is **not** inserted (secondary identity has no reliable 6-digit owner code; name-only resolution only). Placeholders (`0000000000` / `00000`) are never inserted. Alphanumeric secondary ids stay unresolved and race rows keep zero placeholders as before.
 6. Map the reconciled race to complete `jvd_ra` and `jvd_se` rows (entity resolution treats planned master inserts as present so race rows use the real codes after apply).

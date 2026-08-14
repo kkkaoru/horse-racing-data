@@ -54,6 +54,7 @@ import {
 } from "./sources/secondary-source-parser";
 import {
   buildJraCardUrl,
+  buildJraVanWorldCardUrl,
   buildSecondaryCardUrl,
   loadRaceSources,
   OVERSEA_SECONDARY_CARD_URL_TEMPLATE,
@@ -88,6 +89,7 @@ export const USAGE_MESSAGE: string =
   "  --apply                  Write after a safe dry-run diff (default is dry-run only)\n" +
   "  --dry-run                Diff only; do not write (default)\n" +
   "  --jra-file <path>        Read JRA card HTML from a local file (skips JRA HTTP)\n" +
+  "  --jra-url <url>          Fetch a JRA-VAN World card while the official JRA CNAME is unavailable\n" +
   "  --secondary-file <path>  Read secondary card HTML from a local file (skips secondary HTTP)\n" +
   "  --venue-code <code>      JV venue code for storage (required, e.g. A6)\n" +
   "  --race-number <number>   JV race number for storage (required, e.g. 05)\n" +
@@ -101,11 +103,13 @@ export const USAGE_MESSAGE: string =
 const FLAG_APPLY: string = "--apply";
 const FLAG_DRY_RUN: string = "--dry-run";
 const FLAG_JRA_FILE: string = "--jra-file";
+const FLAG_JRA_URL: string = "--jra-url";
 const FLAG_SECONDARY_FILE: string = "--secondary-file";
 const FLAG_VENUE_CODE: string = "--venue-code";
 const FLAG_RACE_NUMBER: string = "--race-number";
 
 const FLAG_JRA_FILE_PREFIX: string = "--jra-file=";
+const FLAG_JRA_URL_PREFIX: string = "--jra-url=";
 const FLAG_SECONDARY_FILE_PREFIX: string = "--secondary-file=";
 const FLAG_VENUE_CODE_PREFIX: string = "--venue-code=";
 const FLAG_RACE_NUMBER_PREFIX: string = "--race-number=";
@@ -167,6 +171,7 @@ export interface ParsedSaveCliArgs {
   readonly secondaryRaceId: string;
   readonly apply: boolean;
   readonly jraCachePath: string | null;
+  readonly jraUrl: string | null;
   readonly secondaryCachePath: string | null;
   readonly venueCode: string;
   readonly raceNumber: string;
@@ -180,6 +185,7 @@ interface ArgParseState {
   readonly positionals: readonly string[];
   readonly apply: boolean;
   readonly jraFile: string | null;
+  readonly jraUrl: string | null;
   readonly secondaryFile: string | null;
   readonly venueCode: string | null;
   readonly raceNumber: string | null;
@@ -230,6 +236,7 @@ const INITIAL_ARG_STATE: ArgParseState = {
   positionals: [],
   apply: false,
   jraFile: null,
+  jraUrl: null,
   secondaryFile: null,
   venueCode: null,
   raceNumber: null,
@@ -293,6 +300,25 @@ const consumeArgToken = (
   if (token.startsWith(FLAG_JRA_FILE_PREFIX)) {
     return {
       state: { ...state, jraFile: token.slice(FLAG_JRA_FILE_PREFIX.length) },
+      nextIndex: index + 1,
+    };
+  }
+
+  if (token === FLAG_JRA_URL) {
+    return consumeFlagValue({
+      state,
+      argv,
+      index,
+      flagName: FLAG_JRA_URL,
+      assign: (current: ArgParseState, value: string): ArgParseState => ({
+        ...current,
+        jraUrl: value,
+      }),
+    });
+  }
+  if (token.startsWith(FLAG_JRA_URL_PREFIX)) {
+    return {
+      state: { ...state, jraUrl: token.slice(FLAG_JRA_URL_PREFIX.length) },
       nextIndex: index + 1,
     };
   }
@@ -427,6 +453,7 @@ export const parseSaveCliArgs = (argv: readonly string[]): ParseSaveCliArgsResul
       secondaryRaceId,
       apply: state.apply,
       jraCachePath: state.jraFile,
+      jraUrl: state.jraUrl,
       secondaryCachePath: state.secondaryFile,
       venueCode: state.venueCode,
       raceNumber: state.raceNumber,
@@ -454,15 +481,54 @@ const toJraReconcileRunner = (runner: ParsedJraRace["runners"][number]): JraReco
   damsire: runner.damsire,
 });
 
+const normalizeRunnerName = (value: string): string => value.normalize("NFKC").replace(/\s+/gu, "");
+
+const buildUniqueJraRunnerNameMap = (
+  runners: readonly JraReconcileRunner[],
+): ReadonlyMap<string, JraReconcileRunner> => {
+  const grouped: ReadonlyMap<string, readonly JraReconcileRunner[]> = runners.reduce(
+    (
+      map: ReadonlyMap<string, readonly JraReconcileRunner[]>,
+      runner: JraReconcileRunner,
+    ): ReadonlyMap<string, readonly JraReconcileRunner[]> => {
+      const key: string = normalizeRunnerName(runner.horseName);
+      return new Map(map).set(key, [...(map.get(key) ?? []), runner]);
+    },
+    new Map<string, readonly JraReconcileRunner[]>(),
+  );
+  return new Map(
+    Array.from(grouped.entries()).flatMap(
+      ([key, matches]): readonly (readonly [string, JraReconcileRunner])[] =>
+        matches.length === 1
+          ? matches.map((runner): readonly [string, JraReconcileRunner] => [key, runner])
+          : [],
+    ),
+  );
+};
+
 const toSecondaryReconcileRunner = (
   runner: SecondarySourceRunner,
+  jraByName: ReadonlyMap<string, JraReconcileRunner>,
+  jraByHorseNumber: ReadonlyMap<number, JraReconcileRunner>,
 ): SecondaryReconcileRunner | null => {
-  if (runner.gate === null || runner.horseName === null) {
+  if (runner.horseName === null) {
+    return null;
+  }
+  const nameMatchedJra: JraReconcileRunner | undefined = jraByName.get(
+    normalizeRunnerName(runner.horseName),
+  );
+  const horseNumber: number | null = runner.horseNumber ?? nameMatchedJra?.horseNumber ?? null;
+  if (horseNumber === null) {
+    return null;
+  }
+  const numberedJra: JraReconcileRunner | undefined = jraByHorseNumber.get(horseNumber);
+  const gate: number | null = runner.gate ?? numberedJra?.gate ?? null;
+  if (gate === null) {
     return null;
   }
   return {
-    horseNumber: runner.horseNumber,
-    gate: runner.gate,
+    horseNumber,
+    gate,
     horseName: runner.horseName,
     jockeyName: EMPTY_NAME,
     trainerName: EMPTY_NAME,
@@ -475,9 +541,15 @@ const toSecondaryReconcileRunner = (
 
 const adaptSecondaryRunners = (
   runners: readonly SecondarySourceRunner[],
+  jraRunners: readonly JraReconcileRunner[],
 ): AdaptedSecondaryRunners => {
-  const adapted: readonly (SecondaryReconcileRunner | null)[] = runners.map(
-    toSecondaryReconcileRunner,
+  const jraByName: ReadonlyMap<string, JraReconcileRunner> =
+    buildUniqueJraRunnerNameMap(jraRunners);
+  const jraByHorseNumber: ReadonlyMap<number, JraReconcileRunner> = new Map(
+    jraRunners.map((runner): readonly [number, JraReconcileRunner] => [runner.horseNumber, runner]),
+  );
+  const adapted: readonly (SecondaryReconcileRunner | null)[] = runners.map((runner) =>
+    toSecondaryReconcileRunner(runner, jraByName, jraByHorseNumber),
   );
   const complete: readonly SecondaryReconcileRunner[] = adapted.filter(
     (runner: SecondaryReconcileRunner | null): runner is SecondaryReconcileRunner =>
@@ -639,6 +711,16 @@ const logReport = ({
   });
 
   logger.info("=== Reconciliation ===");
+  logger.info("Horse-name to secondary-ID matches:");
+  const matchedRunners = reconcileResult.mergedRunners.filter((runner) => runner.hasSecondaryMatch);
+  if (matchedRunners.length === 0) {
+    logger.info("(none)");
+  }
+  matchedRunners.forEach((runner): void => {
+    logger.info(
+      `${runner.horseName} -> horse=${runner.secondaryHorseId ?? "(none)"} jockey=${runner.secondaryJockeyId ?? "(none)"} trainer=${runner.secondaryTrainerId ?? "(none)"}`,
+    );
+  });
   logger.info(`Gate disagreements: ${String(reconcileResult.report.gateDisagreements.length)}`);
   reconcileResult.report.gateDisagreements.forEach((warning): void => {
     logger.info(warning.message);
@@ -699,8 +781,11 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
 
   const args: ParsedSaveCliArgs = parsed.args;
 
-  // Always validate the JRA id shape. Secondary URL is only required when the network path is used.
-  const jraCardUrl: string = buildJraCardUrl(args.jraRacecardId);
+  // The direct JRA-VAN World URL is an explicit fallback while JRA has not published a CNAME.
+  const jraCardUrl: string =
+    args.jraUrl === null
+      ? buildJraCardUrl(args.jraRacecardId)
+      : buildJraVanWorldCardUrl(args.jraUrl);
   const secondaryCardUrl: string =
     args.secondaryCachePath === null
       ? buildSecondaryCardUrl(args.secondaryRaceId, env[OVERSEA_SECONDARY_CARD_URL_TEMPLATE])
@@ -724,10 +809,15 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     html: loaded.secondaryHtml,
     profile: secondaryProfile,
   });
-  const adaptedSecondary: AdaptedSecondaryRunners = adaptSecondaryRunners(secondaryParsed.runners);
+  const jraReconcileRunners: readonly JraReconcileRunner[] =
+    jraRace.runners.map(toJraReconcileRunner);
+  const adaptedSecondary: AdaptedSecondaryRunners = adaptSecondaryRunners(
+    secondaryParsed.runners,
+    jraReconcileRunners,
+  );
 
   const reconcileResult: ReconcileResult = reconcileRunners({
-    jraRunners: jraRace.runners.map(toJraReconcileRunner),
+    jraRunners: jraReconcileRunners,
     secondaryRunners: adaptedSecondary.runners,
   });
 

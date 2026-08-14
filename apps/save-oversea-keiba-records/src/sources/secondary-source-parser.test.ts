@@ -158,7 +158,7 @@ test("reports an empty document when no runner rows are present", () => {
   });
 });
 
-test("records a missing horse-number cell without inventing a runner", () => {
+test("retains a uniquely named runner when a preliminary card has no horse number", () => {
   const html: string = `
 <table><tbody>
 <tr>
@@ -171,11 +171,22 @@ test("records a missing horse-number cell without inventing a runner", () => {
 </tbody></table>`;
 
   expect(parseSecondarySourceRacecard({ html, profile: TEST_PROFILE })).toStrictEqual({
-    runners: [],
+    runners: [
+      {
+        horseNumber: null,
+        gate: 1,
+        horseName: "No Number",
+        horseId: "2021190001",
+        jockeyId: "05504",
+        trainerId: "05701",
+        trainerAffiliation: "ForeignYard",
+      },
+    ],
     issues: [
       {
         code: "missing_horse_number",
-        message: "Runner row is missing a horse-number cell.",
+        message:
+          "Runner row is missing a horse-number cell; unique horse-name reconciliation is required.",
         rowIndex: 0,
         horseNumber: null,
       },
@@ -427,7 +438,8 @@ test("treats an empty horse-number cell as missing rather than invalid", () => {
   expect(parseSecondarySourceRacecard({ html, profile: TEST_PROFILE }).issues).toStrictEqual([
     {
       code: "missing_horse_number",
-      message: "Runner row is missing a horse-number cell.",
+      message:
+        "Runner row is missing a horse-number cell; unique horse-name reconciliation is required.",
       rowIndex: 0,
       horseNumber: null,
     },

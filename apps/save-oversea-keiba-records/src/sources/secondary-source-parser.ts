@@ -4,7 +4,7 @@
 // Input: HTML string for one overseas racecard table from the secondary source,
 //        plus an operator-supplied markup profile that describes how to locate
 //        horse-number cells, gate cells, entity links, and affiliation labels.
-// Output: runners keyed/sorted by horse number, plus non-throwing parse issues.
+// Output: runners keyed/sorted by horse number when published, plus non-throwing parse issues.
 //
 // The committed code is intentionally selector-agnostic. Live class tokens and
 // identity-route prefixes are never hardcoded here: the operator supplies them
@@ -14,15 +14,16 @@
 //
 // Result shape:
 //   SecondarySourceParseResult {
-//     runners: SecondarySourceRunner[]  // complete enough to join by horseNumber
+//     runners: SecondarySourceRunner[]  // may require a unique horse-name fallback before joining
 //     issues: SecondarySourceParseIssue[]  // missing/invalid fields, duplicates, empty docs
 //   }
 //
 // SecondarySourceRunner fields:
 //   horseNumber, gate, horseName, horseId, jockeyId, trainerId, trainerAffiliation
 //
-// Incomplete rows still surface as issues. A row without a horse-number cell does not
-// become a runner. Identity fields that fail to parse become null and emit an issue.
+// Incomplete rows still surface as issues. A row without a horse-number cell is retained
+// when it has a horse identity, allowing orchestration to join a preliminary card by unique
+// horse name. Identity fields that fail to parse become null and emit an issue.
 // The pure parser never performs network, filesystem, or database I/O. The profile
 // loader is the only I/O surface, and tests inject a fake file reader.
 
@@ -40,7 +41,7 @@ export type SecondarySourceParseIssueCode =
   | "no_runner_rows";
 
 export interface SecondarySourceRunner {
-  horseNumber: number;
+  horseNumber: number | null;
   gate: number | null;
   horseName: string | null;
   horseId: string | null;
@@ -358,22 +359,8 @@ const buildRowResult = ({ rowHtml, rowIndex, patterns }: RowBuildInput): RowBuil
   const horseNumberParsed: OptionalNumberParseResult = parseOptionalDigits(fields.horseNumberRaw);
   const gateParsed: OptionalNumberParseResult = parseOptionalDigits(fields.gateRaw);
 
-  if (!horseNumberParsed.present) {
-    return {
-      runner: null,
-      issues: [
-        buildIssue({
-          code: "missing_horse_number",
-          message: "Runner row is missing a horse-number cell.",
-          rowIndex,
-          horseNumber: null,
-        }),
-      ],
-    };
-  }
-
   const horseNumber: number | null = horseNumberParsed.value;
-  if (horseNumber === null) {
+  if (horseNumberParsed.invalid) {
     return {
       runner: null,
       issues: [
@@ -387,7 +374,32 @@ const buildRowResult = ({ rowHtml, rowIndex, patterns }: RowBuildInput): RowBuil
     };
   }
 
+  if (!horseNumberParsed.present && (fields.horseId === null || fields.horseName === null)) {
+    return {
+      runner: null,
+      issues: [
+        buildIssue({
+          code: "missing_horse_number",
+          message: "Runner row is missing a horse-number cell.",
+          rowIndex,
+          horseNumber: null,
+        }),
+      ],
+    };
+  }
+
   const issues: SecondarySourceParseIssue[] = [];
+  if (!horseNumberParsed.present) {
+    issues.push(
+      buildIssue({
+        code: "missing_horse_number",
+        message:
+          "Runner row is missing a horse-number cell; unique horse-name reconciliation is required.",
+        rowIndex,
+        horseNumber: null,
+      }),
+    );
+  }
 
   if (!gateParsed.present) {
     issues.push(
@@ -481,7 +493,7 @@ const isCandidateRunnerRow = (rowHtml: string, patterns: CompiledMarkupPatterns)
   patterns.gateCellPattern.test(rowHtml);
 
 const compareByHorseNumber = (left: SecondarySourceRunner, right: SecondarySourceRunner): number =>
-  left.horseNumber - right.horseNumber;
+  (left.horseNumber ?? Number.MAX_SAFE_INTEGER) - (right.horseNumber ?? Number.MAX_SAFE_INTEGER);
 
 const collectDuplicateIssues = (
   runners: readonly SecondarySourceRunner[],
@@ -489,7 +501,9 @@ const collectDuplicateIssues = (
   const counts: Map<number, number> = runners.reduce(
     (acc: Map<number, number>, runner: SecondarySourceRunner): Map<number, number> => {
       const next: Map<number, number> = new Map(acc);
-      next.set(runner.horseNumber, (next.get(runner.horseNumber) ?? 0) + 1);
+      if (runner.horseNumber !== null) {
+        next.set(runner.horseNumber, (next.get(runner.horseNumber) ?? 0) + 1);
+      }
       return next;
     },
     new Map<number, number>(),

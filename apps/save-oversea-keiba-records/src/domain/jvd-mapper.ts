@@ -93,7 +93,14 @@ const GRADE_CODES: ReadonlyMap<string, string> = new Map([
   ["G2", "B"],
   ["G3", "C"],
 ]);
-const TRACK_CODES: ReadonlyMap<string, string> = new Map([["芝・右", "17"]]);
+const TRACK_CODES: ReadonlyMap<string, string> = new Map([
+  ["芝・直線", "10"],
+  ["芝・左", "11"],
+  ["芝・右", "17"],
+  ["ダート・左", "23"],
+  ["ダート・右", "24"],
+  ["ダート・直線", "29"],
+]);
 
 const isHalfWidthCodePoint = (codePoint: number): boolean =>
   codePoint <= ASCII_MAX_CODE_POINT ||

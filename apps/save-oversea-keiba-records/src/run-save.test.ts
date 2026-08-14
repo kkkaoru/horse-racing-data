@@ -421,11 +421,39 @@ test("parseSaveCliArgs accepts equals-form flags and defaults to dry-run", () =>
       secondaryRaceId: SECONDARY_RACE_ID,
       apply: false,
       jraCachePath: "/cache/jra.html",
+      jraUrl: null,
       secondaryCachePath: "/cache/secondary.html",
       venueCode: "A6",
       raceNumber: "05",
     },
   });
+});
+
+test("parseSaveCliArgs accepts a direct JRA-VAN World URL fallback", () => {
+  expect(
+    parseSaveCliArgs(
+      baseArgv(["--jra-url=https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/"]),
+    ),
+  ).toStrictEqual({
+    ok: true,
+    args: {
+      jraRacecardId: JRA_RACECARD_ID,
+      secondaryRaceId: SECONDARY_RACE_ID,
+      apply: false,
+      jraCachePath: null,
+      jraUrl: "https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/",
+      secondaryCachePath: null,
+      venueCode: VENUE_CODE,
+      raceNumber: RACE_NUMBER,
+    },
+  });
+});
+
+test("parseSaveCliArgs accepts a space-separated direct JRA-VAN World URL", () => {
+  const result = parseSaveCliArgs(
+    baseArgv(["--jra-url", "https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/"]),
+  );
+  expect(result.ok).toBe(true);
 });
 
 test("parseSaveCliArgs enables apply when --apply is present", () => {
@@ -437,6 +465,7 @@ test("parseSaveCliArgs enables apply when --apply is present", () => {
       secondaryRaceId: SECONDARY_RACE_ID,
       apply: true,
       jraCachePath: null,
+      jraUrl: null,
       secondaryCachePath: null,
       venueCode: "A6",
       raceNumber: "05",
@@ -482,6 +511,7 @@ test("parseSaveCliArgs lets --dry-run clear a prior --apply", () => {
       secondaryRaceId: SECONDARY_RACE_ID,
       apply: false,
       jraCachePath: null,
+      jraUrl: null,
       secondaryCachePath: null,
       venueCode: "A6",
       raceNumber: "05",
@@ -507,6 +537,7 @@ test("parseSaveCliArgs accepts space-separated secondary-file and race-number fl
       secondaryRaceId: SECONDARY_RACE_ID,
       apply: false,
       jraCachePath: null,
+      jraUrl: null,
       secondaryCachePath: "cache/secondary.html",
       venueCode: "A6",
       raceNumber: "05",
@@ -1167,15 +1198,14 @@ test("runSave dry-run reports (none) master backfill when all numeric masters al
   ).toBe(false);
 });
 
-// Horse 1 has a number and name but no gate cell → incomplete for reconcile adapter.
+// Horse 1 is from a preliminary card with a name but no horse-number or gate cell.
 const SECONDARY_HTML_INCOMPLETE_GATE: string = `
 <table><tbody>
 <tr class="RunnerList">
-  <td class="RunnerNumber1 Txt_C">1</td>
   <td class="RunnerInfo">
     <span class="RunnerName">
-      <a href="https://example.com/db/entity-a/2021190001" target="_blank" title="テストホース">
-        テストホース
+      <a href="https://example.com/db/entity-a/2021190001" target="_blank" title="テスト　ホース">
+        テスト　ホース
       </a>
     </span>
   </td>
@@ -1216,7 +1246,7 @@ const SECONDARY_HTML_INCOMPLETE_GATE: string = `
 </tbody></table>
 `;
 
-test("runSave reports incomplete secondary runners skipped by the reconcile adapter", async () => {
+test("runSave reconciles a preliminary secondary runner by exact unique horse name", async () => {
   const logger = createFakeLogger();
   const fetchLog: FetchCallLog = { urls: [] };
   const fileLog: FileReadCallLog = { paths: [] };
@@ -1244,10 +1274,53 @@ test("runSave reports incomplete secondary runners skipped by the reconcile adap
   expect(result.exitCode).toBe(0);
   expect(
     logger.infos.some((line) =>
+      line.startsWith("Secondary runners skipped (incomplete gate/name): 0"),
+    ),
+  ).toBe(true);
+  expect(logger.infos.some((line) => line.startsWith("Unmatched JRA horse numbers: (none)"))).toBe(
+    true,
+  );
+  expect(
+    logger.infos.some((line) => line.startsWith("テスト") && line.endsWith("trainer=05701")),
+  ).toBe(true);
+});
+
+test("runSave refuses a numberless name fallback when the JRA name is duplicated", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const statementLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra-duplicate-name.html";
+  const secondaryPath = "cache/secondary-preliminary.html";
+  const duplicateJraHtml: string = JRA_HTML.replace(
+    '<div class="name"><div class="line"><div class="txt">サンプルホース</div>',
+    '<div class="name"><div class="line"><div class="txt">テストホース</div>',
+  );
+
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, duplicateJraHtml],
+          [secondaryPath, SECONDARY_HTML_INCOMPLETE_GATE],
+        ]),
+      ),
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(logger.infos.some((line) => line.startsWith("Unmatched JRA horse numbers: 1"))).toBe(true);
+  expect(
+    logger.infos.some((line) =>
       line.startsWith("Secondary runners skipped (incomplete gate/name): 1"),
     ),
   ).toBe(true);
-  expect(logger.infos.some((line) => line.startsWith("Unmatched JRA horse numbers: 1"))).toBe(true);
 });
 
 test("runSave surfaces secondary parse issues in the report", async () => {

@@ -67,6 +67,7 @@ const SUCCESSFUL_PARSE: ParseSaveCliArgsResult = {
     secondaryRaceId: "secondary-race",
     apply: false,
     jraCachePath: null,
+    jraUrl: null,
     secondaryCachePath: null,
     venueCode: "A6",
     raceNumber: "05",

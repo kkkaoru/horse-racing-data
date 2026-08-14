@@ -134,3 +134,139 @@ test("rejects a runner missing a required field", () => {
     "JRA card is missing runner owner.",
   );
 });
+
+const JRA_VAN_WORLD_HTML: string = `
+<p class="raceInfo__txt">
+2026/08/16(日)ドーヴィル競馬場<br>
+<span class="raceInfo__txt__r">4R</span><span class="raceInfo__txt__name">ジャックルマロワ賞（G1）</span><br>
+芝1600m（直線）2頭<br>
+22:50発走（現地時間：2026/08/16 15:50）</p>
+<dd class="raceTable__details">
+<div class="raceTable__details__line active">
+<div class="raceTable__details__line__item--horseNun"><p>1</p></div>
+<div class="raceTable__details__line__item--gateNun"><p>6</p></div>
+<span class="raceTable__details__line__item--horse__name"><a>ゼウスオリンピオス</a></span>
+<span class="raceTable__details__line__item--horse__info">K．バーク<br />
+<span class="raceTable__details__line__item--horse__info__father"><span>父</span>Night Of Thunder</span>
+<span class="raceTable__details__line__item--horse__info__mother"><span>母</span>Rhea</span>
+<span class="raceTable__details__line__item--horse__info__motherfather"><span>母父</span>Siyouni</span></span>
+<span class="raceTable__details__line__item--odds__jra">3.4</span>
+<span>牡4　栗毛</span>
+<span class="raceTable__details__line__item--jockey__name">C．リー<br /></span>
+<span class="raceTable__details__line__item--jockey__weight">59.5kg</span>
+</div>
+<div class="raceTable__details__line active">
+<div class="raceTable__details__line__item--horseNun"><p>2</p></div>
+<div class="raceTable__details__line__item--gateNun"><p>2</p></div>
+<span class="raceTable__details__line__item--horse__name"><a>ドリームライナー</a></span>
+<span class="raceTable__details__line__item--horse__info">S．ワッテル<br />
+<span class="raceTable__details__line__item--horse__info__father"><span>父</span>Adlerflug</span>
+<span class="raceTable__details__line__item--horse__info__mother"><span>母</span>Game Theory</span>
+<span class="raceTable__details__line__item--horse__info__motherfather"><span>母父</span>Aussie Rules</span></span>
+<span>牡4　鹿毛</span>
+<span class="raceTable__details__line__item--jockey__name"><a>T．バシュロ</a><br /></span>
+<span class="raceTable__details__line__item--jockey__weight">59.5kg</span>
+</div>
+</dd>`;
+
+test("parses a JRA-VAN World card when the official JRA CNAME is unavailable", () => {
+  expect(parseJraCard(JRA_VAN_WORLD_HTML)).toStrictEqual({
+    raceName: "ジャックルマロワ賞",
+    grade: "G1",
+    date: "2026-08-16",
+    venue: "ドーヴィル",
+    country: "",
+    distanceMetres: 1600,
+    surface: "芝",
+    direction: "直線",
+    startTime: "22:50",
+    localStartTime: "15:50",
+    runners: [
+      {
+        horseNumber: 1,
+        gate: 6,
+        horseName: "ゼウスオリンピオス",
+        sex: "牡",
+        age: 4,
+        coatColour: "栗毛",
+        weightCarriedKg: 59.5,
+        jockeyAbbrev: "C．リー",
+        trainerAbbrev: "K．バーク",
+        trainerCountry: "",
+        owner: "",
+        winOdds: 3.4,
+        popularity: null,
+        formRecord: "",
+        sire: "Night Of Thunder",
+        dam: "Rhea",
+        damsire: "Siyouni",
+      },
+      {
+        horseNumber: 2,
+        gate: 2,
+        horseName: "ドリームライナー",
+        sex: "牡",
+        age: 4,
+        coatColour: "鹿毛",
+        weightCarriedKg: 59.5,
+        jockeyAbbrev: "T．バシュロ",
+        trainerAbbrev: "S．ワッテル",
+        trainerCountry: "",
+        owner: "",
+        winOdds: null,
+        popularity: null,
+        formRecord: "",
+        sire: "Adlerflug",
+        dam: "Game Theory",
+        damsire: "Aussie Rules",
+      },
+    ],
+  });
+});
+
+test("parses a JRA-VAN World dirt card without a supported grade", () => {
+  const card: string = JRA_VAN_WORLD_HTML.replace("ジャックルマロワ賞（G1）", "テスト競走").replace(
+    "芝1600m（直線）2頭",
+    "ダ1600m（右）2頭",
+  );
+  const parsed = parseJraCard(card);
+  expect(parsed.grade).toBe(null);
+  expect(parsed.surface).toBe("ダート");
+  expect(parsed.direction).toBe("右");
+});
+
+test("rejects JRA-VAN World metadata without a date and venue", () => {
+  expect(() =>
+    parseJraCard(JRA_VAN_WORLD_HTML.replace("2026/08/16(日)ドーヴィル競馬場", "開催未定")),
+  ).toThrow("JRA-VAN World card is missing race date or venue.");
+});
+
+test("rejects JRA-VAN World metadata without a start time", () => {
+  expect(() => parseJraCard(JRA_VAN_WORLD_HTML.replace("22:50発走", "発走未定"))).toThrow(
+    "JRA-VAN World card is missing race start time.",
+  );
+});
+
+test("rejects a JRA-VAN World runner with invalid age and coat metadata", () => {
+  expect(() => parseJraCard(JRA_VAN_WORLD_HTML.replace("牡4　栗毛", "属性未定"))).toThrow(
+    "JRA-VAN World card has an invalid runner sex, age, or coat colour.",
+  );
+});
+
+test("rejects a JRA-VAN World runner without a required horse name", () => {
+  expect(() => parseJraCard(JRA_VAN_WORLD_HTML.replace("--horse__name", "--other"))).toThrow(
+    "JRA-VAN World card is missing runner horse name.",
+  );
+});
+
+test("rejects JRA-VAN World metadata without a course", () => {
+  expect(() =>
+    parseJraCard(JRA_VAN_WORLD_HTML.replace("芝1600m（直線）2頭", "course pending")),
+  ).toThrow("JRA-VAN World card is missing race course details.");
+});
+
+test("rejects a JRA-VAN World card without runners", () => {
+  expect(() =>
+    parseJraCard(JRA_VAN_WORLD_HTML.replaceAll("raceTable__details__line active", "other")),
+  ).toThrow("JRA-VAN World card has no runners.");
+});

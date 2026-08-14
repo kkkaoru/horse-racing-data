@@ -2,6 +2,7 @@
 import { expect, test } from "vitest";
 import {
   buildJraCardUrl,
+  buildJraVanWorldCardUrl,
   buildSecondaryCardUrl,
   loadRaceSources,
   type FileReadPort,
@@ -86,6 +87,24 @@ test("buildJraCardUrl rejects an id containing forbidden characters", () => {
 
 test("buildJraCardUrl rejects a path-traversal id", () => {
   expect(() => buildJraCardUrl("../etc/passwd")).toThrowError(MALFORMED_ID_ERROR);
+});
+
+test("buildJraVanWorldCardUrl accepts an explicit HTTPS racecard URL", () => {
+  expect(
+    buildJraVanWorldCardUrl("https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/"),
+  ).toBe("https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/");
+});
+
+test("buildJraVanWorldCardUrl rejects another origin", () => {
+  expect(() =>
+    buildJraVanWorldCardUrl("https://example.com/race/jacqueslemarois/2026/racecard/"),
+  ).toThrow("JRA-VAN World card URL must be an HTTPS racecard URL");
+});
+
+test("buildJraVanWorldCardUrl rejects a non-racecard path with query parameters", () => {
+  expect(() =>
+    buildJraVanWorldCardUrl("https://world.jra-van.jp/race/jacqueslemarois/2026/?page=1"),
+  ).toThrow("JRA-VAN World card URL must be an HTTPS racecard URL");
 });
 
 test("buildSecondaryCardUrl substitutes the race id into the template placeholder", () => {

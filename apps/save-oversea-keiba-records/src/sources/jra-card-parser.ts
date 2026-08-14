@@ -143,7 +143,7 @@ const parseRunner = (html: string): ParsedRunner => {
   };
 };
 
-export const parseJraCard = (html: string): ParsedJraRace => {
+const parseOfficialJraCard = (html: string): ParsedJraRace => {
   const dateMatch: RegExpExecArray | null = DATE_PATTERN.exec(html);
   const year: string | undefined = dateMatch?.[1];
   const month: string | undefined = dateMatch?.[2];
@@ -193,13 +193,11 @@ export const parseJraCard = (html: string): ParsedJraRace => {
     throw new Error("JRA card has no runners.");
   }
 
-  const runners: ParsedRunner[] = runnerMatches.map((matched: RegExpMatchArray): ParsedRunner => {
-    const runnerHtml: string | undefined = matched[1];
-    if (runnerHtml === undefined) {
-      throw new Error("JRA card has an invalid runner row.");
-    }
-    return parseRunner(runnerHtml);
-  });
+  const runners: ParsedRunner[] = runnerMatches.map(
+    (matched: RegExpMatchArray): ParsedRunner =>
+      // RUNNER_PATTERN always has one explicit capture group.
+      parseRunner(matched[1] as string),
+  );
 
   return {
     raceName: raceNameWithGrade.replace(GRADE_PATTERN, "").trim(),
@@ -215,3 +213,133 @@ export const parseJraCard = (html: string): ParsedJraRace => {
     runners,
   };
 };
+
+const JRA_VAN_WORLD_MARKER: string = 'class="raceTable__details"';
+const WORLD_RACE_INFO_PATTERN: RegExp = /<p\s+class="raceInfo__txt">([\s\S]*?)<\/p>/iu;
+const WORLD_DATE_VENUE_PATTERN: RegExp = /(\d{4})\/(\d{2})\/(\d{2})\([^)]*\)\s*([^<]+?)競馬場/iu;
+const WORLD_RACE_NAME_PATTERN: RegExp = /class="raceInfo__txt__name">([\s\S]*?)<\/span>/iu;
+const WORLD_COURSE_PATTERN: RegExp = /(芝|ダート|ダ)\s*([\d,]+)m（([^）]+)）\s*\d+頭/iu;
+const WORLD_START_TIME_PATTERN: RegExp =
+  /(\d{1,2}):(\d{2})発走（現地時間：[\s\S]*?(\d{1,2}):(\d{2})）/u;
+const WORLD_RUNNER_PATTERN: RegExp =
+  /<div\s+class="raceTable__details__line\s[^"]*">([\s\S]*?)(?=<div\s+class="raceTable__details__line\s|<\/dd>)/giu;
+const WORLD_HORSE_NUMBER_PATTERN: RegExp = /--horseNun">[\s\S]*?<p[^>]*>\s*(\d+)\s*<\/p>/iu;
+const WORLD_GATE_PATTERN: RegExp = /--gateNun">[\s\S]*?<p>\s*(\d+)\s*<\/p>/iu;
+const WORLD_HORSE_NAME_PATTERN: RegExp = /--horse__name">[\s\S]*?<a[^>]*>([^<]+)<\/a>/iu;
+const WORLD_TRAINER_PATTERN: RegExp = /--horse__info">\s*([^<]+)<br\s*\/?>/iu;
+const WORLD_AGE_COAT_PATTERN: RegExp = /([牡牝騸せん]+)(\d+)[　\s]+([^<\s]+)<\/span>/u;
+const WORLD_JOCKEY_PATTERN: RegExp =
+  /--jockey__name">\s*(?:<a[^>]*>)?\s*([^<\n]+?)(?:<\/a>)?\s*(?:<br\s*\/?>)?\s*<\/span>/iu;
+const WORLD_WEIGHT_PATTERN: RegExp = /--jockey__weight">\s*([\d.]+)kg/iu;
+const WORLD_SIRE_PATTERN: RegExp = /__father"><span>父<\/span>([\s\S]*?)<\/span>/iu;
+const WORLD_DAM_PATTERN: RegExp = /__mother"><span>母<\/span>([\s\S]*?)<\/span>/iu;
+const WORLD_DAMSIRE_PATTERN: RegExp = /__motherfather"><span>母父<\/span>([\s\S]*?)<\/span>/iu;
+const WORLD_ODDS_PATTERN: RegExp = /--odds__(?:jra|local)[^>]*>\s*([\d.]+)\s*<\/span>/iu;
+const WORLD_GRADE_PATTERN: RegExp = /[（(](G[123])[）)]\s*$/iu;
+
+const worldCapture = (html: string, pattern: RegExp, fieldName: string): string => {
+  const value: string | undefined = pattern.exec(html)?.[1];
+  if (value === undefined) {
+    throw new Error(`JRA-VAN World card is missing ${fieldName}.`);
+  }
+  return cleanText(value);
+};
+
+const parseWorldGrade = (raceNameWithGrade: string): RaceGrade => {
+  const grade: string | undefined = raceNameWithGrade
+    .match(WORLD_GRADE_PATTERN)?.[1]
+    ?.toUpperCase();
+  return grade === "G1" || grade === "G2" || grade === "G3" ? grade : null;
+};
+
+const parseJraVanWorldRunner = (html: string): ParsedRunner => {
+  const ageCoatMatch: RegExpExecArray | null = WORLD_AGE_COAT_PATTERN.exec(html);
+  const sex: string | undefined = ageCoatMatch?.[1];
+  const age: string | undefined = ageCoatMatch?.[2];
+  const coatColour: string | undefined = ageCoatMatch?.[3];
+  if (sex === undefined || age === undefined || coatColour === undefined) {
+    throw new Error("JRA-VAN World card has an invalid runner sex, age, or coat colour.");
+  }
+  const odds: string | undefined = WORLD_ODDS_PATTERN.exec(html)?.[1];
+  return {
+    horseNumber: Number(worldCapture(html, WORLD_HORSE_NUMBER_PATTERN, "runner horse number")),
+    gate: Number(worldCapture(html, WORLD_GATE_PATTERN, "runner gate")),
+    horseName: worldCapture(html, WORLD_HORSE_NAME_PATTERN, "runner horse name"),
+    sex,
+    age: Number(age),
+    coatColour: cleanText(coatColour),
+    weightCarriedKg: Number(worldCapture(html, WORLD_WEIGHT_PATTERN, "runner carried weight")),
+    jockeyAbbrev: worldCapture(html, WORLD_JOCKEY_PATTERN, "runner jockey"),
+    trainerAbbrev: worldCapture(html, WORLD_TRAINER_PATTERN, "runner trainer"),
+    trainerCountry: "",
+    owner: "",
+    winOdds: odds === undefined ? null : Number(odds),
+    popularity: null,
+    formRecord: "",
+    sire: worldCapture(html, WORLD_SIRE_PATTERN, "runner sire"),
+    dam: worldCapture(html, WORLD_DAM_PATTERN, "runner dam"),
+    damsire: worldCapture(html, WORLD_DAMSIRE_PATTERN, "runner damsire"),
+  };
+};
+
+export const parseJraVanWorldCard = (html: string): ParsedJraRace => {
+  const raceInfo: string = requiredCapture({
+    html,
+    pattern: WORLD_RACE_INFO_PATTERN,
+    fieldName: "JRA-VAN World race information",
+  });
+  const dateVenue: RegExpExecArray | null = WORLD_DATE_VENUE_PATTERN.exec(raceInfo);
+  const year: string | undefined = dateVenue?.[1];
+  const month: string | undefined = dateVenue?.[2];
+  const day: string | undefined = dateVenue?.[3];
+  const venue: string | undefined = dateVenue?.[4];
+  if (year === undefined || month === undefined || day === undefined || venue === undefined) {
+    throw new Error("JRA-VAN World card is missing race date or venue.");
+  }
+  const course: RegExpExecArray | null = WORLD_COURSE_PATTERN.exec(raceInfo);
+  const surface: string | undefined = course?.[1];
+  const distance: string | undefined = course?.[2];
+  const direction: string | undefined = course?.[3];
+  if (surface === undefined || distance === undefined || direction === undefined) {
+    throw new Error("JRA-VAN World card is missing race course details.");
+  }
+  const times: RegExpExecArray | null = WORLD_START_TIME_PATTERN.exec(raceInfo);
+  const startHour: string | undefined = times?.[1];
+  const startMinute: string | undefined = times?.[2];
+  const localHour: string | undefined = times?.[3];
+  const localMinute: string | undefined = times?.[4];
+  if (
+    startHour === undefined ||
+    startMinute === undefined ||
+    localHour === undefined ||
+    localMinute === undefined
+  ) {
+    throw new Error("JRA-VAN World card is missing race start time.");
+  }
+  const raceNameWithGrade: string = worldCapture(raceInfo, WORLD_RACE_NAME_PATTERN, "race name");
+  const runnerMatches: RegExpMatchArray[] = Array.from(html.matchAll(WORLD_RUNNER_PATTERN));
+  if (runnerMatches.length === 0) {
+    throw new Error("JRA-VAN World card has no runners.");
+  }
+  const runners: ParsedRunner[] = runnerMatches.map(
+    (matched): ParsedRunner =>
+      // WORLD_RUNNER_PATTERN always has one explicit capture group.
+      parseJraVanWorldRunner(matched[1] as string),
+  );
+  return {
+    raceName: raceNameWithGrade.replace(WORLD_GRADE_PATTERN, "").trim(),
+    grade: parseWorldGrade(raceNameWithGrade),
+    date: `${year}-${month}-${day}`,
+    venue: cleanText(venue),
+    country: "",
+    distanceMetres: Number(distance.replaceAll(",", "")),
+    surface: surface === "ダ" ? "ダート" : surface,
+    direction: cleanText(direction),
+    startTime: `${startHour.padStart(2, "0")}:${startMinute}`,
+    localStartTime: `${localHour.padStart(2, "0")}:${localMinute}`,
+    runners,
+  };
+};
+
+export const parseJraCard = (html: string): ParsedJraRace =>
+  html.includes(JRA_VAN_WORLD_MARKER) ? parseJraVanWorldCard(html) : parseOfficialJraCard(html);

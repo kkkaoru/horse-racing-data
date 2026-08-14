@@ -80,6 +80,44 @@ const RESOLVED_CODES: ReadonlyMap<number, ResolvedEntityCodes> = new Map([
   ],
 ]);
 
+test("maps straight turf and basic dirt directions to JV track codes", () => {
+  expect(
+    mapJvdRows({
+      race: { ...RACE, surface: "芝", direction: "直線" },
+      storageIdentity: { venueCode: "A8", raceNumber: "4" },
+      resolvedCodes: RESOLVED_CODES,
+    }).race.track_code,
+  ).toBe("10");
+  expect(
+    mapJvdRows({
+      race: { ...RACE, surface: "芝", direction: "左" },
+      storageIdentity: { venueCode: "A8", raceNumber: "4" },
+      resolvedCodes: RESOLVED_CODES,
+    }).race.track_code,
+  ).toBe("11");
+  expect(
+    mapJvdRows({
+      race: { ...RACE, surface: "ダート", direction: "左" },
+      storageIdentity: { venueCode: "A8", raceNumber: "4" },
+      resolvedCodes: RESOLVED_CODES,
+    }).race.track_code,
+  ).toBe("23");
+  expect(
+    mapJvdRows({
+      race: { ...RACE, surface: "ダート", direction: "右" },
+      storageIdentity: { venueCode: "A8", raceNumber: "4" },
+      resolvedCodes: RESOLVED_CODES,
+    }).race.track_code,
+  ).toBe("24");
+  expect(
+    mapJvdRows({
+      race: { ...RACE, surface: "ダート", direction: "直線" },
+      storageIdentity: { venueCode: "A8", raceNumber: "4" },
+      resolvedCodes: RESOLVED_CODES,
+    }).race.track_code,
+  ).toBe("29");
+});
+
 test("maps parsed data and resolved codes to JV rows with fixed-width placeholders", () => {
   const rows = mapJvdRows({
     race: RACE,
@@ -440,7 +478,7 @@ test("uses zero placeholders for explicitly unresolved codes and unsupported rac
   const unsupportedRace: ParsedRace = {
     ...RACE,
     grade: null,
-    direction: "左",
+    direction: "不明",
   };
   const rows = mapJvdRows({
     race: unsupportedRace,

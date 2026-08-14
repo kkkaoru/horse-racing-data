@@ -43,6 +43,8 @@ interface LoadOneResult {
 }
 
 const JRA_CARD_BASE_URL: string = "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=";
+const JRA_VAN_WORLD_ORIGIN: string = "https://world.jra-van.jp";
+const JRA_VAN_WORLD_RACECARD_PATH_PATTERN: RegExp = /^\/race\/[a-z0-9_-]+\/\d{4}\/racecard\/$/iu;
 const JRA_RACECARD_ID_PATTERN: RegExp = /^[a-z]{2}\d{2}[a-z]{3}\d{6,}(\/[a-z0-9]+)?$/i;
 export const OVERSEA_SECONDARY_CARD_URL_TEMPLATE: string = "OVERSEA_SECONDARY_CARD_URL_TEMPLATE";
 const SECONDARY_RACE_ID_TOKEN: string = "{RACE_ID}";
@@ -52,6 +54,21 @@ export const buildJraCardUrl = (racecardId: string): string => {
     throw new Error("JRA racecard id is malformed; expected a shape like pk01dde0110420260101051.");
   }
   return `${JRA_CARD_BASE_URL}${racecardId}`;
+};
+
+export const buildJraVanWorldCardUrl = (rawUrl: string): string => {
+  const url: URL = new URL(rawUrl);
+  if (
+    url.origin !== JRA_VAN_WORLD_ORIGIN ||
+    !JRA_VAN_WORLD_RACECARD_PATH_PATTERN.test(url.pathname) ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    throw new Error(
+      "JRA-VAN World card URL must be an HTTPS racecard URL such as https://world.jra-van.jp/race/example/2026/racecard/.",
+    );
+  }
+  return url.toString();
 };
 
 export const buildSecondaryCardUrl = (raceId: string, template: string | undefined): string => {
