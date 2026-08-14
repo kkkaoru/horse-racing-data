@@ -538,6 +538,110 @@ it("getHorseDetailData queries a real registered horse identity", async () => {
   expect(executeMock.mock.calls.length).toBe(1);
 });
 
+it("getSimilarRaceStats reads the precomputed overseas person snapshot", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "4",
+        horseCount: "658",
+        name: "モレイラ",
+        quinellaCount: "378",
+        quinellaRate: "45.5",
+        showCount: "468",
+        showRate: "56.3",
+        starts: "831",
+        winCount: "235",
+        winRate: "28.3",
+      },
+    ],
+  });
+  const race = { ...PERCLASS_703_RACE, keibajoCode: "A8" };
+  const settings = {
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all" as const,
+    years: 10,
+  };
+
+  await expect(getSimilarRaceStats(race, settings)).resolves.toStrictEqual([
+    {
+      category: "jockey",
+      currentHorseNumbers: "4",
+      details: [],
+      horseCount: 658,
+      name: "モレイラ",
+      quinellaCount: 378,
+      quinellaRate: 45.5,
+      showCount: 468,
+      showRate: 56.3,
+      starts: 831,
+      winCount: 235,
+      winRate: 28.3,
+    },
+  ]);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toContain(
+    "oversea_person_win_rate_stats",
+  );
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getSimilarRaceStats",
+    "overseas-person-snapshot-v1",
+    race,
+    settings,
+  ]);
+});
+
+it("getSimilarRaceStats returns no fallback rows when an overseas snapshot is absent", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await expect(
+    getSimilarRaceStats(
+      { ...PERCLASS_703_RACE, keibajoCode: "A9" },
+      {
+        classConditionName: null,
+        includeAge: false,
+        includeBloodlineAncestors: false,
+        includeClass: false,
+        includeDistance: false,
+        includeFrame: false,
+        includeMonthWindow: false,
+        includeNarOnly: false,
+        includeRaceNumber: false,
+        includeRaceSubtitle: false,
+        includeRaceTitle: false,
+        includeRunnerCount: false,
+        includeSex: false,
+        includeSurface: false,
+        includeTurn: false,
+        includeVenue: false,
+        includeWeight: false,
+        runnerCount: null,
+        sourceScope: "all",
+        years: 10,
+      },
+    ),
+  ).resolves.toStrictEqual([]);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toContain(
+    "oversea_person_win_rate_stats",
+  );
+});
+
 it("getSimilarRaceStats counts placeholder entries separately without counting an empty left join", async () => {
   executeMock.mockResolvedValue({ rows: [] });
 
@@ -573,9 +677,6 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     /else concat_ws\(\s*':'\s*,\s*'entry'\s*,\s*ranked_grouped_entries\.race_source\s*,\s*ranked_grouped_entries\.kaisai_nen/u,
   );
   expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
-  expect(queryText).toMatch(/select name from target_entries where category = 'jockey'/u);
-  expect(queryText).toMatch(/select name from target_entries where category = 'trainer'/u);
-  expect(queryText).toMatch(/select name from target_entries where category = 'owner'/u);
 });
 
 it("getBloodlineStats supplies source-native pedigree names only through complete runner mappings", async () => {

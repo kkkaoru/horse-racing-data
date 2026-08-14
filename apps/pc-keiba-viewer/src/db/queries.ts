@@ -79,6 +79,7 @@ import {
   nvdUm,
   overseaHorsePedigree,
   overseaHorseRaceHistory,
+  overseaPersonWinRateStats,
   overseaRunnerIdentity,
   overseaRunnerSourceId,
 } from "./schema";
@@ -4880,9 +4881,85 @@ export const getBloodlineStats = cache(
   },
 );
 
+const usesOverseasPersonStatsSnapshot = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+): boolean =>
+  isOverseasKeibajoCode(race.keibajoCode) &&
+  settings.years === 10 &&
+  settings.sourceScope === "all" &&
+  !settings.includeAge &&
+  !settings.includeClass &&
+  !settings.includeDistance &&
+  !settings.includeFrame &&
+  !settings.includeMonthWindow &&
+  !settings.includeRaceNumber &&
+  !settings.includeRaceSubtitle &&
+  !settings.includeRaceTitle &&
+  !settings.includeRunnerCount &&
+  !settings.includeSex &&
+  !settings.includeSurface &&
+  !settings.includeTurn &&
+  !settings.includeVenue &&
+  !settings.includeWeight;
+
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
-    return withDbQueryCache(["getSimilarRaceStats", race, settings], async () => {
+    const useSnapshot = usesOverseasPersonStatsSnapshot(race, settings);
+    const cacheKey = useSnapshot
+      ? ["getSimilarRaceStats", "overseas-person-snapshot-v1", race, settings]
+      : ["getSimilarRaceStats", race, settings];
+    return withDbQueryCache(cacheKey, async () => {
+      if (useSnapshot) {
+        const snapshot = await getDb().execute<{
+          category: "jockey" | "owner" | "trainer";
+          currentHorseNumbers: string;
+          horseCount: string;
+          name: string;
+          quinellaCount: string;
+          quinellaRate: string;
+          showCount: string;
+          showRate: string;
+          starts: string;
+          winCount: string;
+          winRate: string;
+        }>(sql`
+          select
+            category,
+            current_horse_numbers "currentHorseNumbers",
+            horse_count::text "horseCount",
+            name,
+            quinella_count::text "quinellaCount",
+            quinella_rate::text "quinellaRate",
+            show_count::text "showCount",
+            show_rate::text "showRate",
+            starts::text,
+            win_count::text "winCount",
+            win_rate::text "winRate"
+          from ${overseaPersonWinRateStats}
+          where race_source = ${race.source}
+            and kaisai_nen = ${race.kaisaiNen}
+            and kaisai_tsukihi = ${race.kaisaiTsukihi}
+            and keibajo_code = ${race.keibajoCode}
+            and race_bango = ${race.raceBango}
+          order by category asc, show_rate desc, starts desc, name asc
+        `);
+        return snapshot.rows.map((row) => ({
+          category: row.category,
+          currentHorseNumbers: row.currentHorseNumbers,
+          details: [],
+          horseCount: toCount(row.horseCount),
+          name: row.name,
+          quinellaCount: toCount(row.quinellaCount),
+          quinellaRate: toRate(row.quinellaRate),
+          showCount: toCount(row.showCount),
+          showRate: toRate(row.showRate),
+          starts: toCount(row.starts),
+          winCount: toCount(row.winCount),
+          winRate: toRate(row.winRate),
+        }));
+      }
+
       const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
@@ -4977,19 +5054,7 @@ export const getSimilarRaceStats = cache(
             and se.kaisai_tsukihi = ra.kaisai_tsukihi
             and se.keibajo_code = ra.keibajo_code
             and se.race_bango = ra.race_bango
-          where
-            ${shouldUseJraStats(race, settings)} = true
-            and (
-              coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'jockey'
-              )
-              or coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'trainer'
-              )
-              or coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'owner'
-              )
-            )
+          where ${shouldUseJraStats(race, settings)} = true
           union all
           select
             'nar'::text race_source,
@@ -5029,19 +5094,7 @@ export const getSimilarRaceStats = cache(
             and se.kaisai_tsukihi = ra.kaisai_tsukihi
             and se.keibajo_code = ra.keibajo_code
             and se.race_bango = ra.race_bango
-          where
-            ${shouldUseNarStats(race, settings)} = true
-            and (
-              coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'jockey'
-              )
-              or coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'trainer'
-              )
-              or coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') in (
-                select name from target_entries where category = 'owner'
-              )
-            )
+          where ${shouldUseNarStats(race, settings)} = true
         ) history
         where
           history.kaisai_nen || history.kaisai_tsukihi < ${raceDate}

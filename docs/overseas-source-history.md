@@ -84,6 +84,8 @@ The 454 source-person rows are recent profile lists, not a complete and consiste
 
 The resulting target coverage is nine of ten jockeys, five of ten trainers, and the shared Carrot Farm owner row for horses 3 and 4. C. Lee, four unmatched foreign trainers, S. Wattel with only three JV starts, and owners without JV histories remain empty. This is intentional: recent capped source rows are not substituted into the same percentage column with a different scale.
 
+A request-time ten-year/all-venue aggregation is not operationally safe: a production probe of an uncached nine-year equivalent took 135.992 seconds. The 15 eligible A8/04 rows are therefore a one-off snapshot in `oversea_person_win_rate_stats`, calculated with the existing `getSimilarRaceStats` formula through 2026-08-15. The migration records source, scope, period, minimum starts, cutoff, and calculation timestamp; the seed file records every resulting count and rate and is the reproduction artifact. Missing snapshots return no overseas fallback rows rather than triggering the expensive aggregation. This is not a local recurring production job. A recurring implementation for future overseas races must be designed on Cloudflare.
+
 ## Pedigree display completeness
 
 Cached netkeiba pedigree AJAX responses supplied source-native IDs and names for sire, sire-sire, dam, and dam-sire for all ten runners. They are stored in `oversea_horse_pedigree`; they do not replace JV horse masters and are joined only through a complete `oversea_runner_source_id` race-entry mapping.

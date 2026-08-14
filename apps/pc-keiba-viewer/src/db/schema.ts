@@ -1,5 +1,14 @@
 import "server-only";
-import { date, integer, pgTable, smallint, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import {
+  date,
+  integer,
+  numeric,
+  pgTable,
+  smallint,
+  text,
+  timestamp,
+  varchar,
+} from "drizzle-orm/pg-core";
 
 const raceColumns = {
   kaisaiNen: varchar("kaisai_nen", { length: 4 }).notNull(),
@@ -115,6 +124,33 @@ export const overseaHorseRaceHistory = pgTable("oversea_horse_race_history", {
   surface: text("surface").notNull(),
   distanceMetres: integer("distance_metres").notNull(),
   going: text("going").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const overseaPersonWinRateStats = pgTable("oversea_person_win_rate_stats", {
+  raceSource: text("race_source").notNull(),
+  kaisaiNen: text("kaisai_nen").notNull(),
+  kaisaiTsukihi: text("kaisai_tsukihi").notNull(),
+  keibajoCode: text("keibajo_code").notNull(),
+  raceBango: text("race_bango").notNull(),
+  category: text("category").notNull(),
+  name: text("name").notNull(),
+  currentHorseNumbers: text("current_horse_numbers").notNull(),
+  statsSource: text("stats_source").notNull(),
+  scope: text("scope").notNull(),
+  years: smallint("years").notNull(),
+  minimumStarts: smallint("minimum_starts").notNull(),
+  calculatedThrough: date("calculated_through").notNull(),
+  calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull(),
+  starts: integer("starts").notNull(),
+  horseCount: integer("horse_count").notNull(),
+  winCount: integer("win_count").notNull(),
+  quinellaCount: integer("quinella_count").notNull(),
+  showCount: integer("show_count").notNull(),
+  winRate: numeric("win_rate", { precision: 5, scale: 1 }).notNull(),
+  quinellaRate: numeric("quinella_rate", { precision: 5, scale: 1 }).notNull(),
+  showRate: numeric("show_rate", { precision: 5, scale: 1 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 
