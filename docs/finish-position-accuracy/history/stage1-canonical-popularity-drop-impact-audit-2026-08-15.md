@@ -162,6 +162,24 @@ Accordingly, correcting the gate alone fixes false Stage-1 selection on a full b
 7. Shadow-log gate inputs/reason/model choice before changing production selection.
 8. Deploy only after 2026-08-15 meetings end and independently verify fresh, missing, partial, stale, and scratch cases.
 
+### Prepared dark patch
+
+Commit `5cabe484` implements the routing-only candidate without activating it:
+
+- unset/any value other than `1`: current canonical-rank-only behavior;
+- `STAGE1_PRESERVED_ODDS_GATE_ENABLED=1`: canonical rank **or** positive canonical odds marks the board fresh;
+- `finish-position-cron` forwards the optional flag to the container;
+- no feature parquet or model-vector schema changes;
+- no deploy or production flag change as part of this audit.
+
+Post-meeting canary sequence:
+
+1. Deploy with the flag absent/off and verify identical Stage-1 behavior.
+2. Ensure no broad scheduler/recovery batch can run, enable the flag, and trigger exactly one explicitly selected completed/non-live race through focused full.
+3. Confirm logs report `reason=fresh`, the champion artifact loads, row count/rank uniqueness are complete, score spread is non-degenerate, and no unexpected model version is selected.
+4. Repeat with a deliberately odds-absent fixture/request and confirm `reason=odds-missing` still selects Stage-1.
+5. Disable the flag immediately on any mismatch and destroy the canary container before broader cell-by-cell evaluation.
+
 ## Reproduction queries
 
 The impact counts used read-only SQL equivalent to:
