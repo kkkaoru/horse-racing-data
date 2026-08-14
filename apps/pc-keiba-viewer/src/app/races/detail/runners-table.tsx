@@ -387,10 +387,12 @@ export function RunnersTable({
     const horseHref = isLinkableHorseId(horseId)
       ? `/horses/${encodeURIComponent(horseId)}`
       : getSourceHorseHref(runner);
-    const jockeyName = cleanText(runner.kishumeiRyakusho);
-    const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeEntry?.jockeyName);
-    const trainerName = cleanText(runner.chokyoshimeiRyakusho);
-    const ownerName = cleanText(runner.banushimei);
+    const jockeyName = cleanText(runner.jockeyNameFull, cleanText(runner.kishumeiRyakusho));
+    const displayJockeyName = realtimeEntry?.jockeyName
+      ? getPreferredJockeyName(jockeyName, realtimeEntry.jockeyName)
+      : jockeyName;
+    const trainerName = cleanText(runner.trainerNameFull, cleanText(runner.chokyoshimeiRyakusho));
+    const ownerName = cleanText(runner.ownerNameFull, cleanText(runner.banushimei));
     const entryStatus = realtimeEntry?.status || "";
     const blinkerPattern = blinkerPatternByHorse.get(cleanText(runner.kettoTorokuBango, ""));
     const surfaceSwitch = surfaceSwitchByHorse.get(cleanText(runner.kettoTorokuBango, ""));

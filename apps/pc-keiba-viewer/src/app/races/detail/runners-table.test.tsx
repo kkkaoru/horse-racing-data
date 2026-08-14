@@ -112,6 +112,35 @@ describe("runners table", () => {
     expect(screen.queryByText("短縮名")).toBeNull();
   });
 
+  it("shows full source people names instead of fixed-width abbreviations", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            banushimei: "",
+            chokyoshimeiRyakusho: "P．ヴァ",
+            jockeyNameFull: "A．ルメートル",
+            kishumeiRyakusho: "A．ルメ",
+            ownerNameFull: "Yeguada Centurion Slu",
+            trainerNameFull: "P．ヴァルディヴィエルソ",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "A．ルメートル" }).getAttribute("href")).toBe(
+      "/jockeys/A%EF%BC%8E%E3%83%AB%E3%83%A1%E3%83%BC%E3%83%88%E3%83%AB",
+    );
+    expect(screen.getByRole("link", { name: "P．ヴァルディヴィエルソ" }).getAttribute("href")).toBe(
+      "/trainers/P%EF%BC%8E%E3%83%B4%E3%82%A1%E3%83%AB%E3%83%87%E3%82%A3%E3%83%B4%E3%82%A3%E3%82%A8%E3%83%AB%E3%82%BD",
+    );
+    expect(screen.getByRole("link", { name: "Yeguada Centurion Slu" }).getAttribute("href")).toBe(
+      "/owners/Yeguada%20Centurion%20Slu",
+    );
+    expect(screen.queryByText("A．ルメ")).toBeNull();
+    expect(screen.queryByText("P．ヴァ")).toBeNull();
+  });
+
   it("does not link a source identity without a source horse ID", () => {
     render(
       <RunnersTable
