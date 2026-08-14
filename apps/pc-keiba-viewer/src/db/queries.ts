@@ -1994,8 +1994,13 @@ export const getHorseDetailData = cache(
   async (
     kettoTorokuBango: string,
     query: EntityListQuery,
-  ): Promise<{ results: EntityRaceResult[]; summary: EntityDetailSummary } | null> =>
-    withDbQueryCache(["getHorseDetailData", kettoTorokuBango, query], async () => {
+  ): Promise<{ results: EntityRaceResult[]; summary: EntityDetailSummary } | null> => {
+    // A placeholder is shared by unrelated overseas runners, so treating it as
+    // one horse would merge their histories. Return the same null as not-found.
+    if (/^0*$/u.test(kettoTorokuBango.trim())) {
+      return null;
+    }
+    return withDbQueryCache(["getHorseDetailData", kettoTorokuBango, query], async () => {
       const rows = await getEntityResultRows(
         sql`
           ketto_toroku_bango = ${kettoTorokuBango}
@@ -2033,7 +2038,8 @@ export const getHorseDetailData = cache(
         results: rows,
         summary: summarizeEntityResults(rows[0]?.horseName ?? kettoTorokuBango, rows),
       };
-    }),
+    });
+  },
 );
 
 export const getPersonDetailData = cache(
@@ -4801,6 +4807,7 @@ export const getSimilarRaceStats = cache(
           *
         from (
           select
+            'jra'::text race_source,
             ra.kaisai_nen,
             ra.kaisai_tsukihi,
             ra.keibajo_code,
@@ -4840,6 +4847,7 @@ export const getSimilarRaceStats = cache(
           where ${shouldUseJraStats(race, settings)} = true
           union all
           select
+            'nar'::text race_source,
             ra.kaisai_nen,
             ra.kaisai_tsukihi,
             ra.keibajo_code,
@@ -4909,6 +4917,7 @@ export const getSimilarRaceStats = cache(
         select
           'jockey'::text as category,
           jockey as name,
+          race_source,
           kaisai_nen,
           kaisai_tsukihi,
           keibajo_code,
@@ -4927,6 +4936,7 @@ export const getSimilarRaceStats = cache(
         select
           'trainer'::text as category,
           trainer as name,
+          race_source,
           kaisai_nen,
           kaisai_tsukihi,
           keibajo_code,
@@ -4945,6 +4955,7 @@ export const getSimilarRaceStats = cache(
         select
           'owner'::text as category,
           owner as name,
+          race_source,
           kaisai_nen,
           kaisai_tsukihi,
           keibajo_code,
@@ -5016,7 +5027,24 @@ export const getSimilarRaceStats = cache(
             '[]'::jsonb
           ) as details,
           count(ranked_grouped_entries.ketto_toroku_bango)::text as "starts",
-          count(distinct ranked_grouped_entries.ketto_toroku_bango)::text as "horseCount",
+          count(
+            distinct case
+              when ranked_grouped_entries.name is null then null
+              when btrim(coalesce(ranked_grouped_entries.ketto_toroku_bango, '')) <> ''
+                and btrim(ranked_grouped_entries.ketto_toroku_bango) !~ '^0+$'
+                then 'horse:' || btrim(ranked_grouped_entries.ketto_toroku_bango)
+              else concat_ws(
+                ':',
+                'entry',
+                ranked_grouped_entries.race_source,
+                ranked_grouped_entries.kaisai_nen,
+                ranked_grouped_entries.kaisai_tsukihi,
+                ranked_grouped_entries.keibajo_code,
+                ranked_grouped_entries.race_bango,
+                ranked_grouped_entries.umaban
+              )
+            end
+          )::text as "horseCount",
           count(*) filter (where ranked_grouped_entries.kakutei_chakujun = '01')::text as "winCount",
           count(*) filter (where ranked_grouped_entries.kakutei_chakujun in ('01', '02'))::text as "quinellaCount",
           count(*) filter (where ranked_grouped_entries.kakutei_chakujun in ('01', '02', '03'))::text as "showCount",

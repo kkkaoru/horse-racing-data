@@ -30,6 +30,7 @@ import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-d
 import {
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
+  getHorseDetailData,
   getHorseList,
   getHorseRaceResults,
   getRaceAbilityTests,
@@ -37,6 +38,7 @@ import {
   getRaceTimeStats,
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
+  getSimilarRaceStats,
   getTimeScoreRows,
   searchFavoriteHorses,
 } from "./queries";
@@ -433,6 +435,111 @@ it("getRaceAbilityTests excludes all-zero current NAR identities", async () => {
 
   const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
   expect(queryText).toMatch(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u);
+});
+
+it("getHorseDetailData rejects a direct all-zero placeholder without querying", async () => {
+  const result = await getHorseDetailData(" 0000000000 ", {
+    date: "",
+    dateFrom: "",
+    dateTo: "",
+    distanceMax: "",
+    distanceMin: "",
+    jockeyName: "",
+    keibajoCode: "",
+    last3fMax: "",
+    last3fMin: "",
+    oddsMax: "",
+    oddsMin: "",
+    order: "latest",
+    popularityMax: "",
+    popularityMin: "",
+    q: "",
+    raceNumber: "",
+    raceTimeMax: "",
+    raceTimeMin: "",
+    rank: "all",
+    source: "all",
+    surface: "all",
+    trainerName: "",
+    turn: "all",
+  });
+
+  expect(result).toBe(null);
+  expect(withDbQueryCacheMock.mock.calls.length).toBe(0);
+  expect(executeMock.mock.calls.length).toBe(0);
+});
+
+it("getHorseDetailData queries a real registered horse identity", async () => {
+  executeMock.mockResolvedValue({
+    rows: [{ horseName: "登録馬", popularity: "1", rank: "01", winOdds: "20" }],
+  });
+
+  const result = await getHorseDetailData("2020100001", {
+    date: "",
+    dateFrom: "",
+    dateTo: "",
+    distanceMax: "",
+    distanceMin: "",
+    jockeyName: "",
+    keibajoCode: "",
+    last3fMax: "",
+    last3fMin: "",
+    oddsMax: "",
+    oddsMin: "",
+    order: "latest",
+    popularityMax: "",
+    popularityMin: "",
+    q: "",
+    raceNumber: "",
+    raceTimeMax: "",
+    raceTimeMin: "",
+    rank: "all",
+    source: "all",
+    surface: "all",
+    trainerName: "",
+    turn: "all",
+  });
+
+  expect(result?.summary.name).toBe("登録馬");
+  expect(withDbQueryCacheMock.mock.calls.length).toBe(1);
+  expect(executeMock.mock.calls.length).toBe(1);
+});
+
+it("getSimilarRaceStats counts placeholder entries separately without counting an empty left join", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getSimilarRaceStats(PERCLASS_703_RACE, {
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: null,
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/when ranked_grouped_entries\.name is null then null/u);
+  expect(queryText).toMatch(
+    /then 'horse:' \|\| btrim\(ranked_grouped_entries\.ketto_toroku_bango\)/u,
+  );
+  expect(queryText).toMatch(
+    /else concat_ws\(\s*':'\s*,\s*'entry'\s*,\s*ranked_grouped_entries\.race_source\s*,\s*ranked_grouped_entries\.kaisai_nen/u,
+  );
+  expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
 });
 
 it("getTimeScoreRows excludes all-zero current identities before history matching", async () => {
