@@ -94,6 +94,27 @@ At preparation time it returned 0/68 races with any finish-position prediction.
 
 The target list is fixed and does not infer result finality. If a future query adds a result-code predicate, use both `btrim(code) <> ''` and `btrim(code) !~ '^0+$'`; do not treat `IS NOT NULL` as confirmed.
 
+## Queue delivery readiness and race-day checks
+
+`wrangler queues info` does not display the queue's `delivery_paused` field. Use the read-only API probe instead; it exits 0 for active, 2 for paused, and 3 when readiness cannot be determined:
+
+```bash
+docs/probes/finish-position-recovery-20260815/check-queue-delivery.sh
+```
+
+For the 2026-08-15 meeting, the active operator or agent must run it at approximately 08:30 JST before the first race, then at 10:30, 12:30, 14:30, and 16:30 while weight-triggered rescoring is active. Also run it immediately when prediction timestamps fail to advance after a weight update.
+
+If it reports `PAUSED`:
+
+```bash
+bunx wrangler queues resume-delivery finish-position-predict-queue
+docs/probes/finish-position-recovery-20260815/check-queue-delivery.sh
+```
+
+After resuming, verify that queue-consumer events return in `wrangler tail` and that `prediction_generated_at` advances in Neon. Identify races whose expected rescore did not arrive and re-enqueue only those races through the per-race producer; do not launch an unscoped day-wide production run. The 2026-08-14 recovery required purging stale backlog and reconstructing focused messages from `races-20260815.tsv`, but purge is an incident-only action, not part of the routine resume procedure.
+
+Cloudflare's pause documentation describes explicit control-plane pause/resume operations and does not document an automatic pause threshold. Local agent history contained no pause command after 2026-08-09, and the current OAuth token lacks Audit Logs Read permission, so the actor that caused the 2026-08-12 to 2026-08-14 outage remains unconfirmed. Do not attribute a future pause to deploy, error rate, or Cloudflare automation without audit evidence.
+
 ## Duration estimate
 
 Production has three deterministic shards per category, nine total, and one full pipeline slot per shard. For this exact race list, the FNV shard distribution is:
