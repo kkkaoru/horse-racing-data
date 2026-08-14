@@ -7,7 +7,7 @@ account_id=${CLOUDFLARE_ACCOUNT_ID:-78109ec18c7c85b194b19fb32e3bb149}
 # Refresh the local Wrangler OAuth token without printing account details.
 bunx wrangler whoami >/dev/null
 
-QUEUE_ID="$queue_id" ACCOUNT_ID="$account_id" bun <<'BUN'
+QUEUE_ID="$queue_id" ACCOUNT_ID="$account_id" bun - <<'BUN'
 const configPath = `${process.env.HOME}/.wrangler/config/default.toml`;
 const config = Bun.TOML.parse(await Bun.file(configPath).text());
 const token = config.oauth_token;
