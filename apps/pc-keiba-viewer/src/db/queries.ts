@@ -801,6 +801,7 @@ export const getHorseList = cache(
               from ${jvdSe}
               where ${query.source === "nar" ? sql`false` : sql`true`}
                 and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+                and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
               order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
               limit 8000
             )
@@ -818,6 +819,7 @@ export const getHorseList = cache(
               from ${nvdSe}
               where ${query.source === "jra" ? sql`false` : sql`true`}
                 and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+                and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
               order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
               limit 8000
             )
@@ -937,6 +939,7 @@ export const getHorseList = cache(
           from ${jvdSe}
           where ${query.source === "nar" ? sql`false` : sql`true`}
             and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             and (
               ${query.q} = ''
               or coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') ilike ${`%${query.q}%`}
@@ -955,6 +958,7 @@ export const getHorseList = cache(
           from ${nvdSe}
           where ${query.source === "jra" ? sql`false` : sql`true`}
             and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             and (
               ${query.q} = ''
               or coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') ilike ${`%${query.q}%`}
@@ -1379,6 +1383,7 @@ export const searchFavoriteHorses = cache(
               kaisai_nen || kaisai_tsukihi as race_date
             from ${jvdSe}
             where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+              and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
             limit ${favoriteSearchRecentRowLimit}
           )
@@ -1390,6 +1395,7 @@ export const searchFavoriteHorses = cache(
               kaisai_nen || kaisai_tsukihi as race_date
             from ${nvdSe}
             where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+              and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
             limit ${favoriteSearchRecentRowLimit}
           )
@@ -1444,6 +1450,7 @@ export const searchFavoriteHorses = cache(
             kaisai_nen || kaisai_tsukihi as race_date
           from ${jvdSe}
           where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             and (
               ketto_toroku_bango = ${q}
               or bamei ilike ${favoriteSearchPattern(q)}
@@ -1455,6 +1462,7 @@ export const searchFavoriteHorses = cache(
             kaisai_nen || kaisai_tsukihi as race_date
           from ${nvdSe}
           where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
             and (
               ketto_toroku_bango = ${q}
               or bamei ilike ${favoriteSearchPattern(q)}
@@ -3583,7 +3591,8 @@ export const getRaceAbilityTests = cache(
               and kaisai_tsukihi = ${monthDay}
               and keibajo_code = ${keibajoCode}
               and race_bango = ${raceNumber}
-              and nullif(ketto_toroku_bango, '') is not null
+              and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+              and btrim(coalesce(ketto_toroku_bango, '')) !~ '^0+$'
           )
           select
             current_runners."currentUmaban",
@@ -5105,6 +5114,7 @@ export const getTimeScoreRows = cache(
           and se.keibajo_code = ${race.keibajoCode}
           and se.race_bango = ${race.raceBango}
           and btrim(coalesce(se.ketto_toroku_bango, '')) <> ''
+          and btrim(coalesce(se.ketto_toroku_bango, '')) !~ '^0+$'
       ),
       matched_races as (
         select

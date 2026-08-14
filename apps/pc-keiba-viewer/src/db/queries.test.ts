@@ -30,10 +30,14 @@ import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-d
 import {
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
+  getHorseList,
   getHorseRaceResults,
+  getRaceAbilityTests,
   getRaceRunners,
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
+  getTimeScoreRows,
+  searchFavoriteHorses,
 } from "./queries";
 
 interface DrizzleSqlLike {
@@ -334,6 +338,130 @@ it("getHorseRaceResults uses NAR runners for the current identity set", async ()
 
   const queryArg = executeMock.mock.calls[0]?.[0];
   expect(collectTableNames(queryArg)[0]).toBe("nvd_se");
+});
+
+it("getHorseList excludes all-zero identities from both recent JRA and NAR candidates", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getHorseList({
+    date: "",
+    dateFrom: "",
+    dateTo: "",
+    distanceMax: "",
+    distanceMin: "",
+    jockeyName: "",
+    keibajoCode: "",
+    last3fMax: "",
+    last3fMin: "",
+    oddsMax: "",
+    oddsMin: "",
+    order: "latest",
+    popularityMax: "",
+    popularityMin: "",
+    q: "",
+    raceNumber: "",
+    raceTimeMax: "",
+    raceTimeMin: "",
+    rank: "",
+    source: "all",
+    surface: "",
+    trainerName: "",
+    turn: "",
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(
+    queryText.match(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/gu),
+  ).toHaveLength(2);
+});
+
+it("getHorseList excludes all-zero identities from both filtered JRA and NAR aggregates", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getHorseList({
+    date: "",
+    dateFrom: "",
+    dateTo: "",
+    distanceMax: "",
+    distanceMin: "",
+    jockeyName: "",
+    keibajoCode: "",
+    last3fMax: "",
+    last3fMin: "",
+    oddsMax: "",
+    oddsMin: "",
+    order: "name",
+    popularityMax: "",
+    popularityMin: "",
+    q: "2023100001",
+    raceNumber: "",
+    raceTimeMax: "",
+    raceTimeMin: "",
+    rank: "",
+    source: "all",
+    surface: "",
+    trainerName: "",
+    turn: "",
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(
+    queryText.match(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/gu),
+  ).toHaveLength(2);
+});
+
+it("searchFavoriteHorses excludes all-zero identities from recent and fallback searches", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await searchFavoriteHorses("2023100001");
+
+  const recentQueryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  const fallbackQueryText = stringifyQuery(executeMock.mock.calls[1]?.[0]);
+  expect(
+    recentQueryText.match(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/gu),
+  ).toHaveLength(2);
+  expect(
+    fallbackQueryText.match(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/gu),
+  ).toHaveLength(2);
+});
+
+it("getRaceAbilityTests excludes all-zero current NAR identities", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceAbilityTests("nar", "2026", "08", "16", "35", "04");
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/btrim\(coalesce\(ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u);
+});
+
+it("getTimeScoreRows excludes all-zero current identities before history matching", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getTimeScoreRows(PERCLASS_703_RACE, {
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: null,
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/btrim\(coalesce\(se\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u);
 });
 
 it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when all flags are on", async () => {
