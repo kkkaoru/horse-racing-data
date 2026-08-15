@@ -39,10 +39,12 @@ script.
 Tonight’s earlier full-day host base was **612 s** (03:44:53 → 03:55:05).
 This run’s base **337 s** was faster, not stuck.
 
-## RACE_CHAIN (`--target-race 04:01`)
+## RACE_CHAIN (`target_race=04:01` in the log)
 
-Input was still the whole-day day-base parquet (**490 rows / 36 races**).
-`--target-race` narrows PG history only.
+`--target-race` **did pass** (every `racechain-layer` line).
+Output is still **490 rows / 36 races / 391 cols**. 04/01 = 13 rows.
+This is whole-day RACE cost, not 1-race RACE cost. `--target-race` only
+narrows PG history; it does not drop parquet rows.
 
 | step    | script                                     |   seconds |
 | ------- | ------------------------------------------ | --------: |

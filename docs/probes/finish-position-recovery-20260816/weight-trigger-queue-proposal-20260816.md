@@ -145,7 +145,22 @@ is about **3900×**. Sharing “all 12 DAY layers” is a larger change than
 attacking the few heavy ones (base / h2h / lineage / futan / trainer /
 sectional).
 
-**RACE_CHAIN only (04:01, `--target-race`): 447.0 s = 7.45 min**
+**RACE_CHAIN (`target_race=04:01` in the log): 447.0 s = 7.45 min**
+
+This is **not** “1-race RACE cost”. It is **whole-day RACE cost**.
+
+Evidence:
+
+- every `racechain-layer` line has `target_race=04:01`
+  (`/tmp/fp-builtin-split-0401.out`)
+- output `/tmp/fp-builtin-split/feat-jra-v7-final` is **490 rows / 36 races
+  / 391 cols**, same shape as tonight’s `feat-jra-layer-16`
+- 04/01 is **13 of those 490 rows**; the other 35 races are present
+- day-base `final` was already 490×321; RACE_CHAIN appended columns, it did
+  not drop races
+
+So `--target-race` **did pass**, and it **did not shrink the parquet**. It
+only narrows PG history staging. A 13-row input was **not** measured.
 
 | step | script                                     | seconds |
 | ---- | ------------------------------------------ | ------: |
@@ -156,16 +171,15 @@ sectional).
 | 5    | `add-jra-jockey-pedigree-cell-features.py` |  65.652 |
 
 Compare: 08-15 local **full** `LAYER_CHAIN` p50 **9.9 min** (JRA, n=33).
-RACE_CHAIN **7.45 min** is **measured** 2.45 min less than that p50, not
-“seconds”. Input parquet was still the **whole-day 490 rows / 36 races**
-(04/01 = 13 of them). `--target-race` only narrows PG history, so this
-is **not** a 1/36 data-volume run. Whether a 13-row input would be
-faster is **unmeasured**.
+Whole-day RACE_CHAIN **7.45 min** is **measured** 2.45 min less than that
+p50. near-miss 112 s vs the earlier day-wide ~5 min is the same order of
+magnitude, not 1/36 — **fixed-cost-ish** on the RACE layers themselves.
 
-08-15 **day-wide** (not 1-race) layer times for comparison: near-miss
-~5 min / baba ~4 min / relationship ~2 min / jockey ~1 min. Tonight’s
-1-race-flag RACE layers were **similar order of magnitude**, not 1/36.
-That is closer to **fixed cost** than data-dominated.
+**Expected effect of skipping DAY, written exactly:** DAY (measured
+1333.8 s = base + 12 DAY layers) can be skipped on later races if a
+day-base already exists. The RACE layers themselves cost about the same
+for one race as for the whole day in this harness. Per-race speedup from
+split is therefore **the skipped DAY time**, not “RACE becomes seconds”.
 
 ### 4.2 Changes
 
