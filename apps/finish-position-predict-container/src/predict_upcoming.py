@@ -458,9 +458,25 @@ def execute(
     reconnect. On AdminShutdown or "connection is lost/closed" mid-write,
     opens a fresh Neon connection via :func:`_connect` and retries the
     statement once. Any second failure propagates to the caller.
+
+    Forces each write onto a writable transaction (BEGIN + SET TRANSACTION
+    READ WRITE) to defend against Neon's txn-mode pooler inheriting
+    default_transaction_read_only=on from a prior session (same root cause
+    as the 2026-08-10 sync-realtime-data incident fixed in commit 171ed4d2).
+    Without this, INSERT/UPSERT silently fails with SQLSTATE 25006 when the
+    pooler hands out a read-only session.
     """
     try:
         cursor = connection.cursor()
+        cursor.execute("BEGIN")
+        cursor.execute("SET TRANSACTION READ WRITE")
+        cursor.execute("SHOW transaction_read_only")
+        row = cursor.fetchone()
+        if row and row[0] != "off":
+            raise RuntimeError(
+                f"Neon transaction_read_only is {row[0]}; refusing DML. "
+                "Pooler session inherited read-only — see commit 171ed4d2."
+            ) from None
         cursor.execute(sql, params)
         connection.commit()
         return connection
@@ -484,6 +500,14 @@ def execute(
             connection.close()
         fresh = _connect(database_url)
         cursor = fresh.cursor()
+        cursor.execute("BEGIN")
+        cursor.execute("SET TRANSACTION READ WRITE")
+        cursor.execute("SHOW transaction_read_only")
+        row = cursor.fetchone()
+        if row and row[0] != "off":
+            raise RuntimeError(
+                f"Neon transaction_read_only is {row[0]} after reconnect; refusing DML."
+            ) from None
         cursor.execute(sql, params)
         fresh.commit()
         return fresh

@@ -157,6 +157,13 @@ class _StubCursor:
     def fetchall(self) -> list[tuple[object, ...]]:
         return []
 
+    def fetchone(self) -> tuple[object, ...] | None:
+        # Return ("off",) for SHOW transaction_read_only so the writable-txn
+        # guard in execute() passes in tests.
+        if self.last_sql == "SHOW transaction_read_only":
+            return ("off",)
+        return None
+
 
 class _StubConnection:
     """Minimal connection stub that records commits, rollbacks, and closes."""
