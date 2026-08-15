@@ -5356,7 +5356,14 @@ export const getSimilarRaceStats = cache(
           *,
           row_number() over (
             partition by category, coalesce(person_identity, race_source || ':' || person_code, 'name:' || name)
-            order by kaisai_nen desc, kaisai_tsukihi desc, race_bango asc, umaban asc
+            order by
+              kaisai_nen desc,
+              kaisai_tsukihi desc,
+              race_source asc,
+              keibajo_code asc,
+              race_bango asc,
+              umaban asc,
+              ketto_toroku_bango asc
           ) as "detailRank"
         from filtered_grouped_entries
       ),
@@ -5384,8 +5391,11 @@ export const getSimilarRaceStats = cache(
               order by
                 ranked_grouped_entries.kaisai_nen desc,
                 ranked_grouped_entries.kaisai_tsukihi desc,
+                ranked_grouped_entries.race_source asc,
+                ranked_grouped_entries.keibajo_code asc,
                 ranked_grouped_entries.race_bango asc,
-                ranked_grouped_entries.umaban asc
+                ranked_grouped_entries.umaban asc,
+                ranked_grouped_entries.ketto_toroku_bango asc
             ) filter (where ranked_grouped_entries.name is not null and ranked_grouped_entries."detailRank" <= 200),
             '[]'::jsonb
           ) as details,

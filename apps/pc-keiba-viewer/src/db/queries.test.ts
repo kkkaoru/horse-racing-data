@@ -722,6 +722,12 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     /targets\.person_identity = coalesce\(\s*person_code_identities\.person_identity,\s*unique_person_names\.person_identity/u,
   );
   expect(queryText).toMatch(/targets\.name_fallback_allowed/u);
+  expect(queryText).toMatch(
+    /order by\s+kaisai_nen desc,\s+kaisai_tsukihi desc,\s+race_source asc,\s+keibajo_code asc,\s+race_bango asc,\s+umaban asc,\s+ketto_toroku_bango asc/u,
+  );
+  expect(queryText).toMatch(
+    /order by\s+ranked_grouped_entries\.kaisai_nen desc,\s+ranked_grouped_entries\.kaisai_tsukihi desc,\s+ranked_grouped_entries\.race_source asc,\s+ranked_grouped_entries\.keibajo_code asc,\s+ranked_grouped_entries\.race_bango asc,\s+ranked_grouped_entries\.umaban asc,\s+ranked_grouped_entries\.ketto_toroku_bango asc/u,
+  );
   expect(queryText).toMatch(/when ranked_grouped_entries\.name is null then null/u);
   expect(queryText).toMatch(
     /then 'horse:' \|\| btrim\(ranked_grouped_entries\.ketto_toroku_bango\)/u,
