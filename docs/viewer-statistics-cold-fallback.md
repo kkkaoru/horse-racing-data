@@ -41,12 +41,11 @@ search: only an exhausted search may return an incomplete-data disclosure and le
 zero rows. This prevents completion order or transient load from selecting a different
 response that is then retained in KV.
 
-The current implementation waits for every launched candidate before selecting the
-first adequate candidate in canonical order. This guarantees determinism but increased
-the paired local p95 from 2.301 to 3.818 seconds versus the legacy sequential search.
-A future optimization may return once the canonical prefix through the first adequate
-candidate has settled; candidates after that point cannot affect the result. Do not
-switch to completion-order selection, which would reintroduce load-dependent output.
+Rate-stat fallback still launches candidates concurrently and still selects the first
+adequate candidate in canonical order. It now returns as soon as that canonical prefix
+has settled. Later candidates cannot change the chosen result, so waiting for them only
+adds tail latency. Completion-order selection remains forbidden because it would make
+the body depend on load. A timed-out prefix still fails the request and is not cached.
 
 The distinction matters on a truly cold database path. An initial JRA 01/10 generation
 took 9.048 seconds and hit the six-second fallback deadline; three immediately repeated

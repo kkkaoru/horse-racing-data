@@ -332,7 +332,14 @@ export const planRunningStylePredictionsForDate = async (
     states,
     now,
   );
-  await upsertRunningStylePendingStates(env.REALTIME_DB, selected.needed, predictedAt);
+  // Never reset sync-failed rows to pending: their D1 predictions are
+  // complete and the fast path in handleRunningStylePredictionJob retries
+  // only the Neon mirror. Resetting would wipe written_horse_count and
+  // force a full re-inference (and re-classify the race as never-run).
+  const pendingUpsertRaces = selected.needed.filter(
+    (row) => states.get(row.raceKey)?.status !== "sync-failed",
+  );
+  await upsertRunningStylePendingStates(env.REALTIME_DB, pendingUpsertRaces, predictedAt);
   await sendPredictionJobs(
     env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
     [...selected.needed, ...mirrorNeeded].map((row) => toPredictionJob(row, predictedAt)),

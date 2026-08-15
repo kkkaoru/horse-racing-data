@@ -32,7 +32,12 @@ export interface RaceRunningStyleCount {
   count: number;
 }
 
-export type RunningStyleInferenceStatus = "pending" | "processing" | "completed" | "failed";
+export type RunningStyleInferenceStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "sync-failed"
+  | "failed";
 
 export interface RunningStyleInferenceState {
   raceKey: string;
@@ -471,6 +476,49 @@ export const markRunningStyleInferenceCompleted = async (
       params.expectedHorseCount,
       params.writtenHorseCount,
       params.completedAt,
+      params.raceKey,
+    )
+    .run();
+};
+
+export const markRunningStyleInferenceSyncFailed = async (
+  db: D1Database,
+  params: {
+    raceKey: string;
+    featuresR2Key: string;
+    modelVersion: string;
+    cellModelKey?: string | null;
+    cellVariantId?: string | null;
+    expectedHorseCount: number;
+    writtenHorseCount: number;
+    attemptedAt: string;
+    errorMessage: string;
+  },
+): Promise<void> => {
+  await db
+    .prepare(
+      `update running_style_inference_state
+          set status = 'sync-failed',
+              features_r2_key = ?,
+              model_version = ?,
+              cell_model_key = ?,
+              cell_variant_id = ?,
+              expected_horse_count = ?,
+              written_horse_count = ?,
+              attempted_at = ?,
+              completed_at = null,
+              error_message = ?
+        where race_key = ?`,
+    )
+    .bind(
+      params.featuresR2Key,
+      params.modelVersion,
+      params.cellModelKey ?? null,
+      params.cellVariantId ?? null,
+      params.expectedHorseCount,
+      params.writtenHorseCount,
+      params.attemptedAt,
+      params.errorMessage,
       params.raceKey,
     )
     .run();

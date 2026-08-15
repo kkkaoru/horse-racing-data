@@ -17,6 +17,22 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const OUTBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const RUNBOOK_URL =
   "apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md";
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const JST_ISO_FRACTIONAL_TRIM_LENGTH = 19;
+const JST_ISO_SUFFIX = "+09:00";
+const ACTION_BY_SEVERITY: Record<AlertSeverity, string> = {
+  warning:
+    "Verify prediction coverage for the named race and confirm generation is progressing before the next deadline.",
+  critical:
+    "Immediately inspect delivery_paused; if true run `bunx wrangler queues resume-delivery finish-position-predict-queue`, then verify canary consumption and prediction rows before acknowledging this incident.",
+  recovery:
+    "Verify prediction coverage and queue delivery are restored; take no further action unless the incident recurs.",
+};
+const TITLE_PREFIX_BY_SEVERITY: Record<AlertSeverity, string> = {
+  warning: "[WARNING]",
+  critical: "[CRITICAL]",
+  recovery: "[RECOVERY]",
+};
 
 export interface IncidentSignal {
   key: string;
@@ -49,9 +65,37 @@ export const shouldSendIncident = (
   return sinceLast >= ONE_HOUR_MS;
 };
 
+const formatJstIso = (date: Date): string => {
+  const shifted = new Date(date.getTime() + JST_OFFSET_MS);
+  return `${shifted.toISOString().slice(0, JST_ISO_FRACTIONAL_TRIM_LENGTH)}${JST_ISO_SUFFIX}`;
+};
+
+const MS_PER_SECOND = 1_000;
+const MS_PER_MINUTE = 60 * MS_PER_SECOND;
+const MS_PER_HOUR = 60 * MS_PER_MINUTE;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+
+const formatElapsedDuration = (openedAt: string, now: Date): string => {
+  const elapsedMs = Math.max(0, now.getTime() - Date.parse(openedAt));
+  const days = Math.floor(elapsedMs / MS_PER_DAY);
+  const hours = Math.floor((elapsedMs % MS_PER_DAY) / MS_PER_HOUR);
+  const minutes = Math.floor((elapsedMs % MS_PER_HOUR) / MS_PER_MINUTE);
+  const seconds = Math.floor((elapsedMs % MS_PER_MINUTE) / MS_PER_SECOND);
+  const parts = [
+    days > 0 ? `${days}d` : null,
+    hours > 0 ? `${hours}h` : null,
+    minutes > 0 ? `${minutes}m` : null,
+    seconds > 0 ? `${seconds}s` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" ") : "0m";
+};
+
+const titlePrefix = (severity: AlertSeverity): string => TITLE_PREFIX_BY_SEVERITY[severity];
+
 const buildMessage = (
   signal: IncidentSignal,
   incidentId: string,
+  openedAt: string,
   severity: AlertSeverity,
   now: Date,
 ): AlertMessage => ({
@@ -59,13 +103,16 @@ const buildMessage = (
   description: `${signal.description}\nRunbook: ${RUNBOOK_URL}`,
   fields: [
     { name: "Incident ID", value: incidentId },
+    { name: "First detected (JST)", value: formatJstIso(new Date(openedAt)) },
+    { name: "Duration", value: formatElapsedDuration(openedAt, now) },
+    { name: "Action", value: ACTION_BY_SEVERITY[severity] },
     { name: "Stage", value: signal.stage },
     ...signal.fields,
   ],
   incidentId,
   severity,
-  timestampJst: now.toISOString(),
-  title: `${severity === "recovery" ? "[RECOVERY]" : severity === "critical" ? "[CRITICAL]" : "[WARNING]"} ${signal.title}`,
+  timestampJst: formatJstIso(now),
+  title: `${titlePrefix(severity)} ${signal.title}`,
 });
 
 const directNotificationPromises = (env: Env, message: AlertMessage): Promise<void>[] => {
@@ -101,7 +148,7 @@ const sendFailure = async (
   signal: IncidentSignal,
   now: Date,
 ): Promise<IncidentState> => {
-  const message = buildMessage(signal, state.incidentId, signal.severity, now);
+  const message = buildMessage(signal, state.incidentId, state.openedAt, signal.severity, now);
   await deliver(env, message);
   const sent: IncidentState = {
     ...state,
@@ -114,7 +161,6 @@ const sendFailure = async (
   return sent;
 };
 
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const HEARTBEAT_PREFIX = "monitor-heartbeat:";
 const HEARTBEAT_TTL_SECONDS = 3 * 24 * 60 * 60;
 
@@ -129,10 +175,17 @@ export const sendDailyMonitorHeartbeat = async (env: Env, now: Date): Promise<vo
     checkName: "pipeline-health-monitor-heartbeat",
     description:
       "Scheduled prediction monitoring is running. Operators must investigate if this daily message is absent.",
-    fields: [{ name: "JST date", value: date }],
+    fields: [
+      { name: "JST date", value: date },
+      {
+        name: "Action",
+        value:
+          "If this heartbeat is absent by the end of the JST race day, verify the monitor Worker and alert delivery path.",
+      },
+    ],
     incidentId: `heartbeat-${date}`,
     severity: "recovery",
-    timestampJst: now.toISOString(),
+    timestampJst: formatJstIso(now),
     title: "[HEALTHY] pipeline health monitor daily heartbeat",
   };
   await deliver(env, message);
@@ -147,7 +200,7 @@ export const processIncidentSignal = async (
   const existing = await getIncident(env, signal.key);
   if (signal.ok) {
     if (existing === null || existing.closedAt !== null) return;
-    const message = buildMessage(signal, existing.incidentId, "recovery", now);
+    const message = buildMessage(signal, existing.incidentId, existing.openedAt, "recovery", now);
     await deliver(env, message);
     await closeIncident(env, existing, now);
     return;

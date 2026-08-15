@@ -192,6 +192,53 @@ it("turns finish-position endpoint failures into incident signals", async () => 
   );
 });
 
+it("reports queue-health failures and still runs readiness", async () => {
+  vi.mocked(fetchQueueHealth).mockRejectedValue(
+    new Error("queue-health request failed with status 403"),
+  );
+  vi.mocked(fetchPredictionReadiness).mockResolvedValue({
+    checkedAt: ON_WINDOW_NOW.toISOString(),
+    races: [],
+    runYmd: "20260628",
+  });
+  await expect(
+    runScheduled({ env: buildEnv(buildKvState()), now: ON_WINDOW_NOW }),
+  ).resolves.toBeUndefined();
+  expect(fetchPredictionReadiness).toHaveBeenCalled();
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      description:
+        "Monitor endpoint failed and cannot be evaluated: Error: queue-health request failed with status 403",
+      key: "finish-position-monitor-endpoint:queue-health",
+    }),
+    ON_WINDOW_NOW,
+  );
+});
+
+it("emits a queue-health recovery signal after the endpoint becomes available", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  await runScheduled({ env: buildEnv(buildKvState()), now: ON_WINDOW_NOW });
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ key: "finish-position-monitor-endpoint:queue-health", ok: true }),
+    ON_WINDOW_NOW,
+  );
+});
+
+it("contains incident delivery failures so a scheduled tick still completes", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(processIncidentSignal).mockRejectedValue(new Error("discord unavailable"));
+  vi.mocked(fetchQueueHealth).mockRejectedValue(
+    new Error("queue-health request failed with status 403"),
+  );
+  await expect(
+    runScheduled({ env: buildEnv(buildKvState()), now: ON_WINDOW_NOW }),
+  ).resolves.toBeUndefined();
+  expect(errorSpy).toHaveBeenCalled();
+  vi.mocked(processIncidentSignal).mockResolvedValue(undefined);
+});
+
 it("runScheduled skips processing for checks outside their JST window", async () => {
   vi.mocked(fetchQueueHealth).mockResolvedValue({
     lastSuccessfulFetchResultsAt: null,

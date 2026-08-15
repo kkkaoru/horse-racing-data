@@ -35,9 +35,10 @@ vi.mock("../src/storage", () => ({
 vi.mock("../src/running-style-d1", () => ({
   getRunningStyleInferenceState: vi.fn(async () => null),
   listRaceRunningStylesForRace: vi.fn(async () => []),
+  markRunningStyleInferenceCompleted: vi.fn(async () => undefined),
   markRunningStyleInferenceFailed: vi.fn(async () => undefined),
   markRunningStyleInferenceProcessing: vi.fn(async () => undefined),
-  markRunningStyleInferenceSucceeded: vi.fn(async () => undefined),
+  markRunningStyleInferenceSyncFailed: vi.fn(async () => undefined),
   upsertRaceRunningStyles: vi.fn(async () => undefined),
 }));
 vi.mock("../src/running-style-model-binary", () => ({
@@ -75,7 +76,8 @@ test("returns null when RUNNING_STYLE_D1_WRITE_ENABLED is not '1'", async () => 
 });
 
 test("returns skipped summary when inference state is already completed", async () => {
-  const { getRunningStyleInferenceState } = await import("../src/running-style-d1");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("../src/running-style-d1");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValueOnce({
     attemptedAt: null,
     expectedHorseCount: 8,
@@ -84,6 +86,9 @@ test("returns skipped summary when inference state is already completed", async 
     status: "completed",
     writtenHorseCount: 8,
   } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValueOnce(
+    Array.from({ length: 8 }, () => ({}) as never),
+  );
   const env = buildEnv();
   const summary = await handleRunningStylePredictionJob(env, JOB);
   expect(summary?.skipped).toBe(true);
@@ -92,7 +97,8 @@ test("returns skipped summary when inference state is already completed", async 
 });
 
 test("returns skipped summary when completed state has null featuresR2Key and modelVersion", async () => {
-  const { getRunningStyleInferenceState } = await import("../src/running-style-d1");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("../src/running-style-d1");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValueOnce({
     attemptedAt: null,
     expectedHorseCount: 8,
@@ -101,6 +107,9 @@ test("returns skipped summary when completed state has null featuresR2Key and mo
     status: "completed",
     writtenHorseCount: 8,
   } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValueOnce(
+    Array.from({ length: 8 }, () => ({}) as never),
+  );
   const env = buildEnv();
   const summary = await handleRunningStylePredictionJob(env, JOB);
   expect(summary?.skipped).toBe(true);

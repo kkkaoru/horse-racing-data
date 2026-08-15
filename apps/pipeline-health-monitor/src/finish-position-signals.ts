@@ -68,21 +68,21 @@ export const buildCanarySignal = (response: DeliveryCanaryResponse, now: Date): 
 };
 
 export const buildEndpointFailureSignal = (name: string, error: unknown): IncidentSignal => ({
-  description: `Independent monitor endpoint failed: ${String(error)}`,
+  description: `Monitor endpoint failed and cannot be evaluated: ${String(error)}`,
   fields: [{ name: "Endpoint", value: name }],
   key: `finish-position-monitor-endpoint:${name}`,
   ok: false,
   severity: "critical",
   stage: "endpoint-failure",
-  title: `finish-position monitor endpoint failed: ${name}`,
+  title: `monitor endpoint unavailable: ${name}`,
 });
 
 export const buildEndpointRecoverySignal = (name: string): IncidentSignal => ({
-  description: "Independent monitor endpoint recovered.",
+  description: "Monitor endpoint recovered and can be evaluated again.",
   fields: [{ name: "Endpoint", value: name }],
   key: `finish-position-monitor-endpoint:${name}`,
   ok: true,
   severity: "critical",
   stage: "healthy",
-  title: `finish-position monitor endpoint recovered: ${name}`,
+  title: `monitor endpoint recovered: ${name}`,
 });

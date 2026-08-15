@@ -52,11 +52,29 @@ beforeEach(() => {
 
 it("sends the initial critical alert through direct Discord after persisting outbox", async () => {
   const { env, store } = makeEnv();
-  const now = new Date("2026-08-15T00:00:00Z");
+  const opened = new Date("2026-08-15T00:00:00Z");
+  const now = new Date("2026-08-18T02:04:05Z");
+  await processIncidentSignal(env, failingSignal(), opened);
   await processIncidentSignal(env, failingSignal(), now);
-  expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  expect(notifyDiscord).toHaveBeenCalledTimes(2);
+  const message = vi.mocked(notifyDiscord).mock.calls[1]?.[0].message;
+  expect(message?.fields.map((field) => field.name)).toStrictEqual([
+    "Incident ID",
+    "First detected (JST)",
+    "Duration",
+    "Action",
+    "Stage",
+    "Coverage",
+  ]);
+  expect(message?.fields.find((field) => field.name === "First detected (JST)")?.value).toBe(
+    "2026-08-15T09:00:00+09:00",
+  );
+  expect(message?.fields.find((field) => field.name === "Duration")?.value).toBe("3d 2h 4m 5s");
+  expect(message?.fields.find((field) => field.name === "Action")?.value).toBe(
+    "Immediately inspect delivery_paused; if true run `bunx wrangler queues resume-delivery finish-position-predict-queue`, then verify canary consumption and prediction rows before acknowledging this incident.",
+  );
   const state = await getIncident(env, failingSignal().key);
-  expect(state?.sendCount).toBe(1);
+  expect(state?.sendCount).toBe(2);
   expect(state?.lastStage).toBe("T-60");
   expect([...store.keys()].some((key) => key.startsWith("incident-outbox:"))).toBe(false);
 });
@@ -101,6 +119,11 @@ it("sends one recovery, closes the incident, and ignores later healthy ticks", a
   await processIncidentSignal(env, healthy, new Date("2026-08-15T00:05:00Z"));
   await processIncidentSignal(env, healthy, new Date("2026-08-15T00:10:00Z"));
   expect(notifyDiscord).toHaveBeenCalledTimes(2);
+  const recovery = vi.mocked(notifyDiscord).mock.calls[1]?.[0].message;
+  expect(recovery?.severity).toBe("recovery");
+  expect(recovery?.fields.find((field) => field.name === "Action")?.value).toBe(
+    "Verify prediction coverage and queue delivery are restored; take no further action unless the incident recurs.",
+  );
   expect((await getIncident(env, failingSignal().key))?.closedAt).toBe("2026-08-15T00:05:00.000Z");
 });
 
@@ -122,6 +145,9 @@ it("sends one daily healthy heartbeat and uses the next JST date after 15:00 UTC
     name: "JST date",
     value: "2026-08-16",
   });
+  expect(vi.mocked(notifyDiscord).mock.calls[1]?.[0].message.timestampJst).toBe(
+    "2026-08-16T00:00:00+09:00",
+  );
 });
 
 it("evaluates an unsent state as due", () => {

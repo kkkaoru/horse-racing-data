@@ -63,3 +63,13 @@ it("fetchQueueHealth throws when the response is not ok", async () => {
     "queue-health request failed with status 503",
   );
 });
+
+it("fetchQueueHealth rejects a catch-all health response instead of returning false metrics", async () => {
+  const fetchMock = vi.fn(async () =>
+    Response.json({ cron: "*/5 * * * *", name: "sync-realtime-data", ok: true }),
+  );
+  const env = buildEnv(fetchMock as unknown as typeof fetch);
+  await expect(fetchQueueHealth(env)).rejects.toThrow(
+    "queue-health endpoint returned an unexpected response shape; queue-health may not be deployed",
+  );
+});

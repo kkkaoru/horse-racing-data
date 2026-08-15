@@ -32,3 +32,21 @@ it("fetches delivery canaries and rejects non-success responses", async () => {
   const failure = makeEnv(new Response("failed", { status: 503 }));
   await expect(fetchDeliveryCanaries(failure.env)).rejects.toThrow("status=503");
 });
+
+it("rejects a health catch-all response instead of treating it as readiness", async () => {
+  const { env } = makeEnv(
+    Response.json({ cron: "0 18 * * *", name: "finish-position-cron", ok: true }),
+  );
+  await expect(fetchPredictionReadiness(env)).rejects.toThrow(
+    "prediction-readiness endpoint returned an unexpected response shape; prediction-readiness may not be deployed",
+  );
+});
+
+it("rejects a health catch-all response instead of treating it as healthy canary data", async () => {
+  const { env } = makeEnv(
+    Response.json({ cron: "0 18 * * *", name: "finish-position-cron", ok: true }),
+  );
+  await expect(fetchDeliveryCanaries(env)).rejects.toThrow(
+    "delivery-canaries endpoint returned an unexpected response shape; delivery-canaries may not be deployed",
+  );
+});

@@ -29,6 +29,7 @@ vi.mock("./running-style-d1", () => ({
   markRunningStyleInferenceCompleted: vi.fn(async () => {}),
   markRunningStyleInferenceFailed: vi.fn(async () => {}),
   markRunningStyleInferenceProcessing: vi.fn(async () => {}),
+  markRunningStyleInferenceSyncFailed: vi.fn(async () => {}),
   upsertRaceRunningStyles: vi.fn(async () => 0),
 }));
 vi.mock("./running-style-feature-materialize", () => ({
@@ -323,8 +324,11 @@ it("does not call finish-position binding when trigger token is missing or empty
 
 it("skips finish-position full trigger on completed short-circuit when Neon write count is short", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
-    await import("./running-style-d1");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceSyncFailed,
+  } = await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const fetch = vi.fn<typeof globalThis.fetch>(
     async (_input) => new Response("queued", { status: 202 }),
@@ -345,6 +349,10 @@ it("skips finish-position full trigger on completed short-circuit when Neon writ
     "Neon written count 2 is below expected horse count 3",
   );
   expect(fetch).not.toHaveBeenCalled();
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
+    "Neon sync wrote 2/3 rows",
+  );
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon written count 2 is below expected horse count 3",
   );
@@ -930,8 +938,11 @@ it("skips cacheCompletedRunningStyles when written count is less than expected h
 
 it("skips finish-position full trigger after inference when Neon sync fails", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
-    await import("./running-style-d1");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceSyncFailed,
+  } = await import("./running-style-d1");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
@@ -975,6 +986,10 @@ it("skips finish-position full trigger after inference when Neon sync fails", as
   expect(summary?.finishPositionTriggerMode).toBe("skipped");
   expect(summary?.finishPositionTriggerError).toBe("Neon sync failed: neon connection refused");
   expect(fetch).not.toHaveBeenCalled();
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
+    "neon connection refused",
+  );
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon sync failed: neon connection refused",
   );
@@ -982,8 +997,11 @@ it("skips finish-position full trigger after inference when Neon sync fails", as
 
 it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
-    await import("./running-style-d1");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceSyncFailed,
+  } = await import("./running-style-d1");
   const cacheError = new Error("d1 read failure");
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -999,6 +1017,8 @@ it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.cacheError).toBe("d1 read failure");
   expect(summary?.cacheWritten).toBe(false);
+  // cacheError means neonWrittenCount=0 < expected → sync-failed downgrade
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
   expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
     `Running-style cache/sync failed raceKey=jra:20260512:08:01 name=Error message=d1 read failure stack=${cacheError.stack}`,
   );
@@ -1059,8 +1079,11 @@ it("retries transient Neon write failures before triggering finish-position", as
 
 it("sets neonError when Neon write fails but does not throw", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
-    await import("./running-style-d1");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceSyncFailed,
+  } = await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const fetch = vi.fn<typeof globalThis.fetch>(
     async (_input) => new Response("queued", { status: 202 }),
@@ -1086,6 +1109,11 @@ it("sets neonError when Neon write fails but does not throw", async () => {
   expect(summary?.neonError).toBe("neon connection refused");
   expect(summary?.skipped).toBe(true);
   expect(fetch).not.toHaveBeenCalled();
+  // Neon failure on mirror consume downgrades completed → sync-failed
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
+    "neon connection refused",
+  );
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon sync failed: neon connection refused",
   );
@@ -1115,8 +1143,11 @@ it("logs structured cache write failures with raceKey name message and stack", a
 
 it("logs structured Neon write failures with raceKey name message and stack", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
-    await import("./running-style-d1");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceSyncFailed,
+  } = await import("./running-style-d1");
   const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const neonError = new Error("neon connection refused");
@@ -1131,6 +1162,8 @@ it("logs structured Neon write failures with raceKey name message and stack", as
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.neonWrittenCount).toBe(0);
   expect(summary?.neonError).toBe("neon connection refused");
+  // Neon failure downgrades completed → sync-failed
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
   expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
     "Running-style Neon write failed raceKey=jra:20260512:08:01 name=Error message=neon connection refused stack=Error: neon connection refused\n    at test",
   );

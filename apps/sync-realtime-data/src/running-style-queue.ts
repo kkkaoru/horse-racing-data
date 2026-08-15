@@ -19,6 +19,7 @@ import {
   markRunningStyleInferenceCompleted,
   markRunningStyleInferenceFailed,
   markRunningStyleInferenceProcessing,
+  markRunningStyleInferenceSyncFailed,
   type RaceRunningStyleRow,
   upsertRaceRunningStyles,
 } from "./running-style-d1";
@@ -378,12 +379,45 @@ export const handleRunningStylePredictionJob = async (
   try {
     const state = await getRunningStyleInferenceState(env.REALTIME_DB, raceKey);
     if (
-      state?.status === "completed" &&
+      (state?.status === "completed" || state?.status === "sync-failed") &&
       state.expectedHorseCount !== null &&
       state.writtenHorseCount !== null &&
       state.writtenHorseCount >= state.expectedHorseCount
     ) {
       const cacheResult = await cacheAndSyncCompletedRunningStyles(env, job);
+      // Keep the state honest (2026-08-16 incident: Neon write failures were
+      // recorded as completed, leaving races with zero Neon rows while every
+      // state-based monitor reported success). Neon success upgrades
+      // sync-failed back to completed; Neon failure downgrades completed to
+      // sync-failed so the planner keeps re-enqueuing the mirror retry.
+      const expectedHorseCount = state.expectedHorseCount;
+      const neonSyncOk =
+        cacheResult.neonError === undefined && cacheResult.neonWrittenCount >= expectedHorseCount;
+      const stateMetadata = {
+        cellModelKey: state.cellModelKey ?? null,
+        cellVariantId: state.cellVariantId ?? null,
+        expectedHorseCount,
+        featuresR2Key: state.featuresR2Key ?? "",
+        modelVersion: state.modelVersion ?? "completed",
+        raceKey,
+        writtenHorseCount: state.writtenHorseCount,
+      };
+      if (neonSyncOk) {
+        if (state.status === "sync-failed") {
+          await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
+            ...stateMetadata,
+            completedAt: new Date().toISOString(),
+          });
+        }
+      } else {
+        await markRunningStyleInferenceSyncFailed(env.REALTIME_DB, {
+          ...stateMetadata,
+          attemptedAt: new Date().toISOString(),
+          errorMessage:
+            cacheResult.neonError ??
+            `Neon sync wrote ${cacheResult.neonWrittenCount}/${expectedHorseCount} rows`,
+        });
+      }
       const route = resolveRunningStyleCellRoute(
         routeInputFromJob(job),
         runningStyleCellRoutingConfig(env),
@@ -470,8 +504,7 @@ export const handleRunningStylePredictionJob = async (
       predictedAt: job.predictedAt,
       rows: inferenceRows,
     });
-    await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
-      completedAt: new Date().toISOString(),
+    const completionInput = {
       cellModelKey: selectedRoute.modelKey,
       cellVariantId: selectedRoute.variantId,
       expectedHorseCount,
@@ -479,11 +512,34 @@ export const handleRunningStylePredictionJob = async (
       modelVersion: summary.modelVersion,
       raceKey,
       writtenHorseCount: summary.writtenCount,
-    });
+    };
     const cacheResult =
       summary.writtenCount >= expectedHorseCount
         ? await cacheAndSyncCompletedRunningStyles(env, job)
         : { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
+    // Record completed ONLY when the Neon mirror actually has every row
+    // (2026-08-16 incident: completed was written before the Neon sync, so
+    // Neon failures left a completed state with zero Neon rows that no
+    // state-based monitor could detect). A failed Neon sync is recorded as
+    // sync-failed instead; the planner re-enqueues it and the fast path
+    // above retries just the sync until it upgrades to completed.
+    if (
+      summary.writtenCount >= expectedHorseCount &&
+      (cacheResult.neonError !== undefined || cacheResult.neonWrittenCount < expectedHorseCount)
+    ) {
+      await markRunningStyleInferenceSyncFailed(env.REALTIME_DB, {
+        ...completionInput,
+        attemptedAt: new Date().toISOString(),
+        errorMessage:
+          cacheResult.neonError ??
+          `Neon sync wrote ${cacheResult.neonWrittenCount}/${expectedHorseCount} rows`,
+      });
+    } else {
+      await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
+        ...completionInput,
+        completedAt: new Date().toISOString(),
+      });
+    }
     const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
       env,
       job,
