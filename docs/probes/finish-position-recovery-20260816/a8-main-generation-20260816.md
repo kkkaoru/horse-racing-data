@@ -42,6 +42,17 @@ uv run --project apps/pc-keiba-viewer python \
    `jra-cb-v9-sim-2013-CLEAN`. Audit NULLs become `0.0` only inside CatBoost.
 6. Write isolated JSON under `tmp/jacques-le-marois-a8-dry-run-20260816/`
    (dry-run) or `tmp/jacques-le-marois-a8-main-20260816/` (execute).
+7. Always publish coverage and quality: `nonnullLabel` (`47-47/250` on the
+   07:12 dry-run) and whether softmax is nearly uniform. A printed ranking is
+   not the same as a meaningful prediction.
+
+## Coverage and quality (07:12 dry-run)
+
+- Non-NULL features: **47/250** for every runner (34 market-null + 13 board).
+- 203/250 remain NULL. Identity-dependent JRA person/pedigree/similar-race
+  populations stay missing because A8 horses have no usable JV horse IDs.
+- Softmax is **not uniform** (min 1.59%, max 22.61%). The board separates the
+  field; most of that separation comes from the 13 market features.
 
 ## Production formulas used for the 13 board features
 

@@ -16,12 +16,14 @@ from generate_a8_main import (
     GenerationError,
     check_board,
     expected_competition_rank,
+    feature_coverage,
     load_board_json,
     overlay_market_features,
     parse_args,
     parse_official_card_html,
     production_market_features,
     run,
+    softmax_quality,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -233,10 +235,42 @@ def test_dry_run_writes_isolated_scores(tmp_path: Path) -> None:
     assert first["predictedRank"] == 1
     assert first["umaban"] == 3
     assert first["horseName"] == "Sixpence"
+    coverage = report["coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["featureCount"] == 250
+    assert coverage["nonnullMin"] == 47
+    assert coverage["nonnullMax"] == 47
+    assert coverage["nonnullLabel"] == "47-47/250"
+    quality = report["predictionQuality"]
+    assert isinstance(quality, dict)
+    assert quality["nearlyUniform"] is False
+    assert quality["meaning"] == "softmax not uniform; field is separated"
     summary = json.loads(
         (tmp_path / "a8-market-overlay-prediction-summary.json").read_text(encoding="utf-8")
     )
     assert summary["summary"]["label"] == "DRY-RUN / MARKET-OVERLAY / NO PRODUCTION WRITE"
+    assert summary["summary"]["nonnullLabel"] == "47-47/250"
+
+
+def test_feature_coverage_and_softmax_quality_helpers() -> None:
+    coverage = feature_coverage(
+        [
+            {"umaban": 1, "featureValues": {"a": 1, "b": None, "c": 0}},
+            {"umaban": 2, "featureValues": {"a": None, "b": None, "c": None}},
+        ]
+    )
+    assert coverage["nonnullByUmaban"] == {"1": 2, "2": 0}
+    assert coverage["nullByUmaban"] == {"1": 248, "2": 250}
+    assert coverage["nonnullLabel"] == "0-2/250"
+    quality = softmax_quality(
+        [
+            {"softmaxTop1Share": 0.101},
+            {"softmaxTop1Share": 0.099},
+            {"softmaxTop1Share": 0.100},
+        ]
+    )
+    assert quality["nearlyUniform"] is True
+    assert quality["meaning"] == "softmax nearly uniform; field not separated"
 
 
 def test_invalid_board_exits_two_without_scores(tmp_path: Path) -> None:

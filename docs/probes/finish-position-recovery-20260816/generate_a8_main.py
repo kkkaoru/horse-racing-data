@@ -45,6 +45,9 @@ USER_AGENT: Final[str] = (
 )
 JST: Final[ZoneInfo] = ZoneInfo("Asia/Tokyo")
 EXPECTED_RUNNER_COUNT: Final[int] = 10
+FEATURE_COUNT: Final[int] = 250
+UNIFORM_SOFTMAX_SHARE: Final[float] = 1.0 / EXPECTED_RUNNER_COUNT
+NEARLY_UNIFORM_SHARE_RANGE: Final[float] = 0.02
 ODDS_LN_CAP: Final[float] = 300.0
 FETCH_TIMEOUT_SECONDS: Final[int] = 20
 
@@ -420,6 +423,58 @@ def runner_features(runner: Mapping[str, object]) -> dict[str, object]:
     return values
 
 
+def feature_coverage(runners: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    counts: dict[str, int] = {}
+    for runner in runners:
+        umaban = runner.get("umaban")
+        if not isinstance(umaban, int) or isinstance(umaban, bool):
+            raise GenerationError("coverage runner umaban is not an int")
+        values = runner_features(runner)
+        counts[str(umaban)] = sum(cell is not None for cell in values.values())
+    if not counts:
+        raise GenerationError("coverage has no runners")
+    nonnull_values = list(counts.values())
+    return {
+        "featureCount": FEATURE_COUNT,
+        "nonnullByUmaban": counts,
+        "nullByUmaban": {
+            umaban: FEATURE_COUNT - count for umaban, count in counts.items()
+        },
+        "nonnullMin": min(nonnull_values),
+        "nonnullMax": max(nonnull_values),
+        "nonnullLabel": f"{min(nonnull_values)}-{max(nonnull_values)}/{FEATURE_COUNT}",
+    }
+
+
+def softmax_quality(predictions: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    shares: list[float] = []
+    for prediction in predictions:
+        share = prediction.get("softmaxTop1Share")
+        if not isinstance(share, (int, float)) or isinstance(share, bool):
+            raise GenerationError("softmaxTop1Share is not a number")
+        shares.append(float(share))
+    if not shares:
+        raise GenerationError("predictions have no softmax shares")
+    share_min = min(shares)
+    share_max = max(shares)
+    mean = sum(shares) / len(shares)
+    pstdev = math.sqrt(sum((share - mean) ** 2 for share in shares) / len(shares))
+    nearly_uniform = (share_max - share_min) < NEARLY_UNIFORM_SHARE_RANGE
+    return {
+        "softmaxShares": shares,
+        "softmaxMin": share_min,
+        "softmaxMax": share_max,
+        "softmaxPstdev": pstdev,
+        "uniformShare": UNIFORM_SOFTMAX_SHARE,
+        "nearlyUniform": nearly_uniform,
+        "meaning": (
+            "softmax nearly uniform; field not separated"
+            if nearly_uniform
+            else "softmax not uniform; field is separated"
+        ),
+    }
+
+
 def fetch_official_card(url: str) -> bytes:
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
     try:
@@ -486,6 +541,8 @@ def build_report(
     check: BoardCheck,
     market_by_umaban: Mapping[int, Mapping[str, float | None]],
     predictions: Sequence[Mapping[str, object]],
+    coverage: Mapping[str, object],
+    quality: Mapping[str, object],
     output_dir: Path,
     execute: bool,
 ) -> dict[str, object]:
@@ -505,6 +562,8 @@ def build_report(
             "failReasons": list(check.fail_reasons),
             "entries": [asdict(entry) for entry in entries],
         },
+        "coverage": dict(coverage),
+        "predictionQuality": dict(quality),
         "marketInjection": {
             "boardDerivedCount": len(BOARD_DERIVED_MARKET),
             "similarRaceLeftNull": sorted(SIMILAR_RACE_MARKET),
@@ -546,13 +605,18 @@ def run(args: argparse.Namespace, stdout: TextIO = sys.stdout) -> int:
     model_path = args.model_dir / "model.json"
     metadata = json.loads((args.model_dir / "metadata.json").read_text(encoding="utf-8"))
     feature_names = metadata.get("feature_names")
-    if not isinstance(feature_names, list) or len(feature_names) != 250:
+    if not isinstance(feature_names, list) or len(feature_names) != FEATURE_COUNT:
         raise GenerationError("model metadata feature_names must contain 250 names")
     names = [str(name) for name in feature_names]
     runners = overlaid["runners"]
     if not isinstance(runners, list):
         raise GenerationError("overlaid runners is not a list")
     predictions = score_runners(runners, names, model_path)
+    typed_runners = [runner for runner in runners if isinstance(runner, dict)]
+    if len(typed_runners) != len(runners):
+        raise GenerationError("overlaid runners contain a non-object")
+    coverage = feature_coverage(typed_runners)
+    quality = softmax_quality(predictions)
     summary = {
         "race": "2026/08/16/A8/04",
         "label": (
@@ -561,11 +625,14 @@ def run(args: argparse.Namespace, stdout: TextIO = sys.stdout) -> int:
             else "DRY-RUN / MARKET-OVERLAY / NO PRODUCTION WRITE"
         ),
         "modelVersion": metadata.get("model_version"),
-        "featureCount": 250,
+        "featureCount": FEATURE_COUNT,
+        "nonnullByUmaban": coverage["nonnullByUmaban"],
+        "nonnullLabel": coverage["nonnullLabel"],
         "marketFeatureCount": 16,
         "boardDerivedMarketFeatures": 13,
         "similarRaceMarketFeaturesLeftNull": 3,
         "validFullBoard": True,
+        "predictionQuality": quality,
         "generatedAt": generated_at.astimezone(timezone.utc).isoformat(),
         "writes": {"postgres": False, "r2": False, "cache": False},
         "boardSource": source,
@@ -590,6 +657,8 @@ def run(args: argparse.Namespace, stdout: TextIO = sys.stdout) -> int:
         check=check,
         market_by_umaban=market_by_umaban,
         predictions=predictions,
+        coverage=coverage,
+        quality=quality,
         output_dir=output_dir,
         execute=bool(args.execute),
     )
