@@ -73,7 +73,7 @@
     "react-dom": "19.2.7",
     "recharts": "3.8.1",
     "sync-realtime-data-hot": "workspace:*",
-    "zustand": "5.0.14"
+    "zustand": "5.0.15"
   },
   "devDependencies": {
     "@eslint/css": "1.3.0",
