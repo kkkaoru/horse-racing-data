@@ -20,8 +20,12 @@ cache version:
 1. Bypass the section cache and measure the changed section against its production
    database.
 2. Measure the changed race itself, not only unchanged regression races.
-3. Upload a Worker version without promoting traffic and test its version-specific
-   URL before a 100% deployment.
+3. Use a version-specific preview URL before promotion only when the Worker supports
+   preview URLs. `pc-keiba-viewer` exports Durable Objects (`PaddockRoom` and
+   `RaceTrendRoom`), so Cloudflare does not generate preview URLs for it. For this
+   Worker, exhaustively validate the integrated build against the production database
+   locally, deploy only in an approved maintenance window, and keep immediate rollback
+   ready.
 4. Compare cold and warm responses, including semantic fields and response hashes.
 5. Roll back immediately on a timeout, `503`, or unintended body difference.
 
