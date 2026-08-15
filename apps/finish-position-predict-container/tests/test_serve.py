@@ -3131,11 +3131,12 @@ def test_iter_prewarm_chunks_parquet_payload_fn_none_result() -> None:
         )
     )
     last = json.loads(chunks[-1].decode())
-    assert last["status"] == "success"
+    assert last["status"] == "error"
+    assert last["error"] == "prewarm parquet payload missing after day-base build"
     assert "parquetBase64" not in last
 
 
-def test_iter_prewarm_chunks_parquet_payload_fn_error_swallowed() -> None:
+def test_iter_prewarm_chunks_parquet_payload_fn_error_is_reported() -> None:
     def _failing_payload(
         category: str, run_date: str, day_base_dir: Path
     ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
@@ -3148,7 +3149,8 @@ def test_iter_prewarm_chunks_parquet_payload_fn_error_swallowed() -> None:
         )
     )
     last = json.loads(chunks[-1].decode())
-    assert last["status"] == "success"
+    assert last["status"] == "error"
+    assert last["error"] == "RuntimeError: disk read failed"
     assert "parquetBase64" not in last
 
 

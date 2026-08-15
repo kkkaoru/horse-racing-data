@@ -1747,10 +1747,21 @@ def iter_prewarm_chunks(
     if parquet_payload_fn is not None:
         try:
             payload_result = parquet_payload_fn(params.category, params.run_date, day_base_dir)
-            if payload_result is not None:
-                parquet_b64, parquet_key_val, daybase_watermark_val = payload_result
-        except BaseException:
-            pass
+        except BaseException as payload_error:
+            error_msg = f"{type(payload_error).__name__}: {payload_error}"
+            yield build_prewarm_result_line(
+                params.category, params.run_date, status="error", error=error_msg
+            )
+            return
+        if payload_result is None:
+            yield build_prewarm_result_line(
+                params.category,
+                params.run_date,
+                status="error",
+                error="prewarm parquet payload missing after day-base build",
+            )
+            return
+        parquet_b64, parquet_key_val, daybase_watermark_val = payload_result
 
     yield build_prewarm_result_line(
         params.category,
