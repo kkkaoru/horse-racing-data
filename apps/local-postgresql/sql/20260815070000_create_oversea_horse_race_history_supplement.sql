@@ -76,5 +76,10 @@ create table if not exists oversea_horse_race_history_supplement (
   )
 );
 
+comment on column oversea_horse_race_history_supplement.race_time_seconds is
+  'Parseable source time only; foreign course and timing distributions are not proven comparable to JRA model features.';
+comment on column oversea_horse_race_history_supplement.corner_positions_text is
+  'Ordered official source values only; foreign corner conventions and straight-course applicability require separate validation.';
+
 create index if not exists oversea_horse_history_supplement_source_idx
   on oversea_horse_race_history_supplement (supplement_source, history_id);
