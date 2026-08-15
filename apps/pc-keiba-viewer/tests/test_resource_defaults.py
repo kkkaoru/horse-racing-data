@@ -345,6 +345,34 @@ def test_default_memory_limit_env_cap_above_auto_has_no_effect(
     assert subject.default_memory_limit() == "24GB"
 
 
+def test_default_memory_limit_force_unset_matches_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PIPELINE_FORCE_MEMORY_GB", raising=False)
+    monkeypatch.delenv("PIPELINE_MAX_MEMORY_GB", raising=False)
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_pressure(monkeypatch, None)
+    assert subject.default_memory_limit() == "24GB"
+
+
+def test_default_memory_limit_force_overrides_auto_and_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIPELINE_FORCE_MEMORY_GB", "8")
+    monkeypatch.setenv("PIPELINE_MAX_MEMORY_GB", "6")
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_pressure(monkeypatch, available_gb=9, compressor_gb=5)
+    assert subject.default_memory_limit() == "8GB"
+
+
+def test_default_memory_limit_force_invalid_falls_back_to_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIPELINE_FORCE_MEMORY_GB", "0")
+    monkeypatch.delenv("PIPELINE_MAX_MEMORY_GB", raising=False)
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_pressure(monkeypatch, None)
+    assert subject.default_memory_limit() == "24GB"
+
+
 # ── _auto_threads / default_threads (incl. PIPELINE_MAX_THREADS) ────────────
 
 
@@ -448,6 +476,37 @@ def test_default_threads_memory_cap_indirectly_caps_threads(
     _patch_total_bytes(monkeypatch, 48)
     _patch_threads_environment(monkeypatch, cpu=16, load_1m=0.0, pressure=None)
     assert subject.default_threads() == 4
+
+
+def test_default_threads_force_unset_matches_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PIPELINE_FORCE_THREADS", raising=False)
+    monkeypatch.delenv("PIPELINE_MAX_THREADS", raising=False)
+    monkeypatch.delenv("PIPELINE_MAX_MEMORY_GB", raising=False)
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_threads_environment(monkeypatch, cpu=16, load_1m=0.0, pressure=None)
+    assert subject.default_threads() == 16
+
+
+def test_default_threads_force_overrides_auto_and_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIPELINE_FORCE_THREADS", "4")
+    monkeypatch.setenv("PIPELINE_MAX_THREADS", "1")
+    monkeypatch.delenv("PIPELINE_MAX_MEMORY_GB", raising=False)
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_threads_environment(monkeypatch, cpu=16, load_1m=0.0, pressure=(5.0, 20.0))
+    assert subject.default_threads() == 4
+
+
+def test_default_threads_force_invalid_falls_back_to_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PIPELINE_FORCE_THREADS", "abc")
+    monkeypatch.delenv("PIPELINE_MAX_THREADS", raising=False)
+    monkeypatch.delenv("PIPELINE_MAX_MEMORY_GB", raising=False)
+    _patch_total_bytes(monkeypatch, 48)
+    _patch_threads_environment(monkeypatch, cpu=16, load_1m=0.0, pressure=None)
+    assert subject.default_threads() == 16
 
 
 # ── add_resource_args / apply_to_connection ─────────────────────────────────

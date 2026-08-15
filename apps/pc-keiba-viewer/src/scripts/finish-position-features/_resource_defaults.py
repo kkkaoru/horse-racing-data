@@ -29,6 +29,11 @@ env cap (2026-07-12): PIPELINE_MAX_MEMORY_GB / PIPELINE_MAX_THREADS を設定す
 大容量 Mac (48 GiB) では pressure 未検出時に自動検出が ~24 GiB/16 threads まで
 達し得るため (プロジェクト方針の 6 GiB/4 threads を保証しない)、Mac 側の
 launchd/wrapper スクリプトからこの env を設定することで方針を強制できる。
+
+env force (2026-08-16): PIPELINE_FORCE_MEMORY_GB / PIPELINE_FORCE_THREADS は
+auto 検出と MAX-cap の前に完全上書きする。MAX は上げられないので、
+macOS compressor 判定で auto が 2-4 GiB / 1 thread に落ちた緊急経路で使う。
+未設定または不正値なら挙動は完全に不変。
 """
 from __future__ import annotations
 
@@ -74,6 +79,8 @@ SPILL_MAX_SIZE = "30GB"
 # 4 threads on standard-4 without needing either var set.
 PIPELINE_MAX_MEMORY_GB_ENV = "PIPELINE_MAX_MEMORY_GB"
 PIPELINE_MAX_THREADS_ENV = "PIPELINE_MAX_THREADS"
+PIPELINE_FORCE_MEMORY_GB_ENV = "PIPELINE_FORCE_MEMORY_GB"
+PIPELINE_FORCE_THREADS_ENV = "PIPELINE_FORCE_THREADS"
 
 
 def _env_positive_int(name: str) -> int | None:
@@ -201,11 +208,18 @@ def _auto_memory_limit_gb() -> int:
 def default_memory_limit() -> str:
     """Return the DuckDB `memory_limit` string (e.g. "6GB").
 
-    Applies the optional PIPELINE_MAX_MEMORY_GB env-var ceiling (see that
-    constant's own comment) as a final MIN-cap over the auto-detected value
-    -- unset (the default), this returns exactly what the pre-2026-07-12
-    auto-detect logic always returned.
+    PIPELINE_FORCE_MEMORY_GB, when a positive integer, replaces auto-detect
+    and PIPELINE_MAX_MEMORY_GB entirely. Unset or invalid values leave the
+    pre-2026-08-16 path unchanged.
+
+    Otherwise applies the optional PIPELINE_MAX_MEMORY_GB env-var ceiling
+    (see that constant's own comment) as a final MIN-cap over the
+    auto-detected value -- unset (the default), this returns exactly what
+    the pre-2026-07-12 auto-detect logic always returned.
     """
+    force_gb = _env_positive_int(PIPELINE_FORCE_MEMORY_GB_ENV)
+    if force_gb is not None:
+        return f"{force_gb}GB"
     auto_gb = _auto_memory_limit_gb()
     cap_gb = _env_positive_int(PIPELINE_MAX_MEMORY_GB_ENV)
     resolved_gb = auto_gb if cap_gb is None else min(auto_gb, cap_gb)
@@ -248,8 +262,12 @@ def default_threads() -> int:
     On Mac (48 GiB → 24 GiB limit): 24 / 1.5 = 16 threads ≥ cpu_count → no cap.
     On CF standard-4 (12 GiB → 6 GiB limit): 6 / 1.5 = 4 threads → capped.
 
-    Finally applies the optional PIPELINE_MAX_THREADS env-var ceiling (see
-    that constant's own comment) as a MIN-cap over the result above --
+    PIPELINE_FORCE_THREADS, when a positive integer, replaces auto-detect
+    and PIPELINE_MAX_THREADS entirely. Unset or invalid values leave the
+    pre-2026-08-16 path unchanged.
+
+    Otherwise applies the optional PIPELINE_MAX_THREADS env-var ceiling
+    (see that constant's own comment) as a MIN-cap over the result above --
     unset (the default), this returns exactly what the pre-2026-07-12
     auto-detect logic always returned. Note PIPELINE_MAX_MEMORY_GB alone
     already indirectly caps this too (via `mem_gb` above, itself already
@@ -257,6 +275,9 @@ def default_threads() -> int:
     the independent case (e.g. wanting fewer threads without a lower memory
     ceiling).
     """
+    force_threads = _env_positive_int(PIPELINE_FORCE_THREADS_ENV)
+    if force_threads is not None:
+        return force_threads
     mem_gb = int(default_memory_limit().rstrip("GB"))
     mem_cap = max(int(mem_gb / GB_PER_THREAD), 1)
     auto = _auto_threads(mem_cap)
