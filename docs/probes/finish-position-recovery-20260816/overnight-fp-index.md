@@ -2,6 +2,7 @@
 
 One page. If finish-position stalls after midnight, start here.
 Do not deploy during racing hours. Count Neon rows, not D1 `completed`.
+Git vs production (5 undeployed runtime fixes): `tonight-commit-summary-20260816.md`.
 
 ## Tonight's outcome
 
