@@ -61,7 +61,7 @@ from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
 from predict_lib.rescore import RaceScope, race_matches_scope
 from predict_lib.serve import R2Config, build_r2_day_base_key
 
-PIPELINE_DIR: Final[Path] = Path("/app/pipeline")
+PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline"))
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
 LAYER_DIR: Final[Path] = PIPELINE_DIR / "finish-position-features"
 WORK_DIR: Final[Path] = Path("/tmp/predict-upcoming")
