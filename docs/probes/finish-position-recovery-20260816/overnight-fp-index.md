@@ -149,6 +149,7 @@ stdout does not reach the Worker. Missing container logs blocked:
 Until container logs are durable, treat production feature quality as
 unobservable. Do not flip `DAY_BASE_SPLIT_ENABLED` or seed feat-cache
 to "fix" a collapse you cannot see from the Worker.
+Design (no impl): `container-observability-design-20260816.md`.
 
 ## Other notes from tonight
 
