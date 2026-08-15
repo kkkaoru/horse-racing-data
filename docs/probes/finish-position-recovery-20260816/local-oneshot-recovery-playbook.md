@@ -81,13 +81,14 @@ score/flush, wrote 36 races / 490 rows at 05:04:14 UTC.
   limit to 2.7GiB and OOM'd.
 - colima default VM is ~8GiB. `colima stop` frees it. Apple container
   `horse-racing-local-postgresql` is a different runtime and stays up.
-- `feat-<cat>-v7-final` is the orchestrator rename target of the last
-  layer, not a separate feature recipe. Tonight: NAR 333x327 and Ban-ei
-  117x271 are the scored bodies. JRA was scored from `feat-jra-layer-16`
-  (490x390) because the host resume skipped the rename. The leftover
-  `feat-jra-v7-final/features.parquet` is 1x8 (`race_id=jra:2026:0712:05:11`)
-  — rescore late-binding shape, not tonight's 0816 features. Do not treat
-  every `v7-final` as 1x8.
+- `feat-<cat>-v7-final` is two jobs on one path: last-layer rename target
+  and rescore overlay. Count rows and columns; do not trust the name.
+  NAR 333x327 and Ban-ei 117x271 are still the scored bodies. JRA 0816
+  was scored from `feat-jra-layer-16` (490x390). The 1x8 file under
+  `feat-jra-v7-final` is a rescore snapshot (`race_id`, `umaban`,
+  `ketto_toroku_bango`, `tansho_odds`, `tansho_ninkijun`, `odds_score`,
+  `popularity_score`, `weight_diff_from_avg`) for `jra:2026:0712:05:11`.
+  Dir mtime 05:38, file 06:13 — a later rescore overwrote the same path.
 
 ## DuckDB versions (measured, not assumed)
 

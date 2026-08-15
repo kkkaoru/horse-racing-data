@@ -41,16 +41,18 @@ Expected: `01/04/07=12`, `35=12`, `44=10`, `55=10`, `83=12`.
 
 ## What the leftover files mean
 
-| path                                 | measured  | use                                                                                                                                                                                    |
-| ------------------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `feat-jra-layer-16`                  | 490 x 390 | JRA scored body tonight (manual flush)                                                                                                                                                 |
-| `feat-nar-v7-final`                  | 333 x 327 | NAR scored body (`rename(final_dir)`)                                                                                                                                                  |
-| `feat-ban-ei-v7-final`               | 117 x 271 | Ban-ei scored body                                                                                                                                                                     |
-| `feat-jra-v7-final/features.parquet` | 1 x 8     | leftover. `race_id=jra:2026:0712:05:11`. Rescore late-binding overlay (`odds_score`, `popularity_score`, `tansho_odds`, `tansho_ninkijun`, `weight_diff_from_avg`). Not 0816 features. |
+| path                                 | measured  | use                                                                                                                                                                                                                                                                                         |
+| ------------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `feat-jra-layer-16`                  | 490 x 390 | JRA scored body tonight (manual flush)                                                                                                                                                                                                                                                      |
+| `feat-nar-v7-final`                  | 333 x 327 | NAR scored body (`rename(final_dir)`)                                                                                                                                                                                                                                                       |
+| `feat-ban-ei-v7-final`               | 117 x 271 | Ban-ei scored body                                                                                                                                                                                                                                                                          |
+| `feat-jra-v7-final/features.parquet` | 1 x 8     | rescore snapshot, not broken features. Columns: `race_id`, `umaban`, `ketto_toroku_bango`, `tansho_odds`, `tansho_ninkijun`, `odds_score`, `popularity_score`, `weight_diff_from_avg`. Row is `jra:2026:0712:05:11`. Dir mtime 05:38, file 06:13 — a later rescore overwrote the same path. |
 
-`_final_parquet_dir` is only the last-layer rename target. JRA stayed 1x8
-because the host resume scored `layer-16` and never renamed over the old
-0712 rescore file. NAR/Ban-ei orchestrator runs did the rename.
+Same path, two jobs. `_final_parquet_dir` is the last-layer rename target
+_and_ the rescore cache overlay (`features.parquet`). NAR/Ban-ei still
+hold the full scored body because nothing overwrote them. JRA was scored
+from `layer-16` (never renamed), then a 06:13 rescore wrote the 1x8 file
+into `v7-final`. Do not trust the name. Count rows and columns.
 
 ## PREWARM / day-base (do not enable tonight)
 
