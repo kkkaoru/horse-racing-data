@@ -58,3 +58,11 @@ Baselines:
 - `neon-0401-ranks-before-weight-20260816.tsv` (gen 07:07:10Z)
 - `neon-0701-ranks-before-weight-20260816.tsv` (gen 05:04:08Z)
 - `neon-0101-ranks-before-weight-20260816.tsv` (gen 05:03:55Z)
+
+Also record, on the **same** rescore row: did `tansho_odds` / `odds_score`
+change, or only `weight_diff_from_avg` / bataiju? Advisor local PG at 08:41
+had JRA odds **0/500** as well as weights. `apply_fresh_snapshots` refreshes
+both. If odds are still empty at 09:09, the rank delta is weight-only (or
+pedigree restore on 04/01). If both fields move in one `generated_at`, do
+not attribute the rank move to weight alone — write that they are not
+separable without a second snapshot.
