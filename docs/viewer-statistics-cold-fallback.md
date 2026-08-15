@@ -34,18 +34,47 @@ cache version:
 Rate-stat fallback candidates are evaluated concurrently. The request waits at most
 six seconds for the complete candidate set. It uses the first qualifying result in
 the original candidate order only when the complete set finishes within the budget.
-If the deadline expires, all partial results are discarded. This prevents completion
-order or transient load from selecting a different response that is then retained in
-KV.
+If the deadline expires, all partial results are discarded and the section computation
+fails. The route may serve a valid stale body; otherwise it returns `503` without
+caching a load-dependent partial body. An exhausted search is different from a timed-out
+search: only an exhausted search may return an incomplete-data disclosure and legitimate
+zero rows. This prevents completion order or transient load from selecting a different
+response that is then retained in KV.
 
-The response can expose `bloodlineStatsIncomplete` when coverage is unavailable. The
-UI explains that the affected bloodline score remains blank instead of silently
-omitting it.
+The distinction matters on a truly cold database path. An initial JRA 01/10 generation
+took 9.048 seconds and hit the six-second fallback deadline; three immediately repeated
+runs took 2.706, 2.424, and 2.256 seconds and completed. Earlier 68-race validation had
+run against a warm database and therefore reported zero bloodline mismatches. Warm-only
+validation does not prove that a deadline-dependent cold response is safe.
 
-Validation covered all 68 races on 2026-08-15 plus the A8 overseas race. Compared
-with the existing warm responses, bloodline rows and selected settings had zero
-mismatches. A fresh-process cold generation of Ban-ei 83/01 was repeated five times;
-all bodies had length 647,223 and hash `b7f851d0c98371a3`.
+The response can expose `bloodlineStatsIncomplete` when a completed candidate search
+finds insufficient coverage. The UI explains that the affected bloodline score remains
+blank instead of silently omitting it. A fresh-process cold generation of Ban-ei 83/01
+was repeated five times; all bodies had length 647,223 and hash
+`b7f851d0c98371a3`.
+
+## Explicit all-conditions-off remains a known heavy path
+
+The `similar` controls allow a user to turn off every condition and select a ten-year
+or all-time window. Unlike automatic fallback, this explicit state can also disable
+venue filtering. For NAR this creates an all-venue scan. The legacy query itself can
+exceed the 15-second statement timeout in that state; repeated local probes of 55/10
+and 44/10 timed out. This is a user-reachable existing issue, but it is separate from
+the normal automatic fallback, which preserves venue filtering for NAR. Do not use the
+explicit all-conditions-off timing as a proxy for default request performance.
+
+Possible later fixes include retaining the venue when clearing conditions or limiting
+the selectable period. This path was intentionally not changed in the 2026-08-15
+fallback deployment work.
+
+## Cross-database ordering comparisons
+
+Local PostgreSQL and Neon can use different collations. A person-row query ordered by
+rate, starts, and name was stable across five baseline and five candidate executions
+per race on the same local database, while the local and Neon captures ordered tied
+names differently. Compare order-dependent output in the same database environment;
+do not use local row order as a byte-for-byte proxy for Neon row order. Compare keys,
+metrics, and detail multisets separately when validating across those environments.
 
 ## Why Ban-ei does not default to exact race-title matching
 
