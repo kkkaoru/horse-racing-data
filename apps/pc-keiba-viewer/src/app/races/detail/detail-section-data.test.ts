@@ -44,16 +44,20 @@ const {
   getBloodlineStatsMock,
   getRaceDetailMock,
   getRaceRunnersMock,
+  getRaceTimeStatsMock,
   getRaceTrainingsMock,
   getSimilarRaceStatsMock,
+  getTimeScoreRowsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
 } = vi.hoisted(() => ({
   getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
   getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
+  getRaceTimeStatsMock: vi.fn<() => Promise<unknown>>(),
   getRaceTrainingsMock: vi.fn<() => Promise<unknown[]>>(),
   getSimilarRaceStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getTimeScoreRowsMock: vi.fn<() => Promise<unknown[]>>(),
   getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
   getFinishPositionBucketEvaluationMock: vi.fn<GetFinishPositionBucketEvaluationFn>(),
 }));
@@ -73,11 +77,15 @@ vi.mock("../../../db/queries", () => ({
   getRacePaceModelPredictionFeatures: vi.fn<() => Promise<unknown[]>>(),
   getRacePaceSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
   getRaceRunners: getRaceRunnersMock,
-  getRaceTimeStats: vi.fn<() => Promise<unknown>>(),
+  getRaceTimeStats: getRaceTimeStatsMock,
   getRaceTrainings: getRaceTrainingsMock,
   getRunningStyleBucketEvaluation: getRunningStyleBucketEvaluationMock,
   getSimilarRaceStats: getSimilarRaceStatsMock,
-  getTimeScoreRows: vi.fn<() => Promise<unknown[]>>(),
+  getTimeScoreRows: getTimeScoreRowsMock,
+}));
+
+vi.mock("../../../lib/race-time-stats-cache.server", () => ({
+  getOrComputeRaceTimeStats: getRaceTimeStatsMock,
 }));
 
 vi.mock("../../../lib/premium-data-top-cache.server", () => ({
@@ -265,8 +273,10 @@ beforeEach(() => {
   getBloodlineStatsMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
+  getRaceTimeStatsMock.mockReset();
   getRaceTrainingsMock.mockReset();
   getSimilarRaceStatsMock.mockReset();
+  getTimeScoreRowsMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
   getFinishPositionBucketEvaluationMock.mockReset();
 });
@@ -457,6 +467,162 @@ it("discards timed-out parallel domestic bloodline fallback and discloses incomp
 
     expect(payload).toMatchObject({ bloodlineRows: [], bloodlineStatsIncomplete: true });
     expect(getBloodlineStatsMock.mock.calls.length).toBeGreaterThan(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("hides zero person rows and flags a timed-out similar fallback", async () => {
+  vi.useFakeTimers();
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getSimilarRaceStatsMock
+    .mockResolvedValueOnce([
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Uncomputed Jockey",
+        quinellaCount: 0,
+        quinellaRate: 0,
+        showCount: 0,
+        showRate: 0,
+        starts: 0,
+        winCount: 0,
+        winRate: 0,
+      },
+      {
+        category: "trainer",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 20,
+        name: "Computed Trainer",
+        quinellaCount: 3,
+        quinellaRate: 15,
+        showCount: 4,
+        showRate: 20,
+        starts: 20,
+        winCount: 2,
+        winRate: 10,
+      },
+    ])
+    .mockImplementation(() => new Promise(() => undefined));
+  getBloodlineStatsMock.mockResolvedValueOnce([
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Sire",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+
+  try {
+    const payloadPromise = getDetailSectionPayload("similar", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    });
+    await vi.advanceTimersByTimeAsync(6_000);
+    const payload = await payloadPromise;
+
+    expect(payload).toMatchObject({
+      rows: [{ name: "Computed Trainer", starts: 20 }],
+      similarStatsIncomplete: true,
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("keeps legitimate zero person rows when fallback candidates are exhausted", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  const zeroRows = [
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 0,
+      name: "Zero Jockey",
+      quinellaCount: 0,
+      quinellaRate: 0,
+      showCount: 0,
+      showRate: 0,
+      starts: 0,
+      winCount: 0,
+      winRate: 0,
+    },
+  ];
+  getSimilarRaceStatsMock.mockResolvedValue(zeroRows);
+  getBloodlineStatsMock.mockResolvedValueOnce([]).mockResolvedValue([]);
+
+  const payload = await getDetailSectionPayload("similar", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ rows: zeroRows });
+  expect(payload).not.toHaveProperty("similarStatsIncomplete");
+});
+
+it("hides zero person rows and flags a timed-out time-score fallback", async () => {
+  vi.useFakeTimers();
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getTimeScoreRowsMock.mockResolvedValueOnce([]);
+  getRaceTimeStatsMock.mockResolvedValueOnce({ correlationRows: [] });
+  getSimilarRaceStatsMock
+    .mockResolvedValueOnce([
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Uncomputed Jockey",
+        quinellaCount: 0,
+        quinellaRate: 0,
+        showCount: 0,
+        showRate: 0,
+        starts: 0,
+        winCount: 0,
+        winRate: 0,
+      },
+    ])
+    .mockImplementation(() => new Promise(() => undefined));
+  getBloodlineStatsMock.mockResolvedValueOnce([]).mockResolvedValue([]);
+
+  try {
+    const payloadPromise = getDetailSectionPayload("time-score", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    });
+    await vi.runAllTimersAsync();
+    const payload = await payloadPromise;
+
+    expect(payload).toMatchObject({ similarRows: [], similarStatsIncomplete: true });
   } finally {
     vi.useRealTimers();
   }

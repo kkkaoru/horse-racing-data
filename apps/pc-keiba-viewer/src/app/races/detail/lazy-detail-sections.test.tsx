@@ -96,6 +96,7 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
           settings: {},
           similarRows: [],
           similarStatsFallback: true,
+          similarStatsIncomplete: true,
           source: "jra",
           type: "time-score",
         }),
@@ -294,6 +295,9 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
     screen.getByText(
       "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。",
     ),
+  ).toBeDefined();
+  expect(
+    screen.getByText("人物成績の一部を算出できませんでした。未算出の人物は0戦として表示しません。"),
   ).toBeDefined();
   const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");

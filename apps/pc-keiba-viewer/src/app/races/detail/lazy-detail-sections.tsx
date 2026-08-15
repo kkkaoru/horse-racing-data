@@ -142,6 +142,7 @@ type SimilarPayload = {
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
   similarStatsFallback?: boolean;
+  similarStatsIncomplete?: boolean;
   source: RaceSource;
   type: "similar";
 };
@@ -158,6 +159,7 @@ type TimeScorePayload = {
   settings: SimilarRaceStatsSettings;
   similarRows: SimilarRaceStatsRow[];
   similarStatsFallback?: boolean;
+  similarStatsIncomplete?: boolean;
   source: RaceSource;
   type: "time-score";
 };
@@ -175,6 +177,8 @@ const BLOODLINE_STATS_INCOMPLETE_NOTICE =
   "十分な血統成績がない競走馬は血統スコアを算出できないため、該当項目を空欄として表示します。";
 const SIMILAR_STATS_FALLBACK_NOTICE =
   "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。";
+const SIMILAR_STATS_INCOMPLETE_NOTICE =
+  "人物成績の一部を算出できませんでした。未算出の人物は0戦として表示しません。";
 
 type FinishPredictionPayload = {
   bucket: FinishPositionBucketSectionData;
@@ -984,6 +988,9 @@ export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
           ) : null}
           {payload.similarStatsFallback ? (
             <p className="stats-scope-note">{SIMILAR_STATS_FALLBACK_NOTICE}</p>
+          ) : null}
+          {payload.similarStatsIncomplete ? (
+            <p className="stats-scope-note">{SIMILAR_STATS_INCOMPLETE_NOTICE}</p>
           ) : null}
           <BloodlineSimilarCombinedTable
             bloodlineRows={payload.bloodlineRows}

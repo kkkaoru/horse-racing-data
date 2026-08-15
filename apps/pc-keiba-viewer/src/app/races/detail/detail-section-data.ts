@@ -912,6 +912,11 @@ const findConditionAnalysisCandidate = async <T extends SimilarRaceStatsSettings
   );
 };
 
+type RateStatsCandidateResult<T, R> =
+  | { status: "exhausted" }
+  | { status: "matched"; settings: T; stats: R }
+  | { status: "timedOut" };
+
 const findRateStatsCandidate = async <
   T extends SimilarRaceStatsSettings,
   R extends readonly (BloodlineStatsRow | SimilarRaceStatsRow)[],
@@ -919,9 +924,9 @@ const findRateStatsCandidate = async <
   candidates: readonly T[],
   getStats: (settings: T) => Promise<R>,
   hasEnoughStats: (stats: R) => boolean = hasRateRows,
-): Promise<{ settings: T; stats: R } | null> => {
+): Promise<RateStatsCandidateResult<T, R>> => {
   if (candidates.length === 0) {
-    return null;
+    return { status: "exhausted" };
   }
 
   const batchStatsPromise = Promise.all(
@@ -938,10 +943,11 @@ const findRateStatsCandidate = async <
     }),
   ]).finally(() => clearTimeout(timeout));
   if (batchStats === null) {
-    return null;
+    return { status: "timedOut" };
   }
 
-  return batchStats.find(({ stats }) => hasEnoughStats(stats)) ?? null;
+  const matched = batchStats.find(({ stats }) => hasEnoughStats(stats));
+  return matched ? { status: "matched", ...matched } : { status: "exhausted" };
 };
 
 export const getDetailStatsContext = async ({
@@ -1524,6 +1530,7 @@ export const getDetailSectionPayload = async (
       getOrComputeRaceTimeStats({ race, settings: context.conditionAnalysisSettings }),
     ]);
     let resolvedSimilarSettings = context.statsSettings;
+    let similarStatsTimedOut = false;
     let similarRows = getEligibleSimilarStatsRows(
       race,
       await getSimilarRaceStats(race, resolvedSimilarSettings),
@@ -1539,9 +1546,12 @@ export const getDetailSectionPayload = async (
           getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, candidate)),
         (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
       );
-      if (matched) {
+      if (matched.status === "matched") {
         resolvedSimilarSettings = matched.settings;
         similarRows = matched.stats;
+      } else if (matched.status === "timedOut") {
+        similarStatsTimedOut = true;
+        similarRows = similarRows.filter((row) => row.starts > 0);
       }
     }
     let resolvedBloodlineSettings = context.bloodlineStatsSettings;
@@ -1561,7 +1571,7 @@ export const getDetailSectionPayload = async (
           getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
         (stats) => hasBloodlineScoreCoverage(stats, runners),
       );
-      if (matched) {
+      if (matched.status === "matched") {
         resolvedBloodlineSettings = matched.settings;
         bloodlineRows = matched.stats;
       }
@@ -1588,6 +1598,7 @@ export const getDetailSectionPayload = async (
       runners,
       settings: resolvedSimilarSettings,
       similarRows,
+      ...(similarStatsTimedOut ? { similarStatsIncomplete: true } : {}),
       ...getSimilarStatsFallbackPayload(race, resolvedSimilarSettings),
       source: race.source,
       type: section,
@@ -1803,7 +1814,7 @@ export const getDetailSectionPayload = async (
           getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
         (stats) => hasBloodlineScoreCoverage(stats, runners),
       );
-      if (matched) {
+      if (matched.status === "matched") {
         resolvedSettings = matched.settings;
         rows = matched.stats;
       }
@@ -1821,6 +1832,7 @@ export const getDetailSectionPayload = async (
   }
 
   let resolvedSettings = context.statsSettings;
+  let similarStatsTimedOut = false;
   let rows = getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, resolvedSettings));
   if (!hasExplicitStatsState(query, "similar") && !hasSimilarJockeyTrainerCoverage(rows, runners)) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
@@ -1830,9 +1842,12 @@ export const getDetailSectionPayload = async (
         getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, candidate)),
       (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
     );
-    if (matched) {
+    if (matched.status === "matched") {
       resolvedSettings = matched.settings;
       rows = matched.stats;
+    } else if (matched.status === "timedOut") {
+      similarStatsTimedOut = true;
+      rows = rows.filter((row) => row.starts > 0);
     }
   }
   let resolvedBloodlineSettings = context.bloodlineStatsSettings;
@@ -1851,7 +1866,7 @@ export const getDetailSectionPayload = async (
       async (candidate) => getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
       (stats) => hasBloodlineScoreCoverage(stats, runners),
     );
-    if (matched) {
+    if (matched.status === "matched") {
       resolvedBloodlineSettings = matched.settings;
       bloodlineRows = matched.stats;
     }
@@ -1866,6 +1881,7 @@ export const getDetailSectionPayload = async (
     rows,
     runners,
     settings: resolvedSettings,
+    ...(similarStatsTimedOut ? { similarStatsIncomplete: true } : {}),
     ...getSimilarStatsFallbackPayload(race, resolvedSettings),
     source: race.source,
     type: "similar" satisfies DetailSection,
