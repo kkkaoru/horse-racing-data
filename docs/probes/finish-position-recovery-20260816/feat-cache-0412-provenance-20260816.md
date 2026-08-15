@@ -93,3 +93,31 @@ parquet, not the 05:04 rows. That risk is why cache PUT was stopped.
 Do not treat the 04:09 HIT as tonight's source of truth, and do not
 treat the mismatch as proven train/serve skew until a same-job local
 vs container pair is compared.
+
+## Was pedigree data available at 04:09?
+
+`pedigree_staging.stage_horse_pedigree` is a **temp table** built inside
+each DuckDB base run from `jvd_um` / `nvd_um` / `nvd_nu`. There is no
+persistent staging artifact whose mtime can be compared to 04:09.
+
+What can be measured:
+
+| evidence                                     | time / value                                                     |
+| -------------------------------------------- | ---------------------------------------------------------------- |
+| host `feat-jra-base` mtime                   | **03:55:05 JST**                                                 |
+| 04/12 `pedigree_score_for_race` in that base | **15/15 finite, 15 unique**, min 0.029 max 0.103. No 0.0, no NaN |
+| same 15 `ketto` in Neon `jvd_um`             | 15/15 rows, 15/15 sire, 15/15 damsire                            |
+| those `jvd_um.data_sakusei_nengappi`         | min **20260720**, max **20260810**                               |
+
+`data_sakusei_nengappi` is a JST calendar date, not a clock. Latest
+master update for these 15 horses is **2026-08-10**, two days before
+the 04:09 PUT. Host base at 03:55 already had real pedigree scores.
+
+Allowed conclusion: **late master load does not explain a 04:09 cache
+full of 0.0/NaN pedigree scores.** If the 04:09 writer saw the same
+`jvd_um` rows, the collapse is in that writer / its catalog snapshot,
+not in "pedigree arrived after 04:09".
+
+Not proven: that the 04:09 container attached the same catalog
+generation the host used at 03:55. That would need container logs from
+that job, which we do not have.
