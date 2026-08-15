@@ -82,6 +82,13 @@ describe("race detail section cache helpers", () => {
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
+        keibajoCode: "44",
+        section: "time-score",
+      }),
+    ).toBe("race-detail-section:v4:2026:5:23:44:12:time-score:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
         keibajoCode: "A8",
         section: "condition",
       }),
