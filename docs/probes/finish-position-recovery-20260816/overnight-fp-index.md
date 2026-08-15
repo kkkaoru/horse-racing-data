@@ -72,11 +72,13 @@ Design exists, not enabled.
 
 ## Container deploy (window = user confirmation)
 
+Full checklist: `container-deploy-window-20260816.md`.
 Do not run this during 09:40–20:50 JST. 07-18 outage was a mid-card deploy.
 
-Current production image (pre-1.5.5 pin, rollback target):
+Current production version (read-only `wrangler deployments list` at 06:50 JST):
 
-`0c76062e-03c6-4b8b-9a25-a501a4f4c9cc` (finish-position-cron, 2026-08-14T15:00:58Z)
+`0c76062e-03c6-4b8b-9a25-a501a4f4c9cc` (100% since 2026-08-14T15:00:58Z).
+Emergency previous rollback: `953d086b-4342-42ce-a146-0a5061d51575`.
 
 Local image already built, not shipped: `finish-position-predict-local:duckdb-1.5.5`.
 Commits that would ride a deploy: `85bfba82` writable txn, `2139645b`
