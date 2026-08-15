@@ -40,3 +40,21 @@ does not poison R2.
 Still required for live pedigree on the **first** `mode=full` of a day:
 day-base without `--target-race` (`DAY_BASE_SPLIT` + working PREWARM /
 `ensure_day_base`). Not flipped tonight.
+
+Commit `6793ad7f` also contains unrelated A8 probe files
+(`a8-early-market-board-0712-20260816.md`, `a8-main-generation-20260816.md`,
+`generate_a8_main.py`, `test_generate_a8_main.py`). They were not part of
+this change. Do not amend.
+
+## 09:09 weight observation (confound)
+
+`04/01` Neon `prediction_generated_at` is **07:07:10Z** (production
+focused-full overwrite, likely dead pedigree). `07/01` is still
+**05:04:08Z** (tonight’s full-day host generate). Rank movement on 04/01
+alone cannot separate “cache seed restored pedigree” from “reverted the
+07:07 overwrite”. Observe **both** 04/01 and 07/01 after weight rescore.
+Baselines:
+
+- `neon-0401-ranks-before-weight-20260816.tsv` (gen 07:07:10Z)
+- `neon-0701-ranks-before-weight-20260816.tsv` (gen 05:04:08Z)
+- `neon-0101-ranks-before-weight-20260816.tsv` (gen 05:03:55Z)
