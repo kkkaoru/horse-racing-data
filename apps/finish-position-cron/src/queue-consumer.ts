@@ -558,6 +558,14 @@ const handleFocusedFullStatus = async (
         runYmd,
         status: "success",
       });
+      await pickUpFocusedFullCache({
+        category,
+        debug: message.body.debug,
+        env,
+        keibajoCode: message.body.keibajoCode,
+        raceBango: message.body.raceBango,
+        runYmd,
+      });
     }
     await recordCompletedBestEffort(env, message.body);
     message.ack();
@@ -575,7 +583,6 @@ const handleFocusedFullStatus = async (
 };
 
 const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
-  if (message.debug !== true) return;
   console.log(
     `Predict progress category=${message.category} runYmd=${message.runYmd} keibajo=${
       message.keibajoCode ?? "-"
@@ -857,6 +864,17 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         raceBango: message.body.raceBango,
         runYmd,
         status: "success",
+      });
+      // Detached focused-full already returned "accepted" before the parquet
+      // existed. Pickup here is the success-path counterpart of the Neon-complete
+      // skip path above: pull GET /focused-full-cache and FEATURES_CACHE.put.
+      await pickUpFocusedFullCache({
+        category,
+        debug: message.body.debug,
+        env,
+        keibajoCode: message.body.keibajoCode,
+        raceBango: message.body.raceBango,
+        runYmd,
       });
     }
     await recordCompletedBestEffort(env, message.body);

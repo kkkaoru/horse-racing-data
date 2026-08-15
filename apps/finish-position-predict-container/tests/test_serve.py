@@ -1492,6 +1492,42 @@ def test_iter_predict_chunks_full_mode_calls_per_race_payload_fn() -> None:
     assert last.get("perRaceParquets") == per_race
 
 
+def test_iter_predict_chunks_scoped_rescore_cache_miss_skips_per_race_payload() -> None:
+    """Scoped CacheMiss fallback must not embed perRaceParquets (dead JRA pedigree)."""
+    called = [False]
+
+    def _per_race_payload() -> list[dict[str, str]] | None:
+        called[0] = True
+        return [
+            {
+                "parquetBase64": "ZGVnZW5lcmF0ZQ==",
+                "parquetKey": "feat-cache/catalog-v1/jra/20260619/05/01/features.parquet",
+            }
+        ]
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="01",
+    )
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            rescore_fn=_mock_rescore_cache_miss,
+            per_race_parquet_payload_fn=_per_race_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert called[0] is False
+    assert "perRaceParquets" not in last
+
+
 def test_iter_predict_chunks_rescore_mode_calls_per_race_payload_fn() -> None:
     """On mode=rescore, per_race_parquet_payload_fn must be called (both modes)."""
     called = [False]

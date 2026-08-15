@@ -344,7 +344,7 @@ test("uses a stable category-scoped DO name for focused per-race full skipDedup 
       ]),
       makeEnv(),
     );
-    expect(stubFetchMock).toHaveBeenCalledTimes(1);
+    expect(stubFetchMock).toHaveBeenCalledTimes(2);
     const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
     expect(fetchRequest.url).toBe(
       "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
@@ -473,7 +473,7 @@ test("force:true bypasses the focused full completion guard and reaches the Cont
     makeEnv(),
   );
   expect(isFocusedFullPredictionCompleteMock).not.toHaveBeenCalled();
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&keibajoCode=02&raceBango=01&force=1",
@@ -518,7 +518,7 @@ test("continues to container when focused full completion guard fails", async ()
       ]),
       makeEnv(),
     );
-    expect(stubFetchMock).toHaveBeenCalledTimes(1);
+    expect(stubFetchMock).toHaveBeenCalledTimes(2);
     expect(ackMock).toHaveBeenCalledTimes(1);
     expect(consoleWarn).toHaveBeenCalledWith(
       "Focused full completion guard failed category=nar runYmd=20260701 keibajo=50 race=12:",
@@ -545,7 +545,7 @@ test("ignores requestId in the DO name for focused per-race full skipDedup messa
     ]),
     makeEnv(),
   );
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&keibajoCode=35&raceBango=01",
@@ -602,11 +602,11 @@ test("reuses the category-scoped DO across multiple focused per-race full messag
     ]),
     makeEnv(),
   );
-  expect(idFromNameMock).toHaveBeenCalledTimes(2);
+  expect(idFromNameMock).toHaveBeenCalledTimes(4);
   expect(idFromNameMock).toHaveBeenNthCalledWith(1, "predict-nar");
   expect(idFromNameMock).toHaveBeenNthCalledWith(2, "predict-nar");
   const firstRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
-  const secondRequest = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
+  const secondRequest = (stubFetchMock.mock.calls[2] as unknown as [Request])[0];
   expect(firstRequest.url).toContain("raceBango=01");
   expect(secondRequest.url).toContain("raceBango=02");
   expect(ackMock).toHaveBeenCalledTimes(2);
@@ -713,7 +713,7 @@ test("logs container progress for per-race predict messages when debug is enable
   consoleSpy.mockRestore();
 });
 
-test("suppresses container progress logs for normal predict messages", async () => {
+test("logs container progress for normal predict messages", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -725,7 +725,7 @@ test("suppresses container progress logs for normal predict messages", async () 
     },
   );
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(consoleSpy).not.toHaveBeenCalledWith(
+  expect(consoleSpy).toHaveBeenCalledWith(
     "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=predict elapsed=12.3",
   );
   consoleSpy.mockRestore();
@@ -1330,7 +1330,7 @@ test("skips claimRun for focused per-race skipDedup full messages and still fetc
     makeEnv(),
   );
   expect(claimRunMock).not.toHaveBeenCalled();
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
   expect(completeRunMock).not.toHaveBeenCalled();
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
@@ -1702,6 +1702,11 @@ test("acks focused skipDedup full messages when result status is already-complet
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  const alreadyCompletePickup = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
+  expect(alreadyCompletePickup.url).toBe(
+    "http://do/focused-full-cache?category=jra&runDate=20260628&keibajoCode=02&raceBango=01",
+  );
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
     day: "28",
     keibajoCode: "02",
@@ -1744,6 +1749,11 @@ test("falls through focused skipDedup full messages with result status success t
   expect(completeRunMock).not.toHaveBeenCalled();
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  const successPickup = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
+  expect(successPickup.url).toBe(
+    "http://do/focused-full-cache?category=jra&runDate=20260628&keibajoCode=02&raceBango=01",
   );
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
     day: "28",

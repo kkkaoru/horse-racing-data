@@ -543,11 +543,14 @@ def build_result_line(
     parquet bytes to R2 via its FEATURES_CACHE binding — bypassing the
     read-only S3 token limitation in the Container.
 
-    When ``per_race_parquets`` is provided (only on ``mode=full`` success), each
+    When ``per_race_parquets`` is provided (``mode=full`` success, or a
+    ``mode=rescore`` HIT that refreshed an already-healthy cache), each
     element is a ``{"parquetBase64": ..., "parquetKey": ...}`` dict for one race;
     the Worker DO proxies every per-race parquet to R2 under the per-race key
-    (``build_r2_per_race_feat_cache_key``) so a Stage-2 rescore can hit a single
-    race object even when the whole-day parquet upload was skipped.
+    (``build_r2_per_race_feat_cache_key``) so a later scoped rescore can HIT.
+    A scoped ``mode=rescore`` CacheMiss fallback must NOT embed these fields:
+    that rebuild uses ``LAYER_CHAIN`` + ``--target-race`` and would seed a
+    degenerate JRA pedigree vector.
 
     Args:
         category:        The category that was predicted (e.g. ``"jra"``).
@@ -1421,6 +1424,7 @@ def iter_predict_chunks(
     last_progress = time_fn()  # reset after forced emit
 
     races_predicted = 0
+    used_scoped_cache_miss_fallback = False
 
     # Determine which callable to run first and whether a rescore->full fallback
     # may be needed.
@@ -1527,12 +1531,13 @@ def iter_predict_chunks(
             # `_build_feature_rows` inline-build a whole-day day-base (the
             # split path's ensure_day_base miss -> build_day_base). Whole-day
             # rescore miss keeps the existing day-base-capable full fallback.
-            fallback_cm = (
+            used_scoped_cache_miss_fallback = has_single_race_scope(params)
+            scoped_fallback_cm = (
                 activate_scoped_rescore_cache_miss_fallback()
-                if has_single_race_scope(params)
+                if used_scoped_cache_miss_fallback
                 else nullcontext()
             )
-            with fallback_cm:
+            with scoped_fallback_cm:
                 fb_result, fb_error, last_progress = yield from _iter_keepalive(
                     _fallback_call,
                     "predict",
@@ -1591,8 +1596,13 @@ def iter_predict_chunks(
         except BaseException:
             pass
 
+    # Do not PUT a CacheMiss fallback rebuild. That path is LAYER_CHAIN +
+    # --target-race (see activate_scoped_rescore_cache_miss_fallback) and
+    # produces dead JRA pedigree components. A later HIT would lock the
+    # degeneration in. Fresh full / HIT-rescore still seed as before.
     per_race_parquets: list[dict[str, str]] | None = None
-    if per_race_parquet_payload_fn is not None:
+    skip_degenerate_cache_put = used_scoped_cache_miss_fallback
+    if per_race_parquet_payload_fn is not None and not skip_degenerate_cache_put:
         try:
             per_race_parquets = per_race_parquet_payload_fn()
         except BaseException:
