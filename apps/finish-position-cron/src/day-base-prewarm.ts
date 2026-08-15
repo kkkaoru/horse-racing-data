@@ -91,13 +91,18 @@ const describePrewarmResult = (result: PrewarmResultLine): string =>
     result.daybaseWatermark ? "present" : "absent"
   } error=${result.error ?? NONE_LABEL}`;
 
+const hasUploadableParquet = (result: PrewarmResultLine): boolean => {
+  const parquetKey = result.parquetKey?.trim() ?? "";
+  return parquetKey.length > 0;
+};
+
 const logPrewarmResult = (
   category: PredictCategory,
   runYmd: string,
   result: PrewarmResultLine,
 ): void => {
   const summary = `category=${category} runYmd=${runYmd} ${describePrewarmResult(result)}`;
-  if (result.status === PREWARM_SUCCESS_STATUS) {
+  if (result.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) {
     console.log(`[day-base-prewarm] success ${summary}`);
     return;
   }

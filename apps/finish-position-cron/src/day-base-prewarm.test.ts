@@ -270,6 +270,44 @@ test("prewarmCategory logs a warning and does not throw when the response body i
   warnSpy.mockRestore();
 });
 
+test("prewarmCategory logs a warning when status is success but parquetKey is missing", async () => {
+  containerDoFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(resultLineBody({ category: "jra", runDate: "20260628", status: "success" }), {
+        status: 200,
+      }),
+    ),
+  );
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] failed category=jra runYmd=20260628 status=success parquetKey=- watermark=absent error=-",
+  );
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory logs a warning when status is success but parquetKey is blank", async () => {
+  containerDoFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        resultLineBody({
+          category: "jra",
+          parquetKey: "   ",
+          runDate: "20260628",
+          status: "success",
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] failed category=jra runYmd=20260628 status=success parquetKey=    watermark=absent error=-",
+  );
+  warnSpy.mockRestore();
+});
+
 test("prewarmCategory logs a failed outcome with the status placeholder when the result line omits status", async () => {
   containerDoFetchMock.mockImplementation(() =>
     Promise.resolve(new Response('{"type":"result","category":"jra"}\n', { status: 200 })),
