@@ -723,10 +723,10 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
   );
   expect(queryText).toMatch(/targets\.name_fallback_allowed/u);
   expect(queryText).toMatch(
-    /order by\s+kaisai_nen desc,\s+kaisai_tsukihi desc,\s+race_source asc,\s+keibajo_code asc,\s+race_bango asc,\s+umaban asc,\s+ketto_toroku_bango asc/u,
+    /order by\s+kaisai_nen desc,\s+kaisai_tsukihi desc,\s+race_bango asc,\s+umaban asc,\s+race_source asc,\s+keibajo_code asc,\s+ketto_toroku_bango asc/u,
   );
   expect(queryText).toMatch(
-    /order by\s+ranked_grouped_entries\.kaisai_nen desc,\s+ranked_grouped_entries\.kaisai_tsukihi desc,\s+ranked_grouped_entries\.race_source asc,\s+ranked_grouped_entries\.keibajo_code asc,\s+ranked_grouped_entries\.race_bango asc,\s+ranked_grouped_entries\.umaban asc,\s+ranked_grouped_entries\.ketto_toroku_bango asc/u,
+    /order by\s+ranked_grouped_entries\.kaisai_nen desc,\s+ranked_grouped_entries\.kaisai_tsukihi desc,\s+ranked_grouped_entries\.race_bango asc,\s+ranked_grouped_entries\.umaban asc,\s+ranked_grouped_entries\.race_source asc,\s+ranked_grouped_entries\.keibajo_code asc,\s+ranked_grouped_entries\.ketto_toroku_bango asc/u,
   );
   expect(queryText).toMatch(/when ranked_grouped_entries\.name is null then null/u);
   expect(queryText).toMatch(
