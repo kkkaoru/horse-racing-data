@@ -59,6 +59,30 @@ bun --cwd apps/local-postgresql indexes:repair
 `replica:push` also runs `indexes:repair:quick` before R2/Neon sync so XX002
 corruption cannot silently break ingest or push.
 
+### New tables require separate Neon DDL
+
+`replica:push:neon` synchronizes rows only. It enumerates local tables with
+primary keys, but it does **not** create or alter destination tables. Therefore,
+adding a local migration that creates a table also requires this deployment
+checklist before the next scheduled push:
+
+1. Apply the same committed `CREATE TABLE`, constraints, comments, and indexes
+   to Neon. Do not add destination-only foreign keys or other schema changes.
+2. Compare local and Neon `information_schema.columns` output, including column
+   order, types, nullability, defaults, and numeric precision/scale.
+3. Compare primary/check/foreign-key constraints, indexes, and column comments.
+4. Run a focused push with `REPLICA_SYNC_TABLES=<new_table>` and verify row count
+   and a deterministic row fingerprint on both databases.
+5. Run the normal `bun --cwd apps/local-postgresql replica:push:neon` command to
+   prove the complete synchronization path still succeeds.
+6. Compare the full local/Neon table inventories. Local-only training/log tables
+   intentionally excluded by `push-neon-sync.ts` are allowed; every other
+   local primary-key table must exist in Neon.
+
+A missing destination DDL fails during the pre-copy fingerprint query with
+`relation "public.<table>" does not exist`; successful local migration tests do
+not detect this operational gap.
+
 ### Index corruption background
 
 PC-KEIBA ingest has repeatedly hit PostgreSQL B-tree corruption (`XX002`,
