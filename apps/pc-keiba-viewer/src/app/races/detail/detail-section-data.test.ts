@@ -414,7 +414,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
-it("discards timed-out parallel domestic bloodline fallback and discloses incomplete coverage", async () => {
+it("rejects a timed-out parallel domestic bloodline fallback", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -462,17 +462,17 @@ it("discards timed-out parallel domestic bloodline fallback and discloses incomp
       raceSource: "jra",
       year: "2025",
     });
+    payloadPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(6_000);
-    const payload = await payloadPromise;
+    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
 
-    expect(payload).toMatchObject({ bloodlineRows: [], bloodlineStatsIncomplete: true });
     expect(getBloodlineStatsMock.mock.calls.length).toBeGreaterThan(2);
   } finally {
     vi.useRealTimers();
   }
 });
 
-it("hides zero person rows and flags a timed-out similar fallback", async () => {
+it("rejects a timed-out similar fallback", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -535,13 +535,9 @@ it("hides zero person rows and flags a timed-out similar fallback", async () => 
       raceSource: "jra",
       year: "2025",
     });
+    payloadPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(6_000);
-    const payload = await payloadPromise;
-
-    expect(payload).toMatchObject({
-      rows: [{ name: "Computed Trainer", starts: 20 }],
-      similarStatsIncomplete: true,
-    });
+    await expect(payloadPromise).rejects.toThrow("similar statistics fallback timed out");
   } finally {
     vi.useRealTimers();
   }
@@ -579,11 +575,10 @@ it("keeps legitimate zero person rows when fallback candidates are exhausted", a
     year: "2025",
   });
 
-  expect(payload).toMatchObject({ rows: zeroRows });
-  expect(payload).not.toHaveProperty("similarStatsIncomplete");
+  expect(payload).toMatchObject({ rows: zeroRows, similarStatsIncomplete: true });
 });
 
-it("hides zero person rows and flags a timed-out time-score fallback", async () => {
+it("rejects a timed-out time-score person fallback", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -619,10 +614,93 @@ it("hides zero person rows and flags a timed-out time-score fallback", async () 
       raceSource: "jra",
       year: "2025",
     });
+    payloadPromise.catch(() => undefined);
     await vi.runAllTimersAsync();
-    const payload = await payloadPromise;
+    await expect(payloadPromise).rejects.toThrow("similar statistics fallback timed out");
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
-    expect(payload).toMatchObject({ similarRows: [], similarStatsIncomplete: true });
+it("rejects a timed-out standalone bloodline fallback", async () => {
+  vi.useFakeTimers();
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getBloodlineStatsMock
+    .mockResolvedValueOnce([])
+    .mockImplementation(() => new Promise(() => undefined));
+
+  try {
+    const payloadPromise = getDetailSectionPayload("bloodline", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    });
+    payloadPromise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("rejects a timed-out time-score bloodline fallback", async () => {
+  vi.useFakeTimers();
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  getTimeScoreRowsMock.mockResolvedValueOnce([]);
+  getRaceTimeStatsMock.mockResolvedValueOnce({ correlationRows: [] });
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock
+    .mockResolvedValueOnce([])
+    .mockImplementation(() => new Promise(() => undefined));
+
+  try {
+    const payloadPromise = getDetailSectionPayload("time-score", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    });
+    payloadPromise.catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
   } finally {
     vi.useRealTimers();
   }

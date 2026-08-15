@@ -297,7 +297,9 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
     ),
   ).toBeDefined();
   expect(
-    screen.getByText("人物成績の一部を算出できませんでした。未算出の人物は0戦として表示しません。"),
+    screen.getByText(
+      "条件を緩和しても十分な人物成績が見つからないため、該当する人物を0戦として表示します。",
+    ),
   ).toBeDefined();
   const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");

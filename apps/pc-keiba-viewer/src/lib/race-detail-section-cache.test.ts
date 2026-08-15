@@ -71,21 +71,21 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "44",
         section: "bloodline",
       }),
-    ).toBe("race-detail-section:v3:2026:5:23:44:12:bloodline:default");
+    ).toBe("race-detail-section:v5:2026:5:23:44:12:bloodline:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "similar",
       }),
-    ).toBe("race-detail-section:v4:2026:5:23:44:12:similar:default");
+    ).toBe("race-detail-section:v5:2026:5:23:44:12:similar:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v4:2026:5:23:44:12:time-score:default");
+    ).toBe("race-detail-section:v5:2026:5:23:44:12:time-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,

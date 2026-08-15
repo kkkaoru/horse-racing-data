@@ -1530,7 +1530,7 @@ export const getDetailSectionPayload = async (
       getOrComputeRaceTimeStats({ race, settings: context.conditionAnalysisSettings }),
     ]);
     let resolvedSimilarSettings = context.statsSettings;
-    let similarStatsTimedOut = false;
+    let similarStatsIncomplete = false;
     let similarRows = getEligibleSimilarStatsRows(
       race,
       await getSimilarRaceStats(race, resolvedSimilarSettings),
@@ -1550,8 +1550,9 @@ export const getDetailSectionPayload = async (
         resolvedSimilarSettings = matched.settings;
         similarRows = matched.stats;
       } else if (matched.status === "timedOut") {
-        similarStatsTimedOut = true;
-        similarRows = similarRows.filter((row) => row.starts > 0);
+        throw new Error("similar statistics fallback timed out");
+      } else {
+        similarStatsIncomplete = true;
       }
     }
     let resolvedBloodlineSettings = context.bloodlineStatsSettings;
@@ -1574,6 +1575,8 @@ export const getDetailSectionPayload = async (
       if (matched.status === "matched") {
         resolvedBloodlineSettings = matched.settings;
         bloodlineRows = matched.stats;
+      } else if (matched.status === "timedOut") {
+        throw new Error("bloodline statistics fallback timed out");
       }
     }
     const jockeyNameByHorse = new Map(
@@ -1598,7 +1601,7 @@ export const getDetailSectionPayload = async (
       runners,
       settings: resolvedSimilarSettings,
       similarRows,
-      ...(similarStatsTimedOut ? { similarStatsIncomplete: true } : {}),
+      ...(similarStatsIncomplete ? { similarStatsIncomplete: true } : {}),
       ...getSimilarStatsFallbackPayload(race, resolvedSimilarSettings),
       source: race.source,
       type: section,
@@ -1817,6 +1820,8 @@ export const getDetailSectionPayload = async (
       if (matched.status === "matched") {
         resolvedSettings = matched.settings;
         rows = matched.stats;
+      } else if (matched.status === "timedOut") {
+        throw new Error("bloodline statistics fallback timed out");
       }
     }
     return {
@@ -1832,7 +1837,7 @@ export const getDetailSectionPayload = async (
   }
 
   let resolvedSettings = context.statsSettings;
-  let similarStatsTimedOut = false;
+  let similarStatsIncomplete = false;
   let rows = getEligibleSimilarStatsRows(race, await getSimilarRaceStats(race, resolvedSettings));
   if (!hasExplicitStatsState(query, "similar") && !hasSimilarJockeyTrainerCoverage(rows, runners)) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
@@ -1846,8 +1851,9 @@ export const getDetailSectionPayload = async (
       resolvedSettings = matched.settings;
       rows = matched.stats;
     } else if (matched.status === "timedOut") {
-      similarStatsTimedOut = true;
-      rows = rows.filter((row) => row.starts > 0);
+      throw new Error("similar statistics fallback timed out");
+    } else {
+      similarStatsIncomplete = true;
     }
   }
   let resolvedBloodlineSettings = context.bloodlineStatsSettings;
@@ -1869,6 +1875,8 @@ export const getDetailSectionPayload = async (
     if (matched.status === "matched") {
       resolvedBloodlineSettings = matched.settings;
       bloodlineRows = matched.stats;
+    } else if (matched.status === "timedOut") {
+      throw new Error("bloodline statistics fallback timed out");
     }
   }
 
@@ -1881,7 +1889,7 @@ export const getDetailSectionPayload = async (
     rows,
     runners,
     settings: resolvedSettings,
-    ...(similarStatsTimedOut ? { similarStatsIncomplete: true } : {}),
+    ...(similarStatsIncomplete ? { similarStatsIncomplete: true } : {}),
     ...getSimilarStatsFallbackPayload(race, resolvedSettings),
     source: race.source,
     type: "similar" satisfies DetailSection,
