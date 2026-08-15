@@ -32,7 +32,7 @@ RUN apt-get update \
 COPY apps/finish-position-predict-container/pyproject.toml ./pyproject.toml
 RUN uv pip install --system \
     "catboost>=1.2.10" \
-    "duckdb>=1.1.0" \
+    "duckdb==1.5.5" \
     "lightgbm>=4.5.0" \
     "numpy>=2.0.0" \
     "pandas>=2.2.0" \

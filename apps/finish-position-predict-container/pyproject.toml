@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 # exercised at deploy time per DEPLOY.md, not in CI.
 dependencies = [
   "catboost>=1.2.10",
-  "duckdb>=1.1.0",
+  "duckdb==1.5.5",
   "lightgbm>=4.5.0",
   "numpy>=2.0.0",
   "pandas>=2.2.0",
