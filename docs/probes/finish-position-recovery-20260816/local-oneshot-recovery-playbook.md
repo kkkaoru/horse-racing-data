@@ -71,12 +71,19 @@ score/flush, wrote 36 races / 490 rows at 05:04:14 UTC.
 - `pipeline_runner.py` does not forward CLI `--memory-limit` unless the
   layer argv already contains it. Container / orchestrator path needs
   the env override.
-- `add-course-numerical-features.py` does not accept `--pg-url` /
-  `--from-date`. `add_kohan3f_going_features.py` does not accept
-  `--from-date`. Copy argv from `build_layer_argv`, do not invent flags.
+- Most layer scripts already accept `--memory-limit` / `--threads` via
+  shared `add_resource_args`. A grep of the script files themselves will
+  miss this. Still copy argv from `build_layer_argv`:
+  `add-course-numerical-features.py` rejects `--pg-url` / `--from-date`,
+  and `add_kohan3f_going_features.py` rejects `--from-date`.
 - Stop colima / Docker builds before a host generation. Auto memory is
   computed from available RAM at start; a concurrent build dropped the
   limit to 2.7GiB and OOM'd.
+- colima default VM is ~8GiB. `colima stop` frees it. Apple container
+  `horse-racing-local-postgresql` is a different runtime and stays up.
+- `feat-<cat>-v7-final` is a 1-row / 8-column summary, not features.
+  The scored body is the last layer parquet (`feat-jra-layer-16`,
+  `feat-nar-layer-9`, `feat-ban-ei-layer-6`).
 
 ## DuckDB versions (measured, not assumed)
 
