@@ -1051,7 +1051,9 @@ export const getDetailStatsContext = async ({
     isOverseasKeibajoCode(race.keibajoCode) && !hasExplicitStatsState(query, "similar")
       ? relaxAllConditionAnalysisSettings(baseStatsSettings)
       : banEiRace && !hasExplicitStatsState(query, "similar")
-        ? { ...baseStatsSettings, includeRaceTitle: false }
+        ? // Ban-ei titles are commonly one-off sponsor or dedication labels; class is the
+          // repeatable comparison boundary, while exact-title filtering collapses history.
+          { ...baseStatsSettings, includeRaceTitle: false }
         : baseStatsSettings;
   const baseBloodlineStatsSettings = buildStatsSettings(
     "bloodline",
