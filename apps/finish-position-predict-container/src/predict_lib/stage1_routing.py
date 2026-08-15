@@ -31,12 +31,14 @@ Two independent trip conditions route a race to Stage-1, either is sufficient:
    upstream SQL path strips before casting to int, so a coerced ``0`` is
    treated the same as missing, never as a real rank (confirmed against
    2,730,085 real NAR feature-store rows: ``tansho_ninkijun`` is never 0 or
-   negative). The default-off ``STAGE1_PRESERVED_ODDS_GATE_ENABLED=1`` rollout
-   flag additionally accepts a positive canonical ``tansho_odds`` value from
-   the same realtime snapshot. That signal survives the near-miss projection
-   in both JRA and NAR when canonical rank does not. A race where every entry
-   lacks both enabled signals is the whole-race outage this fallback insures
-   against; a partial board is not treated as a whole-race outage.
+   negative). With the default-off
+   ``STAGE1_PRESERVED_ODDS_GATE_ENABLED=1`` rollout flag, the gate instead
+   requires a valid full board: every active entry has positive finite
+   ``tansho_odds``, ranks form ``1..N``, and odds are nondecreasing with rank.
+   The canonical odds survive near-miss in both JRA and NAR. When canonical
+   rank does not, the gate recovers it from the champion's retained normalized
+   ``popularity_score``. This rejects transitional partial boards; flag OFF
+   preserves the historical any-positive-canonical-rank behavior exactly.
 2. **Stddev safety net** (secondary, post-scoring): :func:`is_score_spread_degraded`
    compares the within-race population stddev of the Stage-2 (champion)
    ``predicted_score`` values already computed against
@@ -87,14 +89,17 @@ established "empty/absent config = no live routing" precedent.
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Final, Literal, get_args
 
 from .late_binding import (
+    POPULARITY_SCORE_FIELD,
     TANSHO_NINKIJUN_FIELD,
     TANSHO_ODDS_FIELD,
     coerce_optional_float,
@@ -248,31 +253,66 @@ def preserved_odds_gate_enabled() -> bool:
     return os.environ.get(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "").strip() == "1"
 
 
+def _rank_from_popularity_score(value: object, runner_count: int) -> int | None:
+    """Recover a 1-based rank from the builder's normalized popularity score."""
+    score = coerce_optional_float(value)
+    if score is None or not math.isfinite(score) or score < 0 or score > 1:
+        return None
+    rank_value = score * (runner_count - 1) + 1
+    rank = round(rank_value)
+    if not math.isclose(rank_value, rank, abs_tol=1e-9):
+        return None
+    return rank
+
+
+def _has_valid_full_board(entries: Sequence[Mapping[str, object]]) -> bool:
+    """Validate complete coverage, a rank permutation, and odds/rank ordering."""
+    runner_count = len(entries)
+    if runner_count < 2:
+        return False
+
+    canonical_ranks = [
+        coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD)) for entry in entries
+    ]
+    if all(rank is not None and rank > 0 for rank in canonical_ranks):
+        ranks = [int(rank) for rank in canonical_ranks if rank is not None]
+    else:
+        derived_ranks = [
+            _rank_from_popularity_score(entry.get(POPULARITY_SCORE_FIELD), runner_count)
+            for entry in entries
+        ]
+        if any(rank is None for rank in derived_ranks):
+            return False
+        ranks = [int(rank) for rank in derived_ranks if rank is not None]
+
+    if set(ranks) != set(range(1, runner_count + 1)):
+        return False
+
+    odds = [coerce_optional_float(entry.get(TANSHO_ODDS_FIELD)) for entry in entries]
+    if any(value is None or not math.isfinite(value) or value <= 0 for value in odds):
+        return False
+    ranked_odds = sorted(
+        zip(ranks, (float(value) for value in odds if value is not None), strict=True)
+    )
+    return all(current[1] <= following[1] for current, following in pairwise(ranked_odds))
+
+
 def race_has_fresh_odds(entries: Sequence[Mapping[str, object]]) -> bool:
-    """Return True when at least one entry carries a real market-board value.
+    """Return whether the race carries a trustworthy market board.
 
-    See this module's docstring, condition 1 (freshness gate), for the full
-    rationale. Empty ``entries`` returns False (vacuously no fresh data, though
-    ``score_races`` never scores an empty race so this is defensive-only).
-
-    The default-off path preserves the original rank-only behavior exactly. A
-    rank must be strictly positive: raw JVD popularity columns use ``'00'`` for
-    "unconfirmed", which coerces to zero. When the rollout flag is enabled, a
-    positive canonical ``tansho_odds`` value is also accepted. That column is
-    sourced from the same realtime snapshot and survives the near-miss output
-    projection in both JRA and NAR, unlike settled-only ``tansho_ninkijun_1``
-    and JRA-only ``tansho_ninkijun_raw``.
+    Flag OFF preserves the original any-positive-rank predicate exactly. Flag
+    ON requires a valid full board: every active entry has positive finite odds,
+    ranks form ``1..N``, and odds are nondecreasing with rank. When near-miss
+    removed the canonical rank, the rank permutation is recovered from the
+    retained normalized ``popularity_score`` that the champion model consumes.
     """
-    use_preserved_odds = preserved_odds_gate_enabled()
-    for entry in entries:
-        ninkijun = coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))
-        if ninkijun is not None and ninkijun > 0:
-            return True
-        if use_preserved_odds:
-            odds = coerce_optional_float(entry.get(TANSHO_ODDS_FIELD))
-            if odds is not None and odds > 0:
-                return True
-    return False
+    if preserved_odds_gate_enabled():
+        return _has_valid_full_board(entries)
+    return any(
+        (rank := coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))) is not None
+        and rank > 0
+        for entry in entries
+    )
 
 
 def compute_predicted_score_stddev(scores: Sequence[float]) -> float:

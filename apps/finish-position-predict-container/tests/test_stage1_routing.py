@@ -406,11 +406,14 @@ def test_preserved_odds_gate_rejects_non_one_flag(monkeypatch: pytest.MonkeyPatc
     assert preserved_odds_gate_enabled() is False
 
 
-def test_preserved_odds_gate_accepts_positive_odds_when_enabled(
+def test_preserved_odds_gate_accepts_valid_full_board_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, " 1 ")
-    entries = [{"tansho_ninkijun": None, "tansho_odds": "3.5"}]
+    entries = [
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": "3.5"},
+        {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 8.2},
+    ]
 
     assert preserved_odds_gate_enabled() is True
     assert race_has_fresh_odds(entries) is True
@@ -429,12 +432,143 @@ def test_preserved_odds_gate_rejects_missing_or_nonpositive_odds(
     assert race_has_fresh_odds(entries) is False
 
 
-def test_preserved_odds_gate_keeps_canonical_rank_behavior(
+def test_preserved_odds_gate_accepts_complete_canonical_rank_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"tansho_ninkijun": 2, "tansho_odds": 4.8},
+        {"tansho_ninkijun": 1, "tansho_odds": 2.1},
+    ]
+
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_preserved_odds_gate_rejects_singleton_board(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
 
-    assert race_has_fresh_odds([{"tansho_ninkijun": 2, "tansho_odds": None}]) is True
+    assert race_has_fresh_odds(
+        [{"popularity_score": 0.0, "tansho_ninkijun": 1, "tansho_odds": 2.0}]
+    ) is False
+
+
+def test_preserved_odds_gate_rejects_partial_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 1.0},
+        {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": None},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_preserved_odds_gate_rejects_duplicate_or_missing_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 2.0},
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 3.0},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_preserved_odds_gate_rejects_nonpositive_odds_with_complete_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"tansho_ninkijun": 1, "tansho_odds": 2.0},
+        {"tansho_ninkijun": 2, "tansho_odds": 0},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_preserved_odds_gate_rejects_odds_rank_order_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 9.0},
+        {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 2.0},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "entries", "expected"),
+    [
+        (
+            "full",
+            [
+                {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 2.0},
+                {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 5.0},
+            ],
+            True,
+        ),
+        (
+            "rescore",
+            [
+                {"popularity_score": 0.5, "tansho_ninkijun": 1, "tansho_odds": 2.0},
+                {"popularity_score": 0.5, "tansho_ninkijun": 2, "tansho_odds": 5.0},
+            ],
+            True,
+        ),
+        (
+            "partial",
+            [
+                {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 1.0},
+                {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": None},
+            ],
+            False,
+        ),
+        (
+            "scratch-excluded",
+            [
+                {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 2.0},
+                {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 5.0},
+            ],
+            True,
+        ),
+        (
+            "missing",
+            [
+                {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": None},
+                {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": None},
+            ],
+            False,
+        ),
+    ],
+)
+def test_preserved_odds_gate_mode_parity(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    entries: list[dict[str, object]],
+    expected: bool,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+
+    assert race_has_fresh_odds(entries) is expected, mode
+
+
+def test_preserved_odds_gate_rejects_non_integral_derived_rank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 2.0},
+        {"popularity_score": 0.4, "tansho_ninkijun": None, "tansho_odds": 3.0},
+        {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 4.0},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
 
 
 # ---------------------------------------------------------------------------
@@ -596,8 +730,8 @@ def test_resolve_stage1_gate_uses_preserved_odds_only_when_flag_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entries = [
-        {"tansho_ninkijun": None, "tansho_odds": 2.4},
-        {"tansho_ninkijun": None, "tansho_odds": 5.1},
+        {"popularity_score": 0.0, "tansho_ninkijun": None, "tansho_odds": 2.4},
+        {"popularity_score": 1.0, "tansho_ninkijun": None, "tansho_odds": 5.1},
     ]
 
     monkeypatch.delenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, raising=False)
