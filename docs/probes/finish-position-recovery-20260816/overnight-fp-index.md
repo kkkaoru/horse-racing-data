@@ -65,10 +65,12 @@ Design exists, not enabled.
 - Local fixes, not deployed: payload miss is `error` (`cd90cb73`);
   success without `parquetKey` is failed (`3cd71358`).
 - `DAY_BASE_SPLIT_ENABLED` is a Worker secret forwarded into the container.
-  Empty = full `LAYER_CHAIN` per race even if R2 has a day-base.
-  To enable later: `printf jra | bunx wrangler secret put DAY_BASE_SPLIT_ENABLED`
-  from `apps/finish-position-cron`. Then `jra,nar` after a HIT day.
-  Same function as `build_upcoming_feature_rows_split` / `ensure_day_base`.
+  The key exists today; the value is unreadable. Empty = full `LAYER_CHAIN`
+  even if R2 has a day-base. Same function as
+  `build_upcoming_feature_rows_split` / `ensure_day_base`.
+- Do not enable it because it is unused. 08-14 restore message is
+  `keep split off`. 08-12 outage cause in the handoff is a paused queue,
+  not split. Lineage: `day-base-split-0812-lineage-20260816.md`.
 
 ## Container deploy (window = user confirmation)
 

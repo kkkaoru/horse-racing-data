@@ -25,7 +25,10 @@ txn, `2139645b` `PIPELINE_DIR`, `67440b8b` DuckDB 1.5.5, `cd90cb73` /
 `3cd71358` PREWARM logging. `9007a6e6` FORCE env is viewer-side; the
 container DO `envVars` map does not forward it yet.
 
-Do not put `DAY_BASE_SPLIT_ENABLED` on the same deploy.
+Do not put `DAY_BASE_SPLIT_ENABLED` on the same deploy. The 08-14
+restore said `keep split off`. Enabling it is a separate investigation
+(`day-base-split-0812-lineage-20260816.md`), not a follow-on to DuckDB
+1.5.5.
 
 ## When the window opens
 
