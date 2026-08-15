@@ -57,8 +57,8 @@
 #     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=11 bash ... # exercise RS-before-FP order skip
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # exercise FP dry-run skip
-#   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
-#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # D1-unavailable non-race hours: retries -> failsafe planner kick + Discord alert (no more silent abort)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # D1-unavailable race hours: same failsafe + FP skipped (order over freshness)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, race hours -> tries CF trigger first
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, non-race hours -> no fallback (next tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # CF-offload coverage OK -> stays offloaded (no local kick)
@@ -91,6 +91,11 @@ CORNER_FEATURES_TABLE="race_entry_corner_features"
 JOBS_KICK_URL="https://sync-realtime-data.kkk4oru.com/api/jobs"
 RS_KICK_JOB_TYPE="plan-running-style-predictions"
 DISCOVER_JOB_TYPE="discover-urls"
+# D1 expected-count REST query resilience (2026-08-16 incident: one transient
+# wrangler API failure aborted the whole non-race-hours tick and left failed
+# races unattended all night). Retry before declaring D1 unavailable.
+D1_QUERY_ATTEMPTS=3
+D1_QUERY_RETRY_SLEEP_SEC=5
 FINISH_SCRIPT="$REPO_ROOT/scripts/launchd/finish-position-predict-daily.sh"
 CORNER_FEATURES_BUILD_FILTER="pc-keiba-viewer"
 CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
@@ -364,6 +369,40 @@ kick_worker_job() {
     -H 'Content-Type: application/json' \
     -d "$body" 2>&1 || true)"
   log "$description kick HTTP=$http_code response=$(cat "$response_file" 2>/dev/null || echo '<no response>')"
+}
+
+# Send a guard alert to Discord when GUARD_DISCORD_WEBHOOK_URL is configured
+# (env var, or a GUARD_DISCORD_WEBHOOK_URL= line in $DEV_VARS_FILE). The
+# pipeline-health-monitor alert webhook is a wrangler secret (unreadable
+# locally), so the guard carries its own URL. Never fatal and never silent:
+# a missing URL logs an ERROR naming the undelivered alert; a failed POST
+# logs the HTTP status. Recovery actions must not depend on the notifier.
+# Args: $1 = title, $2 = description, $3 = label, $4 = target ISO date.
+notify_guard_alert() {
+  local title="$1" description="$2" label="$3" target_iso="$4"
+  local webhook="${GUARD_DISCORD_WEBHOOK_URL:-}"
+  if [ -z "$webhook" ] && [ -f "$DEV_VARS_FILE" ]; then
+    webhook="$(grep -E '^GUARD_DISCORD_WEBHOOK_URL=' "$DEV_VARS_FILE" | head -1 | cut -d= -f2- || true)"
+  fi
+  if [ -z "$webhook" ]; then    log "ERROR: GUARD_DISCORD_WEBHOOK_URL not set (env or $DEV_VARS_FILE) — guard alert NOT delivered: $title ($label $target_iso)"
+    return 0
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    log "DRY_RUN: would POST Discord alert: $title ($label $target_iso)"
+    return 0
+  fi
+  local body
+  body="$(jq -nc --arg t "$title" --arg d "$description" --arg l "$label" --arg ts "$target_iso" \
+    '{embeds:[{title:("race-prediction-guard: "+$t),description:$d,color:15158332,fields:[{name:"label",value:$l,inline:true},{name:"target",value:$ts,inline:true}]}]}')"
+  local http_code
+  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$webhook" \
+    -H 'Content-Type: application/json' -d "$body" 2>&1 || true)"
+  if [ "$http_code" = "200" ] || [ "$http_code" = "204" ]; then
+    log "guard alert sent to Discord (HTTP=$http_code): $title"
+  else
+    log "ERROR: guard alert Discord POST failed (HTTP=$http_code): $title"
+  fi
+  return 0
 }
 
 # Read the finish-position-cron POST /run trigger token from the repo-root
@@ -708,7 +747,23 @@ guard_target() {
     d1_result=""
     log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (skipping D1 expected-count query)"
   else
-    d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+    # Retry the wrangler D1 REST query: transient Cloudflare API failures
+    # (auth blips like 7403, 5xx, network drops) must not degrade the tick.
+    # Success = jq can extract the count (c may legitimately be 0).
+    local d1_attempt
+    for d1_attempt in $(seq 1 "$D1_QUERY_ATTEMPTS"); do
+      d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+      if printf '%s' "$d1_result" | jq -e '.[0].results[0].c' >/dev/null 2>&1; then
+        if [ "$d1_attempt" -gt 1 ]; then
+          log "D1 expected-count query succeeded on attempt $d1_attempt/$D1_QUERY_ATTEMPTS for $label"
+        fi
+        break
+      fi
+      log "WARN: D1 expected-count query attempt $d1_attempt/$D1_QUERY_ATTEMPTS failed for $label (result tail: $(printf '%s' "$d1_result" | tail -c 200))"
+      if [ "$d1_attempt" -lt "$D1_QUERY_ATTEMPTS" ]; then
+        sleep "$D1_QUERY_RETRY_SLEEP_SEC"
+      fi
+    done
   fi
   local expected_count
   if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ] && [ "${FORCE_D1_FAIL:-0}" != "1" ]; then
@@ -718,22 +773,35 @@ guard_target() {
   fi
 
   # --- D1 unavailability handling ---
-  # If expected_count is empty/null (parse failure = D1 error), branch on
-  # is_race_hours:
-  #   is_race_hours=1: older behavior kicked finish-position for freshness, but
-  #     that cannot prove running-style is complete. Order wins over freshness,
-  #     so finish-position is skipped below when D1 is unavailable.
-  #   is_race_hours=0: we cannot determine expected_count, so we cannot make
-  #     safe progress on any check — abort as before.
+  # If expected_count is empty/null after the retries above, NEVER abort with
+  # "do nothing" (2026-08-16 incident: a single wrangler D1 REST failure at
+  # the 01:00 non-race-hours tick returned 1 here, leaving three failed
+  # running-style races unattended until morning). Unjudgeable must not map
+  # to no-op. The planner job reads D1 through the Worker's own D1 binding
+  # (not the REST API that just failed) and re-enqueues every failed /
+  # missing / mirror-needed race itself, so kicking it re-injects known
+  # failed races without needing the expected count. Kick first, notify
+  # Discord, then skip only the D1-dependent checks below in both bands.
+  #   is_race_hours=1: also skip finish-position — order (feature -> RS -> FP)
+  #     wins over freshness when RS completeness cannot be proven.
   local d1_unavailable=0
   if [ -z "$expected_count" ] || [ "$expected_count" = "null" ]; then
-    if [ "$is_race_hours" = "1" ]; then
-      log "WARN: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
-      log "WARN: D1 unavailable and is_race_hours=1 — skipping D1-dependent checks; finish-position will also be skipped to preserve feature -> running-style -> finish-position order"
-      d1_unavailable=1
+    d1_unavailable=1
+    log "ERROR: failed to parse expected race count for $label from D1 after $D1_QUERY_ATTEMPTS attempts (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
+    notify_guard_alert \
+      "D1 expected-count query failed after retries" \
+      "guard tick for $target_date_iso could not read the expected race count from D1; issuing a failsafe plan-running-style-predictions kick so failed/incomplete races are still re-planned by the worker (D1 binding, not REST)." \
+      "$label" "$target_date_iso"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
     else
-      log "ERROR: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
-      return 1
+      kick_worker_job "running-style-d1-unavailable-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}" \
+        || log "ERROR: failsafe planner kick could not be issued for $label"
+    fi
+    if [ "$is_race_hours" = "1" ]; then
+      log "WARN: D1 unavailable and is_race_hours=1 — failsafe planner kick issued above; skipping D1-dependent checks; finish-position will also be skipped to preserve feature -> running-style -> finish-position order"
+    else
+      log "WARN: D1 unavailable outside race hours — failsafe planner kick issued above; D1-dependent checks skipped (previous behavior aborted the whole tick)"
     fi
   fi
 
