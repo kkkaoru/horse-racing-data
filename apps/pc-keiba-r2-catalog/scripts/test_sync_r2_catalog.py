@@ -1554,13 +1554,59 @@ class SourceMarkerTests(unittest.TestCase):
         self.assertIn("AS max_sakusei", sql)
         self.assertIn("AS pk_hash", sql)
         self.assertIn("bit_xor(hashtextextended(", sql)
+        self.assertIn("min(data_sakusei_nengappi)", sql)
+        self.assertIn("max(data_sakusei_nengappi)", sql)
+        self.assertIn("coalesce(record_id::text, '')", sql)
+        self.assertIn("coalesce(data_sakusei_nengappi, '')", sql)
         self.assertIn("ketto_toroku_bango", sql)
         self.assertIn('FROM public."nvd_se"', sql)
         self.assertNotIn("SELECT *", sql)
 
+    def test_jv_marker_sql_matches_pre_oversea_legacy_expression(self) -> None:
+        sql = subject.source_marker_sql(subject.TABLE_SPECS["jvd_ra"], "TRUE")
+        self.assertEqual(
+            sql,
+            """
+SELECT count(*)::bigint AS row_count,
+       coalesce(min(data_sakusei_nengappi), '') AS min_sakusei,
+       coalesce(max(data_sakusei_nengappi), '') AS max_sakusei,
+       coalesce(bit_xor(hashtextextended(
+         coalesce(record_id::text, '') || chr(31) ||
+         coalesce(data_sakusei_nengappi, '') || chr(31) ||
+         coalesce(\"kaisai_nen\"::text, '') || chr(31) || coalesce(\"kaisai_tsukihi\"::text, '') || chr(31) || coalesce(\"keibajo_code\"::text, '') || chr(31) || coalesce(\"race_bango\"::text, ''),
+         0
+       )), 0)::text AS pk_hash
+FROM public.\"jvd_ra\"
+WHERE TRUE
+""",
+        )
+
+    def test_oversea_marker_sql_uses_updated_at_instead_of_jv_columns(self) -> None:
+        sql = subject.source_marker_sql(
+            subject.TABLE_SPECS["oversea_runner_identity"],
+            "TRUE",
+        )
+        self.assertIn('min("updated_at")::text', sql)
+        self.assertIn('max("updated_at")::text', sql)
+        self.assertIn('coalesce("updated_at"::text, \'\')', sql)
+        self.assertIn("race_source", sql)
+        self.assertIn('FROM public."oversea_runner_identity"', sql)
+        self.assertNotIn("data_sakusei_nengappi", sql)
+        self.assertNotIn("record_id", sql)
+
     def test_marker_sql_rejects_a_non_identifier_table_name(self) -> None:
         spec = subject.TableSpec('nvd_se"; drop table x', ("id",))
         with self.assertRaisesRegex(ValueError, "unsupported table"):
+            subject.source_marker_sql(spec, "TRUE")
+
+    def test_marker_sql_rejects_a_non_identifier_range_column(self) -> None:
+        spec = subject.TableSpec(
+            "oversea_runner_identity",
+            ("umaban",),
+            source_marker_range_column='updated_at"; drop table x',
+            source_marker_extra_hash_columns=("updated_at",),
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported source marker range column"):
             subject.source_marker_sql(spec, "TRUE")
 
     def test_stored_source_marker_is_versioned_and_order_stable(self) -> None:

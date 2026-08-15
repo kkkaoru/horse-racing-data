@@ -84,10 +84,13 @@ Two layered proofs, both stored as Iceberg table properties after a verified
 write:
 
 1. `sync.source-fingerprint.<slice>` — a PostgreSQL aggregate marker
-   (`count(*)`, min/max `data_sakusei_nengappi`, and `bit_xor(hashtextextended)`
-   over `record_id` + sakusei + primary key). Computed via `postgres_query`
-   without `SELECT *`. When it matches, the run reports `"status": "skipped"`
-   and performs no extract, no Arrow fingerprint, no write, and no read-back.
+   (`count(*)`, min/max of the table's marker range column, and
+   `bit_xor(hashtextextended)` over marker extras + primary key).
+   JV/NAR tables use `data_sakusei_nengappi` + `record_id`; `oversea_*`
+   tables use `updated_at` because they have neither JV column.
+   Computed via `postgres_query` without `SELECT *`. When it matches, the
+   run reports `"status": "skipped"` and performs no extract, no Arrow
+   fingerprint, no write, and no read-back.
 2. `sync.fingerprint.<slice>` — the Arrow IPC SHA-256 used to verify that R2
    actually holds those bytes. Used when the source marker is absent (first run
    after a writer change) so a matching extract can still skip the R2 PUT.

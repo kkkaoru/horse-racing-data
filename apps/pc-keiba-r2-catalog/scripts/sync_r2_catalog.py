@@ -79,6 +79,14 @@ class TableSpec:
     name: str
     primary_key: tuple[str, ...]
     date_columns: tuple[str, ...] = ()
+    # Columns folded into the cheap PG skip marker. JV tables use the fixed-width
+    # sakusei stamp + record_id; overseas source tables have neither and use
+    # updated_at instead so the marker still moves when rows change.
+    source_marker_range_column: str = "data_sakusei_nengappi"
+    source_marker_extra_hash_columns: tuple[str, ...] = (
+        "record_id",
+        "data_sakusei_nengappi",
+    )
 
     @property
     def is_master(self) -> bool:
@@ -154,6 +162,8 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
                 "race_bango",
                 "umaban",
             ),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
         ),
         TableSpec(
             "oversea_runner_source_id",
@@ -166,10 +176,27 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
                 "umaban",
                 "source",
             ),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
         ),
-        TableSpec("oversea_horse_race_history", ("history_id",)),
-        TableSpec("oversea_person_race_history", ("history_id",)),
-        TableSpec("oversea_horse_pedigree", ("source", "source_horse_id")),
+        TableSpec(
+            "oversea_horse_race_history",
+            ("history_id",),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
+        ),
+        TableSpec(
+            "oversea_person_race_history",
+            ("history_id",),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
+        ),
+        TableSpec(
+            "oversea_horse_pedigree",
+            ("source", "source_horse_id"),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
+        ),
         TableSpec(
             "oversea_person_win_rate_stats",
             (
@@ -181,6 +208,8 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
                 "category",
                 "name",
             ),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
         ),
     )
 }
@@ -845,13 +874,35 @@ def pg_slice_predicate(
     return "TRUE"
 
 
+def _require_sql_identifier(name: str, *, kind: str) -> str:
+    if not IDENTIFIER_RE.fullmatch(name):
+        raise ValueError(f"unsupported {kind} {name!r}")
+    return name
+
+
 def source_marker_sql(spec: TableSpec, predicate: str) -> str:
-    if not IDENTIFIER_RE.fullmatch(spec.name):
-        raise ValueError(f"unsupported table {spec.name!r}")
-    pk_concat = " || chr(31) || ".join(
-        f"coalesce(\"{column}\"::text, '')" for column in spec.primary_key
+    table_name = _require_sql_identifier(spec.name, kind="table")
+    range_column = _require_sql_identifier(
+        spec.source_marker_range_column, kind="source marker range column"
     )
-    return f"""
+    extra_hash_columns = tuple(
+        _require_sql_identifier(column, kind="source marker hash column")
+        for column in spec.source_marker_extra_hash_columns
+    )
+    primary_key = tuple(
+        _require_sql_identifier(column, kind="source marker hash column")
+        for column in spec.primary_key
+    )
+    # Preserve the exact legacy JV marker expression so existing Iceberg
+    # source-fingerprint properties keep matching without a version bump.
+    if (
+        range_column == "data_sakusei_nengappi"
+        and extra_hash_columns == ("record_id", "data_sakusei_nengappi")
+    ):
+        pk_concat = " || chr(31) || ".join(
+            f"coalesce(\"{column}\"::text, '')" for column in primary_key
+        )
+        return f"""
 SELECT count(*)::bigint AS row_count,
        coalesce(min(data_sakusei_nengappi), '') AS min_sakusei,
        coalesce(max(data_sakusei_nengappi), '') AS max_sakusei,
@@ -861,7 +912,22 @@ SELECT count(*)::bigint AS row_count,
          {pk_concat},
          0
        )), 0)::text AS pk_hash
-FROM public."{spec.name}"
+FROM public."{table_name}"
+WHERE {predicate}
+"""
+    hash_concat = " || chr(31) || ".join(
+        f"coalesce(\"{column}\"::text, '')"
+        for column in (*extra_hash_columns, *primary_key)
+    )
+    return f"""
+SELECT count(*)::bigint AS row_count,
+       coalesce(min("{range_column}")::text, '') AS min_sakusei,
+       coalesce(max("{range_column}")::text, '') AS max_sakusei,
+       coalesce(bit_xor(hashtextextended(
+         {hash_concat},
+         0
+       )), 0)::text AS pk_hash
+FROM public."{table_name}"
 WHERE {predicate}
 """
 
