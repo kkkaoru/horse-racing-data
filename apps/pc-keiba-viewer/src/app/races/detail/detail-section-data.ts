@@ -218,7 +218,7 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeMonthWindow",
 ] as const;
 
-const RATE_STATS_FALLBACK_TIMEOUT_MS = 2_500;
+const RATE_STATS_FALLBACK_TIMEOUT_MS = 6_000;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
 const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
 
@@ -924,22 +924,24 @@ const findRateStatsCandidate = async <
     return null;
   }
 
-  const completed: Array<{ settings: T; stats: R } | undefined> = [];
   const batchStatsPromise = Promise.all(
-    candidates.map(async (settings, index) => {
-      const result = { settings, stats: await getStats(settings) };
-      completed[index] = result;
-    }),
+    candidates.map(async (settings) => ({
+      settings,
+      stats: await getStats(settings),
+    })),
   );
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
+  const batchStats = await Promise.race([
     batchStatsPromise,
-    new Promise<void>((resolve) => {
-      timeout = setTimeout(resolve, RATE_STATS_FALLBACK_TIMEOUT_MS);
+    new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), RATE_STATS_FALLBACK_TIMEOUT_MS);
     }),
   ]).finally(() => clearTimeout(timeout));
+  if (batchStats === null) {
+    return null;
+  }
 
-  return completed.find((result) => result && hasEnoughStats(result.stats)) ?? null;
+  return batchStats.find(({ stats }) => hasEnoughStats(stats)) ?? null;
 };
 
 export const getDetailStatsContext = async ({
@@ -1048,7 +1050,9 @@ export const getDetailStatsContext = async ({
   const statsSettings: SimilarRaceStatsSettings =
     isOverseasKeibajoCode(race.keibajoCode) && !hasExplicitStatsState(query, "similar")
       ? relaxAllConditionAnalysisSettings(baseStatsSettings)
-      : baseStatsSettings;
+      : banEiRace && !hasExplicitStatsState(query, "similar")
+        ? { ...baseStatsSettings, includeRaceTitle: false }
+        : baseStatsSettings;
   const baseBloodlineStatsSettings = buildStatsSettings(
     "bloodline",
     defaultBloodlineStatsYears,

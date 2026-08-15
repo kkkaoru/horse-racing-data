@@ -95,6 +95,7 @@ vi.mock("../../../lib/top-races-cache.server", () => ({
 
 const {
   getDetailSectionPayload,
+  getDetailStatsContext,
   getFinishPositionBucketSectionData,
   getRunningStyleBucketSectionData,
 } = await import("./detail-section-data");
@@ -270,6 +271,23 @@ beforeEach(() => {
   getFinishPositionBucketEvaluationMock.mockReset();
 });
 
+it("uses the stable title-relaxed default for ban-ei rate statistics", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(BAN_EI_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+
+  const context = await getDetailStatsContext({
+    day: "30",
+    keibajoCode: "83",
+    month: "05",
+    query: {},
+    raceNumber: "11",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(context?.statsSettings.includeRaceTitle).toBe(false);
+});
+
 it("bloodline payload filters thin overseas samples and discloses the venue fallback", async () => {
   getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -386,7 +404,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
-it("times out parallel domestic bloodline fallback and discloses incomplete coverage", async () => {
+it("discards timed-out parallel domestic bloodline fallback and discloses incomplete coverage", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -434,7 +452,7 @@ it("times out parallel domestic bloodline fallback and discloses incomplete cove
       raceSource: "jra",
       year: "2025",
     });
-    await vi.advanceTimersByTimeAsync(2_500);
+    await vi.advanceTimersByTimeAsync(6_000);
     const payload = await payloadPromise;
 
     expect(payload).toMatchObject({ bloodlineRows: [], bloodlineStatsIncomplete: true });
