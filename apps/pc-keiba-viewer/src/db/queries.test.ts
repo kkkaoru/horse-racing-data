@@ -715,6 +715,12 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
   expect(queryText).toMatch(/having count\(distinct person_identity\) = 1/u);
   expect(queryText).toMatch(/targets\.person_identity = ranked_grouped_entries\.person_identity/u);
   expect(queryText).toMatch(/targets\.person_source = ranked_grouped_entries\.race_source/u);
+  expect(queryText).toMatch(
+    /from targets\s+where targets\.category = grouped_entries_raw\.category/u,
+  );
+  expect(queryText).toMatch(
+    /targets\.person_identity = coalesce\(\s*person_code_identities\.person_identity,\s*unique_person_names\.person_identity/u,
+  );
   expect(queryText).toMatch(/targets\.name_fallback_allowed/u);
   expect(queryText).toMatch(/when ranked_grouped_entries\.name is null then null/u);
   expect(queryText).toMatch(

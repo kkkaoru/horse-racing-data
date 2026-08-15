@@ -5297,6 +5297,30 @@ export const getSimilarRaceStats = cache(
           on person_code_identities.person_identity is null
           and unique_person_names.category = grouped_entries_raw.category
           and unique_person_names.short_name = grouped_entries_raw.name
+        where exists (
+          select 1
+          from targets
+          where targets.category = grouped_entries_raw.category
+            and (
+              (
+                targets.person_identity is not null
+                and targets.person_identity = coalesce(
+                  person_code_identities.person_identity,
+                  unique_person_names.person_identity
+                )
+              )
+              or (
+                targets.person_identity is null
+                and targets.person_code is not null
+                and targets.person_source = grouped_entries_raw.race_source
+                and targets.person_code = grouped_entries_raw.person_code
+              )
+              or (
+                targets.name_fallback_allowed
+                and targets.name = grouped_entries_raw.name
+              )
+            )
+        )
       ),
       filtered_grouped_entries as (
         select *
