@@ -199,18 +199,16 @@ def record_layer_timing_row(
     status: str,
     elapsed_seconds: float,
     cumulative_elapsed_seconds: float,
-) -> None:
-    """Best-effort write of one layer-timing row to a TEMPORARY debug table.
+) -> bool:
+    """Write one layer-timing row. Return True only after a successful commit.
 
     See the module-level comment above ``DEBUG_LAYER_TIMING_TABLE`` for why
-    this exists. This function must NEVER raise and must NEVER meaningfully
-    slow down the real pipeline: it opens a short-lived connection with a
-    short ``connect_timeout``, writes one row, and closes — any failure
-    (including the ``CREATE TABLE IF NOT EXISTS``) is swallowed and only
-    best-effort logged to stderr.
+    this exists. Never raises: a timing-table failure must not stop scoring.
+    A False return is a visible write failure, not a successful no-op.
+    2026-08-16: 48h of zero rows was a silent swallow on a read-only
+    pooler session. Force ``SET TRANSACTION READ WRITE`` and refuse when
+    ``SHOW transaction_read_only`` is not ``off``.
     """
-    if not debug_logs_enabled():
-        return
     keibajo_code: str | None = None
     race_bango: str | None = None
     if target_race is not None and ":" in target_race:
@@ -223,6 +221,21 @@ def record_layer_timing_row(
         )
         try:
             cursor = conn.cursor()
+            cursor.execute("BEGIN")
+            cursor.execute("SET TRANSACTION READ WRITE")
+            cursor.execute("SHOW transaction_read_only")
+            row = cursor.fetchone()
+            if row is None or row[0] != "off":
+                shown = None if row is None else row[0]
+                print(
+                    f"[pipeline] debug-timing write failed run_id={run_id} "
+                    f"layer_index={layer_index} status={status} "
+                    f"error=transaction_read_only={shown!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                conn.rollback()
+                return False
             cursor.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {DEBUG_LAYER_TIMING_TABLE} (
@@ -267,13 +280,15 @@ def record_layer_timing_row(
             conn.commit()
         finally:
             conn.close()
-    except Exception as exc:  # best-effort diagnostic only, never re-raise
+    except Exception as exc:
         print(
             f"[pipeline] debug-timing write failed run_id={run_id} "
             f"layer_index={layer_index} status={status} error={exc!r}",
             file=sys.stderr,
             flush=True,
         )
+        return False
+    return True
 
 
 # --- end TEMPORARY diagnostic instrumentation ------------------------------

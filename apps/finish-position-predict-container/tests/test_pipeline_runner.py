@@ -684,7 +684,7 @@ def test_build_pipeline_resets_stale_category_work_dirs_before_rename(
 def test_record_layer_timing_row_writes_row_via_mocked_connection(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
     import psycopg
 
     executed_sql: list[str] = []
@@ -697,12 +697,18 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
             if params is not None:
                 inserted_params.append(params)
 
+        def fetchone(self) -> tuple[object, ...] | None:
+            return ("off",)
+
     class FakeConn:
         def cursor(self) -> FakeCursor:
             return FakeCursor()
 
         def commit(self) -> None:
             state["committed"] = True
+
+        def rollback(self) -> None:
+            return None
 
         def close(self) -> None:
             state["closed"] = True
@@ -716,7 +722,7 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
 
     monkeypatch.setattr(psycopg, "connect", fake_connect)
 
-    pipeline_runner.record_layer_timing_row(
+    wrote = pipeline_runner.record_layer_timing_row(
         "postgresql://u:p@h/db",
         "jra:20260702:05:11:abcd1234",
         "jra",
@@ -729,6 +735,7 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
         1.5,
         2.5,
     )
+    assert wrote is True
 
     assert captured_connect_kwargs["url"] == "postgresql://u:p@h/db"
     assert captured_connect_kwargs["connect_timeout"] == 5
@@ -759,7 +766,7 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
 def test_record_layer_timing_row_no_target_race_leaves_keys_none(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
     import psycopg
 
     inserted_params: list[tuple[object, ...]] = []
@@ -769,12 +776,18 @@ def test_record_layer_timing_row_no_target_race_leaves_keys_none(
             if params is not None:
                 inserted_params.append(params)
 
+        def fetchone(self) -> tuple[object, ...] | None:
+            return ("off",)
+
     class FakeConn:
         def cursor(self) -> FakeCursor:
             return FakeCursor()
 
         def commit(self) -> None:
             pass
+
+        def rollback(self) -> None:
+            return None
 
         def close(self) -> None:
             pass
@@ -803,7 +816,7 @@ def test_record_layer_timing_row_swallows_connect_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
     import psycopg
 
     def fake_connect_raises(*_args: object, **_kwargs: object) -> None:
@@ -811,7 +824,7 @@ def test_record_layer_timing_row_swallows_connect_error(
 
     monkeypatch.setattr(psycopg, "connect", fake_connect_raises)
 
-    pipeline_runner.record_layer_timing_row(
+    wrote = pipeline_runner.record_layer_timing_row(
         "postgresql://u:p@h/db",
         "jra:20260702:all:abcd1234",
         "jra",
@@ -824,6 +837,7 @@ def test_record_layer_timing_row_swallows_connect_error(
         2.0,
         2.0,
     )
+    assert wrote is False
 
     captured = capsys.readouterr()
     assert "debug-timing write failed" in captured.err
@@ -834,7 +848,7 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
     import psycopg
 
     state = {"closed": False}
@@ -850,12 +864,15 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
         def commit(self) -> None:
             pass
 
+        def rollback(self) -> None:
+            return None
+
         def close(self) -> None:
             state["closed"] = True
 
     monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
 
-    pipeline_runner.record_layer_timing_row(
+    wrote = pipeline_runner.record_layer_timing_row(
         "postgresql://u:p@h/db",
         "jra:20260702:all:abcd1234",
         "jra",
@@ -868,11 +885,120 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
         1.0,
         1.0,
     )
+    assert wrote is False
 
     captured = capsys.readouterr()
     assert "debug-timing write failed" in captured.err
     assert "boom-execute" in captured.err
     assert state["closed"] is True
+
+
+def test_record_layer_timing_row_refuses_read_only_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+    import psycopg
+
+    state = {"committed": False, "rolled_back": False, "closed": False, "inserted": False}
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            if params is not None:
+                state["inserted"] = True
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return ("on",)
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            state["committed"] = True
+
+        def rollback(self) -> None:
+            state["rolled_back"] = True
+
+        def close(self) -> None:
+            state["closed"] = True
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
+
+    wrote = pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:all:abcd1234",
+        "jra",
+        "20260702",
+        None,
+        0,
+        3,
+        "__base_build__",
+        "done",
+        1.0,
+        1.0,
+    )
+    assert wrote is False
+    assert state["inserted"] is False
+    assert state["committed"] is False
+    assert state["rolled_back"] is True
+    assert state["closed"] is True
+    captured = capsys.readouterr()
+    assert "debug-timing write failed" in captured.err
+    assert "transaction_read_only" in captured.err
+
+
+def test_record_layer_timing_row_refuses_missing_read_only_row(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+    import psycopg
+
+    state = {"committed": False, "inserted": False}
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            if params is not None:
+                state["inserted"] = True
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return None
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            state["committed"] = True
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
+
+    wrote = pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:all:abcd1234",
+        "jra",
+        "20260702",
+        None,
+        0,
+        3,
+        "__base_build__",
+        "done",
+        1.0,
+        1.0,
+    )
+    assert wrote is False
+    assert state["inserted"] is False
+    assert state["committed"] is False
+    captured = capsys.readouterr()
+    assert "debug-timing write failed" in captured.err
+    assert "transaction_read_only" in captured.err
 
 
 # ---------------------------------------------------------------------------
