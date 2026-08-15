@@ -386,7 +386,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
-it("times out bounded domestic bloodline fallback and discloses incomplete coverage", async () => {
+it("times out parallel domestic bloodline fallback and discloses incomplete coverage", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -420,7 +420,9 @@ it("times out bounded domestic bloodline fallback and discloses incomplete cover
       winRate: 10,
     },
   ]);
-  getBloodlineStatsMock.mockResolvedValueOnce([]).mockReturnValueOnce(new Promise(() => undefined));
+  getBloodlineStatsMock
+    .mockResolvedValueOnce([])
+    .mockImplementation(() => new Promise(() => undefined));
 
   try {
     const payloadPromise = getDetailSectionPayload("similar", {
@@ -432,11 +434,11 @@ it("times out bounded domestic bloodline fallback and discloses incomplete cover
       raceSource: "jra",
       year: "2025",
     });
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_500);
     const payload = await payloadPromise;
 
     expect(payload).toMatchObject({ bloodlineRows: [], bloodlineStatsIncomplete: true });
-    expect(getBloodlineStatsMock).toHaveBeenCalledTimes(2);
+    expect(getBloodlineStatsMock.mock.calls.length).toBeGreaterThan(2);
   } finally {
     vi.useRealTimers();
   }

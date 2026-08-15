@@ -218,9 +218,7 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeMonthWindow",
 ] as const;
 
-const RATE_STATS_CANDIDATE_BATCH_SIZE = 3;
-const RATE_STATS_MAX_FALLBACK_CANDIDATES = 1;
-const RATE_STATS_FALLBACK_TIMEOUT_MS = 2_000;
+const RATE_STATS_FALLBACK_TIMEOUT_MS = 2_500;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
 const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
 
@@ -921,43 +919,27 @@ const findRateStatsCandidate = async <
   candidates: readonly T[],
   getStats: (settings: T) => Promise<R>,
   hasEnoughStats: (stats: R) => boolean = hasRateRows,
-  index = 0,
 ): Promise<{ settings: T; stats: R } | null> => {
-  const boundedCandidates = candidates.slice(0, RATE_STATS_MAX_FALLBACK_CANDIDATES);
-  const candidateBatch = boundedCandidates.slice(index, index + RATE_STATS_CANDIDATE_BATCH_SIZE);
-
-  if (candidateBatch.length === 0) {
+  if (candidates.length === 0) {
     return null;
   }
 
+  const completed: Array<{ settings: T; stats: R } | undefined> = [];
   const batchStatsPromise = Promise.all(
-    candidateBatch.map(async (settings) => ({
-      settings,
-      stats: await getStats(settings),
-    })),
+    candidates.map(async (settings, index) => {
+      const result = { settings, stats: await getStats(settings) };
+      completed[index] = result;
+    }),
   );
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const batchStats = await Promise.race([
+  await Promise.race([
     batchStatsPromise,
-    new Promise<null>((resolve) => {
-      timeout = setTimeout(() => resolve(null), RATE_STATS_FALLBACK_TIMEOUT_MS);
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, RATE_STATS_FALLBACK_TIMEOUT_MS);
     }),
   ]).finally(() => clearTimeout(timeout));
-  if (batchStats === null) {
-    return null;
-  }
 
-  const matched = batchStats.find(({ stats }) => hasEnoughStats(stats));
-  if (matched) {
-    return matched;
-  }
-
-  return findRateStatsCandidate(
-    boundedCandidates,
-    getStats,
-    hasEnoughStats,
-    index + RATE_STATS_CANDIDATE_BATCH_SIZE,
-  );
+  return completed.find((result) => result && hasEnoughStats(result.stats)) ?? null;
 };
 
 export const getDetailStatsContext = async ({
