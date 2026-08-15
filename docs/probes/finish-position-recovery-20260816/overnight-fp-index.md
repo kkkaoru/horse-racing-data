@@ -10,6 +10,11 @@ Production unchanged: no deploy, no secret put, no queue edit.
 First post 09:40 JST. Ban-ei 83/09 and 83/10 scored v8 because
 `grade_code == E` maps to variant base (`banei-83-10-v8-routing-20260816.md`).
 
+Coverage is not quality. Tonight's JRA scores are market-free **and**
+most JRA pedigree features on production feat-cache HITs are dead.
+That is larger than the overnight stall. Do not seed cache from those
+HITs. Mechanism work belongs to the optimize track, not this page.
+
 ## If generation stops
 
 1. Count Neon, not D1:
@@ -107,6 +112,44 @@ Verify after deploy (read-only):
 Rollback: Wrangler rollback to `0c76062e-03c6-4b8b-9a25-a501a4f4c9cc`.
 Prediction writes are UPSERT-only. Do not DELETE Neon rows.
 
+## JRA pedigree collapse (larger than the stall)
+
+Production feat-cache HITs, counted by optimize (do not re-measure here):
+
+- 08-16 HITs: degenerate **3/10**. JRA **2/2** dead, NAR **0/4** live,
+  Ban-ei **1/4**. On dead races, 5 of 7 `pedigree_*` columns are 0.0/NaN.
+- 08-15 JRA HITs: degenerate **4/5** (`04/09` live). Not today-only.
+- Same family as the 08-15 market-feature serve miss: JRA serve is missing
+  a whole input class, not one race.
+
+Provenance (`feat-cache-0412-provenance-20260816.md`, `ae3bd052`):
+
+- 04/12 R2 HIT Last-Modified **04:09:35 JST**. Current Neon 04/12 is the
+  **05:04:07 JST** host UPSERT. Different jobs.
+- Host `feat-jra-base` at **03:55** already has 15/15 finite
+  `pedigree_score_for_race` for 04/12. Those 15 `jvd_um` rows have
+  sire/damsire and `data_sakusei_nengappi` 20260720–20260810.
+- Late master load does **not** explain a 04:09 cache of 0.0/NaN.
+- PUT path copies parquet bytes through base64. It does not recompute
+  ranks. Do not PUT tonight.
+
+Not proven (no container stdout): whether the 04:09 writer attached the
+same catalog generation the host used at 03:55.
+
+## Observability gap (third stop tonight)
+
+`wrangler tail` showing 0 exceptions is not a healthy container. Python
+stdout does not reach the Worker. Missing container logs blocked:
+
+1. Why 04/01 focused-full accepted at 05:51 and stayed MISS at +20 min.
+2. Which job wrote the 04:09 04/12 HIT, and which catalog it attached.
+3. Whether PREWARM 08-15 `success` + 404 was a swallowed payload or a
+   timeout with no last line.
+
+Until container logs are durable, treat production feature quality as
+unobservable. Do not flip `DAY_BASE_SPLIT_ENABLED` or seed feat-cache
+to "fix" a collapse you cannot see from the Worker.
+
 ## Other notes from tonight
 
 - Viewer NAR/Ban-ei runners are in the RSC payload. SSR is a skeleton.
@@ -122,12 +165,13 @@ Prediction writes are UPSERT-only. Do not DELETE Neon rows.
 
 ## Commit map (local, not pushed)
 
-| commit                | what                                         |
-| --------------------- | -------------------------------------------- |
-| `9007a6e6`            | FORCE memory/threads                         |
-| `85bfba82`            | Neon writable txn                            |
-| `2139645b`            | local `PIPELINE_DIR`                         |
-| `67440b8b`            | DuckDB 1.5.5 pin                             |
-| `aaf533c6` `c7df1b8b` | host playbook                                |
-| `a0f56e20`            | PREWARM failure sites                        |
-| `cd90cb73` `3cd71358` | PREWARM cannot log success without an upload |
+| commit                | what                                            |
+| --------------------- | ----------------------------------------------- |
+| `9007a6e6`            | FORCE memory/threads                            |
+| `85bfba82`            | Neon writable txn                               |
+| `2139645b`            | local `PIPELINE_DIR`                            |
+| `67440b8b`            | DuckDB 1.5.5 pin                                |
+| `aaf533c6` `c7df1b8b` | host playbook                                   |
+| `a0f56e20`            | PREWARM failure sites                           |
+| `cd90cb73` `3cd71358` | PREWARM cannot log success without an upload    |
+| `c51ab570` `ae3bd052` | 04/12 HIT is 04:09; pedigree masters predate it |
