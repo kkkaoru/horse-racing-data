@@ -24,7 +24,7 @@
     "horse-racing-realtime": "workspace:*",
     "pg": "catalog:",
     "pg-cloudflare": "catalog:",
-    "thrift": "0.23.0"
+    "thrift": "0.24.0"
   },
   "devDependencies": {
     "@cloudflare/playwright": "catalog:",
