@@ -92,3 +92,27 @@ Before any proposal says "enable split", re-read this file. The next
 step is a dedicated, off-card investigation: secret value via a
 channel that can read it, plus whether 08-12's pause coincided with
 any allowlist change. That is not tonight's work.
+
+## Why it has stayed off since 07-12
+
+Asked 2026-08-16 07:01 JST: never enabled, or enabled then rolled back?
+
+No commit, probe, or handoff records a live allowlist (`jra` / `jra,nar`)
+or a later rollback of one. What is recorded is a chain of reasons not
+to flip it:
+
+| when                          | record                                    | why still off                                                                    |
+| ----------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------- |
+| 07-12 `58cb8b93` / `fae4ad82` | shipped **off by default**                | rollout allowlist, empty = full `LAYER_CHAIN`                                    |
+| 07-15 `e6111ca6`              | catalog `ensure_day_base()` always `None` | flip would rebuild DAY every race                                                |
+| 07-17 `9da2f5eb`              | "Should not add: flip today, as-is"       | "it was never turned on"; zero upside, extra path                                |
+| 07-18 `216a2fc5`              | watermark reuse replaces the bypass       | still behind the same allowlist; spec says team-lead must confirm before flag on |
+| 08-11 `3d75c0d1`              | R2 watermark for cross-process reuse      | still gated; no enablement note                                                  |
+| 08-14 restore                 | `keep split off`                          | after paused-queue outage; not a rollback of a prior on                          |
+
+`216a2fc5` / §5.4.1 still say "flag on にする前に team-lead が確認する".
+That confirmation is **not recorded** as done.
+
+Allowed conclusion: **no record it was ever enabled**. The month off is
+intentional default + two later "do not flip yet" gates, not a
+failed production trial.
