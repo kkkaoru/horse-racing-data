@@ -254,7 +254,14 @@ def preserved_odds_gate_enabled() -> bool:
 
 
 def _rank_from_popularity_score(value: object, runner_count: int) -> int | None:
-    """Recover a 1-based rank from the builder's normalized popularity score."""
+    """Recover a 1-based rank from the builder's normalized popularity score.
+
+    This is coupled to ``finish_position_features_duckdb.py``'s
+    ``popularity_score = (rank - 1) / (runner_count - 1)`` formula, where
+    ``runner_count`` is the active target race's ``shusso_tosu``. If that
+    builder formula changes, this inverse and its full-board tests must change
+    in the same commit.
+    """
     score = coerce_optional_float(value)
     if score is None or not math.isfinite(score) or score < 0 or score > 1:
         return None

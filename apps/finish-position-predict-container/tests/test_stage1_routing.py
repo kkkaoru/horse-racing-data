@@ -478,6 +478,18 @@ def test_preserved_odds_gate_rejects_duplicate_or_missing_ranks(
     assert race_has_fresh_odds(entries) is False
 
 
+def test_preserved_odds_gate_rejects_market_free_median_for_fifteen_runners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": 5.0}
+        for _ in range(15)
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
 def test_preserved_odds_gate_rejects_nonpositive_odds_with_complete_ranks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
