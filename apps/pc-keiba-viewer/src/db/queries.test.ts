@@ -646,44 +646,10 @@ it("getSimilarRaceStats returns no fallback rows when an overseas snapshot is ab
   );
 });
 
-it("getSimilarRaceStats keeps custom overseas queries on name matching", async () => {
-  executeMock.mockResolvedValue({ rows: [] });
-  const race = { ...PERCLASS_703_RACE, keibajoCode: "A8" };
-  const settings = {
-    classConditionName: null,
-    includeAge: false,
-    includeBloodlineAncestors: false,
-    includeClass: false,
-    includeDistance: false,
-    includeFrame: false,
-    includeMonthWindow: false,
-    includeNarOnly: false,
-    includeRaceNumber: false,
-    includeRaceSubtitle: false,
-    includeRaceTitle: false,
-    includeRunnerCount: false,
-    includeSex: false,
-    includeSurface: false,
-    includeTurn: false,
-    includeVenue: true,
-    includeWeight: false,
-    runnerCount: null,
-    sourceScope: "all" as const,
-    years: 10,
-  };
-
-  await expect(getSimilarRaceStats(race, settings)).resolves.toStrictEqual([]);
-  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
-    "getSimilarRaceStats",
-    race,
-    settings,
-  ]);
-});
-
 it("getSimilarRaceStats counts placeholder entries separately without counting an empty left join", async () => {
   executeMock.mockResolvedValue({ rows: [] });
 
-  const settings = {
+  await getSimilarRaceStats(PERCLASS_703_RACE, {
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: false,
@@ -702,26 +668,13 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     includeVenue: false,
     includeWeight: false,
     runnerCount: null,
-    sourceScope: "all" as const,
+    sourceScope: "all",
     years: null,
-  };
-  await getSimilarRaceStats(PERCLASS_703_RACE, settings);
+  });
 
   const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
-  expect(queryText).toMatch(/from jvd_ks/u);
-  expect(queryText).toMatch(/from nvd_ks/u);
-  expect(queryText).toMatch(/from jvd_ch/u);
-  expect(queryText).toMatch(/from nvd_ch/u);
-  expect(queryText).toMatch(/having count\(distinct person_identity\) = 1/u);
-  expect(queryText).toMatch(/targets\.person_identity = ranked_grouped_entries\.person_identity/u);
-  expect(queryText).toMatch(/targets\.person_source = ranked_grouped_entries\.race_source/u);
-  expect(queryText).toMatch(
-    /from targets\s+where targets\.category = grouped_entries_raw\.category/u,
-  );
-  expect(queryText).toMatch(
-    /targets\.person_identity = coalesce\(\s*person_code_identities\.person_identity,\s*unique_person_names\.person_identity/u,
-  );
-  expect(queryText).toMatch(/targets\.name_fallback_allowed/u);
+  expect(queryText).not.toMatch(/person_master_records|person_identity/u);
+  expect(queryText).toMatch(/partition by category, name/u);
   expect(queryText).toMatch(
     /order by\s+kaisai_nen desc,\s+kaisai_tsukihi desc,\s+race_bango asc,\s+umaban asc,\s+race_source asc,\s+keibajo_code asc,\s+ketto_toroku_bango asc/u,
   );
@@ -736,12 +689,6 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     /else concat_ws\(\s*':'\s*,\s*'entry'\s*,\s*ranked_grouped_entries\.race_source\s*,\s*ranked_grouped_entries\.kaisai_nen/u,
   );
   expect(queryText).not.toMatch(/count\(distinct ranked_grouped_entries\.ketto_toroku_bango\)/u);
-  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
-    "getSimilarRaceStats",
-    "domestic-person-code-v1",
-    PERCLASS_703_RACE,
-    settings,
-  ]);
 });
 
 it("getBloodlineStats supplies source-native pedigree names only through complete runner mappings", async () => {
