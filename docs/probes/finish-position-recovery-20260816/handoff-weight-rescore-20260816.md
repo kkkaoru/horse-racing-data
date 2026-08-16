@@ -41,6 +41,10 @@ Pass/fail after a deploy: `post-deploy-weight-rescore-pass-fail-20260816.md`
 - `containers list` at **trigger** and at **post−5**.
 - On a landing: odds spread + `model_version` (not just UPSERT).
 - Ban-ei 83/01 tonight: same two facts + append the asymmetry table.
+- **Why 0006:** 07/02 **landed** (13:39, odds spread) with **no** D1
+  lifecycle row and **no** `retry_errors` row. Trigger time is gone.
+  “No record ≠ did not run.” Next race day, apply 0006 or we will
+  lose the next 07/02.
 
 ## (4) Do not
 
