@@ -94,4 +94,6 @@ per-message consume row, not another pile of commits.
 - Ship only the seven non-stall commits and call it a test
 
 Copy-paste commands: `observe-commands-20260816.md`.
-Ban-ei 08-16 13:54 is tonight, not this page.
+If Neon 0817 is still 0 at 08:00, host NAR by 08:15
+(`tomorrow-host-fallback-deadline-20260817.md`). First post is
+**11:45**, not 09:40. Ban-ei 08-16 13:54 is tonight, not this page.
