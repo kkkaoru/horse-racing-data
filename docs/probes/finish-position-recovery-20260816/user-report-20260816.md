@@ -1,6 +1,8 @@
 # 2026-08-16 ユーザー向け1枚
 
-本番は触っていない。container `0c76062e`。viewer `06fd3c24`。
+コードと設定は触っていない。container `0c76062e`。viewer `06fd3c24`。
+feat-cache **80 件 PUT** あり（07:50）。本番操作ゼロではない。
+`production-changes-20260816.md`。
 
 ## 1. 今日の運用
 
