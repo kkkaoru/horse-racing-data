@@ -28,7 +28,12 @@ the wrong URL in this context.
 | `feat-nar-base` / layer-0 dirs | 16:29:35 / 16:29:36 | timing fail index 0,1 status=done |
 | layer-1 near-miss child        | 16:29:36+           | RSS ~97MB                         |
 
-Base wall ≈ **7 min** (16:22:30 → 16:29:35). More layers TBD.
+Base wall ≈ **7 min** (16:22:30 → 16:29:35).
+
+**Aborted 16:32:37.** `add-near-miss-features.py` child RSS **6.83GB**
+(agreed stop if >6GB). Parent + child killed. Apple PG left running.
+No Neon 0817 flush from this run (still 8 races). Partial dirs:
+`feat-nar-base`, `feat-nar-layer-0` only.
 
 Do not treat this as PREWARM or cache HIT. 0816 `feat-nar-*` is in
 `/tmp/predict-upcoming-0816-preserve`.
