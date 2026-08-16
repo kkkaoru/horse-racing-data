@@ -48,6 +48,17 @@ If unchanged at/after 12:35, say posted without rescore (same
 sentence as JRA). If it moved, record new stamp and delay from
 that race’s trigger. Do not infer HIT/MISS from Last-Modified.
 
+## 4. LIVE INSTANCES at the same clock (fix owns this)
+
+JRA 503 was read after the fact. For NAR, take one read-only
+`wrangler containers list` in the same minute as the weight /
+trigger / Neon reads. Record LIVE INSTANCES, STATE, LAST MODIFIED.
+Do not stop or start anything. Optimize does not need a second
+copy.
+
+11:20 baseline already: LIVE **9**, STATE active, last modified
+00:37 UTC = 09:37 JST. Cap is 10.
+
 ## Optional clocks (do not interpret)
 
 - `wrangler queues list` depth for `finish-position-predict-queue`
