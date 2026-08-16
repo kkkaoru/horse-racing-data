@@ -1,13 +1,29 @@
 # Overnight FP index (2026-08-16)
 
-One page. If finish-position stalls after midnight, start here.
+This directory has **~76 markdown files**. Do not start by listing them.
+
+**Read these three (5 seconds):**
+
+1. Decide: `user-report-20260816.md`
+2. Measure: `handoff-weight-rescore-20260816.md`
+3. This page (symptoms + categories below)
+
+Everything else is a **raw log**. Open a category, not a filename.
 Do not deploy during racing hours. Count Neon rows, not D1 `completed`.
-Git vs production (5 undeployed runtime fixes): `tonight-commit-summary-20260816.md`.
-09:09 JRA weight window checklist: `jra-weight-0909-checklist-20260816.md`.
-JRA R1 close (cause unknown): `weight-rescore-cause-unknown-20260816.md`.
-NAR 12:04 / Ban-ei 13:54 observe-only: `nar-banei-1204-observe-checklist-20260816.md`.
-User one-pager: `user-report-20260816.md`.
-Work handoff (do not re-raise dropped claims): `handoff-weight-rescore-20260816.md`.
+
+## Categories (not a file list)
+
+| if you need                      | look under names like                                                     | do not                               |
+| -------------------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
+| Weight stall numbers / pass-fail | `weight-rescore-*`, `handoff-*`, `post-deploy-*`, `rejected-hypotheses-*` | re-read every `jra-weight-09*` clock |
+| Time-stamped clocks              | `jra-weight-09*`, `jra-first-*`, `nar-3501-*`, `jra-0102-*`               | treat each as a new conclusion       |
+| Feat-cache / pedigree            | `feat-cache-*`, `pedigree-*`, `seed-*`, `macless-*`                       | seed from `v7-final`                 |
+| Day-base / split / PREWARM       | `day-base-*`, `macless-automation-*`                                      | flip split tonight                   |
+| Latency phases                   | `per-race-latency-phase*`                                                 | treat 447s as 1-race                 |
+| Host recovery                    | `local-oneshot-*`, `local-duckdb-*`, `neon-primary-*`                     | restart mid-category                 |
+| Deploy window                    | `container-deploy-*`, `tonight-commit-*`, `nine-commits-*`                | deploy 09:40–20:50                   |
+| A8 / overseas                    | `a8-*`                                                                    | mix into JRA stall                   |
+| Built-not-used                   | `built-not-used-*`, `migration-0006-*`                                    | apply 0006 on a race morning         |
 
 ## Start from the symptom
 
