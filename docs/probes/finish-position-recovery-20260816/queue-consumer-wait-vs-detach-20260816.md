@@ -41,11 +41,11 @@ min without holding the Worker request.
 
 ## Today’s 09:10 weight messages
 
-Those are **rescore**, so the wait path. Seeded caches were already
-HIT-shaped; a started HIT is ~score time, not 9.9 min. Last-Modified
-staying 07:49 does **not** prove unread (GET does not rewrite the
-object). Neon still on morning gens through 10:01 **does** prove no
-successful UPSERT. `internalError` after consumer start is a failed
-invocation, not a finished long wait.
+Those are **rescore**, so the wait path. Last-Modified staying 07:49
+does **not** prove unread (GET does not rewrite the object). Neon still
+on morning gens through 10:01 **does** prove no successful UPSERT. HIT
+vs MISS is not in Neon/D1/R2 metadata — see the observation table.
+`internalError` after consumer start is a failed invocation, not a
+finished long wait.
 
 NAR 12:04 / Ban-ei 13:54 use the same rescore wait path.

@@ -11,10 +11,11 @@ No deploy. No DELETE. No focused-full POST.
 | 09:40       | first post                                                                                                         |
 | 09:41       | Neon still unchanged                                                                                               |
 
-Cache unread after the trigger ⇒ dequeue-or-start, not a mid-job Neon
-lag. Same shape as focused-full `04/01` accept+20min (queue, not
-compute). Seed HIT / rank / odds-vs-weight were **not** tested on JRA
-today.
+Last-Modified still 07:49 ⇒ **no PUT**, not “unread”. GET would leave
+the object unchanged. Neon still on morning gens ⇒ **no successful
+UPSERT**. HIT vs MISS of the seed is not stored (see
+`weight-rescore-missed-post-table-20260816.md`). Seed HIT / rank /
+odds-vs-weight were **not** tested on JRA today.
 
 Carry the same checks to NAR 12:04 / Ban-ei 13:54. Baselines:
 `nar-banei-weight-baselines-20260816.md` (`3e41ca7f`).
