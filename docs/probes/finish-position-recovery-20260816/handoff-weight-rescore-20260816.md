@@ -51,5 +51,20 @@ Pass/fail after a deploy: `post-deploy-weight-rescore-pass-fail-20260816.md`
 - Re-POST focused-full 04/01. Seed from `v7-final` without row counts.
 - Invent a 12th JRA cause tonight.
 
-Numbers: `weight-rescore-asymmetry-20260816.md`.
-Seed how-to: `feat-cache-seed-runbook-20260816.md`.
+## Map (this page is the work entrance)
+
+Symptom index (`overnight-fp-index.md`) points **here** for the stall.
+Do not add a second entrance.
+
+| need                   | file                                               |
+| ---------------------- | -------------------------------------------------- |
+| Numbers (no cause)     | `weight-rescore-asymmetry-20260816.md`             |
+| Clock table            | `weight-rescore-missed-post-table-20260816.md`     |
+| Pass/fail next morning | `post-deploy-weight-rescore-pass-fail-20260816.md` |
+| Dropped claims         | `rejected-hypotheses-20260816.md`                  |
+| Built, not used        | `built-not-used-20260816.md`                       |
+| How to seed cache      | `feat-cache-seed-runbook-20260816.md`              |
+| Wait vs detach         | `queue-consumer-wait-vs-detach-20260816.md`        |
+| NAR/Ban-ei checks      | `nar-weight-window-checklist-20260816.md`          |
+| Queue proposal (older) | `weight-trigger-queue-proposal-20260816.md`        |
+| User one-pager         | `user-report-20260816.md`                          |
