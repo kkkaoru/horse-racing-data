@@ -24,7 +24,7 @@ feat-cache **80 件 PUT** あり（07:50）。本番操作ゼロではない。
 | 01/01 10:00     | trigger 09:20。Neon 05:03。間に合わず                           |
 | 01/02 10:30     | trigger 09:49 → Neon **10:54**（発走 +24 分）。間に合っていない |
 | NAR 35/01 12:35 | trigger 11:44。発走後も Neon **05:31**                          |
-| Ban-ei 14:25    | trigger 13:42。14:20 Neon まだ **05:50**（5 件目）。LIVE 9      |
+| Ban-ei 14:25    | trigger 13:42。発走後 14:26 も Neon **05:50**（5 件目）         |
 | 07/02           | Neon **13:39**。D1 trigger も retry も無い。記録無し ≠ 未実行   |
 
 市場オッズは全件欠ける。`predicted_top1/top3_prob` NULL は仕様。
