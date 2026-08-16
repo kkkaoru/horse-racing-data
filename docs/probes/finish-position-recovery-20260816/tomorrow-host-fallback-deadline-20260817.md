@@ -37,8 +37,11 @@ Need rows **before 11:45**. Margin 15 min → finish by **11:30**.
 | 10:30            | 10:40         | 12:10           | **no** for 35/01   |
 
 **Alarm 08:00.** Count Neon `kaisai_tsukihi='0817'` (not D1
-`completed`). Expected after a good generate: 35=12, 44=10, 46=10.
-Zero at 08:00 → start the NAR host one-shot **by 08:15**.
+`completed`). Expected: 35=12, 44=10, 46=10 (**32**). At 15:00 on
+08-16 there were already **8 leftover races** (stamps 02:30–07:16
+JST, not a live fill). **<32 at 08:00 → host.** Do not wait for 0.
+Do not DELETE the 8. UPSERT the gaps. 46 was empty.
+`0817-partial-already-there-20260816.md`.
 `local-oneshot-recovery-playbook.md`.
 
 Do **not** wait for the 09:10 weight clock. That tests rescore,
