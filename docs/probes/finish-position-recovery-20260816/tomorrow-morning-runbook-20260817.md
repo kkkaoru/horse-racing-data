@@ -1,8 +1,11 @@
 # Tomorrow morning runbook (2026-08-17)
 
 Default window from `deploy-windows-tonight-20260816.md`.
-Do this **before first JRA `fetch-weights` ok** (~09:10).
-If you wake after 09:00, **do not deploy**. Watch only.
+Do this **before first NAR generate / 08:00 Neon count**.
+08-17 has **no JRA**. First post 35/01 **11:45**.
+If you wake after 10:00 with Neon 0, **do not expect 35/01**.
+**pi-fix-developer will not be the 08:00 operator.** Handoff this
+page. Anyone with repo access can run it.
 
 Tonight’s nine commits **do not fix** the stall
 (`nine-commits-do-not-fix-weight-stall-20260816.md`).
