@@ -28,5 +28,22 @@ categories, and we are still in racing hours until 20:50.
 A 22:00 start is allowed by the deploy ban but competes with
 A8’s oversea window on the same machine. Not worth it.
 
+## Is 90 min enough? (margin, not a promise)
+
+Tonight NAR **27 min** was after JRA layers existed. Do not use 27.
+Cold NAR = Iceberg base + 10 layers + score. 46 is a new venue in
+the same `nar` category (one `PREDICT_CATEGORIES=nar` run, not a
+third category). 8 leftover rows do not skip the base rebuild.
+
+90 min is a **budget**, like tonight’s JRA resume+flush ~80 min
+plus slack. If it slips to **150 min** (OOM once, resume, no
+parallel): 08:15 → 10:45. Still **60 min** before 11:45.
+If it slips to **180 min**: 11:15. Tight, still before post.
+
+Do **not** start before 08:15 to “buy” the 27-min number. Buy
+the 08:00 count instead. If 08:00 is already 32, skip.
+If someone can start at **08:00** after a 2-minute count, that
+is the only useful pull-forward (~15 min). Not 07:00.
+
 User still picks. This is the recommendation: **sleep; 08:00
 count; host if <32.**
