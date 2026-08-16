@@ -37,11 +37,11 @@ Today’s two facts are **necessary, not sufficient**.
 
 **Add:**
 
-| #   | fact                                                                                                                       | why today was blind                                                                          |
-| --- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| 4   | ranks / `odds_score` vs baseline **if** (2) moved                                                                          | landing ≠ useful rescore. If both weight-ish ranks and odds move in one gen, say inseparable |
-| 5   | Worker GraphQL for **that** `mode=rescore` delivery: success vs `internalError`, and if present `rescore-fallback-to-full` | HIT vs MISS is not in Neon/D1/R2. Only NDJSON/GraphQL can show the stage                     |
-| 6   | D1 `finish_position_predict_retry_errors` for that race                                                                    | `catch` after start. Empty ≠ success                                                         |
+| #   | fact                                                                                                                            | why today was blind                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 4   | ranks / `odds_score` vs baseline **if** (2) moved. Also: is `odds_score` **per-horse** (min≠max) or still the morning constant? | landing ≠ useful rescore. Spread (01/02 0.11–0.65 vs R1 0.5664) ⇒ real odds entered. Flat ⇒ UPSERT without new market. If both weight-ish ranks and odds move in one gen, say inseparable |
+| 5   | Worker GraphQL for **that** `mode=rescore` delivery: success vs `internalError`, and if present `rescore-fallback-to-full`      | HIT vs MISS is not in Neon/D1/R2. Only NDJSON/GraphQL can show the stage                                                                                                                  |
+| 6   | D1 `finish_position_predict_retry_errors` for that race                                                                         | `catch` after start. Empty ≠ success                                                                                                                                                      |
 
 Without (5), “fixed” can only mean **UPSERT before post**. It cannot
 mean “HIT path works”.

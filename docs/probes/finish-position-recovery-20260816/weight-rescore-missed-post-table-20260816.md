@@ -1,6 +1,8 @@
 # Weight-rescore vs post (2026-08-16)
 
-One sheet for tomorrow. Fill NAR / Ban-ei when those windows close.
+One sheet for tomorrow. Fill NAR / Ban-ei when those windows close. On any landing, also
+record whether `odds_score` is per-horse (01/02) or still the morning
+constant (JRA R1 0.5664 / NAR 0.5048).
 Times are JST unless marked Z. Cache Last-Modified is seed window
 07:48–07:52 unless a later write appears.
 

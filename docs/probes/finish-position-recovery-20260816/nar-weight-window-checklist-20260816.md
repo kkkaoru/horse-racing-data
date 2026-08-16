@@ -33,11 +33,12 @@ Same two facts as JRA, with the 10:13 correction:
 
 Add only what is visible without logs:
 
-| #   | look                                                                                         | when it helps                                                                                            |
-| --- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| C   | Neon ranks / `odds_score` vs TSV                                                             | **only if** B moved. One `generated_at` that changes both weight-ish ranks and odds is **not** separable |
-| D   | D1 `finish_position_predict_retry_errors` for 35/01 (and 44/01, 55/01) after the NAR trigger | consumer `catch` after start. Absence ≠ success                                                          |
-| E   | GraphQL `internalError` in the NAR window (fix-dev)                                          | same unknown as JRA 09:00–09:55; do not attribute without a matching race                                |
+| #   | look                                                                                         | when it helps                                                                                                           |
+| --- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| C   | Neon ranks / `odds_score` vs TSV                                                             | **only if** B moved. One `generated_at` that changes both weight-ish ranks and odds is **not** separable                |
+| C2  | On a landing: is `odds_score` **per-horse** (min≠max) or still the morning constant?         | 01/02 was 0.11–0.65 vs R1 0.5664. Spread ⇒ `apply_fresh_snapshots` injected real odds. Flat ⇒ UPSERT without new market |
+| D   | D1 `finish_position_predict_retry_errors` for 35/01 (and 44/01, 55/01) after the NAR trigger | consumer `catch` after start. Absence ≠ success                                                                         |
+| E   | GraphQL `internalError` in the NAR window (fix-dev)                                          | same unknown as JRA 09:00–09:55; do not attribute without a matching race                                               |
 
 Do **not** infer HIT from A. GET does not rewrite the object.
 
