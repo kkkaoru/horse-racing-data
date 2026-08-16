@@ -21,8 +21,11 @@ Same on the three JRA R1s + 35/01 so far: no UPSERT, no retry_errors
 row, odds still the morning **constant**.
 
 Different on 01/02 only: UPSERT exists; retry_errors exist; odds
-**spread**; smallest field (8). Still market-free model. Still fail
-on the post−5 min clock.
+**spread**; smallest field (8). Still fail on the post−5 min clock.
+
+**Observation, not a cause:** 01/02 `odds_score` became per-horse and
+`model_version` stayed `jra-cb-stage1-marketfree235-2013`. Odds entered;
+the served model name did not change.
 
 Do not turn “smallest field” or “has retry_errors” into a cause.
 Tomorrow: append NAR 44/01, 55/01, Ban-ei 83/01 the same way.
