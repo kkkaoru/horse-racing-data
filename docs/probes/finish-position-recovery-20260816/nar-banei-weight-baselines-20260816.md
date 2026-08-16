@@ -25,7 +25,7 @@ Files: `docs/probes/finish-position-recovery-20260816/neon-*-ranks-before-weight
 before this snapshot). 55/09 and 55/10 are 05:56 (also later than the
 05:31 card).
 
-Same observation as JRA when weights arrive: HEAD cache Last-Modified
-vs 07:49 seed window; pedigree pos; Neon gen/ranks vs these TSVs;
-whether `odds_score` moved or only weight-related fields. If both move
-in one `generated_at`, say they are not separable.
+Observation at the window: `nar-weight-window-checklist-20260816.md`.
+Last-Modified = overwrite only. Neon gen = UPSERT only. HIT/MISS is
+not stored. NAR success vs JRA miss would point at JRA-specific;
+NAR miss would point at a shared structure.
