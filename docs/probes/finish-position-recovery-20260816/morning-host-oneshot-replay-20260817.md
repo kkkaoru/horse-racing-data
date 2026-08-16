@@ -1,9 +1,12 @@
 # If 08-17 container writes nothing: NAR-only host one-shot
 
-**08-17 is Monday: JRA 0, NAR 32** (advisor local PG). No 09:40 JST
-clock. Weight-rescore check is the **NAR** window (~12:04), not 09:10.
-First post ~**12:35** (confirm on the day). Ban-ei not on this card
-unless someone counts 83 tomorrow.
+**08-17 is Monday: JRA 0, NAR 32** (advisor `nvd_ra`). Do **not** reuse
+08-16 clocks (09:40 / 12:04 / 12:35).
+
+Venues: **35** 12R first **11:45** last 18:05; **46** 10R first 15:10
+last 20:40; **44** 10R first 15:40 last 20:50. **No 55, no 83** → no
+Ban-ei. First post **11:45**. Weight window ~**11:14** (post−31).
+Fix-dev notice sheet `55dc93db` uses 11:45 — match that.
 
 Not the “when to notice” clock (fix-dev). This is compute if we replay
 the Mac path half-awake.
@@ -16,9 +19,8 @@ on disk (10 layers, 32 races). Head-to-head NAR peaked ~3.2GB (JRA 6.95).
 
 **Clean NAR-only estimate: ~30–45 min** (Iceberg base + 10 layers +
 score/flush + one mistake). Not 70–90 (that was JRA-inclusive).
-Start by **11:05** if first post is 12:35 and we want R1 rows with slack
-(`12:35 − 90 min` is conservative; 45 min compute + 15 min preflight
-⇒ **11:35** is the tight line). Prefer 11:05.
+Start by **10:15** (11:45 − 90 min). Tight line **11:00** (45 min +
+preflight). Prefer 10:15.
 
 Playbook: `local-oneshot-recovery-playbook.md`.
 Seed after (optional): `feat-cache-seed-runbook-20260816.md`.
@@ -43,10 +45,11 @@ Seed after (optional): `feat-cache-seed-runbook-20260816.md`.
    `apps/finish-position-predict-container`.
 2. **2 min preflight:** DuckDB 1.5.5 print; `colima status` stopped;
    `memory_pressure`; Apple PG up.
-3. Start early enough for **12:35**, not 09:40 (**11:05** / tight 11:35).
+3. Start early enough for **11:45**, not 08-16’s 12:35 (**10:15** / tight 11:00).
 4. FORCE is **host-only** (container `envVars` does not forward it).
 5. Seed only after Neon **32** and last-layer counts. Not “80/80”.
-6. Do not run Ban-ei “to be safe” on a NAR-only day.
+6. Do **not** set `PREDICT_CATEGORIES` to include `ban-ei` or `jra`.
+   No 83 tomorrow.
 
 ## Launch (fill cwd)
 
