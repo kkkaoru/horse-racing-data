@@ -93,4 +93,5 @@ per-message consume row, not another pile of commits.
 - Flip split
 - Ship only the seven non-stall commits and call it a test
 
+Copy-paste commands: `observe-commands-20260816.md`.
 Ban-ei 08-16 13:54 is tonight, not this page.
