@@ -44,10 +44,11 @@ scoped CacheMiss (`6793ad7f`), DuckDB 1.5.5, writable txn.
 | POST     | **15:56:50 JST** focused-full `nar 20260817 46/01` HTTP 200 `accepted` |
 | 16:10:45 | elapsed **13 min**. Neon **0**. feat-cache **404**. 0816 still 80/951  |
 
-**No latency verdict at 13 min.** Today’s shortest landing was 65 min
-(clock **17:02**). Until then record only elapsed + empty. Land before
-65 min → possible improvement. Still empty after 65 min → same band as
-today. Still empty after 227 min (**19:44**) → worse or unchanged. Do
-not flood POST. A later UPSERT is not “HIT works”.
+**17:02 is a midpoint, not a deploy verdict.** 65 min is only today’s
+_shortest_ landing (01/02). Today also had 199 and 227. One race past
+65 min is normal in that spread — **not** “deploy did not help”. Faster
+than 65 min is only “faster than today’s shortest”. Slower than 227 min
+(19:44) is only “slower than today’s longest”. Effect needs **several**
+races tomorrow. Do not flood POST.
 
 0817 remains **8/32**. This deploy does not generate the other 24.
