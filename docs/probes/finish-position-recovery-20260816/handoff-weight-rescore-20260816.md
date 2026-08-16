@@ -4,6 +4,12 @@ User one-pager is `user-report-20260816.md`. This page is for the
 next person who has to **measure**. Live image `0c76062e`. No deploy
 09:40–20:50 unless the user opens a window.
 
+**Read first:** `rejected-hypotheses-20260816.md`. The first thing a
+new person does is invent a cause. Those 11 are already dead (Last-Modified
+≠ unread, 15-min max ≠ regen, cron minutes are UTC, 20 min ≠ fail).
+Pass/fail and the elapsed distribution are for **after** a deploy, not
+before the first hypothesis.
+
 ## (1) One line
 
 Weight trigger fires and the queue consumer runs; R1 predictions
