@@ -67,13 +67,13 @@ Contrasts (R6) optional; they do not count unless an R1 is scratched.
 
 Today vs those two lines:
 
-| watch                                    | vs post−5                         | vs +80 from trigger                                  |
-| ---------------------------------------- | --------------------------------- | ---------------------------------------------------- |
-| 04/01 30 min slack, no UPSERT            | fail                              | would also fail at post                              |
-| 07/01 40 min                             | fail                              | same                                                 |
-| 01/01 50 min                             | fail                              | same                                                 |
-| 35/01 +36 min still baseline, post 12:35 | will fail at 12:30 if still empty | +80 is after post — **post−5 binds first**           |
-| 01/02 landed post+24                     | **fail** (too late)               | trigger→land ~104 min; +80 would already have failed |
+| watch                                                        | vs post−5                         | vs +80 from trigger                                  |
+| ------------------------------------------------------------ | --------------------------------- | ---------------------------------------------------- |
+| 04/01 30 min slack, no UPSERT                                | fail                              | would also fail at post                              |
+| 07/01 40 min slack; landed **12:57** (+227 min from trigger) | fail at post                      | +80 would have failed; **still landed**              |
+| 01/01 50 min                                                 | fail                              | same                                                 |
+| 35/01 +36 min still baseline, post 12:35                     | will fail at 12:30 if still empty | +80 is after post — **post−5 binds first**           |
+| 01/02 landed post+24                                         | **fail** (too late)               | trigger→land ~104 min; +80 would already have failed |
 
 **Keep both clocks.** post−5 is the betting clock (today’s 01/02 would
 still be fail if we only used +80). +80 is the “did it ever finish”
@@ -89,7 +89,13 @@ if written.
 
 **Unknown / do not claim HIT:** (2) moved but (5) has no stage line.
 
-Do not wait past the fail clock for a 76-minute landing.
+**Fail at +80 / post−5, but keep watching.** 07/01 landed at **+227 min**.
+A fail verdict must **not** stop recording later UPSERTs (same shape as
+judging 04/01 at +20 min). Queued ≠ dead. Betting fail and “never
+finishes” are different facts.
+
+Do not wait past the fail clock to _declare_ fixed. Do keep a later
+row on the asymmetry table if a gen moves after fail.
 
 ## LIVE INSTANCES (new; today we only had after-the-fact)
 
