@@ -46,39 +46,63 @@ Today’s two facts are **necessary, not sufficient**.
 Without (5), “fixed” can only mean **UPSERT before post**. It cannot
 mean “HIT path works”.
 
-## How many races
+## How many races (revised after 5 watches)
 
-Today 3 JRA R1s (slack 30 / 40 / 50 min) ruled out a short window.
-That bar stays.
+Today: 04/01, 07/01, 01/01 missed; 35/01 pending at +26–36 min; **01/02
+only** UPSERT, and that was **post+24**. Three JRA R1s already rule out
+a short window. They do **not** rule out “one late stray lands”.
 
-**Minimum to say fixed:** **3 R1s**, at least **2 categories** if
-NAR/Ban-ei also missed tonight (shared structure). If tonight NAR
-lands and JRA does not, next day needs **3 JRA R1s** (JRA-specific).
+**Minimum to say fixed:** still **3 R1s**, all UPSERT **before post−5**.
+If 35/01 also misses, require those 3 across **≥2 categories** (shared
+stall). One R2 landing like 01/02 **does not count** toward fixed.
 
-Contrasts (R6) are optional; they do not count toward the 3 unless an
-R1 is scratched.
+**3 is enough to fail** (any required R1 misses the clock). **3 is not
+enough to claim the path is stable** if only 1 of 5 watches landed
+today — after a “fixed” morning, still log the next 2 R1s the same way
+(no extra deploy gate).
 
-## Fail clock (revise today’s 20 min)
+Contrasts (R6) optional; they do not count unless an R1 is scratched.
 
-Today: 20 min was the first alarm; **77 / 77 / 66 min** still no
-UPSERT. Focused-full once landed at **+76 min**, so 20 min is only
-“not yet”, not fail.
+## Fail clock (still post−5 / +80)
 
-| clock after trigger                  | if Neon gen still baseline                                                    |
-| ------------------------------------ | ----------------------------------------------------------------------------- |
-| **20 min**                           | not yet (same as today)                                                       |
-| **post − 5 min**                     | **operational fail** for that race (too late to bet)                          |
-| **+80 min** or post, whichever first | **not fixed** for that race. 80 > today’s 77 and the +76 focused-full landing |
+Today vs those two lines:
 
-**Not fixed (deploy):** any of the 3 required R1s hits the +80 / post
-line. One success and two misses is not fixed.
+| watch                                    | vs post−5                         | vs +80 from trigger                                  |
+| ---------------------------------------- | --------------------------------- | ---------------------------------------------------- |
+| 04/01 30 min slack, no UPSERT            | fail                              | would also fail at post                              |
+| 07/01 40 min                             | fail                              | same                                                 |
+| 01/01 50 min                             | fail                              | same                                                 |
+| 35/01 +36 min still baseline, post 12:35 | will fail at 12:30 if still empty | +80 is after post — **post−5 binds first**           |
+| 01/02 landed post+24                     | **fail** (too late)               | trigger→land ~104 min; +80 would already have failed |
 
-**Fixed (deploy):** all 3 required R1s UPSERT **before post − 5 min**,
-and (4) is recorded (even if rank delta is 0 — then write “landed,
-ranks unchanged”).
+**Keep both clocks.** post−5 is the betting clock (today’s 01/02 would
+still be fail if we only used +80). +80 is the “did it ever finish”
+clock when post is far (today’s 77 min JRA wait; focused-full +76).
+20 min stays **not yet**, not fail — 01/02 proves a later landing exists.
 
-**Unknown / do not claim HIT:** (2) moved but (5) has no fallback
-line and no HIT log. Say UPSERT-only.
+**Not fixed:** any required R1 hits post−5 or +80 empty. 1-of-3 is not
+fixed. A post+24 UPSERT is not fixed.
 
-Do not wait past the fail clock hoping for a 76-minute landing.
-That is not a working weight path.
+**Fixed:** all required R1s UPSERT **before post−5**, and (4) recorded
+(odds spread vs flat; model_version vs morning). Rank delta 0 is ok
+if written.
+
+**Unknown / do not claim HIT:** (2) moved but (5) has no stage line.
+
+Do not wait past the fail clock for a 76-minute landing.
+
+## LIVE INSTANCES (new; today we only had after-the-fact)
+
+Today: 9/10 at **11:20–11:30**, `LAST MODIFIED` **09:37** — after the
+09:10 trigger, not at it. 10:20 Container 503 has **no** contemporaneous
+count.
+
+Take `wrangler containers list` **twice** (read-only):
+
+| when                                                   | why                                            |
+| ------------------------------------------------------ | ---------------------------------------------- |
+| **weight arrival / trigger** (same minute if possible) | count at enqueue. Today’s missing clock        |
+| **post−5** on the first required R1                    | count when we declare operational fail or pass |
+
+A third list at landing (if any) is optional. Do not use a list from
+hours later as “slots at 09:10”.
