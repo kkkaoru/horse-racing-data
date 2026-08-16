@@ -44,7 +44,7 @@
 
 ## 3. 明日の順
 
-開催中（〜20:50）は deploy しない。A8 は 21:00–22:00 oversea。
+開催中（〜20:50）は deploy しない。A8 本生成は 21:00–22:00 oversea で **container を使わない**。窓の中身: `deploy-windows-tonight-20260816.md`。既定は明朝（stall を試せる唯一の窓）。
 
 1. ユーザー確認後、枠の窓を開く。既定は明朝
 2. **先に** queue consumer が書く per-message 結果（開始 / ack / retry / Python 前に死んだ）。held fetch が返らなくても残す。0006 の表はそれではない
