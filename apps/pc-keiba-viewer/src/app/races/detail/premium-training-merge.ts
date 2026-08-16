@@ -15,6 +15,11 @@
 // The latest-row fallback fixes a viewer regression where premium D1 reviews
 // (e.g. `trainingDate=2026/06/24`) would never merge because the displayed
 // `chokyoNengappi` values predate the review date.
+//
+// Placeholder-row fallback: JRA `jvd_hc`/`jvd_wc` only cover Miho/Ritto, so
+// Hokkaido summer-circuit runners often have one undated placeholder row and
+// no official workout date. A dated premium review must still attach to that
+// row; otherwise grades vanish and the grade-only filter hides the horse.
 
 import type { Training } from "../../../lib/race-types";
 
@@ -149,7 +154,10 @@ const lookupReviewForTraining = ({
     return undefined;
   }
   const latestDate = latestDateByHorse.get(horseNumber);
-  if (!latestDate || latestDate !== trainingDate) {
+  if (!latestDate) {
+    return reviewByHorseLatest.get(horseNumber);
+  }
+  if (latestDate !== trainingDate) {
     return undefined;
   }
   return reviewByHorseLatest.get(horseNumber);

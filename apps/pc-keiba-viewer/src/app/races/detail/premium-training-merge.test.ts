@@ -635,6 +635,87 @@ it("attaches the latest dated review only to the latest training row of three", 
   ]);
 });
 
+it("attaches a dated review to an undated placeholder when the horse has no official workout", () => {
+  const result = mergePremiumTrainingReviews(
+    [
+      {
+        babamawari: null,
+        bamei: "sapporo-local",
+        chokyoJikoku: "",
+        chokyoNengappi: "",
+        course: null,
+        lapTime10f: null,
+        lapTime1f: null,
+        lapTime2f: null,
+        lapTime3f: null,
+        lapTime4f: null,
+        lapTime5f: null,
+        lapTime6f: null,
+        lapTime7f: null,
+        lapTime8f: null,
+        lapTime9f: null,
+        timeGokei10f: null,
+        timeGokei2f: null,
+        timeGokei3f: null,
+        timeGokei4f: null,
+        timeGokei5f: null,
+        timeGokei6f: null,
+        timeGokei7f: null,
+        timeGokei8f: null,
+        timeGokei9f: null,
+        tracenKubun: null,
+        trainingType: "-",
+        umaban: "03",
+      },
+    ],
+    [
+      {
+        commentText: "現地調教の評価",
+        evaluationGrade: "B",
+        evaluationText: "状態良好",
+        horseNumber: "3",
+        riderName: "助手",
+        trainingDate: "2026/08/12(水)",
+      },
+    ],
+  );
+  expect(result).toStrictEqual([
+    {
+      babamawari: null,
+      bamei: "sapporo-local",
+      chokyoJikoku: "",
+      chokyoNengappi: "",
+      course: null,
+      lapTime10f: null,
+      lapTime1f: null,
+      lapTime2f: null,
+      lapTime3f: null,
+      lapTime4f: null,
+      lapTime5f: null,
+      lapTime6f: null,
+      lapTime7f: null,
+      lapTime8f: null,
+      lapTime9f: null,
+      premiumCommentText: "現地調教の評価",
+      premiumEvaluationGrade: "B",
+      premiumEvaluationText: "状態良好",
+      timeGokei10f: null,
+      timeGokei2f: null,
+      timeGokei3f: null,
+      timeGokei4f: null,
+      timeGokei5f: null,
+      timeGokei6f: null,
+      timeGokei7f: null,
+      timeGokei8f: null,
+      timeGokei9f: null,
+      tracenKubun: null,
+      trainingRiderName: "助手",
+      trainingType: "-",
+      umaban: "03",
+    },
+  ]);
+});
+
 it("leaves trainings without umaban unchanged", () => {
   const result = mergePremiumTrainingReviews(
     [

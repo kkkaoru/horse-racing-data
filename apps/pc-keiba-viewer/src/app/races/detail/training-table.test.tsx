@@ -44,13 +44,21 @@ const training = (overrides: Partial<Training>): Training => ({
 afterEach(cleanup);
 
 describe("training table", () => {
-  it("shows only rows with premium grade by default when grade data exists", () => {
+  it("shows only rows with premium grade by default including undated placeholders", () => {
     render(
       <TrainingTable
         sourceLabel="JRA"
         trainings={[
           training({ bamei: "記号あり", premiumEvaluationGrade: "A", umaban: "01" }),
           training({ bamei: "記号なし", premiumEvaluationGrade: null, umaban: "02" }),
+          training({
+            bamei: "公式調教なしだが記号あり",
+            chokyoJikoku: "",
+            chokyoNengappi: "",
+            premiumEvaluationGrade: "B",
+            trainingType: "-",
+            umaban: "03",
+          }),
         ]}
       />,
     );
@@ -59,10 +67,13 @@ describe("training table", () => {
     expect(gradeOnlyCheckbox).toBeInstanceOf(HTMLInputElement);
     expect(gradeOnlyCheckbox instanceof HTMLInputElement && gradeOnlyCheckbox.checked).toBe(true);
     expect(screen.getByText("記号あり")).toBeTruthy();
+    expect(screen.getByText("公式調教なしだが記号あり")).toBeTruthy();
     expect(screen.queryByText("記号なし")).toBeNull();
+    expect(screen.getByText("2 / 3 件")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "記号ありのみを表示" }));
     expect(screen.getByText("記号なし")).toBeTruthy();
+    expect(screen.getByText("3 / 3 件")).toBeTruthy();
   });
 
   it("selects the best premium grade before the fastest 1F record when filtering graded rows", () => {
