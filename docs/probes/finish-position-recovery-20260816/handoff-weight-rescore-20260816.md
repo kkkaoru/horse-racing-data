@@ -29,6 +29,10 @@ almost never UPSERT before post. One late race did.
 - Seed 80/80 (JRA+NAR+Ban-ei) still those objects at 11:51 (44/44 NAR/Ban-ei).
 - Nine git fixes do **not** include a root-cause stall fix
   (`5480ed4d`). Only `85bfba82` / `67440b8b` even sit on the path.
+- **0817 also stopped at 07:16** (same second as 0816’s last write).
+  Advisor 15:11: **8/32** already on Neon (overnight 02:30–07:16); venue
+  **46 is 0/10**. A stopped job has **no pace** — do not extrapolate
+  “full by 06:00”. Fill the missing venues; do not DELETE the 8.
 
 **Unknown**
 
