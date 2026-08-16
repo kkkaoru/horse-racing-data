@@ -44,8 +44,10 @@ scoped CacheMiss (`6793ad7f`), DuckDB 1.5.5, writable txn.
 | POST     | **15:56:50 JST** focused-full `nar 20260817 46/01` HTTP 200 `accepted` |
 | 16:10:45 | elapsed **13 min**. Neon **0**. feat-cache **404**. 0816 still 80/951  |
 
-Same stall shape as today’s 65 / 199 / 227 min landings. Deploy did
-**not** make focused-full land in 15 min. Do not flood POST. Keep
-watching for a late UPSERT; do not call that “HIT works”.
+**No latency verdict at 13 min.** Today’s shortest landing was 65 min
+(clock **17:02**). Until then record only elapsed + empty. Land before
+65 min → possible improvement. Still empty after 65 min → same band as
+today. Still empty after 227 min (**19:44**) → worse or unchanged. Do
+not flood POST. A later UPSERT is not “HIT works”.
 
 0817 remains **8/32**. This deploy does not generate the other 24.
