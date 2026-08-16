@@ -10,6 +10,11 @@ new person does is invent a cause. Those 11 are already dead (Last-Modified
 Pass/fail and the elapsed distribution are for **after** a deploy, not
 before the first hypothesis.
 
+**Keep your own measurement.** Tonight the advisor issued many firm
+causes; the useful replies were Neon min/max/distinct and HEAD, not
+agreement. Do not match a teammate’s certainty. A stopped job has no
+pace. No record ≠ did not run.
+
 ## (1) One line
 
 Weight trigger fires and the queue consumer runs; R1 predictions
