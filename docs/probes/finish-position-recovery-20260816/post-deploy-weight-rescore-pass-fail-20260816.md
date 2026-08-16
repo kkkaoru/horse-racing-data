@@ -3,6 +3,14 @@
 Not a commit ranking. After an image is live, use this to say
 **fixed** or **not fixed**. Tonight’s cause is still unknown.
 
+**This sheet does not certify the tonight pile.** Fix-dev’s split:
+only `85bfba82` (writable txn, **if** consume reached the container)
+and `67440b8b` (DuckDB 1.5.5, **MISS only**) even sit on today’s path.
+The other seven do not move this stamp. Shipping all nine and then
+reading **not fixed** here means we never deployed a root-cause fix —
+not that those nine “failed to cure” the stall. Do not treat a fail
+verdict as evidence against `6793ad7f` / PREWARM / split / odds-board.
+
 ## When to take the baseline
 
 Take Neon ranks **before** that day’s weight trigger, on the **new**
