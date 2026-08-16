@@ -6,6 +6,7 @@ Git vs production (5 undeployed runtime fixes): `tonight-commit-summary-20260816
 09:09 JRA weight window checklist: `jra-weight-0909-checklist-20260816.md`.
 JRA R1 close (cause unknown): `weight-rescore-cause-unknown-20260816.md`.
 NAR 12:04 / Ban-ei 13:54 observe-only: `nar-banei-1204-observe-checklist-20260816.md`.
+User one-pager: `user-report-20260816.md`.
 
 ## Start from the symptom
 
