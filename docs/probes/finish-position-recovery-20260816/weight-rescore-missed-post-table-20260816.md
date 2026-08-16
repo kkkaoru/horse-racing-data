@@ -19,6 +19,19 @@ is not stored (see below).
 | NAR 55/01    | 12:04 |            — |                                    | 05:31:30Z baseline    |          |
 | Ban-ei 83/01 | 13:54 |            — |                                    | 05:50:12Z baseline    |          |
 
+**Separate: only JRA landing after 10:00 JST (not an R1).**
+
+| race      | post  | landing (JST) | vs post     | cache Last-Modified                | Neon gen (distinct=1) | in time? |
+| --------- | ----- | ------------- | ----------- | ---------------------------------- | --------------------- | -------- |
+| JRA 01/02 | 10:30 | **10:54:34**  | **+24 min** | **07:49:06** (72866B) no overwrite | **01:54:34Z**         | **no**   |
+
+01/02 `model_version=jra-cb-stage1-marketfree235-2013` still, but
+`odds_score` is **per-horse** (0.11–0.65), not the collapsed 0.5664 on
+morning R1s. Why this race and not 01/01 is **unknown**. Last-Modified
+still seed ⇒ no feat-cache PUT; GET would look the same. Consume is not
+fully dead — one late UPSERT exists. Still a fail on the post−5 min
+clock (`c565fa16`).
+
 Contrast races (same two facts if a gen moves): 35/06, 44/06, 55/06,
 83/06. TSV: `nar-banei-weight-baselines-20260816.md`.
 
