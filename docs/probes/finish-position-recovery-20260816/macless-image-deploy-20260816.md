@@ -37,10 +37,15 @@ scoped CacheMiss (`6793ad7f`), DuckDB 1.5.5, writable txn.
 | Weight rescore HIT + in-time UPSERT           | NAR window **~11:14 JST 08-17**                                |
 | Split reuse of day-base                       | **not enabled**. Do not flip until PREWARM HEAD is HIT         |
 
-## Probe in flight (not a success)
+## Probe (not a success, not a PREWARM proof)
 
-15:56:50 JST POST focused-full `nar 20260817 46/01` → HTTP 200
-`accepted`. At 16:00 (+3.5 min) Neon **0 rows**, feat-cache **404**,
-day-base **404** (expected: split off, PREWARM not due). 0816 still 80.
-No second POST. If empty at accepted+15 min, that is a **queue/stall**
-fact, not proof the image “works” or “failed PREWARM”.
+|          |                                                                        |
+| -------- | ---------------------------------------------------------------------- |
+| POST     | **15:56:50 JST** focused-full `nar 20260817 46/01` HTTP 200 `accepted` |
+| 16:10:45 | elapsed **13 min**. Neon **0**. feat-cache **404**. 0816 still 80/951  |
+
+Same stall shape as today’s 65 / 199 / 227 min landings. Deploy did
+**not** make focused-full land in 15 min. Do not flood POST. Keep
+watching for a late UPSERT; do not call that “HIT works”.
+
+0817 remains **8/32**. This deploy does not generate the other 24.
