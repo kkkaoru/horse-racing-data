@@ -198,6 +198,12 @@ apps/mlflow-ui/mlflow.db*
 .claude/*
 !.claude/skills
 
+# Serena local project artifacts (cache, memories, project.yml)
+.serena/
+
+# Probe runtime dumps written as NDJSON but named .json (oxfmt rejects them)
+docs/probes/**/accept.json
+
 tmp
 .neon
 
