@@ -12,11 +12,17 @@ const KV_MAX_TTL_SECONDS = 60 * 60 * 24;
 // Bumped v5->v6 on 2026-08-15 because getRaceRunners gained supplemental
 // overseas identity/profile fields. Without a new namespace, a pre-deploy
 // runner payload can hide the new names and links for the full cache TTL.
+// Bumped v6->v7 on 2026-08-16 so overseas-lgbm-fp-v2 (identity-flag-free)
+// is not hidden by a 1h cache of the biased v1 prediction query.
+// Bumped v7->v8 on 2026-08-16 so overseas-lgbm-fp-v3 (netkeiba form + market)
+// is not hidden by a 1h cache of the v2 prediction query.
+// Bumped v8->v9 on 2026-08-16 after form-primary rescoring of v3.
+// Bumped v9->v10 on 2026-08-16 after person/prize overseas rescoring.
 // This cache key is content-addressed, not deploy-version-addressed, and the
 // per-race cache-bust endpoint targets a different KV key scheme, so any
 // shape change to the cached payload needs its own bump here or pre-warmed
 // entries keep serving the old shape for up to PC_KEIBA_DB_CACHE_TTL_SECONDS.
-const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v6";
+const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v10";
 
 declare global {
   interface CacheStorage {
