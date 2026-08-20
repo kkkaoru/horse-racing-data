@@ -420,6 +420,28 @@ test("publishFinishPositionPredictionCacheForCategory writes each listed race", 
   expect(putMock.mock.calls[1]?.[0]).toBe("pred:fp:v1:20260809:05:02");
 });
 
+test("publishFinishPositionPredictionCacheForCategory skips an overseas A8 venue", async () => {
+  allMock.mockResolvedValue({
+    results: [
+      { keibajo_code: "05", race_bango: "11" },
+      { keibajo_code: "A8", race_bango: "04" },
+    ],
+  });
+  queryMock.mockResolvedValue([
+    { model_version: "v", predicted_rank: 1, predicted_score: 1.6, umaban: 1 },
+  ]);
+  const written = await publishFinishPositionPredictionCacheForCategory({
+    bustCacheApi: false,
+    category: "jra",
+    env: makeEnv(),
+    nowMs: NOON_JST_MS,
+    runYmd: "20260809",
+  });
+  expect(written).toBe(1);
+  expect(putMock).toHaveBeenCalledTimes(1);
+  expect(putMock.mock.calls[0]?.[0]).toBe("pred:fp:v1:20260809:05:11");
+});
+
 test("publishFinishPositionPredictionCacheForCategory uses ban-ei include filter", async () => {
   allMock.mockResolvedValue({ results: [] });
   await publishFinishPositionPredictionCacheForCategory({

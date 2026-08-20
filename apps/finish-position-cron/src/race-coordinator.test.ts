@@ -286,6 +286,30 @@ test("planRescoreForCategory claims each in-window race in the DO", async () => 
   });
 });
 
+test("planRescoreForCategory skips an overseas A8 venue on the jra source", async () => {
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+    { keibajo_code: "A8", race_bango: "04", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
+  const summary = await planRescoreForCategory({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(summary).toStrictEqual({
+    alreadyClaimed: 0,
+    category: "jra",
+    date: "2026-06-19",
+    enqueued: 1,
+    scanned: 1,
+    withinWindow: 1,
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+});
+
 test("planRescoreForCategory does not enqueue when the DO claim is rejected", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: false, state: "enqueued" });
   stubD1Rows([

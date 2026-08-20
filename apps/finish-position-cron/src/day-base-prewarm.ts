@@ -17,37 +17,32 @@
 // "start" line before the query, and (b) wrapping the query in its own
 // try/catch that logs and returns rather than rethrows.
 
+import { CONTAINER_DAY_BASE_SLOT_STALE_MS, type ContainerSlotKind } from "./container-slot-cap";
 import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
+import { DAY_BASE_PICKUP_FIRST_ATTEMPT, enqueueDayBasePickup } from "./day-base-pickup";
+import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
 
-// Deliberately stays category-scoped (never resolvePredictDoName) even when
-// RACE_SHARDED_DO is on: this prewarm is a day-stable, category-wide cache
-// warm, not a race-scoped request, so there is no (keibajoCode, raceBango)
-// to shard by. When sharding is enabled each shard still gets its day-base
-// cache lazily on that shard's first race (the container's per-race
-// synchronous fallback, see the module docstring above) -- slower on that
-// first hit per shard, never incorrect.
-const PREWARM_HOST = "http://do";
-const PREWARM_PATH = "/prewarm-day-base";
-const PREWARM_RESULT_TYPE = "result";
-const PREWARM_SUCCESS_STATUS = "success";
-const PREWARM_EMPTY_STATUS = "empty";
-const NONE_LABEL = "-";
+type PrewarmResultType = "result";
+type PrewarmSuccessStatus = "success";
+type PrewarmAcceptedStatus = "accepted";
+type PrewarmEmptyStatus = "empty";
 
 interface PrewarmNdjsonLine {
   type: string;
 }
 
 interface PrewarmResultLine extends PrewarmNdjsonLine {
-  type: "result";
+  type: PrewarmResultType;
   category?: string;
+  daybaseWatermark?: DaybaseWatermark;
   error?: string;
   parquetKey?: string;
   runDate?: string;
   status?: string;
-  daybaseWatermark?: DaybaseWatermark;
 }
 
 interface PrewarmCategoryParams {
@@ -62,6 +57,46 @@ interface RunDayBasePrewarmParams {
   env: Env;
   runYmd: string;
 }
+
+interface LogPrewarmResultParams {
+  category: PredictCategory;
+  result: PrewarmResultLine;
+  runYmd: string;
+}
+
+interface HandlePrewarmResponseParams {
+  category: PredictCategory;
+  response: Response;
+  runYmd: string;
+}
+
+interface ReleaseDayBaseSlotParams {
+  category: PredictCategory;
+  doName: string;
+  env: Env;
+}
+
+// Deliberately stays category-scoped (never resolvePredictDoName) even when
+// RACE_SHARDED_DO is on: this prewarm is a day-stable, category-wide cache
+// warm, not a race-scoped request, so there is no (keibajoCode, raceBango)
+// to shard by. When sharding is enabled each shard still gets its day-base
+// cache lazily on that shard's first race (the container's per-race
+// synchronous fallback, see the module docstring above) -- slower on that
+// first hit per shard, never incorrect.
+const PREWARM_HOST: string = "http://do";
+const PREWARM_PATH: string = "/prewarm-day-base";
+const PREWARM_RESULT_TYPE: PrewarmResultType = "result";
+const PREWARM_SUCCESS_STATUS: PrewarmSuccessStatus = "success";
+const PREWARM_ACCEPTED_STATUS: PrewarmAcceptedStatus = "accepted";
+const PREWARM_EMPTY_STATUS: PrewarmEmptyStatus = "empty";
+const NONE_LABEL: string = "-";
+const DAY_BASE_SLOT_KIND: ContainerSlotKind = "day-base";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isPrewarmNdjsonLine = (value: unknown): value is PrewarmNdjsonLine =>
+  isRecord(value) && typeof value.type === "string";
 
 const isPrewarmResultLine = (line: PrewarmNdjsonLine): line is PrewarmResultLine =>
   line.type === PREWARM_RESULT_TYPE;
@@ -82,7 +117,8 @@ const parsePrewarmResultLine = (text: string): PrewarmResultLine | null => {
     .filter((line) => line.length > 0);
   const lastLine = nonEmptyLines.at(-1);
   if (lastLine === undefined) return null;
-  const parsed = JSON.parse(lastLine) as PrewarmNdjsonLine;
+  const parsed: unknown = JSON.parse(lastLine);
+  if (!isPrewarmNdjsonLine(parsed)) return null;
   return isPrewarmResultLine(parsed) ? parsed : null;
 };
 
@@ -96,14 +132,15 @@ const hasUploadableParquet = (result: PrewarmResultLine): boolean => {
   return parquetKey.length > 0;
 };
 
-const logPrewarmResult = (
-  category: PredictCategory,
-  runYmd: string,
-  result: PrewarmResultLine,
-): void => {
+const logPrewarmResult = (params: LogPrewarmResultParams): void => {
+  const { category, result, runYmd } = params;
   const summary = `category=${category} runYmd=${runYmd} ${describePrewarmResult(result)}`;
   if (result.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) {
     console.log(`[day-base-prewarm] success ${summary}`);
+    return;
+  }
+  if (result.status === PREWARM_ACCEPTED_STATUS && hasUploadableParquet(result)) {
+    console.log(`[day-base-prewarm] started ${summary}`);
     return;
   }
   if (result.status === PREWARM_EMPTY_STATUS) {
@@ -113,11 +150,8 @@ const logPrewarmResult = (
   console.warn(`[day-base-prewarm] failed ${summary}`);
 };
 
-const handlePrewarmResponse = async (
-  response: Response,
-  category: PredictCategory,
-  runYmd: string,
-): Promise<void> => {
+const handlePrewarmResponse = async (params: HandlePrewarmResponseParams): Promise<void> => {
+  const { category, response, runYmd } = params;
   if (!response.ok || !response.body) {
     console.warn(
       `[day-base-prewarm] non-ok response category=${category} runYmd=${runYmd} status=${response.status}`,
@@ -130,26 +164,93 @@ const handlePrewarmResponse = async (
     console.warn(`[day-base-prewarm] unparseable result category=${category} runYmd=${runYmd}`);
     return;
   }
-  logPrewarmResult(category, runYmd, result);
+  logPrewarmResult({ category, result, runYmd });
+};
+
+const logLandedDayBase = (params: Omit<PrewarmCategoryParams, "daysAhead">): void => {
+  console.log(
+    `[day-base-prewarm] success category=${params.category} runYmd=${params.runYmd} status=success parquetKey=feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet watermark=present error=-`,
+  );
+};
+
+const landDayBaseFromPickup = async (
+  params: Omit<PrewarmCategoryParams, "daysAhead">,
+): Promise<boolean> => {
+  const picked = await pickUpPrewarmDayBase(params);
+  if (!picked) return false;
+  return (await headDayBaseObject(params)) !== null;
+};
+
+const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): Promise<void> => {
+  try {
+    await releaseContainerSlot({
+      doName: params.doName,
+      env: params.env,
+      kind: DAY_BASE_SLOT_KIND,
+    });
+  } catch (releaseErr) {
+    console.error(
+      `[day-base-prewarm] failed to release container slot category=${params.category} doName=${params.doName}: ${String(releaseErr)}`,
+    );
+  }
 };
 
 // Fire-and-log dispatch for one category: never throws. The container's
 // per-race lazy day-base build is the safety net when this cache warm fails
 // or times out, so every failure path here is caught and logged instead of
 // propagated.
-export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<void> => {
+export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<boolean> => {
   const { category, daysAhead, env, runYmd } = params;
+  const existing = await headDayBaseObject({ category, env, runYmd });
+  if (existing !== null) {
+    logLandedDayBase({ category, env, runYmd });
+    return true;
+  }
+  // Pickup a finished detached build BEFORE starting another DAY_CHAIN.
+  // Calling /prewarm-day-base first would claim a new slot / restart work
+  // and pop an empty store.
+  if (await landDayBaseFromPickup({ category, env, runYmd })) {
+    logLandedDayBase({ category, env, runYmd });
+    return true;
+  }
   const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   const url = buildPrewarmUrl({ category, daysAhead, runYmd });
+  const claim = await claimContainerSlot({
+    category,
+    doName,
+    env,
+    kind: DAY_BASE_SLOT_KIND,
+    staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
+  });
+  if (!claim.proceed) {
+    console.warn(
+      `[day-base-prewarm] container slot ${claim.state ?? "capped"} doName=${doName} kind=${DAY_BASE_SLOT_KIND} category=${category} runYmd=${runYmd} -- skipping start`,
+    );
+    return false;
+  }
   try {
     const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
     const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
     const response = await stub.fetch(new Request(url));
-    await handlePrewarmResponse(response, category, runYmd);
+    await handlePrewarmResponse({ category, response, runYmd });
+    if (await landDayBaseFromPickup({ category, env, runYmd })) return true;
+    await enqueueDayBasePickup({
+      attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
+      category,
+      env,
+      runYmd,
+    });
+    console.warn(
+      `[day-base-prewarm] pickup-scheduled category=${category} runYmd=${runYmd} status=missing-object parquetKey=feat-daybase/catalog-v1/${category}/${runYmd}/features.parquet watermark=absent error=day-base object missing after prewarm`,
+    );
+    return false;
   } catch (err) {
     console.error(
       `[day-base-prewarm] failed category=${category} runYmd=${runYmd}: ${String(err)}`,
     );
+    return false;
+  } finally {
+    await releaseDayBaseSlotBestEffort({ category, doName, env });
   }
 };
 
@@ -157,17 +258,12 @@ const distinctCategories = (races: readonly RaceEntry[]): PredictCategory[] => [
   ...new Set(races.map((race) => race.category)),
 ];
 
-export const runDayBasePrewarm = async (params: RunDayBasePrewarmParams): Promise<void> => {
-  const { daysAhead, env, runYmd } = params;
-  // Unconditional first line: if enumerateTodaysRaces below throws (a real
-  // 2026-07-12 incident -- the D1 query itself failed and the exception
-  // propagated uncaught through handleScheduled), this is the only evidence
-  // the cron fired at all. Logged BEFORE the query, not after, so it cannot
-  // be skipped by the same failure it exists to catch.
-  console.log(`[day-base-prewarm] start runYmd=${runYmd}`);
-  let races: readonly RaceEntry[];
+const enumerateTodaysRacesOrNull = async (
+  db: D1Database,
+  runYmd: string,
+): Promise<readonly RaceEntry[] | null> => {
   try {
-    races = await enumerateTodaysRaces(env.REALTIME_DB, runYmd);
+    return await enumerateTodaysRaces(db, runYmd);
   } catch (err) {
     // Matches this module's own "never throws" contract (see file docstring)
     // -- previously only prewarmCategory honored it; enumerateTodaysRaces
@@ -175,15 +271,28 @@ export const runDayBasePrewarm = async (params: RunDayBasePrewarmParams): Promis
     // handleScheduled uncaught instead of degrading to the per-race lazy
     // fallback this cache warm is only ever a best-effort optimization for.
     console.error(`[day-base-prewarm] enumerate failed runYmd=${runYmd}: ${String(err)}`);
-    return;
+    return null;
   }
+};
+
+export const runDayBasePrewarm = async (params: RunDayBasePrewarmParams): Promise<boolean> => {
+  const { daysAhead, env, runYmd } = params;
+  // Unconditional first line: if enumerateTodaysRaces below throws (a real
+  // 2026-07-12 incident -- the D1 query itself failed and the exception
+  // propagated uncaught through handleScheduled), this is the only evidence
+  // the cron fired at all. Logged BEFORE the query, not after, so it cannot
+  // be skipped by the same failure it exists to catch.
+  console.log(`[day-base-prewarm] start runYmd=${runYmd}`);
+  const races = await enumerateTodaysRacesOrNull(env.REALTIME_DB, runYmd);
+  if (races === null) return false;
   const categories = distinctCategories(races);
   if (categories.length === 0) {
     console.log(`[day-base-prewarm] no races scheduled runYmd=${runYmd} -- skipping dispatch`);
-    return;
+    return false;
   }
   console.log(`[day-base-prewarm] dispatching runYmd=${runYmd} categories=${categories.join(",")}`);
-  await Promise.all(
+  const landed = await Promise.all(
     categories.map((category) => prewarmCategory({ category, daysAhead, env, runYmd })),
   );
+  return landed.every((ok) => ok);
 };

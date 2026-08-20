@@ -94,6 +94,34 @@ test("acks a delivery canary in the DLQ without recording primary consumption", 
   expect(errorSpy).toHaveBeenCalledWith("[predict-dlq] delivery canary reached DLQ id=canary-id");
 });
 
+test("acks a day-base pickup in the DLQ without redriving it as a predict", async () => {
+  const ack = vi.fn();
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleDlqQueue(
+    {
+      messages: [
+        {
+          ack,
+          body: {
+            attempt: 3,
+            category: "ban-ei",
+            runYmd: "20260817",
+            type: "day-base-pickup",
+          },
+          retry: vi.fn(),
+        },
+      ],
+    } as never,
+    makeEnv(),
+  );
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[predict-dlq] day-base pickup reached DLQ category=ban-ei runYmd=20260817 attempt=3",
+  );
+  errorSpy.mockRestore();
+});
+
 test("records a durable event row for a focused-full message", async () => {
   await handleDlqQueue(
     makeBatch([

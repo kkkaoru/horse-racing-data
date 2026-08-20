@@ -11,11 +11,11 @@ interface StoredRecord {
   completedAt?: number;
 }
 
-const storageMap = new Map<string, StoredRecord>();
+const storageMap = new Map<string, unknown>();
 
 const storageMock = {
   get: vi.fn(async (key: string) => storageMap.get(key)),
-  put: vi.fn(async (key: string, value: StoredRecord) => {
+  put: vi.fn(async (key: string, value: unknown) => {
     storageMap.set(key, value);
   }),
 };
@@ -440,6 +440,494 @@ test("fetch POST /claim-focused-full-race returns claim result", async () => {
   expect(response.status).toBe(200);
   const body = (await response.json()) as { proceed: boolean };
   expect(body.proceed).toBe(true);
+});
+
+test("claimContainerSlot stores the first unique DO lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "rescore",
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot returns busy for a second rescore on the same DO", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "rescore",
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "busy" });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot returns capped when three rescore DOs are already live", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "ban-ei",
+        doName: "predict-ban-ei",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-2",
+    kind: "rescore",
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "capped" });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot lets Ban-ei focused-full proceed when the general pool is full", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-0",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "jra",
+        doName: "predict-jra-2",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar-2",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "ban-ei",
+        doName: "predict-ban-ei",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "jra",
+        doName: "predict-jra-extra",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimContainerSlot({
+    category: "ban-ei",
+    doName: "predict-ban-ei-0",
+    kind: "focused-full",
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot honors a custom staleAfterMs and drops an older lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(5_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 1_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "rescore",
+    staleAfterMs: 2_000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 5_000,
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("touchContainerSlot honors a custom staleAfterMs", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(8_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 1_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  await coordinator.touchContainerSlot({ doName: "predict-nar-0", staleAfterMs: 2_000 });
+  expect(storageMap.get("container-slots")).toStrictEqual({ leases: [] });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot uses blockConcurrencyWhile for serialisation", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "nar",
+    doName: "predict-nar",
+    kind: "rescore",
+  });
+  expect(blockConcurrencyWhileMock).toHaveBeenCalledTimes(1);
+});
+
+test("releaseContainerSlot removes the named lease", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  await coordinator.releaseContainerSlot({ doName: "predict-jra", kind: "rescore" });
+  expect(storageMap.get("container-slots")).toStrictEqual({ leases: [] });
+});
+
+test("touchContainerSlot refreshes the named lease heartbeat", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(50_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  await coordinator.touchContainerSlot({ doName: "predict-jra-1" });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 50_000,
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("fetch POST /claim-container-slot returns proceed:true for a new DO", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-container-slot", {
+    body: JSON.stringify({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "rescore",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { proceed: boolean };
+  expect(body.proceed).toBe(true);
+});
+
+test("fetch POST /claim-container-slot returns capped when the rescore pool is full", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+      {
+        category: "ban-ei",
+        doName: "predict-ban-ei",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-container-slot", {
+    body: JSON.stringify({
+      category: "jra",
+      doName: "predict-jra-2",
+      kind: "rescore",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { proceed: boolean; state: string };
+  expect(body.proceed).toBe(false);
+  expect(body.state).toBe("capped");
+  vi.useRealTimers();
+});
+
+test("fetch POST /release-container-slot writes the remaining leases and returns ok", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "rescore",
+        rescoreHolders: 1,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/release-container-slot", {
+    body: JSON.stringify({ doName: "predict-jra", kind: "rescore" }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+  expect(storageMap.get("container-slots")).toStrictEqual({ leases: [] });
+});
+
+test("fetch POST /clear-container-slot drops the named lease regardless of holders", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        holders: 3,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/clear-container-slot", {
+    body: JSON.stringify({ doName: "predict-nar-0" }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("fetch GET /clear-container-slot returns 405 method not allowed", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/clear-container-slot");
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(405);
+});
+
+test("fetch POST /touch-container-slot returns ok", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/touch-container-slot", {
+    body: JSON.stringify({ doName: "predict-jra-1" }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+});
+
+test("fetch GET /claim-container-slot returns 405 method not allowed", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-container-slot");
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(405);
+});
+
+test("fetch GET /release-container-slot returns 405 method not allowed", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/release-container-slot");
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(405);
+});
+
+test("fetch GET /touch-container-slot returns 405 method not allowed", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/touch-container-slot");
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(405);
 });
 
 test("fetch POST /complete-focused-full-race writes state and returns ok", async () => {

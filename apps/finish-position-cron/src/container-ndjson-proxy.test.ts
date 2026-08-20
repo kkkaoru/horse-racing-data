@@ -278,6 +278,84 @@ test("proxyParquetFromNdjson renews container activity for each streamed chunk",
   expect(renewActivityTimeout).toHaveBeenCalledTimes(2);
 });
 
+test("proxyParquetFromNdjson does not renew activity for a busy result chunk", async () => {
+  const { env } = makeR2Mock();
+  const renewActivityTimeout: RenewActivityTimeout = vi.fn(() => undefined);
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = `${JSON.stringify({
+    type: "result",
+    category: "nar",
+    runDate: "20260820",
+    racesPredicted: 0,
+    status: "busy",
+  })}\n`;
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+  await expect(
+    proxyParquetFromNdjson(response, env, waitUntil, renewActivityTimeout).text(),
+  ).resolves.toBe(resultLine);
+  expect(renewActivityTimeout).not.toHaveBeenCalled();
+  expect(tasks).toStrictEqual([]);
+});
+
+test("proxyParquetFromNdjson does not schedule waitUntil for an already-complete result", async () => {
+  const { env } = makeR2Mock();
+  const renewActivityTimeout: RenewActivityTimeout = vi.fn(() => undefined);
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = `${JSON.stringify({
+    type: "result",
+    category: "jra",
+    runDate: "20260820",
+    racesPredicted: 0,
+    status: "already-complete",
+  })}\n`;
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+  await expect(
+    proxyParquetFromNdjson(response, env, waitUntil, renewActivityTimeout).text(),
+  ).resolves.toBe(resultLine);
+  expect(renewActivityTimeout).not.toHaveBeenCalled();
+  expect(tasks).toStrictEqual([]);
+});
+
+test("proxyParquetFromNdjson does not renew activity for an accepted result chunk", async () => {
+  const { env } = makeR2Mock();
+  const renewActivityTimeout: RenewActivityTimeout = vi.fn(() => undefined);
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = `${JSON.stringify({
+    type: "result",
+    category: "nar",
+    runDate: "20260820",
+    racesPredicted: 0,
+    status: "accepted",
+  })}\n`;
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+  await expect(
+    proxyParquetFromNdjson(response, env, waitUntil, renewActivityTimeout).text(),
+  ).resolves.toBe(resultLine);
+  expect(renewActivityTimeout).not.toHaveBeenCalled();
+  expect(tasks).toStrictEqual([]);
+});
+
 test("proxyParquetFromNdjson keeps streaming when activity renew throws", async () => {
   const { controller, stream } = makeControlledStream();
   const { env } = makeR2Mock();

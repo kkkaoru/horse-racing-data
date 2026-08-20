@@ -13,6 +13,7 @@ import {
   getPredictionKvTtlSeconds,
   resolvePredictionCacheWindow,
 } from "./prediction-kv-keys";
+import { isOverseasKeibajoCode } from "./cron-decision";
 import type { Env, PredictCategory } from "./types";
 
 const RUN_YMD_YEAR_END = 4;
@@ -204,7 +205,7 @@ const listRacesForCategory = async (
     )
       .bind("jra", nen, tsukihi)
       .all<RealtimeRaceRow>();
-    return result.results;
+    return result.results.filter((row) => !isOverseasKeibajoCode(row.keibajo_code));
   }
   if (category === "ban-ei") {
     const result = await env.REALTIME_DB.prepare(

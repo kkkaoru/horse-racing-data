@@ -9,6 +9,7 @@
 // re-enqueues it once, bounded by dlqRedriveCount on the message body so a
 // poison-pill message cannot bounce between the two queues forever.
 
+import { isDayBasePickupQueueMessage } from "./day-base-pickup";
 import { isDeliveryCanaryQueueMessage, isPredictQueueMessage } from "./delivery-canary";
 import {
   buildDlqEventBindParams,
@@ -25,7 +26,12 @@ import {
   retryErrorLookupRowToSnapshot,
   type RetryErrorLookupRow,
 } from "./retry-errors";
-import type { DeliveryCanaryMessage, Env, PredictQueueMessage } from "./types";
+import type {
+  DayBasePickupMessage,
+  DeliveryCanaryMessage,
+  Env,
+  PredictQueueMessage,
+} from "./types";
 
 export const DLQ_QUEUE_NAME = "finish-position-predict-dlq";
 const MAX_DLQ_REDRIVES = 1;
@@ -194,12 +200,17 @@ const processDlqMessage = async (
 };
 
 export const handleDlqQueue = async (
-  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
+  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage>,
   env: Env,
 ): Promise<void> => {
   for (const message of batch.messages) {
     if (isDeliveryCanaryQueueMessage(message)) {
       console.error(`[predict-dlq] delivery canary reached DLQ id=${message.body.id}`);
+      message.ack();
+    } else if (isDayBasePickupQueueMessage(message)) {
+      console.error(
+        `[predict-dlq] day-base pickup reached DLQ category=${message.body.category} runYmd=${message.body.runYmd} attempt=${message.body.attempt}`,
+      );
       message.ack();
     } else if (isPredictQueueMessage(message)) {
       await processDlqMessage(message, env);

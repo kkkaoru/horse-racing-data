@@ -26,9 +26,13 @@
       "*/5 0-13 * * *",
       "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
-      // JST 09:30 — day-base PREWARM only (shared feature artifact via
-      // /prewarm-day-base). Not prediction generation; deliberately outside
-      // the per-race scope guard. See src/day-base-prewarm.ts.
+      // JST 06:00 — day-base PREWARM (shared feature artifact via
+      // /prewarm-day-base). Starts before first JRA post so DAY_CHAIN can
+      // finish; first race may still lazy-build once if this is still running.
+      // Not prediction generation; deliberately outside the per-race scope
+      // guard. See src/day-base-prewarm.ts.
+      "0 21 * * *",
+      // JST 09:30 — day-base PREWARM catch-up if the 06:00 run missed.
       "30 0 * * *",
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
       // Per-race coordinator cron (every 10 min, JST 10:00-20:59): inspects
@@ -91,7 +95,17 @@
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
       "instance_type": "standard-4",
-      "max_instances": 10,
+      // 12 stays as the platform ceiling, not as the scheduler. Unique DO
+      // names in the worst overlap are 3 unsharded category DOs (rescore +
+      // day-base share predict-{category}) + 9 race shards (3 categories x
+      // RACE_SHARD_MAX_CONCURRENT 3) = 12. Raising this further is the
+      // bandage that packed production on 2026-08-16. The real cap is
+      // src/container-slot-cap.ts: general work <= 10 unique DOs, rescores
+      // <= 3 unique DOs (and they no longer shard), Ban-ei focused-full /
+      // day-base keep 2 reserved start slots. Queue consumers retry in 30s
+      // when a claim is busy/capped so Ban-ei /run is not stuck behind
+      // JRA/NAR rescores occupying max_concurrency.
+      "max_instances": 12,
     },
   ],
   "durable_objects": {
@@ -311,7 +325,7 @@
         // stalling otherwise-fast NAR messages behind it. With only 3
         // categories (jra/nar/ban-ei), each mapping to at most one
         // category-scoped Container DO at a time, max_concurrency: 3 let at
-        // most 3 concurrent category DOs run — well under max_instances: 10
+        // most 3 concurrent category DOs run — well under max_instances: 12
         // above — while letting a hung category stop blocking the others.
         //
         // Raised 3->9 on 2026-07-18 alongside vars.RACE_SHARDED_DO="1" above
@@ -320,12 +334,18 @@
         // DOs, so a consumer max_concurrency capped at 3 would still only
         // ever process 3 messages at once total across every category and
         // shard combined -- the sharding would exist but the queue itself
-        // would never dispatch enough parallel messages to use it. 9 = 3
-        // categories x 3 shards (the fully-active worst case), matching
-        // containers[0].max_instances: 10 above (9 <= 10). If
-        // RACE_SHARD_MAX_CONCURRENT is ever raised, this must be
-        // recalculated against max_instances at the same time.
-        "max_concurrency": 9,
+        // would never dispatch enough parallel messages to use it. Lowered
+        // 9->6 so the Queue cannot fan out 9 new shards at once. 6 = 3
+        // categories x 1-2 focused-full shards; the Worker cap still
+        // refuses over-budget starts. Rescores no longer consume a shard
+        // each (they share predict-{category}) and container-slot-cap.ts
+        // refuses a 4th unique rescore DO plus any start that would leave
+        // Ban-ei without reserved headroom. Over-cap messages retry in 30s
+        // and release the consumer slot, so 6 stays a dispatch width, not
+        // an instance budget. If RACE_SHARD_MAX_CONCURRENT is ever raised,
+        // recalculate against max_instances AND container-slot-cap.ts
+        // together.
+        "max_concurrency": 6,
         // max_retries: 16 (raised from 12 on 2026-07-11) replaces the implicit
         // Cloudflare platform default of 3 retries. Focused per-race full
         // messages get a fast "accepted" result while the container's real

@@ -9,6 +9,15 @@
 //   container pipeline while the original detached build is still in flight.
 
 import { DurableObject } from "cloudflare:workers";
+import {
+  CONTAINER_SLOT_STALE_MS,
+  clearContainerSlotLease,
+  decideContainerSlotClaim,
+  releaseContainerSlotLease,
+  touchContainerSlotLease,
+  type ContainerSlotKind,
+  type ContainerSlotLease,
+} from "./container-slot-cap";
 import type { Env } from "./types";
 
 const STORAGE_KEY_PREFIX = "run";
@@ -20,6 +29,11 @@ const STATE_PATH = "/state";
 const CLAIM_RACE_PATH = "/claim-race";
 const CLAIM_FOCUSED_FULL_RACE_PATH = "/claim-focused-full-race";
 const COMPLETE_FOCUSED_FULL_RACE_PATH = "/complete-focused-full-race";
+const CLAIM_CONTAINER_SLOT_PATH = "/claim-container-slot";
+const RELEASE_CONTAINER_SLOT_PATH = "/release-container-slot";
+const TOUCH_CONTAINER_SLOT_PATH = "/touch-container-slot";
+const CLEAR_CONTAINER_SLOT_PATH = "/clear-container-slot";
+const CONTAINER_SLOTS_KEY = "container-slots";
 const HTTP_OK = 200;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_NOT_FOUND = 404;
@@ -57,6 +71,31 @@ interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
 
 interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
   status: string;
+}
+
+interface ContainerSlotsRecord {
+  leases: ContainerSlotLease[];
+}
+
+interface ClaimContainerSlotParams {
+  category: string;
+  doName: string;
+  kind: ContainerSlotKind;
+  staleAfterMs?: number;
+}
+
+interface ReleaseContainerSlotParams {
+  doName: string;
+  kind: ContainerSlotKind;
+}
+
+interface TouchContainerSlotParams {
+  doName: string;
+  staleAfterMs?: number;
+}
+
+interface ClearContainerSlotParams {
+  doName: string;
 }
 
 const buildKey = (runYmd: string, category: string): string =>
@@ -168,6 +207,67 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  async claimContainerSlot(params: ClaimContainerSlotParams): Promise<ClaimResult> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const staleAfterMs =
+        params.staleAfterMs === undefined ? CONTAINER_SLOT_STALE_MS : params.staleAfterMs;
+      const decision = decideContainerSlotClaim(record?.leases ?? [], {
+        category: params.category,
+        doName: params.doName,
+        kind: params.kind,
+        now: Date.now(),
+        staleAfterMs,
+      });
+      await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, {
+        leases: decision.leases,
+      });
+      return decision.proceed ? { proceed: true } : { proceed: false, state: decision.state };
+    });
+  }
+
+  async releaseContainerSlot(params: ReleaseContainerSlotParams): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const leases = releaseContainerSlotLease(
+        record?.leases ?? [],
+        params.doName,
+        params.kind,
+        Date.now(),
+        CONTAINER_SLOT_STALE_MS,
+      );
+      await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
+    });
+  }
+
+  async touchContainerSlot(params: TouchContainerSlotParams): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const staleAfterMs =
+        params.staleAfterMs === undefined ? CONTAINER_SLOT_STALE_MS : params.staleAfterMs;
+      const leases = touchContainerSlotLease(
+        record?.leases ?? [],
+        params.doName,
+        Date.now(),
+        staleAfterMs,
+      );
+      await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
+    });
+  }
+
+  async clearContainerSlot(params: ClearContainerSlotParams): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const leases = clearContainerSlotLease(
+        record?.leases ?? [],
+        params.doName,
+        Date.now(),
+        CONTAINER_SLOT_STALE_MS,
+      );
+      await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
+    });
+  }
+
   private async handleClaim(request: Request): Promise<Response> {
     const body = (await request.json()) as { runYmd: string; category: string };
     const result = await this.claim(body.runYmd, body.category);
@@ -206,6 +306,30 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return Response.json({ ok: true }, { status: HTTP_OK });
   }
 
+  private async handleClaimContainerSlot(request: Request): Promise<Response> {
+    const body = (await request.json()) as ClaimContainerSlotParams;
+    const result = await this.claimContainerSlot(body);
+    return Response.json(result, { status: HTTP_OK });
+  }
+
+  private async handleReleaseContainerSlot(request: Request): Promise<Response> {
+    const body = (await request.json()) as ReleaseContainerSlotParams;
+    await this.releaseContainerSlot(body);
+    return Response.json({ ok: true }, { status: HTTP_OK });
+  }
+
+  private async handleTouchContainerSlot(request: Request): Promise<Response> {
+    const body = (await request.json()) as TouchContainerSlotParams;
+    await this.touchContainerSlot(body);
+    return Response.json({ ok: true }, { status: HTTP_OK });
+  }
+
+  private async handleClearContainerSlot(request: Request): Promise<Response> {
+    const body = (await request.json()) as ClearContainerSlotParams;
+    await this.clearContainerSlot(body);
+    return Response.json({ ok: true }, { status: HTTP_OK });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const pathMethodKey = `${request.method}:${url.pathname}`;
@@ -216,6 +340,10 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       [`POST:${CLAIM_RACE_PATH}`, (req) => this.handleClaimRace(req)],
       [`POST:${CLAIM_FOCUSED_FULL_RACE_PATH}`, (req) => this.handleClaimFocusedFullRace(req)],
       [`POST:${COMPLETE_FOCUSED_FULL_RACE_PATH}`, (req) => this.handleCompleteFocusedFullRace(req)],
+      [`POST:${CLAIM_CONTAINER_SLOT_PATH}`, (req) => this.handleClaimContainerSlot(req)],
+      [`POST:${RELEASE_CONTAINER_SLOT_PATH}`, (req) => this.handleReleaseContainerSlot(req)],
+      [`POST:${TOUCH_CONTAINER_SLOT_PATH}`, (req) => this.handleTouchContainerSlot(req)],
+      [`POST:${CLEAR_CONTAINER_SLOT_PATH}`, (req) => this.handleClearContainerSlot(req)],
     ]);
     const handler = handlers.get(pathMethodKey);
     if (handler) {
@@ -228,6 +356,10 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       CLAIM_RACE_PATH,
       CLAIM_FOCUSED_FULL_RACE_PATH,
       COMPLETE_FOCUSED_FULL_RACE_PATH,
+      CLAIM_CONTAINER_SLOT_PATH,
+      RELEASE_CONTAINER_SLOT_PATH,
+      TOUCH_CONTAINER_SLOT_PATH,
+      CLEAR_CONTAINER_SLOT_PATH,
     ]);
     return knownPaths.has(url.pathname)
       ? Response.json({ error: "Method not allowed" }, { status: HTTP_METHOD_NOT_ALLOWED })

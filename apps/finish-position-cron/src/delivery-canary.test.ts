@@ -103,4 +103,14 @@ it("narrows canary and prediction queue messages", () => {
   expect(isDeliveryCanaryMessage(prediction)).toBe(false);
   expect(isDeliveryCanaryQueueMessage({ body: canary } as never)).toBe(true);
   expect(isPredictQueueMessage({ body: prediction } as never)).toBe(true);
+  expect(
+    isPredictQueueMessage({
+      body: {
+        attempt: 1,
+        category: "ban-ei",
+        runYmd: "20260817",
+        type: "day-base-pickup",
+      },
+    } as never),
+  ).toBe(false);
 });

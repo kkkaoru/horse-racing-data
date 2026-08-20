@@ -18,10 +18,13 @@ interface RescoreResult {
 }
 
 const {
+  claimContainerSlotMock,
   claimFocusedFullRaceMock,
   claimRunMock,
   completeFocusedFullRaceMock,
   completeRunMock,
+  releaseContainerSlotMock,
+  touchContainerSlotMock,
   isOldDateRunYmdMock,
   parseNdjsonStreamMock,
   rescoreJraRaceMock,
@@ -31,8 +34,11 @@ const {
   publishFinishPositionPredictionCacheForCategoryMock,
   isFocusedFullPredictionCompleteMock,
 } = vi.hoisted(() => {
+  const claimContainerSlot = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+  const releaseContainerSlot = vi.fn(async () => undefined);
+  const touchContainerSlot = vi.fn(async () => undefined);
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const completeRun = vi.fn(async () => undefined);
   const isOldDateRunYmd = vi.fn((): boolean => false);
@@ -66,9 +72,12 @@ const {
   const publishFinishPositionPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
   const isFocusedFullPredictionComplete = vi.fn(async (): Promise<boolean> => false);
   return {
+    claimContainerSlotMock: claimContainerSlot,
     claimFocusedFullRaceMock: claimFocusedFullRace,
     claimRunMock: claimRun,
     completeFocusedFullRaceMock: completeFocusedFullRace,
+    releaseContainerSlotMock: releaseContainerSlot,
+    touchContainerSlotMock: touchContainerSlot,
     completeRunMock: completeRun,
     isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
     isOldDateRunYmdMock: isOldDateRunYmd,
@@ -83,10 +92,13 @@ const {
 });
 
 vi.mock("./do-state", () => ({
+  claimContainerSlot: claimContainerSlotMock,
   claimFocusedFullRace: claimFocusedFullRaceMock,
   claimRun: claimRunMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
   completeRun: completeRunMock,
+  releaseContainerSlot: releaseContainerSlotMock,
+  touchContainerSlot: touchContainerSlotMock,
 }));
 
 vi.mock("./ndjson-stream", () => ({
@@ -102,10 +114,15 @@ vi.mock("./scoring/rescore-consumer", () => ({
   rescoreJraRace: rescoreJraRaceMock,
 }));
 
-vi.mock("./prediction-cache-warm", () => ({
-  warmPredictionCacheForCategory: warmPredictionCacheForCategoryMock,
-  warmPredictionCacheForRace: warmPredictionCacheForRaceMock,
-}));
+vi.mock("./prediction-cache-warm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./prediction-cache-warm")>();
+  return {
+    ...actual,
+    warmPredictionCacheForCategory: warmPredictionCacheForCategoryMock,
+    warmPredictionCacheForRace: warmPredictionCacheForRaceMock,
+    warmViewerDisplayForRace: warmPredictionCacheForRaceMock,
+  };
+});
 
 vi.mock("./prediction-kv-writer", () => ({
   publishFinishPositionPredictionCache: publishFinishPositionPredictionCacheMock,
@@ -116,6 +133,18 @@ vi.mock("./prediction-kv-writer", () => ({
 vi.mock("./focused-full-completion", () => ({
   isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
 }));
+
+const { consumeDayBasePickupMock } = vi.hoisted(() => ({
+  consumeDayBasePickupMock: vi.fn(async () => undefined),
+}));
+
+vi.mock("./day-base-pickup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./day-base-pickup")>();
+  return {
+    ...actual,
+    consumeDayBasePickup: consumeDayBasePickupMock,
+  };
+});
 
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import { handleQueue } from "./queue-consumer";
@@ -211,8 +240,11 @@ beforeEach(() => {
   idFromNameMock.mockClear();
   getMock.mockClear();
   stubFetchMock.mockClear();
+  claimContainerSlotMock.mockClear();
   claimFocusedFullRaceMock.mockClear();
   claimRunMock.mockClear();
+  releaseContainerSlotMock.mockClear();
+  touchContainerSlotMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
   completeRunMock.mockClear();
   isOldDateRunYmdMock.mockClear();
@@ -224,6 +256,7 @@ beforeEach(() => {
   publishFinishPositionPredictionCacheMock.mockClear();
   publishFinishPositionPredictionCacheForCategoryMock.mockClear();
   isFocusedFullPredictionCompleteMock.mockClear();
+  consumeDayBasePickupMock.mockClear();
   warmPredictionCacheForRaceMock.mockResolvedValue(true);
   warmPredictionCacheForCategoryMock.mockResolvedValue(0);
   publishFinishPositionPredictionCacheMock.mockResolvedValue({
@@ -240,6 +273,9 @@ beforeEach(() => {
   });
   claimRunMock.mockResolvedValue({ proceed: true });
   claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
+  claimContainerSlotMock.mockResolvedValue({ proceed: true });
+  releaseContainerSlotMock.mockResolvedValue(undefined);
+  touchContainerSlotMock.mockResolvedValue(undefined);
   parseNdjsonStreamMock.mockResolvedValue({
     type: "result",
     racesPredicted: 5,
@@ -453,6 +489,96 @@ test("acks focused full skipDedup messages without container when Neon already h
     raceBango: "12",
     runYmd: "20260701",
   });
+  expect(
+    (publishFinishPositionPredictionCacheMock.mock.invocationCallOrder[0] ?? 0) <
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
+});
+
+test("does not warm the viewer display when focused-full KV publish is empty", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "skipped-empty",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "50",
+        mode: "full",
+        raceBango: "12",
+        runYmd: "20260701",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+});
+
+test("does not warm the viewer display when focused-full KV publish returns error", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "error",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "50",
+        mode: "full",
+        raceBango: "12",
+        runYmd: "20260701",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+});
+
+test("awaits viewer display warm after a successful focused-full KV write", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  let releaseWarm!: () => void;
+  const warmGate = new Promise<void>((resolve) => {
+    releaseWarm = resolve;
+  });
+  let warmStarted!: () => void;
+  const warmStartedPromise = new Promise<void>((resolve) => {
+    warmStarted = resolve;
+  });
+  warmPredictionCacheForRaceMock.mockImplementation(async () => {
+    warmStarted();
+    await warmGate;
+    return true;
+  });
+  let handlerDone = false;
+  const running = handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "50",
+        mode: "full",
+        raceBango: "12",
+        runYmd: "20260701",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  ).then(() => {
+    handlerDone = true;
+  });
+  await warmStartedPromise;
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(handlerDone).toBe(false);
+  releaseWarm();
+  await running;
+  expect(handlerDone).toBe(true);
 });
 
 test("force:true bypasses the focused full completion guard and reaches the Container DO", async () => {
@@ -713,7 +839,7 @@ test("logs container progress for per-race predict messages when debug is enable
   consoleSpy.mockRestore();
 });
 
-test("logs container progress for normal predict messages", async () => {
+test("does not log container progress for normal predict messages when debug is off", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -725,7 +851,7 @@ test("logs container progress for normal predict messages", async () => {
     },
   );
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(consoleSpy).toHaveBeenCalledWith(
+  expect(consoleSpy).not.toHaveBeenCalledWith(
     "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=predict elapsed=12.3",
   );
   consoleSpy.mockRestore();
@@ -759,6 +885,27 @@ test("calls completeRun with error and calls message.retry on failure", async ()
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("consumes a delayed day-base pickup without claiming a run or starting a predict", async () => {
+  const pickup = {
+    ack: ackMock,
+    body: {
+      attempt: 1,
+      category: "ban-ei",
+      runYmd: "20260817",
+      type: "day-base-pickup",
+    },
+    retry: retryMock,
+  };
+  await handleQueue({ messages: [pickup] } as never, makeEnv());
+  expect(consumeDayBasePickupMock).toHaveBeenCalledWith({
+    env: expect.any(Object),
+    message: pickup.body,
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
 });
 
 test("consumes a delivery canary without claiming a run or starting a container", async () => {
@@ -1002,7 +1149,7 @@ test("targets the per-race rescore at a category-scoped predict-nar DO with the 
   consoleSpy.mockRestore();
 });
 
-test("targets a race-sharded DO for the per-race rescore when RACE_SHARDED_DO is enabled", async () => {
+test("keeps a per-race rescore on the category-scoped DO when RACE_SHARDED_DO is enabled", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -1017,7 +1164,13 @@ test("targets a race-sharded DO for the per-race rescore when RACE_SHARDED_DO is
     ]),
     { ...makeEnv(), RACE_SHARDED_DO: "1" },
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-2");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      doName: "predict-nar",
+      kind: "rescore",
+    }),
+  );
   consoleSpy.mockRestore();
 });
 
@@ -1412,6 +1565,33 @@ test("warms only the race cache for focused per-race skipDedup full messages", a
     raceBango: "01",
     runYmd: "20260628",
   });
+  expect(
+    (publishFinishPositionPredictionCacheMock.mock.invocationCallOrder[0] ?? 0) <
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
+});
+
+test("pads unpadded keibajo and race codes when warming after focused-full KV write", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "5",
+        mode: "full",
+        raceBango: "1",
+        runDateIso: "2026-06-28",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
 });
 
 test("acks day-scoped skipDedup full messages without warming category cache", async () => {
@@ -1722,6 +1902,10 @@ test("acks focused skipDedup full messages when result status is already-complet
     raceBango: "01",
     runYmd: "20260628",
   });
+  expect(
+    (publishFinishPositionPredictionCacheMock.mock.invocationCallOrder[0] ?? 0) <
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
   consoleSpy.mockRestore();
 });
 
@@ -1770,6 +1954,10 @@ test("falls through focused skipDedup full messages with result status success t
     raceBango: "01",
     runYmd: "20260628",
   });
+  expect(
+    (publishFinishPositionPredictionCacheMock.mock.invocationCallOrder[0] ?? 0) <
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
 });
 
 test("does not treat a non-focused full message with status accepted as focused-full acceptance", async () => {
@@ -1848,6 +2036,30 @@ test("does not treat per-race rescore as skipDedup even if skipDedup is set", as
   consoleSpy.mockRestore();
 });
 
+test("pads unpadded keibajo and race codes when warming after a rescore KV write", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "5",
+        mode: "rescore",
+        raceBango: "1",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
+  consoleSpy.mockRestore();
+});
+
 test("warms the viewer cache for the race after a JRA per-race rescore succeeds", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
@@ -1877,6 +2089,10 @@ test("warms the viewer cache for the race after a JRA per-race rescore succeeds"
     raceBango: "11",
     runYmd: "20260619",
   });
+  expect(
+    (publishFinishPositionPredictionCacheMock.mock.invocationCallOrder[0] ?? 0) <
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
   consoleSpy.mockRestore();
 });
 
@@ -1913,7 +2129,48 @@ test("awaits per-race KV publish before the rescore handler returns", async () =
   await publishStartedPromise;
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(handlerDone).toBe(false);
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
   release();
+  await running;
+  expect(handlerDone).toBe(true);
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("awaits viewer display warm after a successful rescore KV write", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  let releaseWarm!: () => void;
+  const warmGate = new Promise<void>((resolve) => {
+    releaseWarm = resolve;
+  });
+  let warmStarted!: () => void;
+  const warmStartedPromise = new Promise<void>((resolve) => {
+    warmStarted = resolve;
+  });
+  warmPredictionCacheForRaceMock.mockImplementation(async () => {
+    warmStarted();
+    await warmGate;
+    return true;
+  });
+  let handlerDone = false;
+  const running = handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "04",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260809",
+      }),
+    ]),
+    makeEnv(),
+  ).then(() => {
+    handlerDone = true;
+  });
+  await warmStartedPromise;
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(handlerDone).toBe(false);
+  releaseWarm();
   await running;
   expect(handlerDone).toBe(true);
   consoleSpy.mockRestore();
@@ -1978,8 +2235,34 @@ test("acks a successful rescore even when KV publish returns skipped-empty", asy
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
   expect(logs.some((line) => line.includes("status=skipped-empty"))).toBe(true);
   consoleSpy.mockRestore();
+});
+
+test("does not warm the viewer display when a rescore KV publish returns error", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "error",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "04",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260809",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+  warnSpy.mockRestore();
 });
 
 test("does not warm the race cache when a JRA container per-race rescore fetch throws", async () => {
@@ -2258,4 +2541,402 @@ test("recent-runYmd messages proceed normally when isOldDateRunYmd returns false
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(prepareMock).not.toHaveBeenCalled();
+});
+
+test("retries a per-race rescore and logs capped when the slot claim omits state", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] container slot capped doName=predict-jra kind=rescore category=jra runYmd=20260619 mode=rescore daysAhead=0 skipDedup=false busyRequeueCount=0 keibajo=05 race=11 -- will retry without starting a container",
+  );
+  warnSpy.mockRestore();
+});
+
+test("retries a per-race rescore without starting a container when the slot is capped", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "capped" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+});
+
+test("retries a per-race rescore without starting a container when the category DO is already busy", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] container slot busy doName=predict-nar kind=rescore category=nar runYmd=20260619 mode=rescore daysAhead=0 skipDedup=false busyRequeueCount=0 keibajo=44 race=01 -- will retry without starting a container",
+  );
+  warnSpy.mockRestore();
+});
+
+test("releases the rescore container slot after a successful rescore", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "rescore",
+      staleAfterMs: 1_200_000,
+    }),
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra",
+    env: expect.any(Object),
+    kind: "rescore",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("releases the rescore container slot after a failed rescore fetch", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValueOnce(new Error("container 503"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "30",
+        mode: "rescore",
+        raceBango: "02",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-nar",
+    env: expect.any(Object),
+    kind: "rescore",
+  });
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
+});
+
+test("retries a focused-full without starting a container when the slot is capped", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "capped" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      doName: "predict-jra-1",
+      kind: "focused-full",
+    }),
+  );
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] container slot capped doName=predict-jra-1 kind=focused-full category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 -- will retry without starting a container",
+  );
+  warnSpy.mockRestore();
+});
+
+test("keeps the focused-full slot after the container accepts a detached pipeline", async () => {
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "accepted",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      doName: "predict-jra-1",
+      kind: "focused-full",
+    }),
+  );
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+});
+
+test("releases the focused-full slot when the container reports already-complete", async () => {
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    type: "result",
+    racesPredicted: 8,
+    category: "jra",
+    status: "already-complete",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    kind: "focused-full",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("releases the leftover focused-full slot when Neon already has the race", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValueOnce(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    kind: "focused-full",
+  });
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("heartbeats the focused-full slot when the race claim is still in flight", async () => {
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(touchContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    staleAfterMs: 1_200_000,
+  });
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+});
+
+test("still retries focused-full in-flight when slot heartbeat write fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
+  touchContainerSlotMock.mockRejectedValueOnce(new Error("DO touch failed"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[predict-queue] failed to touch container slot doName=predict-jra-1:",
+    "Error: DO touch failed",
+  );
+  errorSpy.mockRestore();
+});
+
+test("releases the focused-full slot after a successful focused-full result", async () => {
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    type: "result",
+    racesPredicted: 1,
+    category: "jra",
+    status: "success",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    kind: "focused-full",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("releases the focused-full slot after a failed focused-full fetch", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValueOnce(new Error("container 503"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    kind: "focused-full",
+  });
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
+});
+
+test("releases the focused-full slot when the container reports busy", async () => {
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-nar",
+    env: expect.any(Object),
+    kind: "focused-full",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("still acks a successful rescore when slot release fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  releaseContainerSlotMock.mockRejectedValueOnce(new Error("DO release failed"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[predict-queue] failed to release container slot doName=predict-jra kind=rescore:",
+    "Error: DO release failed",
+  );
+  errorSpy.mockRestore();
+  consoleSpy.mockRestore();
 });

@@ -1,9 +1,30 @@
 // Run with bun. Tests for the viewer prediction cache warming module.
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { PredictionKvPublishResult } from "./prediction-kv-writer";
+
+const { publishFinishPositionPredictionCacheMock } = vi.hoisted(() => ({
+  publishFinishPositionPredictionCacheMock: vi.fn(
+    async (): Promise<PredictionKvPublishResult> => ({
+      busted: false,
+      status: "written",
+    }),
+  ),
+}));
+
+vi.mock("./prediction-kv-writer", () => ({
+  publishFinishPositionPredictionCache: publishFinishPositionPredictionCacheMock,
+}));
+
 import {
+  buildWarmRaceParamsFromYmd,
+  populateViewerDisplayCache,
+  retryPopulateViewerDisplayCache,
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
+  warmRaceDetailPage,
+  warmRaceDetailSsrSnapshot,
+  warmViewerDisplayForRace,
 } from "./prediction-cache-warm";
 import type { Env } from "./types";
 
@@ -29,6 +50,8 @@ const makeEnv = (): Env => ({
 });
 
 interface FetchInit {
+  headers?: Readonly<Record<string, string>>;
+  method?: string;
   signal: AbortSignal;
 }
 
@@ -41,8 +64,13 @@ beforeEach(() => {
   prepareMock.mockClear();
   bindMock.mockClear();
   allMock.mockClear();
+  publishFinishPositionPredictionCacheMock.mockClear();
   fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
   allMock.mockResolvedValue({ results: [] });
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "written",
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -50,7 +78,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("warmPredictionCacheForRace builds the viewer section URL with refresh param", async () => {
+test("warmPredictionCacheForRace builds the viewer section URL without refresh by default", async () => {
   await warmPredictionCacheForRace({
     day: "19",
     keibajoCode: "05",
@@ -61,8 +89,202 @@ test("warmPredictionCacheForRace builds the viewer section URL with refresh para
   expect(fetchMock).toHaveBeenCalledTimes(1);
   const fetchUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
   expect(fetchUrl).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction",
+  );
+});
+
+test("warmPredictionCacheForRace appends refresh when requested", async () => {
+  await warmPredictionCacheForRace({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    refresh: true,
+    year: "2026",
+  });
+  const fetchUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
+  expect(fetchUrl).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction?__predictionRefresh=1",
   );
+});
+
+test("warmRaceDetailPage fetches the public race detail path", async () => {
+  await warmRaceDetailPage({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  const fetchUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
+  expect(fetchUrl).toBe("https://pc-keiba-viewer.kkk4oru.com/races/2026/06/19/05/11");
+});
+
+test("warmRaceDetailPage returns true on a 200 response", async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  const result = await warmRaceDetailPage({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(true);
+});
+
+test("warmRaceDetailPage returns false on a non-200 response", async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 503 }));
+  const result = await warmRaceDetailPage({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmRaceDetailPage returns false when fetch rejects", async () => {
+  fetchMock.mockRejectedValue(new Error("network timeout"));
+  const result = await warmRaceDetailPage({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmRaceDetailSsrSnapshot posts the single-race cache-warm URL", async () => {
+  await warmRaceDetailSsrSnapshot({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/cache-warm/race-detail-ssr?date=2026-06-19&keibajo=05&race=11",
+  );
+  expect((fetchMock.mock.calls[0] as unknown as [string, FetchInit])[1].method).toBe("POST");
+  expect((fetchMock.mock.calls[0] as unknown as [string, FetchInit])[1].headers).toStrictEqual({
+    "X-PC-Keiba-Cache-Warm": "scheduled",
+  });
+});
+
+test("warmRaceDetailSsrSnapshot returns true on a 200 response", async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  const result = await warmRaceDetailSsrSnapshot({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(true);
+});
+
+test("warmRaceDetailSsrSnapshot returns false on a non-200 response", async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+  const result = await warmRaceDetailSsrSnapshot({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmRaceDetailSsrSnapshot returns false when fetch rejects", async () => {
+  fetchMock.mockRejectedValue(new Error("network timeout"));
+  const result = await warmRaceDetailSsrSnapshot({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmViewerDisplayForRace warms the section then the SSR snapshot then the detail page", async () => {
+  const result = await warmViewerDisplayForRace({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction",
+  );
+  expect((fetchMock.mock.calls[1] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/cache-warm/race-detail-ssr?date=2026-06-19&keibajo=05&race=11",
+  );
+  expect((fetchMock.mock.calls[1] as unknown as [string, FetchInit])[1].method).toBe("POST");
+  expect((fetchMock.mock.calls[1] as unknown as [string, FetchInit])[1].headers).toStrictEqual({
+    "X-PC-Keiba-Cache-Warm": "scheduled",
+  });
+  expect((fetchMock.mock.calls[2] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/races/2026/06/19/05/11",
+  );
+});
+
+test("warmViewerDisplayForRace returns false when the section warm fails", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  const result = await warmViewerDisplayForRace({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmViewerDisplayForRace returns false when the SSR snapshot warm fails", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  const result = await warmViewerDisplayForRace({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("warmViewerDisplayForRace returns false when the detail page warm fails", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const result = await warmViewerDisplayForRace({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  expect(result).toBe(false);
+});
+
+test("buildWarmRaceParamsFromYmd splits YYYYMMDD and pads codes", () => {
+  expect(buildWarmRaceParamsFromYmd("20260817", "5", "1")).toStrictEqual({
+    day: "17",
+    keibajoCode: "05",
+    month: "08",
+    raceNumber: "01",
+    year: "2026",
+  });
 });
 
 test("warmPredictionCacheForRace returns true on a 200 response", async () => {
@@ -116,7 +338,7 @@ test("warmPredictionCacheForRace aborts the fetch when the timeout elapses", asy
     raceNumber: "11",
     year: "2026",
   });
-  await vi.advanceTimersByTimeAsync(5000);
+  await vi.advanceTimersByTimeAsync(20_000);
   const result = await pending;
   expect(result).toBe(false);
   vi.useRealTimers();
@@ -185,10 +407,31 @@ test("warmPredictionCacheForCategory warms each race with zero-padded codes", as
   const firstUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
   const secondUrl = (fetchMock.mock.calls[1] as unknown as [string])[0];
   expect(firstUrl).toBe(
-    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/01/sections/finish-prediction?__predictionRefresh=1",
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/01/sections/finish-prediction",
   );
   expect(secondUrl).toBe(
-    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/10/12/sections/finish-prediction?__predictionRefresh=1",
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/10/12/sections/finish-prediction",
+  );
+});
+
+test("warmPredictionCacheForCategory skips an overseas A8 venue on the jra source", async () => {
+  allMock.mockResolvedValue({
+    results: [
+      { keibajo_code: "05", race_bango: "11" },
+      { keibajo_code: "A8", race_bango: "04" },
+    ],
+  });
+  const count = await warmPredictionCacheForCategory({
+    category: "jra",
+    env: makeEnv(),
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(count).toBe(1);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const warmedUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
+  expect(warmedUrl).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction",
   );
 });
 
@@ -220,4 +463,143 @@ test("warmPredictionCacheForCategory counts only races that warmed successfully"
     runYmd: "20260619",
   });
   expect(count).toBe(1);
+});
+
+test("populateViewerDisplayCache writes KV then warms section, SSR snapshot, and page", async () => {
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "written",
+  });
+  const ok = await populateViewerDisplayCache({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "35",
+    raceBango: "02",
+    runYmd: "20260817",
+  });
+  expect(ok).toBe(true);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: false,
+    category: "nar",
+    env: expect.any(Object),
+    keibajoCode: "35",
+    raceBango: "02",
+    runYmd: "20260817",
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/08/17/35/02/sections/finish-prediction",
+  );
+  expect((fetchMock.mock.calls[1] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/cache-warm/race-detail-ssr?date=2026-08-17&keibajo=35&race=02",
+  );
+  expect((fetchMock.mock.calls[2] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/races/2026/08/17/35/02",
+  );
+});
+
+test("populateViewerDisplayCache returns false when the viewer warm fails after KV write", async () => {
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "written",
+  });
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const ok = await populateViewerDisplayCache({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260817",
+  });
+  expect(ok).toBe(false);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+});
+
+test("populateViewerDisplayCache returns false for a non-ymd date", async () => {
+  const ok = await populateViewerDisplayCache({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "35",
+    raceBango: "02",
+    runYmd: "2026-08-17",
+  });
+  expect(ok).toBe(false);
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+});
+
+test("populateViewerDisplayCache returns false when KV publish is empty", async () => {
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "skipped-empty",
+  });
+  const ok = await populateViewerDisplayCache({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "35",
+    raceBango: "02",
+    runYmd: "20260817",
+  });
+  expect(ok).toBe(false);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test("retryPopulateViewerDisplayCache retries until KV write succeeds", async () => {
+  vi.useFakeTimers();
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "skipped-empty",
+  });
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "written",
+  });
+  const pending = retryPopulateViewerDisplayCache({
+    category: "ban-ei",
+    env: makeEnv(),
+    keibajoCode: "83",
+    raceBango: "04",
+    runYmd: "20260817",
+  });
+  await vi.advanceTimersByTimeAsync(10_000);
+  const ok = await pending;
+  expect(ok).toBe(true);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(2);
+  vi.useRealTimers();
+});
+
+test("retryPopulateViewerDisplayCache returns true on the first successful attempt", async () => {
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "written",
+  });
+  const ok = await retryPopulateViewerDisplayCache({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260817",
+  });
+  expect(ok).toBe(true);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+});
+
+test("retryPopulateViewerDisplayCache returns false after all attempts fail", async () => {
+  vi.useFakeTimers();
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "skipped-empty",
+  });
+  const pending = retryPopulateViewerDisplayCache({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "35",
+    raceBango: "02",
+    runYmd: "20260817",
+  });
+  await vi.advanceTimersByTimeAsync(70_000);
+  const ok = await pending;
+  expect(ok).toBe(false);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(8);
+  vi.useRealTimers();
 });

@@ -1,19 +1,25 @@
 // Run with bun. Best-effort viewer prediction cache warming for the cron Worker.
 //
-// After a rescore lands fresh predictions in Neon, the cron Worker calls the
-// viewer's finish-prediction section API with __predictionRefresh=1 so the
-// viewer recomputes from Neon and stores the weight-aware result in its Cache
-// API. This makes the race detail page show the new prediction immediately.
-// Warming is fire-and-forget: failures are logged and never thrown so they can
-// never block the rescore ack path.
+// After predictions land in Neon and pred:fp KV is written, the cron Worker
+// warms the viewer's finish-prediction section, race-detail SSR snapshot,
+// and race-detail page so colo Cache API + DETAIL_SECTION_CACHE_KV are hot.
+// Do not force __predictionRefresh on the generate path -- that recomputes
+// from Neon and often exceeds the warm timeout. Failures are logged and
+// never thrown so they can never block the predict ack path.
 
+import { isOverseasKeibajoCode } from "./cron-decision";
+import { publishFinishPositionPredictionCache } from "./prediction-kv-writer";
 import type { Env, PredictCategory } from "./types";
 
-const VIEWER_BASE_URL = "https://pc-keiba-viewer.kkk4oru.com";
-const SECTION_PATH = "finish-prediction";
+const VIEWER_BASE_URL: string = "https://pc-keiba-viewer.kkk4oru.com";
+const SECTION_PATH: string = "finish-prediction";
+const RACE_DETAIL_SSR_PATH: string = "/api/cache-warm/race-detail-ssr";
+const CACHE_WARM_HEADER_NAME: string = "X-PC-Keiba-Cache-Warm";
+const CACHE_WARM_HEADER_VALUE: string = "scheduled";
+const HTTP_POST_METHOD: string = "POST";
 const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 const PREDICTION_REFRESH_VALUE = "1";
-const WARM_TIMEOUT_MS = 5000;
+const WARM_TIMEOUT_MS = 20_000;
 const RUN_DATE_YEAR_START = 0;
 const RUN_DATE_YEAR_END = 4;
 const RUN_DATE_MONTH_START = 5;
@@ -30,6 +36,9 @@ const RACE_BANGO_PAD_WIDTH = 2;
 // keeps its own routing table so it can mirror the predict pipeline without
 // coupling to the coordinator internals.
 const BAN_EI_KEIBAJO_CODES = ["83"] as const;
+const POPULATE_MAX_ATTEMPTS = 8;
+const POPULATE_RETRY_DELAY_MS = 10_000;
+const YMD_LENGTH = 8;
 interface CategoryRaceFilter {
   keibajoCodes: ReadonlyArray<string>;
   keibajoMode: "all" | "exclude" | "include";
@@ -59,7 +68,13 @@ interface WarmRaceParams {
   keibajoCode: string;
   month: string;
   raceNumber: string;
+  refresh?: boolean;
   year: string;
+}
+
+interface WarmFetchInit {
+  headers: Readonly<Record<string, string>>;
+  method: string;
 }
 
 interface WarmCategoryParams {
@@ -69,12 +84,37 @@ interface WarmCategoryParams {
   runYmd: string;
 }
 
+interface PopulateViewerDisplayParams {
+  category: PredictCategory;
+  env: Env;
+  keibajoCode: string;
+  raceBango: string;
+  runYmd: string;
+}
+
 interface RaceWarmRow {
   keibajo_code: string;
   race_bango: string;
 }
 
 const pad = (value: string, width: number): string => value.padStart(width, "0");
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+export const buildWarmRaceParamsFromYmd = (
+  runYmd: string,
+  keibajoCode: string,
+  raceBango: string,
+): WarmRaceParams => ({
+  day: runYmd.slice(RUN_YMD_TSUKIHI_START + 2, RUN_YMD_TSUKIHI_END),
+  keibajoCode: pad(keibajoCode, KEIBAJO_PAD_WIDTH),
+  month: runYmd.slice(RUN_YMD_TSUKIHI_START, RUN_YMD_TSUKIHI_START + 2),
+  raceNumber: pad(raceBango, RACE_BANGO_PAD_WIDTH),
+  year: runYmd.slice(RUN_YMD_NEN_START, RUN_YMD_NEN_END),
+});
 
 const buildPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(", ");
@@ -92,22 +132,53 @@ const buildKeibajoFilter = (
   };
 };
 
-const buildSectionUrl = (params: WarmRaceParams): string =>
-  `${VIEWER_BASE_URL}/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/sections/${SECTION_PATH}?${PREDICTION_REFRESH_PARAM}=${PREDICTION_REFRESH_VALUE}`;
+const buildSectionUrl = (params: WarmRaceParams): string => {
+  const base = `${VIEWER_BASE_URL}/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/sections/${SECTION_PATH}`;
+  if (params.refresh !== true) return base;
+  return `${base}?${PREDICTION_REFRESH_PARAM}=${PREDICTION_REFRESH_VALUE}`;
+};
 
-// Fire-and-forget warm of one race's viewer section. Returns true on a 2xx
-// response; any non-2xx, timeout, or network error returns false (never throws).
-export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promise<boolean> => {
+const buildRaceDetailPageUrl = (params: WarmRaceParams): string =>
+  `${VIEWER_BASE_URL}/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}`;
+
+const buildRaceDetailSsrWarmUrl = (params: WarmRaceParams): string =>
+  `${VIEWER_BASE_URL}${RACE_DETAIL_SSR_PATH}?date=${params.year}-${params.month}-${params.day}&keibajo=${params.keibajoCode}&race=${params.raceNumber}`;
+
+const fetchWithTimeout = async (url: string, init?: WarmFetchInit): Promise<boolean> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), WARM_TIMEOUT_MS);
   try {
-    const response = await fetch(buildSectionUrl(params), { signal: controller.signal });
+    const response = await fetch(url, {
+      ...(init === undefined ? {} : init),
+      signal: controller.signal,
+    });
     return response.ok;
   } catch {
     return false;
   } finally {
     clearTimeout(timeoutId);
   }
+};
+
+// Fire-and-forget warm of one race's viewer section. Returns true on a 2xx
+// response; any non-2xx, timeout, or network error returns false (never throws).
+export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promise<boolean> =>
+  fetchWithTimeout(buildSectionUrl(params));
+
+export const warmRaceDetailPage = async (params: WarmRaceParams): Promise<boolean> =>
+  fetchWithTimeout(buildRaceDetailPageUrl(params));
+
+export const warmRaceDetailSsrSnapshot = async (params: WarmRaceParams): Promise<boolean> =>
+  fetchWithTimeout(buildRaceDetailSsrWarmUrl(params), {
+    headers: { [CACHE_WARM_HEADER_NAME]: CACHE_WARM_HEADER_VALUE },
+    method: HTTP_POST_METHOD,
+  });
+
+export const warmViewerDisplayForRace = async (params: WarmRaceParams): Promise<boolean> => {
+  const sectionOk = await warmPredictionCacheForRace(params);
+  const ssrOk = await warmRaceDetailSsrSnapshot(params);
+  const pageOk = await warmRaceDetailPage(params);
+  return sectionOk && ssrOk && pageOk;
 };
 
 const listRacesForCategory = async (params: WarmCategoryParams): Promise<RaceWarmRow[]> => {
@@ -124,7 +195,10 @@ const listRacesForCategory = async (params: WarmCategoryParams): Promise<RaceWar
   const result = await params.env.REALTIME_DB.prepare(sql)
     .bind(...filter.sources, nen, tsukihi, ...keibajoFilter.binds)
     .all<RaceWarmRow>();
-  return result.results;
+  if (params.category !== "jra") {
+    return result.results;
+  }
+  return result.results.filter((row) => !isOverseasKeibajoCode(row.keibajo_code));
 };
 
 // Warm every race in the category for the run date. Queries realtime_race_sources
@@ -150,4 +224,34 @@ export const warmPredictionCacheForCategory = async (
     ),
   );
   return warmed.filter((ok) => ok).length;
+};
+
+export const populateViewerDisplayCache = async (
+  params: PopulateViewerDisplayParams,
+): Promise<boolean> => {
+  if (params.runYmd.length !== YMD_LENGTH) return false;
+  const published = await publishFinishPositionPredictionCache({
+    bustCacheApi: false,
+    category: params.category,
+    env: params.env,
+    keibajoCode: params.keibajoCode,
+    raceBango: params.raceBango,
+    runYmd: params.runYmd,
+  });
+  if (published.status !== "written") return false;
+  return warmViewerDisplayForRace(
+    buildWarmRaceParamsFromYmd(params.runYmd, params.keibajoCode, params.raceBango),
+  );
+};
+
+export const retryPopulateViewerDisplayCache = async (
+  params: PopulateViewerDisplayParams,
+): Promise<boolean> => {
+  const tryOnce = async (remaining: number): Promise<boolean> => {
+    if (await populateViewerDisplayCache(params)) return true;
+    if (remaining <= 1) return false;
+    await sleep(POPULATE_RETRY_DELAY_MS);
+    return tryOnce(remaining - 1);
+  };
+  return tryOnce(POPULATE_MAX_ATTEMPTS);
 };

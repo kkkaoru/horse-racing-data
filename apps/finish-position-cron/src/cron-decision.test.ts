@@ -4,7 +4,9 @@ import { expect, test, vi } from "vitest";
 import {
   COORDINATOR_CRON_RACE_HOURS,
   enumerateTodaysRaces,
+  isOverseasKeibajoCode,
   FEATURE_BUILD_CRON,
+  FEATURE_BUILD_CRON_EARLY,
   PREDICT_CRON,
   RESCORE_CRON_RACE_HOURS,
   WARM_CRON_PRE_JRA,
@@ -131,8 +133,16 @@ test("FEATURE_BUILD_CRON is the JST 09:30 schedule", () => {
   expect(FEATURE_BUILD_CRON).toBe("30 0 * * *");
 });
 
+test("FEATURE_BUILD_CRON_EARLY is the JST 06:00 schedule", () => {
+  expect(FEATURE_BUILD_CRON_EARLY).toBe("0 21 * * *");
+});
+
 test("shouldRunFeatureBuildCron matches the feature-build cron", () => {
   expect(shouldRunFeatureBuildCron("30 0 * * *")).toBe(true);
+});
+
+test("shouldRunFeatureBuildCron matches the early feature-build cron", () => {
+  expect(shouldRunFeatureBuildCron("0 21 * * *")).toBe(true);
 });
 
 test("shouldRunFeatureBuildCron rejects the pre-JRA warm cron", () => {
@@ -165,6 +175,27 @@ test("shouldRunRescoreCron rejects the feature-build cron", () => {
 
 test("shouldRunPredictCron rejects the feature-build cron", () => {
   expect(shouldRunPredictCron("30 0 * * *")).toBe(false);
+});
+
+test("isOverseasKeibajoCode marks letter venue codes used by JRA overseas sales", () => {
+  expect(isOverseasKeibajoCode("A8")).toBe(true);
+  expect(isOverseasKeibajoCode("A6")).toBe(true);
+  expect(isOverseasKeibajoCode("05")).toBe(false);
+  expect(isOverseasKeibajoCode("83")).toBe(false);
+});
+
+test("enumerateTodaysRaces skips an overseas JRA venue so it is not a domestic jra target", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [
+      { keibajo_code: "05", race_bango: "11", source: "jra" },
+      { keibajo_code: "A8", race_bango: "04", source: "jra" },
+    ],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260816");
+  expect(races).toStrictEqual([{ category: "jra", keibajoCode: "05", raceBango: "11" }]);
 });
 
 test("enumerateTodaysRaces maps a jra source row to the jra category", async () => {

@@ -2,13 +2,27 @@
 // For each message: dedup via DO coordinator (strong consistency), call the Container
 // DO stub's fetch, track state.
 
+import { consumeDayBasePickup, isDayBasePickupQueueMessage } from "./day-base-pickup";
 import {
   consumeDeliveryCanary,
   isDeliveryCanaryQueueMessage,
   isPredictQueueMessage,
 } from "./delivery-canary";
 import { recordDeliveryConsumed, recordPredictionCompleted } from "./delivery-lifecycle";
-import { claimFocusedFullRace, claimRun, completeFocusedFullRace, completeRun } from "./do-state";
+import {
+  CONTAINER_SLOT_RETRY_DELAY_SECONDS,
+  CONTAINER_SLOT_STALE_MS,
+  type ContainerSlotKind,
+} from "./container-slot-cap";
+import {
+  claimContainerSlot,
+  claimFocusedFullRace,
+  claimRun,
+  completeFocusedFullRace,
+  completeRun,
+  releaseContainerSlot,
+  touchContainerSlot,
+} from "./do-state";
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import { pickUpFocusedFullCache } from "./focused-full-cache-pickup";
 import {
@@ -24,8 +38,9 @@ import {
 } from "./old-date-skip-events";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import {
+  buildWarmRaceParamsFromYmd,
   warmPredictionCacheForCategory,
-  warmPredictionCacheForRace,
+  warmViewerDisplayForRace,
 } from "./prediction-cache-warm";
 import {
   publishFinishPositionPredictionCache,
@@ -40,14 +55,13 @@ import {
   buildRetryErrorInsertSql,
   buildRetryErrorRecord,
 } from "./retry-errors";
-import type { DeliveryCanaryMessage, Env, PredictQueueMessage } from "./types";
+import type {
+  DayBasePickupMessage,
+  DeliveryCanaryMessage,
+  Env,
+  PredictQueueMessage,
+} from "./types";
 
-const RUN_YMD_YEAR_START = 0;
-const RUN_YMD_YEAR_END = 4;
-const RUN_YMD_MONTH_START = 4;
-const RUN_YMD_MONTH_END = 6;
-const RUN_YMD_DAY_START = 6;
-const RUN_YMD_DAY_END = 8;
 const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
 const RESCORE_MODE = "rescore";
@@ -99,7 +113,8 @@ const BUSY_REQUEUE_COUNT_INCREMENT = 1;
 // while each individual delivery after launch is a cheap fast completion /
 // accepted check (not a re-run) once the in-container single-slot guard sees
 // that race already in flight for that category. SLEEP_AFTER in
-// container-class.ts is kept above this budget so the container outlives it.
+// container-class.ts is "20m" so a detached first-day day-base build
+// (10–15m) is not killed by "Activity expired".
 const FOCUSED_FULL_RETRY_DELAY_SECONDS = 150;
 // Heartbeat-gap staleness, not "time since claim start": claimFocusedFullRace
 // (predict-run-coordinator.ts) refreshes this claim's timestamp on every poll
@@ -132,6 +147,15 @@ const CONTAINER_PER_RACE_CATEGORIES = new Set<string>([
   NAR_CATEGORY,
   BAN_EI_CATEGORY,
 ]);
+const RESCORE_SLOT_KIND: ContainerSlotKind = "rescore";
+const FOCUSED_FULL_SLOT_KIND: ContainerSlotKind = "focused-full";
+// Focused-full "accepted" keeps this delivery's slot lease: the detached
+// pipeline is still occupying the unique DO after the HTTP response ends.
+// The next redelivery may claim the same doName again (holders++) instead of
+// starting another instance; a later success / already-complete / Neon-complete
+// path releases once (holders--). If redeliveries stop, CONTAINER_SLOT_STALE_MS
+// (20m) prunes the leftover lease.
+const FOCUSED_FULL_ACCEPTED_KEEP_SLOT: boolean = true;
 
 interface PredictUrlParams {
   category: string;
@@ -169,6 +193,12 @@ interface FocusedFullSkipDedupMessage extends PredictQueueMessage {
   skipDedup: true;
 }
 
+interface ViewerDisplayWarmTarget {
+  keibajoCode: string;
+  raceBango: string;
+  runYmd: string;
+}
+
 interface PerRaceRescoreUrlParams {
   category: string;
   daysAhead: number;
@@ -179,6 +209,14 @@ interface PerRaceRescoreUrlParams {
   // runYmd is the YYYYMMDD date string required by the container /predict endpoint.
   runYmd: string;
   cardMaxRaceBango?: number;
+}
+
+interface ClaimContainerSlotOrRetryParams {
+  category: string;
+  doName: string;
+  env: Env;
+  kind: ContainerSlotKind;
+  message: Message<PredictQueueMessage>;
 }
 
 const buildPredictUrl = (params: PredictUrlParams): string => {
@@ -246,14 +284,22 @@ export const isFocusedSkipDedupMessage = (
   message.keibajoCode !== undefined &&
   message.raceBango !== undefined;
 
-const warmPredictionCacheForFocusedRace = (message: FocusedFullSkipDedupMessage): void => {
-  void warmPredictionCacheForRace({
-    day: message.runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
-    keibajoCode: message.keibajoCode,
-    month: message.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
-    raceNumber: message.raceBango,
-    year: message.runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
-  });
+const warmViewerDisplayAfterKvWrite = async (
+  published: PredictionKvPublishResult,
+  params: ViewerDisplayWarmTarget,
+): Promise<void> => {
+  if (published.status !== "written") return;
+  await warmViewerDisplayForRace(
+    buildWarmRaceParamsFromYmd(params.runYmd, params.keibajoCode, params.raceBango),
+  );
+};
+
+const populateViewerDisplayForFocusedRace = async (
+  env: Env,
+  message: FocusedFullSkipDedupMessage,
+): Promise<void> => {
+  const published = await publishPredictionKvForFocusedRace(env, message, false);
+  await warmViewerDisplayAfterKvWrite(published, message);
 };
 
 const publishPredictionKvForRace = async (
@@ -347,8 +393,17 @@ const ackIfFocusedFullAlreadyComplete = async (
     );
     await recordCompletedBestEffort(env, message.body);
     message.ack();
-    warmPredictionCacheForFocusedRace(message.body);
-    await publishPredictionKvForFocusedRace(env, message.body, false);
+    await populateViewerDisplayForFocusedRace(env, message.body);
+    await releaseContainerSlotBestEffort(
+      env,
+      resolvePredictDoName({
+        category,
+        env,
+        keibajoCode,
+        raceBango,
+      }),
+      FOCUSED_FULL_SLOT_KIND,
+    );
     return true;
   } catch (err) {
     console.warn(
@@ -373,6 +428,49 @@ const recordCompletedBestEffort = async (env: Env, message: PredictQueueMessage)
   } catch (error) {
     console.error("[predict-queue] failed to record completed lifecycle", String(error));
   }
+};
+
+const releaseContainerSlotBestEffort = async (
+  env: Env,
+  doName: string,
+  kind: ContainerSlotKind,
+): Promise<void> => {
+  try {
+    await releaseContainerSlot({ doName, env, kind });
+  } catch (err) {
+    console.error(
+      `[predict-queue] failed to release container slot doName=${doName} kind=${kind}:`,
+      String(err),
+    );
+  }
+};
+
+const touchContainerSlotBestEffort = async (env: Env, doName: string): Promise<void> => {
+  try {
+    await touchContainerSlot({ doName, env, staleAfterMs: CONTAINER_SLOT_STALE_MS });
+  } catch (err) {
+    console.error(`[predict-queue] failed to touch container slot doName=${doName}:`, String(err));
+  }
+};
+
+const claimContainerSlotOrRetry = async (
+  params: ClaimContainerSlotOrRetryParams,
+): Promise<boolean> => {
+  const claim = await claimContainerSlot({
+    category: params.category,
+    doName: params.doName,
+    env: params.env,
+    kind: params.kind,
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+  });
+  if (claim.proceed) return true;
+  console.warn(
+    `[predict-queue] container slot ${claim.state ?? "capped"} doName=${params.doName} kind=${
+      params.kind
+    } ${describePredictMessage(params.message.body)} -- will retry without starting a container`,
+  );
+  params.message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+  return false;
 };
 
 const retryFocusedFullAlreadyInFlight = (message: Message<PredictQueueMessage>): void => {
@@ -409,6 +507,15 @@ const claimFocusedFullOrRetry = async (
     } state=${claim.state ?? "-"} staleAfterMs=${FOCUSED_FULL_IN_FLIGHT_STALE_MS}`,
   );
   if (claim.proceed) return true;
+  await touchContainerSlotBestEffort(
+    env,
+    resolvePredictDoName({
+      category,
+      env,
+      keibajoCode,
+      raceBango,
+    }),
+  );
   retryFocusedFullAlreadyInFlight(message);
   return false;
 };
@@ -570,8 +677,7 @@ const handleFocusedFullStatus = async (
     await recordCompletedBestEffort(env, message.body);
     message.ack();
     if (isFocusedSkipDedupMessage(message.body)) {
-      warmPredictionCacheForFocusedRace(message.body);
-      await publishPredictionKvForFocusedRace(env, message.body, false);
+      await populateViewerDisplayForFocusedRace(env, message.body);
     }
     return true;
   }
@@ -583,6 +689,7 @@ const handleFocusedFullStatus = async (
 };
 
 const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
+  if (message.debug !== true) return;
   console.log(
     `Predict progress category=${message.category} runYmd=${message.runYmd} keibajo=${
       message.keibajoCode ?? "-"
@@ -609,7 +716,24 @@ const processContainerPerRaceRescore = async (
 ): Promise<void> => {
   const { category, daysAhead, debug, keibajoCode, raceBango, runYmd } = message.body;
   const startedAt = Date.now();
-  const predictDoName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
+  const predictDoName = resolvePredictDoName({
+    category,
+    env,
+    keibajoCode,
+    raceBango,
+    shareCategoryInstance: true,
+  });
+  if (
+    !(await claimContainerSlotOrRetry({
+      category,
+      doName: predictDoName,
+      env,
+      kind: RESCORE_SLOT_KIND,
+      message,
+    }))
+  ) {
+    return;
+  }
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPerRaceRescoreUrl({
     cardMaxRaceBango,
@@ -655,20 +779,14 @@ const processContainerPerRaceRescore = async (
       }`,
     );
     message.ack();
-    void warmPredictionCacheForRace({
-      day: runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
-      keibajoCode,
-      month: runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
-      raceNumber: raceBango,
-      year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
-    });
-    await publishPredictionKvForRace(env, {
+    const published = await publishPredictionKvForRace(env, {
       bustCacheApi: true,
       category,
       keibajoCode,
       raceBango,
       runYmd,
     });
+    await warmViewerDisplayAfterKvWrite(published, { keibajoCode, raceBango, runYmd });
   } catch (err) {
     console.error(
       `Container per-race rescore failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} durationMs=${
@@ -677,6 +795,8 @@ const processContainerPerRaceRescore = async (
       String(err),
     );
     await retryAfterFailure(message, env, err);
+  } finally {
+    await releaseContainerSlotBestEffort(env, predictDoName, RESCORE_SLOT_KIND);
   }
 };
 
@@ -799,6 +919,17 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     );
   }
   const predictDoName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
+  if (
+    !(await claimContainerSlotOrRetry({
+      category,
+      doName: predictDoName,
+      env,
+      kind: FOCUSED_FULL_SLOT_KIND,
+      message,
+    }))
+  ) {
+    return;
+  }
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPredictUrl({
     cardMaxRaceBango,
@@ -813,6 +944,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   });
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(predictDoName);
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+  const slotHold = { keep: false };
   try {
     debugLog(
       message.body,
@@ -845,7 +977,11 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         result.status ?? "-"
       } racesPredicted=${result.racesPredicted} durationMs=${Date.now() - startedAt}`,
     );
-    if (isFocusedSkipDedup && (await handleFocusedFullStatus(message, env, result.status))) return;
+    if (isFocusedSkipDedup && (await handleFocusedFullStatus(message, env, result.status))) {
+      slotHold.keep =
+        result.status === FOCUSED_FULL_ACCEPTED_STATUS && FOCUSED_FULL_ACCEPTED_KEEP_SLOT;
+      return;
+    }
     assertPredictResultSucceeded(result);
     if (shouldCompleteCategoryRun) {
       await completeRun({
@@ -885,9 +1021,12 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       } racesPredicted=${result.racesPredicted} durationMs=${Date.now() - startedAt}`,
     );
     if (isFocusedSkipDedup) {
-      warmPredictionCacheForFocusedRace(message.body);
-      await publishPredictionKvForFocusedRace(env, message.body, false);
+      await populateViewerDisplayForFocusedRace(env, message.body);
     }
+    // Non-skipDedup per-race full still uses category completeRun and does not
+    // publish pred:fp here. Generate-time display warm is skipDedup focused-full
+    // plus per-race rescore only. Do not revive shouldWarmCategoryCache
+    // (warm-before-KV); day-base pickup also does not write pred:fp.
     if (shouldWarmCategoryCache) {
       void warmPredictionCacheForCategory({
         category,
@@ -930,16 +1069,23 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       });
     }
     await retryAfterFailure(message, env, err);
+  } finally {
+    if (!slotHold.keep) {
+      await releaseContainerSlotBestEffort(env, predictDoName, FOCUSED_FULL_SLOT_KIND);
+    }
   }
 };
 
 export const handleQueue = async (
-  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
+  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage>,
   env: Env,
 ): Promise<void> => {
   for (const message of batch.messages) {
     if (isDeliveryCanaryQueueMessage(message)) {
       await consumeDeliveryCanary(env, message.body, new Date());
+      message.ack();
+    } else if (isDayBasePickupQueueMessage(message)) {
+      await consumeDayBasePickup({ env, message: message.body });
       message.ack();
     } else if (isPredictQueueMessage(message)) {
       await processMessage(message, env);

@@ -8,6 +8,7 @@ const NDJSON_CONTENT_TYPE = "application/x-ndjson";
 const SINGLE_PARQUET_KIND = "single";
 const PER_RACE_PARQUET_KIND = "per-race";
 const PARQUET_CONTENT_TYPE = "application/octet-stream";
+const IDLE_TERMINAL_STATUS_PATTERN = /"status"\s*:\s*"(?:busy|accepted|already-complete)"/;
 // R2 custom metadata key names (no "x-amz-meta-" prefix -- R2's S3-compatible
 // API adds that automatically on GET/HEAD). Must stay in sync with
 // predict_lib.r2_client's own `_WATERMARK_META_*` header name constants on
@@ -112,6 +113,8 @@ export const proxyResultParquetsToR2 = async (
   );
 };
 
+const isIdleTerminalNdjson = (text: string): boolean => IDLE_TERMINAL_STATUS_PATTERN.test(text);
+
 const proxyResultLineParquetsToR2 = async (
   line: string,
   env: R2ProxyEnv,
@@ -132,6 +135,7 @@ const scheduleResultLineProxy = (
   waitUntil: WaitUntil | undefined,
   debug: boolean,
 ): void => {
+  if (isIdleTerminalNdjson(line)) return;
   const task = Promise.resolve().then(() => proxyResultLineParquetsToR2(line, env, debug));
   if (waitUntil) {
     waitUntil(task);
@@ -140,8 +144,12 @@ const scheduleResultLineProxy = (
   void task;
 };
 
-const scheduleActivityRenew = (renewActivityTimeout: RenewActivityTimeout | undefined): void => {
+const scheduleActivityRenew = (
+  renewActivityTimeout: RenewActivityTimeout | undefined,
+  text: string,
+): void => {
   if (renewActivityTimeout === undefined) return;
+  if (isIdleTerminalNdjson(text)) return;
   try {
     renewActivityTimeout();
   } catch (err) {
@@ -187,10 +195,11 @@ const createProxyingNdjsonStream = (
   debug: boolean,
 ): ReadableStream<Uint8Array> => {
   const tracker = createLastLineTracker();
+  const decoder = new TextDecoder();
   return body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller): void {
-        scheduleActivityRenew(renewActivityTimeout);
+        scheduleActivityRenew(renewActivityTimeout, decoder.decode(chunk, { stream: true }));
         controller.enqueue(chunk);
         tracker.acceptChunk(chunk);
       },

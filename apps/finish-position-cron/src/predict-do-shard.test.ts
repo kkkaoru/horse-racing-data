@@ -1,7 +1,11 @@
 // Run with bun. Tests for the race-sharded Container DO name resolver.
 
 import { expect, test } from "vitest";
-import { PREDICT_DO_NAME_PREFIX, resolvePredictDoName } from "./predict-do-shard";
+import {
+  listDayBasePickupDoNames,
+  PREDICT_DO_NAME_PREFIX,
+  resolvePredictDoName,
+} from "./predict-do-shard";
 import type { Env } from "./types";
 
 const makeEnv = (overrides: Partial<Env> = {}): Env => ({ ...overrides }) as Env;
@@ -142,4 +146,64 @@ test("shards ban-ei races independently of jra using the same category prefix sc
   expect(
     resolvePredictDoName({ category: "ban-ei", env, keibajoCode: "44", raceBango: "01" }),
   ).toBe("predict-ban-ei-2");
+});
+
+test("shareCategoryInstance keeps a JRA rescore on the unsharded category DO when sharding is on", () => {
+  expect(
+    resolvePredictDoName({
+      category: "jra",
+      env: makeEnv({ RACE_SHARDED_DO: "1" }),
+      keibajoCode: "05",
+      raceBango: "02",
+      shareCategoryInstance: true,
+    }),
+  ).toBe("predict-jra");
+});
+
+test("listDayBasePickupDoNames is the unsharded category DO when sharding is off", () => {
+  expect(listDayBasePickupDoNames({ category: "ban-ei", env: makeEnv() })).toStrictEqual([
+    "predict-ban-ei",
+  ]);
+});
+
+test("listDayBasePickupDoNames includes the category DO and every shard when sharding is on", () => {
+  expect(
+    listDayBasePickupDoNames({ category: "ban-ei", env: makeEnv({ RACE_SHARDED_DO: "1" }) }),
+  ).toStrictEqual(["predict-ban-ei", "predict-ban-ei-0", "predict-ban-ei-1", "predict-ban-ei-2"]);
+});
+
+test("shareCategoryInstance keeps a NAR rescore on the unsharded category DO when sharding is on", () => {
+  expect(
+    resolvePredictDoName({
+      category: "nar",
+      env: makeEnv({ RACE_SHARDED_DO: "1" }),
+      keibajoCode: "44",
+      raceBango: "01",
+      shareCategoryInstance: true,
+    }),
+  ).toBe("predict-nar");
+});
+
+test("shareCategoryInstance keeps a Ban-ei rescore on the unsharded category DO when sharding is on", () => {
+  expect(
+    resolvePredictDoName({
+      category: "ban-ei",
+      env: makeEnv({ RACE_SHARDED_DO: "1" }),
+      keibajoCode: "83",
+      raceBango: "01",
+      shareCategoryInstance: true,
+    }),
+  ).toBe("predict-ban-ei");
+});
+
+test("focused-full without shareCategoryInstance still shards when RACE_SHARDED_DO is on", () => {
+  expect(
+    resolvePredictDoName({
+      category: "jra",
+      env: makeEnv({ RACE_SHARDED_DO: "1" }),
+      keibajoCode: "05",
+      raceBango: "02",
+      shareCategoryInstance: false,
+    }),
+  ).toBe("predict-jra-2");
 });

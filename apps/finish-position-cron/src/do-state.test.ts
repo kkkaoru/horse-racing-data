@@ -23,12 +23,16 @@ const makeEnv = (): Env => ({
 });
 
 import {
+  claimContainerSlot,
   claimFocusedFullRace,
   claimRescoreRace,
   claimRun,
+  clearContainerSlot,
   completeFocusedFullRace,
   completeRun,
   getRunState,
+  releaseContainerSlot,
+  touchContainerSlot,
 } from "./do-state";
 
 beforeEach(() => {
@@ -260,6 +264,133 @@ test("completeFocusedFullRace calls DO /complete-focused-full-race", async () =>
   expect(req.method).toBe("POST");
   const body = (await req.json()) as { status: string };
   expect(body.status).toBe("success");
+});
+
+test("claimContainerSlot calls DO /claim-container-slot with the unique DO fields", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
+  const result = await claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    env: makeEnv(),
+    kind: "rescore",
+    staleAfterMs: 1_200_000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/claim-container-slot");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as {
+    category: string;
+    doName: string;
+    kind: string;
+    staleAfterMs: number;
+  };
+  expect(body.category).toBe("jra");
+  expect(body.doName).toBe("predict-jra");
+  expect(body.kind).toBe("rescore");
+  expect(body.staleAfterMs).toBe(1200000);
+});
+
+test("claimContainerSlot returns proceed:false when the DO reports capped", async () => {
+  fetchMock.mockResolvedValue(
+    new Response(JSON.stringify({ proceed: false, state: "capped" }), { status: 200 }),
+  );
+  const result = await claimContainerSlot({
+    category: "nar",
+    doName: "predict-nar-2",
+    env: makeEnv(),
+    kind: "rescore",
+    staleAfterMs: 1_200_000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "capped" });
+});
+
+test("claimContainerSlot throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra",
+      env: makeEnv(),
+      kind: "rescore",
+      staleAfterMs: 1_200_000,
+    }),
+  ).rejects.toThrow("DO claim-container-slot failed: 500");
+});
+
+test("releaseContainerSlot calls DO /release-container-slot", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await releaseContainerSlot({
+    doName: "predict-jra",
+    env: makeEnv(),
+    kind: "rescore",
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/release-container-slot");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as { doName: string; kind: string };
+  expect(body.doName).toBe("predict-jra");
+  expect(body.kind).toBe("rescore");
+});
+
+test("releaseContainerSlot throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 503 }));
+  await expect(
+    releaseContainerSlot({
+      doName: "predict-nar",
+      env: makeEnv(),
+      kind: "focused-full",
+    }),
+  ).rejects.toThrow("DO release-container-slot failed: 503");
+});
+
+test("touchContainerSlot calls DO /touch-container-slot", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await touchContainerSlot({
+    doName: "predict-jra-1",
+    env: makeEnv(),
+    staleAfterMs: 1_200_000,
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/touch-container-slot");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as { doName: string; staleAfterMs: number };
+  expect(body.doName).toBe("predict-jra-1");
+  expect(body.staleAfterMs).toBe(1200000);
+});
+
+test("clearContainerSlot calls DO /clear-container-slot", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await clearContainerSlot({
+    doName: "predict-nar-0",
+    env: makeEnv(),
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/clear-container-slot");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as { doName: string };
+  expect(body.doName).toBe("predict-nar-0");
+});
+
+test("clearContainerSlot throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    clearContainerSlot({
+      doName: "predict-nar-1",
+      env: makeEnv(),
+    }),
+  ).rejects.toThrow("DO clear-container-slot failed: 500");
+});
+
+test("touchContainerSlot throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    touchContainerSlot({
+      doName: "predict-ban-ei-0",
+      env: makeEnv(),
+      staleAfterMs: 1_200_000,
+    }),
+  ).rejects.toThrow("DO touch-container-slot failed: 500");
 });
 
 test("completeFocusedFullRace throws when DO returns non-200", async () => {

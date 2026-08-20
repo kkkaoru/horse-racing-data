@@ -20,6 +20,7 @@
 // as a safety margin against an atypically delayed mode=full still running for
 // that category; JRA has no such restriction.
 
+import { isOverseasKeibajoCode } from "./cron-decision";
 import { claimRescoreRace } from "./do-state";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
@@ -255,7 +256,10 @@ const listRacesForCategory = async (
   const result = await env.REALTIME_DB.prepare(sql)
     .bind(...filter.sources, nen, tsukihi, ...keibajoFilter.binds)
     .all<RaceSourceRow>();
-  return result.results;
+  if (category !== "jra") {
+    return result.results;
+  }
+  return result.results.filter((row) => !isOverseasKeibajoCode(row.keibajo_code));
 };
 
 interface CardMaxRaceBangoRow {

@@ -102,7 +102,7 @@ export interface Env {
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
-  PREDICT_QUEUE: Queue<PredictQueueMessage | DeliveryCanaryMessage>;
+  PREDICT_QUEUE: Queue<PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;
   // R2 S3 credentials forwarded into the container env so the Python rescore path
@@ -138,10 +138,12 @@ export interface Env {
   RACE_SHARDED_DO?: string;
   // Shard count per category when RACE_SHARDED_DO is enabled, parsed as a
   // positive integer; unset/non-positive/non-integer falls back to 3 inside
-  // predict-do-shard.ts. wrangler.jsonc's FinishPositionPredictContainer caps
-  // at max_instances: 10 shared across jra/nar/ban-ei, so 3 keeps the
-  // worst-case fully-active 3-category x N-shard total (3x3=9) under that
-  // limit -- raising it must be checked against max_instances before deploy.
+  // predict-do-shard.ts. Applies to focused-full only -- per-race rescore
+  // always uses the unsharded predict-{category} DO so five JRA/NAR shards
+  // cannot pack max_instances. wrangler.jsonc's FinishPositionPredictContainer
+  // ceiling is 12; container-slot-cap.ts keeps general starts <= 10 and
+  // reserves 2 for Ban-ei focused-full / day-base. Raising this must be
+  // checked against both that software cap and max_instances before deploy.
   // Optional so existing callers/tests need not set it.
   RACE_SHARD_MAX_CONCURRENT?: string;
 }
@@ -171,6 +173,13 @@ export interface DeliveryCanaryMessage {
   type: "delivery-canary";
   id: string;
   enqueuedAt: string;
+}
+
+export interface DayBasePickupMessage {
+  type: "day-base-pickup";
+  category: PredictCategory;
+  runYmd: string;
+  attempt: number;
 }
 
 export interface PredictQueueMessage {

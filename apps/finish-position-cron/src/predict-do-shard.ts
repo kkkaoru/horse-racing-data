@@ -25,15 +25,14 @@ import type { Env } from "./types";
 export const PREDICT_DO_NAME_PREFIX = "predict-";
 const RACE_SHARDED_DO_FLAG_VALUE = "1";
 // wrangler.jsonc defines exactly one `containers` entry for
-// FinishPositionPredictContainer with max_instances: 10, shared across every
+// FinishPositionPredictContainer with max_instances: 12, shared across every
 // category that uses this binding -- not per-category. jra/nar/ban-ei can
 // all race the same weekend, so if every category were simultaneously at
-// full shard count, total concurrent DOs = 3 categories * shardCount.
-// Staying at or under max_instances: 10 requires shardCount <= 3
-// (3*3=9 <= 10; 3*4=12 > 10 would exceed it). 3 is therefore the
-// safe-by-construction default for the full 3-category worst case --
-// operators can raise RACE_SHARD_MAX_CONCURRENT after independently
-// re-checking that product against max_instances.
+// full shard count PLUS the 3 unsharded category DOs used by rescore and
+// day-base, unique DO names = 3*shardCount + 3. The software cap in
+// container-slot-cap.ts (general 10 + Ban-ei reserved 2) is what keeps
+// starts at or under 12; shardCount 3 remains the default so focused-full
+// can still fan out per category without each rescore also opening a shard.
 const DEFAULT_RACE_SHARD_MAX_CONCURRENT = 3;
 const SHARD_KEY_SEPARATOR = ":";
 
@@ -50,6 +49,10 @@ interface ResolvePredictDoNameParams {
   env: Env;
   keibajoCode?: string;
   raceBango?: string;
+  // Per-race rescore must share the category DO (predict-{category}) even when
+  // RACE_SHARDED_DO is on. Sharding rescores is what packed 5+ JRA/NAR
+  // instances tonight: each hash bucket starts a dedicated container.
+  shareCategoryInstance?: boolean;
 }
 
 const hashString = (value: string): number =>
@@ -89,10 +92,29 @@ const resolveShardIndex = (keibajoCode: string, raceBango: string, maxConcurrent
 // Flag on AND race-scoped: returns `predict-{category}-{shardIndex}`, where
 // shardIndex = FNV-1a(keibajoCode:raceBango) % RACE_SHARD_MAX_CONCURRENT
 // (default 3, see resolveShardMaxConcurrent).
+export const listDayBasePickupDoNames = (params: {
+  category: string;
+  env: Env;
+}): readonly string[] => {
+  const unshardedName = `${PREDICT_DO_NAME_PREFIX}${params.category}`;
+  if (!isRaceShardingEnabled(params.env)) return [unshardedName];
+  const maxConcurrent = resolveShardMaxConcurrent(params.env);
+  const shardNames = Array.from(
+    { length: maxConcurrent },
+    (_value, index) => `${unshardedName}-${index}`,
+  );
+  return [unshardedName, ...shardNames];
+};
+
 export const resolvePredictDoName = (params: ResolvePredictDoNameParams): string => {
-  const { category, env, keibajoCode, raceBango } = params;
+  const { category, env, keibajoCode, raceBango, shareCategoryInstance } = params;
   const unshardedName = `${PREDICT_DO_NAME_PREFIX}${category}`;
-  if (!isRaceShardingEnabled(env) || keibajoCode === undefined || raceBango === undefined) {
+  if (
+    shareCategoryInstance === true ||
+    !isRaceShardingEnabled(env) ||
+    keibajoCode === undefined ||
+    raceBango === undefined
+  ) {
     return unshardedName;
   }
   const shardIndex = resolveShardIndex(keibajoCode, raceBango, resolveShardMaxConcurrent(env));

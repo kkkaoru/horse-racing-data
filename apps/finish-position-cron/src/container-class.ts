@@ -5,29 +5,17 @@
 // container alive long enough for Neon completion polling to observe the write.
 // container-class.ts is excluded from the coverage gate (see vitest.config.ts).
 //
-// SLEEP_AFTER is "45m" (was "30s", then "30m") so a focused per-race full
-// request can return accepted and still leave enough container lifetime for
-// the detached DuckDB+layer+scoring+Neon pipeline to finish.
+// SLEEP_AFTER is "20m": first-day Ban-ei day-base + race-chain can take
+// 10–15m after a detached "accepted". 5m expired the instance mid-build
+// (Activity expired). 20m is well below the old 90m slot hold.
 
 import { Container } from "@cloudflare/containers";
 import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
-// 45m matches the same total retry-budget reasoning as
-// FOCUSED_FULL_RETRY_DELAY_SECONDS * max_retries in queue-consumer.ts /
-// wrangler.jsonc (2.5min x 16 retries = 40min), with 5 extra minutes of
-// margin, so the container reliably outlives a single worst-case focused
-// pipeline run plus the full in-band retry/reclaim window (see
-// FOCUSED_FULL_IN_FLIGHT_STALE_MS in queue-consumer.ts).
-// This value applies to ALL request types on this container class (day-batch,
-// rescore, focused-full): day-batch/rescore already hold their own connection
-// open continuously during their (currently unchanged, still-blocking)
-// execution, so this mostly extends their post-completion idle tail -- an
-// acceptable, deliberate cost/safety tradeoff for this fix. sleepAfter is not
-// conditional per-request-type; that's not supported by the Container base
-// class.
-const SLEEP_AFTER = "45m";
+// 20m covers a detached first-day day-base build (10–15m) plus race-chain.
+const SLEEP_AFTER = "20m";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
 const ADMIN_STOP_PATH = "/__admin/stop-container";

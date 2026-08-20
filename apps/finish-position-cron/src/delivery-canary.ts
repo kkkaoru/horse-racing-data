@@ -1,7 +1,15 @@
 // Run with bun. Primary predict-queue delivery canary and durable D1 heartbeat.
 
 import type { Message } from "@cloudflare/workers-types";
-import type { DeliveryCanaryMessage, Env, PredictQueueMessage } from "./types";
+import { isDayBasePickupMessage } from "./day-base-pickup";
+import type {
+  DayBasePickupMessage,
+  DeliveryCanaryMessage,
+  Env,
+  PredictQueueMessage,
+} from "./types";
+
+type PredictQueueBody = PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage;
 
 const CANARY_TYPE = "delivery-canary";
 const LATEST_CANARY_LIMIT = 12;
@@ -23,17 +31,17 @@ interface CanaryRow {
   delivery_lag_ms: number | null;
 }
 
-export const isDeliveryCanaryMessage = (
-  value: PredictQueueMessage | DeliveryCanaryMessage,
-): value is DeliveryCanaryMessage => "type" in value && value.type === CANARY_TYPE;
+export const isDeliveryCanaryMessage = (value: PredictQueueBody): value is DeliveryCanaryMessage =>
+  "type" in value && value.type === CANARY_TYPE;
 
 export const isDeliveryCanaryQueueMessage = (
-  message: Message<PredictQueueMessage | DeliveryCanaryMessage>,
+  message: Message<PredictQueueBody>,
 ): message is Message<DeliveryCanaryMessage> => isDeliveryCanaryMessage(message.body);
 
 export const isPredictQueueMessage = (
-  message: Message<PredictQueueMessage | DeliveryCanaryMessage>,
-): message is Message<PredictQueueMessage> => !isDeliveryCanaryMessage(message.body);
+  message: Message<PredictQueueBody>,
+): message is Message<PredictQueueMessage> =>
+  !isDeliveryCanaryMessage(message.body) && !isDayBasePickupMessage(message.body);
 
 export const enqueueDeliveryCanary = async (
   env: Env,

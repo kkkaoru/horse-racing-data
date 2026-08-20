@@ -66,10 +66,13 @@ export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 // the predict / warm crons. Mirrors the running-style "*/10" coordinator.
 export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 
-// Feature-build cron: 00:30 UTC == JST 09:30. The worker treats this as
-// day-base PREWARM (/prewarm-day-base) only -- a shared feature artifact, not
-// prediction generation. Production full per-race runs are triggered by
-// sync-realtime-data after running-style completion via POST /run.
+// Feature-build cron: 21:00 UTC == JST 06:00 (early enough for a JRA DAY_CHAIN
+// to finish before the 09:40 first post) plus 00:30 UTC == JST 09:30 catch-up.
+// The worker treats these as day-base PREWARM (/prewarm-day-base) only -- a
+// shared feature artifact, not prediction generation. Production full per-race
+// runs are triggered by sync-realtime-data after running-style completion via
+// POST /run.
+export const FEATURE_BUILD_CRON_EARLY = "0 21 * * *";
 export const FEATURE_BUILD_CRON = "30 0 * * *";
 
 const WARM_CRONS: ReadonlySet<string> = new Set([
@@ -82,7 +85,10 @@ const RESCORE_CRONS: ReadonlySet<string> = new Set([RESCORE_CRON_RACE_HOURS]);
 
 const COORDINATOR_CRONS: ReadonlySet<string> = new Set([COORDINATOR_CRON_RACE_HOURS]);
 
-const FEATURE_BUILD_CRONS: ReadonlySet<string> = new Set([FEATURE_BUILD_CRON]);
+const FEATURE_BUILD_CRONS: ReadonlySet<string> = new Set([
+  FEATURE_BUILD_CRON_EARLY,
+  FEATURE_BUILD_CRON,
+]);
 
 // Only the configured cron triggers a prediction run. Any other cron string
 // (or no cron at all, which is the deployed state) is ignored.
@@ -101,6 +107,11 @@ export const shouldRunCoordinatorCron = (cron: string): boolean => COORDINATOR_C
 export const shouldRunFeatureBuildCron = (cron: string): boolean => FEATURE_BUILD_CRONS.has(cron);
 
 const pad = (value: string, width: number): string => value.padStart(width, PAD_CHAR);
+
+const OVERSEAS_KEIBAJO_PATTERN = /^[A-Z]/u;
+
+export const isOverseasKeibajoCode = (keibajoCode: string): boolean =>
+  OVERSEAS_KEIBAJO_PATTERN.test(keibajoCode);
 
 // jra source -> jra; otherwise keibajo 83 (帯広) is ban-ei and every other
 // nar-source keibajo is plain nar. Mirrors how the predict pipeline categorises
@@ -131,5 +142,5 @@ export const enumerateTodaysRaces = async (
   const year = runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END);
   const monthDay = runYmd.slice(RUN_YMD_YEAR_END, RUN_YMD_LENGTH);
   const result = await db.prepare(ENUMERATE_RACES_SQL).bind(year, monthDay).all<RaceSourceRow>();
-  return result.results.map(toRaceEntry);
+  return result.results.filter((row) => !isOverseasKeibajoCode(row.keibajo_code)).map(toRaceEntry);
 };
