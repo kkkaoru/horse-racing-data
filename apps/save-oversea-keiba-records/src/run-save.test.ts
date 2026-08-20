@@ -1504,3 +1504,310 @@ test("runSave rejects a missing operator markup profile path when no profile is 
   expect(fetchLog.urls).toStrictEqual([]);
   expect(fileLog.paths).toStrictEqual(["cache/jra.html", "cache/secondary.html"]);
 });
+
+const SECONDARY_HTML_MISSING_HORSE_ID: string = `
+<table><tbody>
+<tr class="RunnerList">
+  <td class="StartStall7 Txt_C "><span>7</span></td>
+  <td class="RunnerNumber1 Txt_C">1</td>
+  <td class="RunnerInfo">
+    <span class="RunnerName">テストホース</span>
+  </td>
+  <td class="Pilot">
+    <a href="https://example.com/db/entity-b/05504/" title="Pilot A">
+      <span>Pilot A</span>
+    </a>
+  </td>
+  <td class="Yard">
+    <span class="YardLabel">ForeignYard</span>
+    <a href="https://example.com/db/entity-c/05701/" title="Yard A">
+      <span>Yard A</span>
+    </a>
+  </td>
+</tr>
+<tr class="RunnerList">
+  <td class="StartStall3 Txt_C "><span>3</span></td>
+  <td class="RunnerNumber2 Txt_C">2</td>
+  <td class="RunnerInfo">
+    <span class="RunnerName">
+      <a href="https://example.com/db/entity-a/2020190005" target="_blank" title="サンプルホース">
+        サンプルホース
+      </a>
+    </span>
+  </td>
+  <td class="Pilot">
+    <a href="https://example.com/db/entity-b/05271/" title="Pilot B">
+      <span>Pilot B</span>
+    </a>
+  </td>
+  <td class="Yard">
+    <span class="YardLabel">StableHome</span>
+    <a href="https://example.com/db/entity-c/01038/" title="Yard B">
+      <span>Yard B</span>
+    </a>
+  </td>
+</tr>
+</tbody></table>
+`;
+
+test("runSave dry-run reports planned oversea_runner_source_id upserts and does not write them", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const statementLog: StatementLog = { statements: [] };
+  const transactionState: { count: number } = { count: 0 };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary.html";
+
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML],
+        ]),
+      ),
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+      onTransaction: (): void => {
+        transactionState.count += 1;
+      },
+    }),
+  });
+
+  expect(result.wrote).toBe(false);
+  expect(transactionState.count).toBe(0);
+  expect(
+    statementLog.statements.some((statement) =>
+      statement.text.startsWith("INSERT INTO oversea_runner_source_id"),
+    ),
+  ).toBe(false);
+  expect(
+    statementLog.statements.some((statement) =>
+      statement.text.startsWith("INSERT INTO oversea_runner_identity"),
+    ),
+  ).toBe(false);
+  expect(
+    logger.infos[logger.infos.indexOf("=== Planned oversea_runner_source_id upserts ===")],
+  ).toBe("=== Planned oversea_runner_source_id upserts ===");
+  expect(logger.infos.some((line) => line === "umaban=01 source_horse_id=present")).toBe(true);
+  expect(logger.infos.some((line) => line === "umaban=02 source_horse_id=present")).toBe(true);
+  expect(logger.infos.some((line) => line === "umaban=09 source_horse_id=present")).toBe(true);
+  expect(
+    logger.infos.some((line) => line === "skipped missing horseNumber=0 missing horseId=0"),
+  ).toBe(true);
+  expect(logger.infos.some((line) => line === "identity table write=no")).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) =>
+        line ===
+        "Would upsert 3 oversea_runner_source_id row(s) (source=netkeiba). Identity table will not be overwritten.",
+    ),
+  ).toBe(true);
+});
+
+test("runSave --apply writes oversea_runner_source_id after jvd_se and never touches identity", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const outerLog: StatementLog = { statements: [] };
+  const txLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary.html";
+
+  const result = await runSave({
+    argv: baseArgv(["--apply", "--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML],
+        ]),
+      ),
+      executor: createRecordingExecutor(outerLog, selectEmptyHandler),
+      transactionExecutor: createRecordingExecutor(txLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.wrote).toBe(true);
+  const insertTexts: readonly string[] = txLog.statements
+    .filter((statement) => statement.text.startsWith("INSERT INTO"))
+    .map((statement) => statement.text);
+  const seIndex: number = insertTexts.findIndex((text) => text.startsWith("INSERT INTO jvd_se"));
+  const sourceIdIndex: number = insertTexts.findIndex((text) =>
+    text.startsWith("INSERT INTO oversea_runner_source_id"),
+  );
+  const identityIndex: number = insertTexts.findIndex((text) =>
+    text.startsWith("INSERT INTO oversea_runner_identity"),
+  );
+  expect(seIndex).toBeGreaterThanOrEqual(0);
+  expect(sourceIdIndex).toBeGreaterThan(seIndex);
+  expect(identityIndex).toBe(-1);
+  expect(
+    txLog.statements.some(
+      (statement) =>
+        statement.text.startsWith("INSERT INTO oversea_runner_source_id") &&
+        statement.values[5] === "01" &&
+        statement.values[6] === "netkeiba" &&
+        statement.values[7] === "2021190001",
+    ),
+  ).toBe(true);
+  expect(
+    txLog.statements.some(
+      (statement) =>
+        statement.text.startsWith("INSERT INTO oversea_runner_source_id") &&
+        statement.values[5] === "09" &&
+        statement.values[7] === "9999999999",
+    ),
+  ).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) =>
+        line === "Wrote 3 oversea_runner_source_id upsert(s). Identity table was not overwritten.",
+    ),
+  ).toBe(true);
+});
+
+test("runSave --apply keeps alphanumeric secondary ids out of jvd_se.ketto_toroku_bango", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const outerLog: StatementLog = { statements: [] };
+  const txLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary-alphanumeric.html";
+
+  const result = await runSave({
+    argv: baseArgv(["--apply", "--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML_ALPHANUMERIC],
+        ]),
+      ),
+      executor: createRecordingExecutor(outerLog, selectEmptyHandler),
+      transactionExecutor: createRecordingExecutor(txLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.wrote).toBe(true);
+  expect(
+    txLog.statements.some(
+      (statement) =>
+        statement.text.startsWith("INSERT INTO jvd_se") && statement.values[11] === "0000000000",
+    ),
+  ).toBe(true);
+  expect(
+    txLog.statements.some(
+      (statement) =>
+        statement.text.startsWith("INSERT INTO jvd_se") && statement.values[11] === "000a029d48",
+    ),
+  ).toBe(false);
+  expect(
+    txLog.statements.some(
+      (statement) =>
+        statement.text.startsWith("INSERT INTO oversea_runner_source_id") &&
+        statement.values[7] === "000a029d48",
+    ),
+  ).toBe(true);
+  expect(
+    txLog.statements.some((statement) =>
+      statement.text.startsWith("INSERT INTO oversea_runner_identity"),
+    ),
+  ).toBe(false);
+});
+
+test("runSave dry-run skips a parsed runner that has no horseNumber", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const statementLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary-incomplete.html";
+
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML_INCOMPLETE_GATE],
+        ]),
+      ),
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(logger.infos.some((line) => line === "umaban=(none) source_horse_id=present")).toBe(true);
+  expect(logger.infos.some((line) => line === "umaban=02 source_horse_id=present")).toBe(true);
+  expect(
+    logger.infos.some((line) => line === "skipped missing horseNumber=1 missing horseId=0"),
+  ).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) =>
+        line ===
+        "Would upsert 1 oversea_runner_source_id row(s) (source=netkeiba). Identity table will not be overwritten.",
+    ),
+  ).toBe(true);
+});
+
+test("runSave dry-run skips a parsed runner that has no horseId", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const statementLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary-missing-horse-id.html";
+
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML_MISSING_HORSE_ID],
+        ]),
+      ),
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(logger.infos.some((line) => line === "umaban=01 source_horse_id=absent")).toBe(true);
+  expect(logger.infos.some((line) => line === "umaban=02 source_horse_id=present")).toBe(true);
+  expect(
+    logger.infos.some((line) => line === "skipped missing horseNumber=0 missing horseId=1"),
+  ).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) =>
+        line ===
+        "Would upsert 1 oversea_runner_source_id row(s) (source=netkeiba). Identity table will not be overwritten.",
+    ),
+  ).toBe(true);
+});

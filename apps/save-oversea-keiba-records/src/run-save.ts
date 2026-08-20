@@ -72,6 +72,13 @@ import type {
   SqlStatement,
 } from "./types";
 import { buildJvdRaUpsert } from "./storage/upsert-sql";
+import {
+  buildOverseaPersistStatements,
+  formatOverseaRunnerSourceIdPlanReport,
+  planOverseaRunnerPersist,
+  OVERSEA_SOURCE_NETKEIBA,
+  type OverseaRunnerPersistPlan,
+} from "./storage/oversea-runner-source-id-sql";
 
 export type SaveExitCode = 0 | 1;
 
@@ -219,6 +226,7 @@ interface BuildWritePathInput {
   readonly rows: JvdRows;
   readonly raceKey: JvdRaceKey;
   readonly masterCandidates: readonly MasterBackfillCandidate[];
+  readonly overseaStatements: readonly SqlStatement[];
   readonly withTransaction: TransactionRunner;
 }
 
@@ -227,6 +235,7 @@ interface LogReportInput {
   readonly diffResult: DryRunDiffResult;
   readonly reconcileResult: ReconcileResult;
   readonly masterCandidates: readonly MasterBackfillCandidate[];
+  readonly overseaPlan: OverseaRunnerPersistPlan;
   readonly secondaryIssues: readonly SecondarySourceParseIssue[];
   readonly networkRequestCount: number;
   readonly skippedIncompleteSecondary: number;
@@ -652,6 +661,7 @@ const applyWrites = async ({
   rows,
   raceKey,
   masterCandidates,
+  overseaStatements,
   withTransaction,
 }: BuildWritePathInput): Promise<WriteSummary> =>
   withTransaction(async (txExecutor: SaveSqlExecutor): Promise<WriteSummary> => {
@@ -664,11 +674,16 @@ const applyWrites = async ({
       await txExecutor.execute(statement);
     }
     await txExecutor.execute(buildJvdRaUpsert(rows.race));
-    return writeJvdSeRunnersIdempotently({
+    const writeSummary: WriteSummary = await writeJvdSeRunnersIdempotently({
       raceKey,
       runners: rows.runners,
       executor: toIdempotentExecutor(txExecutor),
     });
+    // Source IDs land in oversea_runner_source_id only. Identity stays jra-van.
+    for (const statement of overseaStatements) {
+      await txExecutor.execute(statement);
+    }
+    return writeSummary;
   });
 
 const formatWriteSummary = (summary: WriteSummary): string =>
@@ -697,6 +712,7 @@ const logReport = ({
   diffResult,
   reconcileResult,
   masterCandidates,
+  overseaPlan,
   secondaryIssues,
   networkRequestCount,
   skippedIncompleteSecondary,
@@ -707,6 +723,10 @@ const logReport = ({
   });
 
   formatMasterBackfillReport(masterCandidates).forEach((line: string): void => {
+    logger.info(line);
+  });
+
+  formatOverseaRunnerSourceIdPlanReport(overseaPlan).forEach((line: string): void => {
     logger.info(line);
   });
 
@@ -848,6 +868,15 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     resolvedCodes,
   });
 
+  const overseaPlan: OverseaRunnerPersistPlan = planOverseaRunnerPersist({
+    runners: secondaryParsed.runners,
+    raceDate: jraRace.date,
+    venueCode: args.venueCode,
+    raceNumber: args.raceNumber,
+    source: OVERSEA_SOURCE_NETKEIBA,
+  });
+  const overseaStatements: readonly SqlStatement[] = buildOverseaPersistStatements(overseaPlan);
+
   const raceKey = toRaceKey(jvdRows.race);
   const diffResult: DryRunDiffResult = await runDryRunDiffGate({
     raceKey,
@@ -865,6 +894,7 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     diffResult,
     reconcileResult,
     masterCandidates,
+    overseaPlan,
     secondaryIssues: secondaryParsed.issues,
     networkRequestCount: loaded.networkRequestCount,
     skippedIncompleteSecondary: adaptedSecondary.skippedIncompleteCount,
@@ -885,6 +915,9 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     ports.logger.info(
       `Would write jvd_ra + ${String(jvdRows.runners.length)} jvd_se runners for race key ${raceKey.kaisai_nen}/${raceKey.kaisai_tsukihi}/${raceKey.keibajo_code}/${raceKey.race_bango}.`,
     );
+    ports.logger.info(
+      `Would upsert ${String(overseaPlan.sourceIdRows.length)} oversea_runner_source_id row(s) (source=netkeiba). Identity table will not be overwritten.`,
+    );
     if (masterCandidates.length > 0) {
       ports.logger.info(
         `Would insert ${String(masterCandidates.length)} numeric-only master row(s) (ON CONFLICT DO NOTHING).`,
@@ -900,10 +933,14 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     rows: jvdRows,
     raceKey,
     masterCandidates,
+    overseaStatements,
     withTransaction: ports.withTransaction,
   });
 
   ports.logger.info(formatWriteSummary(writeSummary));
+  ports.logger.info(
+    `Wrote ${String(overseaPlan.sourceIdRows.length)} oversea_runner_source_id upsert(s). Identity table was not overwritten.`,
+  );
 
   if (writeSummary.conflicts.length > 0) {
     logIdentityConflicts(ports.logger, writeSummary.conflicts);

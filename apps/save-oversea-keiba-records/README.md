@@ -79,7 +79,7 @@ Horse rows map to `oversea_horse_race_history` with explicit source provenance. 
 5. **Numeric-only master backfill (option 1):** when a secondary id already has a valid JV primary-key shape (pure ASCII digits, exact width) and that code is absent from the local master, plan an insert of a minimal overseas-visitor master row (`jvd_um` / `jvd_ks` / `jvd_ch`). Never mint synthetic or alphanumeric keys. Never UPDATE or DELETE existing masters. Owner master (`jvd_bn`) is **not** inserted (secondary identity has no reliable 6-digit owner code; name-only resolution only). Placeholders (`0000000000` / `00000`) are never inserted. Alphanumeric secondary ids stay unresolved and race rows keep zero placeholders as before.
 6. Map the reconciled race to complete `jvd_ra` and `jvd_se` rows (entity resolution treats planned master inserts as present so race rows use the real codes after apply).
 7. Compare the proposed runner rows with the current database state. Dry-run also prints `=== Master backfill (numeric-only) ===`.
-8. Write only when `--apply` was supplied and the safety gate is `safe`. Masters are inserted first inside the same transaction (`INSERT … ON CONFLICT DO NOTHING`), then `jvd_ra` / `jvd_se`.
+8. Write only when `--apply` was supplied and the safety gate is `safe`. Masters are inserted first inside the same transaction (`INSERT … ON CONFLICT DO NOTHING`), then `jvd_ra` / `jvd_se`, then `oversea_runner_source_id` rows for secondary-source IDs (`source=netkeiba`). `oversea_runner_identity` is not overwritten (that table remains the jra-van display-name row). Dry-run prints planned source-ID upserts (`umaban` + `source_horse_id` present/absent) without writing.
 
 ## Published fields stored in JV columns
 
