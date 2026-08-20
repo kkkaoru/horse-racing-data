@@ -12,14 +12,19 @@ import type {
   SimilarRaceStatsRow,
 } from "../../../lib/race-types";
 import {
+  buildWinRateHeatmapColorScaleGradient,
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   EMPTY_WIN_RATE_HEATMAP_CELL,
+  formatWinRateHeatmapColorScaleAriaLabel,
+  formatWinRateHeatmapColorScaleCaption,
+  formatWinRateHeatmapColorScaleTick,
   formatWinRateHeatmapValue,
   getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapTooltipName,
   shouldShowWinRateHeatmapWeightColumn,
+  WIN_RATE_HEATMAP_COLOR_SCALE_TICKS,
   WIN_RATE_HEATMAP_VIEW_MODES,
   winRateHeatmapBackground,
   winRateHeatmapEntityColSpan,
@@ -51,6 +56,10 @@ interface WinRateHeatmapSwatchProps {
   onToggle: () => void;
 }
 
+interface WinRateHeatmapColorScaleProps {
+  metrics: readonly WinRateHeatmapRateMetric[];
+}
+
 const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
 const HEATMAP_MOBILE_TOOLTIP_QUERY = "(max-width: 720px)";
 
@@ -66,6 +75,16 @@ const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }):
   }
   return "win-rate-heatmap-swatch";
 };
+
+const heatmapColorScaleClassName = (stacked: boolean): string =>
+  stacked
+    ? "win-rate-heatmap-color-scale win-rate-heatmap-color-scale-stacked"
+    : "win-rate-heatmap-color-scale";
+
+const heatmapColorScaleTrackClassName = (hasLabel: boolean): string =>
+  hasLabel
+    ? "win-rate-heatmap-color-scale-track"
+    : "win-rate-heatmap-color-scale-track win-rate-heatmap-color-scale-track-solo";
 
 const subscribeHeatmapMobileTooltip = (onStoreChange: () => void): (() => void) => {
   if (typeof window === "undefined" || !window.matchMedia) {
@@ -92,6 +111,42 @@ const getHeatmapMobileTooltipSnapshot = (): boolean =>
   window.matchMedia(HEATMAP_MOBILE_TOOLTIP_QUERY).matches;
 
 const getHeatmapMobileTooltipServerSnapshot = (): boolean => false;
+
+const WinRateHeatmapColorScale = ({ metrics }: WinRateHeatmapColorScaleProps) => {
+  const stacked = metrics.length > 1;
+  return (
+    <div className="win-rate-heatmap-color-scale-slot">
+      <figure
+        aria-label={formatWinRateHeatmapColorScaleAriaLabel(metrics)}
+        className={heatmapColorScaleClassName(stacked)}
+      >
+        <figcaption className="win-rate-heatmap-color-scale-heading">
+          {formatWinRateHeatmapColorScaleCaption(metrics)}
+        </figcaption>
+        <div className="win-rate-heatmap-color-scale-tracks">
+          {metrics.map((metric) => (
+            <div className={heatmapColorScaleTrackClassName(stacked)} key={metric.key}>
+              {stacked ? (
+                <span className="win-rate-heatmap-color-scale-track-label">
+                  {metric.shortLabel}
+                </span>
+              ) : null}
+              <div
+                className="win-rate-heatmap-color-scale-bar"
+                style={{ backgroundImage: buildWinRateHeatmapColorScaleGradient(metric.hue) }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="win-rate-heatmap-color-scale-ticks">
+          {WIN_RATE_HEATMAP_COLOR_SCALE_TICKS.map((rate) => (
+            <span key={rate}>{formatWinRateHeatmapColorScaleTick(rate)}</span>
+          ))}
+        </div>
+      </figure>
+    </div>
+  );
+};
 
 const WinRateHeatmapSwatch = ({
   cell,
@@ -227,6 +282,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
           </label>
         ))}
       </fieldset>
+      <WinRateHeatmapColorScale metrics={visibleRateMetrics} />
       <div className="stats-table-wrap win-rate-heatmap-table-wrap">
         <table className="stats-table win-rate-heatmap-table">
           <colgroup>

@@ -108,10 +108,32 @@ export const WIN_RATE_HEATMAP_COLUMNS: readonly WinRateHeatmapColumn[] = [
   { key: "sireSire", label: "父父" },
 ];
 
+const WIN_RATE_HEATMAP_WIN_RATE_METRIC: WinRateHeatmapRateMetric = {
+  countKey: "winCount",
+  hue: 8,
+  key: "winRate",
+  label: "勝率",
+  shortLabel: "勝",
+};
+const WIN_RATE_HEATMAP_QUINELLA_RATE_METRIC: WinRateHeatmapRateMetric = {
+  countKey: "quinellaCount",
+  hue: 36,
+  key: "quinellaRate",
+  label: "連対率",
+  shortLabel: "連",
+};
+const WIN_RATE_HEATMAP_SHOW_RATE_METRIC: WinRateHeatmapRateMetric = {
+  countKey: "showCount",
+  hue: 196,
+  key: "showRate",
+  label: "複勝率",
+  shortLabel: "複",
+};
+
 export const WIN_RATE_HEATMAP_RATE_METRICS: readonly WinRateHeatmapRateMetric[] = [
-  { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
-  { countKey: "quinellaCount", hue: 36, key: "quinellaRate", label: "連対率", shortLabel: "連" },
-  { countKey: "showCount", hue: 196, key: "showRate", label: "複勝率", shortLabel: "複" },
+  WIN_RATE_HEATMAP_WIN_RATE_METRIC,
+  WIN_RATE_HEATMAP_QUINELLA_RATE_METRIC,
+  WIN_RATE_HEATMAP_SHOW_RATE_METRIC,
 ];
 
 export const WIN_RATE_HEATMAP_VIEW_MODES: readonly WinRateHeatmapViewModeOption[] = [
@@ -144,9 +166,14 @@ export const EMPTY_WIN_RATE_HEATMAP_CELL: WinRateHeatmapCell = {
   winRate: null,
 };
 
-const WIN_RATE_HEATMAP_SATURATION = 72;
-const WIN_RATE_HEATMAP_MAX_LIGHTNESS = 94;
-const WIN_RATE_HEATMAP_MIN_LIGHTNESS = 42;
+export const WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE: number = 40;
+export const WIN_RATE_HEATMAP_COLOR_SCALE_TICKS: readonly number[] = [0, 10, 20, 30, 40];
+const WIN_RATE_HEATMAP_SATURATION_MIN = 22;
+const WIN_RATE_HEATMAP_SATURATION_MAX = 95;
+const WIN_RATE_HEATMAP_SATURATION_RANGE =
+  WIN_RATE_HEATMAP_SATURATION_MAX - WIN_RATE_HEATMAP_SATURATION_MIN;
+const WIN_RATE_HEATMAP_MAX_LIGHTNESS = 96;
+const WIN_RATE_HEATMAP_MIN_LIGHTNESS = 28;
 const WIN_RATE_HEATMAP_LIGHTNESS_RANGE =
   WIN_RATE_HEATMAP_MAX_LIGHTNESS - WIN_RATE_HEATMAP_MIN_LIGHTNESS;
 const EMPTY_CELL_BACKGROUND = "hsl(0, 0%, 96%)";
@@ -438,10 +465,39 @@ export const winRateHeatmapBackground = (rate: number | null | undefined, hue: n
   if (numericRate === null) {
     return EMPTY_CELL_BACKGROUND;
   }
-  const ratio = Math.min(1, Math.max(0, numericRate / MAX_WIN_RATE));
-  const lightness = WIN_RATE_HEATMAP_MAX_LIGHTNESS - WIN_RATE_HEATMAP_LIGHTNESS_RANGE * ratio;
-  return `hsl(${hue}, ${WIN_RATE_HEATMAP_SATURATION}%, ${lightness}%)`;
+  const ratio = Math.min(1, Math.max(0, numericRate / WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE));
+  const saturation = Math.round(
+    WIN_RATE_HEATMAP_SATURATION_MIN + WIN_RATE_HEATMAP_SATURATION_RANGE * ratio,
+  );
+  const lightness = Math.round(
+    WIN_RATE_HEATMAP_MAX_LIGHTNESS - WIN_RATE_HEATMAP_LIGHTNESS_RANGE * ratio,
+  );
+  return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 };
+
+export const formatWinRateHeatmapColorScaleTick = (rate: number): string => {
+  if (rate >= WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE) {
+    return `${rate}%以上`;
+  }
+  return `${rate}%`;
+};
+
+export const buildWinRateHeatmapColorScaleGradient = (hue: number): string => {
+  const lastIndex = WIN_RATE_HEATMAP_COLOR_SCALE_TICKS.length - 1;
+  const stops = WIN_RATE_HEATMAP_COLOR_SCALE_TICKS.map(
+    (rate, index) => `${winRateHeatmapBackground(rate, hue)} ${(index * 100) / lastIndex}%`,
+  );
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+};
+
+export const formatWinRateHeatmapColorScaleCaption = (
+  metrics: readonly WinRateHeatmapRateMetric[],
+): string => metrics.map((metric) => metric.label).join("+");
+
+export const formatWinRateHeatmapColorScaleAriaLabel = (
+  metrics: readonly WinRateHeatmapRateMetric[],
+): string =>
+  `${metrics.map((metric) => metric.label).join("、")}の色は0%から${WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE}%以上まで濃くなります`;
 
 export const formatWinRateHeatmapValue = (rate: number | null | undefined): string => {
   const numericRate = toHeatmapNumber(rate);

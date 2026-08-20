@@ -9366,6 +9366,68 @@ fieldset.stats-section-toggle-wrap {
   row-gap: var(--space-6px-33);
 }
 
+.win-rate-heatmap-color-scale-slot {
+  margin-bottom: var(--space-14px-55);
+  width: var(--space-100pct-12);
+}
+
+.win-rate-heatmap-color-scale {
+  display: grid;
+  gap: var(--space-6px-33);
+  margin: var(--number-0-2);
+  width: var(--space-100pct-12);
+}
+
+.win-rate-heatmap-color-scale-heading {
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+}
+
+.win-rate-heatmap-color-scale-tracks {
+  display: grid;
+  gap: var(--space-6px-33);
+  width: var(--space-100pct-12);
+}
+
+.win-rate-heatmap-color-scale-track {
+  align-items: center;
+  display: grid;
+  gap: var(--space-8px-28);
+  grid-template-columns: auto minmax(var(--number-0-2), var(--space-1fr-51));
+  width: var(--space-100pct-12);
+}
+
+.win-rate-heatmap-color-scale-track-solo {
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
+}
+
+.win-rate-heatmap-color-scale-track-label {
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+  min-width: var(--space-16px-10);
+  text-align: center;
+}
+
+.win-rate-heatmap-color-scale-bar {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  height: var(--space-16px-10);
+  width: var(--space-100pct-12);
+}
+
+.win-rate-heatmap-color-scale-stacked .win-rate-heatmap-color-scale-bar {
+  height: var(--space-10px-27);
+}
+
+.win-rate-heatmap-color-scale-ticks {
+  color: var(--ink);
+  display: flex;
+  font-size: var(--space-13px-92);
+  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+  width: var(--space-100pct-12);
+}
+
 .win-rate-heatmap-table-wrap {
   -webkit-overflow-scrolling: touch;
   overflow-x: auto;

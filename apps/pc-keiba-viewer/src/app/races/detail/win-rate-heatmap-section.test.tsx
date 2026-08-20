@@ -258,6 +258,7 @@ it("shows an empty state when there are no runners", () => {
     />,
   );
   expect(screen.getByText("勝率ヒートマップを表示する出走馬がありません。")).toBeDefined();
+  expect(document.querySelector(".win-rate-heatmap-color-scale-slot")).toBeNull();
 });
 
 it("renders a heatmap of win rates by default without a horse-name column", () => {
@@ -323,6 +324,29 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
     "checked",
     false,
   );
+  expect(
+    screen.getByRole("figure", { name: "勝率の色は0%から40%以上まで濃くなります" }),
+  ).toBeDefined();
+  expect(screen.getByText("0%")).toBeDefined();
+  expect(screen.getByText("10%")).toBeDefined();
+  expect(screen.getByText("20%")).toBeDefined();
+  expect(screen.getByText("30%")).toBeDefined();
+  expect(screen.getByText("40%以上")).toBeDefined();
+  expect(viewToggle?.nextElementSibling?.className).toBe("win-rate-heatmap-color-scale-slot");
+  expect(
+    document.querySelector(".win-rate-heatmap-color-scale-slot")?.nextElementSibling?.className,
+  ).toBe("stats-table-wrap win-rate-heatmap-table-wrap");
+  const winRateScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
+  if (!(winRateScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected win-rate color scale bar");
+  }
+  expect(winRateScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(8, 22%, 96%) 0%, hsl(8, 40%, 79%) 25%, hsl(8, 59%, 62%) 50%, hsl(8, 77%, 45%) 75%, hsl(8, 95%, 28%) 100%)",
+  );
+  expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(1);
+  expect(document.querySelector(".win-rate-heatmap-color-scale")?.className).toBe(
+    "win-rate-heatmap-color-scale",
+  );
 });
 
 it("shows quinella-rate swatches when the quinella-rate radio is selected", () => {
@@ -351,6 +375,16 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
   expect(screen.getByText("30.0%")).toBeDefined();
   expect(screen.queryByText("15.0%")).toBeNull();
   expect(screen.queryByText("45.0%")).toBeNull();
+  expect(
+    screen.getByRole("figure", { name: "連対率の色は0%から40%以上まで濃くなります" }),
+  ).toBeDefined();
+  const quinellaScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
+  if (!(quinellaScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected quinella color scale bar");
+  }
+  expect(quinellaScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(36, 22%, 96%) 0%, hsl(36, 40%, 79%) 25%, hsl(36, 59%, 62%) 50%, hsl(36, 77%, 45%) 75%, hsl(36, 95%, 28%) 100%)",
+  );
 });
 
 it("shows show-rate swatches when the show-rate radio is selected", () => {
@@ -378,6 +412,16 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.getByText("45.0%")).toBeDefined();
   expect(screen.queryByText("15.0%")).toBeNull();
+  expect(
+    screen.getByRole("figure", { name: "複勝率の色は0%から40%以上まで濃くなります" }),
+  ).toBeDefined();
+  const showScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
+  if (!(showScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected show color scale bar");
+  }
+  expect(showScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(196, 22%, 96%) 0%, hsl(196, 40%, 79%) 25%, hsl(196, 59%, 62%) 50%, hsl(196, 77%, 45%) 75%, hsl(196, 95%, 28%) 100%)",
+  );
 });
 
 it("shows win, quinella, and show swatches when the combined radio is selected", () => {
@@ -397,12 +441,43 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(7);
-  expect(screen.getAllByText("連").length).toBe(7);
-  expect(screen.getAllByText("複").length).toBe(7);
+  expect(screen.getAllByText("勝").length).toBe(8);
+  expect(screen.getAllByText("連").length).toBe(8);
+  expect(screen.getAllByText("複").length).toBe(8);
   expect(screen.getByText("15.0%")).toBeDefined();
   expect(screen.getAllByText("30.0%").length).toBe(2);
   expect(screen.getByText("45.0%")).toBeDefined();
+  expect(
+    screen.getByRole("figure", {
+      name: "勝率、連対率、複勝率の色は0%から40%以上まで濃くなります",
+    }),
+  ).toBeDefined();
+  expect(document.querySelector(".win-rate-heatmap-color-scale")?.className).toBe(
+    "win-rate-heatmap-color-scale win-rate-heatmap-color-scale-stacked",
+  );
+  expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(3);
+  const combinedScaleBars = document.querySelectorAll(".win-rate-heatmap-color-scale-bar");
+  const combinedWinScaleBar = combinedScaleBars[0];
+  const combinedQuinellaScaleBar = combinedScaleBars[1];
+  const combinedShowScaleBar = combinedScaleBars[2];
+  if (!(combinedWinScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected combined win color scale bar");
+  }
+  if (!(combinedQuinellaScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected combined quinella color scale bar");
+  }
+  if (!(combinedShowScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected combined show color scale bar");
+  }
+  expect(combinedWinScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(8, 22%, 96%) 0%, hsl(8, 40%, 79%) 25%, hsl(8, 59%, 62%) 50%, hsl(8, 77%, 45%) 75%, hsl(8, 95%, 28%) 100%)",
+  );
+  expect(combinedQuinellaScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(36, 22%, 96%) 0%, hsl(36, 40%, 79%) 25%, hsl(36, 59%, 62%) 50%, hsl(36, 77%, 45%) 75%, hsl(36, 95%, 28%) 100%)",
+  );
+  expect(combinedShowScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(196, 22%, 96%) 0%, hsl(196, 40%, 79%) 25%, hsl(196, 59%, 62%) 50%, hsl(196, 77%, 45%) 75%, hsl(196, 95%, 28%) 100%)",
+  );
 });
 
 it("shows computed frame win rate when the payload omits rate fields but includes counts", () => {
