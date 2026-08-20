@@ -48,6 +48,8 @@
     "start:local": "PC_KEIBA_DATABASE_TARGET=local next start",
     "start:neon": "PC_KEIBA_DATABASE_TARGET=neon next start",
     "preview:worker": "opennextjs-cloudflare build && wrangler dev",
+    "prepare:jacques-le-marois": "uv run python src/scripts/train_and_predict_finish_position_overseas.py --prepare --card jacques-le-marois --jra-url 'https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73' --netkeiba-url 'https://race.netkeiba.com/race/shutuba_abroad.html?race_id=2026C4010104&rf=race_submenu' --jravan-url 'https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/'",
+    "predict:jacques-le-marois": "uv run python src/scripts/train_and_predict_finish_position_overseas.py --predict-only --card jacques-le-marois --jra-url 'https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73' --netkeiba-url 'https://race.netkeiba.com/race/shutuba_abroad.html?race_id=2026C4010104&rf=race_submenu' --jravan-url 'https://world.jra-van.jp/race/jacqueslemarois/2026/racecard/'",
     "python:check": "bun run python:typecheck && bun run python:ty && bun run python:complexity && bun run python:test",
     "python:complexity": "output=$(uv run python -m mccabe --min 16 src/scripts/corner_lightgbm.py); test -z \"$output\" || (printf '%s\\n' \"$output\" && exit 1)",
     "python:test": "uv run pytest",
