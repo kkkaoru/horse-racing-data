@@ -13,7 +13,7 @@
     "format:check": "bunx oxfmt --check"
   },
   "dependencies": {
-    "@ducklings/workers": "1.5.3",
+    "@ducklings/workers": "1.5.5",
     "hono": "4.12.25",
     "horse-racing-schema": "workspace:*"
   },
