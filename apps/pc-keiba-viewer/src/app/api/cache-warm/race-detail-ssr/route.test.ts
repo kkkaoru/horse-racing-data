@@ -13,6 +13,16 @@ const mocks = vi.hoisted(() => ({
   getRaceCourseInfoMock: vi.fn<(...args: never[]) => Promise<unknown>>(),
   getRaceDetailMock: vi.fn<(...args: never[]) => Promise<unknown>>(),
   getRaceRunnersMock: vi.fn<(...args: never[]) => Promise<unknown[]>>(),
+  getRaceSourceByRouteMock:
+    vi.fn<
+      (
+        year: string,
+        month: string,
+        day: string,
+        keibajoCode: string,
+        raceNumber: string,
+      ) => Promise<string | null>
+    >(),
   getRacesByDateMock: vi.fn<(year: string, month: string, day: string) => Promise<unknown[]>>(),
   getSameVenueRacesByDateMock: vi.fn<(...args: never[]) => Promise<unknown[]>>(),
   putRaceDetailSsrSnapshotMock: vi.fn<(input: unknown) => Promise<void>>(),
@@ -24,6 +34,7 @@ vi.mock("../../../../db/queries", () => ({
   getRaceCourseInfo: mocks.getRaceCourseInfoMock,
   getRaceDetail: mocks.getRaceDetailMock,
   getRaceRunners: mocks.getRaceRunnersMock,
+  getRaceSourceByRoute: mocks.getRaceSourceByRouteMock,
   getRacesByDate: mocks.getRacesByDateMock,
   getSameVenueRacesByDate: mocks.getSameVenueRacesByDateMock,
 }));
@@ -45,6 +56,7 @@ const {
   getRaceCourseInfoMock,
   getRaceDetailMock,
   getRaceRunnersMock,
+  getRaceSourceByRouteMock,
   getRacesByDateMock,
   getSameVenueRacesByDateMock,
   putRaceDetailSsrSnapshotMock,
@@ -98,6 +110,7 @@ beforeEach(() => {
   getRaceCourseInfoMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
+  getRaceSourceByRouteMock.mockReset();
   getRacesByDateMock.mockReset();
   getSameVenueRacesByDateMock.mockReset();
   putRaceDetailSsrSnapshotMock.mockReset();
@@ -119,6 +132,170 @@ it("POST queries getRacesByDate with the parsed date parts from the date query",
   const body = await readJsonRecord(response);
   expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 0, warmed: 0 });
   expect(getRacesByDateMock).toHaveBeenCalledWith("2026", "05", "29");
+});
+
+it("POST warms only the matching venue+race when keibajo and race are set", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getRaceDetailMock.mockResolvedValue({ kyori: "1200", trackCode: "10" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-05-29&keibajo=05&race=02"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 1 });
+  expect(getRacesByDateMock).not.toHaveBeenCalled();
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledTimes(1);
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledWith("2026", "05", "29", "05", "02");
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(1);
+  expect(getRaceDetailMock).toHaveBeenCalledWith("jra", "2026", "05", "29", "05", "02");
+});
+
+it("POST warms every race at the venue when only keibajo is set", async () => {
+  getRacesByDateMock.mockResolvedValue([
+    buildJraRow({ keibajoCode: "05", raceBango: "01" }),
+    buildJraRow({ keibajoCode: "05", raceBango: "02" }),
+    buildJraRow({ keibajoCode: "06", raceBango: "01" }),
+  ]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "1200", trackCode: "10" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-05-29&keibajo=05"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 2, warmed: 2 });
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(2);
+  expect(getRaceDetailMock).toHaveBeenNthCalledWith(1, "jra", "2026", "05", "29", "05", "01");
+  expect(getRaceDetailMock).toHaveBeenNthCalledWith(2, "jra", "2026", "05", "29", "05", "02");
+});
+
+it("POST warms matching race numbers across venues when only race is set", async () => {
+  getRacesByDateMock.mockResolvedValue([
+    buildJraRow({ keibajoCode: "05", raceBango: "01" }),
+    buildJraRow({ keibajoCode: "05", raceBango: "02" }),
+    buildJraRow({ keibajoCode: "06", raceBango: "01" }),
+  ]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "1200", trackCode: "10" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-05-29&race=01"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 2, warmed: 2 });
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(2);
+  expect(getRaceDetailMock).toHaveBeenNthCalledWith(1, "jra", "2026", "05", "29", "05", "01");
+  expect(getRaceDetailMock).toHaveBeenNthCalledWith(2, "jra", "2026", "05", "29", "06", "01");
+});
+
+it("POST reports zero races when keibajo and race match nothing", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue(null);
+  const response = await POST(buildAuthedRequest("?date=2026-05-29&keibajo=05&race=12"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 0, warmed: 0 });
+  expect(getRacesByDateMock).not.toHaveBeenCalled();
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledWith("2026", "05", "29", "05", "12");
+  expect(getRaceDetailMock).not.toHaveBeenCalled();
+});
+
+it("POST warms Ban-ei 83/01 via getRaceSourceByRoute even when getRacesByDate omits it", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  getRaceDetailMock.mockResolvedValue({ kyori: "0200", trackCode: "23" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-08-17&keibajo=83&race=01"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-08-17", raceCount: 1, warmed: 1 });
+  expect(getRacesByDateMock).not.toHaveBeenCalled();
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledTimes(1);
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledWith("2026", "08", "17", "83", "01");
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(1);
+  expect(getRaceDetailMock).toHaveBeenCalledWith("nar", "2026", "08", "17", "83", "01");
+});
+
+it("POST pads unpadded Ban-ei race=1 to 01 before resolving the race", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  getRaceDetailMock.mockResolvedValue({ kyori: "0200", trackCode: "23" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-08-17&keibajo=83&race=1"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-08-17", raceCount: 1, warmed: 1 });
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledWith("2026", "08", "17", "83", "01");
+  expect(getRaceDetailMock).toHaveBeenCalledWith("nar", "2026", "08", "17", "83", "01");
+});
+
+it("POST warms NAR 35/02 via getRaceSourceByRoute without listing the date", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  getRaceDetailMock.mockResolvedValue({ kyori: "1400", trackCode: "24" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-08-17&keibajo=35&race=02"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-08-17", raceCount: 1, warmed: 1 });
+  expect(getRacesByDateMock).not.toHaveBeenCalled();
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledWith("2026", "08", "17", "35", "02");
+  expect(getRaceDetailMock).toHaveBeenCalledWith("nar", "2026", "08", "17", "35", "02");
+});
+
+it("POST pad-matches race=01 when listing returns Ban-ei raceBango 1", async () => {
+  getRacesByDateMock.mockResolvedValue([
+    buildJraRow({ keibajoCode: "83", raceBango: "1", source: "nar" }),
+    buildJraRow({ keibajoCode: "35", raceBango: "02", source: "nar" }),
+  ]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "0200", trackCode: "23" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-08-17&race=01"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-08-17", raceCount: 1, warmed: 1 });
+  expect(getRaceSourceByRouteMock).not.toHaveBeenCalled();
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(1);
+  expect(getRaceDetailMock).toHaveBeenCalledWith("nar", "2026", "08", "17", "83", "01");
+});
+
+it("POST pad-matches Ban-ei 83 when listing returns unpadded raceBango 1", async () => {
+  getRacesByDateMock.mockResolvedValue([
+    buildJraRow({ keibajoCode: "83", raceBango: "1", source: "nar" }),
+    buildJraRow({ keibajoCode: "35", raceBango: "02", source: "nar" }),
+  ]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "0200", trackCode: "23" });
+  getRaceCourseInfoMock.mockResolvedValue({ courseKaishuNengappi: "20200101", courseSetsumei: "" });
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const response = await POST(buildAuthedRequest("?date=2026-08-17&keibajo=83"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-08-17", raceCount: 1, warmed: 1 });
+  expect(getRaceSourceByRouteMock).not.toHaveBeenCalled();
+  expect(getRaceDetailMock).toHaveBeenCalledTimes(1);
+  expect(getRaceDetailMock).toHaveBeenCalledWith("nar", "2026", "08", "17", "83", "01");
 });
 
 it("POST counts a warmed race when getRaceDetail resolves and the fan-out succeeds", async () => {

@@ -8,12 +8,15 @@
 
 import { NextResponse } from "next/server";
 
-// Use getRacesByDate so the warmer hits the same KV key as page SSR.
+// Single-race warm (?keibajo=&race=) resolves via getRaceSourceByRoute +
+// getRaceDetail, the same path as page SSR. Date-wide warm still lists
+// through getRacesByDate so it shares that query-cache key with the day page.
 import {
   getHorseRaceResults,
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
+  getRaceSourceByRoute,
   getRacesByDate,
   getSameVenueRacesByDate,
 } from "../../../../db/queries";
@@ -30,8 +33,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const WARM_CONCURRENCY = 6;
-
 interface WarmRaceParams {
   day: string;
   keibajoCode: string;
@@ -41,7 +42,82 @@ interface WarmRaceParams {
   year: string;
 }
 
+interface TargetDateParts {
+  day: string;
+  month: string;
+  year: string;
+}
+
+interface ResolveSingleRaceParamsInput {
+  keibajoCode: string;
+  raceBango: string;
+  target: TargetDateParts;
+}
+
+interface ResolveListedRaceParamsInput {
+  keibajoCode: string | null;
+  raceBango: string | null;
+  target: TargetDateParts;
+}
+
+const WARM_CONCURRENCY = 6;
+const RACE_CODE_WIDTH: number = 2;
+
 const isRaceSource = (value: string): value is RaceSource => value === "jra" || value === "nar";
+
+const padRaceCode = (value: string): string => value.padStart(RACE_CODE_WIDTH, "0");
+
+const matchesPaddedRaceCode = (actual: string, expected: string): boolean =>
+  padRaceCode(actual) === padRaceCode(expected);
+
+const resolveSingleRaceParams = async (
+  input: ResolveSingleRaceParamsInput,
+): Promise<WarmRaceParams[]> => {
+  const keibajoCode = padRaceCode(input.keibajoCode);
+  const raceBango = padRaceCode(input.raceBango);
+  const source = await getRaceSourceByRoute(
+    input.target.year,
+    input.target.month,
+    input.target.day,
+    keibajoCode,
+    raceBango,
+  );
+  return source === null
+    ? []
+    : [
+        {
+          day: input.target.day,
+          keibajoCode,
+          month: input.target.month,
+          raceBango,
+          source,
+          year: input.target.year,
+        },
+      ];
+};
+
+const resolveListedRaceParams = async (
+  input: ResolveListedRaceParamsInput,
+): Promise<WarmRaceParams[]> => {
+  const races = await getRacesByDate(input.target.year, input.target.month, input.target.day);
+  return races
+    .filter((race): race is typeof race & { source: RaceSource } => isRaceSource(race.source))
+    .filter(
+      (race) =>
+        input.keibajoCode === null || matchesPaddedRaceCode(race.keibajoCode, input.keibajoCode),
+    )
+    .filter(
+      (race) => input.raceBango === null || matchesPaddedRaceCode(race.raceBango, input.raceBango),
+    )
+    .map((race) => ({
+      day: input.target.day,
+      keibajoCode: padRaceCode(race.keibajoCode),
+      month: input.target.month,
+      raceBango: padRaceCode(race.raceBango),
+      source: race.source,
+      year: input.target.year,
+    }));
+};
 
 const warmRecentResults = async (params: WarmRaceParams): Promise<void> => {
   const { day, keibajoCode, month, raceBango, source, year } = params;
@@ -124,9 +200,7 @@ const processInPool = async <T, R>(
   return allResults;
 };
 
-const getTargetDateParts = (
-  searchParams: URLSearchParams,
-): { day: string; month: string; year: string } =>
+const getTargetDateParts = (searchParams: URLSearchParams): TargetDateParts =>
   parseIsoDateParts(searchParams.get("date")) ?? getJstDateParts(new Date());
 
 export async function POST(request: Request) {
@@ -139,17 +213,12 @@ export async function POST(request: Request) {
   }
 
   const target = getTargetDateParts(searchParams);
-  const races = await getRacesByDate(target.year, target.month, target.day);
-  const raceParams: WarmRaceParams[] = races
-    .filter((race): race is typeof race & { source: RaceSource } => isRaceSource(race.source))
-    .map((race) => ({
-      day: target.day,
-      keibajoCode: race.keibajoCode,
-      month: target.month,
-      raceBango: race.raceBango,
-      source: race.source,
-      year: target.year,
-    }));
+  const keibajoCode = searchParams.get("keibajo");
+  const raceBango = searchParams.get("race");
+  const raceParams: WarmRaceParams[] =
+    keibajoCode !== null && raceBango !== null
+      ? await resolveSingleRaceParams({ keibajoCode, raceBango, target })
+      : await resolveListedRaceParams({ keibajoCode, raceBango, target });
   const outcomes = await processInPool(raceParams, WARM_CONCURRENCY, async (params) => {
     try {
       return await warmRaceDetailSsr(params);
