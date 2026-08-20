@@ -90,6 +90,17 @@ PROGRESS_CLOSE_BUTTON_AUTO_ID = "CloseButton"
 # 完了/確認ダイアログを閉じるための既定ボタンラベル候補。
 DEFAULT_DISMISS_LABELS: tuple[str, ...] = ("OK", "はい", "閉じる")
 
+# prlctl exec / Windows Terminal leave consoles in front of the registration
+# dialog. Start click and progress detection then miss the real UI.
+COVERING_WINDOW_TITLE_MARKERS: tuple[str, ...] = (
+    "python.exe",
+    "Parallels Tools",
+    "prl_tools_service",
+)
+COVERING_PROCESS_NAMES: frozenset[str] = frozenset(
+    {"WindowsTerminal.exe", "WindowsTerminal"}
+)
+
 LOCK_FILE = Path(os.environ["TEMP"]) / "pc-keiba-auto-update.lock"
 LOG_DIR = Path(os.environ["LOCALAPPDATA"]) / "pc-keiba-auto-update" / "logs"
 LOG_RETENTION_DAYS = 30
@@ -97,11 +108,28 @@ LOG_RETENTION_DAYS = 30
 CONNECT_RETRIES = 3
 CONNECT_TIMEOUT_SEC = 60
 CONNECT_BACKOFF_SEC = 5
+SW_MINIMIZE = 6
+START_CLICK_RETRIES = 3
+START_CLICK_SETTLE_SEC = 2
 
 
 # ---------------------------------------------------------------------------
 # ログ
 # ---------------------------------------------------------------------------
+def hide_own_console() -> None:
+    """Minimize this process console so it cannot cover the registration UI."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+    except ImportError:
+        return
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if not hwnd:
+        return
+    ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)
+
+
 def _enable_utf8_stdout() -> None:
     """Windows コンソール CP932 → UTF-8 化 (TextIOWrapper の場合のみ)。"""
     if not isinstance(sys.stdout, io.TextIOWrapper):
@@ -298,6 +326,72 @@ def _pick_visible_menu_item(main_window: UiWindow, title: str) -> UiElement | No
     return candidates[0] if candidates else None
 
 
+def _window_title(window: UiWindow) -> str:
+    try:
+        return window.window_text() or ""
+    except Exception:
+        return ""
+
+
+def _covering_process_name(window: UiWindow) -> str:
+    try:
+        pid = int(window.element_info.process_id)
+    except Exception:
+        return ""
+    try:
+        return psutil.Process(pid).name()
+    except Exception:
+        return ""
+
+
+def _is_covering_window(window: UiWindow) -> bool:
+    title = _window_title(window)
+    lowered = title.lower()
+    if any(marker.lower() in lowered for marker in COVERING_WINDOW_TITLE_MARKERS):
+        return True
+    return _covering_process_name(window) in COVERING_PROCESS_NAMES
+
+
+def minimize_covering_windows() -> int:
+    """Minimize Terminal / python consoles that hide the registration dialog."""
+    minimized = 0
+    try:
+        windows = Desktop(backend="uia").windows()
+    except Exception as error:
+        logging.warning("covering window list failed: %s", error)
+        return 0
+    for window in windows:
+        try:
+            if not _is_covering_window(window):
+                continue
+            window.minimize()
+            minimized += 1
+        except Exception:
+            continue
+    if minimized:
+        logging.info("minimized %d covering window(s)", minimized)
+    return minimized
+
+
+def reveal_registration_ui(main_window: UiWindow) -> None:
+    """Bring 通常データ登録 in front of prlctl / Terminal consoles."""
+    minimize_covering_windows()
+    try:
+        main_window.set_focus()
+    except Exception as error:
+        logging.warning("main set_focus failed: %s", error)
+    pid = _window_pid(main_window)
+    if pid is None:
+        return
+    progress = find_progress_window(pid)
+    if progress is None:
+        return
+    try:
+        progress.set_focus()
+    except Exception as error:
+        logging.warning("progress set_focus failed: %s", error)
+
+
 def _select_normal_data_registration(main_window: UiWindow) -> None:
     """データメニュー → 通常データ登録 を順にクリックする (副作用のみ)。"""
     main_window.set_focus()
@@ -339,6 +433,37 @@ def click_start(main_window: UiWindow, dry_run: bool = False) -> bool:
         return True
     btn.click_input()
     logging.info("開始ボタン押下完了")
+    reveal_registration_ui(main_window)
+    return True
+
+
+def click_start_until_started(
+    main_window: UiWindow,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Click 開始 and retry if the dialog stays idle."""
+    clicked = click_start(main_window, dry_run=dry_run)
+    if not clicked or dry_run:
+        return clicked
+    remaining = START_CLICK_RETRIES
+    while remaining > 0:
+        time.sleep(START_CLICK_SETTLE_SEC)
+        if is_update_in_progress(main_window):
+            logging.info("更新開始を確認")
+            return True
+        reveal_registration_ui(main_window)
+        button = find_start_button(main_window)
+        if button is None:
+            remaining -= 1
+            continue
+        if not button.is_enabled():
+            logging.info("StartButton disabled — 更新開始")
+            return True
+        logging.warning("StartButton still enabled after click; retrying")
+        button.click_input()
+        remaining -= 1
+    logging.warning("StartButton stayed enabled after retries")
     return True
 
 
@@ -373,9 +498,21 @@ def find_progress_window(pid: int) -> UiWindow | None:
     return None
 
 
+def dismiss_completed_progress(pid: int) -> bool:
+    """Click 閉じる when 通常データ登録 has finished processing files."""
+    window = find_progress_window(pid)
+    if window is None:
+        return False
+    if not _try_click_label(window, "閉じる"):
+        return False
+    logging.info("完了ダイアログの閉じるを押下")
+    return True
+
+
 def is_update_in_progress_by_pid(pid: int) -> bool:
     """プロセス PID だけで進行中判定。main window 未接続時にも使える。"""
     try:
+        dismiss_completed_progress(pid)
         return find_progress_window(pid) is not None
     except Exception as e:
         logging.warning("進行中判定 (PID) 失敗 (安全側=進行中扱い): %s", e)
@@ -486,7 +623,12 @@ def wait_for_completion(
     saw_progress = False
     pid = _window_pid(main_window)
     while time.time() < deadline:
+        minimize_covering_windows()
+        with contextlib.suppress(Exception):
+            main_window.set_focus()
         _dismiss_popups(main_window)
+        if pid is not None:
+            dismiss_completed_progress(pid)
         if _progress_visible(pid):
             saw_progress = _log_first(saw_progress, "進捗ウィンドウを検出 — 更新進行中")
             time.sleep(poll_sec)
@@ -534,18 +676,39 @@ def _iter_sibling_windows(pid: int, exclude_handle: int) -> Iterator[UiWindow]:
         yield w
 
 
+def _button_matches_label(button: UiElement, label: str) -> bool:
+    try:
+        return (button.window_text() or "") == label and button.is_enabled()
+    except Exception:
+        return False
+
+
+def _find_labeled_button(window: UiWindow, label: str) -> UiElement | None:
+    """Prefer a direct child, then search descendants (完了画面の閉じる is nested)."""
+    try:
+        button = window.child_window(title=label, control_type="Button")
+        if button.exists() and button.is_enabled():
+            return button
+    except Exception:
+        pass
+    try:
+        for button in window.descendants(control_type="Button"):
+            if _button_matches_label(button, label):
+                return button
+    except Exception:
+        return None
+    return None
+
+
 def _try_click_label(window: UiWindow, label: str) -> bool:
     """指定ラベルのボタンが存在 + enabled なら押下し True。
     存在しなければ / 例外時は False。"""
-    try:
-        btn = window.child_window(title=label, control_type="Button")
-        if not btn.exists() or not btn.is_enabled():
-            return False
-    except Exception:
+    button = _find_labeled_button(window, label)
+    if button is None:
         return False
     title = window.window_text() or ""
     logging.info("ポップアップ '%s' を [%s] で閉じる", title, label)
-    btn.click_input()
+    button.click_input()
     time.sleep(0.5)
     return True
 
@@ -631,7 +794,7 @@ def _run_workflow(args: argparse.Namespace) -> None:
         _handle_already_in_progress(pid, args)
         return
     open_dialog_if_needed(main_window)
-    clicked = click_start(main_window, dry_run=args.dry_run)
+    clicked = click_start_until_started(main_window, dry_run=args.dry_run)
     if args.wait and clicked and not args.dry_run:
         _finalize_wait(main_window, args)
 
@@ -662,6 +825,7 @@ def main() -> int:
     args = parse_args()
     log_path = setup_logging()
     purge_old_logs()
+    hide_own_console()
     logging.info("=== 開始 ログ=%s args=%s ===", log_path, vars(args))
 
     if not acquire_lock(args.lock_stale_min):

@@ -83,6 +83,32 @@ def _mk_element(
 # ---------------------------------------------------------------------------
 # setup_logging / purge_old_logs
 # ---------------------------------------------------------------------------
+def test_hide_own_console_noop_on_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod.sys, "platform", "darwin")
+    mod.hide_own_console()
+
+
+def test_hide_own_console_minimizes_console_hwnd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.kernel32.GetConsoleWindow.return_value = 123
+    fake_ctypes.windll.user32.ShowWindow.return_value = True
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    mod.hide_own_console()
+    fake_ctypes.windll.user32.ShowWindow.assert_called_once_with(123, mod.SW_MINIMIZE)
+
+
+def test_hide_own_console_skips_when_no_hwnd(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.kernel32.GetConsoleWindow.return_value = 0
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    mod.hide_own_console()
+    fake_ctypes.windll.user32.ShowWindow.assert_not_called()
+
+
 def test_setup_logging_creates_log_dir_and_file(tmp_path: Path) -> None:
     log_path = mod.setup_logging()
     assert log_path.parent == mod.LOG_DIR
@@ -556,9 +582,225 @@ def test_click_start_no_button() -> None:
             mod.click_start(main)
 
 
+def test_click_start_reveals_ui_after_click() -> None:
+    btn = _mk_element(is_enabled=True)
+    main = MagicMock()
+    with patch.object(mod, "find_start_button", return_value=btn):
+        with patch.object(mod, "reveal_registration_ui") as reveal:
+            assert mod.click_start(main) is True
+    reveal.assert_called_once_with(main)
+
+
+def test_click_start_until_started_dry_run_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    slept: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", slept.append)
+    assert mod.click_start_until_started(main, dry_run=True) is True
+    assert slept == []
+
+
+def test_click_start_until_started_confirms_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(mod, "is_update_in_progress", lambda _w: True)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.click_start_until_started(main) is True
+
+
+def test_click_start_until_started_retries_then_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    button = _mk_element(is_enabled=True)
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    progress = iter([False, True])
+    monkeypatch.setattr(mod, "is_update_in_progress", lambda _w: next(progress))
+    monkeypatch.setattr(mod, "reveal_registration_ui", lambda _w: None)
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: button)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.click_start_until_started(main) is True
+    button.click_input.assert_called_once()
+
+
+def test_click_start_until_started_disabled_means_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    button = _mk_element(is_enabled=False)
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(mod, "is_update_in_progress", lambda _w: False)
+    monkeypatch.setattr(mod, "reveal_registration_ui", lambda _w: None)
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: button)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.click_start_until_started(main) is True
+
+
+def test_click_start_until_started_returns_false_when_initial_click_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: False)
+    assert mod.click_start_until_started(main) is False
+
+
+def test_click_start_until_started_retries_when_button_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(mod, "is_update_in_progress", lambda _w: False)
+    monkeypatch.setattr(mod, "reveal_registration_ui", lambda _w: None)
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.click_start_until_started(main) is True
+
+
+def test_click_start_until_started_gives_up_after_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    button = _mk_element(is_enabled=True)
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(mod, "is_update_in_progress", lambda _w: False)
+    monkeypatch.setattr(mod, "reveal_registration_ui", lambda _w: None)
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: button)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.click_start_until_started(main) is True
+    assert button.click_input.call_count == 3
+
+
+def test_is_covering_window_matches_python_console_title() -> None:
+    window = MagicMock()
+    window.window_text.return_value = r"選択 C:\Users\kkk4oru\AppData\Local\Programs\Python\Python312-arm64\python.exe"
+    window.element_info.process_id = 1
+    assert mod._is_covering_window(window) is True
+
+
+def test_is_covering_window_matches_windows_terminal_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = MagicMock()
+    window.window_text.return_value = "Windows PowerShell"
+    fake_proc = MagicMock()
+    fake_proc.name.return_value = "WindowsTerminal.exe"
+    monkeypatch.setattr(mod.psutil, "Process", lambda _pid: fake_proc)
+    assert mod._is_covering_window(window) is True
+
+
+def test_is_covering_window_skips_pckeiba_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = MagicMock()
+    window.window_text.return_value = "PC-KEIBA Database"
+    fake_proc = MagicMock()
+    fake_proc.name.return_value = "Com.Pckeiba.Database.exe"
+    monkeypatch.setattr(mod.psutil, "Process", lambda _pid: fake_proc)
+    assert mod._is_covering_window(window) is False
+
+
+def test_minimize_covering_windows_minimizes_only_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cover = MagicMock()
+    cover.window_text.return_value = "python.exe"
+    keep = MagicMock()
+    keep.window_text.return_value = "PC-KEIBA Database"
+    fake_proc = MagicMock()
+    fake_proc.name.return_value = "Com.Pckeiba.Database.exe"
+    monkeypatch.setattr(mod.psutil, "Process", lambda _pid: fake_proc)
+    desktop = MagicMock()
+    desktop.windows.return_value = [cover, keep]
+    monkeypatch.setattr(mod, "Desktop", lambda backend="uia": desktop)
+    assert mod.minimize_covering_windows() == 1
+    cover.minimize.assert_called_once()
+    keep.minimize.assert_not_called()
+
+
+def test_minimize_covering_windows_list_failure_returns_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BoomDesktop:
+        def __init__(self, backend: str | None = None) -> None:
+            raise RuntimeError("no uia")
+
+    monkeypatch.setattr(mod, "Desktop", _BoomDesktop)
+    assert mod.minimize_covering_windows() == 0
+
+
+def test_reveal_registration_ui_focuses_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 42
+    progress = MagicMock()
+    monkeypatch.setattr(mod, "minimize_covering_windows", lambda: 1)
+    monkeypatch.setattr(
+        mod, "find_progress_window", lambda pid: progress if pid == 42 else None
+    )
+    mod.reveal_registration_ui(main)
+    main.set_focus.assert_called_once()
+    progress.set_focus.assert_called_once()
+
+
+def test_reveal_registration_ui_swallows_focus_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 42
+    main.set_focus.side_effect = RuntimeError("no focus")
+    monkeypatch.setattr(mod, "minimize_covering_windows", lambda: 0)
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
+    mod.reveal_registration_ui(main)
+
+
 # ---------------------------------------------------------------------------
 # is_update_in_progress / safe_close_app
 # ---------------------------------------------------------------------------
+def test_dismiss_completed_progress_clicks_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = MagicMock()
+    monkeypatch.setattr(
+        mod, "find_progress_window", lambda pid: window if pid == 7 else None
+    )
+    monkeypatch.setattr(mod, "_try_click_label", lambda _w, label: label == "閉じる")
+    assert mod.dismiss_completed_progress(7) is True
+
+
+def test_dismiss_completed_progress_false_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
+    assert mod.dismiss_completed_progress(7) is False
+
+
+def test_find_labeled_button_uses_descendants_when_child_missing() -> None:
+    window = MagicMock()
+    child = MagicMock()
+    child.exists.return_value = False
+    window.child_window.return_value = child
+    close_btn = _mk_element(name="閉じる", is_enabled=True)
+    window.descendants.return_value = [close_btn]
+    assert mod._find_labeled_button(window, "閉じる") is close_btn
+
+
+def test_try_click_label_clicks_descendant_close() -> None:
+    window = MagicMock()
+    window.window_text.return_value = "通常データ登録"
+    child = MagicMock()
+    child.exists.return_value = False
+    window.child_window.return_value = child
+    close_btn = _mk_element(name="閉じる", is_enabled=True)
+    window.descendants.return_value = [close_btn]
+    assert mod._try_click_label(window, "閉じる") is True
+    close_btn.click_input.assert_called_once()
+
+
 def test_is_update_in_progress_progress_window(monkeypatch: pytest.MonkeyPatch) -> None:
     main = MagicMock()
     main.element_info.process_id = 1
@@ -672,6 +914,7 @@ def test_wait_for_completion_success_via_enabled(
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=btn_states))
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
@@ -685,6 +928,7 @@ def test_wait_for_completion_button_disappears_is_not_completion(
     monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
     monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
@@ -698,6 +942,7 @@ def test_wait_for_completion_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "find_start_button", lambda _w: btn)
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
     monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
@@ -720,6 +965,7 @@ def test_wait_for_completion_is_enabled_exception(
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=seq))
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
@@ -733,6 +979,7 @@ def test_wait_for_completion_progress_appears_then_vanishes(
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress))
     monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
@@ -746,6 +993,7 @@ def test_wait_for_completion_absent_while_progress_open_times_out(
     monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: MagicMock())
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
     monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
@@ -762,6 +1010,7 @@ def test_wait_for_completion_pid_lookup_fails_falls_back_to_button(
     btn_states = [_mk_element(is_enabled=False), _mk_element(is_enabled=True)]
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=btn_states))
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
@@ -940,7 +1189,9 @@ def test_main_full_path_no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
         mod, "connect_main", lambda *_a, **_k: (MagicMock(), MagicMock())
     )
     monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
-    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(
+        mod, "click_start_until_started", lambda _w, dry_run=False: True
+    )
     assert mod.main() == 0
 
 
@@ -965,7 +1216,9 @@ def test_main_connect_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(mod, "connect_main", _cm)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
-    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(
+        mod, "click_start_until_started", lambda _w, dry_run=False: True
+    )
     assert mod.main() == 0
 
 
@@ -1014,7 +1267,9 @@ def test_main_wait_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
         mod, "connect_main", lambda *_a, **_k: (MagicMock(), MagicMock())
     )
     monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
-    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(
+        mod, "click_start_until_started", lambda _w, dry_run=False: True
+    )
     monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: True)
     safe_close = MagicMock(return_value=True)
     monkeypatch.setattr(mod, "safe_close_app", safe_close)
@@ -1032,7 +1287,9 @@ def test_main_wait_timeout_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
         mod, "connect_main", lambda *_a, **_k: (MagicMock(), MagicMock())
     )
     monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
-    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(
+        mod, "click_start_until_started", lambda _w, dry_run=False: True
+    )
     monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: False)
     safe_close = MagicMock()
     monkeypatch.setattr(mod, "safe_close_app", safe_close)
@@ -1096,7 +1353,9 @@ def test_main_wait_without_close(monkeypatch: pytest.MonkeyPatch) -> None:
         mod, "connect_main", lambda *_a, **_k: (MagicMock(), MagicMock())
     )
     monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
-    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(
+        mod, "click_start_until_started", lambda _w, dry_run=False: True
+    )
     monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: True)
     safe_close = MagicMock()
     monkeypatch.setattr(mod, "safe_close_app", safe_close)
