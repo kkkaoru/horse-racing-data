@@ -18,8 +18,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// NOTE: LazyOverallScoreSection (Issue E original target) is dead code — never imported outside its own file.
-// Agent H re-targeted to LazyTimeScoreSection (the actual user-visible section). Tests below cover the live path.
+// NOTE: LazyOverallScoreSection is unused on the race detail page. Combined overall
+// score calculation still runs via the time-score payload used by finish prediction
+// and the win-rate heatmap.
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -62,10 +63,16 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
     }
     if (url.endsWith("/sections/condition")) {
       return Promise.resolve(
-        new Response(JSON.stringify({ type: "condition" }), {
-          headers: { "content-type": "application/json" },
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            frameStats: [{ frameNumber: "1" }],
+            type: "condition",
+          }),
+          {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          },
+        ),
       );
     }
     return Promise.resolve(
@@ -80,12 +87,14 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
             class: null,
             distance: null,
             frame: "",
+            grade: null,
             monthWindow: "",
             raceNumber: "",
             raceSubtitle: null,
             raceTitle: null,
             sex: null,
             surface: null,
+            track: null,
             turn: null,
             venue: null,
             weight: null,
@@ -106,18 +115,22 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
   }),
 }));
 
-vi.mock("./bloodline-similar-combined-table", () => ({
-  BloodlineSimilarCombinedTable: () => (
-    <div data-testid="bloodline-similar-combined-stub">combined</div>
+vi.mock("./win-rate-heatmap-section", () => ({
+  WinRateHeatmapSection: ({
+    frameStats,
+    horseResults,
+  }: {
+    frameStats: unknown[];
+    horseResults: unknown[];
+  }) => (
+    <div
+      data-frame-stats={frameStats.length}
+      data-horse-results={horseResults.length}
+      data-testid="win-rate-heatmap-stub"
+    >
+      heatmap
+    </div>
   ),
-}));
-
-vi.mock("./bloodline-stats-table", () => ({
-  BloodlineStatsTable: () => <div data-testid="bloodline-stats-stub">bloodline</div>,
-}));
-
-vi.mock("./similar-race-stats-table", () => ({
-  SimilarRaceStatsTable: () => <div data-testid="similar-race-stats-stub">similar</div>,
 }));
 
 vi.mock("./overall-score-table", () => ({
@@ -205,7 +218,7 @@ vi.mock("./finish-position-bucket-section", () => ({
 }));
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import { LazyDetailSections, LazyTimeScoreSection } from "./lazy-detail-sections";
+import { LazyDetailSections } from "./lazy-detail-sections";
 
 const installMatchMediaMockTimeScore = (initialMatches: boolean): MockMediaQueryListController => {
   const listeners = new Set<(event: MockMediaQueryEvent) => void>();
@@ -236,77 +249,6 @@ const installMatchMediaMockTimeScore = (initialMatches: boolean): MockMediaQuery
   return controller;
 };
 
-interface TimeScoreSectionProps {
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  realtimeApiBaseUrl: string;
-  source: "jra" | "nar";
-  year: string;
-}
-
-const timeScoreSectionProps: TimeScoreSectionProps = {
-  day: "01",
-  keibajoCode: "05",
-  month: "06",
-  raceNumber: "01",
-  realtimeApiBaseUrl: "",
-  source: "jra",
-  year: "2026",
-};
-
-test("LazyTimeScoreSection collapses by default on mobile viewport", async () => {
-  installMatchMediaMockTimeScore(true);
-  await act(async () => {
-    render(<LazyTimeScoreSection {...timeScoreSectionProps} />);
-  });
-  await waitFor(() => {
-    expect(screen.getByRole("button", { name: "総合評価スコア セクションを開く" })).toBeDefined();
-  });
-  const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを開く" });
-  expect(toggle.getAttribute("aria-expanded")).toStrictEqual("false");
-  const bodyContent = screen.getByTestId("bloodline-similar-combined-stub");
-  expect(bodyContent.parentElement?.parentElement?.hasAttribute("hidden")).toStrictEqual(true);
-});
-
-test("LazyTimeScoreSection expands by default on desktop viewport", async () => {
-  installMatchMediaMockTimeScore(false);
-  await act(async () => {
-    render(<LazyTimeScoreSection {...timeScoreSectionProps} />);
-  });
-  await waitFor(() => {
-    expect(screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" })).toBeDefined();
-  });
-  await waitFor(() => {
-    expect(screen.getByTestId("bloodline-similar-combined-stub")).toBeDefined();
-  });
-  expect(
-    screen.getByText(
-      "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。",
-    ),
-  ).toBeDefined();
-  expect(
-    screen.getByText(
-      "十分な血統成績がない競走馬は血統スコアを算出できないため、該当項目を空欄として表示します。",
-    ),
-  ).toBeDefined();
-  expect(
-    screen.getByText(
-      "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。",
-    ),
-  ).toBeDefined();
-  expect(
-    screen.getByText(
-      "条件を緩和しても十分な人物成績が見つからないため、該当する人物を0戦として表示します。",
-    ),
-  ).toBeDefined();
-  const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });
-  expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");
-  const bodyContent = screen.getByTestId("bloodline-similar-combined-stub");
-  expect(bodyContent.parentElement?.parentElement?.hasAttribute("hidden")).toStrictEqual(false);
-});
-
 test("LazyDetailSections renders the results chart section directly below the results section", async () => {
   installMatchMediaMockTimeScore(false);
   await act(async () => {
@@ -328,11 +270,15 @@ test("LazyDetailSections renders the results chart section directly below the re
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
   });
   const resultsStub = screen.getByTestId("horse-race-results-table-stub");
+  const heatmapStub = screen.getByTestId("win-rate-heatmap-stub");
   const chartStub = screen.getByTestId("horse-race-results-chart-stub");
   expect(resultsStub.compareDocumentPosition(chartStub)).toStrictEqual(4);
+  expect(chartStub.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
+  expect(heatmapStub.getAttribute("data-horse-results")).toStrictEqual("0");
+  expect(heatmapStub.getAttribute("data-frame-stats")).toStrictEqual("1");
   expect(chartStub.getAttribute("data-runners-passed")).toStrictEqual("present");
   expect(chartStub.getAttribute("data-target-keibajo-code")).toStrictEqual("05");
   expect(chartStub.getAttribute("data-target-race-date")).toStrictEqual("20270601");
@@ -412,7 +358,7 @@ test("LazyDetailSections renders a chart section error when the results fetch fa
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
   });
 });
 
@@ -477,6 +423,6 @@ test("LazyDetailSections renders a chart section error when the results payload 
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
   });
 });

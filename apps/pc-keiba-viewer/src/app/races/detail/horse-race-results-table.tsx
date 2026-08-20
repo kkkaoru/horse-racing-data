@@ -19,7 +19,7 @@ import {
   isCornerPacePredictionSupported,
   RACE_PACE_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/race-pace-prediction";
-import type { HorseRaceResult, Runner } from "../../../lib/race-types";
+import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
 import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
   formatCarriedWeight,
@@ -31,6 +31,7 @@ import {
 } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
+import { RaceTimeStatsMetrics } from "./race-time-stats-metrics";
 
 type ResultLimit = "all" | "1" | "3" | "5" | "10";
 type SortDirection = "asc" | "desc";
@@ -47,6 +48,7 @@ interface HorseRaceResultsTableProps {
   currentRaceDate: string;
   currentTrackCode: string | null;
   defaultIncludeClass: boolean;
+  raceTimeStats: RaceTimeStats | null;
   results: HorseRaceResult[];
   runners: Runner[];
   source: RaceSource;
@@ -360,6 +362,7 @@ export function HorseRaceResultsTable({
   currentRaceDate,
   currentTrackCode,
   defaultIncludeClass,
+  raceTimeStats,
   results,
   runners,
   source,
@@ -1182,6 +1185,7 @@ export function HorseRaceResultsTable({
           </span>
         </section>
       </MobileFilterDisclosure>
+      {raceTimeStats ? <RaceTimeStatsMetrics stats={raceTimeStats} /> : null}
       {debutRunners.length > 0 ? (
         <section className="race-results-newcomer-panel" aria-label="newcomer runners">
           <h3>新馬</h3>

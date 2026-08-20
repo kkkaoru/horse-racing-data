@@ -27,8 +27,6 @@ import type {
   Training,
 } from "../../../lib/race-types";
 import { AbilityTestTable } from "./ability-test-table";
-import { BloodlineSimilarCombinedTable } from "./bloodline-similar-combined-table";
-import { BloodlineStatsTable } from "./bloodline-stats-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
@@ -40,8 +38,8 @@ import { PremiumDataTopHorsesTable } from "./premium-data-top-section";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import type { RealtimeRaceRequest } from "./realtime-client";
-import { SimilarRaceStatsTable } from "./similar-race-stats-table";
 import { TrainingTable } from "./training-table";
+import { WinRateHeatmapSection } from "./win-rate-heatmap-section";
 
 type DetailSection =
   | "ability"
@@ -71,6 +69,7 @@ type ConditionLabels = {
   class: string | null;
   distance: string | null;
   frame: string;
+  grade: string | null;
   monthWindow: string;
   raceNumber: string;
   raceSubtitle: string | null;
@@ -78,6 +77,7 @@ type ConditionLabels = {
   runnerCount?: string | null;
   sex: string | null;
   surface: string | null;
+  track: string | null;
   turn: string | null;
   venue: string | null;
   weight: string | null;
@@ -175,10 +175,6 @@ const BLOODLINE_VENUE_FALLBACK_NOTICE =
   "海外競馬場の同場母集団がないため、日本の全競馬場のJV/NAR成績で集計しています。";
 const BLOODLINE_STATS_INCOMPLETE_NOTICE =
   "十分な血統成績がない競走馬は血統スコアを算出できないため、該当項目を空欄として表示します。";
-const SIMILAR_STATS_FALLBACK_NOTICE =
-  "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。";
-const SIMILAR_STATS_INCOMPLETE_NOTICE =
-  "条件を緩和しても十分な人物成績が見つからないため、該当する人物を0戦として表示します。";
 
 type FinishPredictionPayload = {
   bucket: FinishPositionBucketSectionData;
@@ -233,6 +229,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
 // Not part of SECTION_TITLES because that map is keyed by DetailSection and this
 // extra section reuses the existing "results" payload instead of a new section key.
 const RESULTS_CHART_SECTION_TITLE = "競走成績グラフ";
+const WIN_RATE_HEATMAP_SECTION_TITLE = "勝率ヒートマップ";
 
 const GENERIC_STATS_QUERY_KEYS = new Set([
   "statsAge",
@@ -264,6 +261,7 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
   if (section === "condition") {
     return (
       name.startsWith("analysisStats") ||
+      name.startsWith("analysisCell") ||
       name === "similarStatsVenue" ||
       GENERIC_STATS_QUERY_KEYS.has(name)
     );
@@ -271,6 +269,7 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
   if (section === "overall-score" || section === "finish-prediction") {
     return (
       name.startsWith("analysisStats") ||
+      name.startsWith("analysisCell") ||
       name.startsWith("bloodlineStats") ||
       name === "similarStatsVenue" ||
       GENERIC_STATS_QUERY_KEYS.has(name)
@@ -292,6 +291,7 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
   if (section === "time-score") {
     return (
       name.startsWith("analysisStats") ||
+      name.startsWith("analysisCell") ||
       name.startsWith("bloodlineStats") ||
       name.startsWith("similarStats") ||
       name === "similarStatsVenue" ||
@@ -606,6 +606,7 @@ const usePremiumDataTopSectionPayload = (
 function LazyResultsSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("results", props, searchParams);
+  const conditionState = useSectionPayload("condition", props, searchParams);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.results} />;
   }
@@ -616,6 +617,8 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
   if (!payload || payload.type !== "results") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.results} />;
   }
+  const raceTimeStats =
+    conditionState.payload?.type === "condition" ? conditionState.payload.raceTimeStats : null;
   return (
     <section
       aria-busy={state.status === "loading"}
@@ -631,10 +634,56 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
         currentRaceDate={payload.currentRaceDate}
         currentTrackCode={payload.currentTrackCode}
         defaultIncludeClass={payload.defaultIncludeClass}
+        raceTimeStats={raceTimeStats}
         results={payload.results}
         runners={payload.runners}
         source={payload.source}
         sourceScope={payload.sourceScope}
+      />
+    </section>
+  );
+}
+
+function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const scoreState = useSectionPayload("time-score", props, searchParams);
+  const resultsState = useSectionPayload("results", props, searchParams);
+  const conditionState = useSectionPayload("condition", props, searchParams);
+  if (
+    (scoreState.status === "loading" && scoreState.payload === null) ||
+    (resultsState.status === "loading" && resultsState.payload === null) ||
+    (conditionState.status === "loading" && conditionState.payload === null)
+  ) {
+    return <SectionSkeleton title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+  }
+  if (scoreState.status === "error") {
+    return <SectionError error={scoreState.error} title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+  }
+  const payload = scoreState.payload;
+  if (!payload || payload.type !== "time-score") {
+    return <SectionError error="Invalid section payload" title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+  }
+  const horseResults = resultsState.payload?.type === "results" ? resultsState.payload.results : [];
+  const frameStats =
+    conditionState.payload?.type === "condition" ? (conditionState.payload.frameStats ?? []) : [];
+  return (
+    <section
+      aria-busy={
+        scoreState.status === "loading" ||
+        resultsState.status === "loading" ||
+        conditionState.status === "loading"
+      }
+      className="similar-stats-section lazy-detail-section win-rate-heatmap-section"
+    >
+      <div className="section-heading compact">
+        <h2>{WIN_RATE_HEATMAP_SECTION_TITLE}</h2>
+      </div>
+      <WinRateHeatmapSection
+        bloodlineRows={payload.bloodlineRows ?? []}
+        frameStats={frameStats}
+        horseResults={horseResults}
+        runners={payload.runners ?? []}
+        similarRows={payload.similarRows ?? []}
       />
     </section>
   );
@@ -938,128 +987,10 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         <h2>同条件レース分析</h2>
       </div>
       <RaceConditionAnalysisSection
-        conditionLabels={payload.conditionLabels}
         finishPositionStats={payload.finishPositionStats}
-        frameStats={payload.frameStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}
-        runners={payload.runners}
-        settings={payload.settings}
-        source={payload.source}
       />
-    </section>
-  );
-}
-
-export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
-  const searchParams = useSearchParams();
-  const [showBloodline, setShowBloodline] = useState(false);
-  const [showSimilar, setShowSimilar] = useState(false);
-  const state = useSectionPayload("time-score", props, searchParams);
-  if (state.status === "loading" && state.payload === null) {
-    return <SectionSkeleton title={SECTION_TITLES["time-score"]} />;
-  }
-  if (state.status === "error") {
-    return <SectionError error={state.error} title={SECTION_TITLES["time-score"]} />;
-  }
-  const payload = state.payload;
-  if (!payload || payload.type !== "time-score") {
-    return <SectionError error="Invalid section payload" title={SECTION_TITLES["time-score"]} />;
-  }
-  return (
-    <section
-      aria-busy={state.status === "loading"}
-      className="similar-stats-section lazy-detail-section"
-    >
-      <MobileCollapsibleSection
-        heading={
-          <div className="section-heading compact">
-            <h2>総合評価スコア</h2>
-          </div>
-        }
-        title="総合評価スコア"
-      >
-        <div className="stats-category-list">
-          {payload.bloodlineVenueFallback ? (
-            <p className="stats-scope-note">{BLOODLINE_VENUE_FALLBACK_NOTICE}</p>
-          ) : null}
-          {payload.bloodlineStatsIncomplete ? (
-            <p className="stats-scope-note">{BLOODLINE_STATS_INCOMPLETE_NOTICE}</p>
-          ) : null}
-          {payload.similarStatsFallback ? (
-            <p className="stats-scope-note">{SIMILAR_STATS_FALLBACK_NOTICE}</p>
-          ) : null}
-          {payload.similarStatsIncomplete ? (
-            <p className="stats-scope-note">{SIMILAR_STATS_INCOMPLETE_NOTICE}</p>
-          ) : null}
-          <BloodlineSimilarCombinedTable
-            bloodlineRows={payload.bloodlineRows}
-            correlationRows={payload.correlationRows}
-            realtimeRequest={{
-              apiBaseUrl: props.realtimeApiBaseUrl,
-              day: props.day,
-              keibajoCode: props.keibajoCode,
-              month: props.month,
-              raceNumber: props.raceNumber,
-              source: props.source,
-              year: props.year,
-            }}
-            rows={payload.similarRows}
-            runners={payload.runners}
-            timeRows={payload.rows}
-          />
-          <div className="stats-section-toggle-wrap">
-            <button
-              aria-expanded={showBloodline}
-              className="stats-control-button stats-section-toggle"
-              type="button"
-              onClick={() => {
-                setShowBloodline((current) => !current);
-              }}
-            >
-              {showBloodline ? "血統成績を閉じる" : "血統成績を表示"}
-            </button>
-            <button
-              aria-expanded={showSimilar}
-              className="stats-control-button stats-section-toggle"
-              type="button"
-              onClick={() => {
-                setShowSimilar((current) => !current);
-              }}
-            >
-              {showSimilar ? "同条件成績を閉じる" : "同条件成績を表示"}
-            </button>
-          </div>
-          {showBloodline ? (
-            <section className="stats-category-section">
-              <div className="section-heading compact">
-                <h3>血統成績</h3>
-              </div>
-              <BloodlineStatsTable
-                conditionLabels={payload.conditionLabels}
-                rows={payload.bloodlineRows}
-                runners={payload.runners}
-                settings={payload.bloodlineSettings}
-                source={payload.source}
-              />
-            </section>
-          ) : null}
-          {showSimilar ? (
-            <section className="stats-category-section">
-              <div className="section-heading compact">
-                <h3>同条件成績</h3>
-              </div>
-              <SimilarRaceStatsTable
-                conditionLabels={payload.conditionLabels}
-                rows={payload.similarRows}
-                runners={payload.runners}
-                settings={payload.settings}
-                source={payload.source}
-              />
-            </section>
-          ) : null}
-        </div>
-      </MobileCollapsibleSection>
     </section>
   );
 }
@@ -1067,9 +998,9 @@ export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
 export function LazyDetailSections(props: LazyDetailSectionsProps) {
   return (
     <>
-      <LazyTimeScoreSection {...props} />
       <LazyResultsSection {...props} />
       <LazyResultsChartSection {...props} />
+      <LazyWinRateHeatmapSection {...props} />
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />

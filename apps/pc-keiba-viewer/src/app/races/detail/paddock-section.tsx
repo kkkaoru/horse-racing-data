@@ -171,15 +171,6 @@ type PaddockTableStyle = CSSProperties & {
   "--paddock-weight-col-width": string;
 };
 
-type PaddockScoreTooltipState = {
-  horseName: string;
-  horseNumber: string;
-  left: number;
-  placement: "bottom" | "top";
-  top: number;
-  total: number;
-};
-
 type PaddockTableSortMode = "officialRank" | "relativeScore";
 
 // The horse's latest weight + signed change parsed from the "456(+4)" runner
@@ -262,13 +253,6 @@ const formatOfficialRank = (rank: PaddockOfficialRank | null | undefined): strin
 
 const formatPaddockScore = (value: number): string =>
   Number.isInteger(value) ? String(value) : value.toFixed(1);
-
-const CIRCLED_NUMBER_LABELS = ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"] as const;
-
-const formatPaddockScoreRuby = (value: number): string =>
-  Number.isInteger(value) && value >= 1 && value <= 10
-    ? (CIRCLED_NUMBER_LABELS[value] ?? String(value))
-    : formatPaddockScore(value);
 
 const parseHorseWeightLabel = (
   value: string,
@@ -1297,9 +1281,6 @@ function PaddockReadOnlyTable({
   showBloodline: boolean;
   state: PaddockState | null;
 }) {
-  const [activeScoreTooltip, setActiveScoreTooltip] = useState<PaddockScoreTooltipState | null>(
-    null,
-  );
   const [sortMode, setSortMode] = useState<PaddockTableSortMode>("officialRank");
   const scoredRows = rows
     .map((runner) => ({
@@ -1327,33 +1308,6 @@ function PaddockReadOnlyTable({
     }
     return Number(left.horseNumber) - Number(right.horseNumber);
   });
-
-  const showScoreTooltip = useCallback(
-    (row: (typeof evaluatedRows)[number], target: HTMLElement) => {
-      const total = row.scores?.total ?? 0;
-      if (total === 0) {
-        setActiveScoreTooltip(null);
-        return;
-      }
-      const rect = target.getBoundingClientRect();
-      const estimatedWidth = 280;
-      const edgePadding = 16;
-      const left = Math.min(
-        window.innerWidth - estimatedWidth / 2 - edgePadding,
-        Math.max(estimatedWidth / 2 + edgePadding, rect.left + rect.width / 2),
-      );
-      const showAbove = rect.top > 92;
-      setActiveScoreTooltip({
-        horseName: row.horseName,
-        horseNumber: row.horseNumber,
-        left,
-        placement: showAbove ? "top" : "bottom",
-        top: showAbove ? rect.top - 10 : rect.bottom + 10,
-        total,
-      });
-    },
-    [],
-  );
 
   if (evaluatedRows.length === 0) {
     return <p className="empty-state">パドック評価はまだありません。</p>;
@@ -1490,8 +1444,6 @@ function PaddockReadOnlyTable({
           <tbody>
             {evaluatedRows.map((row) => {
               const total = row.scores?.total ?? 0;
-              const scoreTooltipId = `paddock-horse-number-score-${row.horseNumber}`;
-              const isScoreTooltipOpen = activeScoreTooltip?.horseNumber === row.horseNumber;
               const scoreRatio = (total - minTotal) / totalRange;
               const fontSize = 16 + scoreRatio * 9.6;
               const cellPaddingY = 7 + scoreRatio * 7;
@@ -1509,36 +1461,8 @@ function PaddockReadOnlyTable({
                   <td>
                     <FrameNumberBadge value={row.frameNumber} />
                   </td>
-                  <td
-                    className="paddock-table-horse-number"
-                    onMouseEnter={(event) => showScoreTooltip(row, event.currentTarget)}
-                    onMouseLeave={() => setActiveScoreTooltip(null)}
-                  >
-                    <button
-                      aria-describedby={total !== 0 ? scoreTooltipId : undefined}
-                      aria-expanded={isScoreTooltipOpen}
-                      aria-label={`${row.horseName}の馬番${formatRunnerNumber(row.horseNumber)}${total !== 0 ? `、パドック合計値 ${formatPaddockScore(total)} の説明` : ""}`}
-                      className={`paddock-horse-number-cell-trigger${isScoreTooltipOpen ? " tooltip-open" : ""}`}
-                      type="button"
-                      onBlur={() => setActiveScoreTooltip(null)}
-                      onClick={(event) => {
-                        if (isScoreTooltipOpen) {
-                          setActiveScoreTooltip(null);
-                          return;
-                        }
-                        showScoreTooltip(row, event.currentTarget);
-                      }}
-                      onFocus={(event) => showScoreTooltip(row, event.currentTarget)}
-                    >
-                      <span className="paddock-horse-number-with-score">
-                        <span>{formatRunnerNumber(row.horseNumber)}</span>
-                        {total !== 0 ? (
-                          <span className="paddock-horse-number-score" aria-hidden="true">
-                            {formatPaddockScoreRuby(total)}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
+                  <td className="paddock-table-horse-number">
+                    {formatRunnerNumber(row.horseNumber)}
                   </td>
                   <td className="stats-name-cell" data-label="馬名">
                     <HorseNameBadge
@@ -1612,23 +1536,6 @@ function PaddockReadOnlyTable({
           </tbody>
         </table>
       </div>
-      {activeScoreTooltip ? (
-        <div
-          className={`paddock-horse-number-score-tooltip ${activeScoreTooltip.placement}`}
-          id={`paddock-horse-number-score-${activeScoreTooltip.horseNumber}`}
-          role="tooltip"
-          style={{
-            left: `${activeScoreTooltip.left}px`,
-            top: `${activeScoreTooltip.top}px`,
-          }}
-        >
-          <strong>{activeScoreTooltip.horseName}</strong>
-          <span>
-            合計値 <b>{formatPaddockScore(activeScoreTooltip.total)}</b>
-          </span>
-          <small>パドック・返し + 注目度x0.5 + 好みx0.3</small>
-        </div>
-      ) : null}
     </div>
   );
 }

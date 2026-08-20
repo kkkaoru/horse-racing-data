@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HorseRaceResult, Runner } from "../../../lib/race-types";
+import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 
 vi.mock("next/navigation", () => ({
@@ -104,6 +104,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
           result({
@@ -134,6 +135,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({
             bamei: "ランク外",
@@ -161,6 +163,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
           result({
@@ -194,6 +197,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260512"
         currentTrackCode="24"
         defaultIncludeClass={true}
+        raceTimeStats={null}
         results={[
           result({
             bamei: "履歴あり",
@@ -232,6 +236,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260816"
         currentTrackCode="17"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[]}
         runners={[runner({ bamei: "補助前馬名", horseNameFull: "FULL HORSE NAME" })]}
         source="jra"
@@ -252,6 +257,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[result({ bamei: "対象", currentUmaban: "01" })]}
         runners={[]}
         source="jra"
@@ -271,6 +277,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({
             bamei: "ランク外",
@@ -307,6 +314,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[result({ bamei: "対象", currentUmaban: "01" })]}
         runners={[]}
         source="jra"
@@ -326,6 +334,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[result({ bamei: "対象", currentUmaban: "01" })]}
         runners={[]}
         source="jra"
@@ -346,6 +355,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({
             bamei: "対象馬",
@@ -387,6 +397,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="24"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({
             bamei: "対象馬",
@@ -443,6 +454,7 @@ describe("horse race results table", () => {
         currentRaceDate="20260322"
         currentTrackCode="90"
         defaultIncludeClass={false}
+        raceTimeStats={null}
         results={[
           result({
             keibajoCode: "83",
@@ -463,5 +475,41 @@ describe("horse race results table", () => {
     expect(screen.getByText("3:18.8")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /上がり3F/u })).toBeNull();
     expect(screen.queryByText("37.8")).toBeNull();
+  });
+
+  it("renders compact time-trend metrics above the per-horse results table", () => {
+    const raceTimeStats: RaceTimeStats = {
+      averageKohan3f: 345,
+      averageRaceTime: 965,
+      correlationRows: [],
+      fastestDetail: null,
+      fastestKohan3f: 332,
+      fastestRaceTime: 725,
+      medianKohan3f: 341,
+      medianRaceTime: 960,
+      raceCount: 12,
+      targetRaces: [],
+    };
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={raceTimeStats}
+        results={[result({ bamei: "対象", currentUmaban: "01" })]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+    const metrics = screen.getByLabelText("タイム傾向");
+    const table = screen.getByRole("table");
+    expect(metrics.compareDocumentPosition(table)).toStrictEqual(4);
+    expect(screen.getByText("最速レースタイム")).toBeDefined();
+    expect(screen.getByText("1:12.5")).toBeDefined();
+    expect(screen.getByText("最速上がり3F")).toBeDefined();
   });
 });
