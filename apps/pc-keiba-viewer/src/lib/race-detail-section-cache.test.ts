@@ -92,7 +92,7 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "A8",
         section: "condition",
       }),
-    ).toBe("race-detail-section:v3:2026:5:23:A8:12:condition:default");
+    ).toBe("race-detail-section:v6:2026:5:23:A8:12:condition:default");
   });
 
   it("validates cacheable sections and default warm targets", () => {

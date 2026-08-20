@@ -85,8 +85,20 @@ import {
 } from "./schema";
 
 const BLOODLINE_STATS_QUERY_VERSION = "v3";
+const FRAME_STATS_QUERY_VERSION = "v2-rates";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
-const TIME_SCORE_QUERY_VERSION = "v2";
+const RATE_PERCENT_DIVISOR = 10;
+const RATE_PERCENT_SCALE = 1000;
+const TIME_SCORE_QUERY_VERSION = "v3-cell";
+const CELL_CONDITION_LABEL_PAIRS = [
+  ["005", "1勝クラス"],
+  ["010", "2勝クラス"],
+  ["016", "3勝クラス"],
+  ["701", "新馬"],
+  ["702", "未出走"],
+  ["703", "未勝利"],
+  ["999", "オープン"],
+] as const;
 
 export interface ActiveRunningStylePrediction {
   horseNumber: number;
@@ -3068,6 +3080,11 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
   // Overseas market-free LightGBM trained on data_kubun='B' runners.
   "overseas-lgbm-fp-v1",
+  // v2 drops Japan-catalogue identity-presence flags (has_jockey /
+  // has_trainer / has_horse_reg) that ranked Japanese-ID runners first.
+  "overseas-lgbm-fp-v2",
+  // v3 adds complete-card market features + LambdaRank grouping.
+  "overseas-lgbm-fp-v3",
 ];
 
 // The base leak-free models plus every model_version a priority-0 display
@@ -3777,6 +3794,8 @@ export const getRaceAbilityTests = cache(
 
 const toCount = (value: string | number | bigint | null | undefined): number => Number(value ?? 0);
 const toRate = (value: string | number | null | undefined): number => Number(value ?? 0);
+const toRateFromCounts = (count: number, starts: number): number | null =>
+  starts > 0 ? Math.round((count * RATE_PERCENT_SCALE) / starts) / RATE_PERCENT_DIVISOR : null;
 const toNullableNumber = (value: string | number | null | undefined): number | null => {
   if (value === null || value === undefined) {
     return null;
@@ -4053,6 +4072,112 @@ const runnerCountCondition = (
     ) = ${settings.runnerCount}::int
   )
 `;
+
+interface BuildHistoryRaceWhereInput {
+  race: RaceDetail;
+  raceDate: string;
+  runnerTable: typeof jvdSe | typeof nvdSe;
+  settings: SimilarRaceStatsSettings;
+  tableName?: string;
+}
+
+const cellConditionKeySql = (jokenCode: ReturnType<typeof sql>, meisho: ReturnType<typeof sql>) => {
+  const whenClauses = CELL_CONDITION_LABEL_PAIRS.map(
+    ([code, label]) => sql`when ${jokenCode} = ${code} then ${label}`,
+  );
+  return sql`case ${sql.join(whenClauses, sql` `)} else nullif(split_part(trim(${meisho}), ' ', 1), '') end`;
+};
+
+const buildCellHistoryRacePredicates = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+  tableName: string,
+) => {
+  const table = sql.raw(tableName);
+  const historyConditionKey = cellConditionKeySql(
+    sql`${table}.kyoso_joken_code`,
+    sql`${table}.kyoso_joken_meisho`,
+  );
+  const currentConditionKey = cellConditionKeySql(
+    sql`${race.kyosoJokenCode ?? ""}`,
+    sql`${race.kyosoJokenMeisho ?? ""}`,
+  );
+  const currentRaceName = (race.kyosomeiHondai ?? "").replace(/^[\s　]+|[\s　]+$/gu, "");
+  return sql`
+    (${settings.includeVenue} = false or ${table}.keibajo_code = ${race.keibajoCode})
+    and (${settings.includeDistance} = false or ${table}.kyori = ${race.kyori})
+    and (${settings.includeAge} = false or ${table}.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+    and (${settings.includeClass} = false or ${table}.kyoso_joken_code = ${race.kyosoJokenCode})
+    and (${settings.includeConditionKey} = false or ${historyConditionKey} is not distinct from ${currentConditionKey})
+    and (${settings.includeTrackCode} = false or ${table}.track_code is not distinct from ${race.trackCode})
+    and (${settings.includeGrade} = false or ${table}.grade_code is not distinct from ${race.gradeCode})
+    and (
+      ${settings.includeRaceTitle} = false
+      or (
+        ${table}.grade_code in ('A', 'F')
+        and nullif(
+          regexp_replace(${table}.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'),
+          ''
+        ) is not distinct from ${currentRaceName === "" ? null : currentRaceName}
+      )
+    )
+  `;
+};
+
+const buildLegacyHistoryRacePredicates = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+  raceDate: string,
+  runnerTable: typeof jvdSe | typeof nvdSe,
+  tableName: string,
+) => {
+  const table = sql.raw(tableName);
+  const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+  const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+  const classCondition = getStatsClassCondition(race, settings.classConditionName, tableName);
+  const raceTitleCondition = getStatsRaceTitleCondition(race, tableName);
+  const raceSubtitleCondition = getStatsRaceSubtitleCondition(race, tableName);
+  return sql`
+    (${settings.includeVenue} = false or ${table}.keibajo_code = ${race.keibajoCode})
+    and ${monthWindowCondition(raceDate, settings.includeMonthWindow, tableName)}
+    and ${runnerCountCondition(runnerTable, settings)}
+    and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+    and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+    and (${settings.includeAge} = false or ${table}.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+    and (${settings.includeClass} = false or ${classCondition})
+    and (${settings.includeSex} = false or ${table}.kyoso_kigo_code = ${race.kyosoKigoCode})
+    and (${settings.includeWeight} = false or ${table}.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+    and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes, tableName)})
+    and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes, tableName)})
+    and (${settings.includeDistance} = false or ${table}.kyori = ${race.kyori})
+    and (${settings.includeRaceNumber} = false or ${table}.race_bango = ${race.raceBango})
+  `;
+};
+
+const buildHistoryRaceWhereSql = (input: BuildHistoryRaceWhereInput) => {
+  const tableName = input.tableName ?? "ra";
+  const table = sql.raw(tableName);
+  const predicates = input.settings.cellMatching
+    ? buildCellHistoryRacePredicates(input.race, input.settings, tableName)
+    : buildLegacyHistoryRacePredicates(
+        input.race,
+        input.settings,
+        input.raceDate,
+        input.runnerTable,
+        tableName,
+      );
+  return sql`
+    ${table}.kaisai_nen || ${table}.kaisai_tsukihi < ${input.raceDate}
+    and (
+      ${input.settings.years}::int is null
+      or ${table}.kaisai_nen || ${table}.kaisai_tsukihi >= to_char(
+        to_date(${input.raceDate}, 'YYYYMMDD') - (${input.settings.years}::int * interval '1 year'),
+        'YYYYMMDD'
+      )
+    )
+    and ${predicates}
+  `;
+};
 
 const JRA_STATS_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
 
@@ -4901,7 +5026,11 @@ const usesOverseasPersonStatsSnapshot = (
   !settings.includeSurface &&
   !settings.includeTurn &&
   !settings.includeVenue &&
-  !settings.includeWeight;
+  !settings.includeWeight &&
+  !settings.cellMatching &&
+  !settings.includeConditionKey &&
+  !settings.includeGrade &&
+  !settings.includeTrackCode;
 
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
@@ -5353,11 +5482,6 @@ export const getTimeScoreRows = cache(
         const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
         const currentRunnerTable = race.source === "jra" ? jvdSe : nvdSe;
         const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-        const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-        const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-        const classCondition = getStatsClassCondition(race, settings.classConditionName);
-        const raceTitleCondition = getStatsRaceTitleCondition(race);
-        const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
         const result = await getDb().execute<{ rows: unknown }>(sql`
       with current_horses as (
         select
@@ -5399,27 +5523,12 @@ export const getTimeScoreRows = cache(
           ra.race_bango
         from ${raceTable} ra
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
-          and (${settings.includeClass} = false or ${classCondition})
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
       ),
       target_profile as (
         select
@@ -5715,11 +5824,6 @@ export const getRaceTimeStats = cache(
       const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
       const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         raceCount: string;
         fastestRaceTime: string | null;
@@ -5754,27 +5858,12 @@ export const getRaceTimeStats = cache(
           ) as race_name
         from ${raceTable} ra
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
-          and (${settings.includeClass} = false or ${classCondition})
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
       ),
       winner_rows as (
         select
@@ -6124,11 +6213,6 @@ export const getPayoutStats = cache(
       const odds5Table = sql.raw(statsSource === "jra" ? "jvd_o5" : "nvd_o5");
       const odds6Table = sql.raw(statsSource === "jra" ? "jvd_o6" : "nvd_o6");
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         betType: string;
         count: string;
@@ -6150,27 +6234,12 @@ export const getPayoutStats = cache(
           ) as race_name
         from ${raceTable} ra
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
-          and (${settings.includeClass} = false or ${classCondition})
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
       ),
       strict_payout_values as (
         select
@@ -6426,11 +6495,6 @@ export const getFinishPositionStats = cache(
       const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
       const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         finishPosition: string;
         count: string;
@@ -6452,27 +6516,12 @@ export const getFinishPositionStats = cache(
           ) as race_name
         from ${raceTable} ra
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
-          and (${settings.includeClass} = false or ${classCondition})
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
       ),
       finish_rows as (
         select
@@ -6560,36 +6609,46 @@ export const getFinishPositionStats = cache(
 
 export const getFrameStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<FrameStatsRow[]> => {
-    return withDbQueryCache(["getFrameStats", race, settings], async () => {
-      const statsSource = getSingleStatsSource(race, settings);
-      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
-      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
-      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = getStatsRaceTitleCondition(race);
-      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
-      const result = await getDb().execute<{
-        frameNumber: string;
-        runnerCount: string | null;
-        count: string;
-        score: string | null;
-        averageFinish: string | null;
-        medianFinish: string | null;
-        averagePopularity: string | null;
-        medianPopularity: string | null;
-        details: unknown;
-      }>(sql`
+    return withDbQueryCache(
+      ["getFrameStats", FRAME_STATS_QUERY_VERSION, race, settings],
+      async () => {
+        const statsSource = getSingleStatsSource(race, settings);
+        const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+        const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+        const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const result = await getDb().execute<{
+          frameNumber: string;
+          runnerCount: string | null;
+          count: string;
+          score: string | null;
+          averageFinish: string | null;
+          medianFinish: string | null;
+          averagePopularity: string | null;
+          medianPopularity: string | null;
+          quinellaCount: string;
+          quinellaRate: string | null;
+          showCount: string;
+          showRate: string | null;
+          winCount: string;
+          winRate: string | null;
+          details: unknown;
+        }>(sql`
       with current_frames as (
-        select distinct wakuban
+        select distinct
+          nullif(
+            nullif(regexp_replace(btrim(wakuban), '[^0-9]', '', 'g'), '')::int,
+            0
+          )::text as wakuban
         from ${runnerTable}
         where
           kaisai_nen = ${race.kaisaiNen}
           and kaisai_tsukihi = ${race.kaisaiTsukihi}
           and keibajo_code = ${race.keibajoCode}
           and race_bango = ${race.raceBango}
-          and nullif(wakuban, '') is not null
+          and nullif(
+            nullif(regexp_replace(btrim(wakuban), '[^0-9]', '', 'g'), '')::int,
+            0
+          ) is not null
       ),
       matched_races as (
         select
@@ -6612,27 +6671,12 @@ export const getFrameStats = cache(
           )::int as runner_count
         from ${raceTable} ra
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
-          and (${settings.includeClass} = false or ${classCondition})
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
       ),
       frame_rows as (
         select
@@ -6642,7 +6686,10 @@ export const getFrameStats = cache(
           matched_races.race_bango,
           matched_races.race_name,
           matched_races.runner_count,
-          se.wakuban,
+          nullif(
+            nullif(regexp_replace(btrim(se.wakuban), '[^0-9]', '', 'g'), '')::int,
+            0
+          )::text as wakuban,
           se.umaban,
           coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
           coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
@@ -6659,14 +6706,20 @@ export const getFrameStats = cache(
           and se.keibajo_code = matched_races.keibajo_code
           and se.race_bango = matched_races.race_bango
         where
-          nullif(se.wakuban, '') is not null
+          nullif(
+            nullif(regexp_replace(btrim(se.wakuban), '[^0-9]', '', 'g'), '')::int,
+            0
+          ) is not null
           and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
           and (
             ${settings.includeFrame} = false
             or exists (
               select 1
               from current_frames
-              where current_frames.wakuban = se.wakuban
+              where current_frames.wakuban = nullif(
+                nullif(regexp_replace(btrim(se.wakuban), '[^0-9]', '', 'g'), '')::int,
+                0
+              )::text
             )
           )
       ),
@@ -6684,6 +6737,21 @@ export const getFrameStats = cache(
           wakuban as "frameNumber",
           case when ${settings.includeRunnerCount} then max(runner_count)::text else null end as "runnerCount",
           count(*)::text as "count",
+          count(*) filter (where finish_position = 1)::text as "winCount",
+          count(*) filter (where finish_position <= 2)::text as "quinellaCount",
+          count(*) filter (where finish_position <= 3)::text as "showCount",
+          round(
+            count(*) filter (where finish_position = 1) * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "winRate",
+          round(
+            count(*) filter (where finish_position <= 2) * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "quinellaRate",
+          round(
+            count(*) filter (where finish_position <= 3) * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "showRate",
           round(avg(finish_position), 1)::text as "averageFinish",
           round((percentile_cont(0.5) within group (order by finish_position))::numeric, 1)::text
             as "medianFinish",
@@ -6733,6 +6801,12 @@ export const getFrameStats = cache(
         "frameNumber",
         "runnerCount",
         "count",
+        "winCount",
+        "quinellaCount",
+        "showCount",
+        "winRate",
+        "quinellaRate",
+        "showRate",
         round(normalized_score, 2)::text as "score",
         "averageFinish",
         "medianFinish",
@@ -6743,18 +6817,31 @@ export const getFrameStats = cache(
       order by "frameNumber" asc
     `);
 
-      return result.rows.map((row) => ({
-        averageFinish: toNullableNumber(row.averageFinish),
-        averagePopularity: toNullableNumber(row.averagePopularity),
-        count: toCount(row.count),
-        details: toStatsDetails(row.details),
-        frameNumber: row.frameNumber,
-        medianFinish: toNullableNumber(row.medianFinish),
-        medianPopularity: toNullableNumber(row.medianPopularity),
-        runnerCount: toNullableNumber(row.runnerCount),
-        score: toNullableNumber(row.score) ?? 0,
-      }));
-    });
+        return result.rows.map((row) => ({
+          averageFinish: toNullableNumber(row.averageFinish),
+          averagePopularity: toNullableNumber(row.averagePopularity),
+          count: toCount(row.count),
+          details: toStatsDetails(row.details),
+          frameNumber: row.frameNumber,
+          medianFinish: toNullableNumber(row.medianFinish),
+          medianPopularity: toNullableNumber(row.medianPopularity),
+          quinellaCount: toCount(row.quinellaCount),
+          quinellaRate:
+            toNullableNumber(row.quinellaRate) ??
+            toRateFromCounts(toCount(row.quinellaCount), toCount(row.count)),
+          runnerCount: toNullableNumber(row.runnerCount),
+          score: toNullableNumber(row.score) ?? 0,
+          showCount: toCount(row.showCount),
+          showRate:
+            toNullableNumber(row.showRate) ??
+            toRateFromCounts(toCount(row.showCount), toCount(row.count)),
+          winCount: toCount(row.winCount),
+          winRate:
+            toNullableNumber(row.winRate) ??
+            toRateFromCounts(toCount(row.winCount), toCount(row.count)),
+        }));
+      },
+    );
   },
 );
 

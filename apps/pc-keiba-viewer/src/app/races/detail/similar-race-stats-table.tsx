@@ -87,10 +87,14 @@ const METRIC_SCORE_WEIGHTS = {
 
 type ToggleSettingKey = keyof Omit<
   SimilarRaceStatsSettings,
+  | "cellMatching"
   | "classConditionName"
   | "includeBloodlineAncestors"
+  | "includeConditionKey"
+  | "includeGrade"
   | "includeNarOnly"
   | "includeRunnerCount"
+  | "includeTrackCode"
   | "runnerCount"
   | "sourceScope"
   | "years"

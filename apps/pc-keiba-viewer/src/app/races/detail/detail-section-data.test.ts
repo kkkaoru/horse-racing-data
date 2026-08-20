@@ -298,6 +298,59 @@ it("uses the stable title-relaxed default for ban-ei rate statistics", async () 
   expect(context?.statsSettings.includeRaceTitle).toBe(false);
 });
 
+it("uses cell classification flags for condition analysis past-race matching", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(NAR_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+
+  const context = await getDetailStatsContext({
+    day: "30",
+    keibajoCode: "55",
+    month: "05",
+    query: {},
+    raceNumber: "01",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(context?.conditionAnalysisSettings).toMatchObject({
+    cellMatching: true,
+    includeAge: true,
+    includeClass: false,
+    includeConditionKey: true,
+    includeDistance: true,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeRaceTitle: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
+    includeVenue: true,
+    includeWeight: false,
+  });
+});
+
+it("turns off the analysis cell venue flag from analysisCellKeibajo=0", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+
+  const context = await getDetailStatsContext({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: { analysisCellKeibajo: "0" },
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(context?.conditionAnalysisSettings.cellMatching).toBe(true);
+  expect(context?.conditionAnalysisSettings.includeVenue).toBe(false);
+  expect(context?.conditionAnalysisSettings.includeClass).toBe(true);
+  expect(context?.conditionAnalysisSettings.includeConditionKey).toBe(false);
+});
+
 it("bloodline payload filters thin overseas samples and discloses the venue fallback", async () => {
   getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -541,6 +594,174 @@ it("rejects a timed-out similar fallback", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("returns the first canonical adequate candidate without waiting for later ones", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  const adequateRows = [
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Prefix Sire",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ];
+  let resolveLater: ((rows: typeof adequateRows) => void) | undefined;
+  const later = new Promise<typeof adequateRows>((resolve) => {
+    resolveLater = resolve;
+  });
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(adequateRows)
+    .mockReturnValueOnce(later);
+
+  const payloadPromise = getDetailSectionPayload("bloodline", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  const payload = await payloadPromise;
+  expect(payload).toMatchObject({
+    rows: adequateRows,
+    type: "bloodline",
+  });
+  expect(resolveLater).toBeTypeOf("function");
+});
+
+it("does not adopt a later faster candidate before the canonical prefix settles", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+  const laterAdequateRows = [
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Later Sire",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ];
+  const earlierAdequateRows = [
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Earlier Sire",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ];
+  let resolveEarlier: ((rows: typeof earlierAdequateRows) => void) | undefined;
+  const earlier = new Promise<typeof earlierAdequateRows>((resolve) => {
+    resolveEarlier = resolve;
+  });
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock
+    .mockResolvedValueOnce([])
+    .mockReturnValueOnce(earlier)
+    .mockResolvedValueOnce(laterAdequateRows);
+
+  const payloadPromise = getDetailSectionPayload("bloodline", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  await Promise.resolve();
+  expect(resolveEarlier).toBeTypeOf("function");
+  resolveEarlier?.(earlierAdequateRows);
+  const payload = await payloadPromise;
+  expect(payload).toMatchObject({
+    rows: earlierAdequateRows,
+    type: "bloodline",
+  });
 });
 
 it("keeps legitimate zero person rows when fallback candidates are exhausted", async () => {

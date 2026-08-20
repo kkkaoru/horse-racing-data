@@ -14,7 +14,6 @@ import {
   getRacePaceModelPredictionFeatures,
   getRacePaceSimilarityFeatures,
   getRaceRunners,
-  getRaceTimeStats,
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
   getSimilarRaceStats,
@@ -46,6 +45,11 @@ import {
   getTrackTurnLabel,
 } from "../../../lib/format";
 import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/netkeiba-training";
+import {
+  ANALYSIS_CELL_PARAM_NAMES,
+  buildCellMatchingStatsSettings,
+  withDisabledCellDimensions,
+} from "../../../lib/past-race-cell-matching";
 import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
 import {
   getAgeLabel,
@@ -603,6 +607,7 @@ const hasExplicitStatsState = (
     return (
       name.startsWith(`${prefix}Stats`) ||
       name.startsWith("stats") ||
+      (prefix === "analysis" && name.startsWith("analysisCell")) ||
       (prefix === "analysis" && name === "similarStatsVenue")
     );
   });
@@ -754,6 +759,9 @@ const hasCompleteConditionAnalysisRows = (stats: ConditionAnalysisStats): boolea
 };
 
 const relaxAllConditionAnalysisSettings = <T extends SimilarRaceStatsSettings>(settings: T): T => {
+  if (settings.cellMatching) {
+    return { ...settings, ...withDisabledCellDimensions(settings, false) };
+  }
   const relaxedSettings = { ...settings };
   for (const key of CONDITION_ANALYSIS_RELAX_KEYS) {
     relaxedSettings[key] = false;
@@ -765,6 +773,13 @@ const relaxAllConditionAnalysisSettings = <T extends SimilarRaceStatsSettings>(s
 const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSettings>(
   settings: T,
 ): T[] => {
+  if (settings.cellMatching) {
+    return [
+      settings,
+      { ...settings, ...withDisabledCellDimensions(settings, true) },
+      { ...settings, ...withDisabledCellDimensions(settings, false) },
+    ];
+  }
   const candidates = [settings];
   const relaxedSettings = { ...settings };
 
@@ -929,25 +944,33 @@ const findRateStatsCandidate = async <
     return { status: "exhausted" };
   }
 
-  const batchStatsPromise = Promise.all(
-    candidates.map(async (settings) => ({
-      settings,
-      stats: await getStats(settings),
-    })),
-  );
+  const pending = candidates.map(async (settings) => ({
+    settings,
+    stats: await getStats(settings),
+  }));
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const batchStats = await Promise.race([
-    batchStatsPromise,
-    new Promise<null>((resolve) => {
-      timeout = setTimeout(() => resolve(null), RATE_STATS_FALLBACK_TIMEOUT_MS);
-    }),
-  ]).finally(() => clearTimeout(timeout));
-  if (batchStats === null) {
-    return { status: "timedOut" };
+  const deadline = new Promise<"timedOut">((resolve) => {
+    timeout = setTimeout(() => resolve("timedOut"), RATE_STATS_FALLBACK_TIMEOUT_MS);
+  });
+  const waitForCanonicalPrefix = async (index: number): Promise<RateStatsCandidateResult<T, R>> => {
+    const next = pending[index];
+    if (!next) {
+      return { status: "exhausted" };
+    }
+    const raced = await Promise.race([next, deadline]);
+    if (raced === "timedOut") {
+      return { status: "timedOut" };
+    }
+    if (hasEnoughStats(raced.stats)) {
+      return { status: "matched", ...raced };
+    }
+    return waitForCanonicalPrefix(index + 1);
+  };
+  try {
+    return await waitForCanonicalPrefix(0);
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const matched = batchStats.find(({ stats }) => hasEnoughStats(stats));
-  return matched ? { status: "matched", ...matched } : { status: "exhausted" };
 };
 
 export const getDetailStatsContext = async ({
@@ -976,18 +999,12 @@ export const getDetailStatsContext = async ({
   const defaultBloodlineStatsYears = 10;
   const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
   const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
-  const parsedRaceRunnerCount = Number(cleanText(race.shussoTosu, "").replace(/[^0-9]/g, ""));
-  const currentRunnerCount =
-    runners.length > 0
-      ? runners.length
-      : Number.isFinite(parsedRaceRunnerCount) && parsedRaceRunnerCount > 0
-        ? parsedRaceRunnerCount
-        : null;
   const buildStatsSettings = (
     prefix: string,
     defaultYearsForPrefix: number | null,
     defaultIncludeSex: boolean,
   ): SimilarRaceStatsSettings => ({
+    cellMatching: false,
     classConditionName: statsClassConditionLabel,
     includeAge: getDefaultFlag(
       getStatsQueryParam(query, prefix, "statsAge") ??
@@ -999,10 +1016,12 @@ export const getDetailStatsContext = async ({
       getStatsQueryParam(query, prefix, "statsClass"),
       Boolean(statsClassConditionLabel),
     ),
+    includeConditionKey: false,
     includeDistance: banEiRace
       ? false
       : getFlag(getStatsQueryParam(query, prefix, "statsDistance")),
     includeFrame: getOptionalFlag(getStatsQueryParam(query, prefix, "statsFrame")),
+    includeGrade: false,
     includeMonthWindow: getOptionalFlag(
       getStatsQueryParam(query, prefix, "statsRaceMonth") ??
         getStatsQueryParam(query, prefix, "statsMonthWindow"),
@@ -1021,6 +1040,7 @@ export const getDetailStatsContext = async ({
     ),
     includeRunnerCount: false,
     includeSex: getDefaultFlag(getStatsQueryParam(query, prefix, "statsSex"), defaultIncludeSex),
+    includeTrackCode: false,
     includeSurface: banEiRace
       ? false
       : getFlag(
@@ -1092,6 +1112,7 @@ export const getDetailStatsContext = async ({
     class: statsClassConditionLabel,
     distance: banEiRace ? null : formatDistance(race.kyori),
     frame: "枠番号",
+    grade: null,
     monthWindow: "開催月±1か月",
     raceNumber: formatRaceNumber(race.raceBango),
     raceSubtitle: raceNameFilterLabels.subtitle,
@@ -1099,21 +1120,43 @@ export const getDetailStatsContext = async ({
     runnerCount: null,
     sex: raceSymbolLabel.startsWith("競走記号") ? null : raceSymbolLabel,
     surface: banEiRace ? null : getTrackSurfaceLabel(race.trackCode),
+    track: null,
     turn: banEiRace ? null : getTrackTurnLabel(race.trackCode),
     venue: banEiRace ? null : formatKeibajo(keibajoCode),
     weight: getWeightLabel(race.juryoShubetsuCode),
   };
+  const analysisCellFlags = getFinishPredictionDimensionFlags({
+    gradeCode: race.gradeCode ?? null,
+    isBanEi: banEiRace,
+    paramNames: ANALYSIS_CELL_PARAM_NAMES,
+    query,
+    source: race.source,
+  });
   const conditionAnalysisSettings: SimilarRaceStatsSettings = {
-    ...buildStatsSettings("analysis", null, defaultSimilarStatsIncludeSex),
-    includeRunnerCount: getDefaultFlag(
-      getStatsQueryParam(query, "analysis", "statsRunnerCount"),
-      currentRunnerCount !== null,
-    ),
-    runnerCount: currentRunnerCount,
+    ...buildCellMatchingStatsSettings({
+      classConditionName: statsClassConditionLabel,
+      flags: analysisCellFlags,
+      sourceScope: getStatsSourceScope(query, "analysis"),
+      years: getStatsYears(getStatsQueryParam(query, "analysis", "statsYears"), null),
+    }),
   };
+  const cellGradeLabel = getGradeLabel(race.gradeCode, race.source);
+  const cellTrackLabel =
+    banEiRace || race.trackCode === null || race.trackCode === ""
+      ? null
+      : `${getTrackSurfaceLabel(race.trackCode)}${getTrackTurnLabel(race.trackCode)}`;
+  const cellRaceNameLabel = (race.kyosomeiHondai ?? "").trim();
   const conditionAnalysisLabels = {
     ...statsConditionLabels,
-    runnerCount: currentRunnerCount === null ? null : `${currentRunnerCount}頭`,
+    class:
+      race.source === "jra"
+        ? getConditionLabel(race.kyosoJokenCode)
+        : (race.kyosoJokenMeisho ?? "").trim() || statsClassConditionLabel,
+    grade: cellGradeLabel === "-" ? null : cellGradeLabel,
+    raceTitle: cellRaceNameLabel === "" ? null : cellRaceNameLabel,
+    runnerCount: null,
+    track: cellTrackLabel,
+    venue: formatKeibajo(keibajoCode),
   };
 
   return {
@@ -1719,7 +1762,7 @@ export const getDetailSectionPayload = async (
   if (section === "overall-score") {
     const [timeRows, raceTimeStats] = await Promise.all([
       getTimeScoreRows(race, context.conditionAnalysisSettings),
-      getRaceTimeStats(race, context.conditionAnalysisSettings),
+      getOrComputeRaceTimeStats({ race, settings: context.conditionAnalysisSettings }),
     ]);
     const resolvedBloodlineSettings = context.bloodlineStatsSettings;
     const bloodlineRows = getEligibleBloodlineRows(

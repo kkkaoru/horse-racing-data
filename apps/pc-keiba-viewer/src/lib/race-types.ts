@@ -424,12 +424,15 @@ export interface PayoutStatsDetail extends Record<string, unknown> {
 }
 
 export interface SimilarRaceStatsSettings {
+  cellMatching: boolean;
   classConditionName: string | null;
   includeAge: boolean;
   includeBloodlineAncestors: boolean;
   includeClass: boolean;
+  includeConditionKey: boolean;
   includeDistance: boolean;
   includeFrame: boolean;
+  includeGrade: boolean;
   includeMonthWindow: boolean;
   includeNarOnly: boolean;
   includeRaceNumber: boolean;
@@ -438,6 +441,7 @@ export interface SimilarRaceStatsSettings {
   includeRunnerCount: boolean;
   includeSex: boolean;
   includeSurface: boolean;
+  includeTrackCode: boolean;
   includeTurn: boolean;
   includeVenue: boolean;
   includeWeight: boolean;
@@ -761,5 +765,11 @@ export interface FrameStatsRow extends Record<string, unknown> {
   medianFinish: number | null;
   averagePopularity: number | null;
   medianPopularity: number | null;
+  quinellaCount: number;
+  quinellaRate: number | null;
+  showCount: number;
+  showRate: number | null;
+  winCount: number;
+  winRate: number | null;
   details: StatsDetail[];
 }

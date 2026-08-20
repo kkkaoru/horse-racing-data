@@ -14,6 +14,7 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // to be called race-by-race to work around it. Bumping here invalidates every
 // section's cache at once instead.
 export const DETAIL_SECTION_CACHE_VERSION = "v3";
+const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v6";
 const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v5";
 const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v8";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
@@ -55,6 +56,9 @@ const getDetailSectionCacheVersion = (
 ): string => {
   if (section === "premium-data-top") {
     return PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION;
+  }
+  if (section === "condition") {
+    return CONDITION_DETAIL_SECTION_CACHE_VERSION;
   }
   if (
     (section === "bloodline" || section === "similar" || section === "time-score") &&

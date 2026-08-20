@@ -25,7 +25,7 @@ vi.mock("./query-cache", () => ({
 }));
 
 import type { FinishPositionBucketFilter } from "../lib/finish-prediction-dimensions";
-import type { RaceDetail, Runner } from "../lib/race-types";
+import type { RaceDetail, Runner, SimilarRaceStatsSettings } from "../lib/race-types";
 import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-dimensions";
 import {
   getFinishPositionBucketEvaluation,
@@ -34,6 +34,7 @@ import {
   getHorseList,
   getHorseRaceResults,
   getBloodlineStats,
+  getFrameStats,
   getRaceAbilityTests,
   getRaceRunners,
   getRaceTimeStats,
@@ -560,12 +561,15 @@ it("getSimilarRaceStats reads the precomputed overseas person snapshot", async (
   });
   const race = { ...PERCLASS_703_RACE, keibajoCode: "A8" };
   const settings = {
+    cellMatching: false,
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: false,
     includeClass: false,
+    includeConditionKey: false,
     includeDistance: false,
     includeFrame: false,
+    includeGrade: false,
     includeMonthWindow: false,
     includeNarOnly: false,
     includeRaceNumber: false,
@@ -574,6 +578,7 @@ it("getSimilarRaceStats reads the precomputed overseas person snapshot", async (
     includeRunnerCount: false,
     includeSex: false,
     includeSurface: false,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: false,
     includeWeight: false,
@@ -618,12 +623,15 @@ it("getSimilarRaceStats returns no fallback rows when an overseas snapshot is ab
     getSimilarRaceStats(
       { ...PERCLASS_703_RACE, keibajoCode: "A9" },
       {
+        cellMatching: false,
         classConditionName: null,
         includeAge: false,
         includeBloodlineAncestors: false,
         includeClass: false,
+        includeConditionKey: false,
         includeDistance: false,
         includeFrame: false,
+        includeGrade: false,
         includeMonthWindow: false,
         includeNarOnly: false,
         includeRaceNumber: false,
@@ -632,6 +640,7 @@ it("getSimilarRaceStats returns no fallback rows when an overseas snapshot is ab
         includeRunnerCount: false,
         includeSex: false,
         includeSurface: false,
+        includeTrackCode: false,
         includeTurn: false,
         includeVenue: false,
         includeWeight: false,
@@ -646,16 +655,38 @@ it("getSimilarRaceStats returns no fallback rows when an overseas snapshot is ab
   );
 });
 
-it("getSimilarRaceStats counts placeholder entries separately without counting an empty left join", async () => {
-  executeMock.mockResolvedValue({ rows: [] });
-
-  await getSimilarRaceStats(PERCLASS_703_RACE, {
+it("getFrameStats maps win, quinella, and show rates per frame", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        averageFinish: "3.2",
+        averagePopularity: "4.1",
+        count: "40",
+        details: [],
+        frameNumber: "1",
+        medianFinish: "2.5",
+        medianPopularity: "3.0",
+        quinellaCount: "12",
+        quinellaRate: "30.0",
+        runnerCount: "16",
+        score: "0.80",
+        showCount: "18",
+        showRate: "45.0",
+        winCount: "6",
+        winRate: "15.0",
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: false,
     includeClass: false,
+    includeConditionKey: false,
     includeDistance: false,
     includeFrame: false,
+    includeGrade: false,
     includeMonthWindow: false,
     includeNarOnly: false,
     includeRaceNumber: false,
@@ -664,6 +695,211 @@ it("getSimilarRaceStats counts placeholder entries separately without counting a
     includeRunnerCount: false,
     includeSex: false,
     includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: 10,
+  };
+
+  await expect(getFrameStats(PERCLASS_703_RACE, settings)).resolves.toStrictEqual([
+    {
+      averageFinish: 3.2,
+      averagePopularity: 4.1,
+      count: 40,
+      details: [],
+      frameNumber: "1",
+      medianFinish: 2.5,
+      medianPopularity: 3,
+      quinellaCount: 12,
+      quinellaRate: 30,
+      runnerCount: 16,
+      score: 0.8,
+      showCount: 18,
+      showRate: 45,
+      winCount: 6,
+      winRate: 15,
+    },
+  ]);
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/count\(\*\) filter \(where finish_position = 1\)/u);
+  expect(queryText).toMatch(/count\(\*\) filter \(where finish_position <= 2\)/u);
+  expect(queryText).toMatch(/count\(\*\) filter \(where finish_position <= 3\)/u);
+  expect(queryText).toMatch(
+    /nullif\(regexp_replace\(btrim\(se\.wakuban\), '\[\^0-9\]', '', 'g'\), ''\)::int/u,
+  );
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getFrameStats",
+    "v2-rates",
+    PERCLASS_703_RACE,
+    settings,
+  ]);
+});
+
+it("getFrameStats keeps null rates when the database returns a null or invalid rate", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        averageFinish: null,
+        averagePopularity: null,
+        count: "0",
+        details: [],
+        frameNumber: "2",
+        medianFinish: null,
+        medianPopularity: null,
+        quinellaCount: "0",
+        quinellaRate: null,
+        runnerCount: null,
+        score: null,
+        showCount: "0",
+        showRate: "not-a-number",
+        winCount: "0",
+        winRate: null,
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: true,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "jra",
+    years: 5,
+  };
+
+  await expect(getFrameStats(PERCLASS_703_RACE, settings)).resolves.toStrictEqual([
+    {
+      averageFinish: null,
+      averagePopularity: null,
+      count: 0,
+      details: [],
+      frameNumber: "2",
+      medianFinish: null,
+      medianPopularity: null,
+      quinellaCount: 0,
+      quinellaRate: null,
+      runnerCount: null,
+      score: 0,
+      showCount: 0,
+      showRate: null,
+      winCount: 0,
+      winRate: null,
+    },
+  ]);
+});
+
+it("getFrameStats computes win, quinella, and show rates from counts when the rate columns are null", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        averageFinish: "3.2",
+        averagePopularity: "4.1",
+        count: "40",
+        details: [],
+        frameNumber: "1",
+        medianFinish: "2.5",
+        medianPopularity: "3.0",
+        quinellaCount: "12",
+        quinellaRate: null,
+        runnerCount: "16",
+        score: "0.80",
+        showCount: "18",
+        showRate: null,
+        winCount: "6",
+        winRate: null,
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: 10,
+  };
+
+  await expect(getFrameStats(PERCLASS_703_RACE, settings)).resolves.toStrictEqual([
+    {
+      averageFinish: 3.2,
+      averagePopularity: 4.1,
+      count: 40,
+      details: [],
+      frameNumber: "1",
+      medianFinish: 2.5,
+      medianPopularity: 3,
+      quinellaCount: 12,
+      quinellaRate: 30,
+      runnerCount: 16,
+      score: 0.8,
+      showCount: 18,
+      showRate: 45,
+      winCount: 6,
+      winRate: 15,
+    },
+  ]);
+});
+
+it("getSimilarRaceStats counts placeholder entries separately without counting an empty left join", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getSimilarRaceStats(PERCLASS_703_RACE, {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: false,
     includeWeight: false,
@@ -695,12 +931,15 @@ it("getBloodlineStats supplies source-native pedigree names only through complet
   executeMock.mockResolvedValue({ rows: [] });
 
   await getBloodlineStats(PERCLASS_703_RACE, {
+    cellMatching: false,
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: true,
     includeClass: false,
+    includeConditionKey: false,
     includeDistance: false,
     includeFrame: false,
+    includeGrade: false,
     includeMonthWindow: false,
     includeNarOnly: false,
     includeRaceNumber: false,
@@ -709,6 +948,7 @@ it("getBloodlineStats supplies source-native pedigree names only through complet
     includeRunnerCount: false,
     includeSex: false,
     includeSurface: false,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: false,
     includeWeight: false,
@@ -740,12 +980,15 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
   executeMock.mockResolvedValue({ rows: [] });
 
   await getTimeScoreRows(PERCLASS_703_RACE, {
+    cellMatching: false,
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: false,
     includeClass: false,
+    includeConditionKey: false,
     includeDistance: false,
     includeFrame: false,
+    includeGrade: false,
     includeMonthWindow: false,
     includeNarOnly: false,
     includeRaceNumber: false,
@@ -754,6 +997,7 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
     includeRunnerCount: false,
     includeSex: false,
     includeSurface: false,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: false,
     includeWeight: false,
@@ -766,7 +1010,7 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getTimeScoreRows",
-    "v2",
+    "v3-cell",
   ]);
   expect(collectTableNames(queryArg)).toStrictEqual([
     "jvd_se",
@@ -793,12 +1037,15 @@ it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse histo
   executeMock.mockResolvedValue({ rows: [] });
 
   await getRaceTimeStats(PERCLASS_703_RACE, {
+    cellMatching: false,
     classConditionName: null,
     includeAge: false,
     includeBloodlineAncestors: false,
     includeClass: false,
+    includeConditionKey: false,
     includeDistance: false,
     includeFrame: false,
+    includeGrade: false,
     includeMonthWindow: false,
     includeNarOnly: false,
     includeRaceNumber: false,
@@ -807,6 +1054,7 @@ it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse histo
     includeRunnerCount: false,
     includeSex: false,
     includeSurface: false,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: false,
     includeWeight: false,
@@ -822,6 +1070,86 @@ it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse histo
   expect(queryText).toMatch(
     /btrim\(coalesce\(current_entries\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u,
   );
+});
+
+it("getTimeScoreRows matches past races with cell classification predicates", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getTimeScoreRows(PERCLASS_703_RACE, {
+    cellMatching: true,
+    classConditionName: "未勝利",
+    includeAge: true,
+    includeBloodlineAncestors: true,
+    includeClass: false,
+    includeConditionKey: true,
+    includeDistance: true,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
+    includeVenue: true,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "jra",
+    years: 10,
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/ra\.keibajo_code = /u);
+  expect(queryText).toMatch(/ra\.kyori = /u);
+  expect(queryText).toMatch(/ra\.kyoso_shubetsu_code = /u);
+  expect(queryText).toMatch(/ra\.track_code is not distinct from /u);
+  expect(queryText).toMatch(/when ra\.kyoso_joken_code = /u);
+  expect(queryText).toMatch(/then '1勝クラス'/u);
+  expect(queryText).toMatch(
+    /else nullif\(split_part\(trim\(ra\.kyoso_joken_meisho\), ' ', 1\), ''\)/u,
+  );
+  expect(queryText).not.toMatch(/substring\(ra\.kaisai_tsukihi from 1 for 2\)/u);
+});
+
+it("getRaceTimeStats matches past races with cell track and grade predicates", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceTimeStats(PERCLASS_703_RACE, {
+    cellMatching: true,
+    classConditionName: "G1",
+    includeAge: true,
+    includeBloodlineAncestors: true,
+    includeClass: true,
+    includeConditionKey: false,
+    includeDistance: true,
+    includeFrame: false,
+    includeGrade: true,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: true,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
+    includeVenue: true,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "jra",
+    years: 5,
+  });
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/ra\.grade_code is not distinct from /u);
+  expect(queryText).toMatch(/ra\.grade_code in \('A', 'F'\)/u);
+  expect(queryText).toMatch(/ra\.kyoso_joken_code = /u);
+  expect(queryText).not.toMatch(/ra\.kyoso_kigo_code = /u);
 });
 
 it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when all flags are on", async () => {
@@ -1907,6 +2235,8 @@ it("getFinishPositionLambdarankPredictions uses source='overseas' and category='
   expect(queryText).toMatch(/p3\.source = 'overseas'/u);
   // Priority 0 must be gated to false (no cell-routing for overseas).
   expect(queryText).toMatch(/where false\s+and p0\.source = 'overseas'/u);
+  expect(queryText).toMatch(/overseas-lgbm-fp-v2/u);
+  expect(queryText).toMatch(/overseas-lgbm-fp-v3/u);
 });
 
 it("race-runners-nar-includes-sire-name", async () => {

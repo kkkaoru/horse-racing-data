@@ -140,7 +140,7 @@ it("buildRaceCacheBustKeys generates main + stale entries for every cacheable se
   expect(keys.mainKeys).toStrictEqual([
     "race-detail-section:v3:2026:06:28:05:11:ability:default",
     "race-detail-section:v5:2026:06:28:05:11:bloodline:default",
-    "race-detail-section:v3:2026:06:28:05:11:condition:default",
+    "race-detail-section:v6:2026:06:28:05:11:condition:default",
     "race-detail-section:v2:2026:06:28:05:11:premium-data-top:default",
     "race-detail-section:v3:2026:06:28:05:11:overall-score:default",
     "race-detail-section:v3:2026:06:28:05:11:pace-prediction:default",
@@ -162,7 +162,7 @@ it("buildRaceCacheBustKeys staleKeys prepend the stale: prefix to each main key"
   expect(keys.staleKeys).toStrictEqual([
     "stale:race-detail-section:v3:2026:06:28:05:11:ability:default",
     "stale:race-detail-section:v5:2026:06:28:05:11:bloodline:default",
-    "stale:race-detail-section:v3:2026:06:28:05:11:condition:default",
+    "stale:race-detail-section:v6:2026:06:28:05:11:condition:default",
     "stale:race-detail-section:v2:2026:06:28:05:11:premium-data-top:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:overall-score:default",
     "stale:race-detail-section:v3:2026:06:28:05:11:pace-prediction:default",
