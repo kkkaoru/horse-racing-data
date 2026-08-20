@@ -133,7 +133,7 @@ const WIN_RATE_HEATMAP_VIEW_MODE_METRICS: Record<
   winRate: WIN_RATE_HEATMAP_RATE_METRICS.filter((metric) => metric.key === "winRate"),
 };
 
-const EMPTY_CELL: WinRateHeatmapCell = {
+export const EMPTY_WIN_RATE_HEATMAP_CELL: WinRateHeatmapCell = {
   name: null,
   quinellaCount: null,
   quinellaRate: null,
@@ -155,7 +155,7 @@ const RATE_DECIMAL_FACTOR = 10;
 const EMPTY_RATE_COLUMN_SPAN = 1;
 
 const splitHorseNumbers = (value: string): string[] =>
-  value
+  cleanText(value, "")
     .split(",")
     .map((horseNumber) => formatRunnerNumber(cleanText(horseNumber, "")))
     .filter((horseNumber) => horseNumber !== "-");
@@ -195,7 +195,7 @@ const toHeatmapCell = (
   row: BloodlineStatsRow | SimilarRaceStatsRow | undefined,
 ): WinRateHeatmapCell => {
   if (row === undefined) {
-    return EMPTY_CELL;
+    return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
   return {
     name: row.name,
@@ -214,7 +214,7 @@ const toFrameHeatmapCell = (
   frameNumber: string,
 ): WinRateHeatmapCell => {
   if (row === undefined) {
-    return EMPTY_CELL;
+    return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
   const name = `枠${frameNumber}`;
   const starts = toHeatmapNumber(row.count);
@@ -244,7 +244,7 @@ const toFrameHeatmapCell = (
   }
   const ranks = ranksFromDetails(row.details);
   if (ranks.length === 0) {
-    return { ...EMPTY_CELL, name };
+    return { ...EMPTY_WIN_RATE_HEATMAP_CELL, name };
   }
   return buildRateCell({
     name,
@@ -260,7 +260,7 @@ const buildHorseRateCell = (horseName: string, results: HorseRaceResult[]): WinR
     .map((result) => parseFinishPosition(result.kakuteiChakujun))
     .filter((rank): rank is number => rank !== null);
   if (ranks.length === 0) {
-    return { ...EMPTY_CELL, name: horseName };
+    return { ...EMPTY_WIN_RATE_HEATMAP_CELL, name: horseName };
   }
   return buildRateCell({
     name: horseName,
@@ -343,12 +343,12 @@ const toWeightHeatmapCell = (
   ratesByClass: Map<string, WeightClassRateCounts>,
 ): WinRateHeatmapCell => {
   if (kg === null) {
-    return EMPTY_CELL;
+    return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
   const weightClass = getHorseWeightClass(kg);
   const counts = ratesByClass.get(weightClass.key);
   if (counts === undefined || counts.starts === 0) {
-    return { ...EMPTY_CELL, name: weightClass.label };
+    return { ...EMPTY_WIN_RATE_HEATMAP_CELL, name: weightClass.label };
   }
   return buildRateCell({
     name: weightClass.label,

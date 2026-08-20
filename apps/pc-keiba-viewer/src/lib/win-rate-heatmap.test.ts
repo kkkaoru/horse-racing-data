@@ -1520,6 +1520,30 @@ it("leaves the weight cell empty when the current horse has no published weight"
   ]);
 });
 
+it("skips similar and bloodline rows whose current horse numbers are blank", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [{ ...bloodlineSire, currentHorseNumbers: "" }],
+      frameStats: [],
+      horseResults: [],
+      runners: [runnerOne],
+      similarRows: [{ ...similarJockey, currentHorseNumbers: "   " }],
+    }).map((row) => ({
+      horse: row.cells.horse.name,
+      jockey: row.cells.jockey.name,
+      sire: row.cells.sire.name,
+    })),
+  ).toStrictEqual([
+    {
+      horse: "Alpha",
+      jockey: null,
+      sire: null,
+    },
+  ]);
+});
+
 it("decodes Ban-ei hex horse weights when classifying heatmap weight cells", () => {
   expect(
     buildWinRateHeatmapRows({

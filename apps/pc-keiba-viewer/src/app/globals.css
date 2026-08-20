@@ -9415,7 +9415,6 @@ fieldset.stats-section-toggle-wrap {
   padding: var(--space-6px-33) var(--space-2px-25);
 }
 
-.win-rate-heatmap-swatch:hover,
 .win-rate-heatmap-swatch.tooltip-open {
   z-index: var(--number-20-3);
 }
@@ -9460,11 +9459,22 @@ fieldset.stats-section-toggle-wrap {
   z-index: var(--number-20-3);
 }
 
-.win-rate-heatmap-swatch:hover .win-rate-heatmap-tooltip,
-.win-rate-heatmap-swatch:focus-visible .win-rate-heatmap-tooltip,
 .win-rate-heatmap-swatch.tooltip-open .win-rate-heatmap-tooltip {
   opacity: var(--number-1-7);
   visibility: visible;
+}
+
+@media (min-width: 721px) {
+  .win-rate-heatmap-swatch:hover,
+  .win-rate-heatmap-swatch:focus-visible {
+    z-index: var(--number-20-3);
+  }
+
+  .win-rate-heatmap-swatch:hover .win-rate-heatmap-tooltip,
+  .win-rate-heatmap-swatch:focus-visible .win-rate-heatmap-tooltip {
+    opacity: var(--number-1-7);
+    visibility: visible;
+  }
 }
 
 .win-rate-heatmap-tooltip-above .win-rate-heatmap-tooltip {
@@ -9476,6 +9486,17 @@ fieldset.stats-section-toggle-wrap {
   .win-rate-heatmap-table {
     min-width: var(--space-880px-154);
     width: var(--space-880px-154);
+  }
+
+  .win-rate-heatmap-swatch:hover .win-rate-heatmap-tooltip,
+  .win-rate-heatmap-swatch:focus-visible .win-rate-heatmap-tooltip {
+    opacity: var(--number-0-2);
+    visibility: hidden;
+  }
+
+  .win-rate-heatmap-swatch.tooltip-open .win-rate-heatmap-tooltip {
+    opacity: var(--number-1-7);
+    visibility: visible;
   }
 }
 

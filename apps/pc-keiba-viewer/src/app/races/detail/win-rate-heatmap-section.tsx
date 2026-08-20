@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { indexLiveHorseWeightKg } from "../../../lib/horse-weight-class";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
@@ -14,6 +14,7 @@ import type {
 import {
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
+  EMPTY_WIN_RATE_HEATMAP_CELL,
   formatWinRateHeatmapValue,
   getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
@@ -40,8 +41,6 @@ interface WinRateHeatmapSectionProps {
   similarRows: SimilarRaceStatsRow[];
 }
 
-const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
-
 interface WinRateHeatmapSwatchProps {
   cell: WinRateHeatmapCell;
   column: WinRateHeatmapColumn;
@@ -51,6 +50,9 @@ interface WinRateHeatmapSwatchProps {
   metric: WinRateHeatmapRateMetric;
   onToggle: () => void;
 }
+
+const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
+const HEATMAP_MOBILE_TOOLTIP_QUERY = "(max-width: 720px)";
 
 const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }): string => {
   if (input.isLastRow && input.isOpen) {
@@ -64,6 +66,32 @@ const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }):
   }
   return "win-rate-heatmap-swatch";
 };
+
+const subscribeHeatmapMobileTooltip = (onStoreChange: () => void): (() => void) => {
+  if (typeof window === "undefined" || !window.matchMedia) {
+    return () => {};
+  }
+  const mediaQuery = window.matchMedia(HEATMAP_MOBILE_TOOLTIP_QUERY);
+  if (mediaQuery.addEventListener) {
+    mediaQuery.addEventListener("change", onStoreChange);
+  } else {
+    mediaQuery.addListener(onStoreChange);
+  }
+  return () => {
+    if (mediaQuery.removeEventListener) {
+      mediaQuery.removeEventListener("change", onStoreChange);
+    } else {
+      mediaQuery.removeListener(onStoreChange);
+    }
+  };
+};
+
+const getHeatmapMobileTooltipSnapshot = (): boolean =>
+  typeof window !== "undefined" &&
+  Boolean(window.matchMedia) &&
+  window.matchMedia(HEATMAP_MOBILE_TOOLTIP_QUERY).matches;
+
+const getHeatmapMobileTooltipServerSnapshot = (): boolean => false;
 
 const WinRateHeatmapSwatch = ({
   cell,
@@ -86,6 +114,7 @@ const WinRateHeatmapSwatch = ({
             ? `${column.label} ${frameNumber}`
             : `${column.label} ${getWinRateHeatmapTooltipName(cell)}`
         }
+        aria-expanded={isOpen}
         className="win-rate-heatmap-swatch-button"
         type="button"
         onClick={onToggle}
@@ -116,6 +145,33 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
     DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   );
+  const isMobileTooltip = useSyncExternalStore(
+    subscribeHeatmapMobileTooltip,
+    getHeatmapMobileTooltipSnapshot,
+    getHeatmapMobileTooltipServerSnapshot,
+  );
+  useEffect(() => {
+    if (isMobileTooltip) {
+      return undefined;
+    }
+    setOpenTooltipKey(null);
+  }, [isMobileTooltip]);
+  useEffect(() => {
+    if (!isMobileTooltip || openTooltipKey === null) {
+      return undefined;
+    }
+    const closeTooltipOnOutsidePointer = (event: PointerEvent): void => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".win-rate-heatmap-swatch-button") !== null) {
+        return;
+      }
+      setOpenTooltipKey(null);
+    };
+    document.addEventListener("pointerdown", closeTooltipOnOutsidePointer);
+    return () => {
+      document.removeEventListener("pointerdown", closeTooltipOnOutsidePointer);
+    };
+  }, [isMobileTooltip, openTooltipKey]);
   const { payload: realtimePayload } = useRealtimeRacePayload(realtimeRequest, null);
   const horseWeightSnapshot = useHorseWeightStream({
     day: realtimeRequest.day,
@@ -208,7 +264,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                   {row.horseNumber}
                 </th>
                 {visibleColumns.map((column) => {
-                  const cell = row.cells[column.key];
+                  const cell = row.cells[column.key] ?? EMPTY_WIN_RATE_HEATMAP_CELL;
                   return visibleRateMetrics.map((metric) => {
                     const tooltipKey = `${row.horseNumber}-${column.key}-${metric.key}`;
                     return (
@@ -217,10 +273,13 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                         column={column}
                         frameNumber={row.frameNumber}
                         isLastRow={rowIndex === rows.length - 1}
-                        isOpen={openTooltipKey === tooltipKey}
+                        isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
                         key={tooltipKey}
                         metric={metric}
                         onToggle={() => {
+                          if (!isMobileTooltip) {
+                            return;
+                          }
                           setOpenTooltipKey((current) =>
                             current === tooltipKey ? null : tooltipKey,
                           );

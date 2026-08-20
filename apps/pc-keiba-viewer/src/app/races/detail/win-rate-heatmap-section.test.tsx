@@ -1,5 +1,5 @@
 // bun で実行する (bunx vitest)
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -30,8 +30,53 @@ vi.mock("./realtime-client", () => ({
   >(() => ({ error: null, payload: null })),
 }));
 
+interface MockMediaQueryEvent {
+  matches: boolean;
+}
+
+interface MockMediaQueryListController {
+  matches: boolean;
+  fire: (matches: boolean) => void;
+}
+
+const installMatchMediaMock = (initialMatches: boolean): MockMediaQueryListController => {
+  const listeners = new Set<(event: MockMediaQueryEvent) => void>();
+  const controller: MockMediaQueryListController = {
+    fire: (matches: boolean) => {
+      controller.matches = matches;
+      listeners.forEach((listener) => {
+        listener({ matches });
+      });
+    },
+    matches: initialMatches,
+  };
+  const mediaQueryList = {
+    addEventListener: (_: string, listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.add(listener);
+    },
+    addListener: (listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.add(listener);
+    },
+    get matches() {
+      return controller.matches;
+    },
+    removeEventListener: (_: string, listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.delete(listener);
+    },
+    removeListener: (listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.delete(listener);
+    },
+  };
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => mediaQueryList),
+  );
+  return controller;
+};
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.mocked(useHorseWeightStream).mockReturnValue(null);
   vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
 });
@@ -421,7 +466,34 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
   expect(screen.getAllByRole("tooltip").length).toBe(7);
 });
 
-it("opens a heatmap tooltip on click and closes it on a second click", () => {
+it("does not pin a heatmap tooltip on click in desktop view", () => {
+  installMatchMediaMock(false);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatch = document.querySelector(".win-rate-heatmap-swatch");
+  const button = document.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(swatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected heatmap swatch");
+  }
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("expected heatmap swatch button");
+  }
+  fireEvent.click(button);
+  expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+  expect(button.getAttribute("aria-expanded")).toBe("false");
+});
+
+it("opens a heatmap tooltip on click and closes it on a second click in mobile view", () => {
+  installMatchMediaMock(true);
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
@@ -445,11 +517,14 @@ it("opens a heatmap tooltip on click and closes it on a second click", () => {
   expect(swatch.className).toBe(
     "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
   );
+  expect(button.getAttribute("aria-expanded")).toBe("true");
   fireEvent.click(button);
   expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+  expect(button.getAttribute("aria-expanded")).toBe("false");
 });
 
-it("moves the open heatmap tooltip to another cell on click", () => {
+it("keeps only one heatmap tooltip open when another cell is clicked in mobile view", () => {
+  installMatchMediaMock(true);
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
@@ -488,6 +563,151 @@ it("moves the open heatmap tooltip to another cell on click", () => {
   expect(secondSwatch.className).toBe(
     "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
   );
+  expect(document.querySelectorAll(".win-rate-heatmap-swatch.tooltip-open").length).toBe(1);
+});
+
+it("keeps the mobile tooltip open when pointerdown stays on a swatch button", () => {
+  installMatchMediaMock(true);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatch = document.querySelector(".win-rate-heatmap-swatch");
+  const button = document.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(swatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected heatmap swatch");
+  }
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("expected heatmap swatch button");
+  }
+  fireEvent.click(button);
+  fireEvent.pointerDown(button);
+  expect(swatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
+});
+
+it("closes the open mobile heatmap tooltip when clicking outside the swatches", () => {
+  installMatchMediaMock(true);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatch = document.querySelector(".win-rate-heatmap-swatch");
+  const button = document.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(swatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected heatmap swatch");
+  }
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("expected heatmap swatch button");
+  }
+  fireEvent.click(button);
+  expect(swatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
+  fireEvent.pointerDown(document.body);
+  expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+});
+
+it("closes the pinned mobile tooltip when the viewport becomes desktop", () => {
+  const controller = installMatchMediaMock(true);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatch = document.querySelector(".win-rate-heatmap-swatch");
+  const button = document.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(swatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected heatmap swatch");
+  }
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("expected heatmap swatch button");
+  }
+  fireEvent.click(button);
+  expect(swatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
+  act(() => {
+    controller.fire(false);
+  });
+  expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+});
+
+it("does not pin a heatmap tooltip when matchMedia is unavailable", () => {
+  vi.stubGlobal("matchMedia", undefined);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatch = document.querySelector(".win-rate-heatmap-swatch");
+  const button = document.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(swatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected heatmap swatch");
+  }
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("expected heatmap swatch button");
+  }
+  fireEvent.click(button);
+  expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+});
+
+it("subscribes with addListener when addEventListener is missing", () => {
+  const listeners = new Set<(event: MockMediaQueryEvent) => void>();
+  const mediaQueryList = {
+    addListener: (listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.add(listener);
+    },
+    matches: true,
+    removeListener: (listener: (event: MockMediaQueryEvent) => void) => {
+      listeners.delete(listener);
+    },
+  };
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => mediaQueryList),
+  );
+  const { unmount } = render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(listeners.size).toBe(1);
+  unmount();
+  expect(listeners.size).toBe(0);
 });
 
 it("hides the horse-weight column for overseas races even when a runner has a weight", () => {
@@ -547,6 +767,7 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
 });
 
 it("points the last-row heatmap tooltip up and leaves earlier rows pointing down", () => {
+  installMatchMediaMock(true);
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
