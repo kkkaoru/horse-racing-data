@@ -4,11 +4,12 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  submit-focused-races.sh [--execute] [--debug] [--concurrency N] [--input FILE]
-                          [--log-dir DIR] [--retry-failed DIR]
+  submit-focused-races.sh --run-ymd YYYYMMDD [--execute] [--debug] [--concurrency N]
+                          [--input FILE] [--log-dir DIR] [--retry-failed DIR]
 
 Without --execute, prints the planned requests and performs no network calls.
 FINISH_POSITION_CRON_TRIGGER_TOKEN must be set for --execute.
+--run-ymd is required so this probe script cannot silently reuse a previous day.
 EOF
 }
 
@@ -19,6 +20,7 @@ concurrency=9
 execute=false
 debug=false
 retry_failed_dir=""
+run_ymd=""
 endpoint=${FINISH_POSITION_CRON_ENDPOINT:-https://finish-position-cron.kaoru.workers.dev/api/admin/run-focused-full-race}
 user_agent=${FINISH_POSITION_USER_AGENT:-horse-racing-recovery/20260815}
 
@@ -30,12 +32,14 @@ while (($# > 0)); do
     --input) input=$2; shift 2 ;;
     --log-dir) log_dir=$2; shift 2 ;;
     --retry-failed) retry_failed_dir=$2; shift 2 ;;
+    --run-ymd) run_ymd=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
 [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || { echo "--concurrency must be a positive integer" >&2; exit 2; }
+[[ "$run_ymd" =~ ^[0-9]{8}$ ]] || { echo "--run-ymd YYYYMMDD is required" >&2; exit 2; }
 [[ -r "$input" ]] || { echo "input is not readable: $input" >&2; exit 2; }
 if $execute; then
   : "${FINISH_POSITION_CRON_TRIGGER_TOKEN:?set FINISH_POSITION_CRON_TRIGGER_TOKEN for --execute}"
@@ -61,20 +65,20 @@ fi
 target_count=$(wc -l < "$work_dir/targets.tsv" | tr -d ' ')
 echo "targets=$target_count concurrency=$concurrency execute=$execute debug=$debug endpoint=$endpoint"
 if ! $execute; then
-  awk -F '\t' -v endpoint="$endpoint" '{printf "POST %s category=%s runYmd=20260815 keibajoCode=%s raceBango=%s\n", endpoint,$1,$2,$3}' "$work_dir/targets.tsv"
+  awk -F '\t' -v endpoint="$endpoint" -v run_ymd="$run_ymd" '{printf "POST %s category=%s runYmd=%s keibajoCode=%s raceBango=%s\n", endpoint,$1,run_ymd,$2,$3}' "$work_dir/targets.tsv"
   exit 0
 fi
 
 mkdir -p "$log_dir"
-export FINISH_POSITION_CRON_TRIGGER_TOKEN endpoint user_agent log_dir debug
+export FINISH_POSITION_CRON_TRIGGER_TOKEN endpoint user_agent log_dir debug RUN_YMD="$run_ymd"
 run_one() {
   set -euo pipefail
   local category=$1 venue=$2 race=$3
   local key="${category}:${venue}:${race}"
   local started body response_file http_status curl_exit finished response response_status ok safe_key
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  body=$(jq -cn --arg category "$category" --arg venue "$venue" --arg race "$race" --argjson debug "$debug" \
-    '{category:$category,runYmd:"20260815",keibajoCode:$venue,raceBango:$race,debug:$debug}')
+  body=$(jq -cn --arg category "$category" --arg venue "$venue" --arg race "$race" --arg runYmd "$RUN_YMD" --argjson debug "$debug" \
+    '{category:$category,runYmd:$runYmd,keibajoCode:$venue,raceBango:$race,debug:$debug}')
   response_file=$(mktemp)
   trap 'rm -f "$response_file"' EXIT
   set +e

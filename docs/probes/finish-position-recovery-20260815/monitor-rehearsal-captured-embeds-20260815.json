@@ -1,0 +1,173 @@
+{
+  "capturedAt": "2026-08-15T01:16:30.762Z",
+  "canaryCritical": {
+    "title": "[CRITICAL] finish-position queue delivery canary overdue",
+    "description": "Canary rehearsal-canary has not been consumed within 10 minutes.\nRunbook: apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md",
+    "color": 15158332,
+    "timestamp": "2026-08-15T09:10:00+09:00",
+    "fields": [
+      {
+        "name": "Incident ID",
+        "value": "6dd93fe8-bea4-4771-b20d-c1f690e64f28",
+        "inline": true
+      },
+      {
+        "name": "First detected (JST)",
+        "value": "2026-08-15T09:10:00+09:00",
+        "inline": true
+      },
+      {
+        "name": "Duration",
+        "value": "0m",
+        "inline": true
+      },
+      {
+        "name": "Action",
+        "value": "Immediately inspect delivery_paused; if true run `bunx wrangler queues resume-delivery finish-position-predict-queue`, then verify canary consumption and prediction rows before acknowledging this incident.",
+        "inline": true
+      },
+      {
+        "name": "Stage",
+        "value": "10-minute-delivery-slo",
+        "inline": true
+      },
+      {
+        "name": "Canary ID",
+        "value": "rehearsal-canary",
+        "inline": true
+      },
+      {
+        "name": "Enqueued",
+        "value": "2026-08-15T00:00:00.000Z",
+        "inline": true
+      }
+    ]
+  },
+  "canaryRecovery": {
+    "title": "[RECOVERY] finish-position queue delivery canary overdue",
+    "description": "Primary prediction queue consumed delivery canaries within the SLO.\nRunbook: apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md",
+    "color": 3066993,
+    "timestamp": "2026-08-15T09:15:00+09:00",
+    "fields": [
+      {
+        "name": "Incident ID",
+        "value": "6dd93fe8-bea4-4771-b20d-c1f690e64f28",
+        "inline": true
+      },
+      {
+        "name": "First detected (JST)",
+        "value": "2026-08-15T09:10:00+09:00",
+        "inline": true
+      },
+      {
+        "name": "Duration",
+        "value": "5m",
+        "inline": true
+      },
+      {
+        "name": "Action",
+        "value": "Verify prediction coverage and queue delivery are restored; take no further action unless the incident recurs.",
+        "inline": true
+      },
+      {
+        "name": "Stage",
+        "value": "10-minute-delivery-slo",
+        "inline": true
+      }
+    ]
+  },
+  "readinessMissingCritical": {
+    "title": "[CRITICAL] finish-position predictions incomplete jra:01:01",
+    "description": "10 of 10 required predictions are missing.\nRunbook: apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md",
+    "color": 15158332,
+    "timestamp": "2026-08-15T10:00:00+09:00",
+    "fields": [
+      {
+        "name": "Incident ID",
+        "value": "2355fe7a-9fef-4333-9197-e376e1ca648d",
+        "inline": true
+      },
+      {
+        "name": "First detected (JST)",
+        "value": "2026-08-15T10:00:00+09:00",
+        "inline": true
+      },
+      {
+        "name": "Duration",
+        "value": "0m",
+        "inline": true
+      },
+      {
+        "name": "Action",
+        "value": "Immediately inspect delivery_paused; if true run `bunx wrangler queues resume-delivery finish-position-predict-queue`, then verify canary consumption and prediction rows before acknowledging this incident.",
+        "inline": true
+      },
+      {
+        "name": "Stage",
+        "value": "T-60",
+        "inline": true
+      },
+      {
+        "name": "Race",
+        "value": "jra:01:01",
+        "inline": true
+      },
+      {
+        "name": "Post",
+        "value": "2026-08-15T10:00:00+09:00",
+        "inline": true
+      },
+      {
+        "name": "Coverage",
+        "value": "0/10",
+        "inline": true
+      },
+      {
+        "name": "Minutes to post",
+        "value": "60",
+        "inline": true
+      }
+    ]
+  },
+  "timeline": [
+    {
+      "elapsed": "0m",
+      "ok": true,
+      "sent": 0
+    },
+    {
+      "elapsed": "5m",
+      "ok": true,
+      "sent": 0
+    },
+    {
+      "elapsed": "10m",
+      "ok": false,
+      "severity": "critical",
+      "sent": 1
+    },
+    {
+      "elapsed": "20m",
+      "ok": false,
+      "sent": 2,
+      "duration": "10m"
+    },
+    {
+      "elapsed": "40m",
+      "ok": false,
+      "sent": 3,
+      "duration": "30m"
+    },
+    {
+      "elapsed": "70m",
+      "ok": false,
+      "sent": 3
+    },
+    {
+      "elapsed": "100m",
+      "ok": false,
+      "sent": 4,
+      "duration": "1h 30m"
+    }
+  ]
+}

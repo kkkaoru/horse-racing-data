@@ -1,0 +1,2 @@
+2026-08-15 01:20:47 JST local emergency generation validation
+race=jra:2026:0815:04:01 expected_entries=9 rows=9 distinct_horses=9 rank_min=1 rank_max=9 score_min=-2.28942590894096 score_max=1.80053595299484 model=jra-cb-stage1-marketfree235-2013 generated_at=2026-08-14T16:20:47.504258Z result=PASS
