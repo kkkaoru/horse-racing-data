@@ -889,3 +889,25 @@ it("exports the expected URL param names mapping", () => {
     raceName: "finishPredictionRaceName",
   });
 });
+
+it("reads custom analysis cell param names when provided", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    gradeCode: null,
+    isBanEi: false,
+    paramNames: {
+      condition: "analysisCellCondition",
+      distance: "analysisCellDistance",
+      grade: "analysisCellGrade",
+      keibajo: "analysisCellKeibajo",
+      kyosoJoken: "analysisCellJoken",
+      kyosoShubetsu: "analysisCellShubetsu",
+      raceName: "analysisCellRaceName",
+      track: "analysisCellTrack",
+    },
+    query: { analysisCellKeibajo: "0", analysisCellDistance: "0" },
+    source: "nar",
+  });
+  expect(flags.keibajo).toBe(false);
+  expect(flags.distance).toBe(false);
+  expect(flags.condition).toBe(true);
+});

@@ -143,6 +143,7 @@ export interface GetFinishPredictionDimensionFlagsInput {
   source: "jra" | "nar";
   gradeCode: string | null;
   isBanEi: boolean;
+  paramNames?: Record<keyof FinishPredictionDimensionFlags, string>;
 }
 
 export const FINISH_PREDICTION_PARAM_NAMES = {
@@ -216,14 +217,15 @@ export const getFinishPredictionDimensionFlags = (
   input: GetFinishPredictionDimensionFlagsInput,
 ): FinishPredictionDimensionFlags => {
   const { query, source, gradeCode, isBanEi } = input;
-  const keibajo = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.keibajo);
-  const distance = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.distance);
-  const kyosoShubetsu = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.kyosoShubetsu);
-  const kyosoJokenRaw = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.kyosoJoken);
-  const conditionRaw = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.condition);
-  const trackRaw = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.track);
-  const gradeRaw = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.grade);
-  const raceNameRaw = readFlag(query, FINISH_PREDICTION_PARAM_NAMES.raceName);
+  const paramNames = input.paramNames ?? FINISH_PREDICTION_PARAM_NAMES;
+  const keibajo = readFlag(query, paramNames.keibajo);
+  const distance = readFlag(query, paramNames.distance);
+  const kyosoShubetsu = readFlag(query, paramNames.kyosoShubetsu);
+  const kyosoJokenRaw = readFlag(query, paramNames.kyosoJoken);
+  const conditionRaw = readFlag(query, paramNames.condition);
+  const trackRaw = readFlag(query, paramNames.track);
+  const gradeRaw = readFlag(query, paramNames.grade);
+  const raceNameRaw = readFlag(query, paramNames.raceName);
   const kyosoJoken = source === "nar" ? false : kyosoJokenRaw;
   const condition = source === "jra" ? false : conditionRaw;
   const track = isBanEi ? false : trackRaw;
