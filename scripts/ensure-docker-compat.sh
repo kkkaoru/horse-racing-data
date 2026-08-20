@@ -38,7 +38,10 @@ if ! command -v colima >/dev/null 2>&1; then
 fi
 
 echo "Docker daemon not reachable; starting colima for wrangler Containers..." >&2
-colima start
+# 4 CPU / 8 GiB: enough for wrangler Containers image builds, without
+# competing with Apple Container's local PostgreSQL on a 48 GiB host.
+# Do not raise this back to 16 GiB; that VM shows ~25 GiB host RSS.
+colima start --cpus 4 --memory 8
 
 retries=24
 attempt=0
