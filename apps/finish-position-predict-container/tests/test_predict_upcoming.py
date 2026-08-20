@@ -73,6 +73,8 @@ _BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
 _MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
 _MAKE_RESCORE_FN_ATTR = "_make_rescore_fn"
 _PREWARM_PARQUET_PAYLOAD_ATTR = "_prewarm_parquet_payload"
+_MAKE_PREWARM_EXISTING_OBJECT_FN_ATTR = "_make_prewarm_existing_object_fn"
+_MAKE_PREWARM_COMMIT_FN_ATTR = "_make_prewarm_commit_fn"
 _ENSURE_CACHED_PARQUET_ATTR = "_ensure_cached_parquet"
 _load_model_metadata = cast(
     Callable[[Path, Category], Sequence[str]],
@@ -102,8 +104,19 @@ _make_rescore_fn = cast(
     getattr(predict_upcoming, _MAKE_RESCORE_FN_ATTR),
 )
 _prewarm_parquet_payload = cast(
-    Callable[[str, str, Path], tuple[str, str, Mapping[str, str | int] | None] | None],
+    Callable[
+        [str, str, Path],
+        tuple[str, str, Mapping[str, str | int] | None, str | None] | None,
+    ],
     getattr(predict_upcoming, _PREWARM_PARQUET_PAYLOAD_ATTR),
+)
+_make_prewarm_existing_object_fn = cast(
+    Callable[[R2Config | None], Callable[[str, str], str | None]],
+    getattr(predict_upcoming, _MAKE_PREWARM_EXISTING_OBJECT_FN_ATTR),
+)
+_make_prewarm_commit_fn = cast(
+    Callable[..., Callable[[str, str, Mapping[str, str | int] | None, str | None], None]],
+    getattr(predict_upcoming, _MAKE_PREWARM_COMMIT_FN_ATTR),
 )
 _ensure_cached_parquet = cast(
     Callable[[Path, str, str, R2Config | None], None],
@@ -923,6 +936,96 @@ def test_focused_full_cache_route_found_false_when_store_not_wired() -> None:
         _stop_threading_server(httpd, thread)
 
 
+def test_prewarm_day_base_cache_route_returns_found_true_and_consumes_entry() -> None:
+    store = FocusedFullCacheStore()
+    store.put(
+        "prewarm:jra:20260816",
+        FocusedFullCachePayload(
+            parquet_base64="YQ==",
+            parquet_key="feat-daybase/catalog-v1/jra/20260816/features.parquet",
+            per_race_parquets=None,
+        ),
+    )
+    httpd, thread, port = _start_server_with_cache_store(store)
+    try:
+        status, body = _get(port, "/prewarm-day-base-cache?category=jra&runDate=20260816")
+        assert status == 200
+        assert json.loads(body.decode()) == {
+            "found": True,
+            "parquetBase64": "YQ==",
+            "parquetKey": "feat-daybase/catalog-v1/jra/20260816/features.parquet",
+            "perRaceParquets": None,
+        }
+        status_again, body_again = _get(
+            port, "/prewarm-day-base-cache?category=jra&runDate=20260816"
+        )
+        assert status_again == 200
+        assert json.loads(body_again.decode()) == {
+            "found": True,
+            "parquetBase64": "YQ==",
+            "parquetKey": "feat-daybase/catalog-v1/jra/20260816/features.parquet",
+            "perRaceParquets": None,
+        }
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_prewarm_day_base_cache_route_includes_daybase_watermark() -> None:
+    store = FocusedFullCacheStore()
+    store.put(
+        "prewarm:ban-ei:20260816",
+        FocusedFullCachePayload(
+            parquet_base64="YQ==",
+            parquet_key="feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+            per_race_parquets=None,
+            daybase_watermark={
+                "maxDataSakuseiNengappi": "20260816",
+                "rowCount": 80,
+                "rsPredictedAtMax": "2026-08-16T00:00:00",
+                "rsRowCount": 4,
+            },
+        ),
+    )
+    httpd, thread, port = _start_server_with_cache_store(store)
+    try:
+        status, body = _get(port, "/prewarm-day-base-cache?category=ban-ei&runDate=20260816")
+        assert status == 200
+        assert json.loads(body.decode()) == {
+            "found": True,
+            "parquetBase64": "YQ==",
+            "parquetKey": "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+            "perRaceParquets": None,
+            "daybaseWatermark": {
+                "maxDataSakuseiNengappi": "20260816",
+                "rowCount": 80,
+                "rsPredictedAtMax": "2026-08-16T00:00:00",
+                "rsRowCount": 4,
+            },
+        }
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_prewarm_day_base_cache_route_400_on_invalid_query() -> None:
+    httpd, thread, port = _start_server_with_cache_store(FocusedFullCacheStore())
+    try:
+        status, body = _get(port, "/prewarm-day-base-cache?runDate=20260816")
+        assert status == 400
+        assert b"category" in body
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_prewarm_day_base_cache_route_found_false_when_store_not_wired() -> None:
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(port, "/prewarm-day-base-cache?category=nar&runDate=20260816")
+        assert status == 200
+        assert json.loads(body.decode()) == {"found": False}
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
 # ---------------------------------------------------------------------------
 # make_handler_class — /prewarm-day-base wiring
 # ---------------------------------------------------------------------------
@@ -935,8 +1038,8 @@ def _fake_prewarm(category: str, run_date: str, days_ahead: int) -> Path | None:
 
 def _fake_prewarm_parquet_payload(
     category: str, run_date: str, day_base_dir: Path
-) -> tuple[str, str, Mapping[str, str | int] | None] | None:
-    return "cGF5bG9hZA==", f"feat-daybase/{category}/{run_date}/features.parquet", None
+) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+    return "cGF5bG9hZA==", f"feat-daybase/{category}/{run_date}/features.parquet", None, None
 
 
 def test_make_handler_class_prewarm_fn_callable_without_instance() -> None:
@@ -967,6 +1070,9 @@ def test_make_handler_class_prewarm_fn_none_when_not_provided() -> None:
     )
     assert handler_cls.prewarm_fn is None
     assert handler_cls.prewarm_parquet_payload_fn is None
+    assert handler_cls.prewarm_existing_object_fn is None
+    assert handler_cls.prewarm_commit_fn is None
+    assert handler_cls.prewarm_background_fn is None
 
 
 def test_make_handler_class_prewarm_parquet_payload_fn_callable_without_instance() -> None:
@@ -982,7 +1088,7 @@ def test_make_handler_class_prewarm_parquet_payload_fn_callable_without_instance
     payload_fn = handler_cls.prewarm_parquet_payload_fn
     assert payload_fn is not None
     result = payload_fn("jra", "20260712", Path("/tmp/x"))
-    assert result == ("cGF5bG9hZA==", "feat-daybase/jra/20260712/features.parquet", None)
+    assert result == ("cGF5bG9hZA==", "feat-daybase/jra/20260712/features.parquet", None, None)
 
 
 def test_make_handler_class_prewarm_fn_not_bound_method() -> None:
@@ -1123,12 +1229,13 @@ def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) ->
     result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
 
     assert result is not None
-    encoded, key, watermark = result
+    encoded, key, watermark, watermark_error = result
     import base64
 
     assert base64.b64decode(encoded) == b"PARQUET-DATA"
     assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
     assert watermark is None
+    assert watermark_error is None
 
 
 def test_prewarm_parquet_payload_reads_watermark_sidecar_when_present(tmp_path: Path) -> None:
@@ -1152,13 +1259,30 @@ def test_prewarm_parquet_payload_reads_watermark_sidecar_when_present(tmp_path: 
     result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
 
     assert result is not None
-    _encoded, _key, watermark = result
+    _encoded, _key, watermark, watermark_error = result
+    assert watermark_error is None
     assert watermark == {
         "maxDataSakuseiNengappi": "20260712",
         "rowCount": 946,
         "rsPredictedAtMax": "2026-07-18T09:00:00",
         "rsRowCount": 12,
     }
+
+
+def test_prewarm_parquet_payload_reads_reason_sidecar_when_present(tmp_path: Path) -> None:
+    day_dir = tmp_path / "daybase-ban-ei-20260816"
+    day_base_dir = day_dir / "final"
+    day_base_dir.mkdir(parents=True)
+    (day_base_dir / "data.parquet").write_bytes(b"PARQUET-DATA")
+    (day_dir / "watermark-reason.txt").write_text("watermark count is 0", encoding="utf-8")
+
+    result = _prewarm_parquet_payload("ban-ei", "20260816", day_base_dir)
+
+    assert result is not None
+    _encoded, key, watermark, watermark_error = result
+    assert key == "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet"
+    assert watermark is None
+    assert watermark_error == "watermark count is 0"
 
 
 def test_ensure_cached_parquet_fetches_only_catalog_generation(
@@ -1533,6 +1657,142 @@ def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) ->
     result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
 
     assert result is None
+
+
+def test_prewarm_existing_object_fn_none_without_r2() -> None:
+    existing = _make_prewarm_existing_object_fn(None)
+    assert existing("jra", "20260712") is None
+
+
+def test_prewarm_existing_object_fn_returns_key_on_watermark_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r2 = R2Config(
+        account_id="acct",
+        access_key_id="id",
+        secret_access_key="secret",
+        bucket="bucket",
+    )
+    monkeypatch.setattr(
+        predict_upcoming,
+        "r2_head_watermark",
+        lambda _r2, _key: ("20260712", 10, "none", 0),
+    )
+    existing = _make_prewarm_existing_object_fn(r2)
+    assert existing("jra", "20260712") == ("feat-daybase/catalog-v1/jra/20260712/features.parquet")
+
+
+def test_prewarm_existing_object_fn_returns_none_on_watermark_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r2 = R2Config(
+        account_id="acct",
+        access_key_id="id",
+        secret_access_key="secret",
+        bucket="bucket",
+    )
+    monkeypatch.setattr(predict_upcoming, "r2_head_watermark", lambda _r2, _key: None)
+    existing = _make_prewarm_existing_object_fn(r2)
+    assert existing("nar", "20260712") is None
+
+
+def test_prewarm_commit_fn_rejects_invalid_key() -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    commit = _make_prewarm_commit_fn(FocusedFullCacheStore())
+    with pytest.raises(RuntimeError, match="invalid day-base parquet key"):
+        commit("bad-key", "dGVzdA==", None, None)
+
+
+def test_prewarm_commit_fn_stores_payload_for_worker_pickup() -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    store = FocusedFullCacheStore()
+    commit = _make_prewarm_commit_fn(store)
+    commit("feat-daybase/catalog-v1/jra/20260712/features.parquet", "dGVzdA==", None, None)
+    payload = store.pop("prewarm:jra:20260712")
+    assert payload is not None
+    assert payload.parquet_base64 == "dGVzdA=="
+    assert payload.parquet_key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert payload.daybase_watermark is None
+    assert payload.watermark_error is None
+
+
+def test_prewarm_commit_fn_stores_watermark_error_for_pickup() -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    store = FocusedFullCacheStore()
+    commit = _make_prewarm_commit_fn(store)
+    commit(
+        "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+        "dGVzdA==",
+        None,
+        "watermark count is 0",
+    )
+    payload = store.pop("prewarm:ban-ei:20260816")
+    assert payload is not None
+    assert payload.parquet_base64 == "dGVzdA=="
+    assert payload.parquet_key == "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet"
+    assert payload.daybase_watermark is None
+    assert payload.watermark_error == "watermark count is 0"
+
+
+def test_prewarm_commit_fn_silent_without_debug(capsys: pytest.CaptureFixture[str]) -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    commit = _make_prewarm_commit_fn(FocusedFullCacheStore())
+    commit("feat-daybase/catalog-v1/jra/20260712/features.parquet", "dGVzdA==", None, None)
+    assert capsys.readouterr().err == ""
+
+
+def test_prewarm_commit_fn_logs_watermark_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    commit = _make_prewarm_commit_fn(FocusedFullCacheStore())
+    commit("feat-daybase/catalog-v1/jra/20260712/features.parquet", "dGVzdA==", None, None)
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[predict-serve] prewarm_commit stored "
+        "key=feat-daybase/catalog-v1/jra/20260712/features.parquet "
+        "watermark=absent reason=-\n"
+    )
+
+
+def test_prewarm_commit_fn_logs_watermark_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from predict_lib.focused_full_cache import FocusedFullCacheStore
+
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    store = FocusedFullCacheStore()
+    commit = _make_prewarm_commit_fn(store)
+    commit(
+        "feat-daybase/catalog-v1/nar/20260712/features.parquet",
+        "dGVzdA==",
+        {
+            "maxDataSakuseiNengappi": "20260712",
+            "rowCount": 946,
+            "rsPredictedAtMax": "2026-07-18T09:00:00",
+            "rsRowCount": 12,
+        },
+        None,
+    )
+    captured = capsys.readouterr()
+    assert "watermark=present" in captured.err
+    assert "feat-daybase/catalog-v1/nar/20260712/features.parquet" in captured.err
+    payload = store.pop("prewarm:nar:20260712")
+    assert payload is not None
+    assert payload.parquet_base64 == "dGVzdA=="
+    assert payload.parquet_key == "feat-daybase/catalog-v1/nar/20260712/features.parquet"
+    assert payload.daybase_watermark == {
+        "maxDataSakuseiNengappi": "20260712",
+        "rowCount": 946,
+        "rsPredictedAtMax": "2026-07-18T09:00:00",
+        "rsRowCount": 12,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2171,8 +2431,10 @@ def test_score_races_nar_default_uses_category_model_without_per_class() -> None
 
 def test_load_nar_transformer_returns_none_when_feature_order_has_leak(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     transformer = SimpleNamespace(
         feature_order=("feat", "target_running_style_class"),
         seeds=(object(),),
@@ -2223,8 +2485,9 @@ def _jra_entries_with_ninkijun(
 
 
 def test_load_stage1_model_returns_none_on_unapproved_model_version(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     config = Stage1CategoryConfig(
         enabled=True,
         model_version="jra-cb-not-on-the-allowlist",
@@ -2241,8 +2504,9 @@ def test_load_stage1_model_returns_none_on_unapproved_model_version(
 
 
 def test_load_stage1_model_returns_none_on_missing_metadata_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     """No metadata.json staged at all -- the booster load itself never even
     gets a chance since ``_load_booster_by_arch`` is real here (unpatched)."""
     loaded = _load_stage1_model(tmp_path, "jra", _STAGE1_TEST_CONFIG)
@@ -2252,8 +2516,9 @@ def test_load_stage1_model_returns_none_on_missing_metadata_file(
 
 
 def test_load_stage1_model_returns_none_on_leak_column(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _write_variant_metadata(
         tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["target_corner_2_norm"]
     )
@@ -2266,8 +2531,9 @@ def test_load_stage1_model_returns_none_on_leak_column(
 
 
 def test_load_stage1_model_returns_none_on_feature_count_mismatch(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _write_variant_metadata(
         tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat_a", "feat_b"]
     )
@@ -2390,8 +2656,9 @@ def test_score_races_stage1_absent_category_config_never_overrides(tmp_path: Pat
 
 
 def test_score_races_stage1_broken_artifact_falls_back_to_champion(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     """Stage-1 gate WOULD trip (odds missing) but the artifact itself fails
     to load (no metadata.json staged) -- must fail closed to the champion,
     never leave the race unscored."""
@@ -2412,9 +2679,11 @@ def test_score_races_stage1_broken_artifact_falls_back_to_champion(
 
 def test_score_races_warns_when_resolved_non_default_variant_missing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A rule pointing at an undeclared/unloaded variant falls back but is visible."""
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={

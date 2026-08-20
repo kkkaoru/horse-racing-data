@@ -33,9 +33,10 @@ All are transient and resolve on a fresh connect attempt.
 from __future__ import annotations
 
 import importlib
-import sys
 import time
 from typing import Protocol, cast
+
+from predict_lib.debug_log import debug_log
 
 # Transient error substrings that warrant a retry. AdminShutdown is a psycopg
 # error class name (not a message substring); we also match it by class name
@@ -146,10 +147,9 @@ def connect_postgres_with_retry(
             if attempt == max_retries:
                 break
             sleep_seconds = min(backoff_base * (2**attempt), 16.0)
-            print(
+            debug_log(
                 f"[db_driver] connect attempt {attempt + 1} failed: {exc!r} "
-                f"— retrying in {sleep_seconds:.1f}s",
-                file=sys.stderr,
+                f"— retrying in {sleep_seconds:.1f}s"
             )
             time.sleep(sleep_seconds)
     # All retries exhausted — raise the last transient error.

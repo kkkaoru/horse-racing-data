@@ -20,6 +20,7 @@ from predict_lib.pipeline_args import (
     JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     KOHAN3F_GOING_SCRIPT,
     LAYER_CHAIN,
+    LINEAGE_SCRIPT,
     RACE_CHAIN,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
@@ -567,7 +568,12 @@ def test_build_base_argv_without_realtime_odds_omits_flag() -> None:
 
 def test_build_base_argv_with_realtime_odds_path_appends_flag() -> None:
     argv = build_base_argv(
-        BUILDER, "nar", "20260610", 0, URL, Path("/tmp/base"),
+        BUILDER,
+        "nar",
+        "20260610",
+        0,
+        URL,
+        Path("/tmp/base"),
         realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-nar.parquet"),
     )
     assert "--realtime-odds" in argv
@@ -578,7 +584,12 @@ def test_build_base_argv_with_realtime_odds_path_appends_flag() -> None:
 
 def test_build_base_argv_with_realtime_odds_still_ends_with_allow_empty_targets() -> None:
     argv = build_base_argv(
-        BUILDER, "jra", "20260610", 2, URL, Path("/tmp/base"),
+        BUILDER,
+        "jra",
+        "20260610",
+        2,
+        URL,
+        Path("/tmp/base"),
         realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-jra.parquet"),
     )
     assert "--allow-empty-targets" in argv
@@ -596,7 +607,12 @@ def test_build_base_argv_realtime_odds_none_produces_same_argv_as_before() -> No
 
 def test_build_base_argv_with_realtime_odds_for_ban_ei_appends_flag() -> None:
     argv = build_base_argv(
-        BUILDER, "ban-ei", "20260610", 0, URL, Path("/tmp/base"),
+        BUILDER,
+        "ban-ei",
+        "20260610",
+        0,
+        URL,
+        Path("/tmp/base"),
         realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-ban-ei.parquet"),
     )
     assert "--realtime-odds" in argv
@@ -731,13 +747,16 @@ def test_build_base_argv_without_venue_weather_omits_flag() -> None:
 
 def test_build_base_argv_with_venue_weather_dir_appends_flag() -> None:
     argv = build_base_argv(
-        BUILDER, "nar", "20260624", 0, URL, Path("/tmp/base"),
+        BUILDER,
+        "nar",
+        "20260624",
+        0,
+        URL,
+        Path("/tmp/base"),
         venue_weather_dir=Path("/tmp/predict-upcoming/venue-weather"),
     )
     assert "--venue-weather-dir" in argv
-    assert argv[argv.index("--venue-weather-dir") + 1] == (
-        "/tmp/predict-upcoming/venue-weather"
-    )
+    assert argv[argv.index("--venue-weather-dir") + 1] == ("/tmp/predict-upcoming/venue-weather")
 
 
 def test_build_base_argv_venue_weather_none_same_as_omitted() -> None:
@@ -750,7 +769,12 @@ def test_build_base_argv_venue_weather_none_same_as_omitted() -> None:
 
 def test_build_base_argv_with_both_realtime_odds_and_venue_weather() -> None:
     argv = build_base_argv(
-        BUILDER, "jra", "20260624", 0, URL, Path("/tmp/base"),
+        BUILDER,
+        "jra",
+        "20260624",
+        0,
+        URL,
+        Path("/tmp/base"),
         realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-jra.parquet"),
         venue_weather_dir=Path("/tmp/predict-upcoming/venue-weather"),
     )
@@ -770,7 +794,12 @@ def test_build_base_argv_without_target_race_omits_flag() -> None:
 
 def test_build_base_argv_with_target_race_appends_flag() -> None:
     argv = build_base_argv(
-        BUILDER, "jra", "20260628", 0, URL, Path("/tmp/base"),
+        BUILDER,
+        "jra",
+        "20260628",
+        0,
+        URL,
+        Path("/tmp/base"),
         target_race="01:05",
     )
     assert "--target-race" in argv
@@ -1239,6 +1268,13 @@ def test_jra_jockey_pedigree_cell_script_stays_in_race_chain() -> None:
     # move to DAY_CHAIN, see the DAY_CHAIN module comment.
     assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT in race_chain_for("jra")
     assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT not in day_chain_for("jra")
+
+
+def test_jra_day_stable_lineage_stays_on_whole_day_base() -> None:
+    # --target-race on the day-base zeros JRA pedigree/lineage columns.
+    # The whole-day base must keep lineage in DAY_CHAIN, not RACE_CHAIN.
+    assert LINEAGE_SCRIPT in day_chain_for("jra")
+    assert LINEAGE_SCRIPT not in race_chain_for("jra")
 
 
 def test_race_chain_counts_match_architecture_spec() -> None:

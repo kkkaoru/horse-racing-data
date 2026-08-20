@@ -44,11 +44,13 @@ import sys
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import IO, Final
 
 from predict_lib.conn_url import is_catalog_source_url
+from predict_lib.debug_log import debug_log, debug_logs_enabled, record_debug_progress
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
     build_base_argv,
@@ -66,6 +68,31 @@ DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py
 LAYER_DIR: Final[Path] = PIPELINE_DIR / "finish-position-features"
 WORK_DIR: Final[Path] = Path("/tmp/predict-upcoming")
 RACE_ID_FIELD: Final[str] = "race_id"
+_ABSENT_WATERMARK_TOKEN: Final[str] = "none"
+"""Non-empty token for a missing RS ``predicted_at`` or a NULL
+``data_sakusei_nengappi`` on a non-zero row set. Pickup/HEAD reject empty
+strings, so both :func:`build_day_base` and :func:`ensure_day_base` must
+recompute this same token -- never ``""``."""
+_ABSENT_RS_WATERMARK: Final[tuple[str, int]] = (_ABSENT_WATERMARK_TOKEN, 0)
+"""Stable RS watermark when the category has no by-day shard (Ban-ei) or the
+day's shard has not been written yet."""
+_YMD_DATE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{8}$")
+_WATERMARK_REASON_FILENAME: Final[str] = "watermark-reason.txt"
+_WATERMARK_INVALID_DATE_REASON: Final[str] = "watermark target_date is not YYYYMMDD"
+_WATERMARK_COUNT_ZERO_REASON: Final[str] = "watermark count is 0"
+_WATERMARK_QUERY_FAILED_PREFIX: Final[str] = "watermark query failed: "
+_WATERMARK_RS_UNAVAILABLE_REASON: Final[str] = "rs watermark unavailable"
+_WATERMARK_R2_HIVE_MISSING_REASON: Final[str] = "r2-hive-layout-missing"
+_WATERMARK_R2_MISSING_OBJECT_REASON: Final[str] = "r2-missing-object"
+_WATERMARK_R2_MISMATCH_REASON: Final[str] = "r2-watermark-mismatch"
+HIVE_PARQUET_GLOB: Final[str] = "race_year=*/*.parquet"
+HIVE_PARTITION_PREFIX: Final[str] = "race_year="
+HIVE_PARQUET_FILENAME: Final[str] = "features.parquet"
+_YMD_YEAR_LENGTH: Final[int] = 4
+# jvd_se / nvd_se 取消・除外. Feature builder drops these; coverage must too.
+_IJO_KUBUN_SCRATCH: Final[str] = "1"
+_IJO_KUBUN_EXCLUDE: Final[str] = "2"
+_IJO_KUBUN_NORMAL_FALLBACK: Final[str] = "0"
 
 
 def _group_parquet_rows(
@@ -97,9 +124,6 @@ def _group_parquet_rows(
 STDERR_TAIL_BYTES: Final[int] = 4000
 PG_URL_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"(postgresql://)[^@]+@")
 PG_URL_REDACTED: Final[str] = r"\1<redacted>@"
-PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
-TRUE_ENV_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on", "debug"})
-
 PIPELINE_SUBPROCESS_TIMEOUT_ENV: Final[str] = "PIPELINE_SUBPROCESS_TIMEOUT_SECONDS"
 """Env var overriding :data:`DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS`."""
 
@@ -162,11 +186,7 @@ def _kill_process_group(process: subprocess.Popen[str]) -> None:
     except ProcessLookupError:
         pass
     except OSError as exc:
-        print(
-            f"[pipeline] failed to kill process group pid={process.pid}: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+        debug_log(f"[pipeline] failed to kill process group pid={process.pid}: {exc}")
 
 
 # --- TEMPORARY diagnostic instrumentation (added 2026-07-02) ---------------
@@ -227,12 +247,10 @@ def record_layer_timing_row(
             row = cursor.fetchone()
             if row is None or row[0] != "off":
                 shown = None if row is None else row[0]
-                print(
+                debug_log(
                     f"[pipeline] debug-timing write failed run_id={run_id} "
                     f"layer_index={layer_index} status={status} "
-                    f"error=transaction_read_only={shown!r}",
-                    file=sys.stderr,
-                    flush=True,
+                    f"error=transaction_read_only={shown!r}"
                 )
                 conn.rollback()
                 return False
@@ -281,11 +299,9 @@ def record_layer_timing_row(
         finally:
             conn.close()
     except Exception as exc:
-        print(
+        debug_log(
             f"[pipeline] debug-timing write failed run_id={run_id} "
-            f"layer_index={layer_index} status={status} error={exc!r}",
-            file=sys.stderr,
-            flush=True,
+            f"layer_index={layer_index} status={status} error={exc!r}"
         )
         return False
     return True
@@ -310,10 +326,6 @@ def _capture_stream(src: IO[str], buffer: list[str], *, sink: IO[str] | None = N
             sink.write(line)
             sink.flush()
         buffer.append(line)
-
-
-def debug_logs_enabled() -> bool:
-    return os.environ.get(PREDICT_DEBUG_LOGS_ENV, "").strip().lower() in TRUE_ENV_VALUES
 
 
 def run_with_stderr_capture(args: Sequence[str]) -> None:
@@ -368,11 +380,9 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     try:
         returncode = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        print(
+        debug_log(
             f"[pipeline] SUBPROCESS TIMEOUT after {timeout_seconds:.0f}s -- "
-            f"killing process group: {safe_args}",
-            file=sys.stderr,
-            flush=True,
+            f"killing process group: {safe_args}"
         )
         _kill_process_group(process)
         process.wait()  # reap now that the group has been signaled
@@ -422,8 +432,21 @@ def _day_base_dir(category: Category, target_date: str) -> Path:
 
 
 def _log_pipeline_progress(message: str) -> None:
-    if debug_logs_enabled():
-        print(f"[pipeline] {message}", file=sys.stderr, flush=True)
+    debug_log(f"[pipeline] {message}")
+    record_debug_progress(message)
+
+
+def _log_day_base_hit(*, category: Category, target_date: str, source: str, reason: str) -> None:
+    _log_pipeline_progress(
+        f"step=daybase-hit source={source} category={category} "
+        f"target_date={target_date} reason={reason}"
+    )
+
+
+def _log_day_base_miss(*, category: Category, target_date: str, reason: str) -> None:
+    _log_pipeline_progress(
+        f"step=daybase-miss category={category} target_date={target_date} reason={reason}"
+    )
 
 
 def _query_source_rows(
@@ -465,6 +488,62 @@ def _se_table_and_filter(category: Category) -> tuple[str, str]:
     return "nvd_se", "keibajo_code = '83'"
 
 
+@dataclass(frozen=True, slots=True)
+class SourceWatermarkOutcome:
+    """Value plus fail-closed reason for :func:`_compute_source_watermark`.
+
+    ``reason`` is set only when ``value`` is ``None`` so prewarm can surface
+    ``watermark query failed: ...`` vs ``watermark count is 0`` instead of a
+    generic missing-sidecar message.
+    """
+
+    value: tuple[str, int] | None
+    reason: str | None
+
+
+def _is_ymd_target_date(target_date: str) -> bool:
+    return _YMD_DATE_PATTERN.fullmatch(target_date) is not None
+
+
+def _compute_source_watermark_outcome(
+    category: Category,
+    target_date: str,
+    database_url: str,
+) -> SourceWatermarkOutcome:
+    """Compute the source watermark and the fail-closed reason, if any."""
+    if not _is_ymd_target_date(target_date):
+        return SourceWatermarkOutcome(None, _WATERMARK_INVALID_DATE_REASON)
+    se_table, keibajo_filter = _se_table_and_filter(category)
+    year = target_date[:4]
+    try:
+        rows = _query_source_rows(
+            database_url,
+            f"""
+                select max(data_sakusei_nengappi), count(*)
+                from pg.{se_table}
+                where kaisai_nen between '{year}' and '{year}'
+                  and (kaisai_nen || kaisai_tsukihi) between '{target_date}' and '{target_date}'
+                  and {keibajo_filter}
+            """,
+        )
+    except Exception as exc:
+        debug_log(
+            f"[day-base] watermark query failed category={category} "
+            f"target_date={target_date} error={exc}"
+        )
+        return SourceWatermarkOutcome(None, f"{_WATERMARK_QUERY_FAILED_PREFIX}{exc}")
+    if not rows or not rows[0][1]:
+        return SourceWatermarkOutcome(None, _WATERMARK_COUNT_ZERO_REASON)
+    max_updated, row_count = rows[0]
+    count_value = row_count if isinstance(row_count, int) else int(str(row_count))
+    if max_updated is None:
+        return SourceWatermarkOutcome((_ABSENT_WATERMARK_TOKEN, count_value), None)
+    max_token = str(max_updated).strip()
+    if not max_token:
+        return SourceWatermarkOutcome((_ABSENT_WATERMARK_TOKEN, count_value), None)
+    return SourceWatermarkOutcome((max_token, count_value), None)
+
+
 def _compute_source_watermark(
     category: Category,
     target_date: str,
@@ -480,10 +559,27 @@ def _compute_source_watermark(
     changed since the cached day-base was built (a correction, a late
     scratch, a late add, a backfill), or the freshness signal itself could
     not be verified. Either way the caller must not trust the cache and must
-    rebuild -- ``None`` is the fail-closed sentinel throughout this module's
-    existing freshness-resolution functions (mirrors
+    rebuild -- ``None`` is the fail-closed sentinel (mirrors
     :func:`day_base_covers_entry_list`'s own "return False on ANY exception"
-    contract).
+    contract). A 0-row result after the concat date predicate is also
+    ``None``: that is a predicate/table miss, not a stable empty-day state,
+    so this function must not freeze ``("", 0)`` and hide later SE
+    corrections.
+
+    The date predicate copies the DuckDB feature builder
+    (``finish_position_features_duckdb.py``) and
+    :func:`_query_upcoming_race_keys` year prune: interpolated YYYYMMDD
+    literals, no bound ``?`` params, no ``trim``. Iceberg/DuckDB bind
+    params can miss the same string partition rows the interpolated builder
+    finds. ``target_date`` must be exactly 8 digits or this returns
+    ``None`` without interpolating.
+
+    When rows exist but ``data_sakusei_nengappi`` is NULL, the max side is
+    :data:`_ABSENT_WATERMARK_TOKEN` (``"none"``) so pickup/HEAD see a
+    non-empty string. ``None`` stays reserved for unverifiable / 0-count.
+
+    See :func:`_compute_source_watermark_outcome` for the Worker-visible
+    fail-closed reason string.
 
     ``data_sakusei_nengappi`` (JV-Data's per-record "data creation date"
     field) is used rather than a generic "updated_at" column because
@@ -501,29 +597,7 @@ def _compute_source_watermark(
     call to :func:`build_upcoming_feature_rows_split`, regardless of which
     branch produced ``day_base_dir``.
     """
-    se_table, keibajo_filter = _se_table_and_filter(category)
-    try:
-        rows = _query_source_rows(
-            database_url,
-            f"""
-                select max(data_sakusei_nengappi), count(*)
-                from pg.{se_table}
-                where kaisai_nen = ? and kaisai_tsukihi = ? and {keibajo_filter}
-            """,
-            [target_date[:4], target_date[4:]],
-        )
-    except Exception as exc:
-        print(
-            f"[day-base] watermark query failed category={category} "
-            f"target_date={target_date} error={exc}",
-            file=sys.stderr,
-        )
-        return None
-    if not rows or not rows[0][1]:
-        return None
-    max_updated, row_count = rows[0]
-    count_value = row_count if isinstance(row_count, int) else int(str(row_count))
-    return (str(max_updated).strip() if max_updated is not None else "", count_value)
+    return _compute_source_watermark_outcome(category, target_date, database_url).value
 
 
 _RS_PREDICTIONS_R2_PREFIX: Final[str] = "running-style/predictions/by-day/raw-iceberg-v1"
@@ -552,16 +626,17 @@ def _compute_rs_watermark(
 ) -> tuple[str, int] | None:
     """Freshness signal for the day's running-style predictions in R2.
 
-    Returns ``("", 0)`` -- a STABLE, valid watermark value, never the
-    fail-closed ``None`` sentinel -- both when RS predictions don't apply to
-    ``category`` (no by-day shard, e.g. ``ban-ei``) and when the day's shard
-    simply has not been written yet (a normal, expected state early in the
-    day). Either case is a real "no RS yet" state: a day-base built while it
-    holds has no RS features to offer, which is correct, and the watermark
-    only changes -- forcing a rebuild -- once real predictions with a higher
-    row count / later ``predicted_at`` actually appear. This deliberately
-    avoids rebuilding on every single call while genuinely waiting for RS to
-    land for the day.
+    Returns :data:`_ABSENT_RS_WATERMARK` (``("none", 0)``) -- a STABLE,
+    non-empty token pickup/HEAD will accept -- both when RS predictions
+    don't apply to ``category`` (no by-day shard, e.g. ``ban-ei``) and when
+    the day's shard simply has not been written yet (a normal, expected
+    state early in the day). Either case is a real "no RS yet" state: a
+    day-base built while it holds has no RS features to offer, which is
+    correct, and the watermark only changes -- forcing a rebuild -- once
+    real predictions with a higher row count / later ``predicted_at``
+    actually appear. This deliberately avoids rebuilding on every single
+    call while genuinely waiting for RS to land for the day. Empty string
+    is never written: Worker HEAD/pickup reject ``rsPredictedAtMax === ""``.
 
     Returns ``None`` (matching :func:`_compute_source_watermark`'s
     fail-closed contract) on any OTHER error -- missing R2 credentials,
@@ -569,15 +644,14 @@ def _compute_rs_watermark(
     freshness and must not trust the cache.
     """
     if category not in _RS_WATERMARK_CATEGORIES:
-        return ("", 0)
+        return _ABSENT_RS_WATERMARK
     if r2_config is None:
         return None
     import duckdb
 
     yyyy, mm, dd = target_date[:4], target_date[4:6], target_date[6:8]
     glob = (
-        f"s3://{r2_config.bucket}/{_RS_PREDICTIONS_R2_PREFIX}/"
-        f"{yyyy}/{mm}/{dd}/{category}/*.parquet"
+        f"s3://{r2_config.bucket}/{_RS_PREDICTIONS_R2_PREFIX}/{yyyy}/{mm}/{dd}/{category}/*.parquet"
     )
     try:
         connection = duckdb.connect(":memory:")
@@ -602,26 +676,28 @@ def _compute_rs_watermark(
             connection.close()
     except duckdb.IOException as exc:
         if "No files found that match" not in str(exc):
-            print(
+            debug_log(
                 f"[day-base] rs watermark query failed category={category} "
-                f"target_date={target_date} error={exc}",
-                file=sys.stderr,
+                f"target_date={target_date} error={exc}"
             )
             return None
-        return ("", 0)
+        return _ABSENT_RS_WATERMARK
     except Exception as exc:
-        print(
+        debug_log(
             f"[day-base] rs watermark setup failed category={category} "
-            f"target_date={target_date} error={exc}",
-            file=sys.stderr,
+            f"target_date={target_date} error={exc}"
         )
         return None
     if not row or not row[1]:
-        return ("", 0)
+        return _ABSENT_RS_WATERMARK
     max_predicted_at, row_count = row
     count_value = row_count if isinstance(row_count, int) else int(str(row_count))
-    predicted_at_value = str(max_predicted_at).strip() if max_predicted_at is not None else ""
-    return (predicted_at_value, count_value)
+    if max_predicted_at is None:
+        return (_ABSENT_WATERMARK_TOKEN, count_value)
+    predicted_token = str(max_predicted_at).strip()
+    if not predicted_token:
+        return (_ABSENT_WATERMARK_TOKEN, count_value)
+    return (predicted_token, count_value)
 
 
 def _combine_watermarks(
@@ -642,6 +718,27 @@ def _watermark_path(day_dir: Path) -> Path:
     return day_dir / "watermark.json"
 
 
+def _watermark_reason_path(day_dir: Path) -> Path:
+    return day_dir / _WATERMARK_REASON_FILENAME
+
+
+def _write_watermark_reason(day_dir: Path, reason: str) -> None:
+    try:
+        _watermark_reason_path(day_dir).write_text(reason, encoding="utf-8")
+    except OSError as exc:
+        debug_log(f"[day-base] watermark reason write failed dir={day_dir} error={exc}")
+
+
+def _read_watermark_reason(day_dir: Path) -> str | None:
+    try:
+        text = _watermark_reason_path(day_dir).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if text == "":
+        return None
+    return text
+
+
 def _write_watermark(day_dir: Path, watermark: DayBaseWatermark) -> None:
     payload = {
         "max_data_sakusei_nengappi": watermark[0],
@@ -656,7 +753,7 @@ def _write_watermark(day_dir: Path, watermark: DayBaseWatermark) -> None:
         # itself -- it just means the NEXT ensure_day_base call for this
         # category+day will find no watermark file, treat it as a mismatch,
         # and safely rebuild (fail-closed), same outcome as today.
-        print(f"[day-base] watermark write failed dir={day_dir} error={exc}", file=sys.stderr)
+        debug_log(f"[day-base] watermark write failed dir={day_dir} error={exc}")
 
 
 def _read_watermark(day_dir: Path) -> DayBaseWatermark | None:
@@ -727,10 +824,7 @@ def _query_upcoming_race_keys(
         rows = _query_source_rows(database_url, sql, params)
         return [(str(r[0]).strip(), str(r[1]).strip()) for r in rows if r[0] and r[1]]
     except Exception as exc:
-        print(
-            f"[realtime-odds] race-key query failed category={category} error={exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[realtime-odds] race-key query failed category={category} error={exc}")
         return []
 
 
@@ -784,10 +878,9 @@ def build_upcoming_feature_rows(
         database_url, target_date, days_ahead, category, target_race
     )
     if target_race is not None and not race_keys:
-        print(
+        debug_log(
             f"[pipeline] presence-guard: target_race={target_race} category={category} "
-            "has zero upcoming rows in source catalog -> skipping feature build",
-            file=sys.stderr,
+            "has zero upcoming rows in source catalog -> skipping feature build"
         )
         return {}
     realtime_odds_path = fetch_realtime_odds_parquet(category, target_date, WORK_DIR, race_keys)
@@ -809,16 +902,29 @@ def build_upcoming_feature_rows(
 
 
 def has_parquet_output(directory: Path) -> bool:
-    """True when ``directory`` contains at least one ``.parquet`` file.
+    """True when ``directory`` contains a hive-partitioned parquet.
 
-    The DuckDB base build writes partitioned output (``race_year=YYYY/*.parquet``)
-    when target rows exist, and an empty directory when ``--allow-empty-targets``
-    is set and the target window has no races. The layer chain expects at least
-    one parquet file, so we treat a parquet-less directory as "no work to do".
+    The DuckDB base build writes ``race_year=YYYY/*.parquet`` when target rows
+    exist, and an empty directory when ``--allow-empty-targets`` is set and the
+    target window has no races. Race-chain scripts
+    (``add-baba-pedigree-affinity-features.py`` ``stage_base_input``) read
+    ``race_year=*/*.parquet``; a flat ``features.parquet`` is not discoverable
+    that way. Treat a parquet-less or flat-only directory as "no work to do".
     """
     if not directory.exists():
         return False
-    return any(directory.rglob("*.parquet"))
+    return any(directory.glob(HIVE_PARQUET_GLOB))
+
+
+def r2_day_base_dest_path(final_dir: Path, target_date: str) -> Path:
+    """Local dest for an R2 day-base GET that race-chain scripts can glob.
+
+    Pickup uploads one flattened parquet. HIT must materialize it at
+    ``final/race_year={YYYY}/features.parquet`` so ``HIVE_PARQUET_GLOB``
+    matches. ``YYYY`` is the first four digits of ``target_date``.
+    """
+    year = target_date[:_YMD_YEAR_LENGTH]
+    return final_dir / f"{HIVE_PARTITION_PREFIX}{year}" / HIVE_PARQUET_FILENAME
 
 
 def _reset_category_work_dirs(category: Category, final_dir: Path) -> None:
@@ -1268,16 +1374,47 @@ def build_day_base(
         # failed watermark compute/write here degrades the NEXT call to
         # "no watermark found" (safe fail-closed rebuild), never this
         # build's own success.
-        watermark = _combine_watermarks(
-            _compute_source_watermark(category, target_date, database_url),
-            _compute_rs_watermark(category, target_date, r2_config),
-        )
+        source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
+        rs_watermark = _compute_rs_watermark(category, target_date, r2_config)
+        watermark = _combine_watermarks(source_outcome.value, rs_watermark)
         if watermark is not None:
             _write_watermark(day_dir, watermark)
+        elif source_outcome.reason is not None:
+            _write_watermark_reason(day_dir, source_outcome.reason)
+        elif rs_watermark is None:
+            _write_watermark_reason(day_dir, _WATERMARK_RS_UNAVAILABLE_REASON)
+        stored_reason = _read_watermark_reason(day_dir)
+        if stored_reason is not None:
+            debug_log(
+                f"[day-base] watermark absent category={category} "
+                f"target_date={target_date} reason={stored_reason}"
+            )
     _log_pipeline_progress(
         f"done daybase category={category} target_date={target_date} output={final_dir}"
     )
     return final_dir
+
+
+def _materialize_r2_day_base(
+    *,
+    r2_config: R2Config,
+    category: Category,
+    target_date: str,
+    final_dir: Path,
+) -> str | None:
+    """GET the R2 day-base object into the hive layout race-chain scripts read.
+
+    Returns ``None`` on success. Returns a miss reason when the GET fails or
+    the restored tree does not contain ``race_year=*/*.parquet``. A True GET
+    that left only a flat parquet is a miss, never a silent empty HIT.
+    """
+    object_key = build_r2_day_base_key(category, target_date)
+    dest_path = r2_day_base_dest_path(final_dir, target_date)
+    if not r2_get_parquet(r2_config, object_key, dest_path):
+        return "r2-get-failed"
+    if not has_parquet_output(final_dir):
+        return _WATERMARK_R2_HIVE_MISSING_REASON
+    return None
 
 
 def ensure_day_base(
@@ -1313,11 +1450,16 @@ def ensure_day_base(
        local-disk check misses and a watermark WAS computable: a cheap
        signed HEAD (:func:`predict_lib.r2_client.r2_head_watermark`) checks
        the R2 object's custom metadata against the freshly-computed
-       watermark BEFORE paying for the full parquet GET. A mismatch,
-       missing metadata (e.g. an object written before this metadata
-       existed), or any HEAD failure all resolve to "untrusted" -- fall
-       through to the existing ``return None`` unchanged, same fail-closed
-       contract as every other branch here. This lets a shard's first race
+       watermark BEFORE paying for the full parquet GET. A matching GET is
+       materialized at ``final/race_year={YYYY}/features.parquet`` -- pickup
+       stores one flattened parquet, but race-chain scripts glob
+       ``race_year=*/*.parquet``. A True GET that does not restore that
+       hive tree is a miss, never a silent empty HIT. A missing R2 object
+       (HEAD returns ``None``) is ``r2-missing-object``. A present 4-tuple
+       that does not equal the live watermark is ``r2-watermark-mismatch``.
+       A HEAD exception is ``r2-watermark-fetch-failed``. All of these
+       resolve to "untrusted" -- fall through to ``return None``, same
+       fail-closed contract as every other branch here. This lets a shard's first race
        skip the day-base build entirely when the 09:30 JST prewarm already
        populated R2 for this category+day, instead of every shard paying
        the full rebuild cost on its own first race.
@@ -1340,44 +1482,141 @@ def ensure_day_base(
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
     if is_catalog_source_url(database_url):
-        watermark = _combine_watermarks(
-            _compute_source_watermark(category, target_date, database_url),
-            _compute_rs_watermark(category, target_date, r2_config),
-        )
+        source_value = _compute_source_watermark(category, target_date, database_url)
+        rs_watermark = _compute_rs_watermark(category, target_date, r2_config)
+        watermark = _combine_watermarks(source_value, rs_watermark)
         if watermark is None:
+            miss_reason = _WATERMARK_RS_UNAVAILABLE_REASON
+            if source_value is None and debug_logs_enabled():
+                source_reason = _compute_source_watermark_outcome(
+                    category, target_date, database_url
+                ).reason
+                if source_reason is not None:
+                    miss_reason = source_reason
+            debug_log(
+                f"[day-base] MISS category={category} target_date={target_date} "
+                f"reason={miss_reason}"
+            )
+            _log_day_base_miss(category=category, target_date=target_date, reason=miss_reason)
             return None
-        if has_parquet_output(final_dir) and _read_watermark(day_dir) == watermark:
+        stored = _read_watermark(day_dir)
+        if has_parquet_output(final_dir) and stored == watermark:
+            debug_log(
+                f"[day-base] HIT local category={category} target_date={target_date} "
+                "reason=watermark-match"
+            )
+            _log_day_base_hit(
+                category=category,
+                target_date=target_date,
+                source="local",
+                reason="watermark-match",
+            )
             return final_dir
         if r2_config is not None:
             object_key = build_r2_day_base_key(category, target_date)
             try:
                 r2_watermark = r2_head_watermark(r2_config, object_key)
                 if r2_watermark == watermark:
-                    dest_path = final_dir / "features.parquet"
-                    if r2_get_parquet(r2_config, object_key, dest_path):
+                    hive_miss = _materialize_r2_day_base(
+                        r2_config=r2_config,
+                        category=category,
+                        target_date=target_date,
+                        final_dir=final_dir,
+                    )
+                    if hive_miss is None:
+                        _write_watermark(day_dir, watermark)
+                        debug_log(
+                            f"[day-base] HIT r2 category={category} "
+                            f"target_date={target_date} reason=watermark-match"
+                        )
+                        _log_day_base_hit(
+                            category=category,
+                            target_date=target_date,
+                            source="r2",
+                            reason="watermark-match",
+                        )
                         return final_dir
-            except Exception as exc:
-                print(
-                    f"[day-base] ensure_day_base r2 watermark fetch failed category={category} "
-                    f"target_date={target_date} key={object_key} error={exc}",
-                    file=sys.stderr,
+                    debug_log(
+                        f"[day-base] MISS category={category} target_date={target_date} "
+                        f"reason={hive_miss}"
+                    )
+                    _log_day_base_miss(category=category, target_date=target_date, reason=hive_miss)
+                    return None
+                miss_reason = (
+                    _WATERMARK_R2_MISSING_OBJECT_REASON
+                    if r2_watermark is None
+                    else _WATERMARK_R2_MISMATCH_REASON
                 )
+                debug_log(
+                    f"[day-base] MISS category={category} target_date={target_date} "
+                    f"reason={miss_reason}"
+                )
+                _log_day_base_miss(category=category, target_date=target_date, reason=miss_reason)
+            except Exception as exc:
+                debug_log(
+                    f"[day-base] MISS category={category} target_date={target_date} "
+                    f"reason=r2-watermark-fetch-failed error={exc}"
+                )
+                _log_day_base_miss(
+                    category=category,
+                    target_date=target_date,
+                    reason="r2-watermark-fetch-failed",
+                )
+            return None
+        miss_reason = (
+            "local-watermark-mismatch" if has_parquet_output(final_dir) else "no-local-cache"
+        )
+        debug_log(
+            f"[day-base] MISS category={category} target_date={target_date} reason={miss_reason}"
+        )
+        _log_day_base_miss(category=category, target_date=target_date, reason=miss_reason)
         return None
     if has_parquet_output(final_dir):
+        debug_log(
+            f"[day-base] HIT local category={category} target_date={target_date} reason=disk-cache"
+        )
+        _log_day_base_hit(
+            category=category, target_date=target_date, source="local", reason="disk-cache"
+        )
         return final_dir
     if r2_config is None:
-        return None
-    object_key = build_r2_day_base_key(category, target_date)
-    dest_path = final_dir / "features.parquet"
-    try:
-        if r2_get_parquet(r2_config, object_key, dest_path):
-            return final_dir
-    except Exception as exc:
-        print(
-            f"[day-base] ensure_day_base r2 fetch failed category={category} "
-            f"target_date={target_date} key={object_key} error={exc}",
-            file=sys.stderr,
+        debug_log(
+            f"[day-base] MISS category={category} target_date={target_date} reason=no-r2-config"
         )
+        _log_day_base_miss(category=category, target_date=target_date, reason="no-r2-config")
+        return None
+    try:
+        hive_miss = _materialize_r2_day_base(
+            r2_config=r2_config,
+            category=category,
+            target_date=target_date,
+            final_dir=final_dir,
+        )
+        if hive_miss is None:
+            debug_log(
+                f"[day-base] HIT r2 category={category} target_date={target_date} reason=offline-r2"
+            )
+            _log_day_base_hit(
+                category=category, target_date=target_date, source="r2", reason="offline-r2"
+            )
+            return final_dir
+        if hive_miss == _WATERMARK_R2_HIVE_MISSING_REASON:
+            debug_log(
+                f"[day-base] MISS category={category} target_date={target_date} reason={hive_miss}"
+            )
+            _log_day_base_miss(category=category, target_date=target_date, reason=hive_miss)
+            return None
+    except Exception as exc:
+        debug_log(
+            f"[day-base] MISS category={category} target_date={target_date} "
+            f"reason=r2-fetch-failed error={exc}"
+        )
+        _log_day_base_miss(category=category, target_date=target_date, reason="r2-fetch-failed")
+        return None
+    debug_log(
+        f"[day-base] MISS category={category} target_date={target_date} reason=r2-object-missing"
+    )
+    _log_day_base_miss(category=category, target_date=target_date, reason="r2-object-missing")
     return None
 
 
@@ -1411,18 +1650,30 @@ def day_base_covers_entry_list(
     try:
         import duckdb
 
+        if not _is_ymd_target_date(target_date):
+            return False
         keibajo_code, race_bango = target_race.split(":", 1)
         se_table = "jvd_se" if category == "jra" else "nvd_se"
+        year = target_date[:4]
+        # Interpolate the Iceberg date partition the same way
+        # ``_compute_source_watermark_outcome`` does. Bound ``?`` dates miss
+        # catalog rows, which made this check return False and fall through to
+        # full LAYER_CHAIN even when the day-base HIT. Scratch/exclude codes
+        # match ``finish_position_features_duckdb`` upcoming-entrant SQL so a
+        # 取消/除外 horse still in ``nvd_se`` cannot fail coverage.
         source_rows = _query_source_rows(
             database_url,
             f"""
             select distinct ketto_toroku_bango
             from pg.{se_table}
-            where kaisai_nen = ? and kaisai_tsukihi = ?
+            where kaisai_nen between '{year}' and '{year}'
+              and (kaisai_nen || kaisai_tsukihi) between '{target_date}' and '{target_date}'
               and keibajo_code = ? and race_bango = ?
               and ketto_toroku_bango is not null
+              and coalesce(trim(ijo_kubun_code), '{_IJO_KUBUN_NORMAL_FALLBACK}')
+                  not in ('{_IJO_KUBUN_SCRATCH}', '{_IJO_KUBUN_EXCLUDE}')
             """,
-            (target_date[:4], target_date[4:], keibajo_code, race_bango),
+            (keibajo_code, race_bango),
         )
         current_horses = {str(row[0]).strip() for row in source_rows if row[0]}
         if not current_horses:
@@ -1447,10 +1698,7 @@ def day_base_covers_entry_list(
         day_base_horses = {str(row[0]).strip() for row in rows if row[0]}
         return current_horses.issubset(day_base_horses)
     except Exception as exc:
-        print(
-            f"[day-base] entry-list drift check failed target_race={target_race} error={exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[day-base] entry-list drift check failed target_race={target_race} error={exc}")
         return False
 
 

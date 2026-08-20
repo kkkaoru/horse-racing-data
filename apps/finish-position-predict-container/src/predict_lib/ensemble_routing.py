@@ -28,7 +28,6 @@ existing ``discover_member_models`` + ``build_pool_from_paths`` helpers.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +44,7 @@ from .booster_pool import (
     discover_member_models,
     load_member_feature_names,
 )
+from .debug_log import debug_log
 from .ensemble_scorer import score_with_ensemble
 from .model_meta import (
     METADATA_FILE_NAME,
@@ -221,7 +221,7 @@ def _resolve_member_feature_names(
     except (FileNotFoundError, ValueError):
         if member_mv == baseline_mv:
             raise
-        print(f"member-metadata-missing:{member_mv}", file=sys.stderr)
+        debug_log(f"member-metadata-missing:{member_mv}")
         return None
 
 
@@ -241,7 +241,7 @@ def drop_order_mismatched_members(pool: BoosterPool) -> BoosterPool:
         if member_feature_order_matches(model_names, record.feature_names):
             kept[member_mv] = record
             continue
-        print(f"member-order-mismatch:{member_mv}", file=sys.stderr)
+        debug_log(f"member-order-mismatch:{member_mv}")
     return BoosterPool(boosters=kept)
 
 
@@ -558,16 +558,12 @@ def score_race_with_resolution(
     """
     if isinstance(resolution, str):
         scores = _score_single(fallback_booster, entries, feature_names, architecture)
-        return EnsembleRouteOutcome(
-            scores=scores, model_version=resolution, fallback_reason=None
-        )
+        return EnsembleRouteOutcome(scores=scores, model_version=resolution, fallback_reason=None)
     scores_or_none, reason = _score_ensemble(
         resolution, race_id, entries, feature_names, pool, resolution.category
     )
     if scores_or_none is None:
-        fallback_scores = _score_single(
-            fallback_booster, entries, feature_names, architecture
-        )
+        fallback_scores = _score_single(fallback_booster, entries, feature_names, architecture)
         return EnsembleRouteOutcome(
             scores=fallback_scores,
             model_version=fallback_model_version,

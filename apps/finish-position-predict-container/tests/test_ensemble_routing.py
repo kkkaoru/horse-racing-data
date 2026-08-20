@@ -207,9 +207,7 @@ def _cb_record_with_names(
 ) -> PoolBooster:
     """Wrap a CatBoost stub carrying its OWN ordered ``feature_names`` so the
     scorer projects entries onto that member-specific order."""
-    return PoolBooster(
-        booster=booster, architecture="catboost", feature_names=tuple(feature_names)
-    )
+    return PoolBooster(booster=booster, architecture="catboost", feature_names=tuple(feature_names))
 
 
 def _write_manifest(
@@ -435,12 +433,8 @@ def _two_member_ensemble() -> PerClassEnsemble:
         kyoso_joken_code="703",
         ensemble_type="rank_blend",
         members=(
-            EnsembleMember(
-                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True
-            ),
-            EnsembleMember(
-                model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-            ),
+            EnsembleMember(model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True),
+            EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False),
         ),
     )
 
@@ -1138,9 +1132,7 @@ def test_score_race_with_resolution_falls_back_when_member_missing() -> None:
     with the global model_version label and ``member-missing:<mv>`` reason."""
     ensemble = _two_member_ensemble()
     # Only the iter14 member is in the pool; iter22 is missing.
-    pool = BoosterPool(
-        boosters={JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0))}
-    )
+    pool = BoosterPool(boosters={JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0))})
     fallback = _StubBooster(0.4)
 
     outcome = score_race_with_resolution(
@@ -1287,9 +1279,7 @@ def test_score_race_with_resolution_outer_shape_guard_triggers(
         # Return a 2-element vector even though entries has 3.
         return np.array([0.1, 0.2], dtype=np.float64)
 
-    monkeypatch.setattr(
-        routing_module, "score_with_ensemble", stub_score_with_ensemble
-    )
+    monkeypatch.setattr(routing_module, "score_with_ensemble", stub_score_with_ensemble)
 
     outcome = score_race_with_resolution(
         resolution=ensemble,
@@ -1384,10 +1374,7 @@ def test_resolve_member_architecture_returns_catboost_for_cb_token() -> None:
     category — covers both JRA per-class members and NAR iter 30 residuals."""
     from predict_lib.ensemble_routing import resolve_member_architecture
 
-    assert (
-        resolve_member_architecture(JRA_CLASS_703_ENSEMBLE_MODEL_VERSION, "jra")
-        == "catboost"
-    )
+    assert resolve_member_architecture(JRA_CLASS_703_ENSEMBLE_MODEL_VERSION, "jra") == "catboost"
     assert resolve_member_architecture(NAR_RESIDUAL_NEW, "nar") == "catboost"
 
 
@@ -1406,10 +1393,7 @@ def test_resolve_member_architecture_returns_lightgbm_for_lambdarank_token() -> 
     ``-lgb-`` arch token) still resolves to LightGBM."""
     from predict_lib.ensemble_routing import resolve_member_architecture
 
-    assert (
-        resolve_member_architecture("iter36-nar-lambdarank-residual-C-v8", "nar")
-        == "lightgbm"
-    )
+    assert resolve_member_architecture("iter36-nar-lambdarank-residual-C-v8", "nar") == "lightgbm"
 
 
 def test_resolve_member_architecture_falls_back_to_category_default() -> None:
@@ -1526,10 +1510,12 @@ def test_drop_order_mismatched_members_keeps_matching_catboost() -> None:
 
 
 def test_drop_order_mismatched_members_drops_permuted_catboost(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A CatBoost member whose booster order disagrees with metadata is dropped
     and a ``member-order-mismatch:<mv>`` line is logged to stderr."""
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     permuted_booster = _NamedBooster(["feature_b", "feature_a", "iter14_score"])
     record = _cb_record_with_names(permuted_booster, RESIDUAL_METADATA_FEATURE_NAMES)
     pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
@@ -1538,7 +1524,7 @@ def test_drop_order_mismatched_members_drops_permuted_catboost(
 
     assert kept.has(ITER22_RESIDUAL_703) is False
     captured = capsys.readouterr()
-    assert f"member-order-mismatch:{ITER22_RESIDUAL_703}" in captured.err
+    assert captured.err == "member-order-mismatch:iter22-jra-cb-residual-703-v8\n"
 
 
 def test_drop_order_mismatched_members_always_keeps_xgboost() -> None:
@@ -1567,6 +1553,7 @@ def test_init_member_pool_skips_member_when_metadata_missing(
     (logged ``member-metadata-missing:<mv>``); the baseline still loads so the
     ensemble can fall back to it. Registry injection required after the iter 19
     base-only flip."""
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
@@ -1595,7 +1582,7 @@ def test_init_member_pool_skips_member_when_metadata_missing(
     assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
     assert pool.has(ITER22_RESIDUAL_703) is False
     captured = capsys.readouterr()
-    assert f"member-metadata-missing:{ITER22_RESIDUAL_703}" in captured.err
+    assert "member-metadata-missing:iter22-jra-cb-residual-703-v8" in captured.err
 
 
 def test_init_member_pool_skips_member_when_metadata_corrupt(
@@ -1607,6 +1594,7 @@ def test_init_member_pool_skips_member_when_metadata_corrupt(
     ``feature_names`` key) is skipped + logged, exercising the ValueError arm of
     the non-baseline failure posture. Registry injection required after the iter 19
     base-only flip."""
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
@@ -1635,7 +1623,7 @@ def test_init_member_pool_skips_member_when_metadata_corrupt(
 
     assert pool.has(ITER22_RESIDUAL_703) is False
     captured = capsys.readouterr()
-    assert f"member-metadata-missing:{ITER22_RESIDUAL_703}" in captured.err
+    assert "member-metadata-missing:iter22-jra-cb-residual-703-v8" in captured.err
 
 
 def test_init_member_pool_raises_when_baseline_metadata_missing(
@@ -1723,6 +1711,7 @@ def test_init_member_pool_drops_order_mismatched_member(
     disagrees with its metadata order is dropped by the post-load order assertion
     (logged ``member-order-mismatch:<mv>``). The baseline (matching order) is
     kept. Registry injection required after the iter 19 base-only flip."""
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
@@ -1761,7 +1750,7 @@ def test_init_member_pool_drops_order_mismatched_member(
     assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
     assert pool.has(ITER22_RESIDUAL_703) is False
     captured = capsys.readouterr()
-    assert f"member-order-mismatch:{ITER22_RESIDUAL_703}" in captured.err
+    assert "member-order-mismatch:iter22-jra-cb-residual-703-v8" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -1796,9 +1785,7 @@ def test_column_gap_zero_when_all_features_present() -> None:
 
 def test_column_gap_counts_missing_features() -> None:
     """Member features absent from the entry keys are counted."""
-    gap = column_gap(
-        ["feature_a", "feature_b", "feature_c"], frozenset({"feature_a"}), None
-    )
+    gap = column_gap(["feature_a", "feature_b", "feature_c"], frozenset({"feature_a"}), None)
     assert gap == 2
 
 
@@ -1817,9 +1804,7 @@ def test_column_gap_excludes_injected_score_col() -> None:
 def test_column_gap_score_col_none_keeps_score_required() -> None:
     """When ``score_col`` is None nothing is discarded — a missing ``iter14_score``
     counts toward the gap (the score_col-is-None branch)."""
-    gap = column_gap(
-        ["feature_a", "iter14_score"], frozenset({"feature_a"}), None
-    )
+    gap = column_gap(["feature_a", "iter14_score"], frozenset({"feature_a"}), None)
     assert gap == 1
 
 
@@ -1845,12 +1830,8 @@ def test_find_baseline_member_returns_none_when_no_baseline() -> None:
         kyoso_joken_code="703",
         ensemble_type="rank_blend",
         members=(
-            EnsembleMember(
-                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False
-            ),
-            EnsembleMember(
-                model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-            ),
+            EnsembleMember(model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False),
+            EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False),
         ),
     )
     assert find_baseline_member(ensemble) is None
@@ -1905,12 +1886,8 @@ def test_score_member_returns_column_gap_when_feature_absent() -> None:
     """A NON-BASELINE member whose metadata lists a feature ABSENT from the
     entry keys returns ``(None, member-column-gap:<mv>:<n>)`` so the ensemble
     falls back rather than silently 0-filling."""
-    member = EnsembleMember(
-        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-    )
-    record = _cb_record_with_names(
-        _StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"]
-    )
+    member = EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False)
+    record = _cb_record_with_names(_StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"])
     pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
 
@@ -1928,12 +1905,8 @@ def test_score_member_baseline_skips_column_gap_guard() -> None:
     (``shusso_tosu`` at index 2 + ``shusso_tosu_1`` at 146) that the parquet
     only emits once — the legacy ``build_feature_matrix`` 0-fill preserves the
     pre-WIP baseline behaviour for the safety-net booster."""
-    member = EnsembleMember(
-        model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True
-    )
-    record = _cb_record_with_names(
-        _StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"]
-    )
+    member = EnsembleMember(model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True)
+    record = _cb_record_with_names(_StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"])
     pool = BoosterPool(boosters={JRA_FALLBACK_MODEL_VERSION: record})
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
 
@@ -1949,12 +1922,8 @@ def test_score_member_baseline_skips_column_gap_guard() -> None:
 def test_score_member_does_not_gap_on_injected_score_col() -> None:
     """A member whose only beyond-entry feature is the injected ``score_col`` does
     NOT gap on pass 2 (the score_col is supplied by the augment pass)."""
-    member = EnsembleMember(
-        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-    )
-    record = _cb_record_with_names(
-        _StubBooster(0.0), ["feature_a", "feature_b", JRA_SCORE_COL]
-    )
+    member = EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False)
+    record = _cb_record_with_names(_StubBooster(0.0), ["feature_a", "feature_b", JRA_SCORE_COL])
     pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
 
@@ -1969,9 +1938,7 @@ def test_score_member_does_not_gap_on_injected_score_col() -> None:
 def test_score_member_empty_entries_uses_empty_key_set() -> None:
     """An empty entries sequence yields an empty key set; a member with a
     declared feature then gaps (the ``entries[0]`` guard is skipped)."""
-    member = EnsembleMember(
-        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-    )
+    member = EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False)
     record = _cb_record_with_names(_StubBooster(0.0), ["feature_a"])
     pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
@@ -2031,12 +1998,8 @@ def test_score_race_falls_back_when_no_baseline_in_manifest() -> None:
         kyoso_joken_code="703",
         ensemble_type="rank_blend",
         members=(
-            EnsembleMember(
-                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False
-            ),
-            EnsembleMember(
-                model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-            ),
+            EnsembleMember(model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False),
+            EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False),
         ),
     )
     pool = BoosterPool(
@@ -2265,15 +2228,9 @@ def test_matrix_cache_shared_for_same_arch_and_feature_order() -> None:
         kyoso_joken_code="703",
         ensemble_type="rank_blend",
         members=(
-            EnsembleMember(
-                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.2, is_baseline=True
-            ),
-            EnsembleMember(
-                model_version=ITER22_RESIDUAL_703, weight=0.4, is_baseline=False
-            ),
-            EnsembleMember(
-                model_version=second_residual_mv, weight=0.4, is_baseline=False
-            ),
+            EnsembleMember(model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.2, is_baseline=True),
+            EnsembleMember(model_version=ITER22_RESIDUAL_703, weight=0.4, is_baseline=False),
+            EnsembleMember(model_version=second_residual_mv, weight=0.4, is_baseline=False),
         ),
     )
     pool = BoosterPool(

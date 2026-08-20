@@ -26,9 +26,12 @@ import os
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from predict_lib import serve as serve_module
+from predict_lib.debug_log import drain_debug_progress, record_debug_progress
 from predict_lib.focused_full_cache import FocusedFullCachePayload
 from predict_lib.serve import (
     FOCUSED_FULL_ACCEPTED_STATUS,
@@ -49,6 +52,7 @@ from predict_lib.serve import (
     activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
+    build_prewarm_cache_key,
     build_prewarm_result_line,
     build_progress_line,
     build_r2_day_base_key,
@@ -61,10 +65,18 @@ from predict_lib.serve import (
     iter_predict_chunks,
     iter_prewarm_chunks,
     mask_error_message,
+    parse_day_base_cache_identity,
     parse_focused_full_cache_query,
     parse_predict_params,
     parse_prewarm_params,
     parse_request_path,
+    run_prewarm_in_background,
+)
+
+_RELEASE_PREWARM_SLOT_ATTR = "_release_prewarm_slot"
+_release_prewarm_slot = cast(
+    Callable[[str], None],
+    getattr(serve_module, _RELEASE_PREWARM_SLOT_ATTR),
 )
 
 # ---------------------------------------------------------------------------
@@ -164,6 +176,30 @@ def test_parse_predict_params_debug_flag_default_false() -> None:
     assert result.debug_logs is False
 
 
+def test_parse_predict_params_debug_flag_zero_is_off() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&debug=0")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is False
+
+
+def test_parse_predict_params_debug_flag_false_is_off() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&debug=false")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is False
+
+
+def test_parse_predict_params_debug_flag_garbage_is_off() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&debug=maybe")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is False
+
+
+def test_parse_predict_params_debug_flag_true_is_on() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&debug=true")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is True
+
+
 def test_parse_predict_params_force_flag_enabled() -> None:
     result = parse_predict_params("category=jra&runDate=20260619&force=1")
     assert isinstance(result, PredictParams)
@@ -202,6 +238,251 @@ def test_iter_predict_chunks_sets_debug_env_during_predict() -> None:
     assert seen == ["1"]
     assert os.environ["PREDICT_DEBUG_LOGS"] == "previous"
     os.environ.pop("PREDICT_DEBUG_LOGS", None)
+
+
+def test_build_result_line_omits_step_when_not_provided() -> None:
+    line = build_result_line("jra", "20260619", 10, status="success")
+    parsed = json.loads(line.decode())
+    assert "step" not in parsed
+
+
+def test_build_result_line_includes_step_when_provided() -> None:
+    line = build_result_line(
+        "jra",
+        "20260619",
+        10,
+        status="success",
+        step="step=racechain-layer index=1/1 status=done",
+    )
+    parsed = json.loads(line.decode())
+    assert parsed["step"] == "step=racechain-layer index=1/1 status=done"
+
+
+def test_iter_predict_chunks_debug_off_omits_racechain_and_daybase_hit_progress() -> None:
+    drain_debug_progress()
+
+    def _predict_with_tokens(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress("step=daybase-hit source=local category=jra target_date=20260619")
+        record_debug_progress("step=racechain-layer index=1/1 status=start")
+        return 1
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=False)
+    chunks = list(iter_predict_chunks(params, _predict_with_tokens, sleep_fn=_noop_sleep))
+    joined = b"".join(chunks).decode()
+    assert "racechain-layer" not in joined
+    assert "daybase-hit" not in joined
+    assert "daybase-miss" not in joined
+    assert "daybase-base" not in joined
+    last = json.loads(chunks[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert "step" not in last
+
+
+def test_iter_predict_chunks_debug_on_daybase_present_emits_racechain_not_rebuild() -> None:
+    drain_debug_progress()
+
+    def _predict_hit(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress(
+            "step=daybase-hit source=local category=jra target_date=20260619 reason=watermark-match"
+        )
+        record_debug_progress(
+            "step=racechain-layer index=1/1 status=start category=jra script=x.py "
+            "target_race=83:03 elapsed_seconds=0.000"
+        )
+        return 1
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=True)
+    chunks = list(iter_predict_chunks(params, _predict_hit, sleep_fn=_noop_sleep))
+    joined = b"".join(chunks).decode()
+    assert "step=daybase-hit" in joined
+    assert "step=racechain-layer" in joined
+    assert "step=daybase-base" not in joined
+    assert "step=daybase-miss" not in joined
+    last = json.loads(chunks[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert last["step"] == (
+        "step=racechain-layer index=1/1 status=start category=jra script=x.py "
+        "target_race=83:03 elapsed_seconds=0.000"
+    )
+
+
+def test_iter_predict_chunks_debug_on_daybase_missing_emits_miss_rebuild_token() -> None:
+    drain_debug_progress()
+
+    def _predict_miss(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress(
+            "step=daybase-miss category=jra target_date=20260619 reason=no-local-cache"
+        )
+        record_debug_progress(
+            "step=daybase-base index=0 status=start category=jra target_date=20260619"
+        )
+        return 1
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=True)
+    chunks = list(iter_predict_chunks(params, _predict_miss, sleep_fn=_noop_sleep))
+    joined = b"".join(chunks).decode()
+    assert "step=daybase-miss" in joined
+    assert "step=daybase-base" in joined
+    last = json.loads(chunks[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert last["step"] == (
+        "step=daybase-base index=0 status=start category=jra target_date=20260619"
+    )
+
+
+def test_iter_predict_chunks_debug_on_without_pipeline_steps_omits_result_step() -> None:
+    drain_debug_progress()
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=True)
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    joined = b"".join(chunks).decode()
+    assert last["status"] == "success"
+    assert "step" not in last
+    assert "racechain-layer" not in joined
+    assert "daybase-hit" not in joined
+
+
+def test_iter_predict_chunks_debug_on_error_includes_last_step() -> None:
+    drain_debug_progress()
+
+    def _predict_fail(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress(
+            "step=daybase-miss category=jra target_date=20260619 reason=no-local-cache"
+        )
+        raise RuntimeError("rebuild failed")
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=True)
+    chunks = list(iter_predict_chunks(params, _predict_fail, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    joined = b"".join(chunks).decode()
+    assert last["status"] == "error"
+    assert "step=daybase-miss" in joined
+    assert last["step"] == (
+        "step=daybase-miss category=jra target_date=20260619 reason=no-local-cache"
+    )
+
+
+def test_iter_predict_chunks_debug_on_emits_daybase_hit_during_keepalive() -> None:
+    drain_debug_progress()
+    started = threading.Event()
+    unblock = threading.Event()
+    sleeps = [0]
+
+    def _predict_hold(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress(
+            "step=daybase-hit source=local category=jra target_date=20260619 reason=watermark-match"
+        )
+        started.set()
+        unblock.wait(timeout=2.0)
+        record_debug_progress(
+            "step=racechain-layer index=1/1 status=done category=jra script=x.py "
+            "target_race=83:03 elapsed_seconds=0.100"
+        )
+        return 1
+
+    def _sleep(_: float) -> None:
+        sleeps[0] += 1
+        if sleeps[0] >= 2:
+            unblock.set()
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, debug_logs=True)
+    chunks = list(iter_predict_chunks(params, _predict_hold, sleep_fn=_sleep))
+    joined = b"".join(chunks).decode()
+    last = json.loads(chunks[-1].decode())
+    assert started.wait(timeout=2.0)
+    assert "step=daybase-hit" in joined
+    assert "step=racechain-layer" in joined
+    assert "step=daybase-base" not in joined
+    assert last["status"] == "success"
+    assert last["step"] == (
+        "step=racechain-layer index=1/1 status=done category=jra script=x.py "
+        "target_race=83:03 elapsed_seconds=0.100"
+    )
+
+
+def test_iter_predict_chunks_emits_result_ndjson_without_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    os.environ.pop("PREDICT_DEBUG_LOGS", None)
+
+    def _predict_ok(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        return 3
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+    chunks = list(iter_predict_chunks(params, _predict_ok, sleep_fn=_noop_sleep))
+    parsed = json.loads(chunks[-1].decode())
+    assert parsed["type"] == "result"
+    assert parsed["status"] == "success"
+    assert parsed["racesPredicted"] == 3
+    assert parsed["category"] == "jra"
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_iter_prewarm_chunks_emits_result_ndjson_without_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    parsed = json.loads(chunks[-1].decode())
+    assert parsed["type"] == "result"
+    assert parsed["status"] == "success"
+    assert parsed["category"] == "jra"
+    assert parsed["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
 def test_parse_predict_params_days_ahead_missing_defaults_to_zero() -> None:
@@ -779,6 +1060,27 @@ def test_build_r2_per_race_feat_cache_key_zero_pads_unpadded_codes() -> None:
 # ---------------------------------------------------------------------------
 # build_r2_day_base_key
 # ---------------------------------------------------------------------------
+
+
+def test_build_prewarm_cache_key_is_category_and_date() -> None:
+    assert build_prewarm_cache_key("ban-ei", "20260816") == "prewarm:ban-ei:20260816"
+
+
+def test_parse_day_base_cache_identity_reads_category_and_date() -> None:
+    assert parse_day_base_cache_identity(
+        "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    ) == ("jra", "20260712")
+
+
+def test_parse_day_base_cache_identity_reads_banei_category() -> None:
+    assert parse_day_base_cache_identity(
+        "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet"
+    ) == ("ban-ei", "20260816")
+
+
+def test_parse_day_base_cache_identity_rejects_short_key() -> None:
+    with pytest.raises(RuntimeError, match="invalid day-base parquet key"):
+        parse_day_base_cache_identity("feat-daybase/catalog-v1/jra")
 
 
 def test_build_r2_day_base_key_format() -> None:
@@ -2037,6 +2339,60 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
     assert invoked.wait(timeout=2.0), "predict_fn was never invoked"
 
 
+def test_iter_predict_chunks_debug_on_focused_full_holds_and_emits_racechain() -> None:
+    drain_debug_progress()
+    released: list[str] = []
+
+    def _predict_hit(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        record_debug_progress(
+            "step=daybase-hit source=r2 category=nar target_date=20260619 reason=watermark-match"
+        )
+        record_debug_progress(
+            "step=racechain-layer index=1/1 status=start category=nar script=x.py "
+            "target_race=83:03 elapsed_seconds=0.000"
+        )
+        return 1
+
+    params = PredictParams(
+        category="nar",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="83",
+        race_bango="03",
+        debug_logs=True,
+    )
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict_hit,
+            focused_full_claim_fn=lambda _key: FOCUSED_FULL_SLOT_CLAIMED,
+            focused_full_release_fn=lambda key: released.append(key),
+            sleep_fn=_noop_sleep,
+        )
+    )
+    joined = b"".join(chunks).decode()
+    last = json.loads(chunks[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 1
+    assert "step=daybase-hit" in joined
+    assert "step=racechain-layer" in joined
+    assert "step=daybase-base" not in joined
+    assert last["step"] == (
+        "step=racechain-layer index=1/1 status=start category=nar script=x.py "
+        "target_race=83:03 elapsed_seconds=0.000"
+    )
+    assert released == ["nar:20260619:83:03"]
+
+
 def test_iter_predict_chunks_focused_full_claim_busy_skips_launch() -> None:
     """When the single-process guard reports the slot busy (held by a DIFFERENT
     race), predict_fn must never be invoked and the response must report
@@ -2796,6 +3152,24 @@ def test_iter_predict_chunks_focused_full_completion_raises_runs_pipeline() -> N
 # ---------------------------------------------------------------------------
 
 
+def test_parse_prewarm_params_debug_flag_enabled() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&debug=1")
+    assert isinstance(result, PrewarmParams)
+    assert result.debug_logs is True
+
+
+def test_parse_prewarm_params_debug_flag_default_false() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712")
+    assert isinstance(result, PrewarmParams)
+    assert result.debug_logs is False
+
+
+def test_parse_prewarm_params_debug_flag_invalid_is_off() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&debug=nope")
+    assert isinstance(result, PrewarmParams)
+    assert result.debug_logs is False
+
+
 def test_parse_prewarm_params_jra_success() -> None:
     result = parse_prewarm_params("category=jra&runDate=20260712&daysAhead=0")
     assert isinstance(result, PrewarmParams)
@@ -2960,6 +3334,51 @@ def test_build_focused_full_cache_response_body_found() -> None:
     }
 
 
+def test_build_focused_full_cache_response_body_includes_daybase_watermark() -> None:
+    payload = FocusedFullCachePayload(
+        parquet_base64="YmFzZTY0",
+        parquet_key="feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+        per_race_parquets=None,
+        daybase_watermark={
+            "maxDataSakuseiNengappi": "20260816",
+            "rowCount": 80,
+            "rsPredictedAtMax": "2026-08-16T00:00:00",
+            "rsRowCount": 4,
+        },
+    )
+    body = build_focused_full_cache_response_body(payload)
+    assert json.loads(body.decode()) == {
+        "found": True,
+        "parquetBase64": "YmFzZTY0",
+        "parquetKey": "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+        "perRaceParquets": None,
+        "daybaseWatermark": {
+            "maxDataSakuseiNengappi": "20260816",
+            "rowCount": 80,
+            "rsPredictedAtMax": "2026-08-16T00:00:00",
+            "rsRowCount": 4,
+        },
+    }
+
+
+def test_build_focused_full_cache_response_body_includes_watermark_error() -> None:
+    payload = FocusedFullCachePayload(
+        parquet_base64="YmFzZTY0",
+        parquet_key="feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+        per_race_parquets=None,
+        daybase_watermark=None,
+        watermark_error="watermark count is 0",
+    )
+    body = build_focused_full_cache_response_body(payload)
+    assert json.loads(body.decode()) == {
+        "found": True,
+        "parquetBase64": "YmFzZTY0",
+        "parquetKey": "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+        "perRaceParquets": None,
+        "watermarkError": "watermark count is 0",
+    }
+
+
 # ---------------------------------------------------------------------------
 # build_prewarm_result_line
 # ---------------------------------------------------------------------------
@@ -3043,13 +3462,56 @@ def _mock_build_empty(category: str, run_date: str, days_ahead: int) -> None:
     return None
 
 
+def test_iter_prewarm_chunks_sets_debug_env_during_build() -> None:
+    seen: list[str | None] = []
+    os.environ["PREDICT_DEBUG_LOGS"] = "previous"
+
+    def _build_debug(category: str, run_date: str, days_ahead: int) -> Path:
+        seen.append(os.environ.get("PREDICT_DEBUG_LOGS"))
+        return Path("/tmp/daybase-jra-20260712")
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0, debug_logs=True)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _build_debug,
+            parquet_payload_fn=_mock_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert json.loads(chunks[-1].decode())["status"] == "success"
+    assert seen == ["1"]
+    assert os.environ["PREDICT_DEBUG_LOGS"] == "previous"
+    os.environ.pop("PREDICT_DEBUG_LOGS", None)
+
+
 def _mock_build_raises(category: str, run_date: str, days_ahead: int) -> Path:
     raise RuntimeError("day-base build boom")
 
 
+def _mock_payload(
+    category: str, run_date: str, day_base_dir: Path
+) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+    return (
+        "dGVzdA==",
+        "feat-daybase/catalog-v1/jra/20260712/features.parquet",
+        {
+            "maxDataSakuseiNengappi": "20260712",
+            "rowCount": 946,
+            "rsPredictedAtMax": "2026-07-18T09:00:00",
+            "rsRowCount": 12,
+        },
+        None,
+    )
+
+
 def test_iter_prewarm_chunks_success_yields_progress_then_result() -> None:
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
-    chunks = list(iter_prewarm_chunks(params, _mock_build_ok, sleep_fn=_noop_sleep))
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_mock_payload, sleep_fn=_noop_sleep
+        )
+    )
     assert len(chunks) >= 2
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = [p.get("stage") for p in parsed if p.get("type") == "progress"]
@@ -3059,6 +3521,7 @@ def test_iter_prewarm_chunks_success_yields_progress_then_result() -> None:
     assert last["status"] == "success"
     assert last["category"] == "jra"
     assert last["runDate"] == "20260712"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
 
 
 def test_iter_prewarm_chunks_empty_build_yields_empty_status() -> None:
@@ -3104,7 +3567,11 @@ def test_iter_prewarm_chunks_forwards_category_run_date_days_ahead() -> None:
         return Path("/tmp/daybase")
 
     params = PrewarmParams(category="nar", run_date="20260712", days_ahead=3)
-    list(iter_prewarm_chunks(params, _capture, sleep_fn=_noop_sleep))
+    list(
+        iter_prewarm_chunks(
+            params, _capture, parquet_payload_fn=_mock_payload, sleep_fn=_noop_sleep
+        )
+    )
     assert seen == [("nar", "20260712", 3)]
 
 
@@ -3113,9 +3580,19 @@ def test_iter_prewarm_chunks_calls_parquet_payload_fn_with_day_base_dir() -> Non
 
     def _payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         captured.append((category, run_date, day_base_dir))
-        return "dGVzdA==", "feat-daybase/jra/20260712/features.parquet", None
+        return (
+            "dGVzdA==",
+            "feat-daybase/jra/20260712/features.parquet",
+            {
+                "maxDataSakuseiNengappi": "20260712",
+                "rowCount": 946,
+                "rsPredictedAtMax": "2026-07-18T09:00:00",
+                "rsRowCount": 12,
+            },
+            None,
+        )
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     chunks = list(
@@ -3127,7 +3604,12 @@ def test_iter_prewarm_chunks_calls_parquet_payload_fn_with_day_base_dir() -> Non
     assert last["status"] == "success"
     assert last["parquetBase64"] == "dGVzdA=="
     assert last["parquetKey"] == "feat-daybase/jra/20260712/features.parquet"
-    assert "daybaseWatermark" not in last
+    assert last["daybaseWatermark"] == {
+        "maxDataSakuseiNengappi": "20260712",
+        "rowCount": 946,
+        "rsPredictedAtMax": "2026-07-18T09:00:00",
+        "rsRowCount": 12,
+    }
     assert len(captured) == 1
     assert captured[0][0] == "jra"
     assert captured[0][1] == "20260712"
@@ -3137,11 +3619,12 @@ def test_iter_prewarm_chunks_calls_parquet_payload_fn_with_day_base_dir() -> Non
 def test_iter_prewarm_chunks_forwards_daybase_watermark_when_present() -> None:
     def _payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         return (
             "dGVzdA==",
             "feat-daybase/jra/20260712/features.parquet",
             {"maxDataSakuseiNengappi": "20260712", "rowCount": 946},
+            None,
         )
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
@@ -3154,10 +3637,110 @@ def test_iter_prewarm_chunks_forwards_daybase_watermark_when_present() -> None:
     assert last["daybaseWatermark"] == {"maxDataSakuseiNengappi": "20260712", "rowCount": 946}
 
 
+def test_iter_prewarm_chunks_missing_watermark_is_error() -> None:
+    committed: list[tuple[str, str, Mapping[str, str | int] | None, str | None]] = []
+
+    def _no_watermark(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+        return "dGVzdA==", "feat-daybase/catalog-v1/jra/20260712/features.parquet", None, None
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        committed.append((parquet_key, parquet_b64, watermark, watermark_error))
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_no_watermark,
+            commit_fn=_commit,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "prewarm day-base watermark missing after day-base build"
+    assert "parquetBase64" not in last
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert committed == [
+        ("feat-daybase/catalog-v1/jra/20260712/features.parquet", "dGVzdA==", None, None)
+    ]
+
+
+def test_iter_prewarm_chunks_zero_count_reason_is_error() -> None:
+    committed: list[tuple[str, Mapping[str, str | int] | None, str | None]] = []
+
+    def _zero_count(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+        return (
+            "dGVzdA==",
+            "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+            None,
+            "watermark count is 0",
+        )
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        committed.append((parquet_key, watermark, watermark_error))
+
+    params = PrewarmParams(category="ban-ei", run_date="20260816", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_zero_count,
+            commit_fn=_commit,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "watermark count is 0"
+    assert "parquetBase64" not in last
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet"
+    assert committed == [
+        ("feat-daybase/catalog-v1/ban-ei/20260816/features.parquet", None, "watermark count is 0")
+    ]
+
+
+def test_iter_prewarm_chunks_query_failed_reason_is_error() -> None:
+    def _query_failed(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+        return (
+            "dGVzdA==",
+            "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+            None,
+            "watermark query failed: attach failed",
+        )
+
+    params = PrewarmParams(category="ban-ei", run_date="20260816", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_query_failed, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "watermark query failed: attach failed"
+    assert "parquetBase64" not in last
+
+
 def test_iter_prewarm_chunks_parquet_payload_fn_none_result() -> None:
     def _no_parquet(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         return None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
@@ -3175,7 +3758,7 @@ def test_iter_prewarm_chunks_parquet_payload_fn_none_result() -> None:
 def test_iter_prewarm_chunks_parquet_payload_fn_error_is_reported() -> None:
     def _failing_payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         raise RuntimeError("disk read failed")
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
@@ -3190,12 +3773,309 @@ def test_iter_prewarm_chunks_parquet_payload_fn_error_is_reported() -> None:
     assert "parquetBase64" not in last
 
 
-def test_iter_prewarm_chunks_no_parquet_payload_fn_no_fields() -> None:
+def test_iter_prewarm_chunks_no_parquet_payload_fn_is_error() -> None:
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     chunks = list(iter_prewarm_chunks(params, _mock_build_ok, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "prewarm parquet payload missing after day-base build"
     assert "parquetBase64" not in last
     assert "parquetKey" not in last
+
+
+def test_iter_prewarm_chunks_blank_parquet_key_is_error() -> None:
+    def _blank_key(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+        return "dGVzdA==", "   ", None, None
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_blank_key, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "prewarm parquet key missing after day-base build"
+    assert "parquetBase64" not in last
+    assert "parquetKey" not in last
+
+
+def test_iter_prewarm_chunks_commit_fn_failure_is_error() -> None:
+    def _failing_commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        raise RuntimeError("put failed")
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            commit_fn=_failing_commit,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "RuntimeError: put failed"
+    assert "parquetBase64" not in last
+
+
+def test_iter_prewarm_chunks_commit_fn_success_keeps_key() -> None:
+    committed: list[tuple[str, str]] = []
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        committed.append((parquet_key, parquet_b64))
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            commit_fn=_commit,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert committed == [("feat-daybase/catalog-v1/jra/20260712/features.parquet", "dGVzdA==")]
+
+
+def test_iter_prewarm_chunks_existing_object_skips_build() -> None:
+    built: list[bool] = []
+
+    def _build(category: str, run_date: str, days_ahead: int) -> Path:
+        built.append(True)
+        return Path("/tmp/daybase")
+
+    def _existing(category: str, run_date: str) -> str | None:
+        return "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(params, _build, existing_object_fn=_existing, sleep_fn=_noop_sleep)
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert built == []
+
+
+def test_iter_prewarm_chunks_background_returns_accepted_with_key() -> None:
+    launched: list[bool] = []
+
+    def _background(fn: Callable[[], None]) -> None:
+        launched.append(True)
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "accepted"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert launched == [True]
+
+
+def test_iter_prewarm_chunks_in_flight_second_call_is_accepted() -> None:
+    def _background(fn: Callable[[], None]) -> None:
+        return None
+
+    params = PrewarmParams(category="nar", run_date="20260712", days_ahead=0)
+    try:
+        first = list(
+            iter_prewarm_chunks(
+                params,
+                _mock_build_ok,
+                parquet_payload_fn=_mock_payload,
+                background_fn=_background,
+                sleep_fn=_noop_sleep,
+            )
+        )
+        second = list(
+            iter_prewarm_chunks(
+                params,
+                _mock_build_ok,
+                parquet_payload_fn=_mock_payload,
+                background_fn=_background,
+                sleep_fn=_noop_sleep,
+            )
+        )
+        assert json.loads(first[-1].decode())["status"] == "accepted"
+        assert json.loads(second[-1].decode())["status"] == "accepted"
+        assert json.loads(second[-1].decode())["parquetKey"] == (
+            "feat-daybase/catalog-v1/nar/20260712/features.parquet"
+        )
+    finally:
+        _release_prewarm_slot("nar:20260712")
+
+
+def test_iter_prewarm_chunks_background_runs_commit() -> None:
+    committed: list[str] = []
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        committed.append(parquet_key)
+
+    def _background(fn: Callable[[], None]) -> None:
+        fn()
+
+    params = PrewarmParams(category="jra", run_date="20260713", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            commit_fn=_commit,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "accepted"
+    assert committed == ["feat-daybase/catalog-v1/jra/20260712/features.parquet"]
+
+
+def test_iter_prewarm_chunks_existing_object_none_falls_through_to_build() -> None:
+    def _existing(category: str, run_date: str) -> str | None:
+        return None
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_release_prewarm_slot_unknown_key_is_noop() -> None:
+    _release_prewarm_slot("missing:20990101")
+
+
+def test_iter_prewarm_chunks_existing_object_exception_falls_through_to_build() -> None:
+    def _existing(category: str, run_date: str) -> str | None:
+        raise RuntimeError("head failed")
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_iter_prewarm_chunks_blank_existing_object_falls_through_to_build() -> None:
+    def _existing(category: str, run_date: str) -> str | None:
+        return "   "
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_iter_prewarm_chunks_empty_parquet_bytes_is_error() -> None:
+    def _empty_bytes(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+        return "", "feat-daybase/catalog-v1/jra/20260712/features.parquet", None, None
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_empty_bytes, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert last["error"] == "prewarm parquet key missing after day-base build"
+
+
+def test_iter_prewarm_chunks_background_empty_build_does_not_commit() -> None:
+    committed: list[bool] = []
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        committed.append(True)
+
+    def _background(fn: Callable[[], None]) -> None:
+        fn()
+
+    params = PrewarmParams(category="jra", run_date="20260714", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_empty,
+            parquet_payload_fn=_mock_payload,
+            commit_fn=_commit,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "accepted"
+    assert committed == []
+
+
+def test_run_prewarm_in_background_executes_and_survives_error() -> None:
+    ran = threading.Event()
+
+    def _fn() -> None:
+        ran.set()
+        raise RuntimeError("boom")
+
+    run_prewarm_in_background(_fn)
+    assert ran.wait(timeout=2.0) is True
 
 
 def test_iter_prewarm_chunks_empty_build_skips_parquet_payload_fn() -> None:
@@ -3203,9 +4083,9 @@ def test_iter_prewarm_chunks_empty_build_skips_parquet_payload_fn() -> None:
 
     def _payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         called.append(True)
-        return "x", "y", None
+        return "x", "y", None, None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     list(
@@ -3221,9 +4101,9 @@ def test_iter_prewarm_chunks_error_skips_parquet_payload_fn() -> None:
 
     def _payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
         called.append(True)
-        return "x", "y", None
+        return "x", "y", None, None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     list(
@@ -3259,6 +4139,7 @@ def test_iter_prewarm_chunks_keepalive_emits_progress_during_blocking_build() ->
         gen = iter_prewarm_chunks(
             params,
             _blocking_build,
+            parquet_payload_fn=_mock_payload,
             time_fn=time_fn,
             sleep_fn=sleep_fn,
             progress_interval_s=10.0,
@@ -3311,6 +4192,7 @@ def test_iter_prewarm_chunks_post_build_progress_when_interval_elapsed() -> None
         iter_prewarm_chunks(
             params,
             _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
             time_fn=_slow_time,
             sleep_fn=_noop_sleep,
             progress_interval_s=10.0,

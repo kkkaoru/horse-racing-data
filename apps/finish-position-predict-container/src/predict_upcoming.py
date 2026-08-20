@@ -72,6 +72,7 @@ from predict_lib.cell_router import (
     load_cell_router,
 )
 from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
+from predict_lib.debug_log import debug_log, query_debug_enabled
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.ensemble_routing import catboost_model_feature_names, member_feature_order_matches
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
@@ -104,7 +105,7 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
-from predict_lib.r2_client import r2_get_parquet
+from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
 from predict_lib.rescore import (
     RaceFreshSnapshot,
     RaceScope,
@@ -121,21 +122,27 @@ from predict_lib.serve import (
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
+    PrewarmBackgroundFn,
     PrewarmBuildFn,
+    PrewarmCommitFn,
+    PrewarmExistingObjectFn,
     PrewarmParquetPayloadFn,
     R2Config,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
+    build_prewarm_cache_key,
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
+    parse_day_base_cache_identity,
     parse_focused_full_cache_query,
     parse_predict_params,
     parse_prewarm_params,
     parse_request_path,
+    run_prewarm_in_background,
 )
 from predict_lib.stage1_routing import (
     Stage1CategoryConfig,
@@ -379,10 +386,7 @@ def _score_one_race_etop2(
 
     fired = is_etop2_override_active(cb_scores, xgb_scores, class_code)
     if fired:
-        print(
-            f"[etop2] override fired race_id={race_id} class={class_code}",
-            file=sys.stderr,
-        )
+        debug_log(f"[etop2] override fired race_id={race_id} class={class_code}")
 
     ranked = rank_race_entries(entries, override_scores)
     return build_prediction_rows(
@@ -425,10 +429,7 @@ def score_one_race_nar_etop2(
 
     fired = is_nar_etop2_override_active(xgb_scores, cb_scores, nar_class)
     if fired:
-        print(
-            f"[nar-etop2] override fired race_id={race_id} class={nar_class}",
-            file=sys.stderr,
-        )
+        debug_log(f"[nar-etop2] override fired race_id={race_id} class={nar_class}")
 
     ranked = rank_race_entries(entries, override_scores)
     return build_prediction_rows(
@@ -484,18 +485,14 @@ def execute(
         if not is_transient_error(exc):
             raise
         # Transient mid-write failure: attempt a single reconnect then retry.
-        print(
+        debug_log(
             f"[predict-upcoming] mid-write transient error ({type(exc).__name__}): {exc} "
-            "— reconnecting and retrying once",
-            file=sys.stderr,
+            "— reconnecting and retrying once"
         )
         try:
             connection.rollback()
         except BaseException as rb_exc:
-            print(
-                f"[predict-upcoming] rollback failed: {rb_exc}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-upcoming] rollback failed: {rb_exc}")
         with contextlib.suppress(BaseException):
             connection.close()
         fresh = _connect(database_url)
@@ -708,12 +705,11 @@ def score_races(
                 vspec.feature_set_hash,
             )
             if not _variant_booster_feature_order_matches(booster, arch, fnames):
-                print(
+                debug_log(
                     f"[cell-routing] variant={vname} category={category} "
                     f"version={vspec.model_version} feature-order-mismatch: "
                     "booster's own trained column order disagrees with "
-                    "metadata.json -> not loaded, races fall back to category default",
-                    file=sys.stderr,
+                    "metadata.json -> not loaded, races fall back to category default"
                 )
                 continue
             variant_pool[vname] = VariantModel(
@@ -722,10 +718,9 @@ def score_races(
                 architecture=arch,
                 model_version=vspec.model_version,
             )
-            print(
+            debug_log(
                 f"[cell-routing] loaded variant={vname} category={category} "
-                f"version={vspec.model_version} features={vspec.feature_count}",
-                file=sys.stderr,
+                f"version={vspec.model_version} features={vspec.feature_count}"
             )
     xgb_etop2_booster: BoosterLike | None = None
     if JRA_ETOP2_ENABLED and category == "jra":
@@ -767,15 +762,11 @@ def score_races(
                 effective_feature_names = vm.feature_names
                 effective_architecture = vm.architecture
                 cell_variant_model = vm
-                print(
-                    f"[cell-routing] race={race_id} category={category} -> {variant}",
-                    file=sys.stderr,
-                )
+                debug_log(f"[cell-routing] race={race_id} category={category} -> {variant}")
             elif variant != cell_router.routing_for(category).default_variant:
-                print(
+                debug_log(
                     f"[cell-routing] race={race_id} category={category} "
-                    f"resolved missing variant={variant}; using default",
-                    file=sys.stderr,
+                    f"resolved missing variant={variant}; using default"
                 )
         if cell_variant_model is not None:
             rows = _score_one_race_direct(
@@ -820,10 +811,9 @@ def score_races(
                 stage2_scores=extract_predicted_scores(rows),
             )
             if gate.use_stage1:
-                print(
+                debug_log(
                     f"[stage1-gate] race={race_id} category={category} "
-                    f"reason={gate.reason} stddev={gate.stddev} -> {stage1_model.model_version}",
-                    file=sys.stderr,
+                    f"reason={gate.reason} stddev={gate.stddev} -> {stage1_model.model_version}"
                 )
                 rows = _score_one_race_direct(
                     stage1_model.booster,
@@ -848,11 +838,10 @@ def _score_one_race_direct(
     model_version: str,
 ) -> list[list[object]]:
     if is_degenerate_feature_matrix(entries, feature_names):
-        print(
+        debug_log(
             f"[feature-guard] race_id={race_id} category={category} "
             f"model_version={model_version} rejected: feature matrix mostly missing "
-            "-> skipping write (self-heal will retry)",
-            file=sys.stderr,
+            "-> skipping write (self-heal will retry)"
         )
         return []
     matrix = build_feature_matrix(entries, feature_names, architecture)
@@ -883,10 +872,7 @@ def _load_nar_transformer(
     try:
         transformer = load_transformer(artifact_dir)
     except BaseException as load_error:
-        print(
-            f"[nar-transformer] load failed -> ensemble-only: {load_error}",
-            file=sys.stderr,
-        )
+        debug_log(f"[nar-transformer] load failed -> ensemble-only: {load_error}")
         return None
     known = set(feature_names)
     try:
@@ -895,24 +881,19 @@ def _load_nar_transformer(
             context=f"NAR transformer model_version={NAR_TRANSFORMER_MODEL_VERSION}",
         )
     except ValueError as leak_error:
-        print(
-            f"[nar-transformer] leak guard failed -> ensemble-only: {leak_error}",
-            file=sys.stderr,
-        )
+        debug_log(f"[nar-transformer] leak guard failed -> ensemble-only: {leak_error}")
         return None
     missing = [name for name in transformer.feature_order if name not in known]
     if missing:
-        print(
+        debug_log(
             f"[nar-transformer] feature-contract gap ({len(missing)}) "
-            f"-> ensemble-only: {missing[:5]}",
-            file=sys.stderr,
+            f"-> ensemble-only: {missing[:5]}"
         )
         return None
-    print(
+    debug_log(
         f"[nar-transformer] loaded seeds={len(transformer.seeds)} "
         f"features={len(transformer.feature_order)} "
-        f"version={NAR_TRANSFORMER_MODEL_VERSION}",
-        file=sys.stderr,
+        f"version={NAR_TRANSFORMER_MODEL_VERSION}"
     )
     return transformer
 
@@ -937,11 +918,10 @@ def _score_one_race_nar_blend(
     NAR_TRANSFORMER_MODEL_VERSION.
     """
     if is_degenerate_feature_matrix(entries, feature_names):
-        print(
+        debug_log(
             f"[feature-guard] race_id={race_id} category=nar "
             "rejected: feature matrix mostly missing -> skipping write "
-            "(self-heal will retry)",
-            file=sys.stderr,
+            "(self-heal will retry)"
         )
         return []
     matrix = build_feature_matrix(entries, feature_names, "xgboost")
@@ -956,9 +936,8 @@ def _score_one_race_nar_blend(
             )
             model_version = NAR_TRANSFORMER_MODEL_VERSION
         except BaseException as blend_error:
-            print(
-                f"[nar-transformer] race fail -> ensemble-only race_id={race_id}: {blend_error}",
-                file=sys.stderr,
+            debug_log(
+                f"[nar-transformer] race fail -> ensemble-only race_id={race_id}: {blend_error}"
             )
             scores = base_scores
             model_version = model_version_for("nar")
@@ -994,9 +973,8 @@ def _flush_scored(
         try:
             connection.close()
         except BaseException as close_error:
-            print(
-                f"[predict-upcoming] connection close failed category={category}: {close_error}",
-                file=sys.stderr,
+            debug_log(
+                f"[predict-upcoming] connection close failed category={category}: {close_error}"
             )
     return written
 
@@ -1128,16 +1106,14 @@ def _load_stage1_model(
                 "booster's own trained column order disagrees with metadata.json"
             )
     except BaseException as load_error:
-        print(
+        debug_log(
             f"[stage1-gate] category={category} version={config.model_version} "
-            f"load failed -> Stage-1 fallback disabled this run: {load_error}",
-            file=sys.stderr,
+            f"load failed -> Stage-1 fallback disabled this run: {load_error}"
         )
         return None
-    print(
+    debug_log(
         f"[stage1-gate] loaded category={category} version={config.model_version} "
-        f"features={config.feature_count}",
-        file=sys.stderr,
+        f"features={config.feature_count}"
     )
     return VariantModel(
         booster=booster,
@@ -1236,10 +1212,7 @@ def _try_record_audit(
     try:
         audit_connection = _connect(database_url)
     except BaseException as audit_connect_error:
-        print(
-            f"[predict-upcoming] audit connect failed: {audit_connect_error}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-upcoming] audit connect failed: {audit_connect_error}")
         return
     try:
         _record_audit(
@@ -1252,18 +1225,12 @@ def _try_record_audit(
             database_url,
         )
     except BaseException as audit_write_error:
-        print(
-            f"[predict-upcoming] audit write failed: {audit_write_error}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-upcoming] audit write failed: {audit_write_error}")
     finally:
         try:
             audit_connection.close()
         except BaseException as audit_close_error:
-            print(
-                f"[predict-upcoming] audit close failed: {audit_close_error}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-upcoming] audit close failed: {audit_close_error}")
 
 
 # ---------------------------------------------------------------------------
@@ -1331,10 +1298,7 @@ def _split_parquet_by_race(
             for race_id in race_ids:
                 parts = race_id.split(":")
                 if len(parts) < RACE_ID_MIN_PARTS:
-                    print(
-                        f"[predict-serve] per_race_parquet skip malformed race_id={race_id}",
-                        file=sys.stderr,
-                    )
+                    debug_log(f"[predict-serve] per_race_parquet skip malformed race_id={race_id}")
                     continue
                 keibajo_code = parts[RACE_ID_KEIBAJO_INDEX]
                 race_bango = parts[RACE_ID_BANGO_INDEX]
@@ -1352,10 +1316,9 @@ def _split_parquet_by_race(
                 payloads.append({"parquetBase64": encoded, "parquetKey": parquet_key})
     finally:
         con.close()
-    print(
+    debug_log(
         f"[predict-serve] per_race_parquet ready races={len(payloads)} "
-        f"category={category_str} run_date={run_date}",
-        file=sys.stderr,
+        f"category={category_str} run_date={run_date}"
     )
     return payloads
 
@@ -1390,10 +1353,7 @@ def _seed_focused_full_per_race_payloads(
     try:
         split = _split_parquet_by_race(final_dir, category_str, run_date)
     except BaseException as split_error:
-        print(
-            f"[predict-serve] focused-full per-race split failed: {split_error}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-serve] focused-full per-race split failed: {split_error}")
         split = None
     if split:
         matched = [item for item in split if item["parquetKey"] == expected_key]
@@ -1401,10 +1361,7 @@ def _seed_focused_full_per_race_payloads(
             return matched
     data = parquet_files[0].read_bytes()
     encoded = base64.b64encode(data).decode("ascii")
-    print(
-        f"[predict-serve] focused-full per-race seed key={expected_key} bytes={len(data)}",
-        file=sys.stderr,
-    )
+    debug_log(f"[predict-serve] focused-full per-race seed key={expected_key} bytes={len(data)}")
     return [{"parquetBase64": encoded, "parquetKey": expected_key}]
 
 
@@ -1532,19 +1489,13 @@ def _make_predict_fn(
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
-            print(
-                f"[predict-serve] parquet_payload skip: no parquet in {final_dir}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-serve] parquet_payload skip: no parquet in {final_dir}")
             return None
         local_path = parquet_files[0]
         parquet_key = build_r2_feat_cache_key(category_str, run_date)
         data = local_path.read_bytes()
         encoded = base64.b64encode(data).decode("ascii")
-        print(
-            f"[predict-serve] parquet_payload ready key={parquet_key} bytes={len(data)}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-serve] parquet_payload ready key={parquet_key} bytes={len(data)}")
         return encoded, parquet_key
 
     def _parquet_payload() -> tuple[str, str] | None:
@@ -1569,18 +1520,12 @@ def _make_predict_fn(
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
-            print(
-                f"[predict-serve] per_race_parquet skip: no parquet in {final_dir}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-serve] per_race_parquet skip: no parquet in {final_dir}")
             return None
         try:
             return _split_parquet_by_race(final_dir, category_str, run_date)
         except BaseException as split_error:
-            print(
-                f"[predict-serve] per_race_parquet split failed: {split_error}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-serve] per_race_parquet split failed: {split_error}")
             return None
 
     def _per_race_parquet_payloads() -> list[dict[str, str]] | None:
@@ -1655,8 +1600,9 @@ def _make_prewarm_fn(database_url: str, r2_config: R2Config | None = None) -> Pr
 
 def _prewarm_parquet_payload(
     category_str: str, run_date: str, day_base_dir: Path
-) -> tuple[str, str, Mapping[str, str | int] | None] | None:
-    """Read the day-base parquet and return ``(base64, R2 key, watermark)``
+) -> tuple[str, str, Mapping[str, str | int] | None, str | None] | None:
+    """Read the day-base parquet and return
+    ``(base64, R2 key, watermark, watermark_error)``
     for the Worker DO proxy -- the ``PrewarmParquetPayloadFn`` injected into
     :func:`predict_lib.serve.iter_prewarm_chunks`. Returns ``None``
     (non-blocking) when no parquet file is found under ``day_base_dir``.
@@ -1688,13 +1634,15 @@ def _prewarm_parquet_payload(
         "Callable[[Path], tuple[str, int, str, int] | None]",
         getattr(pipeline_runner, read_watermark_attr),
     )
+    read_reason_attr = "_read_watermark_reason"
+    read_reason = cast(
+        "Callable[[Path], str | None]",
+        getattr(pipeline_runner, read_reason_attr),
+    )
 
     parquet_files = list(day_base_dir.rglob("*.parquet"))
     if not parquet_files:
-        print(
-            f"[predict-serve] prewarm_parquet_payload skip: no parquet in {day_base_dir}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-serve] prewarm_parquet_payload skip: no parquet in {day_base_dir}")
         return None
     data = parquet_files[0].read_bytes()
     encoded = base64.b64encode(data).decode("ascii")
@@ -1709,12 +1657,65 @@ def _prewarm_parquet_payload(
             "rsPredictedAtMax": rs_predicted_at_max,
             "rsRowCount": rs_row_count,
         }
-    print(
+    watermark_error = read_reason(day_base_dir.parent)
+    debug_log(
         f"[predict-serve] prewarm_parquet_payload ready key={parquet_key} bytes={len(data)} "
-        f"watermark={'present' if watermark is not None else 'absent'}",
-        file=sys.stderr,
+        f"watermark={'present' if watermark is not None else 'absent'} "
+        f"reason={watermark_error if watermark_error is not None else '-'}"
     )
-    return encoded, parquet_key, watermark
+    return encoded, parquet_key, watermark, watermark_error
+
+
+def _make_prewarm_existing_object_fn(r2: R2Config | None) -> PrewarmExistingObjectFn:
+    """Return a HEAD-based skip check for an already-cached day-base object.
+
+    A missing watermark (absent object, 403, or pre-metadata object) means
+    this container must rebuild; it never writes the object itself.
+    """
+
+    def _existing(category_str: str, run_date: str) -> str | None:
+        if r2 is None:
+            return None
+        object_key = build_r2_day_base_key(category_str, run_date)
+        if r2_head_watermark(r2, object_key) is None:
+            return None
+        return object_key
+
+    return _existing
+
+
+def _make_prewarm_commit_fn(store: FocusedFullCacheStore) -> PrewarmCommitFn:
+    """Stash day-base bytes for Worker FEATURES_CACHE pickup.
+
+    Container R2 tokens are read-only (see focused_full_cache.py). A SigV4 PUT
+    here would 403; the Worker binding is the only working write path.
+    """
+
+    def _commit(
+        parquet_key: str,
+        parquet_b64: str,
+        watermark: Mapping[str, str | int] | None,
+        watermark_error: str | None = None,
+    ) -> None:
+        category, run_date = parse_day_base_cache_identity(parquet_key)
+        watermark_state = "present" if watermark is not None else "absent"
+        reason_state = watermark_error if watermark_error is not None else "-"
+        debug_log(
+            f"[predict-serve] prewarm_commit stored key={parquet_key} "
+            f"watermark={watermark_state} reason={reason_state}"
+        )
+        store.put(
+            build_prewarm_cache_key(category, run_date),
+            FocusedFullCachePayload(
+                parquet_base64=parquet_b64,
+                parquet_key=parquet_key,
+                per_race_parquets=None,
+                daybase_watermark=dict(watermark) if watermark is not None else None,
+                watermark_error=watermark_error,
+            ),
+        )
+
+    return _commit
 
 
 def _ensure_cached_parquet(
@@ -1812,25 +1813,18 @@ def _fetch_watermarked_per_race_cache(
         if not day_base_covers_entry_list(
             candidate_dir, category, run_date, target_race, source_url
         ):
-            print(
+            debug_log(
                 f"[predict-serve] rescore per-race cache watermark rejected "
-                f"key={object_key} target_race={target_race}",
-                file=sys.stderr,
+                f"key={object_key} target_race={target_race}"
             )
             return False
         shutil.rmtree(final_dir, ignore_errors=True)
         final_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(candidate_path, final_dir / "features.parquet")
-        print(
-            f"[predict-serve] rescore per-race cache watermark accepted key={object_key}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-serve] rescore per-race cache watermark accepted key={object_key}")
         return True
     except BaseException as exc:
-        print(
-            f"[predict-serve] rescore per-race cache fetch failed key={object_key}: {exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[predict-serve] rescore per-race cache fetch failed key={object_key}: {exc}")
         return False
     finally:
         shutil.rmtree(candidate_dir, ignore_errors=True)
@@ -2032,10 +2026,7 @@ def _make_rescore_fn(
         try:
             return _split_parquet_by_race(final_dir, cat_str, rd)
         except BaseException as err:
-            print(
-                f"[predict-serve] rescore per_race_parquet split failed: {err}",
-                file=sys.stderr,
-            )
+            debug_log(f"[predict-serve] rescore per_race_parquet split failed: {err}")
             return None
 
     return _rescore, _per_race_payloads
@@ -2226,7 +2217,7 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
         finally:
             conn.close()
     except Exception as exc:
-        print(f"[predict-serve] completion check failed: {exc}", file=sys.stderr, flush=True)
+        debug_log(f"[predict-serve] completion check failed: {exc}")
         return False
 
 
@@ -2238,8 +2229,8 @@ def _make_focused_full_completion_fn(database_url: str) -> FocusedFullCompletion
 
 
 class _PredictHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal HTTP/1.1 request handler for ``/ping``, ``/predict``, and
-    ``/prewarm-day-base``."""
+    """Minimal HTTP/1.1 request handler for ``/ping``, ``/predict``,
+    ``/prewarm-day-base``, and ``/prewarm-day-base-cache``."""
 
     predict_fn: PredictCategoryFn  # injected by make_handler_class
     parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
@@ -2251,11 +2242,16 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
     focused_full_cache_store: FocusedFullCacheStore | None  # injected by make_handler_class
     prewarm_fn: PrewarmBuildFn | None  # injected by make_handler_class
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None  # injected by make_handler_class
+    prewarm_existing_object_fn: PrewarmExistingObjectFn | None  # injected by make_handler_class
+    prewarm_commit_fn: PrewarmCommitFn | None  # injected by make_handler_class
+    prewarm_background_fn: PrewarmBackgroundFn | None  # injected by make_handler_class
 
     @override
     def log_message(self, format: str, *args: object) -> None:
         # Redirect access log to stderr to avoid polluting stdout.
-        print(f"[predict-serve] {format % args}", file=sys.stderr, flush=True)
+        _, query = parse_request_path(self.path)
+        if query_debug_enabled(query):
+            print(f"[predict-serve] {format % args}", file=sys.stderr, flush=True)
 
     def do_GET(self) -> None:  # N802: stdlib BaseHTTPRequestHandler requires this name
         path, query = parse_request_path(self.path)
@@ -2313,10 +2309,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(size_line + chunk + b"\r\n")
                     self.wfile.flush()
                 except OSError as write_err:
-                    print(
-                        f"[predict-serve] write error: {write_err}",
-                        file=sys.stderr,
-                    )
+                    debug_log(f"[predict-serve] write error: {write_err}")
                     return
 
             # Terminating chunk
@@ -2341,6 +2334,31 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
 
             payload = (
                 self.focused_full_cache_store.pop(build_focused_full_race_key(cache_result))
+                if self.focused_full_cache_store is not None
+                else None
+            )
+            body = build_focused_full_cache_response_body(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/prewarm-day-base-cache":
+            cache_params = parse_prewarm_params(query)
+            if isinstance(cache_params, str):
+                error_body = cache_params.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+            payload = (
+                self.focused_full_cache_store.peek(
+                    build_prewarm_cache_key(cache_params.category, cache_params.run_date)
+                )
                 if self.focused_full_cache_store is not None
                 else None
             )
@@ -2383,16 +2401,16 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 prewarm_result,
                 self.prewarm_fn,
                 parquet_payload_fn=self.prewarm_parquet_payload_fn,
+                existing_object_fn=self.prewarm_existing_object_fn,
+                commit_fn=self.prewarm_commit_fn,
+                background_fn=self.prewarm_background_fn,
             ):
                 size_line = f"{len(chunk):X}\r\n".encode()
                 try:
                     self.wfile.write(size_line + chunk + b"\r\n")
                     self.wfile.flush()
                 except OSError as write_err:
-                    print(
-                        f"[predict-serve] write error: {write_err}",
-                        file=sys.stderr,
-                    )
+                    debug_log(f"[predict-serve] write error: {write_err}")
                     return
 
             try:
@@ -2418,6 +2436,9 @@ def make_handler_class(
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
     focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
     focused_full_cache_store: FocusedFullCacheStore | None = None,
+    prewarm_existing_object_fn: PrewarmExistingObjectFn | None = None,
+    prewarm_commit_fn: PrewarmCommitFn | None = None,
+    prewarm_background_fn: PrewarmBackgroundFn | None = None,
 ) -> type[_PredictHandler]:
     """Return a ``_PredictHandler`` subclass with bound callables.
 
@@ -2446,6 +2467,9 @@ def make_handler_class(
     _prewarm_parquet_payload: PrewarmParquetPayloadFn | None = prewarm_parquet_payload_fn
     _cache_populate: FocusedFullCachePopulateFn | None = focused_full_cache_populate_fn
     _cache_store: FocusedFullCacheStore | None = focused_full_cache_store
+    _prewarm_existing: PrewarmExistingObjectFn | None = prewarm_existing_object_fn
+    _prewarm_commit: PrewarmCommitFn | None = prewarm_commit_fn
+    _prewarm_background: PrewarmBackgroundFn | None = prewarm_background_fn
 
     @final
     class _BoundHandler(_PredictHandler):
@@ -2462,6 +2486,13 @@ def make_handler_class(
             staticmethod(_cache_populate) if _cache_populate is not None else None
         )
         focused_full_cache_store = _cache_store
+        prewarm_existing_object_fn = (
+            staticmethod(_prewarm_existing) if _prewarm_existing is not None else None
+        )
+        prewarm_commit_fn = staticmethod(_prewarm_commit) if _prewarm_commit is not None else None
+        prewarm_background_fn = (
+            staticmethod(_prewarm_background) if _prewarm_background is not None else None
+        )
 
     return _BoundHandler
 
@@ -2477,6 +2508,9 @@ def serve_http(
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
     focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
     focused_full_cache_store: FocusedFullCacheStore | None = None,
+    prewarm_existing_object_fn: PrewarmExistingObjectFn | None = None,
+    prewarm_commit_fn: PrewarmCommitFn | None = None,
+    prewarm_background_fn: PrewarmBackgroundFn | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
 
@@ -2510,6 +2544,9 @@ def serve_http(
         prewarm_parquet_payload_fn,
         focused_full_cache_populate_fn,
         focused_full_cache_store,
+        prewarm_existing_object_fn,
+        prewarm_commit_fn,
+        prewarm_background_fn,
     )
     httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
     httpd.daemon_threads = True
@@ -2573,6 +2610,9 @@ def main() -> int:
             _prewarm_parquet_payload,
             cache_populate_fn,
             focused_full_cache_store,
+            _make_prewarm_existing_object_fn(r2),
+            _make_prewarm_commit_fn(focused_full_cache_store),
+            run_prewarm_in_background,
         )
         return 0  # unreachable but satisfies the return type
 

@@ -49,6 +49,8 @@ class FocusedFullCachePayload:
     parquet_base64: str | None
     parquet_key: str | None
     per_race_parquets: list[dict[str, str]] | None
+    daybase_watermark: dict[str, str | int] | None = None
+    watermark_error: str | None = None
 
 
 @final
@@ -85,6 +87,18 @@ class FocusedFullCacheStore:
         with self._lock:
             self._evict_expired(now)
             entry = self._entries.pop(race_key, None)
+        return entry[1] if entry is not None else None
+
+    def peek(self, race_key: str) -> FocusedFullCachePayload | None:
+        """Return a payload without consuming it.
+
+        Prewarm pickup may reject a payload that lacks a watermark and retry.
+        ``pop`` would drop those bytes; peek keeps them until HEAD succeeds.
+        """
+        now = self._time_fn()
+        with self._lock:
+            self._evict_expired(now)
+            entry = self._entries.get(race_key)
         return entry[1] if entry is not None else None
 
     def _evict_expired(self, now: float) -> None:

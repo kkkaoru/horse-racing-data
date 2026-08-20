@@ -123,9 +123,7 @@ def test_r2_get_parquet_url_and_host_construction(
     assert req.get_method() == "GET"
 
 
-def test_r2_get_parquet_404_returns_false(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_r2_get_parquet_404_returns_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
         raise urllib.error.HTTPError(req.full_url, 404, "Not Found", email.message.Message(), None)
 
@@ -165,9 +163,11 @@ def test_r2_get_parquet_other_exception_propagates(
         r2_get_parquet(_R2, "some/key", tmp_path / "features.parquet")
 
 
-def test_r2_get_parquet_logs_success_to_stderr(
+def test_r2_get_parquet_silent_without_debug(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+
     def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
         return _FakeResponse(b"hello")
 
@@ -176,9 +176,25 @@ def test_r2_get_parquet_logs_success_to_stderr(
     r2_get_parquet(_R2, "feat-daybase/jra/20260712/features.parquet", tmp_path / "out.parquet")
 
     captured = capsys.readouterr()
-    assert "r2-client" in captured.err
-    assert "feat-daybase/jra/20260712/features.parquet" in captured.err
-    assert "bytes=5" in captured.err
+    assert captured.err == ""
+
+
+def test_r2_get_parquet_logs_success_when_debug_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
+        return _FakeResponse(b"hello")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    r2_get_parquet(_R2, "feat-daybase/jra/20260712/features.parquet", tmp_path / "out.parquet")
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[r2-client] get ok key=feat-daybase/jra/20260712/features.parquet bytes=5\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +290,26 @@ def test_r2_head_watermark_missing_object_returns_none(
     result = r2_head_watermark(_R2, "missing/key")
 
     assert result is None
-    assert "head watermark failed" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
+
+
+def test_r2_head_watermark_logs_failure_when_debug_enabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        raise TimeoutError("connect timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None
+    assert (
+        "[r2-client] head watermark failed key=some/key error=TimeoutError('connect timed out')"
+        in capsys.readouterr().err
+    )
 
 
 def test_r2_head_watermark_other_exception_returns_none(
@@ -288,7 +323,7 @@ def test_r2_head_watermark_other_exception_returns_none(
     result = r2_head_watermark(_R2, "some/key")
 
     assert result is None
-    assert "head watermark failed" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
 
 
 def test_r2_head_watermark_missing_metadata_header_returns_none(
@@ -350,3 +385,25 @@ def test_r2_head_watermark_malformed_rs_row_count_returns_none(
     result = r2_head_watermark(_R2, "some/key")
 
     assert result is None
+
+
+def test_r2_head_watermark_banei_none_rs_token_returns_four_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production Ban-ei sidecar: concat date + count + absent-RS token."""
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        return _FakeHeadResponse(
+            {
+                "x-amz-meta-max-data-sakusei-nengappi": "20260814",
+                "x-amz-meta-row-count": "117",
+                "x-amz-meta-rs-predicted-at-max": "none",
+                "x-amz-meta-rs-row-count": "0",
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet")
+
+    assert result == ("20260814", 117, "none", 0)

@@ -1,4 +1,4 @@
-"""Shared R2 SigV4 GET helper.
+"""Shared R2 SigV4 GET/HEAD helper.
 
 Extracted from ``predict_upcoming.py``'s original ``_r2_get_parquet`` so the
 same signed-GET logic can be reused by a second call site — the day-base
@@ -12,28 +12,37 @@ mocking ``urllib.request.urlopen``, not exclusion.
 
 The SigV4 signing here is deliberately minimal (payload_hash of the empty
 body, no query-string signing) because it only ever issues unsigned-query GET
-requests for a known object key — the same scope the original
-``predict_upcoming._r2_get_parquet`` covered.
+or HEAD requests for a known object key. Container R2 tokens are read-only;
+object writes go through the Worker FEATURES_CACHE binding, not SigV4 PUT.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .debug_log import debug_log
 from .serve import R2Config
 
-_EMPTY_BODY_SHA256: str = hashlib.sha256(b"").hexdigest()
 _R2_HOST_SUFFIX: str = "r2.cloudflarestorage.com"
 _SIGNING_SERVICE: str = "s3"
 _SIGNING_REGION: str = "auto"
-_SIGNED_HEADERS: str = "host;x-amz-content-sha256;x-amz-date"
 _REQUEST_TIMEOUT_SECONDS: float = 30.0
+_GET_METHOD: str = "GET"
+_HEAD_METHOD: str = "HEAD"
+
+# Metadata key names as PUT by the Worker (container-ndjson-proxy.ts) --
+# surfaced back on GET/HEAD as ``x-amz-meta-{key}`` response headers per the
+# S3-compatible API R2 implements. Must stay in sync with that file's own
+# ``customMetadata`` object keys.
+_WATERMARK_META_MAX_UPDATED: str = "x-amz-meta-max-data-sakusei-nengappi"
+_WATERMARK_META_ROW_COUNT: str = "x-amz-meta-row-count"
+_WATERMARK_META_RS_PREDICTED_AT_MAX: str = "x-amz-meta-rs-predicted-at-max"
+_WATERMARK_META_RS_ROW_COUNT: str = "x-amz-meta-rs-row-count"
 
 
 def _sign(key: bytes, msg: str) -> bytes:
@@ -53,27 +62,29 @@ def _signing_key(secret_access_key: str, datestamp: str) -> bytes:
     )
 
 
-def _build_signed_request(r2: R2Config, object_key: str, method: str) -> urllib.request.Request:
+def _build_signed_request(*, r2: R2Config, object_key: str, method: str) -> urllib.request.Request:
     """Build a SigV4-signed unsigned-payload request for one R2 object.
 
-    ``method`` is either ``"GET"`` (fetch the object body,
-    :func:`r2_get_parquet`) or ``"HEAD"`` (fetch only headers/metadata,
-    :func:`r2_head_watermark`) -- both have an empty request body, so the
-    signing math (payload hash of the empty string) is identical; only the
-    HTTP verb embedded in the canonical request's first line differs.
+    Only :data:`_GET_METHOD` and :data:`_HEAD_METHOD` are used. The empty-body
+    payload hash matches the original GET helper; writes are not signed here.
     """
+    payload_hash = hashlib.sha256(b"").hexdigest()
     now = datetime.now(UTC)
     amzdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = now.strftime("%Y%m%d")
     host = f"{r2.account_id}.{_R2_HOST_SUFFIX}"
     url = f"https://{host}/{r2.bucket}/{object_key}"
-
-    canonical_headers = (
-        f"host:{host}\nx-amz-content-sha256:{_EMPTY_BODY_SHA256}\nx-amz-date:{amzdate}\n"
-    )
+    header_map: dict[str, str] = {
+        "host": host,
+        "x-amz-content-sha256": payload_hash,
+        "x-amz-date": amzdate,
+    }
+    signed_header_names = sorted(header_map)
+    canonical_headers = "".join(f"{name}:{header_map[name]}\n" for name in signed_header_names)
+    signed_headers = ";".join(signed_header_names)
     canonical_request = (
         f"{method}\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n"
-        f"{_SIGNED_HEADERS}\n{_EMPTY_BODY_SHA256}"
+        f"{signed_headers}\n{payload_hash}"
     )
 
     credential_scope = f"{datestamp}/{_SIGNING_REGION}/{_SIGNING_SERVICE}/aws4_request"
@@ -86,22 +97,24 @@ def _build_signed_request(r2: R2Config, object_key: str, method: str) -> urllib.
     signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
     auth_header = (
         f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
-        f" SignedHeaders={_SIGNED_HEADERS}, Signature={signature}"
+        f" SignedHeaders={signed_headers}, Signature={signature}"
     )
+    request_headers: dict[str, str] = {
+        "Authorization": auth_header,
+        "x-amz-date": amzdate,
+        "x-amz-content-sha256": payload_hash,
+    }
     return urllib.request.Request(
         url,
+        data=None,
         method=method,
-        headers={
-            "Authorization": auth_header,
-            "x-amz-date": amzdate,
-            "x-amz-content-sha256": _EMPTY_BODY_SHA256,
-        },
+        headers=request_headers,
     )
 
 
 def _build_signed_get_request(r2: R2Config, object_key: str) -> urllib.request.Request:
     """Build a SigV4-signed unsigned-payload GET request for one R2 object."""
-    return _build_signed_request(r2, object_key, "GET")
+    return _build_signed_request(r2=r2, object_key=object_key, method=_GET_METHOD)
 
 
 def r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
@@ -125,29 +138,8 @@ def r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
         raise
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_bytes(data)
-    print(
-        f"[r2-client] get ok key={object_key} bytes={len(data)}",
-        file=sys.stderr,
-    )
+    debug_log(f"[r2-client] get ok key={object_key} bytes={len(data)}")
     return True
-
-
-# ---------------------------------------------------------------------------
-# Day-base watermark sidecar (2026-07-19, task #32 -- cross-process day-base
-# reuse for catalog sources). The watermark is carried as R2 custom metadata
-# on the day-base parquet object itself (not a second sidecar object) --
-# one PUT, no two-object consistency hazard, and a signed HEAD (no body
-# download) is enough to check it before paying for the full GET.
-# ---------------------------------------------------------------------------
-
-# Metadata key names as PUT by the Worker (container-ndjson-proxy.ts) --
-# surfaced back on GET/HEAD as ``x-amz-meta-{key}`` response headers per the
-# S3-compatible API R2 implements. Must stay in sync with that file's own
-# ``customMetadata`` object keys.
-_WATERMARK_META_MAX_UPDATED: str = "x-amz-meta-max-data-sakusei-nengappi"
-_WATERMARK_META_ROW_COUNT: str = "x-amz-meta-row-count"
-_WATERMARK_META_RS_PREDICTED_AT_MAX: str = "x-amz-meta-rs-predicted-at-max"
-_WATERMARK_META_RS_ROW_COUNT: str = "x-amz-meta-rs-row-count"
 
 
 def r2_head_watermark(r2: R2Config, object_key: str) -> tuple[str, int, str, int] | None:
@@ -166,15 +158,12 @@ def r2_head_watermark(r2: R2Config, object_key: str) -> tuple[str, int, str, int
         object_key: R2 object key (the day-base parquet's own key, per
                     ``pipeline_runner.build_r2_day_base_key``).
     """
-    req = _build_signed_request(r2, object_key, "HEAD")
+    req = _build_signed_request(r2=r2, object_key=object_key, method=_HEAD_METHOD)
     try:
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
             headers = resp.headers
-    except Exception as exc:  # fail-closed, never crash the caller
-        print(
-            f"[r2-client] head watermark failed key={object_key} error={exc!r}",
-            file=sys.stderr,
-        )
+    except (TimeoutError, OSError, urllib.error.URLError) as exc:
+        debug_log(f"[r2-client] head watermark failed key={object_key} error={exc!r}")
         return None
     max_updated = headers.get(_WATERMARK_META_MAX_UPDATED)
     row_count_raw = headers.get(_WATERMARK_META_ROW_COUNT)

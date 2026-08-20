@@ -41,12 +41,13 @@ Units notes:
 from __future__ import annotations
 
 import json
-import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from predict_lib.debug_log import debug_log
 
 HOT_WORKER_BASE_URL: str = "https://sync-realtime-data-hot.kkk4oru.com/api/odds"
 WEIGHT_WORKER_BASE_URL: str = "https://sync-realtime-data.kkk4oru.com/api/horse-weight"
@@ -142,10 +143,9 @@ def fetch_with_retry(
             if attempt == max_retries:
                 raise
             sleep_seconds = backoff_base * (2**attempt)
-            print(
+            debug_log(
                 f"[realtime-odds] fetch attempt {attempt + 1} failed url={url} "
-                f"error={exc!r} — retrying in {sleep_seconds:.1f}s",
-                file=sys.stderr,
+                f"error={exc!r} — retrying in {sleep_seconds:.1f}s"
             )
             time.sleep(sleep_seconds)
     # unreachable — loop always raises or returns
@@ -297,10 +297,7 @@ def fetch_weight_for_race(
     try:
         response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
-        print(
-            f"[realtime-weight] fetch failed race_key={race_key} error={exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[realtime-weight] fetch failed race_key={race_key} error={exc}")
         return {}
     return extract_weight_map(response)
 
@@ -319,10 +316,7 @@ def fetch_odds_for_race(
     try:
         response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
-        print(
-            f"[realtime-odds] fetch failed race_key={race_key} error={exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[realtime-odds] fetch failed race_key={race_key} error={exc}")
         return []
     return extract_rows(keibajo_code, race_bango, response)
 
@@ -345,10 +339,7 @@ def fetch_odds_and_sanrenpuku_for_race(
     try:
         response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
-        print(
-            f"[realtime-odds] fetch failed race_key={race_key} error={exc}",
-            file=sys.stderr,
-        )
+        debug_log(f"[realtime-odds] fetch failed race_key={race_key} error={exc}")
         return [], {}
     rows = extract_rows(keibajo_code, race_bango, response)
     sanrenpuku_map = extract_sanrenpuku_p3(response)
@@ -370,10 +361,7 @@ def merge_weight_into_rows(
     Horses present in ``odds_rows`` but absent from ``weight_map`` get
     ``None`` for bataiju so the DuckDB COALESCE falls back to nvd_se.
     """
-    return [
-        (r[0], r[1], r[2], r[3], r[4], weight_map.get(r[2]))
-        for r in odds_rows
-    ]
+    return [(r[0], r[1], r[2], r[3], r[4], weight_map.get(r[2])) for r in odds_rows]
 
 
 def _write_parquet(
@@ -395,9 +383,7 @@ def _write_parquet(
             "umaban": pa.array([r[2] for r in rows], type=pa.int32()),
             "tansho_odds_realtime": pa.array([r[3] for r in rows], type=pa.float64()),
             "ninkijun_realtime": pa.array([r[4] for r in rows], type=pa.int32()),
-            "bataiju_realtime": pa.array(
-                [r[5] for r in rows], type=pa.int32()
-            ),
+            "bataiju_realtime": pa.array([r[5] for r in rows], type=pa.int32()),
             "exotic_sanrenpuku_p3_realtime": pa.array(
                 [resolved_map.get((r[0], r[1], r[2])) for r in rows], type=pa.float64()
             ),
@@ -438,10 +424,9 @@ def fetch_realtime_odds_parquet(
         fetcher = HttpRealtimeOddsFetcher()
 
     if race_keys is None:
-        print(
+        debug_log(
             f"[realtime-odds] no race_keys provided for category={category} "
-            "target_date={target_date} — skipping realtime odds fetch",
-            file=sys.stderr,
+            "target_date={target_date} — skipping realtime odds fetch"
         )
         return None
 
@@ -460,10 +445,9 @@ def fetch_realtime_odds_parquet(
             all_sanrenpuku[(keibajo_code, race_bango, umaban)] = p3
 
     if not all_rows:
-        print(
+        debug_log(
             f"[realtime-odds] zero rows collected category={category} "
-            f"target_date={target_date} races={len(race_keys)} — using null-odds fallback",
-            file=sys.stderr,
+            f"target_date={target_date} races={len(race_keys)} — using null-odds fallback"
         )
         return None
 
@@ -471,9 +455,8 @@ def fetch_realtime_odds_parquet(
     work_dir.mkdir(parents=True, exist_ok=True)
     _write_parquet(all_rows, out_path, sanrenpuku_map=all_sanrenpuku)
     bataiju_count = sum(1 for r in all_rows if r[5] is not None)
-    print(
+    debug_log(
         f"[realtime-odds] wrote {len(all_rows)} rows to {out_path} "
-        f"category={category} races={len(race_keys)} bataiju={bataiju_count}/{len(all_rows)}",
-        file=sys.stderr,
+        f"category={category} races={len(race_keys)} bataiju={bataiju_count}/{len(all_rows)}"
     )
     return out_path

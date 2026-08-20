@@ -67,9 +67,7 @@ keep the held-response keepalive behaviour.
 from __future__ import annotations
 
 import json
-import os
 import re
-import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
@@ -79,6 +77,7 @@ from pathlib import Path
 from typing import Final, Literal, final
 from urllib.parse import parse_qs, urlparse
 
+from .debug_log import debug_log, debug_logs_scope, drain_debug_progress, parse_debug_flag
 from .focused_full_cache import FocusedFullCachePayload
 
 # ---------------------------------------------------------------------------
@@ -115,9 +114,6 @@ PredictMode = Literal["full", "rescore"]
 SUPPORTED_MODES: Final[frozenset[str]] = frozenset({"full", "rescore"})
 """Valid values for the ``mode`` query parameter."""
 
-PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
-"""Process env flag read by pipeline_runner to decide whether to stream debug logs."""
-
 R2_FEAT_CACHE_PREFIX: Final[str] = "feat-cache"
 """R2 object key prefix for feature-parquet cache objects."""
 
@@ -149,6 +145,34 @@ FOCUSED_FULL_ALREADY_COMPLETE_STATUS: Final[str] = "already-complete"
 """``build_result_line`` status when the race already has complete predictions
 in Neon (checked before launching a fresh ~15-27 min pipeline). No pipeline is
 launched and the slot is not consumed; the Worker queue consumer acks it."""
+
+PREWARM_EMPTY_STATUS: Final[str] = "empty"
+"""``build_prewarm_result_line`` status when the day-base build emitted zero
+target rows for the category+day (e.g. JRA on a NAR-only weekday) -- not an
+error, just nothing to cache. Mirrors ``build_day_base``'s ``None`` return."""
+
+PREWARM_ACCEPTED_STATUS: Final[str] = "accepted"
+"""``build_prewarm_result_line`` status when the day-base build was launched
+in a detached thread so the Worker cron can return before DAY_CHAIN finishes.
+The expected ``parquetKey`` is still present; ``status=success`` is reserved
+for a completed upload."""
+
+PREWARM_PAYLOAD_MISSING_ERROR: Final[str] = "prewarm parquet payload missing after day-base build"
+PREWARM_KEY_MISSING_ERROR: Final[str] = "prewarm parquet key missing after day-base build"
+PREWARM_WATERMARK_MISSING_ERROR: Final[str] = (
+    "prewarm day-base watermark missing after day-base build"
+)
+
+PREWARM_CACHE_KEY_PREFIX: Final[str] = "prewarm"
+"""In-process store key prefix for a completed day-base parquet awaiting Worker
+FEATURES_CACHE pickup. Distinct from the R2 object key itself."""
+
+R2_DAY_BASE_KEY_MIN_PARTS: Final[int] = 5
+"""Minimum ``/``-split segments of a day-base R2 key
+(``feat-daybase/catalog-v1/{category}/{runDate}/features.parquet``)."""
+
+R2_DAY_BASE_KEY_CATEGORY_INDEX: Final[int] = 2
+R2_DAY_BASE_KEY_RUN_DATE_INDEX: Final[int] = 3
 
 
 # ---------------------------------------------------------------------------
@@ -331,12 +355,15 @@ class PrewarmParams:
     ``pipeline_runner.build_day_base``), never a single race.
     """
 
-    __slots__ = ("category", "days_ahead", "run_date")
+    __slots__ = ("category", "days_ahead", "debug_logs", "run_date")
 
-    def __init__(self, category: str, run_date: str, days_ahead: int) -> None:
+    def __init__(
+        self, category: str, run_date: str, days_ahead: int, debug_logs: bool = False
+    ) -> None:
         self.category: str = category
         self.run_date: str = run_date
         self.days_ahead: int = days_ahead
+        self.debug_logs: bool = debug_logs
 
 
 def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
@@ -373,7 +400,10 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
         if days_ahead < 0:
             return f"invalid daysAhead: {days_ahead}; must be non-negative"
 
-    return PrewarmParams(category=category, run_date=run_date, days_ahead=days_ahead)
+    debug_logs = parse_debug_flag(_first_qs(qs, "debug"))
+    return PrewarmParams(
+        category=category, run_date=run_date, days_ahead=days_ahead, debug_logs=debug_logs
+    )
 
 
 def parse_focused_full_cache_query(query_string: str) -> PredictParams | str:
@@ -430,16 +460,18 @@ def build_focused_full_cache_response_body(payload: FocusedFullCachePayload | No
     ``container-ndjson-proxy.ts`` already parses off a normal result line, so
     the identical R2-proxy logic can consume either shape.
     """
-    body: dict[str, object] = (
-        {"found": False}
-        if payload is None
-        else {
-            "found": True,
-            "parquetBase64": payload.parquet_base64,
-            "parquetKey": payload.parquet_key,
-            "perRaceParquets": payload.per_race_parquets,
-        }
-    )
+    if payload is None:
+        return json.dumps({"found": False}).encode("utf-8")
+    body: dict[str, object] = {
+        "found": True,
+        "parquetBase64": payload.parquet_base64,
+        "parquetKey": payload.parquet_key,
+        "perRaceParquets": payload.per_race_parquets,
+    }
+    if payload.daybase_watermark is not None:
+        body["daybaseWatermark"] = payload.daybase_watermark
+    if payload.watermark_error is not None:
+        body["watermarkError"] = payload.watermark_error
     return json.dumps(body).encode("utf-8")
 
 
@@ -460,9 +492,7 @@ def _optional_scope_value(raw: str | None) -> str | None:
 
 
 def _parse_debug_flag(raw: str | None) -> bool:
-    if raw is None:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on", "debug"}
+    return parse_debug_flag(raw)
 
 
 def parse_request_path(raw_path: str) -> tuple[str, str]:
@@ -527,6 +557,7 @@ def build_result_line(
     parquet_base64: str | None = None,
     parquet_key: str | None = None,
     per_race_parquets: list[dict[str, str]] | None = None,
+    step: str | None = None,
 ) -> bytes:
     """Return a single UTF-8 NDJSON result line (newline-terminated).
 
@@ -562,6 +593,9 @@ def build_result_line(
         parquet_base64:  Optional base64-encoded feature parquet bytes for Worker R2 proxy.
         parquet_key:     Optional R2 object key matching ``build_r2_feat_cache_key``.
         per_race_parquets: Optional list of per-race ``{"parquetBase64", "parquetKey"}`` dicts.
+        step:            Optional last debug pipeline token (``step=daybase-hit`` /
+                         ``step=racechain-layer`` / ``step=daybase-miss`` /
+                         ``step=daybase-base``). Present only when ``debug=1``.
     """
     payload: dict[str, object] = {
         "type": "result",
@@ -578,13 +612,9 @@ def build_result_line(
         payload["parquetKey"] = parquet_key
     if per_race_parquets is not None:
         payload["perRaceParquets"] = per_race_parquets
+    if step is not None:
+        payload["step"] = step
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
-
-
-PREWARM_EMPTY_STATUS: Final[str] = "empty"
-"""``build_prewarm_result_line`` status when the day-base build emitted zero
-target rows for the category+day (e.g. JRA on a NAR-only weekday) -- not an
-error, just nothing to cache. Mirrors ``build_day_base``'s ``None`` return."""
 
 
 def build_prewarm_result_line(
@@ -716,6 +746,23 @@ jockey-pedigree-cell columns yet -- see ``pipeline_args.DAY_CHAIN`` /
 directly-scoreable parquet. Conflating the two keys would let a rescore
 request silently load a day-base-only parquet missing the RACE_CHAIN columns,
 corrupting the feature vector without raising."""
+
+
+def build_prewarm_cache_key(category: str, run_date: str) -> str:
+    """In-process store key for a completed day-base parquet awaiting Worker PUT."""
+    return f"{PREWARM_CACHE_KEY_PREFIX}:{category}:{run_date}"
+
+
+def parse_day_base_cache_identity(parquet_key: str) -> tuple[str, str]:
+    """Return ``(category, run_date)`` from a day-base R2 object key.
+
+    Raises ``RuntimeError`` when *parquet_key* is not at least the five-segment
+    ``feat-daybase/catalog-v1/{category}/{runDate}/features.parquet`` shape.
+    """
+    tokens = parquet_key.split("/")
+    if len(tokens) < R2_DAY_BASE_KEY_MIN_PARTS:
+        raise RuntimeError(f"invalid day-base parquet key: {parquet_key}")
+    return tokens[R2_DAY_BASE_KEY_CATEGORY_INDEX], tokens[R2_DAY_BASE_KEY_RUN_DATE_INDEX]
 
 
 def build_r2_day_base_key(category: str, run_date: str) -> str:
@@ -896,23 +943,15 @@ def _run_predict_fn(
     The whole body runs under :data:`_PIPELINE_EXEC_LOCK` -- see that lock's
     docstring for why every caller of this function must be serialized.
     """
-    with _PIPELINE_EXEC_LOCK:
-        previous = os.environ.get(PREDICT_DEBUG_LOGS_ENV)
-        os.environ[PREDICT_DEBUG_LOGS_ENV] = "1" if params.debug_logs else "0"
-        try:
-            return predict_fn(
-                params.category,
-                params.run_date,
-                params.days_ahead,
-                params.keibajo_code,
-                params.race_bango,
-                params.card_max_race_bango,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop(PREDICT_DEBUG_LOGS_ENV, None)
-            else:
-                os.environ[PREDICT_DEBUG_LOGS_ENV] = previous
+    with _PIPELINE_EXEC_LOCK, debug_logs_scope(params.debug_logs):
+        return predict_fn(
+            params.category,
+            params.run_date,
+            params.days_ahead,
+            params.keibajo_code,
+            params.race_bango,
+            params.card_max_race_bango,
+        )
 
 
 def _run_in_thread[T](
@@ -945,6 +984,29 @@ def _run_in_thread[T](
     return thread, result_box, error_box
 
 
+def _debug_progress_chunks(
+    elapsed_fn: Callable[[], float],
+    debug_steps: list[str],
+) -> Generator[bytes, None, None]:
+    """Yield queued debug step tokens as existing ``type=progress`` NDJSON lines.
+
+    Tokens reuse the pipeline ``step=...`` message as ``stage`` so the Worker
+    ``Predict progress`` logger prints HIT vs rebuild without a second protocol.
+    Empty when debug is off.
+    """
+    messages = drain_debug_progress()
+    debug_steps.extend(messages)
+    for message in messages:
+        yield build_progress_line(message, elapsed_fn())
+
+
+def _result_debug_step(debug_logs: bool, debug_steps: list[str]) -> str | None:
+    """Last drained debug step for the result line, or None when debug is off."""
+    if not debug_logs or not debug_steps:
+        return None
+    return debug_steps[-1]
+
+
 def _iter_keepalive[T](
     fn: Callable[[], T],
     stage: str,
@@ -954,6 +1016,7 @@ def _iter_keepalive[T](
     progress_interval_s: float,
     elapsed_fn: Callable[[], float],
     last_progress: float,
+    debug_steps: list[str] | None = None,
 ) -> Generator[bytes, None, tuple[T | None, BaseException | None, float]]:
     """Run *fn* in a background daemon thread, yielding keepalive progress lines.
 
@@ -964,7 +1027,9 @@ def _iter_keepalive[T](
 
     Yields ``build_progress_line(stage, elapsed_fn())`` whenever *fn* is still
     running in its background thread and at least *progress_interval_s*
-    seconds have elapsed since the most recent keepalive. Returns
+    seconds have elapsed since the most recent keepalive. When debug mode has
+    queued pipeline ``step=`` tokens, those are also yielded as progress lines
+    (same NDJSON shape, ``stage`` carries the token). Returns
     ``(result, error, last_progress)`` as the generator's return value
     (retrieved via ``result, error, last_progress = yield from
     _iter_keepalive(...)``) -- exactly one of ``result`` / ``error`` is
@@ -979,14 +1044,20 @@ def _iter_keepalive[T](
     progress" check, or a second call to this helper for the rescore-fallback
     retry).
     """
+    collected = debug_steps if debug_steps is not None else []
     thread, result_box, error_box = _run_in_thread(fn)
     while thread.is_alive():
         sleep_fn(_POLL_INTERVAL_S)
+        debug_chunks = list(_debug_progress_chunks(elapsed_fn, collected))
+        if debug_chunks:
+            yield from debug_chunks
+            last_progress = time_fn()
         now = time_fn()
         if now - last_progress >= progress_interval_s:
             yield build_progress_line(stage, elapsed_fn())
             last_progress = now
     thread.join()
+    yield from _debug_progress_chunks(elapsed_fn, collected)
     if error_box:
         return None, error_box[0], last_progress
     return result_box[0], None, last_progress
@@ -1140,11 +1211,7 @@ def _run_detached_focused_full(fn: Callable[[], int]) -> None:
         try:
             fn()
         except BaseException as exc:
-            print(
-                f"[focused-full] detached pipeline failed: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
+            debug_log(f"[focused-full] detached pipeline failed: {type(exc).__name__}: {exc}")
         finally:
             current_thread = threading.current_thread()
             with _FOCUSED_FULL_LOCK:
@@ -1324,9 +1391,11 @@ def iter_predict_chunks(
 
     - **Slot free** (``"claimed"``): the slot is claimed for this race. Unless
       *focused_full_completion_fn* reports the race already has complete
-      predictions in Neon (see below), *predict_fn* is run through the normal
-      keepalive thread/poll/join path and returns final ``success`` or
-      ``error``.
+      predictions in Neon (see below), *predict_fn* is detached and the
+      generator returns ``accepted``. When ``params.debug_logs`` is True the
+      pipeline is held on the HTTP stream instead so Worker ``Predict
+      progress`` can see ``step=daybase-hit`` / ``step=racechain-layer`` /
+      rebuild tokens.
     - **Slot already held by THIS SAME race key** (``"in-flight-self"``): a
       redelivery of a race whose own pipeline is still running. No second
       thread is launched; the generator yields
@@ -1402,6 +1471,8 @@ def iter_predict_chunks(
         progress_interval_s: Minimum seconds between progress keepalive lines.
     """
     started = time_fn()
+    debug_steps: list[str] = []
+    drain_debug_progress()
 
     def _elapsed() -> float:
         return time_fn() - started
@@ -1483,11 +1554,9 @@ def iter_predict_chunks(
             try:
                 focused_full_cache_populate_fn(params)
             except BaseException as cache_err:
-                print(
+                debug_log(
                     f"[focused-full] cache populate failed race={focused_race_key}: "
-                    f"{type(cache_err).__name__}: {cache_err}",
-                    file=sys.stderr,
-                    flush=True,
+                    f"{type(cache_err).__name__}: {cache_err}"
                 )
 
         def _call_focused_and_release() -> int:
@@ -1498,9 +1567,13 @@ def iter_predict_chunks(
             finally:
                 release_fn(focused_race_key)
 
-        _run_detached_focused_full(_call_focused_and_release)
-        yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
-        return
+        if not params.debug_logs:
+            _run_detached_focused_full(_call_focused_and_release)
+            yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
+            return
+        # debug=1: hold the HTTP stream so Worker ``Predict progress`` can
+        # see step=daybase-hit / step=racechain-layer / rebuild tokens.
+        first_call = _call_focused_and_release
 
     # Keepalive loop: run the pipeline in a background thread, yielding progress
     # lines while it runs so the Worker DO can call renewActivityTimeout and the
@@ -1513,6 +1586,7 @@ def iter_predict_chunks(
         progress_interval_s=progress_interval_s,
         elapsed_fn=_elapsed,
         last_progress=last_progress,
+        debug_steps=debug_steps,
     )
 
     # Check thread outcome.
@@ -1546,6 +1620,7 @@ def iter_predict_chunks(
                     progress_interval_s=progress_interval_s,
                     elapsed_fn=_elapsed,
                     last_progress=last_progress,
+                    debug_steps=debug_steps,
                 )
 
             if fb_error is not None:
@@ -1557,6 +1632,7 @@ def iter_predict_chunks(
                     races_predicted,
                     status="error",
                     error=error_msg,
+                    step=_result_debug_step(params.debug_logs, debug_steps),
                 )
                 return
 
@@ -1571,6 +1647,7 @@ def iter_predict_chunks(
                 races_predicted,
                 status="error",
                 error=error_msg,
+                step=_result_debug_step(params.debug_logs, debug_steps),
             )
             return
     else:
@@ -1616,6 +1693,7 @@ def iter_predict_chunks(
         parquet_base64=parquet_b64,
         parquet_key=parquet_key_val,
         per_race_parquets=per_race_parquets,
+        step=_result_debug_step(params.debug_logs, debug_steps),
     )
 
 
@@ -1644,10 +1722,11 @@ Raises:
 """
 
 PrewarmParquetPayloadFn = Callable[
-    [str, str, Path], tuple[str, str, Mapping[str, str | int] | None] | None
+    [str, str, Path], tuple[str, str, Mapping[str, str | int] | None, str | None] | None
 ]
 """Reads the day-base parquet under the given directory for (category,
-run_date) and returns ``(parquet_base64, parquet_key, daybase_watermark)``,
+run_date) and returns
+``(parquet_base64, parquet_key, daybase_watermark, watermark_error)``,
 or ``None`` when no parquet file is found. Injected so
 :func:`iter_prewarm_chunks` stays I/O-free (mirrors :data:`ParquetPayloadFn`
 for ``/predict``); the real file read lives in ``predict_upcoming.py``.
@@ -1656,11 +1735,178 @@ because it takes zero args), this callable receives the day-base directory
 directly from the just-completed build result, so no shared state box is
 needed.
 
-``daybase_watermark`` (task #32, 2026-07-19) is the day-base's own
-``watermark.json`` sidecar (``pipeline_runner._read_watermark``), or
-``None`` when that file is absent -- see :func:`build_prewarm_result_line`
-for why a missing watermark is not an error.
+``daybase_watermark`` is the day-base's own ``watermark.json`` sidecar
+(``pipeline_runner._read_watermark``), or ``None`` when that file is
+absent. ``watermark_error`` is the fail-closed reason
+(``watermark count is 0`` / ``watermark query failed: ...``) when the
+sidecar is missing so the result line and pickup log can distinguish those
+cases.
 """
+
+PrewarmExistingObjectFn = Callable[[str, str], str | None]
+"""Return the day-base R2 key when a reusable object already exists."""
+
+PrewarmCommitFn = Callable[[str, str, Mapping[str, str | int] | None, str | None], None]
+"""Upload ``(parquet_key, parquet_base64, watermark, watermark_error)``.
+Must raise on failure."""
+
+PrewarmBackgroundFn = Callable[[Callable[[], None]], None]
+"""Run the day-base build+upload off the HTTP request thread."""
+
+_PREWARM_LOCK: Final[threading.Lock] = threading.Lock()
+_PREWARM_IN_FLIGHT: Final[list[str]] = []
+_DETACHED_PREWARM_THREADS: Final[list[threading.Thread]] = []
+
+
+def _prewarm_flight_key(category: str, run_date: str) -> str:
+    return f"{category}:{run_date}"
+
+
+def _claim_prewarm_slot(flight_key: str) -> bool:
+    with _PREWARM_LOCK:
+        if flight_key in _PREWARM_IN_FLIGHT:
+            return False
+        _PREWARM_IN_FLIGHT.append(flight_key)
+        return True
+
+
+def _release_prewarm_slot(flight_key: str) -> None:
+    with _PREWARM_LOCK:
+        if flight_key in _PREWARM_IN_FLIGHT:
+            _PREWARM_IN_FLIGHT.remove(flight_key)
+
+
+def run_prewarm_in_background(fn: Callable[[], None]) -> None:
+    """Start ``fn`` on a non-daemon thread so the Worker cron can return."""
+
+    def _target() -> None:
+        try:
+            fn()
+        except BaseException as exc:
+            debug_log(f"[prewarm] detached failed: {type(exc).__name__}: {exc}")
+        finally:
+            with _PREWARM_LOCK:
+                _DETACHED_PREWARM_THREADS[:] = [
+                    thread for thread in _DETACHED_PREWARM_THREADS if thread.is_alive()
+                ]
+
+    thread = threading.Thread(target=_target, name="prewarm-day-base", daemon=False)
+    with _PREWARM_LOCK:
+        _DETACHED_PREWARM_THREADS.append(thread)
+    thread.start()
+
+
+def _lookup_existing_prewarm_key(
+    params: PrewarmParams, existing_object_fn: PrewarmExistingObjectFn | None
+) -> str | None:
+    if existing_object_fn is None:
+        return None
+    try:
+        existing_key = existing_object_fn(params.category, params.run_date)
+    except BaseException:
+        return None
+    if existing_key is None:
+        return None
+    stripped = existing_key.strip()
+    if stripped == "":
+        return None
+    return stripped
+
+
+def _build_prewarm_upload_result(
+    *,
+    params: PrewarmParams,
+    day_base_dir: Path,
+    parquet_payload_fn: PrewarmParquetPayloadFn | None,
+    commit_fn: PrewarmCommitFn | None,
+) -> bytes:
+    if parquet_payload_fn is None:
+        return build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status="error",
+            error=PREWARM_PAYLOAD_MISSING_ERROR,
+        )
+    try:
+        payload_result = parquet_payload_fn(params.category, params.run_date, day_base_dir)
+    except BaseException as payload_error:
+        error_msg = f"{type(payload_error).__name__}: {payload_error}"
+        return build_prewarm_result_line(
+            params.category, params.run_date, status="error", error=error_msg
+        )
+    if payload_result is None:
+        return build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status="error",
+            error=PREWARM_PAYLOAD_MISSING_ERROR,
+        )
+    parquet_b64, parquet_key_val, daybase_watermark_val, watermark_error = payload_result
+    if parquet_b64.strip() == "" or parquet_key_val.strip() == "":
+        return build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status="error",
+            error=PREWARM_KEY_MISSING_ERROR,
+        )
+    if commit_fn is not None:
+        try:
+            commit_fn(parquet_key_val, parquet_b64, daybase_watermark_val, watermark_error)
+        except BaseException as commit_error:
+            error_msg = f"{type(commit_error).__name__}: {commit_error}"
+            return build_prewarm_result_line(
+                params.category, params.run_date, status="error", error=error_msg
+            )
+    if daybase_watermark_val is None:
+        missing_error = (
+            watermark_error if watermark_error is not None else PREWARM_WATERMARK_MISSING_ERROR
+        )
+        return build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status="error",
+            error=missing_error,
+            parquet_key=parquet_key_val,
+        )
+    return build_prewarm_result_line(
+        params.category,
+        params.run_date,
+        status="success",
+        parquet_base64=parquet_b64,
+        parquet_key=parquet_key_val,
+        daybase_watermark=daybase_watermark_val,
+    )
+
+
+def _run_detached_prewarm_build(
+    *,
+    params: PrewarmParams,
+    build_fn: PrewarmBuildFn,
+    parquet_payload_fn: PrewarmParquetPayloadFn | None,
+    commit_fn: PrewarmCommitFn | None,
+    flight_key: str,
+) -> None:
+    try:
+        with debug_logs_scope(params.debug_logs):
+            day_base_dir = build_fn(params.category, params.run_date, params.days_ahead)
+        if day_base_dir is None:
+            debug_log(
+                f"[prewarm] detached empty category={params.category} runDate={params.run_date}"
+            )
+            return
+        result_line = _build_prewarm_upload_result(
+            params=params,
+            day_base_dir=day_base_dir,
+            parquet_payload_fn=parquet_payload_fn,
+            commit_fn=commit_fn,
+        )
+        parsed = json.loads(result_line.decode())
+        debug_log(
+            f"[prewarm] detached {parsed.get('status')} category={params.category} "
+            f"runDate={params.run_date} parquetKey={parsed.get('parquetKey', '-')}"
+        )
+    finally:
+        _release_prewarm_slot(flight_key)
 
 
 def iter_prewarm_chunks(
@@ -1668,6 +1914,9 @@ def iter_prewarm_chunks(
     build_fn: PrewarmBuildFn,
     *,
     parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
+    existing_object_fn: PrewarmExistingObjectFn | None = None,
+    commit_fn: PrewarmCommitFn | None = None,
+    background_fn: PrewarmBackgroundFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -1710,6 +1959,7 @@ def iter_prewarm_chunks(
         progress_interval_s: Minimum seconds between progress keepalive lines.
     """
     started = time_fn()
+    drain_debug_progress()
 
     def _elapsed() -> float:
         return time_fn() - started
@@ -1717,11 +1967,52 @@ def iter_prewarm_chunks(
     yield build_progress_line("starting", _elapsed())
     last_progress = time_fn()
 
+    existing_key = _lookup_existing_prewarm_key(params, existing_object_fn)
+    if existing_key is not None:
+        yield build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status="success",
+            parquet_key=existing_key,
+        )
+        return
+
+    if background_fn is not None:
+        flight_key = _prewarm_flight_key(params.category, params.run_date)
+        expected_key = build_r2_day_base_key(params.category, params.run_date)
+        if not _claim_prewarm_slot(flight_key):
+            yield build_prewarm_result_line(
+                params.category,
+                params.run_date,
+                status=PREWARM_ACCEPTED_STATUS,
+                parquet_key=expected_key,
+            )
+            return
+
+        def _detached() -> None:
+            _run_detached_prewarm_build(
+                params=params,
+                build_fn=build_fn,
+                parquet_payload_fn=parquet_payload_fn,
+                commit_fn=commit_fn,
+                flight_key=flight_key,
+            )
+
+        background_fn(_detached)
+        yield build_prewarm_result_line(
+            params.category,
+            params.run_date,
+            status=PREWARM_ACCEPTED_STATUS,
+            parquet_key=expected_key,
+        )
+        return
+
     yield build_progress_line("day-base-build", _elapsed())
     last_progress = time_fn()  # reset after forced emit
 
     def _call_build() -> Path | None:
-        return build_fn(params.category, params.run_date, params.days_ahead)
+        with debug_logs_scope(params.debug_logs):
+            return build_fn(params.category, params.run_date, params.days_ahead)
 
     day_base_dir, error, last_progress = yield from _iter_keepalive(
         _call_build,
@@ -1751,33 +2042,9 @@ def iter_prewarm_chunks(
     if now - last_progress >= progress_interval_s:
         yield build_progress_line("complete", _elapsed())
 
-    parquet_b64: str | None = None
-    parquet_key_val: str | None = None
-    daybase_watermark_val: Mapping[str, str | int] | None = None
-    if parquet_payload_fn is not None:
-        try:
-            payload_result = parquet_payload_fn(params.category, params.run_date, day_base_dir)
-        except BaseException as payload_error:
-            error_msg = f"{type(payload_error).__name__}: {payload_error}"
-            yield build_prewarm_result_line(
-                params.category, params.run_date, status="error", error=error_msg
-            )
-            return
-        if payload_result is None:
-            yield build_prewarm_result_line(
-                params.category,
-                params.run_date,
-                status="error",
-                error="prewarm parquet payload missing after day-base build",
-            )
-            return
-        parquet_b64, parquet_key_val, daybase_watermark_val = payload_result
-
-    yield build_prewarm_result_line(
-        params.category,
-        params.run_date,
-        status="success",
-        parquet_base64=parquet_b64,
-        parquet_key=parquet_key_val,
-        daybase_watermark=daybase_watermark_val,
+    yield _build_prewarm_upload_result(
+        params=params,
+        day_base_dir=day_base_dir,
+        parquet_payload_fn=parquet_payload_fn,
+        commit_fn=commit_fn,
     )

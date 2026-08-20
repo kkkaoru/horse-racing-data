@@ -51,6 +51,19 @@ def test_pop_consumes_entry() -> None:
     assert store.pop("jra:20260712:05:09") is None
 
 
+def test_peek_returns_payload_without_consuming() -> None:
+    store = FocusedFullCacheStore()
+    store.put("jra:20260712:05:09", _PAYLOAD_A)
+    assert store.peek("jra:20260712:05:09") == _PAYLOAD_A
+    assert store.peek("jra:20260712:05:09") == _PAYLOAD_A
+    assert store.pop("jra:20260712:05:09") == _PAYLOAD_A
+
+
+def test_peek_missing_key_returns_none() -> None:
+    store = FocusedFullCacheStore()
+    assert store.peek("no-such-key") is None
+
+
 def test_two_races_do_not_cross_contaminate() -> None:
     """Regression test for the cache-poisoning shape flagged during design --
     two different race keys must never share or overwrite each other's

@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import urllib.request
 from pathlib import Path
 from typing import Final
+
+from predict_lib.debug_log import debug_log
 
 VENUE_WEATHER_BASE_URL: Final[str] = os.environ.get(
     "VENUE_WEATHER_URL", "https://venue-weather.kaoru.workers.dev"
@@ -95,23 +96,14 @@ def fetch_weather_json(target_date: str) -> list[dict[str, object]]:
             raw = resp.read().decode("utf-8")
         parsed: object = json.loads(raw)
     except Exception as exc:
-        print(
-            f"[venue-weather] fetch failed target_date={target_date} error={exc!r}",
-            file=sys.stderr,
-        )
+        debug_log(f"[venue-weather] fetch failed target_date={target_date} error={exc!r}")
         return []
     if not isinstance(parsed, dict):
-        print(
-            f"[venue-weather] response is not an object target_date={target_date}",
-            file=sys.stderr,
-        )
+        debug_log(f"[venue-weather] response is not an object target_date={target_date}")
         return []
     rows: object = parsed.get("rows")
     if not isinstance(rows, list):
-        print(
-            f"[venue-weather] response has no rows list target_date={target_date}",
-            file=sys.stderr,
-        )
+        debug_log(f"[venue-weather] response has no rows list target_date={target_date}")
         return []
     return [row for row in rows if isinstance(row, dict)]
 
@@ -155,15 +147,9 @@ def write_weather_duckdb(
         finally:
             con.close()
     except Exception as exc:
-        print(
-            f"[venue-weather] duckdb write failed target_date={target_date} error={exc!r}",
-            file=sys.stderr,
-        )
+        debug_log(f"[venue-weather] duckdb write failed target_date={target_date} error={exc!r}")
         return None
-    print(
-        f"[venue-weather] wrote {len(params)} rows to {db_path} target_date={target_date}",
-        file=sys.stderr,
-    )
+    debug_log(f"[venue-weather] wrote {len(params)} rows to {db_path} target_date={target_date}")
     return weather_dir
 
 
@@ -176,9 +162,6 @@ def fetch_venue_weather_dir(target_date: str, work_dir: Path) -> Path | None:
     """
     rows = fetch_weather_json(target_date)
     if not rows:
-        print(
-            f"[venue-weather] no rows for target_date={target_date} — skipping weather",
-            file=sys.stderr,
-        )
+        debug_log(f"[venue-weather] no rows for target_date={target_date} — skipping weather")
         return None
     return write_weather_duckdb(rows, target_date, work_dir)
