@@ -54,7 +54,7 @@ import type {
   TimeScoreDetail,
   TimeScoreRow,
 } from "../lib/race-types";
-import { isOverseasKeibajoCode } from "../lib/runner-format";
+import { inferRaceSourceFromKeibajoCode, isOverseasKeibajoCode } from "../lib/runner-format";
 import {
   type RunningStyleBucketFilter,
   type RunningStyleBucketMetrics,
@@ -446,6 +446,34 @@ export const getSameVenueRacesByDate = cache(
   },
 );
 
+const raceSourceLookupOrder = (keibajoCode: string): readonly [RaceSource, RaceSource] => {
+  if (inferRaceSourceFromKeibajoCode(keibajoCode) === "nar") {
+    return ["nar", "jra"];
+  }
+  return ["jra", "nar"];
+};
+
+const hasRaceRow = async (
+  source: RaceSource,
+  year: string,
+  monthDay: string,
+  keibajoCode: string,
+  raceNumber: string,
+): Promise<boolean> => {
+  const table = source === "jra" ? jvdRa : nvdRa;
+  const result = await getDb().execute<{ one: number }>(sql`
+    select 1 as one
+    from ${table}
+    where
+      kaisai_nen = ${year}
+      and kaisai_tsukihi = ${monthDay}
+      and keibajo_code = ${keibajoCode}
+      and race_bango = ${raceNumber}
+    limit 1
+  `);
+  return result.rows.length > 0;
+};
+
 export const getRaceSourceByRoute = cache(
   async (
     year: string,
@@ -455,33 +483,17 @@ export const getRaceSourceByRoute = cache(
     raceNumber: string,
   ): Promise<RaceSource | null> =>
     withDbQueryCache(
-      ["getRaceSourceByRoute", year, month, day, keibajoCode, raceNumber],
+      ["getRaceSourceByRoute", "v2-single-table", year, month, day, keibajoCode, raceNumber],
       async () => {
         const monthDay = `${month}${day}`;
-        const result = await getDb().execute<{ source: RaceSource }>(sql`
-    select source
-    from (
-      select 'jra'::text as source
-      from ${jvdRa}
-      where
-        kaisai_nen = ${year}
-        and kaisai_tsukihi = ${monthDay}
-        and keibajo_code = ${keibajoCode}
-        and race_bango = ${raceNumber}
-      union all
-      select 'nar'::text as source
-      from ${nvdRa}
-      where
-        kaisai_nen = ${year}
-        and kaisai_tsukihi = ${monthDay}
-        and keibajo_code = ${keibajoCode}
-        and race_bango = ${raceNumber}
-    ) races
-    order by source asc
-    limit 1
-  `);
-
-        return result.rows[0]?.source ?? null;
+        const [primary, secondary] = raceSourceLookupOrder(keibajoCode);
+        if (await hasRaceRow(primary, year, monthDay, keibajoCode, raceNumber)) {
+          return primary;
+        }
+        if (await hasRaceRow(secondary, year, monthDay, keibajoCode, raceNumber)) {
+          return secondary;
+        }
+        return null;
       },
     ),
 );

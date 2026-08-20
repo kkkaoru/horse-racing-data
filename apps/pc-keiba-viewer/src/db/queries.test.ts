@@ -41,6 +41,7 @@ import {
   getRaceTrainings,
   getRunningStyleBucketEvaluation,
   getSimilarRaceStats,
+  getRaceSourceByRoute,
   getTimeScoreRows,
   searchFavoriteHorses,
 } from "./queries";
@@ -300,6 +301,58 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("getRaceSourceByRoute looks up NAR venues in nvd_ra first", async () => {
+  executeMock.mockResolvedValue({ rows: [{ one: 1 }] });
+
+  expect(await getRaceSourceByRoute("2026", "08", "20", "45", "12")).toBe("nar");
+
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  expect(executeMock).toHaveBeenCalledTimes(1);
+  expect(collectTableNames(queryArg)).toStrictEqual(["nvd_ra"]);
+  expect(stringifyQuery(queryArg)).toMatch(/select 1 as one/u);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
+    "getRaceSourceByRoute",
+    "v2-single-table",
+  ]);
+});
+
+it("getRaceSourceByRoute looks up JRA venues in jvd_ra first", async () => {
+  executeMock.mockResolvedValue({ rows: [{ one: 1 }] });
+
+  expect(await getRaceSourceByRoute("2026", "08", "16", "05", "11")).toBe("jra");
+
+  expect(executeMock).toHaveBeenCalledTimes(1);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toStrictEqual(["jvd_ra"]);
+});
+
+it("getRaceSourceByRoute looks up overseas venues in jvd_ra first", async () => {
+  executeMock.mockResolvedValue({ rows: [{ one: 1 }] });
+
+  expect(await getRaceSourceByRoute("2026", "08", "16", "A8", "04")).toBe("jra");
+
+  expect(executeMock).toHaveBeenCalledTimes(1);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toStrictEqual(["jvd_ra"]);
+});
+
+it("getRaceSourceByRoute falls back to the other table when the hinted table is empty", async () => {
+  executeMock.mockResolvedValueOnce({ rows: [] });
+  executeMock.mockResolvedValueOnce({ rows: [{ one: 1 }] });
+
+  expect(await getRaceSourceByRoute("2026", "08", "20", "45", "12")).toBe("jra");
+
+  expect(executeMock).toHaveBeenCalledTimes(2);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toStrictEqual(["nvd_ra"]);
+  expect(collectTableNames(executeMock.mock.calls[1]?.[0])).toStrictEqual(["jvd_ra"]);
+});
+
+it("getRaceSourceByRoute returns null when neither table has the race", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  expect(await getRaceSourceByRoute("2026", "08", "20", "45", "12")).toBe(null);
+
+  expect(executeMock).toHaveBeenCalledTimes(2);
 });
 
 it("getRaceRunners joins JRA overseas identities by the complete race-entry key", async () => {

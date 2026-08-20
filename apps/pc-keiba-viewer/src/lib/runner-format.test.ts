@@ -6,6 +6,7 @@ import {
   formatRunnerNumber,
   formatRunnerValue,
   formatSexAge,
+  inferRaceSourceFromKeibajoCode,
   isOverseasKeibajoCode,
 } from "./runner-format";
 
@@ -60,5 +61,18 @@ describe("runner format helpers", () => {
     expect(isOverseasKeibajoCode("83")).toBe(false);
     expect(isOverseasKeibajoCode(null)).toBe(false);
     expect(isOverseasKeibajoCode("")).toBe(false);
+  });
+
+  it("infers jra vs nar from keibajo codes", () => {
+    expect(inferRaceSourceFromKeibajoCode("05")).toBe("jra");
+    expect(inferRaceSourceFromKeibajoCode("10")).toBe("jra");
+    expect(inferRaceSourceFromKeibajoCode("A8")).toBe("jra");
+    expect(inferRaceSourceFromKeibajoCode("45")).toBe("nar");
+    expect(inferRaceSourceFromKeibajoCode("30")).toBe("nar");
+    expect(inferRaceSourceFromKeibajoCode("83")).toBe("nar");
+    expect(inferRaceSourceFromKeibajoCode("11")).toBe(null);
+    expect(inferRaceSourceFromKeibajoCode("00")).toBe(null);
+    expect(inferRaceSourceFromKeibajoCode(null)).toBe(null);
+    expect(inferRaceSourceFromKeibajoCode("")).toBe(null);
   });
 });

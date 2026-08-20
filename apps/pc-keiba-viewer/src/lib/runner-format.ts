@@ -1,3 +1,4 @@
+import { type RaceSource } from "./codes";
 import { cleanText } from "./format";
 
 const SEX_LABELS: Record<string, string> = {
@@ -5,6 +6,8 @@ const SEX_LABELS: Record<string, string> = {
   "2": "牝",
   "3": "セ",
 };
+const JRA_KEIBAJO_CODE_MAX: number = 10;
+const NAR_KEIBAJO_CODE_MIN: number = 30;
 
 export const isBanEiKeibajoCode = (value: string | null | undefined): boolean =>
   ["81", "82", "83", "84"].includes(cleanText(value, ""));
@@ -13,6 +16,25 @@ export const isBanEiKeibajoCode = (value: string | null | undefined): boolean =>
 export const isOverseasKeibajoCode = (value: string | null | undefined): boolean => {
   const cleaned = cleanText(value, "");
   return cleaned.length > 0 && !/^\d+$/u.test(cleaned);
+};
+
+export const inferRaceSourceFromKeibajoCode = (
+  value: string | null | undefined,
+): RaceSource | null => {
+  if (isOverseasKeibajoCode(value)) {
+    return "jra";
+  }
+  const parsed = Number(cleanText(value, ""));
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  if (parsed <= JRA_KEIBAJO_CODE_MAX) {
+    return "jra";
+  }
+  if (parsed >= NAR_KEIBAJO_CODE_MIN) {
+    return "nar";
+  }
+  return null;
 };
 
 export const formatRunnerNumber = (value: string | null | undefined): string => {
