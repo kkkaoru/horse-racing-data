@@ -9347,10 +9347,18 @@ fieldset.stats-section-toggle-wrap {
   color: var(--accent-strong);
 }
 
-.win-rate-heatmap-section {
+.win-rate-heatmap-section,
+.win-rate-heatmap-wrap {
   display: grid;
   gap: var(--space-28px-42);
+  max-width: var(--space-100pct-12);
+  min-width: var(--number-0-2);
   padding-top: var(--space-18px-31);
+}
+
+.win-rate-heatmap-wrap {
+  gap: var(--number-0-2);
+  padding-top: var(--number-0-2);
 }
 
 .win-rate-heatmap-view-toggle {
@@ -9430,16 +9438,20 @@ fieldset.stats-section-toggle-wrap {
 
 .win-rate-heatmap-table-wrap {
   -webkit-overflow-scrolling: touch;
+  max-width: var(--space-100pct-12);
+  min-width: var(--number-0-2);
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
   overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+  width: var(--space-100pct-12);
 }
 
 .win-rate-heatmap-table {
   border-collapse: collapse;
-  min-width: var(--number-0-2);
+  min-width: var(--space-880px-154);
   table-layout: fixed;
-  width: var(--space-100pct-12);
+  width: max(var(--space-100pct-12), var(--space-880px-154));
 }
 
 .win-rate-heatmap-col-number,
@@ -9545,11 +9557,6 @@ fieldset.stats-section-toggle-wrap {
 }
 
 @media (max-width: 720px) {
-  .win-rate-heatmap-table {
-    min-width: var(--space-880px-154);
-    width: var(--space-880px-154);
-  }
-
   .win-rate-heatmap-swatch:hover .win-rate-heatmap-tooltip,
   .win-rate-heatmap-swatch:focus-visible .win-rate-heatmap-tooltip {
     opacity: var(--number-0-2);
