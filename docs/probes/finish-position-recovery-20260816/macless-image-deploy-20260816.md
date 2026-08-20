@@ -39,10 +39,12 @@ scoped CacheMiss (`6793ad7f`), DuckDB 1.5.5, writable txn.
 
 ## Probe (not a success, not a PREWARM proof)
 
-|          |                                                                        |
-| -------- | ---------------------------------------------------------------------- |
-| POST     | **15:56:50 JST** focused-full `nar 20260817 46/01` HTTP 200 `accepted` |
-| 16:10:45 | elapsed **13 min**. Neon **0**. feat-cache **404**. 0816 still 80/951  |
+|          |                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------- |
+| POST     | **15:56:50 JST** focused-full `nar 20260817 46/01` HTTP 200 `accepted`                                                |
+| 16:10:45 | elapsed **13 min**. Neon **0**. feat-cache **404**. 0816 still 80/951                                                 |
+| 16:58    | 46/01 still **0** / cache 404. elapsed **61 min** (midpoint 17:02 not yet)                                            |
+| 16:53:09 | **46/02 landed** (POST 16:16:45 → **36 min**). n=10. odds flat 0.5048. model marketfree. cache still **404** at 16:58 |
 
 **17:02 is a midpoint, not a deploy verdict.** 65 min is only today’s
 _shortest_ landing (01/02). Today also had 199 and 227. One race past
