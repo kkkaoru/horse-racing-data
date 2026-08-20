@@ -3,7 +3,6 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { BrandRunner } from "./brand-runner";
-import { RaceAiConsentManager } from "./race-ai-consent-manager";
 import { StylesheetReloadGuard } from "./stylesheet-reload-guard";
 
 import "./vars.css";
@@ -47,7 +46,6 @@ export default function RootLayout({ children }: RootLayoutProps) {
           </details>
         </header>
         <main>{children}</main>
-        <RaceAiConsentManager />
         <StylesheetReloadGuard />
       </body>
     </html>

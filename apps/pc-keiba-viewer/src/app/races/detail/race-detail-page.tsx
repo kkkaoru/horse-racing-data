@@ -56,16 +56,8 @@ import {
   loadInitialRealtimePayloadServer,
 } from "../../../lib/realtime-payload.server";
 import { getRunnerDisplayNames } from "../../../lib/runner-display";
-import {
-  formatCarriedWeight,
-  formatHorseWeight,
-  formatRunnerNumber,
-  formatRunnerValue,
-  formatSexAge,
-  isBanEiKeibajoCode,
-} from "../../../lib/runner-format";
+import { isBanEiKeibajoCode } from "../../../lib/runner-format";
 import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
-import { AiJsonExportSection } from "./ai-json-export-section";
 import {
   LazyDetailSections,
   LazyFinishPredictionSection,
@@ -74,7 +66,6 @@ import {
 } from "./lazy-detail-sections";
 import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import { PaddockSection } from "./paddock-section";
-import { RaceAiAssistant } from "./race-ai-assistant";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
 import { RaceTrendSection } from "./race-trend-section";
@@ -85,22 +76,6 @@ import { RunningStyleRaceSection } from "./running-style-race-section";
 import { TrackConditionSection } from "./track-condition-section";
 
 export const dynamic = "force-dynamic";
-
-const DEFAULT_RACE_AI_ASSISTANT_NAME = "アーモンドAI";
-const DEFAULT_RACE_AI_ASSISTANT_ICON_URL = "/ai/almondeye_top.png";
-const DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR = "#69a9e9";
-
-const getRaceAiAssistantName = (): string =>
-  process.env.PC_KEIBA_RACE_AI_NAME?.trim() || DEFAULT_RACE_AI_ASSISTANT_NAME;
-
-const getRaceAiAssistantIconUrl = (): string =>
-  process.env.PC_KEIBA_RACE_AI_ICON_URL?.trim() || DEFAULT_RACE_AI_ASSISTANT_ICON_URL;
-
-const getRaceAiAssistantAccentColor = (): string =>
-  process.env.PC_KEIBA_RACE_AI_ACCENT_COLOR?.trim() || DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR;
-
-const isRaceAiAssistantEnabled = (): boolean =>
-  process.env.PC_KEIBA_RACE_AI_ENABLED?.trim().toLowerCase() === "true";
 
 interface RaceDetailViewProps {
   day: string;
@@ -166,15 +141,6 @@ const getRaceStartsAt = (
   const hour = normalizedTime.slice(0, 2);
   const minute = normalizedTime.slice(2, 4);
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:00+09:00`;
-};
-
-const formatStoredOddsForExport = (value: string | null | undefined): string => {
-  const cleaned = cleanText(value, "");
-  if (!cleaned || cleaned === "0000") {
-    return "-";
-  }
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? (parsed / 10).toFixed(1) : "-";
 };
 
 interface BlinkerPatternEntry {
@@ -466,84 +432,6 @@ export async function RaceDetailView({
     keibajoCode,
     source: raceSource,
   });
-  const baseProcessedData = {
-    adjacentRaces: {
-      next: nextRace
-        ? {
-            label: getAdjacentRaceLabel(nextRace),
-            path: getRaceDetailPath(nextRace),
-            race: nextRace,
-          }
-        : null,
-      previous: previousRace
-        ? {
-            label: getAdjacentRaceLabel(previousRace),
-            path: getRaceDetailPath(previousRace),
-            race: previousRace,
-          }
-        : null,
-    },
-    course: {
-      facts: courseFacts,
-      imagePath: courseImagePath,
-      paragraphs: courseParagraphs,
-      text: courseText,
-    },
-    detailCells: {
-      condition: conditionLabel,
-      dirtCondition: formatBaba(race.babajotaiCodeDirt),
-      entryUrl: visibleJraRaceEntryUrl,
-      grade: getGradeLabel(race.gradeCode, race.source),
-      raceSymbol: getRaceSymbolDetailLabel(race.kyosoKigoCode),
-      registeredRunnerCount: race.torokuTosu,
-      resultUrl: visibleJraRaceResultUrl,
-      runnerCount: race.shussoTosu,
-      turfCondition: formatBaba(race.babajotaiCodeShiba),
-      weather: formatWeather(race.tenkoCode),
-      weightType: getWeightLabel(race.juryoShubetsuCode),
-    },
-    globalSummary: {
-      distance: formatDistance(race.kyori),
-      raceNumber: formatRaceNumber(raceNumber),
-      startsAt: raceStartsAt,
-      startTime: `${formatTime(race.hassoJikoku)}発走`,
-      surface: getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode),
-      venue: formatKeibajo(keibajoCode),
-    },
-    hero: {
-      badgeDistance: formatDistance(race.kyori),
-      badgeTrack: formatTrack(race.trackCode),
-      date: formatDate(year, `${month}${day}`),
-      raceName,
-      sourceLabel: SOURCE_LABELS[raceSource],
-      subtitle: `${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)} ${formatTime(
-        race.hassoJikoku,
-      )}発走`,
-      tags: raceTags,
-    },
-    runnerRows: runners.map((runner) => {
-      const displayNames = getRunnerDisplayNames(runner);
-      return {
-        carriedWeight: formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight),
-        finishOrder: formatRunnerValue(runner.kakuteiChakujun, "00"),
-        frameNumber: cleanText(runner.wakuban),
-        horseName: displayNames.horse,
-        horseNumber: formatRunnerNumber(runner.umaban),
-        horseWeight: formatHorseWeight(
-          runner.bataiju,
-          runner.zogenFugo,
-          runner.zogenSa,
-          decodeHexHorseWeight,
-        ),
-        jockeyName: displayNames.jockey,
-        ownerName: displayNames.owner,
-        sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
-        storedWinOdds: formatStoredOddsForExport(runner.tanshoOdds),
-        trainerName: displayNames.trainer,
-      };
-    }),
-    sharePath,
-  };
   return (
     <RealtimeRaceProvider initialPayload={initialRealtimePayload} request={realtimeRequest}>
       <section className="page-shell">
@@ -684,27 +572,6 @@ export async function RaceDetailView({
         </section>
 
         <TrackConditionSection trackCode={race.trackCode} />
-
-        {isRaceAiAssistantEnabled() && (
-          <RaceAiAssistant
-            assistantAccentColor={getRaceAiAssistantAccentColor()}
-            assistantIconUrl={getRaceAiAssistantIconUrl()}
-            assistantName={getRaceAiAssistantName()}
-            basePostgresqlData={{
-              courseInfo,
-              race,
-              sameVenueRaces,
-              runners,
-            }}
-            baseProcessedData={baseProcessedData}
-            day={day}
-            keibajoCode={keibajoCode}
-            month={month}
-            raceNumber={raceNumber}
-            source={raceSource}
-            year={year}
-          />
-        )}
 
         <PaddockSection
           day={day}
@@ -898,21 +765,6 @@ export async function RaceDetailView({
           month={month}
           raceNumber={raceNumber}
           realtimeApiBaseUrl={realtimeApiBaseUrl}
-          source={raceSource}
-          year={year}
-        />
-        <AiJsonExportSection
-          basePostgresqlData={{
-            courseInfo,
-            race,
-            sameVenueRaces,
-            runners,
-          }}
-          baseProcessedData={baseProcessedData}
-          day={day}
-          keibajoCode={keibajoCode}
-          month={month}
-          raceNumber={raceNumber}
           source={raceSource}
           year={year}
         />

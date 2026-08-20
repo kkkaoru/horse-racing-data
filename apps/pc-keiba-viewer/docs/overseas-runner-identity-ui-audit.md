@@ -23,13 +23,12 @@ This is the only table in the initial server-rendered page that displays horse, 
 The presentation follow-up now routes all audited current-runner labels through the shared `getRunnerDisplayNames` helper (`full -> JV -> empty`):
 
 - `race-detail-page.tsx` processed runner rows and running-style labels;
-- `race-ai-data.ts` prompt rows and the AI data route serializer;
 - paddock rows and realtime odds labels;
 - overall-score, premium-data-top, and time-score labels in `detail-section-data.ts`;
 - pace and finish-position prediction output labels, after computation;
 - similar-race, bloodline, combined-score, and newcomer/result current-runner labels.
 
-The AI serializer retains the existing fixed-width JV keys for compatibility and adds supplemental fields alongside them. Realtime jockey updates compare against the JV abbreviation but preserve the full supplemental name when the realtime value identifies the same jockey. A genuinely changed jockey still replaces the stored display value.
+The exported data retains the existing fixed-width JV keys for compatibility and adds supplemental fields alongside them. Realtime jockey updates compare against the JV abbreviation but preserve the full supplemental name when the realtime value identifies the same jockey. A genuinely changed jockey still replaces the stored display value.
 
 ## Consumers that must continue to use JV values for computation
 

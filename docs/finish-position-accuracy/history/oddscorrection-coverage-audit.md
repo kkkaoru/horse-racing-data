@@ -156,7 +156,7 @@ Additionally: `marketOverrides` is not passed, so it uses stored morning odds �
 
 This event path also drops: `modelPredictionFeatures`, `similarityFeatures`, `sameDayVenueJockeyWins`, `currentGradeCode`, `currentKyosoJokenCode`, `currentKyosoJokenMeisho` — producing a degraded prediction row.
 
-### Path B — `race-ai-data.ts` (AI assistant export)
+### Path B — former AI assistant export
 
 Lines 527–531:
 
@@ -195,18 +195,18 @@ No calls to `buildFinishPredictionRows*`. No gap.
 
 ## 7. Summary table
 
-| Influence path                                                          | What it is                                      | `oddsCorrectionEnabled` gates it?                                                            |
-| ----------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `oddsWeight` in `finalRunnerConfig`                                     | Score weight for stored/realtime odds           | **YES** — zeroed when OFF                                                                    |
-| `popularityWeight` in `finalRunnerConfig`                               | Score weight for stored/realtime popularity     | **YES** — zeroed when OFF                                                                    |
-| `getHorseHistoryAdjustedConfig` debut elevation of oddsWeight           | Pre-gate multiplication for debut horses        | **YES** — gate applied after, result is 0                                                    |
-| `getConditionAdjustedConfig` JRA/NAR multipliers on oddsWeight          | Pre-gate scaling                                | **YES** — gate applied after, result is 0                                                    |
-| `marketOverrides` construction                                          | Realtime tansho map                             | **YES** — not built when OFF                                                                 |
-| Stored `tanshoOdds`/`tanshoNinkijun` value in returned row              | Display-only fields                             | N/A — weight is 0, no score impact                                                           |
-| `horse-race-results-table.tsx` → `RACE_FINISH_PREDICTION_RESULTS_EVENT` | Rewrites displayRows when result filter changes | **NO** — `oddsCorrectionEnabled` omitted, defaults to `undefined` → always ON for non-maiden |
-| `race-ai-data.ts` `buildFinishPredictionRowsFromInputs`                 | AI assistant prediction                         | **NO** — always applies realtime odds if available                                           |
-| `ai-json-export-section.tsx` `buildFinishPredictionRowsFromInputs`      | JSON export                                     | **NO** — always applies realtime odds if available                                           |
-| Score sort tiebreaker                                                   | Horse number                                    | N/A — no odds in tiebreaker                                                                  |
+| Influence path                                                            | What it is                                      | `oddsCorrectionEnabled` gates it?                                                            |
+| ------------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `oddsWeight` in `finalRunnerConfig`                                       | Score weight for stored/realtime odds           | **YES** — zeroed when OFF                                                                    |
+| `popularityWeight` in `finalRunnerConfig`                                 | Score weight for stored/realtime popularity     | **YES** — zeroed when OFF                                                                    |
+| `getHorseHistoryAdjustedConfig` debut elevation of oddsWeight             | Pre-gate multiplication for debut horses        | **YES** — gate applied after, result is 0                                                    |
+| `getConditionAdjustedConfig` JRA/NAR multipliers on oddsWeight            | Pre-gate scaling                                | **YES** — gate applied after, result is 0                                                    |
+| `marketOverrides` construction                                            | Realtime tansho map                             | **YES** — not built when OFF                                                                 |
+| Stored `tanshoOdds`/`tanshoNinkijun` value in returned row                | Display-only fields                             | N/A — weight is 0, no score impact                                                           |
+| `horse-race-results-table.tsx` → `RACE_FINISH_PREDICTION_RESULTS_EVENT`   | Rewrites displayRows when result filter changes | **NO** — `oddsCorrectionEnabled` omitted, defaults to `undefined` → always ON for non-maiden |
+| Former AI assistant export `buildFinishPredictionRowsFromInputs`          | AI assistant prediction                         | **NO** — always applies realtime odds if available                                           |
+| Former `ai-json-export-section.tsx` `buildFinishPredictionRowsFromInputs` | JSON export                                     | **NO** — always applies realtime odds if available                                           |
+| Score sort tiebreaker                                                     | Horse number                                    | N/A — no odds in tiebreaker                                                                  |
 
 ---
 
@@ -235,7 +235,7 @@ The `RACE_FINISH_PREDICTION_RESULTS_EVENT` dispatch at lines 742–766 must pass
 
 Option A is strongly preferred — the event-driven cross-component override produces a second, inferior prediction in place of the authoritative one.
 
-### Fix 2 (MINOR — AI export paths): `race-ai-data.ts` and `ai-json-export-section.tsx`
+### Fix 2 (MINOR — AI export paths): former AI assistant export and JSON export
 
 These are export/AI-assistant paths and don't affect the visible prediction table. However, for consistency with user intent, they should either:
 

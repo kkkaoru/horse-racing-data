@@ -132,33 +132,6 @@ const apiSpec = {
         tags: ["spec"],
       },
     },
-    "/api/models/gemma-4-e2b/{version}/gemma-4-E2B-it-web.task": {
-      get: {
-        operationId: "getGemma4E2BWebModel",
-        parameters: [
-          {
-            description: "モデルバージョン。例: v20260518",
-            in: "path",
-            name: "version",
-            required: true,
-            schema: { pattern: "^v\\d{8}$", type: "string" },
-          },
-        ],
-        responses: {
-          "200": {
-            content: {
-              "application/octet-stream": {
-                schema: { format: "binary", type: "string" },
-              },
-            },
-            description: "MediaPipe LLM Inference 用 Gemma 4 E2B Web モデル。",
-          },
-          ...errorResponses,
-        },
-        summary: "ブラウザAI予想用の Gemma 4 E2B Web モデルを返します。",
-        tags: ["models"],
-      },
-    },
     "/api/top-races": {
       get: {
         operationId: "getTopRaces",
@@ -401,155 +374,6 @@ const apiSpec = {
         tags: ["races"],
       },
     },
-    "/api/races/{year}/{month}/{day}/{keibajoCode}/{raceNumber}/ai/data": {
-      get: {
-        operationId: "getRaceAiDataParts",
-        parameters: [
-          ...routeParameters,
-          sourceQueryParameter,
-          {
-            description:
-              "AIが必要な実データだけを取得するためのカンマ区切り指定。例: race,runners,courseInfo,finishPrediction,overallScore",
-            in: "query",
-            name: "parts",
-            required: false,
-            schema: {
-              default: "race,runners,courseInfo,courseDisplay",
-              type: "string",
-            },
-          },
-          {
-            description:
-              "parts に realtime を含めた時のリアルタイムデータの部分指定。例: entries,oddsTansho,weights,results,trackCondition",
-            in: "query",
-            name: "realtimeParts",
-            required: false,
-            schema: {
-              default: "entries,oddsTansho,weights,results,trackCondition",
-              type: "string",
-            },
-          },
-        ],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "WebGPU AI予想がオンデマンドで参照するレース実データをparts指定で返します。",
-        tags: ["races"],
-      },
-    },
-    "/api/races/{year}/{month}/{day}/{keibajoCode}/{raceNumber}/ai/logs": {
-      delete: {
-        operationId: "resetRaceAiLogsByDelete",
-        parameters: [...routeParameters, sourceQueryParameter],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "レースごとのブラウザAI予想ログにサーバー側からリセットコマンドを送ります。",
-        tags: ["races"],
-      },
-      get: {
-        operationId: "getRaceAiLogServerCommand",
-        parameters: [...routeParameters, sourceQueryParameter],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "レースごとのブラウザAI予想ログ向けサーバーコマンドを返します。",
-        tags: ["races"],
-      },
-      post: {
-        operationId: "setRaceAiLogServerCommand",
-        parameters: [...routeParameters, sourceQueryParameter],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary:
-          "レースごとのブラウザAI予想ログにresetコマンドを作成、またはackCommandIdで既読化します。",
-        tags: ["races"],
-      },
-    },
-    "/api/debug/ai-chat": {
-      get: {
-        operationId: "getLocalAiChatDebugSnapshot",
-        parameters: [
-          {
-            description:
-              "レースごとのAIチャット状態を参照するキー。省略時はlocalhost上の全スナップショットを返します。",
-            in: "query",
-            name: "raceKey",
-            required: false,
-            schema: { type: "string" },
-          },
-        ],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "localhost限定で、ブラウザAIチャットの状態を参照します。",
-        tags: ["debug"],
-      },
-      post: {
-        operationId: "sendLocalAiChatDebugCommand",
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary:
-          "localhost限定で、ブラウザAIチャットへsend-message/reset/replace-messagesコマンドを渡します。",
-        tags: ["debug"],
-      },
-      put: {
-        operationId: "writeLocalAiChatDebugSnapshot",
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "localhost限定で、ブラウザAIチャットの状態を書き込みます。",
-        tags: ["debug"],
-      },
-    },
-    "/api/debug/ai-playground": {
-      get: {
-        operationId: "getAiPlaygroundDebugSnapshot",
-        parameters: [
-          {
-            description:
-              "/ai ページのブラウザ診断セッションID。省略時は最新セッションのサマリー一覧を返します。",
-            in: "query",
-            name: "sessionId",
-            required: false,
-            schema: { type: "string" },
-          },
-        ],
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "/ai ページのブラウザログ、AI状態、ハートビート、サーバー同期状態を参照します。",
-        tags: ["debug"],
-      },
-      post: {
-        operationId: "clearAiPlaygroundDebugSnapshot",
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "/ai ページの指定セッション診断ログをサーバー側でリセットします。",
-        tags: ["debug"],
-      },
-      put: {
-        operationId: "writeAiPlaygroundDebugSnapshot",
-        responses: {
-          "200": jsonResponse,
-          ...errorResponses,
-        },
-        summary: "/ai ページのブラウザログ、AI状態、ハートビートをサーバーへ書き込みます。",
-        tags: ["debug"],
-      },
-    },
     "/api/races/{year}/{month}/{day}/{keibajoCode}/{raceNumber}/sections/{section}": {
       get: {
         operationId: "getRaceDetailSection",
@@ -691,12 +515,10 @@ const apiSpec = {
   ],
   tags: [
     { name: "spec" },
-    { name: "models" },
     { name: "races" },
     { name: "paddock" },
     { name: "mypage" },
     { name: "cache" },
-    { name: "debug" },
   ],
 } as const;
 

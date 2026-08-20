@@ -136,8 +136,6 @@ Cloudflare Access 越しの検証のため、`.env.local` の
 (scratchpad 限定、リポジトリ非追跡) を経由して chrome-devtools MCP セッシ
 ョンで実ページを操作。結果:
 
-- ページロード直後に「アーモンドAI予想を利用しますか」の confirm()
-  ダイアログが出る (既存機能、本検証と無関係) → dismiss して継続。
 - `document.querySelector('.finish-prediction-confidence-badge')` →
   1 件、テキスト **「予測の自信度: 低」**、class
   `finish-prediction-confidence-badge-low`。stddev 0.0795 → low tier
