@@ -19,11 +19,13 @@ import {
   formatWinRateHeatmapValue,
   getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
+  getWinRateHeatmapColorScaleTracks,
   getWinRateHeatmapTooltipName,
   shouldShowWinRateHeatmapWeightColumn,
   WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE,
   WIN_RATE_HEATMAP_COLOR_SCALE_TICKS,
   WIN_RATE_HEATMAP_COLUMNS,
+  WIN_RATE_HEATMAP_COMBINED_HUE,
   WIN_RATE_HEATMAP_RATE_METRICS,
   WIN_RATE_HEATMAP_VIEW_MODES,
   winRateHeatmapBackground,
@@ -372,6 +374,7 @@ it("exports heatmap columns for frame, weight, horse, jockey, trainer, and blood
 });
 
 it("exports win, quinella, and show rate metrics", () => {
+  expect(WIN_RATE_HEATMAP_COMBINED_HUE).toBe(272);
   expect(WIN_RATE_HEATMAP_RATE_METRICS).toStrictEqual([
     { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
     { countKey: "quinellaCount", hue: 36, key: "quinellaRate", label: "連対率", shortLabel: "連" },
@@ -1327,9 +1330,9 @@ it("maps heatmap view modes to win, quinella, show, or all three rate metrics", 
     { countKey: "showCount", hue: 196, key: "showRate", label: "複勝率", shortLabel: "複" },
   ]);
   expect(getVisibleWinRateHeatmapRateMetrics("all")).toStrictEqual([
-    { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
-    { countKey: "quinellaCount", hue: 36, key: "quinellaRate", label: "連対率", shortLabel: "連" },
-    { countKey: "showCount", hue: 196, key: "showRate", label: "複勝率", shortLabel: "複" },
+    { countKey: "winCount", hue: 272, key: "winRate", label: "勝率", shortLabel: "勝" },
+    { countKey: "quinellaCount", hue: 272, key: "quinellaRate", label: "連対率", shortLabel: "連" },
+    { countKey: "showCount", hue: 272, key: "showRate", label: "複勝率", shortLabel: "複" },
   ]);
   expect(winRateHeatmapEntityColSpan(0)).toBe(1);
   expect(winRateHeatmapEntityColSpan(1)).toBe(1);
@@ -1382,6 +1385,9 @@ it("uses a gray background for missing rates and stronger color for higher rates
   expect(winRateHeatmapBackground(100, 8)).toBe("hsl(8, 95%, 28%)");
   expect(winRateHeatmapBackground(20, 196)).toBe("hsl(196, 59%, 62%)");
   expect(winRateHeatmapBackground(-5, 8)).toBe("hsl(8, 22%, 96%)");
+  expect(winRateHeatmapBackground(15, 272)).toBe("hsl(272, 49%, 71%)");
+  expect(winRateHeatmapBackground(30, 272)).toBe("hsl(272, 77%, 45%)");
+  expect(winRateHeatmapBackground(45, 272)).toBe("hsl(272, 95%, 28%)");
 });
 
 it("builds a horizontal color-scale gradient that matches heatmap cell colors", () => {
@@ -1396,6 +1402,9 @@ it("builds a horizontal color-scale gradient that matches heatmap cell colors", 
   );
   expect(buildWinRateHeatmapColorScaleGradient(196)).toBe(
     "linear-gradient(to right, hsl(196, 22%, 96%) 0%, hsl(196, 40%, 79%) 25%, hsl(196, 59%, 62%) 50%, hsl(196, 77%, 45%) 75%, hsl(196, 95%, 28%) 100%)",
+  );
+  expect(buildWinRateHeatmapColorScaleGradient(272)).toBe(
+    "linear-gradient(to right, hsl(272, 22%, 96%) 0%, hsl(272, 40%, 79%) 25%, hsl(272, 59%, 62%) 50%, hsl(272, 77%, 45%) 75%, hsl(272, 95%, 28%) 100%)",
   );
 });
 
@@ -1417,6 +1426,35 @@ it("names the color scale from visible metrics for single and combined views", (
   expect(formatWinRateHeatmapColorScaleAriaLabel(getVisibleWinRateHeatmapRateMetrics("all"))).toBe(
     "勝率、連対率、複勝率の色は0%から40%以上まで濃くなります",
   );
+});
+
+it("collapses the color scale to one track when every visible metric shares a hue", () => {
+  expect(getWinRateHeatmapColorScaleTracks([])).toStrictEqual([]);
+  expect(
+    getWinRateHeatmapColorScaleTracks(getVisibleWinRateHeatmapRateMetrics("winRate")),
+  ).toStrictEqual([
+    { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
+  ]);
+  expect(
+    getWinRateHeatmapColorScaleTracks(getVisibleWinRateHeatmapRateMetrics("all")),
+  ).toStrictEqual([
+    { countKey: "winCount", hue: 272, key: "winRate", label: "勝率", shortLabel: "勝" },
+  ]);
+  expect(
+    getWinRateHeatmapColorScaleTracks([
+      { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
+      {
+        countKey: "quinellaCount",
+        hue: 36,
+        key: "quinellaRate",
+        label: "連対率",
+        shortLabel: "連",
+      },
+    ]),
+  ).toStrictEqual([
+    { countKey: "winCount", hue: 8, key: "winRate", label: "勝率", shortLabel: "勝" },
+    { countKey: "quinellaCount", hue: 36, key: "quinellaRate", label: "連対率", shortLabel: "連" },
+  ]);
 });
 
 it("hides the horse-weight column for overseas venues and when no runner has a weight", () => {

@@ -130,6 +130,8 @@ const WIN_RATE_HEATMAP_SHOW_RATE_METRIC: WinRateHeatmapRateMetric = {
   shortLabel: "複",
 };
 
+export const WIN_RATE_HEATMAP_COMBINED_HUE: number = 272;
+
 export const WIN_RATE_HEATMAP_RATE_METRICS: readonly WinRateHeatmapRateMetric[] = [
   WIN_RATE_HEATMAP_WIN_RATE_METRIC,
   WIN_RATE_HEATMAP_QUINELLA_RATE_METRIC,
@@ -149,7 +151,13 @@ const WIN_RATE_HEATMAP_VIEW_MODE_METRICS: Record<
   WinRateHeatmapViewMode,
   readonly WinRateHeatmapRateMetric[]
 > = {
-  all: WIN_RATE_HEATMAP_RATE_METRICS,
+  all: WIN_RATE_HEATMAP_RATE_METRICS.map((metric) => ({
+    countKey: metric.countKey,
+    hue: WIN_RATE_HEATMAP_COMBINED_HUE,
+    key: metric.key,
+    label: metric.label,
+    shortLabel: metric.shortLabel,
+  })),
   quinellaRate: WIN_RATE_HEATMAP_RATE_METRICS.filter((metric) => metric.key === "quinellaRate"),
   showRate: WIN_RATE_HEATMAP_RATE_METRICS.filter((metric) => metric.key === "showRate"),
   winRate: WIN_RATE_HEATMAP_RATE_METRICS.filter((metric) => metric.key === "winRate"),
@@ -507,6 +515,15 @@ export const formatWinRateHeatmapValue = (rate: number | null | undefined): stri
 export const getVisibleWinRateHeatmapRateMetrics = (
   mode: WinRateHeatmapViewMode,
 ): readonly WinRateHeatmapRateMetric[] => WIN_RATE_HEATMAP_VIEW_MODE_METRICS[mode];
+
+export const getWinRateHeatmapColorScaleTracks = (
+  metrics: readonly WinRateHeatmapRateMetric[],
+): readonly WinRateHeatmapRateMetric[] => {
+  if (new Set(metrics.map((metric) => metric.hue)).size > 1) {
+    return metrics;
+  }
+  return metrics.slice(0, 1);
+};
 
 export const getWinRateHeatmapTooltipName = (cell: WinRateHeatmapCell): string =>
   cell.name === null ? "-" : cell.name;

@@ -441,9 +441,9 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(8);
-  expect(screen.getAllByText("連").length).toBe(8);
-  expect(screen.getAllByText("複").length).toBe(8);
+  expect(screen.getAllByText("勝").length).toBe(7);
+  expect(screen.getAllByText("連").length).toBe(7);
+  expect(screen.getAllByText("複").length).toBe(7);
   expect(screen.getByText("15.0%")).toBeDefined();
   expect(screen.getAllByText("30.0%").length).toBe(2);
   expect(screen.getByText("45.0%")).toBeDefined();
@@ -453,31 +453,32 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
     }),
   ).toBeDefined();
   expect(document.querySelector(".win-rate-heatmap-color-scale")?.className).toBe(
-    "win-rate-heatmap-color-scale win-rate-heatmap-color-scale-stacked",
+    "win-rate-heatmap-color-scale",
   );
-  expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(3);
-  const combinedScaleBars = document.querySelectorAll(".win-rate-heatmap-color-scale-bar");
-  const combinedWinScaleBar = combinedScaleBars[0];
-  const combinedQuinellaScaleBar = combinedScaleBars[1];
-  const combinedShowScaleBar = combinedScaleBars[2];
-  if (!(combinedWinScaleBar instanceof HTMLDivElement)) {
-    throw new Error("expected combined win color scale bar");
+  expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(1);
+  const combinedScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
+  if (!(combinedScaleBar instanceof HTMLDivElement)) {
+    throw new Error("expected combined color scale bar");
   }
-  if (!(combinedQuinellaScaleBar instanceof HTMLDivElement)) {
-    throw new Error("expected combined quinella color scale bar");
+  expect(combinedScaleBar.style.backgroundImage).toBe(
+    "linear-gradient(to right, hsl(272, 22%, 96%) 0%, hsl(272, 40%, 79%) 25%, hsl(272, 59%, 62%) 50%, hsl(272, 77%, 45%) 75%, hsl(272, 95%, 28%) 100%)",
+  );
+  const combinedSwatches = document.querySelectorAll("td.win-rate-heatmap-swatch");
+  const combinedWinSwatch = combinedSwatches[0];
+  const combinedQuinellaSwatch = combinedSwatches[1];
+  const combinedShowSwatch = combinedSwatches[2];
+  if (!(combinedWinSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected combined win swatch");
   }
-  if (!(combinedShowScaleBar instanceof HTMLDivElement)) {
-    throw new Error("expected combined show color scale bar");
+  if (!(combinedQuinellaSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected combined quinella swatch");
   }
-  expect(combinedWinScaleBar.style.backgroundImage).toBe(
-    "linear-gradient(to right, hsl(8, 22%, 96%) 0%, hsl(8, 40%, 79%) 25%, hsl(8, 59%, 62%) 50%, hsl(8, 77%, 45%) 75%, hsl(8, 95%, 28%) 100%)",
-  );
-  expect(combinedQuinellaScaleBar.style.backgroundImage).toBe(
-    "linear-gradient(to right, hsl(36, 22%, 96%) 0%, hsl(36, 40%, 79%) 25%, hsl(36, 59%, 62%) 50%, hsl(36, 77%, 45%) 75%, hsl(36, 95%, 28%) 100%)",
-  );
-  expect(combinedShowScaleBar.style.backgroundImage).toBe(
-    "linear-gradient(to right, hsl(196, 22%, 96%) 0%, hsl(196, 40%, 79%) 25%, hsl(196, 59%, 62%) 50%, hsl(196, 77%, 45%) 75%, hsl(196, 95%, 28%) 100%)",
-  );
+  if (!(combinedShowSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected combined show swatch");
+  }
+  expect(combinedWinSwatch.style.backgroundColor).toBe("hsl(272, 49%, 71%)");
+  expect(combinedQuinellaSwatch.style.backgroundColor).toBe("hsl(272, 77%, 45%)");
+  expect(combinedShowSwatch.style.backgroundColor).toBe("hsl(272, 95%, 28%)");
 });
 
 it("shows computed frame win rate when the payload omits rate fields but includes counts", () => {
