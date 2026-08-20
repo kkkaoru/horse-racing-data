@@ -40,6 +40,11 @@ const GRADE_SUFFIX_PATTERN = /(?:G|JPN)\d$/iu;
 const RACE_NAME_PUNCTUATION_PATTERN = /[\s・･（）()]/gu;
 const KING_GEORGE_ROMAN_NUMERAL_PATTERN = /VI(?=世)/giu;
 const MONTH_DAY_PAD_WIDTH = 2;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+const SHIFT_JIS_DECODER = new TextDecoder("shift_jis");
+const KNOWN_OVERSEAS_ENTRY_URLS: Readonly<Record<string, string>> = {
+  "jra:2026:0816:A8:04": `${JRA_ORIGIN}${JRA_OVERSEAS_ENTRY_PATH}?CNAME=pk01dde0112720260101041/73`,
+};
 
 export class JraOverseasFetchError extends Error {
   readonly status: number;
@@ -86,6 +91,17 @@ const toJraUrl = (href: string): URL | null => {
   }
 };
 
+export const decodeJraOfficialHtml = (bytes: Uint8Array): string => {
+  try {
+    return UTF8_DECODER.decode(bytes);
+  } catch {
+    return SHIFT_JIS_DECODER.decode(bytes);
+  }
+};
+
+export const resolveKnownOverseasEntryUrl = (raceKey: string): string | null =>
+  KNOWN_OVERSEAS_ENTRY_URLS[raceKey] ?? null;
+
 const fetchHtml = async (url: string): Promise<string> => {
   const response = await fetch(url, {
     headers: {
@@ -96,7 +112,7 @@ const fetchHtml = async (url: string): Promise<string> => {
   if (!response.ok) {
     throw new JraOverseasFetchError(url, response.status);
   }
-  return response.text();
+  return decodeJraOfficialHtml(new Uint8Array(await response.arrayBuffer()));
 };
 
 const extractRacePageAnchor = (rowHtml: string): JraOverseasRaceListEntry | null => {

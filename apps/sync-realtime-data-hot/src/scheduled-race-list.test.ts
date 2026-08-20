@@ -7,6 +7,11 @@ vi.mock("./postgres-pool", () => ({
 
 vi.mock("./jra-overseas", () => ({
   createJraOverseasRaceResolver: vi.fn(() => async () => null),
+  resolveKnownOverseasEntryUrl: vi.fn((raceKey: string) =>
+    raceKey === "jra:2026:0816:A8:04"
+      ? "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73"
+      : null,
+  ),
 }));
 
 vi.mock("./keiba-go", () => ({
@@ -764,8 +769,44 @@ it("listTodayRacesFromHyperdrive skips an overseas JRA row when official resolut
   });
   expect(rows).toStrictEqual([]);
   expect(warnSpy).toHaveBeenCalledWith(
-    "[scheduled-race-list] JRA overseas race resolution failed, skipping raceKey=jra:2026:0725:A6:05: official page unavailable",
+    "[scheduled-race-list] JRA overseas race resolution failed, trying known entry URL raceKey=jra:2026:0725:A6:05: official page unavailable",
   );
+});
+
+it("listTodayRacesFromHyperdrive uses the known accessSD URL and JV post time when official resolve misses A8/04", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "2250",
+        kaisai_kai: "00",
+        kaisai_nen: "2026",
+        kaisai_nichime: "00",
+        kaisai_tsukihi: "0816",
+        keibajo_code: "A8",
+        kyosomei_hondai: "ジャックルマロワ賞　　　　　　　　　　　　　　　　　　　　　",
+        race_bango: "04",
+        source: "jra",
+      },
+    ],
+  });
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260816", {
+    pool: { query } as never,
+    resolveJraOverseasRace: async () => null,
+  });
+  expect(rows).toStrictEqual([
+    {
+      debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0816",
+      keibajoCode: "A8",
+      oddsLinksJson: "{}",
+      raceBango: "04",
+      raceKey: "jra:2026:0816:A8:04",
+      raceStartAtJst: "2026-08-16T22:50:00+09:00",
+      source: "jra",
+    },
+  ]);
 });
 
 it("listTodayRacesFromHyperdrive skips overseas JRA rows without a race name", async () => {

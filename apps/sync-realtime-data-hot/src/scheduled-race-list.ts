@@ -24,6 +24,7 @@ import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
 import { buildJraEntryUrlFromRace } from "./jra";
 import {
   createJraOverseasRaceResolver,
+  resolveKnownOverseasEntryUrl,
   type JraOverseasRaceResolver,
   type JraOverseasRaceResolution,
 } from "./jra-overseas";
@@ -88,6 +89,7 @@ interface IntermediateRow {
   raceBango: string;
   raceKey: string;
   raceStartAtJst: string | null;
+  jvRaceStartAtJst: string | null;
   kaisaiKai: string | null;
   kaisaiNichime: string | null;
   kyosomeiHondai: string | null;
@@ -211,11 +213,12 @@ const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
   if (overseasJra && !kyosomeiHondai) {
     return null;
   }
-  const raceStartAtJst = overseasJra ? null : buildRaceStartAtJst(row);
-  if (!overseasJra && !raceStartAtJst) {
+  const jvRaceStartAtJst = buildRaceStartAtJst(row);
+  if (!overseasJra && !jvRaceStartAtJst) {
     return null;
   }
   return {
+    jvRaceStartAtJst,
     kaisaiKai: row.kaisai_kai,
     kaisaiNen: row.kaisai_nen,
     kaisaiNichime: row.kaisai_nichime,
@@ -224,7 +227,7 @@ const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
     kyosomeiHondai,
     raceBango: normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH),
     raceKey: buildRaceKey(row),
-    raceStartAtJst,
+    raceStartAtJst: overseasJra ? null : jvRaceStartAtJst,
     source: row.source,
   };
 };
@@ -431,6 +434,14 @@ const resolveDomesticJraDetails = (row: IntermediateRow): ResolvedRaceDetails | 
   return { debaUrl, raceStartAtJst: row.raceStartAtJst! };
 };
 
+const resolveKnownOverseasFallback = (row: IntermediateRow): JraOverseasRaceResolution | null => {
+  const debaUrl = resolveKnownOverseasEntryUrl(row.raceKey);
+  if (!debaUrl || !row.jvRaceStartAtJst) {
+    return null;
+  }
+  return { debaUrl, raceStartAtJst: row.jvRaceStartAtJst };
+};
+
 const resolveOverseasJraDetails = async (
   row: IntermediateRow,
   resolver: JraOverseasRaceResolver,
@@ -444,16 +455,23 @@ const resolveOverseasJraDetails = async (
     if (resolution) {
       return resolution;
     }
-    console.warn(
-      `[scheduled-race-list] JRA overseas race URL or post time not found, skipping raceKey=${row.raceKey}`,
-    );
-    return null;
   } catch (error) {
     console.warn(
-      `[scheduled-race-list] JRA overseas race resolution failed, skipping raceKey=${row.raceKey}: ${formatError(error)}`,
+      `[scheduled-race-list] JRA overseas race resolution failed, trying known entry URL raceKey=${row.raceKey}: ${formatError(error)}`,
     );
-    return null;
+    return resolveKnownOverseasFallback(row);
   }
+  const fallback = resolveKnownOverseasFallback(row);
+  if (fallback) {
+    console.warn(
+      `[scheduled-race-list] JRA overseas official resolve missed, using known entry URL raceKey=${row.raceKey}`,
+    );
+    return fallback;
+  }
+  console.warn(
+    `[scheduled-race-list] JRA overseas race URL or post time not found, skipping raceKey=${row.raceKey}`,
+  );
+  return null;
 };
 
 const resolveJraDetails = async (

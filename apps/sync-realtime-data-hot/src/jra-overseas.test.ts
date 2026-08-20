@@ -3,9 +3,11 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import {
   createJraOverseasRaceResolver,
+  decodeJraOfficialHtml,
   JraOverseasFetchError,
   parseJraOverseasRaceList,
   parseJraOverseasRacePage,
+  resolveKnownOverseasEntryUrl,
 } from "./jra-overseas";
 
 const ASCOT_RACE_LIST_HTML = `
@@ -221,6 +223,87 @@ it("createJraOverseasRaceResolver rejects ambiguous same-date normalized race na
   const resolver = createJraOverseasRaceResolver();
   await expect(resolver(ASCOT_INPUT)).resolves.toBeNull();
   expect(fetchSpy).toHaveBeenCalledTimes(1);
+});
+
+it("decodeJraOfficialHtml decodes Shift_JIS JRA pages that are invalid UTF-8", () => {
+  const shiftJisYear = Uint8Array.from([0x32, 0x30, 0x32, 0x36, 0x94, 0x4e]);
+  expect(decodeJraOfficialHtml(shiftJisYear)).toStrictEqual("2026年");
+});
+
+it("decodeJraOfficialHtml keeps valid UTF-8 HTML unchanged", () => {
+  const utf8 = new TextEncoder().encode("<p>日本時間 8月16日</p>");
+  expect(decodeJraOfficialHtml(utf8)).toStrictEqual("<p>日本時間 8月16日</p>");
+});
+
+it("resolveKnownOverseasEntryUrl returns the official accessSD card for A8/04", () => {
+  expect(resolveKnownOverseasEntryUrl("jra:2026:0816:A8:04")).toStrictEqual(
+    "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73",
+  );
+});
+
+it("resolveKnownOverseasEntryUrl returns null for an unknown overseas race key", () => {
+  expect(resolveKnownOverseasEntryUrl("jra:2026:0725:A6:05")).toBeNull();
+});
+
+it("parseJraOverseasRacePage extracts a split 発走予定時刻 block from the official JLM page shape", () => {
+  expect(
+    parseJraOverseasRacePage(
+      `
+        <div class="cell cap">発売開始時刻</div>
+        <div class="date">日本時間<strong>8月16日（日曜）</strong></div>
+        <div class="time">ネット馬券購入：<strong>7時00分</strong></div>
+        <div class="cell cap">発走予定時刻</div>
+        <div class="cell time">日本時間<strong>8月16日（日曜）<span>22時50分</span></strong></div>
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73"><i></i>出馬表</a>
+      `,
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0816",
+        kyosomeiHondai: "ジャックルマロワ賞",
+      },
+    ),
+  ).toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73",
+    raceStartAtJst: "2026-08-16T22:50:00+09:00",
+  });
+});
+
+it("createJraOverseasRaceResolver matches ジャックルマロワ賞 from the official annual list", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://www.jra.go.jp/keiba/overseas/racelist/2026.html") {
+      return Promise.resolve(
+        new Response(
+          `<table><tr>
+            <td>2026年8月16日（日曜）</td>
+            <td><a href="/keiba/overseas/race/2026jlm/index.html">ジャックルマロワ賞（G1）</a></td>
+          </tr></table>`,
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        `
+          <div>日本時間<strong>8月16日（日曜）<span>22時50分</span></strong></div>
+          <a href="/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73">出馬表</a>
+        `,
+        { status: 200 },
+      ),
+    );
+  });
+  const resolver = createJraOverseasRaceResolver();
+  await expect(
+    resolver({
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0816",
+      kyosomeiHondai: "ジャックルマロワ賞",
+    }),
+  ).resolves.toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0112720260101041/73",
+    raceStartAtJst: "2026-08-16T22:50:00+09:00",
+  });
 });
 
 it("createJraOverseasRaceResolver surfaces official page HTTP failures", async () => {
