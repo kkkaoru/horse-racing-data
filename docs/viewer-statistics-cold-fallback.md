@@ -73,6 +73,20 @@ Possible later fixes include retaining the venue when clearing conditions or lim
 the selectable period. This path was intentionally not changed in the 2026-08-15
 fallback deployment work.
 
+## Local feature-parity requires a fresh corner table
+
+Domestic isolated rebuilds read historical recs from
+`race_entry_corner_features`. A local copy whose latest `race_date` is older
+than the compared production snapshot will diverge on history aggregates even
+when the builder SQL is identical. On 2026-08-16 the local table still ended at
+`2026-07-12`. For `2026/08/09/04/11` horse 1 (`2023103550`), production
+`days_since_last_race` was 63 from the 2026-06-07 start, while the isolated
+rebuild used 203 from the last local corner row on 2026-01-18. That is source
+staleness, not an as-of leak (`h.race_date < t.race_date` remains in the
+builder). Do not treat such a rebuild as production-feature parity until the
+local corner table covers the compared race date. A8 history does not use this
+table; it reads `oversea_horse_race_history`.
+
 ## Cross-database ordering comparisons
 
 Local PostgreSQL and Neon can use different collations. A person-row query ordered by
