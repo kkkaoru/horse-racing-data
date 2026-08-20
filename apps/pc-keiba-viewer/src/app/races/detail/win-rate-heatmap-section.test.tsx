@@ -1,18 +1,63 @@
 // bun で実行する (bunx vitest)
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
+import { afterEach, expect, it, vi } from "vitest";
 
+import type {
+  HorseWeightSnapshot,
+  UseHorseWeightStreamParams,
+} from "../../../lib/horse-weight-stream-client";
+import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
+  HorseRaceResult,
   Runner,
   SimilarRaceStatsRow,
 } from "../../../lib/race-types";
+import { useRealtimeRacePayload } from "./realtime-client";
 import { WinRateHeatmapSection } from "./win-rate-heatmap-section";
+
+vi.mock("../../../lib/horse-weight-stream-client", () => ({
+  useHorseWeightStream: vi.fn<(params: UseHorseWeightStreamParams) => HorseWeightSnapshot | null>(
+    () => null,
+  ),
+}));
+
+vi.mock("./realtime-client", () => ({
+  useRealtimeRacePayload: vi.fn<
+    () => { error: string | null; payload: RealtimeRacePayload | null }
+  >(() => ({ error: null, payload: null })),
+}));
 
 afterEach(() => {
   cleanup();
+  vi.mocked(useHorseWeightStream).mockReturnValue(null);
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
 });
+
+const heatmapRealtimeRequest = {
+  apiBaseUrl: "https://realtime.test",
+  day: "21",
+  keibajoCode: "05",
+  month: "08",
+  raceNumber: "11",
+  source: "jra",
+  year: "2026",
+};
+
+const liveWeightSnapshot: HorseWeightSnapshot = {
+  fetchedAt: "2026-08-21T10:00:00+09:00",
+  horses: [
+    {
+      changeAmount: 2,
+      changeSign: "+",
+      horseName: "Alpha",
+      horseNumber: "1",
+      weight: 485,
+    },
+  ],
+};
 
 const runner: Runner = {
   banushimei: "Owner A",
@@ -106,12 +151,63 @@ const frameOne: FrameStatsRow = {
   winRate: 15,
 };
 
+const horsePastWin: HorseRaceResult = {
+  babajotaiCodeDirt: null,
+  babajotaiCodeShiba: null,
+  bamei: "Alpha",
+  banushimei: "Owner A",
+  barei: "3",
+  bataiju: "480",
+  chokyoshimeiRyakusho: "Trainer A",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  currentBarei: "4",
+  currentJockey: "Jockey A",
+  currentSeibetsuCode: "1",
+  currentUmaban: "01",
+  futanJuryo: "570",
+  gradeCode: null,
+  hassoJikoku: "1200",
+  juryoShubetsuCode: null,
+  kaisaiNen: "2025",
+  kaisaiTsukihi: "0112",
+  kakuteiChakujun: "01",
+  keibajoCode: "05",
+  kettoTorokuBango: "2020100001",
+  kishumeiRyakusho: "Jockey A",
+  kohan3f: null,
+  kyori: "1600",
+  kyosoJokenCode: null,
+  kyosoJokenMeisho: null,
+  kyosoKigoCode: null,
+  kyosomeiFukudai: null,
+  kyosomeiHondai: "Past A",
+  kyosomeiKakkonai: null,
+  kyosoShubetsuCode: null,
+  raceBango: "01",
+  seibetsuCode: "1",
+  sohaTime: null,
+  tanshoNinkijun: "1",
+  tanshoOdds: "12",
+  tenkoCode: null,
+  timeSa: null,
+  trackCode: "10",
+  umaban: "03",
+  wakuban: "3",
+  zogenFugo: null,
+  zogenSa: null,
+};
+
 it("shows an empty state when there are no runners", () => {
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
       frameStats={[]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[]}
       similarRows={[]}
     />,
@@ -125,6 +221,8 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
       bloodlineRows={[bloodlineSire]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[similarJockey, similarTrainer]}
     />,
@@ -132,6 +230,7 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.queryByText("馬名")).toBeNull();
   expect(screen.getByText("番")).toBeDefined();
   expect(screen.getByText("枠")).toBeDefined();
+  expect(screen.queryByText("馬体重")).toBeNull();
   expect(screen.getByText("馬")).toBeDefined();
   expect(screen.getByText("騎手")).toBeDefined();
   expect(screen.getByText("調教師")).toBeDefined();
@@ -187,6 +286,8 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
       bloodlineRows={[bloodlineSire]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[similarJockey, similarTrainer]}
     />,
@@ -213,6 +314,8 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
       bloodlineRows={[bloodlineSire]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[similarJockey, similarTrainer]}
     />,
@@ -238,6 +341,8 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
       bloodlineRows={[bloodlineSire]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[similarJockey, similarTrainer]}
     />,
@@ -261,6 +366,8 @@ it("shows computed frame win rate when the payload omits rate fields but include
       bloodlineRows={[]}
       frameStats={[{ ...frameOne, winRate: Number.NaN }]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[]}
     />,
@@ -285,6 +392,8 @@ it("renders a dash instead of throwing when frame win rate is not a finite numbe
         },
       ]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[]}
     />,
@@ -300,6 +409,8 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
       bloodlineRows={[]}
       frameStats={[]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[]}
     />,
@@ -316,6 +427,8 @@ it("opens a heatmap tooltip on click and closes it on a second click", () => {
       bloodlineRows={[]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[]}
     />,
@@ -329,9 +442,11 @@ it("opens a heatmap tooltip on click and closes it on a second click", () => {
     throw new Error("expected heatmap swatch button");
   }
   fireEvent.click(button);
-  expect(swatch.className).toBe("win-rate-heatmap-swatch tooltip-open");
+  expect(swatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
   fireEvent.click(button);
-  expect(swatch.className).toBe("win-rate-heatmap-swatch");
+  expect(swatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
 });
 
 it("moves the open heatmap tooltip to another cell on click", () => {
@@ -340,6 +455,8 @@ it("moves the open heatmap tooltip to another cell on click", () => {
       bloodlineRows={[]}
       frameStats={[frameOne]}
       horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
       runners={[runner]}
       similarRows={[]}
     />,
@@ -363,8 +480,115 @@ it("moves the open heatmap tooltip to another cell on click", () => {
     throw new Error("expected second heatmap swatch button");
   }
   fireEvent.click(firstButton);
-  expect(firstSwatch.className).toBe("win-rate-heatmap-swatch tooltip-open");
+  expect(firstSwatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
   fireEvent.click(secondButton);
-  expect(firstSwatch.className).toBe("win-rate-heatmap-swatch");
-  expect(secondSwatch.className).toBe("win-rate-heatmap-swatch tooltip-open");
+  expect(firstSwatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+  expect(secondSwatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open",
+  );
+});
+
+it("hides the horse-weight column for overseas races even when a runner has a weight", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[horsePastWin]}
+      keibajoCode="A8"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "21",
+        keibajoCode: "A8",
+        month: "08",
+        raceNumber: "11",
+        source: "jra",
+        year: "2026",
+      }}
+      runners={[{ ...runner, bataiju: "480" }]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.queryByText("馬体重")).toBeNull();
+  expect(screen.getAllByText("勝").length).toBe(7);
+});
+
+it("shows the horse-weight column after 枠 when a domestic runner has a published weight", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[horsePastWin]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[{ ...runner, bataiju: "485" }]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("馬体重")).toBeDefined();
+  expect(screen.getAllByText("勝").length).toBe(8);
+  expect(screen.getAllByText("100.0%").length).toBe(2);
+  expect(screen.getByText("480-499kg")).toBeDefined();
+  const headings = [...document.querySelectorAll("thead tr:first-child th")].map(
+    (heading) => heading.textContent,
+  );
+  expect(headings).toStrictEqual([
+    "番",
+    "枠",
+    "馬体重",
+    "馬",
+    "騎手",
+    "調教師",
+    "父",
+    "母父",
+    "父父",
+  ]);
+});
+
+it("points the last-row heatmap tooltip up and leaves earlier rows pointing down", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner, { ...runner, bamei: "Beta", kettoTorokuBango: "2020100002", umaban: "02" }]}
+      similarRows={[]}
+    />,
+  );
+  const firstRowSwatch = document.querySelector("tbody tr:first-child td.win-rate-heatmap-swatch");
+  const lastRowSwatch = document.querySelector("tbody tr:last-child td.win-rate-heatmap-swatch");
+  if (!(firstRowSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected first-row heatmap swatch");
+  }
+  if (!(lastRowSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected last-row heatmap swatch");
+  }
+  expect(firstRowSwatch.className).toBe("win-rate-heatmap-swatch");
+  expect(lastRowSwatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+  const firstRowButton = firstRowSwatch.querySelector(".win-rate-heatmap-swatch-button");
+  if (!(firstRowButton instanceof HTMLButtonElement)) {
+    throw new Error("expected first-row heatmap swatch button");
+  }
+  fireEvent.click(firstRowButton);
+  expect(firstRowSwatch.className).toBe("win-rate-heatmap-swatch tooltip-open");
+});
+
+it("shows the horse-weight column from the live weight stream when stored bataiju is still empty", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue(liveWeightSnapshot);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[horsePastWin]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("馬体重")).toBeDefined();
+  expect(screen.getByText("480-499kg")).toBeDefined();
 });

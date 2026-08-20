@@ -682,6 +682,16 @@ function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
         bloodlineRows={payload.bloodlineRows ?? []}
         frameStats={frameStats}
         horseResults={horseResults}
+        keibajoCode={props.keibajoCode}
+        realtimeRequest={{
+          apiBaseUrl: props.realtimeApiBaseUrl,
+          day: props.day,
+          keibajoCode: props.keibajoCode,
+          month: props.month,
+          raceNumber: props.raceNumber,
+          source: props.source,
+          year: props.year,
+        }}
         runners={payload.runners ?? []}
         similarRows={payload.similarRows ?? []}
       />

@@ -13,8 +13,10 @@ import {
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   formatWinRateHeatmapValue,
+  getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapTooltipName,
+  shouldShowWinRateHeatmapWeightColumn,
   WIN_RATE_HEATMAP_COLUMNS,
   WIN_RATE_HEATMAP_RATE_METRICS,
   WIN_RATE_HEATMAP_VIEW_MODES,
@@ -331,8 +333,28 @@ const horseSecond: HorseRaceResult = {
   zogenSa: null,
 };
 
-it("exports heatmap columns for frame, horse, jockey, trainer, and bloodline", () => {
+it("exports heatmap columns for frame, weight, horse, jockey, trainer, and bloodline", () => {
   expect(WIN_RATE_HEATMAP_COLUMNS).toStrictEqual([
+    { key: "frame", label: "枠" },
+    { key: "weight", label: "馬体重" },
+    { key: "horse", label: "馬" },
+    { key: "jockey", label: "騎手" },
+    { key: "trainer", label: "調教師" },
+    { key: "sire", label: "父" },
+    { key: "damSire", label: "母父" },
+    { key: "sireSire", label: "父父" },
+  ]);
+  expect(getVisibleWinRateHeatmapColumns(true)).toStrictEqual([
+    { key: "frame", label: "枠" },
+    { key: "weight", label: "馬体重" },
+    { key: "horse", label: "馬" },
+    { key: "jockey", label: "騎手" },
+    { key: "trainer", label: "調教師" },
+    { key: "sire", label: "父" },
+    { key: "damSire", label: "母父" },
+    { key: "sireSire", label: "父父" },
+  ]);
+  expect(getVisibleWinRateHeatmapColumns(false)).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "horse", label: "馬" },
     { key: "jockey", label: "騎手" },
@@ -354,6 +376,8 @@ it("exports win, quinella, and show rate metrics", () => {
 it("returns no heatmap rows when there are no runners", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [bloodlineSire],
       frameStats: [frameOne],
       horseResults: [horseWin],
@@ -366,6 +390,8 @@ it("returns no heatmap rows when there are no runners", () => {
 it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [bloodlineSire, bloodlineDamSire, bloodlineSireSire],
       frameStats: [frameOne],
       horseResults: [horseWin, horseSecond],
@@ -445,6 +471,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           winCount: 5,
           winRate: 10,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -522,6 +558,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           winCount: 5,
           winRate: 10,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "2",
       horseName: "Beta",
@@ -533,6 +579,8 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
 it("drops runners without a displayable horse number", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [frameOne],
       horseResults: [horseWin],
@@ -545,6 +593,8 @@ it("drops runners without a displayable horse number", () => {
 it("looks up frame rates by wakuban when the stored frame number is zero-padded", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [{ ...frameOne, frameNumber: "01" }],
       horseResults: [],
@@ -624,6 +674,16 @@ it("looks up frame rates by wakuban when the stored frame number is zero-padded"
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -635,6 +695,8 @@ it("looks up frame rates by wakuban when the stored frame number is zero-padded"
 it("treats non-finite frame rates as missing heatmap values", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [
         {
@@ -725,6 +787,16 @@ it("treats non-finite frame rates as missing heatmap values", () => {
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -736,6 +808,8 @@ it("treats non-finite frame rates as missing heatmap values", () => {
 it("computes frame rates from win, quinella, and show counts when rate fields are missing", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [
         {
@@ -766,6 +840,8 @@ it("computes frame rates from win, quinella, and show counts when rate fields ar
 it("computes frame rates from finish-position details when counts are missing", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [
         {
@@ -801,6 +877,8 @@ it("computes frame rates from finish-position details when counts are missing", 
 it("ignores frame stats whose frame number cannot be displayed", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [{ ...frameOne, frameNumber: "00" }],
       horseResults: [],
@@ -880,6 +958,16 @@ it("ignores frame stats whose frame number cannot be displayed", () => {
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -891,6 +979,8 @@ it("ignores frame stats whose frame number cannot be displayed", () => {
 it("skips horse results whose current number cannot be displayed", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [],
       horseResults: [{ ...horseWin, currentUmaban: "00" }],
@@ -970,6 +1060,16 @@ it("skips horse results whose current number cannot be displayed", () => {
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -981,6 +1081,8 @@ it("skips horse results whose current number cannot be displayed", () => {
 it("treats blank, zero, and non-numeric finish positions as missing horse rates", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [],
       horseResults: [
@@ -1064,6 +1166,16 @@ it("treats blank, zero, and non-numeric finish positions as missing horse rates"
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -1075,6 +1187,8 @@ it("treats blank, zero, and non-numeric finish positions as missing horse rates"
 it("uses a dash when the runner has no displayable horse name", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [],
       horseResults: [],
@@ -1154,6 +1268,16 @@ it("uses a dash when the runner has no displayable horse name", () => {
           winCount: null,
           winRate: null,
         },
+        weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "-",
@@ -1165,6 +1289,8 @@ it("uses a dash when the runner has no displayable horse name", () => {
 it("keeps heatmap row order stable when two formatted horse numbers are equal", () => {
   expect(
     buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
       bloodlineRows: [],
       frameStats: [],
       horseResults: [],
@@ -1247,4 +1373,177 @@ it("uses a gray background for missing rates and stronger color for higher rates
   expect(winRateHeatmapBackground(100, 8)).toBe("hsl(8, 72%, 42%)");
   expect(winRateHeatmapBackground(50, 8)).toBe("hsl(8, 72%, 68%)");
   expect(winRateHeatmapBackground(50, 196)).toBe("hsl(196, 72%, 68%)");
+});
+
+it("hides the horse-weight column for overseas venues and when no runner has a weight", () => {
+  expect(
+    shouldShowWinRateHeatmapWeightColumn({
+      keibajoCode: "A8",
+      liveWeightKgByHorse: new Map(),
+      runners: [{ ...runnerOne, bataiju: "480" }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapWeightColumn({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      runners: [runnerOne],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapWeightColumn({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      runners: [{ ...runnerOne, bataiju: "000" }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapWeightColumn({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      runners: [{ ...runnerOne, bataiju: "480" }],
+    }),
+  ).toBe(true);
+  expect(
+    shouldShowWinRateHeatmapWeightColumn({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map([["1", 485]]),
+      runners: [runnerOne],
+    }),
+  ).toBe(true);
+});
+
+it("maps a horse onto the 20kg weight-class rates computed from past races", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [
+        { ...horseWin, bataiju: "480", kakuteiChakujun: "01" },
+        { ...horseSecond, bataiju: "490", kakuteiChakujun: "02" },
+        { ...horseWin, bataiju: "485", kakuteiChakujun: "05" },
+        { ...horseWin, bataiju: "510", kakuteiChakujun: "01" },
+        { ...horseWin, bataiju: "000", kakuteiChakujun: "01" },
+        { ...horseWin, bataiju: "480", kakuteiChakujun: "00" },
+      ],
+      runners: [{ ...runnerOne, bataiju: "485" }],
+      similarRows: [],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "480-499kg",
+      quinellaCount: 2,
+      quinellaRate: 66.7,
+      showCount: 2,
+      showRate: 66.7,
+      starts: 3,
+      winCount: 1,
+      winRate: 33.3,
+    },
+  ]);
+});
+
+it("keeps the weight-class label when the current horse has a weight but that class has no past starts", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [{ ...horseWin, bataiju: "480", kakuteiChakujun: "01" }],
+      runners: [{ ...runnerOne, bataiju: "399" }],
+      similarRows: [],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "399kg以下",
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+  ]);
+});
+
+it("uses a live kilogram weight when stored bataiju is still empty", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map([["1", 485]]),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [{ ...horseWin, bataiju: "480", kakuteiChakujun: "01" }],
+      runners: [runnerOne],
+      similarRows: [],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "480-499kg",
+      quinellaCount: 1,
+      quinellaRate: 100,
+      showCount: 1,
+      showRate: 100,
+      starts: 1,
+      winCount: 1,
+      winRate: 100,
+    },
+  ]);
+});
+
+it("leaves the weight cell empty when the current horse has no published weight", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [{ ...horseWin, bataiju: "480", kakuteiChakujun: "01" }],
+      runners: [runnerOne],
+      similarRows: [],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+  ]);
+});
+
+it("decodes Ban-ei hex horse weights when classifying heatmap weight cells", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "83",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [
+        { ...horseWin, bataiju: "4AE", kakuteiChakujun: "01", keibajoCode: "83" },
+        { ...horseSecond, bataiju: "4AE", kakuteiChakujun: "03", keibajoCode: "83" },
+      ],
+      runners: [{ ...runnerOne, bataiju: "4AE" }],
+      similarRows: [],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "540kg以上",
+      quinellaCount: 1,
+      quinellaRate: 50,
+      showCount: 2,
+      showRate: 100,
+      starts: 2,
+      winCount: 1,
+      winRate: 50,
+    },
+  ]);
 });

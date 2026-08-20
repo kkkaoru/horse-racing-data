@@ -1,7 +1,9 @@
 "use client";
 
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
+import { indexLiveHorseWeightKg } from "../../../lib/horse-weight-class";
+import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
@@ -13,9 +15,10 @@ import {
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   formatWinRateHeatmapValue,
+  getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapTooltipName,
-  WIN_RATE_HEATMAP_COLUMNS,
+  shouldShowWinRateHeatmapWeightColumn,
   WIN_RATE_HEATMAP_VIEW_MODES,
   winRateHeatmapBackground,
   winRateHeatmapEntityColSpan,
@@ -25,11 +28,14 @@ import {
   type WinRateHeatmapViewMode,
 } from "../../../lib/win-rate-heatmap";
 import { FrameNumberBadge } from "./frame-number-badge";
+import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-client";
 
 interface WinRateHeatmapSectionProps {
   bloodlineRows: BloodlineStatsRow[];
   frameStats: FrameStatsRow[];
   horseResults: HorseRaceResult[];
+  keibajoCode: string;
+  realtimeRequest: RealtimeRaceRequest;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
 }
@@ -40,15 +46,30 @@ interface WinRateHeatmapSwatchProps {
   cell: WinRateHeatmapCell;
   column: WinRateHeatmapColumn;
   frameNumber: string;
+  isLastRow: boolean;
   isOpen: boolean;
   metric: WinRateHeatmapRateMetric;
   onToggle: () => void;
 }
 
+const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }): string => {
+  if (input.isLastRow && input.isOpen) {
+    return "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open";
+  }
+  if (input.isLastRow) {
+    return "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above";
+  }
+  if (input.isOpen) {
+    return "win-rate-heatmap-swatch tooltip-open";
+  }
+  return "win-rate-heatmap-swatch";
+};
+
 const WinRateHeatmapSwatch = ({
   cell,
   column,
   frameNumber,
+  isLastRow,
   isOpen,
   metric,
   onToggle,
@@ -56,7 +77,7 @@ const WinRateHeatmapSwatch = ({
   const value = cell[metric.key];
   return (
     <td
-      className={isOpen ? "win-rate-heatmap-swatch tooltip-open" : "win-rate-heatmap-swatch"}
+      className={heatmapSwatchClassName({ isLastRow, isOpen })}
       style={{ backgroundColor: winRateHeatmapBackground(value, metric.hue) }}
     >
       <button
@@ -86,6 +107,8 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   bloodlineRows,
   frameStats,
   horseResults,
+  keibajoCode,
+  realtimeRequest,
   runners,
   similarRows,
 }: WinRateHeatmapSectionProps) {
@@ -93,12 +116,37 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
     DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   );
+  const { payload: realtimePayload } = useRealtimeRacePayload(realtimeRequest, null);
+  const horseWeightSnapshot = useHorseWeightStream({
+    day: realtimeRequest.day,
+    initial: realtimePayload?.horseWeights ?? null,
+    keibajoCode: realtimeRequest.keibajoCode,
+    month: realtimeRequest.month,
+    raceNumber: realtimeRequest.raceNumber,
+    source: realtimeRequest.source,
+    year: realtimeRequest.year,
+  });
+  const liveWeightKgByHorse = useMemo(
+    () =>
+      indexLiveHorseWeightKg(
+        horseWeightSnapshot?.horses ?? realtimePayload?.horseWeights?.horses ?? [],
+      ),
+    [horseWeightSnapshot, realtimePayload],
+  );
   const visibleRateMetrics = getVisibleWinRateHeatmapRateMetrics(viewMode);
   const entityColSpan = winRateHeatmapEntityColSpan(visibleRateMetrics.length);
+  const showWeight = shouldShowWinRateHeatmapWeightColumn({
+    keibajoCode,
+    liveWeightKgByHorse,
+    runners,
+  });
+  const visibleColumns = getVisibleWinRateHeatmapColumns(showWeight);
   const rows = buildWinRateHeatmapRows({
     bloodlineRows,
     frameStats,
     horseResults,
+    keibajoCode,
+    liveWeightKgByHorse,
     runners,
     similarRows,
   });
@@ -133,14 +181,14 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
               <th className="win-rate-heatmap-number" rowSpan={2} scope="col">
                 番
               </th>
-              {WIN_RATE_HEATMAP_COLUMNS.map((column) => (
+              {visibleColumns.map((column) => (
                 <th key={column.key} colSpan={entityColSpan} scope="colgroup">
                   {column.label}
                 </th>
               ))}
             </tr>
             <tr>
-              {WIN_RATE_HEATMAP_COLUMNS.map((column) =>
+              {visibleColumns.map((column) =>
                 visibleRateMetrics.map((metric) => (
                   <th
                     className="win-rate-heatmap-rate-heading"
@@ -154,12 +202,12 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row, rowIndex) => (
               <tr key={row.horseNumber}>
                 <th className="win-rate-heatmap-number" scope="row" title={row.horseName}>
                   {row.horseNumber}
                 </th>
-                {WIN_RATE_HEATMAP_COLUMNS.map((column) => {
+                {visibleColumns.map((column) => {
                   const cell = row.cells[column.key];
                   return visibleRateMetrics.map((metric) => {
                     const tooltipKey = `${row.horseNumber}-${column.key}-${metric.key}`;
@@ -168,6 +216,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                         cell={cell}
                         column={column}
                         frameNumber={row.frameNumber}
+                        isLastRow={rowIndex === rows.length - 1}
                         isOpen={openTooltipKey === tooltipKey}
                         key={tooltipKey}
                         metric={metric}

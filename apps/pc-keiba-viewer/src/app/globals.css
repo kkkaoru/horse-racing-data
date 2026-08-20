@@ -9369,8 +9369,8 @@ fieldset.stats-section-toggle-wrap {
 .win-rate-heatmap-table-wrap {
   -webkit-overflow-scrolling: touch;
   overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-x: contain;
-  padding-bottom: var(--space-44px-23);
 }
 
 .win-rate-heatmap-table {
@@ -9465,6 +9465,11 @@ fieldset.stats-section-toggle-wrap {
 .win-rate-heatmap-swatch.tooltip-open .win-rate-heatmap-tooltip {
   opacity: var(--number-1-7);
   visibility: visible;
+}
+
+.win-rate-heatmap-tooltip-above .win-rate-heatmap-tooltip {
+  bottom: calc(var(--space-100pct-12) + var(--space-4px-18));
+  top: auto;
 }
 
 @media (max-width: 720px) {
