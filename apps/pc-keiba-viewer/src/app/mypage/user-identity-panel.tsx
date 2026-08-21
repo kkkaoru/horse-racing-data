@@ -119,7 +119,7 @@ export function UserIdentityPanel() {
     <section className="mypage-user-identity-panel" aria-label="ユーザー識別子">
       <div className="section-heading compact">
         <h2>ユーザー識別子</h2>
-        <span>{statusLabel(status)}</span>
+        <span className={`mypage-user-identity-status is-${status}`}>{statusLabel(status)}</span>
       </div>
       <p className="mypage-user-identity-note">
         IDは localStorage や IndexedDB のような自分のブラウザ内のみに保存され、
@@ -149,7 +149,12 @@ export function UserIdentityPanel() {
         <button type="button" disabled={disabled} onClick={handleSave}>
           保存
         </button>
-        <button type="button" disabled={disabled} onClick={handleRegenerate}>
+        <button
+          type="button"
+          className="mypage-user-identity-secondary"
+          disabled={disabled}
+          onClick={handleRegenerate}
+        >
           再生成
         </button>
       </div>

@@ -2192,6 +2192,125 @@ fieldset.running-style-tabs {
   padding: var(--space-16px-10);
 }
 
+.mypage-user-identity-panel {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-12px-9);
+  margin-bottom: var(--space-28px-42);
+  padding: var(--space-16px-10);
+}
+
+.mypage-user-identity-status {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-999px-30);
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+  padding: var(--space-6px-33) var(--space-12px-9);
+}
+
+.mypage-user-identity-status.is-saved {
+  background: var(--color-rgba-15-107-79-0-08-1);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.mypage-user-identity-status.is-error {
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.mypage-user-identity-note {
+  color: var(--muted);
+  line-height: var(--number-2-1);
+  margin: var(--number-0-2);
+}
+
+.mypage-user-identity-current {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-6px-33);
+  margin: var(--number-0-2);
+  padding: var(--space-12px-9) var(--space-14px-55);
+}
+
+.mypage-user-identity-current dt {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+}
+
+.mypage-user-identity-current dd {
+  margin: var(--number-0-2);
+}
+
+.mypage-user-identity-current code {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.mypage-user-identity-field {
+  display: grid;
+  gap: var(--space-6px-33);
+}
+
+.mypage-user-identity-field span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+}
+
+.mypage-user-identity-field input {
+  background: var(--bg);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--ink);
+  font: inherit;
+  min-height: var(--space-40px-47);
+  padding: var(--space-8px-28) var(--space-10px-27);
+  width: var(--space-100pct-12);
+}
+
+.mypage-user-identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.mypage-user-identity-actions button {
+  background: var(--accent);
+  border: var(--space-1px-7) solid var(--accent);
+  border-radius: var(--space-6px-33);
+  color: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--number-800-12);
+  min-height: var(--space-38px-35);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.mypage-user-identity-actions button:disabled {
+  cursor: not-allowed;
+  opacity: var(--number-0-6-23);
+}
+
+.mypage-user-identity-actions .mypage-user-identity-secondary {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.mypage-user-identity-error {
+  color: var(--ink);
+  margin: var(--number-0-2);
+}
+
 .mypage-favorites-panel .section-heading button {
   background: var(--accent);
   border: var(--space-1px-7) solid var(--accent);

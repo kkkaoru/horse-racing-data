@@ -106,6 +106,7 @@ test("shows-saved-status-after-save", async () => {
   await waitFor(() => {
     expect(screen.getByText("保存済み")).toBeTruthy();
   });
+  expect(document.querySelector(".mypage-user-identity-status.is-saved")).toBeTruthy();
 });
 
 test("shows-server-note-about-local-storage", async () => {
