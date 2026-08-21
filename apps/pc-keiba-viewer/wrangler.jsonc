@@ -26,6 +26,10 @@
       "binding": "REALTIME_HOT",
       "service": "sync-realtime-data-hot",
     },
+    {
+      "binding": "R2_CATALOG",
+      "service": "pc-keiba-r2-catalog",
+    },
   ],
   "images": {
     "binding": "IMAGES",
@@ -38,6 +42,10 @@
     {
       "binding": "PADDOCK_STATE_KV",
       "id": "1cb633c48a084a428d3ce3e0f844f7d1",
+    },
+    {
+      "binding": "MCP_OAUTH_KV",
+      "id": "295a119fc4ab43e0ae861aea77641033",
     },
   ],
   "queues": {
