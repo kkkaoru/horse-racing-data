@@ -104,6 +104,12 @@ pre-commit:
     test-horse-racing-schema:
       glob: "packages/horse-racing-schema/**/*.ts"
       run: bun run --filter horse-racing-schema test
+    tsc-pc-keiba-viewer-plugin:
+      glob: "packages/pc-keiba-viewer-plugin/**/*.ts"
+      run: bun run --filter pc-keiba-viewer-plugin tsc
+    test-pc-keiba-viewer-plugin:
+      glob: "packages/pc-keiba-viewer-plugin/**/*.ts"
+      run: bun run --filter pc-keiba-viewer-plugin test:coverage
     tsc-catboost-json-tree:
       glob: "packages/catboost-json-tree/**/*.ts"
       run: bun run --filter catboost-json-tree tsc

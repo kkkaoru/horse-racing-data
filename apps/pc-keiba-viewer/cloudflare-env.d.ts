@@ -140,6 +140,9 @@ declare global {
   interface CloudflareEnv {
     FINISH_POSITION_MODELS?: PcKeibaR2Bucket;
     DETAIL_SECTION_CACHE_KV?: PcKeibaKvNamespace;
+    MCP_AUTH_TOKEN?: string;
+    MCP_OAUTH_KV?: PcKeibaKvNamespace;
+    MCP_OAUTH_SIGNING_KEY?: string;
     DETAIL_SECTION_CACHE_QUEUE?: PcKeibaQueue;
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;
@@ -152,6 +155,7 @@ declare global {
     PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS?: string;
     PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     RACE_TREND_ROOM?: PcKeibaDurableObjectNamespace;
+    R2_CATALOG?: { fetch: typeof fetch };
     REALTIME_DATA?: { fetch: typeof fetch };
     REALTIME_DB?: PcKeibaD1Database;
     REALTIME_FEATURES?: { fetch: typeof fetch };

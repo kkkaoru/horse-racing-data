@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pc-keiba-viewer",
+  "version": "1.0.0",
+  "description": "Authenticated MCP access to PC-KEIBA viewer race data, plus the skill that tells agents how to use it. Human Cloudflare Access stays in place; MCP adds a Bearer token. Hostnames and credentials are supplied by the client environment, not this package.",
+  "license": "Apache-2.0",
+  "keywords": ["agent-plugins", "mcp", "horse-racing", "pc-keiba", "keiba"],
+  "repository": "https://github.com/kkkaoru/horse-racing-data"
+}

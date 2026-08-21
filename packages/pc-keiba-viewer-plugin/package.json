@@ -1,0 +1,21 @@
+{
+  "name": "pc-keiba-viewer-plugin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun run tsc && bun run lint && bun run format:check && bun run test:coverage",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check",
+    "lint": "bunx oxlint",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

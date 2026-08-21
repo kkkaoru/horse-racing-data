@@ -1,0 +1,15 @@
+{
+  "name": "horse-racing-data",
+  "description": "Agent Plugins for this repository. Hostnames and credentials stay in the client environment.",
+  "plugins": [
+    {
+      "name": "pc-keiba-viewer",
+      "description": "Authenticated MCP access to PC-KEIBA viewer race data. Human Cloudflare Access stays in place.",
+      "source": {
+        "type": "local",
+        "path": "./packages/pc-keiba-viewer-plugin"
+      },
+      "keywords": ["mcp", "keiba", "agent-plugins"]
+    }
+  ]
+}

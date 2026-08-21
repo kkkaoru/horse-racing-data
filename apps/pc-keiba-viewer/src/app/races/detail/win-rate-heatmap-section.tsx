@@ -14,26 +14,16 @@ import type {
 } from "../../../lib/race-types";
 import {
   buildWinRateHeatmapColorScaleGradient,
-  buildWinRateHeatmapRows,
+  buildWinRateHeatmapDisplay,
+  DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
-  EMPTY_WIN_RATE_HEATMAP_CELL,
   formatWinRateHeatmapColorScaleAriaLabel,
   formatWinRateHeatmapColorScaleCaption,
   formatWinRateHeatmapColorScaleTick,
-  formatWinRateHeatmapTooltipStarts,
-  formatWinRateHeatmapValue,
-  getVisibleWinRateHeatmapColumns,
-  getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapColorScaleTracks,
-  getWinRateHeatmapTooltipName,
-  shouldShowWinRateHeatmapCarriedWeightColumn,
-  shouldShowWinRateHeatmapWeightColumn,
   WIN_RATE_HEATMAP_COLOR_SCALE_TICKS,
   WIN_RATE_HEATMAP_VIEW_MODES,
-  winRateHeatmapBackground,
-  winRateHeatmapEntityColSpan,
-  type WinRateHeatmapCell,
-  type WinRateHeatmapColumn,
+  type WinRateHeatmapDisplaySwatch,
   type WinRateHeatmapRateMetric,
   type WinRateHeatmapViewMode,
 } from "../../../lib/win-rate-heatmap";
@@ -53,15 +43,11 @@ interface WinRateHeatmapSectionProps {
 }
 
 interface WinRateHeatmapSwatchProps {
-  cell: WinRateHeatmapCell;
-  column: WinRateHeatmapColumn;
-  compactValue: boolean;
   frameNumber: string;
   isLastRow: boolean;
   isOpen: boolean;
-  metric: WinRateHeatmapRateMetric;
   onToggle: () => void;
-  showStarts: boolean;
+  swatch: WinRateHeatmapDisplaySwatch;
 }
 
 interface WinRateHeatmapColorScaleProps {
@@ -70,7 +56,6 @@ interface WinRateHeatmapColorScaleProps {
 
 const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
 const HEATMAP_MOBILE_TOOLTIP_QUERY = "(max-width: 720px)";
-const DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS: boolean = false;
 
 const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }): string => {
   if (input.isLastRow && input.isOpen) {
@@ -143,60 +128,44 @@ const WinRateHeatmapColorScale = ({ metrics }: WinRateHeatmapColorScaleProps) =>
 );
 
 const heatmapSwatchAriaLabel = (input: {
-  cell: WinRateHeatmapCell;
-  column: WinRateHeatmapColumn;
   frameNumber: string;
-  startsLabel: string | null;
+  swatch: WinRateHeatmapDisplaySwatch;
 }): string => {
   const nameLabel =
-    input.column.key === "frame"
-      ? `${input.column.label} ${input.frameNumber}`
-      : `${input.column.label} ${getWinRateHeatmapTooltipName(input.cell)}`;
-  return input.startsLabel === null ? nameLabel : `${nameLabel} ${input.startsLabel}`;
+    input.swatch.columnKey === "frame"
+      ? `${input.swatch.columnLabel} ${input.frameNumber}`
+      : `${input.swatch.columnLabel} ${input.swatch.name}`;
+  return input.swatch.startsLabel === null ? nameLabel : `${nameLabel} ${input.swatch.startsLabel}`;
 };
 
 const WinRateHeatmapSwatch = ({
-  cell,
-  column,
-  compactValue,
   frameNumber,
   isLastRow,
   isOpen,
-  metric,
   onToggle,
-  showStarts,
-}: WinRateHeatmapSwatchProps) => {
-  const value = cell[metric.key];
-  const startsLabel = showStarts ? formatWinRateHeatmapTooltipStarts(cell.starts) : null;
-  return (
-    <td
-      className={heatmapSwatchClassName({ isLastRow, isOpen })}
-      style={{ backgroundColor: winRateHeatmapBackground(value, metric.hue) }}
+  swatch,
+}: WinRateHeatmapSwatchProps) => (
+  <td
+    className={heatmapSwatchClassName({ isLastRow, isOpen })}
+    style={{ backgroundColor: swatch.background }}
+  >
+    <button
+      aria-label={heatmapSwatchAriaLabel({ frameNumber, swatch })}
+      aria-expanded={isOpen}
+      className="win-rate-heatmap-swatch-button"
+      type="button"
+      onClick={onToggle}
     >
-      <button
-        aria-label={heatmapSwatchAriaLabel({ cell, column, frameNumber, startsLabel })}
-        aria-expanded={isOpen}
-        className="win-rate-heatmap-swatch-button"
-        type="button"
-        onClick={onToggle}
-      >
-        <span className="win-rate-heatmap-swatch-value">
-          {formatWinRateHeatmapValue(value, compactValue)}
-        </span>
-        <span className="win-rate-heatmap-tooltip" role="tooltip">
-          {column.key === "frame" ? (
-            <FrameNumberBadge value={frameNumber} />
-          ) : (
-            getWinRateHeatmapTooltipName(cell)
-          )}
-          {startsLabel === null ? null : (
-            <span className="win-rate-heatmap-tooltip-starts">{startsLabel}</span>
-          )}
-        </span>
-      </button>
-    </td>
-  );
-};
+      <span className="win-rate-heatmap-swatch-value">{swatch.valueLabel}</span>
+      <span className="win-rate-heatmap-tooltip" role="tooltip">
+        {swatch.columnKey === "frame" ? <FrameNumberBadge value={frameNumber} /> : swatch.name}
+        {swatch.startsLabel === null ? null : (
+          <span className="win-rate-heatmap-tooltip-starts">{swatch.startsLabel}</span>
+        )}
+      </span>
+    </button>
+  </td>
+);
 
 export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   bloodlineRows,
@@ -259,22 +228,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
       ),
     [horseWeightSnapshot, realtimePayload],
   );
-  const visibleRateMetrics = getVisibleWinRateHeatmapRateMetrics(viewMode);
-  const entityColSpan = winRateHeatmapEntityColSpan(visibleRateMetrics.length);
-  const showWeight = shouldShowWinRateHeatmapWeightColumn({
-    keibajoCode,
-    liveWeightKgByHorse,
-    runners,
-  });
-  const showCarriedWeight = shouldShowWinRateHeatmapCarriedWeightColumn({
-    keibajoCode,
-    runners,
-  });
-  const visibleColumns = getVisibleWinRateHeatmapColumns({
-    showCarriedWeight,
-    showWeight,
-  });
-  const rows = buildWinRateHeatmapRows({
+  const display = buildWinRateHeatmapDisplay({
     bloodlineRows,
     carriedWeightClassStats,
     frameStats,
@@ -282,10 +236,12 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     keibajoCode,
     liveWeightKgByHorse,
     runners,
+    showStarts,
     similarRows,
+    viewMode,
     weightClassStats,
   });
-  if (rows.length === 0) {
+  if (display.empty) {
     return <p className="empty-state">勝率ヒートマップを表示する出走馬がありません。</p>;
   }
   return (
@@ -316,7 +272,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
           レース数
         </label>
       </fieldset>
-      <WinRateHeatmapColorScale metrics={visibleRateMetrics} />
+      <WinRateHeatmapColorScale metrics={display.visibleRateMetrics} />
       <div className="stats-table-wrap win-rate-heatmap-table-wrap">
         <table className="stats-table win-rate-heatmap-table">
           <colgroup>
@@ -327,15 +283,15 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
               <th className="win-rate-heatmap-number" rowSpan={2} scope="col">
                 番
               </th>
-              {visibleColumns.map((column) => (
-                <th key={column.key} colSpan={entityColSpan} scope="colgroup">
+              {display.visibleColumns.map((column) => (
+                <th key={column.key} colSpan={display.entityColSpan} scope="colgroup">
                   {column.label}
                 </th>
               ))}
             </tr>
             <tr>
-              {visibleColumns.map((column) =>
-                visibleRateMetrics.map((metric) => (
+              {display.visibleColumns.map((column) =>
+                display.visibleRateMetrics.map((metric) => (
                   <th
                     className="win-rate-heatmap-rate-heading"
                     key={`${column.key}-${metric.key}`}
@@ -348,37 +304,30 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, rowIndex) => (
+            {display.rows.map((row, rowIndex) => (
               <tr key={row.horseNumber}>
                 <th className="win-rate-heatmap-number" scope="row" title={row.horseName}>
                   {row.horseNumber}
                 </th>
-                {visibleColumns.map((column) => {
-                  const cell = row.cells[column.key] ?? EMPTY_WIN_RATE_HEATMAP_CELL;
-                  return visibleRateMetrics.map((metric) => {
-                    const tooltipKey = `${row.horseNumber}-${column.key}-${metric.key}`;
-                    return (
-                      <WinRateHeatmapSwatch
-                        cell={cell}
-                        column={column}
-                        compactValue={viewMode === "all"}
-                        frameNumber={row.frameNumber}
-                        isLastRow={rowIndex === rows.length - 1}
-                        isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
-                        key={tooltipKey}
-                        metric={metric}
-                        showStarts={showStarts}
-                        onToggle={() => {
-                          if (!isMobileTooltip) {
-                            return;
-                          }
-                          setOpenTooltipKey((current) =>
-                            current === tooltipKey ? null : tooltipKey,
-                          );
-                        }}
-                      />
-                    );
-                  });
+                {row.swatches.map((swatch) => {
+                  const tooltipKey = `${row.horseNumber}-${swatch.columnKey}-${swatch.metricKey}`;
+                  return (
+                    <WinRateHeatmapSwatch
+                      frameNumber={row.frameNumber}
+                      isLastRow={rowIndex === display.rows.length - 1}
+                      isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
+                      key={tooltipKey}
+                      swatch={swatch}
+                      onToggle={() => {
+                        if (!isMobileTooltip) {
+                          return;
+                        }
+                        setOpenTooltipKey((current) =>
+                          current === tooltipKey ? null : tooltipKey,
+                        );
+                      }}
+                    />
+                  );
                 })}
               </tr>
             ))}

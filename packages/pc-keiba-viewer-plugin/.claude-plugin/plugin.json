@@ -1,0 +1,5 @@
+{
+  "name": "pc-keiba-viewer",
+  "version": "1.0.0",
+  "description": "Authenticated MCP access to PC-KEIBA viewer race data. Human Cloudflare Access stays in place."
+}

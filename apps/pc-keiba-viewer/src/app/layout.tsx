@@ -42,6 +42,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
               <Link href="/owners">馬主一覧</Link>
               <Link href="/trainers">調教師一覧</Link>
               <Link href="/mypage">マイページ</Link>
+              <Link href="/mcp-connect">MCP 接続</Link>
             </nav>
           </details>
         </header>

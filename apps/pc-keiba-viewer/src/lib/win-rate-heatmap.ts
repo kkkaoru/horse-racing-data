@@ -162,6 +162,7 @@ export const WIN_RATE_HEATMAP_VIEW_MODES: readonly WinRateHeatmapViewModeOption[
 ];
 
 export const DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE: WinRateHeatmapViewMode = "winRate";
+export const DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS: boolean = false;
 
 const WIN_RATE_HEATMAP_VIEW_MODE_METRICS: Record<
   WinRateHeatmapViewMode,
@@ -666,3 +667,85 @@ export const getWinRateHeatmapTooltipName = (cell: WinRateHeatmapCell): string =
 
 export const winRateHeatmapEntityColSpan = (visibleRateCount: number): number =>
   visibleRateCount === 0 ? EMPTY_RATE_COLUMN_SPAN : visibleRateCount;
+
+export interface WinRateHeatmapDisplaySwatch {
+  background: string;
+  columnKey: WinRateHeatmapMetricKey;
+  columnLabel: string;
+  metricKey: WinRateHeatmapRateKey;
+  metricLabel: string;
+  name: string;
+  startsLabel: string | null;
+  valueLabel: string;
+}
+
+export interface WinRateHeatmapDisplayRow {
+  frameNumber: string;
+  horseName: string;
+  horseNumber: string;
+  swatches: WinRateHeatmapDisplaySwatch[];
+}
+
+export interface WinRateHeatmapDisplayModel {
+  empty: boolean;
+  entityColSpan: number;
+  rows: WinRateHeatmapDisplayRow[];
+  showCarriedWeight: boolean;
+  showWeight: boolean;
+  viewMode: WinRateHeatmapViewMode;
+  visibleColumns: readonly WinRateHeatmapColumn[];
+  visibleRateMetrics: readonly WinRateHeatmapRateMetric[];
+}
+
+export interface BuildWinRateHeatmapDisplayInput extends BuildWinRateHeatmapRowsInput {
+  showStarts: boolean;
+  viewMode: WinRateHeatmapViewMode;
+}
+
+export const buildWinRateHeatmapDisplay = (
+  input: BuildWinRateHeatmapDisplayInput,
+): WinRateHeatmapDisplayModel => {
+  const showWeight = shouldShowWinRateHeatmapWeightColumn({
+    keibajoCode: input.keibajoCode,
+    liveWeightKgByHorse: input.liveWeightKgByHorse,
+    runners: input.runners,
+  });
+  const showCarriedWeight = shouldShowWinRateHeatmapCarriedWeightColumn({
+    keibajoCode: input.keibajoCode,
+    runners: input.runners,
+  });
+  const visibleColumns = getVisibleWinRateHeatmapColumns({
+    showCarriedWeight,
+    showWeight,
+  });
+  const visibleRateMetrics = getVisibleWinRateHeatmapRateMetrics(input.viewMode);
+  const compactValue = input.viewMode === "all";
+  const rows = buildWinRateHeatmapRows(input);
+  return {
+    empty: rows.length === 0,
+    entityColSpan: winRateHeatmapEntityColSpan(visibleRateMetrics.length),
+    rows: rows.map((row) => ({
+      frameNumber: row.frameNumber,
+      horseName: row.horseName,
+      horseNumber: row.horseNumber,
+      swatches: visibleColumns.flatMap((column) => {
+        const cell = row.cells[column.key] ?? EMPTY_WIN_RATE_HEATMAP_CELL;
+        return visibleRateMetrics.map((metric) => ({
+          background: winRateHeatmapBackground(cell[metric.key], metric.hue),
+          columnKey: column.key,
+          columnLabel: column.label,
+          metricKey: metric.key,
+          metricLabel: metric.shortLabel,
+          name: getWinRateHeatmapTooltipName(cell),
+          startsLabel: input.showStarts ? formatWinRateHeatmapTooltipStarts(cell.starts) : null,
+          valueLabel: formatWinRateHeatmapValue(cell[metric.key], compactValue),
+        }));
+      }),
+    })),
+    showCarriedWeight,
+    showWeight,
+    viewMode: input.viewMode,
+    visibleColumns,
+    visibleRateMetrics,
+  };
+};

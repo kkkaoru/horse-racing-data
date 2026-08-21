@@ -11,6 +11,7 @@ import type {
 } from "./race-types";
 import {
   buildWinRateHeatmapColorScaleGradient,
+  buildWinRateHeatmapDisplay,
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   formatWinRateHeatmapColorScaleAriaLabel,
@@ -1924,4 +1925,45 @@ it("decodes Ban-ei hex horse weights when classifying heatmap weight cells", () 
       winRate: 50,
     },
   ]);
+});
+
+it("projects heatmap display labels with the same formatters the table uses", () => {
+  const display = buildWinRateHeatmapDisplay({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    showStarts: false,
+    similarRows: [similarJockey],
+    viewMode: "winRate",
+  });
+  const jockeySwatch = display.rows[0]?.swatches.find(
+    (swatch) => swatch.columnKey === "jockey" && swatch.metricKey === "winRate",
+  );
+  expect(display.empty).toBe(false);
+  expect(display.viewMode).toBe("winRate");
+  expect(display.showCarriedWeight).toBe(true);
+  expect(display.rows[0]?.horseNumber).toBe("1");
+  expect(jockeySwatch?.valueLabel).toBe("20.0%");
+  expect(jockeySwatch?.startsLabel).toBe(null);
+});
+
+it("includes (n) start labels only when the レース数 flag is on", () => {
+  const shown = buildWinRateHeatmapDisplay({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    showStarts: true,
+    similarRows: [similarJockey],
+    viewMode: "winRate",
+  });
+  const jockeySwatch = shown.rows[0]?.swatches.find(
+    (swatch) => swatch.columnKey === "jockey" && swatch.metricKey === "winRate",
+  );
+  expect(jockeySwatch?.startsLabel).toBe("(80)");
 });

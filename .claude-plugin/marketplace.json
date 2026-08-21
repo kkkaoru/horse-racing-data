@@ -1,0 +1,17 @@
+{
+  "name": "horse-racing-data",
+  "owner": {
+    "name": "kkkaoru"
+  },
+  "metadata": {
+    "pluginRoot": "./packages"
+  },
+  "plugins": [
+    {
+      "name": "pc-keiba-viewer",
+      "description": "Authenticated MCP access to PC-KEIBA viewer race data. Human Cloudflare Access stays in place. Hostnames and credentials come from the client environment.",
+      "source": "./pc-keiba-viewer-plugin",
+      "keywords": ["mcp", "keiba", "agent-plugins"]
+    }
+  ]
+}
