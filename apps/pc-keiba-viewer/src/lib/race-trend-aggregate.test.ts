@@ -518,6 +518,7 @@ test("aggregateForTargets uses the current running style from the runner mapping
 });
 
 test("aggregateForTargets joins historical running style rows for matching starters", () => {
+  expect(detailFromStarter(baseRow).runningStyle).toStrictEqual("senkou");
   const historicalRunningStyles: RaceTrendRunningStyleCache[] = [
     {
       raceKey: "nar:2026:0520:44:11",

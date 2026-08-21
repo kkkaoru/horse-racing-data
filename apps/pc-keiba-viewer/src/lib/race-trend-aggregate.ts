@@ -534,11 +534,12 @@ const aggregateRunningStyleRows = (
       .map((row) => parseStoredWinOdds(row.tanshoOdds))
       .filter((value): value is number => value !== null);
     const details = sortTrendDetails(
-      groupRows.map((row) => ({
-        ...detailFromStarter(row),
-        runningStyle:
-          runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? runningStyleFromCorners(row),
-      })),
+      groupRows.map((row) => {
+        const detail = detailFromStarter(row);
+        detail.runningStyle =
+          runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? detail.runningStyle;
+        return detail;
+      }),
     );
     return {
       key: `${key}:${target.horseNumber ?? index}`,

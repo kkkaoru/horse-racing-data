@@ -105,7 +105,7 @@ const METRIC_SCORE_WEIGHTS = {
   winRate: 0.25,
 };
 
-const DEFAULT_SCORE_TARGETS: ScoreTargets = {
+export const createDefaultScoreTargets = (): ScoreTargets => ({
   base: {
     correlation: true,
     time: true,
@@ -120,7 +120,7 @@ const DEFAULT_SCORE_TARGETS: ScoreTargets = {
     owner: true,
     trainer: true,
   },
-};
+});
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
@@ -246,7 +246,7 @@ export const buildCombinedScoreRows = ({
   realtimeValues = new Map(),
   rows,
   runners,
-  scoreTargets = DEFAULT_SCORE_TARGETS,
+  scoreTargets = createDefaultScoreTargets(),
   timeRows,
 }: BuildCombinedScoreRowsInput): CombinedScoreRow[] => {
   const displayedCorrelationRows = applyRealtimeCorrelationRows(correlationRows, realtimeValues);
@@ -383,7 +383,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   timeRows,
 }: BloodlineSimilarCombinedTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
-  const [scoreTargets, setScoreTargets] = useState<ScoreTargets>(DEFAULT_SCORE_TARGETS);
+  const [scoreTargets, setScoreTargets] = useState<ScoreTargets>(createDefaultScoreTargets);
   const { payload } = useRealtimeRacePayload(
     realtimeRequest ?? {
       apiBaseUrl: "",
