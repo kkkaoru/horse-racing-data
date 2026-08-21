@@ -67,14 +67,16 @@ keep the held-response keepalive behaviour.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, final
+from typing import Final, Literal, TypedDict, final
 from urllib.parse import parse_qs, urlparse
 
 from .debug_log import debug_log, debug_logs_scope, drain_debug_progress, parse_debug_flag
@@ -162,6 +164,35 @@ PREWARM_KEY_MISSING_ERROR: Final[str] = "prewarm parquet key missing after day-b
 PREWARM_WATERMARK_MISSING_ERROR: Final[str] = (
     "prewarm day-base watermark missing after day-base build"
 )
+
+PIPELINE_TOTAL_TIMEOUT_ENV: Final[str] = "PIPELINE_TOTAL_TIMEOUT_SECONDS"
+DEFAULT_PIPELINE_TOTAL_TIMEOUT_SECONDS: Final[float] = 30 * 60
+"""Absolute end-to-end ceiling for one focused full pipeline.
+
+The older subprocess timeout applied independently to every base/layer child,
+allowing a chain of individually bounded children to run for hours.  This
+deadline is shared by the detached status record and ``pipeline_runner`` so
+pollers can distinguish genuine progress from a dead pipeline without
+extending the run merely because a Queue message was redelivered.
+"""
+
+FOCUSED_FULL_STATE_MAX_ENTRIES: Final[int] = 256
+FOCUSED_FULL_ERROR_MAX_LENGTH: Final[int] = 2000
+
+
+def pipeline_total_timeout_seconds() -> float:
+    """Return the configured positive end-to-end timeout."""
+    raw = os.environ.get(PIPELINE_TOTAL_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_PIPELINE_TOTAL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_PIPELINE_TOTAL_TIMEOUT_SECONDS
+    if value <= 0:
+        return DEFAULT_PIPELINE_TOTAL_TIMEOUT_SECONDS
+    return value
+
 
 PREWARM_CACHE_KEY_PREFIX: Final[str] = "prewarm"
 """In-process store key prefix for a completed day-base parquet awaiting Worker
@@ -1203,6 +1234,146 @@ this list prevents the worker thread object from being garbage-collected before
 it releases the focused slot.
 """
 
+FocusedFullRunStatus = Literal["running", "success", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class FocusedFullRunState:
+    """Observable snapshot for one detached focused-full pipeline."""
+
+    race_key: str
+    status: FocusedFullRunStatus
+    started_at_ms: int
+    last_progress_at_ms: int
+    deadline_at_ms: int
+    finished_at_ms: int | None = None
+    error: str | None = None
+
+
+class FocusedFullStatusPayload(TypedDict):
+    raceKey: str
+    status: Literal["missing", "running", "success", "error"]
+    startedAtMs: int | None
+    lastProgressAtMs: int | None
+    finishedAtMs: int | None
+    deadlineAtMs: int | None
+    error: str | None
+
+
+@final
+class _FocusedFullStateRegistry:
+    """Thread-safe bounded in-memory lifecycle registry for detached runs."""
+
+    def __init__(self, max_entries: int) -> None:
+        self._lock = threading.Lock()
+        self._max_entries = max_entries
+        self._states: OrderedDict[str, FocusedFullRunState] = OrderedDict()
+
+    def start(self, race_key: str, now_ms: int, timeout_seconds: float) -> FocusedFullRunState:
+        state = FocusedFullRunState(
+            race_key=race_key,
+            status="running",
+            started_at_ms=now_ms,
+            last_progress_at_ms=now_ms,
+            deadline_at_ms=now_ms + round(timeout_seconds * 1000),
+        )
+        with self._lock:
+            self._states[race_key] = state
+            self._states.move_to_end(race_key)
+            while len(self._states) > self._max_entries:
+                self._states.popitem(last=False)
+        return state
+
+    def progress(self, race_key: str, now_ms: int) -> FocusedFullRunState | None:
+        with self._lock:
+            current = self._states.get(race_key)
+            if current is None or current.status != "running":
+                return current
+            updated = FocusedFullRunState(
+                race_key=current.race_key,
+                status=current.status,
+                started_at_ms=current.started_at_ms,
+                last_progress_at_ms=now_ms,
+                deadline_at_ms=current.deadline_at_ms,
+            )
+            self._states[race_key] = updated
+            self._states.move_to_end(race_key)
+            return updated
+
+    def finish(
+        self,
+        race_key: str,
+        status: Literal["success", "error"],
+        now_ms: int,
+        error: str | None,
+    ) -> FocusedFullRunState | None:
+        with self._lock:
+            current = self._states.get(race_key)
+            if current is None:
+                return None
+            updated = FocusedFullRunState(
+                race_key=current.race_key,
+                status=status,
+                started_at_ms=current.started_at_ms,
+                last_progress_at_ms=now_ms,
+                deadline_at_ms=current.deadline_at_ms,
+                finished_at_ms=now_ms,
+                error=error,
+            )
+            self._states[race_key] = updated
+            self._states.move_to_end(race_key)
+            return updated
+
+    def get(self, race_key: str) -> FocusedFullRunState | None:
+        with self._lock:
+            return self._states.get(race_key)
+
+
+_FOCUSED_FULL_STATES: Final[_FocusedFullStateRegistry] = _FocusedFullStateRegistry(
+    FOCUSED_FULL_STATE_MAX_ENTRIES
+)
+
+
+def _wall_time_ms(wall_time_fn: TimeFn = time.time) -> int:
+    return round(wall_time_fn() * 1000)
+
+
+def mark_focused_full_progress(race_key: str, wall_time_fn: TimeFn = time.time) -> None:
+    """Advance actual pipeline progress without changing its absolute deadline."""
+    _FOCUSED_FULL_STATES.progress(race_key, _wall_time_ms(wall_time_fn))
+
+
+def get_focused_full_run_state(race_key: str) -> FocusedFullRunState | None:
+    """Return the latest immutable lifecycle snapshot for *race_key*."""
+    return _FOCUSED_FULL_STATES.get(race_key)
+
+
+def build_focused_full_status_response_body(params: PredictParams) -> bytes:
+    """Serialize the additive ``/focused-full-status`` poll response."""
+    race_key = build_focused_full_race_key(params)
+    state = get_focused_full_run_state(race_key)
+    if state is None:
+        payload: FocusedFullStatusPayload = {
+            "raceKey": race_key,
+            "status": "missing",
+            "startedAtMs": None,
+            "lastProgressAtMs": None,
+            "finishedAtMs": None,
+            "deadlineAtMs": None,
+            "error": None,
+        }
+    else:
+        payload = {
+            "raceKey": state.race_key,
+            "status": state.status,
+            "startedAtMs": state.started_at_ms,
+            "lastProgressAtMs": state.last_progress_at_ms,
+            "finishedAtMs": state.finished_at_ms,
+            "deadlineAtMs": state.deadline_at_ms,
+            "error": state.error,
+        }
+    return json.dumps(payload, separators=(",", ":")).encode() + b"\n"
+
 
 def _run_detached_focused_full(fn: Callable[[], int]) -> None:
     """Run *fn* in a background thread independent of the HTTP response."""
@@ -1338,6 +1509,7 @@ def iter_predict_chunks(
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
+    focused_full_timeout_seconds: float | None = None,
 ) -> Generator[bytes, None, None]:
     """Yield NDJSON bytes chunks for a single ``/predict`` request.
 
@@ -1469,6 +1641,9 @@ def iter_predict_chunks(
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
+        focused_full_timeout_seconds: Immutable absolute deadline recorded for
+                             a detached focused-full run. ``None`` reads
+                             :data:`PIPELINE_TOTAL_TIMEOUT_ENV`.
     """
     started = time_fn()
     debug_steps: list[str] = []
@@ -1546,6 +1721,13 @@ def iter_predict_chunks(
             yield _focused_full_result_line(params, focused_status)
             return
 
+        timeout_seconds = (
+            pipeline_total_timeout_seconds()
+            if focused_full_timeout_seconds is None
+            else focused_full_timeout_seconds
+        )
+        _FOCUSED_FULL_STATES.start(focused_race_key, _wall_time_ms(), timeout_seconds)
+
         unguarded_first_call = first_call
 
         def _populate_cache_best_effort() -> None:
@@ -1563,7 +1745,24 @@ def iter_predict_chunks(
             try:
                 result = unguarded_first_call()
                 _populate_cache_best_effort()
+                _FOCUSED_FULL_STATES.finish(
+                    focused_race_key,
+                    "success",
+                    _wall_time_ms(),
+                    None,
+                )
                 return result
+            except BaseException as focused_error:
+                safe_error = mask_error_message(f"{type(focused_error).__name__}: {focused_error}")[
+                    :FOCUSED_FULL_ERROR_MAX_LENGTH
+                ]
+                _FOCUSED_FULL_STATES.finish(
+                    focused_race_key,
+                    "error",
+                    _wall_time_ms(),
+                    safe_error,
+                )
+                raise
             finally:
                 release_fn(focused_race_key)
 

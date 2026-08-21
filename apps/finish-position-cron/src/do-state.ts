@@ -3,6 +3,7 @@
 // which provides strong-consistency (no eventual-consistency race window).
 
 import type { ContainerSlotKind } from "./container-slot-cap";
+import { resolvePredictDoName } from "./predict-do-shard";
 import type { Env } from "./types";
 
 const DO_NAME = "predict-run-coordinator";
@@ -47,6 +48,7 @@ interface ClaimRaceParams {
 }
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  doName?: string;
   staleAfterMs: number;
   force?: boolean;
 }
@@ -61,23 +63,27 @@ interface ClaimContainerSlotParams {
   env: Env;
   kind: ContainerSlotKind;
   staleAfterMs: number;
+  workKey?: string;
 }
 
 interface ReleaseContainerSlotParams {
   doName: string;
   env: Env;
   kind: ContainerSlotKind;
+  workKey?: string;
 }
 
 interface TouchContainerSlotParams {
   doName: string;
   env: Env;
-  staleAfterMs: number;
+  staleAfterMs?: number;
+  workKey?: string;
 }
 
 interface ClearContainerSlotParams {
   doName: string;
   env: Env;
+  workKey?: string;
 }
 
 const getCoordinatorStub = (env: Env): DurableObjectStub => {
@@ -150,6 +156,14 @@ export const claimFocusedFullRace = async (
     new Request(`${DO_HOST}${CLAIM_FOCUSED_FULL_RACE_PATH}`, {
       body: JSON.stringify({
         category: params.category,
+        doName:
+          params.doName ??
+          resolvePredictDoName({
+            category: params.category,
+            env: params.env,
+            keibajoCode: params.keibajoCode,
+            raceBango: params.raceBango,
+          }),
         force: params.force === true,
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
@@ -199,6 +213,7 @@ export const claimContainerSlot = async (
         doName: params.doName,
         kind: params.kind,
         staleAfterMs: params.staleAfterMs,
+        workKey: params.workKey,
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
@@ -214,7 +229,7 @@ export const releaseContainerSlot = async (params: ReleaseContainerSlotParams): 
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${RELEASE_CONTAINER_SLOT_PATH}`, {
-      body: JSON.stringify({ doName: params.doName, kind: params.kind }),
+      body: JSON.stringify({ doName: params.doName, kind: params.kind, workKey: params.workKey }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),
@@ -228,7 +243,11 @@ export const touchContainerSlot = async (params: TouchContainerSlotParams): Prom
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${TOUCH_CONTAINER_SLOT_PATH}`, {
-      body: JSON.stringify({ doName: params.doName, staleAfterMs: params.staleAfterMs }),
+      body: JSON.stringify({
+        doName: params.doName,
+        staleAfterMs: params.staleAfterMs,
+        workKey: params.workKey,
+      }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),
@@ -242,7 +261,7 @@ export const clearContainerSlot = async (params: ClearContainerSlotParams): Prom
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${CLEAR_CONTAINER_SLOT_PATH}`, {
-      body: JSON.stringify({ doName: params.doName }),
+      body: JSON.stringify({ doName: params.doName, workKey: params.workKey }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),

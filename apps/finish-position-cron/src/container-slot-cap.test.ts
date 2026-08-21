@@ -84,8 +84,8 @@ test("NAR day-base does not use the reserved lane", () => {
 test("pruneStaleContainerSlots drops a lease older than the stale window", () => {
   const live = pruneStaleContainerSlots(
     [
-      makeLease({ doName: "predict-jra", timestamp: 100 }),
-      makeLease({ category: "nar", doName: "predict-nar", timestamp: NOW_MS }),
+      makeLease({ doName: "predict-jra", staleAfterMs: 1_000, timestamp: 100 }),
+      makeLease({ category: "nar", doName: "predict-nar", staleAfterMs: 1_000, timestamp: NOW_MS }),
     ],
     NOW_MS,
     1_000,
@@ -97,9 +97,56 @@ test("pruneStaleContainerSlots drops a lease older than the stale window", () =>
       holders: 1,
       kind: "focused-full",
       rescoreHolders: 0,
+      staleAfterMs: 1_000,
       timestamp: 1_000_000,
     },
   ]);
+});
+
+test("pruneStaleContainerSlots applies each lease kind's own expiry", () => {
+  const live = pruneStaleContainerSlots(
+    [
+      makeLease({ doName: "predict-jra-day", kind: "day-base", timestamp: NOW_MS - 1_800_000 }),
+      makeLease({ category: "nar", doName: "predict-nar-0", timestamp: NOW_MS - 1_800_000 }),
+    ],
+    NOW_MS,
+  );
+  expect(live).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-jra-day",
+      holders: 1,
+      kind: "day-base",
+      rescoreHolders: 0,
+      timestamp: -800_000,
+    },
+  ]);
+});
+
+test("decideContainerSlotClaim preserves custom expiry and work ownership", () => {
+  const decision = decideContainerSlotClaim([], {
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    now: NOW_MS,
+    staleAfterMs: 2_000,
+    workKey: "focused-full:20260813:jra:30:11",
+  });
+  expect(decision).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        staleAfterMs: 2_000,
+        timestamp: NOW_MS,
+        workKey: "focused-full:20260813:jra:30:11",
+      },
+    ],
+    proceed: true,
+  });
 });
 
 test("decideContainerSlotClaim starts the first unique DO", () => {
@@ -293,7 +340,7 @@ test("a stale rescore lease is dropped so a later claim can reuse that unique DO
   ]);
 });
 
-test("sharing one DO leaves a sibling lease on a different DO unchanged", () => {
+test("a different execution cannot share one DO and leaves sibling leases unchanged", () => {
   const two: ContainerSlotLease[] = [
     makeLease({
       category: "jra",
@@ -310,28 +357,12 @@ test("sharing one DO leaves a sibling lease on a different DO unchanged", () => 
     now: NOW_MS + 5,
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
   });
-  expect(shared.proceed).toBe(true);
-  expect(shared.leases).toStrictEqual([
-    {
-      category: "jra",
-      doName: "predict-jra",
-      holders: 2,
-      kind: "rescore",
-      rescoreHolders: 1,
-      timestamp: 1_000_005,
-    },
-    {
-      category: "nar",
-      doName: "predict-nar-0",
-      holders: 1,
-      kind: "focused-full",
-      rescoreHolders: 0,
-      timestamp: 1_000_000,
-    },
-  ]);
+  expect(shared.proceed).toBe(false);
+  expect(shared.state).toBe("busy");
+  expect(shared.leases).toStrictEqual(two);
 });
 
-test("focused-full can share an existing rescore DO without starting another instance", () => {
+test("focused-full waits while an existing rescore owns the DO", () => {
   const rescore = decideContainerSlotClaim([], {
     category: "jra",
     doName: "predict-jra",
@@ -346,17 +377,9 @@ test("focused-full can share an existing rescore DO without starting another ins
     now: NOW_MS + 5,
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
   });
-  expect(focused.proceed).toBe(true);
-  expect(focused.leases).toStrictEqual([
-    {
-      category: "jra",
-      doName: "predict-jra",
-      holders: 2,
-      kind: "rescore",
-      rescoreHolders: 1,
-      timestamp: 1_000_005,
-    },
-  ]);
+  expect(focused.proceed).toBe(false);
+  expect(focused.state).toBe("busy");
+  expect(focused.leases).toStrictEqual(rescore.leases);
 });
 
 test("ten general unique DOs cap an eleventh JRA focused-full shard", () => {
@@ -676,6 +699,35 @@ test("releaseContainerSlotLease removes a single-holder lease", () => {
   expect(remaining).toStrictEqual([]);
 });
 
+test("releaseContainerSlotLease preserves optional lease ownership fields", () => {
+  const remaining = releaseContainerSlotLease(
+    [
+      makeLease({
+        doName: "predict-jra",
+        holders: 2,
+        staleAfterMs: 2_000,
+        workKey: "focused-full:20260813:jra:30:11",
+      }),
+    ],
+    "predict-jra",
+    "focused-full",
+    NOW_MS,
+    "focused-full:20260813:jra:30:11",
+  );
+  expect(remaining).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-jra",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      staleAfterMs: 2_000,
+      timestamp: NOW_MS,
+      workKey: "focused-full:20260813:jra:30:11",
+    },
+  ]);
+});
+
 test("releaseContainerSlotLease decrements a shared lease without dropping the instance", () => {
   const remaining = releaseContainerSlotLease(
     [
@@ -704,7 +756,7 @@ test("releaseContainerSlotLease decrements a shared lease without dropping the i
   ]);
 });
 
-test("releasing a rescore holder on a shared lease frees the rescore cap", () => {
+test("releasing a legacy rescore holder keeps the remaining focused execution exclusive", () => {
   const remaining = releaseContainerSlotLease(
     [
       makeLease({
@@ -737,7 +789,8 @@ test("releasing a rescore holder on a shared lease frees the rescore cap", () =>
     now: NOW_MS,
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
   });
-  expect(nextRescore.proceed).toBe(true);
+  expect(nextRescore.proceed).toBe(false);
+  expect(nextRescore.state).toBe("busy");
 });
 
 test("releaseContainerSlotLease leaves unrelated DOs untouched", () => {
@@ -759,6 +812,103 @@ test("releaseContainerSlotLease leaves unrelated DOs untouched", () => {
       kind: "focused-full",
       rescoreHolders: 0,
       timestamp: 1_000_000,
+    },
+  ]);
+});
+
+test("releaseContainerSlotLease cannot release a different work owner's lease", () => {
+  const remaining = releaseContainerSlotLease(
+    [makeLease({ doName: "predict-nar-1", workKey: "focused-full:20260813:nar:30:11" })],
+    "predict-nar-1",
+    "focused-full",
+    NOW_MS,
+    "focused-full:20260813:nar:30:12",
+  );
+  expect(remaining).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-nar-1",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1_000_000,
+      workKey: "focused-full:20260813:nar:30:11",
+    },
+  ]);
+});
+
+test("clearContainerSlotLease only clears the matching work owner", () => {
+  const leases = [
+    makeLease({ doName: "predict-nar-1", workKey: "focused-full:20260813:nar:30:11" }),
+  ];
+  expect(
+    clearContainerSlotLease(leases, "predict-nar-1", NOW_MS, "focused-full:20260813:nar:30:12"),
+  ).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-nar-1",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1_000_000,
+      workKey: "focused-full:20260813:nar:30:11",
+    },
+  ]);
+  expect(
+    clearContainerSlotLease(leases, "predict-nar-1", NOW_MS, "focused-full:20260813:nar:30:11"),
+  ).toStrictEqual([]);
+});
+
+test("touchContainerSlotLease only refreshes the matching work owner", () => {
+  const touched = touchContainerSlotLease(
+    [
+      makeLease({
+        doName: "predict-nar-1",
+        timestamp: NOW_MS - 100,
+        workKey: "focused-full:20260813:nar:30:11",
+      }),
+    ],
+    "predict-nar-1",
+    NOW_MS,
+    "focused-full:20260813:nar:30:12",
+  );
+  expect(touched).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-nar-1",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 999_900,
+      workKey: "focused-full:20260813:nar:30:11",
+    },
+  ]);
+});
+
+test("touchContainerSlotLease preserves optional lease ownership fields", () => {
+  const touched = touchContainerSlotLease(
+    [
+      makeLease({
+        doName: "predict-jra",
+        staleAfterMs: 2_000,
+        timestamp: NOW_MS - 100,
+        workKey: "focused-full:20260813:jra:30:11",
+      }),
+    ],
+    "predict-jra",
+    NOW_MS,
+    "focused-full:20260813:jra:30:11",
+  );
+  expect(touched).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-jra",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      staleAfterMs: 2_000,
+      timestamp: NOW_MS,
+      workKey: "focused-full:20260813:jra:30:11",
     },
   ]);
 });

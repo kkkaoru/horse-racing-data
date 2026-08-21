@@ -32,6 +32,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
+import pipeline_runner
 import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
 from predict_lib.cell_router import CellRouter, build_base_model_r2_key
@@ -111,7 +112,7 @@ _prewarm_parquet_payload = cast(
     getattr(predict_upcoming, _PREWARM_PARQUET_PAYLOAD_ATTR),
 )
 _make_prewarm_existing_object_fn = cast(
-    Callable[[R2Config | None], Callable[[str, str], str | None]],
+    Callable[[R2Config | None, str], Callable[[str, str], str | None]],
     getattr(predict_upcoming, _MAKE_PREWARM_EXISTING_OBJECT_FN_ATTR),
 )
 _make_prewarm_commit_fn = cast(
@@ -921,6 +922,37 @@ def test_focused_full_cache_route_400_on_invalid_query() -> None:
         _stop_threading_server(httpd, thread)
 
 
+def test_focused_full_status_route_returns_missing_for_unknown_race() -> None:
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(
+            port,
+            "/focused-full-status?category=nar&runDate=20261231&keibajoCode=99&raceBango=12",
+        )
+        assert status == 200
+        assert json.loads(body.decode()) == {
+            "raceKey": "nar:20261231:99:12",
+            "status": "missing",
+            "startedAtMs": None,
+            "lastProgressAtMs": None,
+            "finishedAtMs": None,
+            "deadlineAtMs": None,
+            "error": None,
+        }
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_focused_full_status_route_400_on_invalid_query() -> None:
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(port, "/focused-full-status?runDate=20261231")
+        assert status == 400
+        assert b"category" in body
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
 def test_focused_full_cache_route_found_false_when_store_not_wired() -> None:
     """A local/test run without a cache store injected must degrade to
     found=false, never a 500 -- matches the endpoint's non-blocking contract."""
@@ -1660,7 +1692,7 @@ def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) ->
 
 
 def test_prewarm_existing_object_fn_none_without_r2() -> None:
-    existing = _make_prewarm_existing_object_fn(None)
+    existing = _make_prewarm_existing_object_fn(None, "r2-catalog://pc-keiba")
     assert existing("jra", "20260712") is None
 
 
@@ -1678,7 +1710,12 @@ def test_prewarm_existing_object_fn_returns_key_on_watermark_hit(
         "r2_head_watermark",
         lambda _r2, _key: ("20260712", 10, "none", 0),
     )
-    existing = _make_prewarm_existing_object_fn(r2)
+    monkeypatch.setattr(
+        pipeline_runner,
+        "compute_day_base_watermark",
+        lambda *_args, **_kwargs: ("20260712", 10, "none", 0),
+    )
+    existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")
     assert existing("jra", "20260712") == ("feat-daybase/catalog-v1/jra/20260712/features.parquet")
 
 
@@ -1691,9 +1728,39 @@ def test_prewarm_existing_object_fn_returns_none_on_watermark_miss(
         secret_access_key="secret",
         bucket="bucket",
     )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "compute_day_base_watermark",
+        lambda *_args, **_kwargs: ("20260712", 10, "none", 0),
+    )
     monkeypatch.setattr(predict_upcoming, "r2_head_watermark", lambda _r2, _key: None)
-    existing = _make_prewarm_existing_object_fn(r2)
+    existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")
     assert existing("nar", "20260712") is None
+
+
+def test_prewarm_existing_object_fn_rebuilds_stale_present_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r2 = R2Config(
+        account_id="acct",
+        access_key_id="id",
+        secret_access_key="secret",
+        bucket="bucket",
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "compute_day_base_watermark",
+        lambda *_args, **_kwargs: ("20260713", 11, "2026-07-13T10:00:00", 30),
+    )
+    monkeypatch.setattr(
+        predict_upcoming,
+        "r2_head_watermark",
+        lambda _r2, _key: ("20260712", 10, "2026-07-12T10:00:00", 20),
+    )
+
+    existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")
+
+    assert existing("jra", "20260712") is None
 
 
 def test_prewarm_commit_fn_rejects_invalid_key() -> None:

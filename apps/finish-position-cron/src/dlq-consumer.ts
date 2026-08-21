@@ -17,9 +17,10 @@ import {
   buildDlqEventRecord,
   emptyPredictFailure,
 } from "./dlq-events";
-import { completeFocusedFullRace } from "./do-state";
+import { clearContainerSlot, completeFocusedFullRace } from "./do-state";
+import { resolvePredictDoName } from "./predict-do-shard";
 import type { PredictFailureSnapshot } from "./predict-failure";
-import { isFocusedSkipDedupMessage } from "./queue-consumer";
+import { buildFocusedFullWorkKey, isFocusedSkipDedupMessage } from "./queue-consumer";
 import {
   buildRetryErrorLookupByMessageIdSql,
   buildRetryErrorLookupByRaceSql,
@@ -158,6 +159,16 @@ const unstickFocusedFullClaim = async (env: Env, body: PredictQueueMessage): Pro
     raceBango: body.raceBango,
     runYmd: body.runYmd,
     status: "error",
+  });
+  await clearContainerSlot({
+    doName: resolvePredictDoName({
+      category: body.category,
+      env,
+      keibajoCode: body.keibajoCode,
+      raceBango: body.raceBango,
+    }),
+    env,
+    workKey: buildFocusedFullWorkKey(body),
   });
 };
 

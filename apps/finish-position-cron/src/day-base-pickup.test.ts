@@ -3,15 +3,19 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { DayBasePickupMessage, Env } from "./types";
 
-const { headDayBaseObjectMock, pickUpPrewarmDayBaseMock } = vi.hoisted(() => ({
-  headDayBaseObjectMock: vi.fn(async (): Promise<{ size: number } | null> => null),
-  pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
-}));
+const { headDayBaseObjectMock, pickUpPrewarmDayBaseMock, releaseContainerSlotMock } = vi.hoisted(
+  () => ({
+    headDayBaseObjectMock: vi.fn(async (): Promise<{ size: number } | null> => null),
+    pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
+    releaseContainerSlotMock: vi.fn(async () => undefined),
+  }),
+);
 
 vi.mock("./day-base-prewarm-pickup", () => ({
   headDayBaseObject: headDayBaseObjectMock,
   pickUpPrewarmDayBase: pickUpPrewarmDayBaseMock,
 }));
+vi.mock("./do-state", () => ({ releaseContainerSlot: releaseContainerSlotMock }));
 
 import {
   consumeDayBasePickup,
@@ -40,8 +44,9 @@ const pickupBody: DayBasePickupMessage = {
 
 beforeEach(() => {
   queueSendMock.mockClear();
-  headDayBaseObjectMock.mockClear();
-  pickUpPrewarmDayBaseMock.mockClear();
+  headDayBaseObjectMock.mockReset();
+  pickUpPrewarmDayBaseMock.mockReset();
+  releaseContainerSlotMock.mockClear();
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
 });
@@ -121,20 +126,19 @@ test("enqueueDayBasePickup sends a delayed queue message", async () => {
   logSpy.mockRestore();
 });
 
-test("consumeDayBasePickup skips pickup when the object already landed", async () => {
+test("consumeDayBasePickup does not trust an old object without a fresh pickup", async () => {
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 80 });
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await consumeDayBasePickup({ env: makeEnv(), message: pickupBody });
-  expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
-  expect(queueSendMock).not.toHaveBeenCalled();
+  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(1);
+  expect(queueSendMock).toHaveBeenCalledTimes(1);
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-pickup] already-landed category=ban-ei runYmd=20260817 attempt=1",
+    "[day-base-pickup] scheduled category=ban-ei runYmd=20260817 attempt=2 delaySeconds=180",
   );
   logSpy.mockRestore();
 });
 
 test("consumeDayBasePickup logs landed after a successful pickup", async () => {
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 80 });
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -143,6 +147,11 @@ test("consumeDayBasePickup logs landed after a successful pickup", async () => {
   expect(logSpy).toHaveBeenCalledWith(
     "[day-base-pickup] landed category=ban-ei runYmd=20260817 attempt=1",
   );
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
+    doName: "predict-ban-ei",
+    env: expect.any(Object),
+    kind: "day-base",
+  });
   logSpy.mockRestore();
 });
 

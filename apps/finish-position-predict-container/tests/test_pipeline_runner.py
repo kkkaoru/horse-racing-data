@@ -23,9 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pipeline_runner
 from pipeline_runner import (
+    PipelineDeadlineExceededError,
     SourceWatermarkOutcome,
     has_parquet_output,
     mask_pg_url,
+    pipeline_execution_scope,
     r2_day_base_dest_path,
     run_with_stderr_capture,
 )
@@ -268,6 +270,18 @@ def test_run_kills_hanging_subprocess_reports_stderr_tail_from_before_timeout(
         )
     message = str(exc_info.value)
     assert "hung-before-timeout" in message
+
+
+def test_pipeline_execution_scope_bounds_the_whole_child_chain() -> None:
+    started = perf_counter()
+    with (
+        pipeline_execution_scope(total_timeout_seconds=0.2),
+        pytest.raises(PipelineDeadlineExceededError) as exc_info,
+    ):
+        run_with_stderr_capture(["python", "-c", "import time; time.sleep(30)"])
+    elapsed = perf_counter() - started
+    assert "pipeline total deadline exceeded" in str(exc_info.value)
+    assert elapsed < 10.0
 
 
 def test_has_parquet_output_false_for_missing_dir(tmp_path: Path):

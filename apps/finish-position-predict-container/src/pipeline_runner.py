@@ -43,7 +43,9 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -61,7 +63,7 @@ from predict_lib.pipeline_args import (
 )
 from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
 from predict_lib.rescore import RaceScope, race_matches_scope
-from predict_lib.serve import R2Config, build_r2_day_base_key
+from predict_lib.serve import R2Config, build_r2_day_base_key, pipeline_total_timeout_seconds
 
 PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline"))
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
@@ -147,6 +149,53 @@ budget rather than silently exhausting it. Env-overridable so an
 unusually large backfill window (multi-day ``daysAhead``) can raise it
 without a code change.
 """
+
+PipelineProgressFn = Callable[[str], None]
+_PIPELINE_DEADLINE_MONOTONIC: Final[ContextVar[float | None]] = ContextVar(
+    "pipeline_deadline_monotonic", default=None
+)
+_PIPELINE_PROGRESS_FN: Final[ContextVar[PipelineProgressFn | None]] = ContextVar(
+    "pipeline_progress_fn", default=None
+)
+
+
+class PipelineDeadlineExceededError(RuntimeError):
+    """Raised when the shared end-to-end pipeline deadline is exhausted."""
+
+
+@contextmanager
+def pipeline_execution_scope(
+    *,
+    total_timeout_seconds: float | None = None,
+    progress_fn: PipelineProgressFn | None = None,
+) -> Generator[None, None, None]:
+    """Apply one immutable deadline and progress observer to a pipeline call."""
+    timeout_seconds = (
+        pipeline_total_timeout_seconds() if total_timeout_seconds is None else total_timeout_seconds
+    )
+    if timeout_seconds <= 0:
+        raise ValueError("total_timeout_seconds must be positive")
+    deadline_token = _PIPELINE_DEADLINE_MONOTONIC.set(perf_counter() + timeout_seconds)
+    progress_token = _PIPELINE_PROGRESS_FN.set(progress_fn)
+    try:
+        yield
+    finally:
+        _PIPELINE_PROGRESS_FN.reset(progress_token)
+        _PIPELINE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+
+def _subprocess_timeout_for_current_scope() -> tuple[float, bool]:
+    """Return ``(timeout, deadline_limited)`` for the next child process."""
+    subprocess_timeout = _pipeline_subprocess_timeout_seconds()
+    deadline = _PIPELINE_DEADLINE_MONOTONIC.get()
+    if deadline is None:
+        return subprocess_timeout, False
+    remaining = deadline - perf_counter()
+    if remaining <= 0:
+        raise PipelineDeadlineExceededError("pipeline total deadline exceeded before subprocess")
+    if remaining < subprocess_timeout:
+        return remaining, True
+    return subprocess_timeout, False
 
 
 def _pipeline_subprocess_timeout_seconds() -> float:
@@ -350,7 +399,7 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
       used in the exit-code failure message below also serves as the "which
       race" identity for the timeout log line.
     """
-    timeout_seconds = _pipeline_subprocess_timeout_seconds()
+    timeout_seconds, deadline_limited = _subprocess_timeout_for_current_scope()
     safe_args = [mask_pg_url(arg) for arg in args]
     process = subprocess.Popen(
         list(args),
@@ -380,8 +429,9 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     try:
         returncode = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        timeout_kind = "TOTAL PIPELINE DEADLINE" if deadline_limited else "SUBPROCESS TIMEOUT"
         debug_log(
-            f"[pipeline] SUBPROCESS TIMEOUT after {timeout_seconds:.0f}s -- "
+            f"[pipeline] {timeout_kind} after {timeout_seconds:.0f}s -- "
             f"killing process group: {safe_args}"
         )
         _kill_process_group(process)
@@ -390,10 +440,15 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
         stderr_thread.join()
         stderr_text = "".join(stderr_buffer)
         stderr_tail = stderr_text[-STDERR_TAIL_BYTES:]
+        timeout_description = (
+            "pipeline total deadline exceeded" if deadline_limited else "subprocess timed out"
+        )
         message = (
-            f"subprocess timed out after {timeout_seconds:.0f}s and was killed: {safe_args}\n"
+            f"{timeout_description} after {timeout_seconds:.0f}s and was killed: {safe_args}\n"
             f"stderr (last {STDERR_TAIL_BYTES} bytes):\n{stderr_tail}"
         )
+        if deadline_limited:
+            raise PipelineDeadlineExceededError(message) from None
         raise RuntimeError(message) from None
     stdout_thread.join()
     stderr_thread.join()
@@ -434,6 +489,9 @@ def _day_base_dir(category: Category, target_date: str) -> Path:
 def _log_pipeline_progress(message: str) -> None:
     debug_log(f"[pipeline] {message}")
     record_debug_progress(message)
+    progress_fn = _PIPELINE_PROGRESS_FN.get()
+    if progress_fn is not None:
+        progress_fn(message)
 
 
 def _log_day_base_hit(*, category: Category, target_date: str, source: str, reason: str) -> None:
@@ -712,6 +770,23 @@ def _combine_watermarks(
     if entrant is None or rs is None:
         return None
     return (entrant[0], entrant[1], rs[0], rs[1])
+
+
+def compute_day_base_watermark(
+    category: Category,
+    target_date: str,
+    database_url: str,
+    *,
+    r2_config: R2Config | None,
+) -> DayBaseWatermark | None:
+    """Return the live Catalog and running-style freshness watermark.
+
+    Normal prediction pickup and prewarm HEAD checks share this fail-closed
+    contract so an old but present R2 object cannot suppress a rebuild.
+    """
+    entrant = _compute_source_watermark(category, target_date, database_url)
+    running_style = _compute_rs_watermark(category, target_date, r2_config)
+    return _combine_watermarks(entrant, running_style)
 
 
 def _watermark_path(day_dir: Path) -> Path:
@@ -1482,12 +1557,12 @@ def ensure_day_base(
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
     if is_catalog_source_url(database_url):
-        source_value = _compute_source_watermark(category, target_date, database_url)
-        rs_watermark = _compute_rs_watermark(category, target_date, r2_config)
-        watermark = _combine_watermarks(source_value, rs_watermark)
+        watermark = compute_day_base_watermark(
+            category, target_date, database_url, r2_config=r2_config
+        )
         if watermark is None:
             miss_reason = _WATERMARK_RS_UNAVAILABLE_REASON
-            if source_value is None and debug_logs_enabled():
+            if debug_logs_enabled():
                 source_reason = _compute_source_watermark_outcome(
                     category, target_date, database_url
                 ).reason

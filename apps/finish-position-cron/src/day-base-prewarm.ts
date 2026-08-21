@@ -150,27 +150,24 @@ const logPrewarmResult = (params: LogPrewarmResultParams): void => {
   console.warn(`[day-base-prewarm] failed ${summary}`);
 };
 
-const handlePrewarmResponse = async (params: HandlePrewarmResponseParams): Promise<void> => {
+const handlePrewarmResponse = async (
+  params: HandlePrewarmResponseParams,
+): Promise<PrewarmResultLine | null> => {
   const { category, response, runYmd } = params;
   if (!response.ok || !response.body) {
     console.warn(
       `[day-base-prewarm] non-ok response category=${category} runYmd=${runYmd} status=${response.status}`,
     );
-    return;
+    return null;
   }
   const text = await response.text();
   const result = parsePrewarmResultLine(text);
   if (result === null) {
     console.warn(`[day-base-prewarm] unparseable result category=${category} runYmd=${runYmd}`);
-    return;
+    return null;
   }
   logPrewarmResult({ category, result, runYmd });
-};
-
-const logLandedDayBase = (params: Omit<PrewarmCategoryParams, "daysAhead">): void => {
-  console.log(
-    `[day-base-prewarm] success category=${params.category} runYmd=${params.runYmd} status=success parquetKey=feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet watermark=present error=-`,
-  );
+  return result;
 };
 
 const landDayBaseFromPickup = async (
@@ -201,18 +198,9 @@ const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): P
 // propagated.
 export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<boolean> => {
   const { category, daysAhead, env, runYmd } = params;
-  const existing = await headDayBaseObject({ category, env, runYmd });
-  if (existing !== null) {
-    logLandedDayBase({ category, env, runYmd });
-    return true;
-  }
-  // Pickup a finished detached build BEFORE starting another DAY_CHAIN.
-  // Calling /prewarm-day-base first would claim a new slot / restart work
-  // and pop an empty store.
-  if (await landDayBaseFromPickup({ category, env, runYmd })) {
-    logLandedDayBase({ category, env, runYmd });
-    return true;
-  }
+  // Do not trust R2 presence or an old in-process pickup here. The
+  // container's prewarm endpoint must first compare the object's metadata
+  // with the live Catalog + running-style watermark.
   const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   const url = buildPrewarmUrl({ category, daysAhead, runYmd });
   const claim = await claimContainerSlot({
@@ -228,18 +216,27 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     );
     return false;
   }
+  let releaseSlot = true;
   try {
     const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
     const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
     const response = await stub.fetch(new Request(url));
-    await handlePrewarmResponse({ category, response, runYmd });
+    const result = await handlePrewarmResponse({ category, response, runYmd });
+    // Only the container can declare an existing R2 object fresh because its
+    // prewarm fast path compares the live Catalog + running-style watermark.
+    if (result?.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) return true;
     if (await landDayBaseFromPickup({ category, env, runYmd })) return true;
+    if (result?.status !== PREWARM_ACCEPTED_STATUS) return false;
     await enqueueDayBasePickup({
       attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
       category,
       env,
       runYmd,
     });
+    // The detached DAY_CHAIN still owns this capacity. Its delayed pickup
+    // releases the lease after the fresh object lands (or retries exhaust),
+    // preventing accepted work from immediately freeing a competing slot.
+    releaseSlot = false;
     console.warn(
       `[day-base-prewarm] pickup-scheduled category=${category} runYmd=${runYmd} status=missing-object parquetKey=feat-daybase/catalog-v1/${category}/${runYmd}/features.parquet watermark=absent error=day-base object missing after prewarm`,
     );
@@ -250,7 +247,9 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     );
     return false;
   } finally {
-    await releaseDayBaseSlotBestEffort({ category, doName, env });
+    if (releaseSlot) {
+      await releaseDayBaseSlotBestEffort({ category, doName, env });
+    }
   }
 };
 

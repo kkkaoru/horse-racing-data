@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
@@ -52,6 +53,7 @@ from predict_lib.serve import (
     activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
+    build_focused_full_status_response_body,
     build_prewarm_cache_key,
     build_prewarm_result_line,
     build_progress_line,
@@ -64,6 +66,7 @@ from predict_lib.serve import (
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
+    mark_focused_full_progress,
     mask_error_message,
     parse_day_base_cache_identity,
     parse_focused_full_cache_query,
@@ -2337,6 +2340,78 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
     assert last["category"] == "jra"
     assert last["runDate"] == "20260619"
     assert invoked.wait(timeout=2.0), "predict_fn was never invoked"
+
+
+def test_focused_full_status_records_running_progress_and_success() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        started.set()
+        release.wait(timeout=2.0)
+        return 1
+
+    params = _make_focused_full_params(keibajo_code="05", race_bango="11")
+    chunks = list(iter_predict_chunks(params, _predict, focused_full_timeout_seconds=60.0))
+    assert json.loads(chunks[-1].decode())["status"] == "accepted"
+    assert started.wait(timeout=2.0)
+
+    running = json.loads(build_focused_full_status_response_body(params))
+    assert running["raceKey"] == "jra:20260619:05:11"
+    assert running["status"] == "running"
+    assert running["startedAtMs"] == running["lastProgressAtMs"]
+    assert running["deadlineAtMs"] - running["startedAtMs"] == 60000
+    assert running["finishedAtMs"] is None
+    assert running["error"] is None
+
+    mark_focused_full_progress("jra:20260619:05:11", wall_time_fn=lambda: 1234567.0)
+    progressed = json.loads(build_focused_full_status_response_body(params))
+    assert progressed["startedAtMs"] == running["startedAtMs"]
+    assert progressed["lastProgressAtMs"] == 1234567000
+    assert progressed["deadlineAtMs"] == running["deadlineAtMs"]
+
+    release.set()
+    deadline = time.monotonic() + 2.0
+    terminal = json.loads(build_focused_full_status_response_body(params))
+    while terminal["status"] == "running" and time.monotonic() < deadline:
+        terminal = json.loads(build_focused_full_status_response_body(params))
+    assert terminal["status"] == "success"
+    assert terminal["finishedAtMs"] is not None
+    assert terminal["error"] is None
+
+
+def test_focused_full_status_records_masked_error() -> None:
+    failed = threading.Event()
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        failed.set()
+        raise RuntimeError("postgresql://user:secret@host/db failed")
+
+    params = _make_focused_full_params(keibajo_code="05", race_bango="12")
+    chunks = list(iter_predict_chunks(params, _predict))
+    assert json.loads(chunks[-1].decode())["status"] == "accepted"
+    assert failed.wait(timeout=2.0)
+    deadline = time.monotonic() + 2.0
+    terminal = json.loads(build_focused_full_status_response_body(params))
+    while terminal["status"] == "running" and time.monotonic() < deadline:
+        terminal = json.loads(build_focused_full_status_response_body(params))
+    assert terminal["status"] == "error"
+    assert terminal["error"] == "RuntimeError: postgresql://[REDACTED]@host/db failed"
+    assert terminal["finishedAtMs"] is not None
 
 
 def test_iter_predict_chunks_debug_on_focused_full_holds_and_emits_racechain() -> None:

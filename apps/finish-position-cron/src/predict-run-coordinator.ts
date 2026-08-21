@@ -41,6 +41,7 @@ const HTTP_NOT_FOUND = 404;
 interface RunRecord {
   status: string;
   timestamp: number;
+  doName?: string;
   racesPredicted?: number;
   completedAt?: number;
 }
@@ -65,6 +66,7 @@ interface ClaimRaceParams {
 }
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  doName?: string;
   staleAfterMs: number;
   force?: boolean;
 }
@@ -77,25 +79,35 @@ interface ContainerSlotsRecord {
   leases: ContainerSlotLease[];
 }
 
+interface FocusedFullLaneRecord {
+  activeRaceKey: string;
+  startedAt: number;
+  waiters: string[];
+}
+
 interface ClaimContainerSlotParams {
   category: string;
   doName: string;
   kind: ContainerSlotKind;
   staleAfterMs?: number;
+  workKey?: string;
 }
 
 interface ReleaseContainerSlotParams {
   doName: string;
   kind: ContainerSlotKind;
+  workKey?: string;
 }
 
 interface TouchContainerSlotParams {
   doName: string;
   staleAfterMs?: number;
+  workKey?: string;
 }
 
 interface ClearContainerSlotParams {
   doName: string;
+  workKey?: string;
 }
 
 const buildKey = (runYmd: string, category: string): string =>
@@ -106,6 +118,9 @@ const buildRaceKey = (params: ClaimRaceParams): string =>
 
 const buildFocusedFullRaceKey = (params: ClaimRaceParams): string =>
   `${FOCUSED_FULL_KEY_PREFIX}:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`;
+
+const buildFocusedFullLaneKey = (doName: string): string =>
+  `${FOCUSED_FULL_KEY_PREFIX}-lane:${encodeURIComponent(doName)}`;
 
 const TERMINAL_STATUSES = new Set(["success"]);
 
@@ -161,49 +176,143 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
-  // Poll = every redelivery of a focused-full skipDedup message while the
-  // race is still claimed and not yet stale (see queue-consumer.ts
-  // claimFocusedFullOrRetry, called on every delivery attempt). Each such
-  // poll is itself evidence that the queue is actively watching this race,
-  // so the claim's heartbeat is refreshed here rather than left at its
-  // original claim-time value. Without this refresh, staleAfterMs measured
-  // "time since the pipeline was launched" instead of "time since we last
-  // confirmed it was still worth waiting for" -- so shrinking staleAfterMs
-  // to react quickly to a genuinely dead pipeline would also falsely
-  // reclaim (and duplicate-launch) a legitimately slow one. With the
-  // refresh, a live poll cadence keeps staleAfterMs from ever tripping for
-  // work that is still being watched; it only trips once redeliveries stop
-  // landing (retries exhausted -> dead-letter queue, see dlq-consumer.ts),
-  // which is the actual "nobody is polling this anymore" signal.
+  // Redelivery is observation, not progress: a fresh started claim is returned
+  // unchanged. Once its absolute no-progress deadline expires, the caller may
+  // clear the matching slot and re-probe the Container's authoritative
+  // same-race in-flight guard.
   async claimFocusedFullRace(params: ClaimFocusedFullRaceParams): Promise<ClaimResult> {
     return this.ctx.blockConcurrencyWhile(async () => {
-      const key = buildFocusedFullRaceKey(params);
-      const existing = await this.ctx.storage.get<RunRecord>(key);
+      const raceKey = buildFocusedFullRaceKey(params);
+      const existing = await this.ctx.storage.get<RunRecord>(raceKey);
       const now = Date.now();
-      if (existing !== undefined) {
-        const isTerminal = TERMINAL_STATUSES.has(existing.status);
-        if (isTerminal && params.force !== true) {
-          return { proceed: false, state: existing.status };
-        }
-        const ageMs = now - existing.timestamp;
-        if (!isTerminal && existing.status === "started" && ageMs < params.staleAfterMs) {
-          await this.ctx.storage.put<RunRecord>(key, { status: existing.status, timestamp: now });
-          return { proceed: false, state: existing.status };
-        }
+      if (
+        existing !== undefined &&
+        TERMINAL_STATUSES.has(existing.status) &&
+        params.force !== true
+      ) {
+        return { proceed: false, state: existing.status };
       }
-      await this.ctx.storage.put<RunRecord>(key, {
-        status: "started",
-        timestamp: now,
-      });
-      return { proceed: true };
+      const doName = params.doName ?? existing?.doName ?? `legacy-${params.category}`;
+      const laneKey = buildFocusedFullLaneKey(doName);
+      const storedLane = await this.ctx.storage.get<FocusedFullLaneRecord>(laneKey);
+      const lane =
+        storedLane ??
+        (existing?.status === "started"
+          ? { activeRaceKey: raceKey, startedAt: existing.timestamp, waiters: [] }
+          : undefined);
+      if (lane === undefined) {
+        await this.ctx.storage.put<RunRecord>(raceKey, {
+          doName,
+          status: "started",
+          timestamp: now,
+        });
+        await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+          activeRaceKey: raceKey,
+          startedAt: now,
+          waiters: [],
+        });
+        return { proceed: true };
+      }
+      if (lane.activeRaceKey === raceKey) {
+        if (existing?.status === "ready") {
+          await this.ctx.storage.put<RunRecord>(raceKey, {
+            doName,
+            status: "started",
+            timestamp: lane.startedAt,
+          });
+          return { proceed: true, state: "promoted" };
+        }
+        if (existing?.status === "started" && now - lane.startedAt < params.staleAfterMs) {
+          return { proceed: false, state: "started" };
+        }
+        if (lane.waiters.length === 0) {
+          await this.ctx.storage.put<RunRecord>(raceKey, {
+            doName,
+            status: "started",
+            timestamp: now,
+          });
+          await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+            activeRaceKey: raceKey,
+            startedAt: now,
+            waiters: [],
+          });
+          return { proceed: true, state: "stale" };
+        }
+        const [promotedRaceKey, ...remainingWaiters] = lane.waiters as [string, ...string[]];
+        const promoted = await this.ctx.storage.get<RunRecord>(promotedRaceKey);
+        await this.ctx.storage.put<RunRecord>(promotedRaceKey, {
+          ...(promoted?.doName === undefined ? {} : { doName: promoted.doName }),
+          status: "ready",
+          timestamp: now,
+        });
+        await this.ctx.storage.put<RunRecord>(raceKey, {
+          doName,
+          status: "queued",
+          timestamp: existing?.timestamp ?? now,
+        });
+        await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+          activeRaceKey: promotedRaceKey,
+          startedAt: now,
+          waiters: [...remainingWaiters, raceKey],
+        });
+        return { proceed: false, state: "queued" };
+      }
+      if (!lane.waiters.includes(raceKey)) {
+        await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+          ...lane,
+          waiters: [...lane.waiters, raceKey],
+        });
+      }
+      if (existing?.status !== "queued" || existing.doName !== doName) {
+        await this.ctx.storage.put<RunRecord>(raceKey, {
+          doName,
+          status: "queued",
+          timestamp: existing?.timestamp ?? now,
+        });
+      }
+      return { proceed: false, state: "queued" };
     });
   }
 
   async completeFocusedFullRace(params: CompleteFocusedFullRaceParams): Promise<void> {
-    await this.ctx.storage.put<RunRecord>(buildFocusedFullRaceKey(params), {
-      completedAt: Date.now(),
-      status: params.status,
-      timestamp: Date.now(),
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const raceKey = buildFocusedFullRaceKey(params);
+      const existing = await this.ctx.storage.get<RunRecord>(raceKey);
+      const now = Date.now();
+      await this.ctx.storage.put<RunRecord>(raceKey, {
+        ...(existing?.doName === undefined ? {} : { doName: existing.doName }),
+        completedAt: now,
+        status: params.status,
+        timestamp: now,
+      });
+      if (existing?.doName === undefined) return;
+      const laneKey = buildFocusedFullLaneKey(existing.doName);
+      const lane = await this.ctx.storage.get<FocusedFullLaneRecord>(laneKey);
+      if (lane === undefined) return;
+      if (lane.activeRaceKey !== raceKey) {
+        if (!lane.waiters.includes(raceKey)) return;
+        await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+          ...lane,
+          waiters: lane.waiters.filter((waiter) => waiter !== raceKey),
+        });
+        return;
+      }
+      const [promotedRaceKey, ...remainingWaiters] = lane.waiters;
+      if (promotedRaceKey === undefined) {
+        await this.ctx.storage.delete(laneKey);
+        return;
+      }
+      const promoted = await this.ctx.storage.get<RunRecord>(promotedRaceKey);
+      await this.ctx.storage.put<RunRecord>(promotedRaceKey, {
+        ...(promoted?.doName === undefined ? {} : { doName: promoted.doName }),
+        status: "ready",
+        timestamp: now,
+      });
+      await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+        activeRaceKey: promotedRaceKey,
+        startedAt: now,
+        waiters: remainingWaiters,
+      });
     });
   }
 
@@ -218,6 +327,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         kind: params.kind,
         now: Date.now(),
         staleAfterMs,
+        workKey: params.workKey,
       });
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, {
         leases: decision.leases,
@@ -234,7 +344,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.doName,
         params.kind,
         Date.now(),
-        CONTAINER_SLOT_STALE_MS,
+        params.workKey,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
     });
@@ -243,13 +353,11 @@ export class PredictRunCoordinator extends DurableObject<Env> {
   async touchContainerSlot(params: TouchContainerSlotParams): Promise<void> {
     await this.ctx.blockConcurrencyWhile(async () => {
       const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
-      const staleAfterMs =
-        params.staleAfterMs === undefined ? CONTAINER_SLOT_STALE_MS : params.staleAfterMs;
       const leases = touchContainerSlotLease(
         record?.leases ?? [],
         params.doName,
         Date.now(),
-        staleAfterMs,
+        params.workKey,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
     });
@@ -262,7 +370,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         record?.leases ?? [],
         params.doName,
         Date.now(),
-        CONTAINER_SLOT_STALE_MS,
+        params.workKey,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
     });

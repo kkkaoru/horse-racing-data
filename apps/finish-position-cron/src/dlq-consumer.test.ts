@@ -4,12 +4,17 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { RetryErrorLookupRow } from "./retry-errors";
 import type { Env, PredictQueueMessage } from "./types";
 
-const { completeFocusedFullRaceMock } = vi.hoisted(() => {
+const { clearContainerSlotMock, completeFocusedFullRaceMock } = vi.hoisted(() => {
+  const clearContainerSlot = vi.fn(async () => undefined);
   const completeFocusedFullRace = vi.fn(async () => undefined);
-  return { completeFocusedFullRaceMock: completeFocusedFullRace };
+  return {
+    clearContainerSlotMock: clearContainerSlot,
+    completeFocusedFullRaceMock: completeFocusedFullRace,
+  };
 });
 
 vi.mock("./do-state", () => ({
+  clearContainerSlot: clearContainerSlotMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
 }));
 
@@ -64,6 +69,8 @@ beforeEach(() => {
   prepareMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
   completeFocusedFullRaceMock.mockResolvedValue(undefined);
+  clearContainerSlotMock.mockClear();
+  clearContainerSlotMock.mockResolvedValue(undefined);
 });
 
 test("DLQ_QUEUE_NAME matches the dead-letter queue name in wrangler.jsonc", () => {

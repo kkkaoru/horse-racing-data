@@ -12,6 +12,13 @@ export interface ContainerSlotLease {
   kind: ContainerSlotKind;
   rescoreHolders: number;
   timestamp: number;
+  // Optional for backward compatibility with leases persisted before per-lease
+  // expiry was introduced. Missing values are derived from `kind` while the
+  // old records drain naturally.
+  staleAfterMs?: number;
+  // Identifies the execution that owns this DO reservation. Older persisted
+  // leases have no workKey and remain releasable during the rolling upgrade.
+  workKey?: string;
 }
 
 export interface ContainerSlotClaimParams {
@@ -20,6 +27,7 @@ export interface ContainerSlotClaimParams {
   kind: ContainerSlotKind;
   now: number;
   staleAfterMs: number;
+  workKey?: string;
 }
 
 export interface ContainerSlotClaimDecision {
@@ -57,11 +65,16 @@ const EMPTY_HOLDER_COUNT = 0;
 export const isReservedContainerLane = (params: ReservedLaneParams): boolean =>
   params.category === BAN_EI_CATEGORY && params.kind !== RESCORE_KIND;
 
+const staleAfterMsForLease = (lease: ContainerSlotLease): number =>
+  lease.staleAfterMs ??
+  (lease.kind === "day-base" ? CONTAINER_DAY_BASE_SLOT_STALE_MS : CONTAINER_SLOT_STALE_MS);
+
 export const pruneStaleContainerSlots = (
   leases: readonly ContainerSlotLease[],
   now: number,
-  staleAfterMs: number,
-): ContainerSlotLease[] => leases.filter((lease) => now - lease.timestamp < staleAfterMs);
+  _legacyCallerStaleAfterMs?: number,
+): ContainerSlotLease[] =>
+  leases.filter((lease) => now - lease.timestamp < staleAfterMsForLease(lease));
 
 const countReservedLeases = (leases: readonly ContainerSlotLease[]): number =>
   leases.filter((lease) => isReservedContainerLane(lease)).length;
@@ -69,30 +82,16 @@ const countReservedLeases = (leases: readonly ContainerSlotLease[]): number =>
 const countRescoreDos = (leases: readonly ContainerSlotLease[]): number =>
   leases.filter((lease) => lease.rescoreHolders > EMPTY_HOLDER_COUNT).length;
 
-const replaceLease = (
-  leases: readonly ContainerSlotLease[],
-  next: ContainerSlotLease,
-): ContainerSlotLease[] => leases.map((lease) => (lease.doName === next.doName ? next : lease));
-
 const decideSharedContainerSlotClaim = (
   live: readonly ContainerSlotLease[],
-  existing: ContainerSlotLease,
-  params: ContainerSlotClaimParams,
+  _existing: ContainerSlotLease,
+  _params: ContainerSlotClaimParams,
 ): ContainerSlotClaimDecision => {
-  if (params.kind === RESCORE_KIND && existing.rescoreHolders > EMPTY_HOLDER_COUNT) {
-    return { leases: [...live], proceed: false, state: CONTAINER_SLOT_BUSY_STATE };
-  }
-  const next: ContainerSlotLease = {
-    category: existing.category,
-    doName: existing.doName,
-    holders: existing.holders + HOLDER_INCREMENT,
-    kind: existing.kind,
-    rescoreHolders:
-      existing.rescoreHolders +
-      (params.kind === RESCORE_KIND ? HOLDER_INCREMENT : EMPTY_HOLDER_COUNT),
-    timestamp: params.now,
-  };
-  return { leases: replaceLease(live, next), proceed: true };
+  // A Container process serializes every pipeline execution around shared work
+  // directories. Counting another caller as a holder only forwards contention
+  // to Python, where it returns `busy`, and permits unfair requeue starvation.
+  // Keep the existing owner unchanged and make every other delivery wait here.
+  return { leases: [...live], proceed: false, state: CONTAINER_SLOT_BUSY_STATE };
 };
 
 const decideNewContainerSlotClaim = (
@@ -111,7 +110,9 @@ const decideNewContainerSlotClaim = (
   if (!reservedLane && generalCount >= CONTAINER_GENERAL_SLOT_MAX) {
     return { leases: [...live], proceed: false, state: CONTAINER_SLOT_CAPPED_STATE };
   }
-  const created: ContainerSlotLease = {
+  const defaultStaleAfterMs =
+    params.kind === "day-base" ? CONTAINER_DAY_BASE_SLOT_STALE_MS : CONTAINER_SLOT_STALE_MS;
+  const createdWithoutOptionalFields: ContainerSlotLease = {
     category: params.category,
     doName: params.doName,
     holders: HOLDER_INCREMENT,
@@ -119,6 +120,14 @@ const decideNewContainerSlotClaim = (
     rescoreHolders: params.kind === RESCORE_KIND ? HOLDER_INCREMENT : EMPTY_HOLDER_COUNT,
     timestamp: params.now,
   };
+  const createdWithoutWorkKey: ContainerSlotLease =
+    params.staleAfterMs === defaultStaleAfterMs
+      ? createdWithoutOptionalFields
+      : { ...createdWithoutOptionalFields, staleAfterMs: params.staleAfterMs };
+  const created: ContainerSlotLease =
+    params.workKey === undefined
+      ? createdWithoutWorkKey
+      : { ...createdWithoutWorkKey, workKey: params.workKey };
   return { leases: [...live, created], proceed: true };
 };
 
@@ -126,7 +135,7 @@ export const decideContainerSlotClaim = (
   leases: readonly ContainerSlotLease[],
   params: ContainerSlotClaimParams,
 ): ContainerSlotClaimDecision => {
-  const live = pruneStaleContainerSlots(leases, params.now, params.staleAfterMs);
+  const live = pruneStaleContainerSlots(leases, params.now);
   const existing = live.find((lease) => lease.doName === params.doName);
   return existing === undefined
     ? decideNewContainerSlotClaim(live, params)
@@ -138,14 +147,19 @@ export const releaseContainerSlotLease = (
   doName: string,
   kind: ContainerSlotKind,
   now: number,
-  staleAfterMs: number,
+  workKeyOrLegacyStaleAfterMs?: string | number,
 ): ContainerSlotLease[] => {
-  const live = pruneStaleContainerSlots(leases, now, staleAfterMs);
+  const live = pruneStaleContainerSlots(leases, now);
+  const workKey =
+    typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.flatMap((lease) => {
     if (lease.doName !== doName) return [lease];
+    if (workKey !== undefined && lease.workKey !== undefined && lease.workKey !== workKey) {
+      return [lease];
+    }
     const nextHolders = lease.holders - HOLDER_INCREMENT;
     if (nextHolders <= EMPTY_HOLDER_COUNT) return [];
-    const next: ContainerSlotLease = {
+    const nextWithoutOptionalFields: ContainerSlotLease = {
       category: lease.category,
       doName: lease.doName,
       holders: nextHolders,
@@ -156,6 +170,14 @@ export const releaseContainerSlotLease = (
       ),
       timestamp: lease.timestamp,
     };
+    const nextWithStaleAfterMs: ContainerSlotLease =
+      lease.staleAfterMs === undefined
+        ? nextWithoutOptionalFields
+        : { ...nextWithoutOptionalFields, staleAfterMs: lease.staleAfterMs };
+    const next: ContainerSlotLease =
+      lease.workKey === undefined
+        ? nextWithStaleAfterMs
+        : { ...nextWithStaleAfterMs, workKey: lease.workKey };
     return [next];
   });
 };
@@ -164,11 +186,14 @@ export const touchContainerSlotLease = (
   leases: readonly ContainerSlotLease[],
   doName: string,
   now: number,
-  staleAfterMs: number,
+  workKeyOrLegacyStaleAfterMs?: string | number,
 ): ContainerSlotLease[] => {
-  const live = pruneStaleContainerSlots(leases, now, staleAfterMs);
+  const live = pruneStaleContainerSlots(leases, now);
+  const workKey =
+    typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.map((lease) =>
-    lease.doName === doName
+    lease.doName === doName &&
+    (workKey === undefined || lease.workKey === undefined || lease.workKey === workKey)
       ? {
           category: lease.category,
           doName: lease.doName,
@@ -176,6 +201,8 @@ export const touchContainerSlotLease = (
           kind: lease.kind,
           rescoreHolders: lease.rescoreHolders,
           timestamp: now,
+          ...(lease.staleAfterMs === undefined ? {} : { staleAfterMs: lease.staleAfterMs }),
+          ...(lease.workKey === undefined ? {} : { workKey: lease.workKey }),
         }
       : lease,
   );
@@ -185,6 +212,13 @@ export const clearContainerSlotLease = (
   leases: readonly ContainerSlotLease[],
   doName: string,
   now: number,
-  staleAfterMs: number,
-): ContainerSlotLease[] =>
-  pruneStaleContainerSlots(leases, now, staleAfterMs).filter((lease) => lease.doName !== doName);
+  workKeyOrLegacyStaleAfterMs?: string | number,
+): ContainerSlotLease[] => {
+  const workKey =
+    typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
+  return pruneStaleContainerSlots(leases, now).filter(
+    (lease) =>
+      lease.doName !== doName ||
+      (workKey !== undefined && lease.workKey !== undefined && lease.workKey !== workKey),
+  );
+};

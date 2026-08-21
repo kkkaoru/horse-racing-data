@@ -80,10 +80,10 @@ beforeEach(() => {
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
   queueSendMock.mockClear();
-  headDayBaseObjectMock.mockClear();
-  pickUpPrewarmDayBaseMock.mockClear();
+  headDayBaseObjectMock.mockReset();
+  pickUpPrewarmDayBaseMock.mockReset();
   claimContainerSlotMock.mockClear();
-  releaseContainerSlotMock.mockClear();
+  releaseContainerSlotMock.mockReset();
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
   claimContainerSlotMock.mockResolvedValue({ proceed: true });
@@ -208,7 +208,7 @@ test("prewarmCategory still builds when FEATURES_CACHE has an unwatermarked obje
   warnSpy.mockRestore();
 });
 
-test("prewarmCategory logs success and skips the container when FEATURES_CACHE already has the object", async () => {
+test("prewarmCategory does not trust a merely present FEATURES_CACHE object", async () => {
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 87257 });
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const landed = await prewarmCategory({
@@ -217,11 +217,8 @@ test("prewarmCategory logs success and skips the container when FEATURES_CACHE a
     env: makeEnv(),
     runYmd: "20260816",
   });
-  expect(landed).toBe(true);
-  expect(containerDoFetchMock).not.toHaveBeenCalled();
-  expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] success category=ban-ei runYmd=20260816 status=success parquetKey=feat-daybase/catalog-v1/ban-ei/20260816/features.parquet watermark=present error=-",
-  );
+  expect(landed).toBe(false);
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
   logSpy.mockRestore();
 });
 
@@ -508,7 +505,7 @@ test("prewarmCategory logs missing-object when pickup does not land the day-base
           category: "jra",
           parquetKey: "jra/20260628/day-base.parquet",
           runDate: "20260628",
-          status: "success",
+          status: "accepted",
         }),
         { status: 200 },
       ),
@@ -523,7 +520,7 @@ test("prewarmCategory logs missing-object when pickup does not land the day-base
     runYmd: "20260628",
   });
   expect(landed).toBe(false);
-  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(2);
+  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(1);
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm] pickup-scheduled category=jra runYmd=20260628 status=missing-object parquetKey=feat-daybase/catalog-v1/jra/20260628/features.parquet watermark=absent error=day-base object missing after prewarm",
   );
@@ -540,8 +537,20 @@ test("prewarmCategory logs missing-object when pickup does not land the day-base
   logSpy.mockRestore();
 });
 
-test("prewarmCategory pickups a finished detached payload without starting another build", async () => {
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
+test("prewarmCategory picks up a detached payload after container freshness validation", async () => {
+  containerDoFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        resultLineBody({
+          category: "ban-ei",
+          parquetKey: "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+          runDate: "20260816",
+          status: "accepted",
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 87257 });
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -553,9 +562,9 @@ test("prewarmCategory pickups a finished detached payload without starting anoth
   });
   expect(landed).toBe(true);
   expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(1);
-  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] success category=ban-ei runYmd=20260816 status=success parquetKey=feat-daybase/catalog-v1/ban-ei/20260816/features.parquet watermark=present error=-",
+    "[day-base-prewarm] started category=ban-ei runYmd=20260816 status=accepted parquetKey=feat-daybase/catalog-v1/ban-ei/20260816/features.parquet watermark=absent error=-",
   );
   logSpy.mockRestore();
 });
@@ -574,9 +583,7 @@ test("prewarmCategory returns true after a started build then pickup lands the o
       ),
     ),
   );
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 87257 });
-  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const landed = await prewarmCategory({
@@ -586,12 +593,12 @@ test("prewarmCategory returns true after a started build then pickup lands the o
     runYmd: "20260816",
   });
   expect(landed).toBe(true);
-  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(2);
+  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(1);
   expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
   logSpy.mockRestore();
 });
 
-test("runDayBasePrewarm returns true when every category already has a day-base object", async () => {
+test("runDayBasePrewarm revalidates every category even when day-base objects are present", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([
     { category: "jra", keibajoCode: "05", raceBango: "01" },
     { category: "nar", keibajoCode: "44", raceBango: "01" },
@@ -600,9 +607,9 @@ test("runDayBasePrewarm returns true when every category already has a day-base 
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await expect(
     runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
-  ).resolves.toBe(true);
-  expect(containerDoFetchMock).not.toHaveBeenCalled();
-  expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
+  ).resolves.toBe(false);
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
+  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(2);
   logSpy.mockRestore();
 });
 
@@ -647,7 +654,7 @@ test("pickUpPrewarmDayBase is invoked after a container prewarm when the object 
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await prewarmCategory({ category: "nar", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
-  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(2);
+  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(1);
   logSpy.mockRestore();
   warnSpy.mockRestore();
 });
@@ -703,9 +710,7 @@ test("prewarmCategory claims a Ban-ei reserved day-base slot before starting", a
 });
 
 test("prewarmCategory releases the day-base slot after pickup lands the object", async () => {
-  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 12 });
   containerDoFetchMock.mockImplementation(() =>
     Promise.resolve(
@@ -754,7 +759,7 @@ test("prewarmCategory releases the day-base slot when the container fetch throws
   errorSpy.mockRestore();
 });
 
-test("prewarmCategory releases the Ban-ei day-base slot when pickup misses after start", async () => {
+test("prewarmCategory keeps the Ban-ei day-base slot while accepted pickup is pending", async () => {
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   headDayBaseObjectMock.mockResolvedValue(null);
@@ -779,18 +784,13 @@ test("prewarmCategory releases the Ban-ei day-base slot when pickup misses after
     runYmd: "20260628",
   });
   expect(landed).toBe(false);
-  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
-    doName: "predict-ban-ei",
-    env: expect.any(Object),
-    kind: "day-base",
-  });
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
 
 test("prewarmCategory still reports landed when slot release fails after pickup", async () => {
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 12 });
   releaseContainerSlotMock.mockRejectedValueOnce(new Error("release failed"));
   containerDoFetchMock.mockImplementation(() =>

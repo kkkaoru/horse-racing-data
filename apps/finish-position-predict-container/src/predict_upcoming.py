@@ -130,6 +130,7 @@ from predict_lib.serve import (
     R2Config,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
+    build_focused_full_status_response_body,
     build_prewarm_cache_key,
     build_r2_day_base_key,
     build_r2_feat_cache_key,
@@ -137,6 +138,7 @@ from predict_lib.serve import (
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
+    mark_focused_full_progress,
     parse_day_base_cache_identity,
     parse_focused_full_cache_query,
     parse_predict_params,
@@ -1439,20 +1441,32 @@ def _make_predict_fn(
         race_bango: str | None = None,
         card_max_race_bango: int | None = None,
     ) -> int:
+        from pipeline_runner import pipeline_execution_scope
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
         target_race = f"{keibajo_code}:{race_bango}" if keibajo_code and race_bango else None
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
-        written = predict_category(
-            database_url,
-            category,
-            models_dir,
-            window,
-            target_race=target_race,
-            r2_config=r2,
-            card_max_race_bango=card_max_race_bango,
-        )
+
+        progress_fn: Callable[[str], None] | None = None
+        if target_race is not None:
+            race_key = f"{category_str}:{run_date}:{target_race}"
+
+            def _mark_progress(_: str) -> None:
+                mark_focused_full_progress(race_key)
+
+            progress_fn = _mark_progress
+
+        with pipeline_execution_scope(progress_fn=progress_fn):
+            written = predict_category(
+                database_url,
+                category,
+                models_dir,
+                window,
+                target_race=target_race,
+                r2_config=r2,
+                card_max_race_bango=card_max_race_bango,
+            )
         # Record the last successful run so parquet_payload_fn can retrieve it.
         with _last_run_lock:
             _last_run.clear()
@@ -1666,18 +1680,27 @@ def _prewarm_parquet_payload(
     return encoded, parquet_key, watermark, watermark_error
 
 
-def _make_prewarm_existing_object_fn(r2: R2Config | None) -> PrewarmExistingObjectFn:
-    """Return a HEAD-based skip check for an already-cached day-base object.
+def _make_prewarm_existing_object_fn(
+    r2: R2Config | None, database_url: str
+) -> PrewarmExistingObjectFn:
+    """Return a freshness-checked skip for an already-cached day-base object.
 
-    A missing watermark (absent object, 403, or pre-metadata object) means
-    this container must rebuild; it never writes the object itself.
+    Presence alone is never sufficient: the R2 metadata must equal the live
+    Catalog entrant plus running-style watermark used by ``ensure_day_base``.
     """
 
     def _existing(category_str: str, run_date: str) -> str | None:
         if r2 is None:
             return None
+        from pipeline_runner import compute_day_base_watermark
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        live_watermark = compute_day_base_watermark(category, run_date, database_url, r2_config=r2)
+        if live_watermark is None:
+            return None
         object_key = build_r2_day_base_key(category_str, run_date)
-        if r2_head_watermark(r2, object_key) is None:
+        if r2_head_watermark(r2, object_key) != live_watermark:
             return None
         return object_key
 
@@ -2345,6 +2368,24 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if path == "/focused-full-status":
+            status_result = parse_focused_full_cache_query(query)
+            if isinstance(status_result, str):
+                error_body = status_result.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+            body = build_focused_full_status_response_body(status_result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/prewarm-day-base-cache":
             cache_params = parse_prewarm_params(query)
             if isinstance(cache_params, str):
@@ -2610,7 +2651,7 @@ def main() -> int:
             _prewarm_parquet_payload,
             cache_populate_fn,
             focused_full_cache_store,
-            _make_prewarm_existing_object_fn(r2),
+            _make_prewarm_existing_object_fn(r2, source_url),
             _make_prewarm_commit_fn(focused_full_cache_store),
             run_prewarm_in_background,
         )

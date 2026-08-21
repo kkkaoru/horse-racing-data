@@ -7,6 +7,7 @@ import type { Env } from "./types";
 interface StoredRecord {
   status: string;
   timestamp: number;
+  doName?: string;
   racesPredicted?: number;
   completedAt?: number;
 }
@@ -14,6 +15,7 @@ interface StoredRecord {
 const storageMap = new Map<string, unknown>();
 
 const storageMock = {
+  delete: vi.fn(async (key: string) => storageMap.delete(key)),
   get: vi.fn(async (key: string) => storageMap.get(key)),
   put: vi.fn(async (key: string, value: unknown) => {
     storageMap.set(key, value);
@@ -35,6 +37,7 @@ beforeEach(() => {
   storageMap.clear();
   storageMock.get.mockClear();
   storageMock.put.mockClear();
+  storageMock.delete.mockClear();
   blockConcurrencyWhileMock.mockClear();
   blockConcurrencyWhileMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
 });
@@ -311,7 +314,7 @@ test("claimFocusedFullRace stores a focused-full started key for a new race", as
   expect(value.status).toBe("started");
 });
 
-test("claimFocusedFullRace returns proceed:false and refreshes the heartbeat for a fresh started key", async () => {
+test("claimFocusedFullRace returns proceed:false without extending a fresh started key", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(10_000);
   storageMap.set("focused-full:20260621:jra:02:01", { status: "started", timestamp: 9_000 });
@@ -324,10 +327,7 @@ test("claimFocusedFullRace returns proceed:false and refreshes the heartbeat for
     staleAfterMs: 2100000,
   });
   expect(result).toStrictEqual({ proceed: false, state: "started" });
-  expect(storageMock.put).toHaveBeenCalledTimes(1);
-  const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
-  expect(key).toBe("focused-full:20260621:jra:02:01");
-  expect(value).toStrictEqual({ status: "started", timestamp: 10_000 });
+  expect(storageMock.put).not.toHaveBeenCalled();
   vi.useRealTimers();
 });
 
@@ -343,8 +343,8 @@ test("claimFocusedFullRace returns proceed:true and refreshes stale started key"
     runYmd: "20260621",
     staleAfterMs: 2100000,
   });
-  expect(result).toStrictEqual({ proceed: true });
-  expect(storageMock.put).toHaveBeenCalledTimes(1);
+  expect(result).toStrictEqual({ proceed: true, state: "stale" });
+  expect(storageMock.put).toHaveBeenCalledTimes(2);
   vi.useRealTimers();
 });
 
@@ -378,7 +378,7 @@ test("claimFocusedFullRace with force:true bypasses a successful focused key and
   expect(result).toStrictEqual({ proceed: true });
   const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
   expect(key).toBe("focused-full:20260621:jra:02:01");
-  expect(value).toStrictEqual({ status: "started", timestamp: 5_000 });
+  expect(value).toStrictEqual({ doName: "legacy-jra", status: "started", timestamp: 5_000 });
   vi.useRealTimers();
 });
 
@@ -406,6 +406,199 @@ test("claimFocusedFullRace does not leak the stale success state after a force r
   });
   expect(followUp).toStrictEqual({ proceed: false, state: "started" });
   vi.useRealTimers();
+});
+
+test("focused-full lane deduplicates waiters and promotes them in FIFO order", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  const coordinator = makeCoordinator();
+  const first = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "10",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  const second = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  const third = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "12",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  expect(first).toStrictEqual({ proceed: true });
+  expect(second).toStrictEqual({ proceed: false, state: "queued" });
+  expect(third).toStrictEqual({ proceed: false, state: "queued" });
+  expect(storageMap.get("focused-full-lane:predict-nar-1")).toStrictEqual({
+    activeRaceKey: "focused-full:20260813:nar:30:10",
+    startedAt: 10_000,
+    waiters: ["focused-full:20260813:nar:30:11", "focused-full:20260813:nar:30:12"],
+  });
+
+  vi.setSystemTime(20_000);
+  await coordinator.completeFocusedFullRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "10",
+    runYmd: "20260813",
+    status: "success",
+  });
+  expect(storageMap.get("focused-full-lane:predict-nar-1")).toStrictEqual({
+    activeRaceKey: "focused-full:20260813:nar:30:11",
+    startedAt: 20_000,
+    waiters: ["focused-full:20260813:nar:30:12"],
+  });
+  const promoted = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  expect(promoted).toStrictEqual({ proceed: true, state: "promoted" });
+
+  vi.setSystemTime(21_000);
+  storageMock.put.mockClear();
+  const activePoll = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  expect(activePoll).toStrictEqual({ proceed: false, state: "started" });
+  expect(storageMock.put).not.toHaveBeenCalled();
+
+  await coordinator.completeFocusedFullRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    status: "error",
+  });
+  await coordinator.completeFocusedFullRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    status: "error",
+  });
+  expect(storageMap.get("focused-full-lane:predict-nar-1")).toStrictEqual({
+    activeRaceKey: "focused-full:20260813:nar:30:12",
+    startedAt: 21_000,
+    waiters: [],
+  });
+  vi.useRealTimers();
+});
+
+test("a stale active focused-full owner yields to its oldest waiter exactly once", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "10",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  vi.setSystemTime(902_000);
+  const stale = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "10",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  expect(stale).toStrictEqual({ proceed: false, state: "queued" });
+  expect(storageMap.get("focused-full-lane:predict-nar-1")).toStrictEqual({
+    activeRaceKey: "focused-full:20260813:nar:30:11",
+    startedAt: 902_000,
+    waiters: ["focused-full:20260813:nar:30:10"],
+  });
+  vi.useRealTimers();
+});
+
+test("completing a queued focused-full race removes only that waiter", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "10",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  await coordinator.completeFocusedFullRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    status: "error",
+  });
+  expect(storageMap.get("focused-full-lane:predict-nar-1")).toMatchObject({
+    activeRaceKey: "focused-full:20260813:nar:30:10",
+    waiters: [],
+  });
+});
+
+test("completing the only focused-full owner deletes its empty lane", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-1",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    staleAfterMs: 900_000,
+  });
+  await coordinator.completeFocusedFullRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "11",
+    runYmd: "20260813",
+    status: "success",
+  });
+  expect(storageMock.delete).toHaveBeenCalledWith("focused-full-lane:predict-nar-1");
+  expect(storageMap.has("focused-full-lane:predict-nar-1")).toBe(false);
 });
 
 test("completeFocusedFullRace writes terminal focused-full state", async () => {
@@ -641,6 +834,7 @@ test("claimContainerSlot honors a custom staleAfterMs and drops an older lease",
         holders: 1,
         kind: "rescore",
         rescoreHolders: 1,
+        staleAfterMs: 2_000,
         timestamp: 1_000,
       },
     ],
@@ -661,6 +855,7 @@ test("claimContainerSlot honors a custom staleAfterMs and drops an older lease",
         holders: 1,
         kind: "rescore",
         rescoreHolders: 1,
+        staleAfterMs: 2_000,
         timestamp: 5_000,
       },
     ],
@@ -679,6 +874,7 @@ test("touchContainerSlot honors a custom staleAfterMs", async () => {
         holders: 1,
         kind: "focused-full",
         rescoreHolders: 0,
+        staleAfterMs: 2_000,
         timestamp: 1_000,
       },
     ],
