@@ -14,6 +14,18 @@ export const originFromForwardedHeaders = (headerMap: Headers): string | null =>
 
 export const mcpResourceUrl = (origin: string): string => `${origin}/mcp`;
 
+export const displayedMcpUrl = (serverMcpUrl: string, browserOrigin: string | null): string => {
+  if (serverMcpUrl.startsWith("https://") || serverMcpUrl.startsWith("http://")) {
+    return serverMcpUrl;
+  }
+  if (browserOrigin === null || browserOrigin.trim().length === 0) {
+    return "/mcp";
+  }
+  const origin = browserOrigin.trim();
+  const withoutSlash = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+  return mcpResourceUrl(withoutSlash);
+};
+
 export const isCanonicalMcpResource = (origin: string, resource: string): boolean => {
   const expected = mcpResourceUrl(origin);
   return resource === expected || resource === origin;

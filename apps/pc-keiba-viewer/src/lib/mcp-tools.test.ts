@@ -285,3 +285,110 @@ it("callMcpTool rejects unknown tools and non-object arguments", async () => {
   const args = await callMcpTool("get_api_spec", ["bad"], jsonFetch({}));
   expect(args.content[0]?.text).toBe("Tool arguments must be an object");
 });
+
+it("search requires a non-empty query", async () => {
+  const empty = await callMcpTool("search", { query: "  " }, jsonFetch({}));
+  expect(empty.content[0]?.text).toBe("query must be a non-empty search string");
+});
+
+it("search returns ChatGPT id title url results from all entity kinds", async () => {
+  const result = await callMcpTool(
+    "search",
+    { query: "Alpha" },
+    jsonFetch({
+      "/api/mypage/favorites/search?kind=horse&q=Alpha": {
+        results: [{ id: "2020100001", kind: "horse", label: "Alpha", meta: "12走" }],
+      },
+      "/api/mypage/favorites/search?kind=jockey&q=Alpha": { results: [] },
+      "/api/mypage/favorites/search?kind=owner&q=Alpha": { results: [] },
+      "/api/mypage/favorites/search?kind=trainer&q=Alpha": {
+        results: [{ id: "Trainer A", kind: "trainer", label: "Trainer A" }],
+      },
+    }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "")).toStrictEqual({
+    results: [
+      {
+        id: "horse:2020100001",
+        title: "Alpha (horse)",
+        url: "/horses/2020100001",
+      },
+      {
+        id: "trainer:Trainer A",
+        title: "Trainer A (trainer)",
+        url: "/trainers/Trainer A",
+      },
+    ],
+  });
+});
+
+it("search skips failed kinds and malformed rows", async () => {
+  const result = await callMcpTool(
+    "search",
+    { query: "X" },
+    jsonFetch({
+      "/api/mypage/favorites/search?kind=jockey&q=X": { results: "bad" },
+      "/api/mypage/favorites/search?kind=owner&q=X": { results: [null] },
+      "/api/mypage/favorites/search?kind=trainer&q=X": {
+        results: [{ id: "T", kind: "barn", label: "Barn" }],
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "")).toStrictEqual({
+    results: [{ id: "barn:T", title: "Barn (barn)", url: "/barn/T" }],
+  });
+});
+
+it("fetch loads an allowlisted api path for ChatGPT", async () => {
+  const result = await callMcpTool(
+    "fetch",
+    { id: "/api/spec" },
+    jsonFetch({ "/api/spec": { openapi: "3.1.0" } }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "")).toStrictEqual({
+    id: "/api/spec",
+    metadata: { kind: "api" },
+    text: '{"openapi":"3.1.0"}',
+    title: "/api/spec",
+    url: "/api/spec",
+  });
+});
+
+it("fetch loads a search result id", async () => {
+  const result = await callMcpTool(
+    "fetch",
+    { id: "horse:2020100001" },
+    jsonFetch({
+      "/api/mypage/favorites/search?kind=horse&q=2020100001": {
+        results: [{ id: "2020100001", kind: "horse", label: "Alpha", meta: "12走" }],
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "")).toStrictEqual({
+    id: "horse:2020100001",
+    metadata: { kind: "horse", meta: "12走" },
+    text: '{"id":"2020100001","kind":"horse","label":"Alpha","meta":"12走"}',
+    title: "Alpha (horse)",
+    url: "/horses/2020100001",
+  });
+});
+
+it("fetch rejects blank, malformed, missing, and failed ids", async () => {
+  const blank = await callMcpTool("fetch", { id: "  " }, jsonFetch({}));
+  expect(blank.content[0]?.text).toBe("id must be a non-empty string");
+  const malformed = await callMcpTool("fetch", { id: "nocolon" }, jsonFetch({}));
+  expect(malformed.content[0]?.text).toBe("id must be kind:id from search, or an /api path");
+  const badKind = await callMcpTool("fetch", { id: "barn:1" }, jsonFetch({}));
+  expect(badKind.content[0]?.text).toBe("id must be kind:id from search, or an /api path");
+  const missing = await callMcpTool(
+    "fetch",
+    { id: "horse:missing" },
+    jsonFetch({
+      "/api/mypage/favorites/search?kind=horse&q=missing": { results: [] },
+    }),
+  );
+  expect(missing.content[0]?.text).toBe("fetch id was not found");
+  const failedApi = await callMcpTool("fetch", { id: "/api/spec" }, failingFetch);
+  expect(failedApi.content[0]?.text).toBe("fetch failed with status 500");
+});

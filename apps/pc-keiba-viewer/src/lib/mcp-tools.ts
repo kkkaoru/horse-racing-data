@@ -43,6 +43,25 @@ export interface McpToolResult {
   isError: boolean;
 }
 
+interface FavoriteSearchRow {
+  id: string;
+  kind: string;
+  label: string;
+  meta: string;
+}
+
+interface ChatgptSearchHit {
+  id: string;
+  title: string;
+  url: string;
+}
+
+interface SearchKindRowsInput {
+  fetchSite: McpSiteFetch;
+  kind: string;
+  query: string;
+}
+
 const YEAR_PATTERN: string = "^\\d{4}$";
 const MONTH_DAY_RACE_PATTERN: string = "^\\d{2}$";
 const KEIBAJO_PATTERN: string = "^[0-9A-Z]{2}$";
@@ -58,6 +77,12 @@ const VIEW_MODE_LIST: readonly WinRateHeatmapViewMode[] = [
 const isHeatmapViewMode = (value: string): value is WinRateHeatmapViewMode =>
   VIEW_MODE_LIST.some((mode) => mode === value);
 const SEARCH_KINDS: ReadonlySet<string> = new Set(["horse", "jockey", "owner", "trainer"]);
+const ENTITY_PAGE_PATH: ReadonlyMap<string, string> = new Map([
+  ["horse", "/horses/"],
+  ["jockey", "/jockeys/"],
+  ["owner", "/owners/"],
+  ["trainer", "/trainers/"],
+]);
 const RACE_SECTIONS: ReadonlySet<string> = new Set([
   "ability",
   "bloodline",
@@ -174,6 +199,30 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       type: "object",
     },
     name: "get_win_rate_heatmap_display",
+  },
+  {
+    description:
+      "ChatGPT search tool. Searches horses, jockeys, owners, and trainers. Returns id/title/url results.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: { query: { description: "Search string.", minLength: 1, type: "string" } },
+      required: ["query"],
+      type: "object",
+    },
+    name: "search",
+  },
+  {
+    description:
+      "ChatGPT fetch tool. Loads a search result id (kind:id) or an allowlisted /api path.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        id: { description: "Result id from search, or an /api path.", type: "string" },
+      },
+      required: ["id"],
+      type: "object",
+    },
+    name: "fetch",
   },
 ];
 
@@ -399,5 +448,117 @@ export const callMcpTool = async (
     });
     return okJson(display);
   }
+  if (name === "search") {
+    return searchForChatgpt(args, fetchSite);
+  }
+  if (name === "fetch") {
+    return fetchForChatgpt(args, fetchSite);
+  }
   return errorResult(`Unknown tool: ${name}`);
+};
+
+const readFavoriteRows = (payload: unknown): FavoriteSearchRow[] => {
+  if (!isRecord(payload) || !Array.isArray(payload.results)) {
+    return [];
+  }
+  return payload.results.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    const id = entry.id;
+    const kind = entry.kind;
+    const label = entry.label;
+    const meta = entry.meta;
+    if (typeof id !== "string" || typeof kind !== "string" || typeof label !== "string") {
+      return [];
+    }
+    return [
+      {
+        id,
+        kind,
+        label,
+        meta: typeof meta === "string" ? meta : "",
+      },
+    ];
+  });
+};
+
+const toChatgptHit = (row: FavoriteSearchRow): ChatgptSearchHit => {
+  const prefix = ENTITY_PAGE_PATH.get(row.kind);
+  const path = prefix === undefined ? `/${row.kind}/${row.id}` : `${prefix}${row.id}`;
+  return {
+    id: `${row.kind}:${row.id}`,
+    title: `${row.label} (${row.kind})`,
+    url: path,
+  };
+};
+
+const searchKindRows = async (input: SearchKindRowsInput): Promise<FavoriteSearchRow[]> => {
+  const path = `/api/mypage/favorites/search?kind=${encodeURIComponent(input.kind)}&q=${encodeURIComponent(input.query)}`;
+  const fetched = await fetchSiteJson(input.fetchSite, path);
+  if (!fetched.ok) {
+    return [];
+  }
+  return readFavoriteRows(fetched.value);
+};
+
+const searchForChatgpt = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const query = readString(args, "query");
+  if (query === null || query.trim().length === 0) {
+    return errorResult("query must be a non-empty search string");
+  }
+  const horseRows = await searchKindRows({ fetchSite, kind: "horse", query });
+  const jockeyRows = await searchKindRows({ fetchSite, kind: "jockey", query });
+  const ownerRows = await searchKindRows({ fetchSite, kind: "owner", query });
+  const trainerRows = await searchKindRows({ fetchSite, kind: "trainer", query });
+  const results = [...horseRows, ...jockeyRows, ...ownerRows, ...trainerRows].map(toChatgptHit);
+  return okJson({ results });
+};
+
+const fetchForChatgpt = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const id = readString(args, "id");
+  if (id === null || id.trim().length === 0) {
+    return errorResult("id must be a non-empty string");
+  }
+  if (id.startsWith("/api/")) {
+    const fetched = await fetchSiteJson(fetchSite, id);
+    if (!fetched.ok) {
+      return errorResult(`fetch failed with status ${fetched.status}`);
+    }
+    return okJson({
+      id,
+      metadata: { kind: "api" },
+      text: JSON.stringify(fetched.value),
+      title: id,
+      url: id,
+    });
+  }
+  const separator = id.indexOf(":");
+  if (separator < 1) {
+    return errorResult("id must be kind:id from search, or an /api path");
+  }
+  const kind = id.slice(0, separator);
+  const entityId = id.slice(separator + 1);
+  if (!SEARCH_KINDS.has(kind) || entityId.length === 0) {
+    return errorResult("id must be kind:id from search, or an /api path");
+  }
+  const rows = await searchKindRows({ fetchSite, kind, query: entityId });
+  const row = rows.find((entry) => entry.id === entityId);
+  if (row === undefined) {
+    return errorResult("fetch id was not found");
+  }
+  const hit = toChatgptHit(row);
+  return okJson({
+    id: hit.id,
+    metadata: { kind: row.kind, meta: row.meta },
+    text: JSON.stringify(row),
+    title: hit.title,
+    url: hit.url,
+  });
 };

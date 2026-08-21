@@ -2311,6 +2311,91 @@ fieldset.running-style-tabs {
   margin: var(--number-0-2);
 }
 
+.mcp-connect-intro,
+.mcp-connect-card {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-12px-9);
+  margin-bottom: var(--space-20px-52);
+  padding: var(--space-16px-10) var(--space-18px-31);
+}
+
+.mcp-connect-intro p,
+.mcp-connect-card p,
+.mcp-connect-card ol,
+.mcp-connect-card li {
+  margin: var(--number-0-2);
+}
+
+.mcp-connect-card h2 {
+  font-size: var(--space-20px-52);
+  margin: var(--number-0-2);
+}
+
+.mcp-connect-url-row {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.mcp-connect-url-row code {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  flex: var(--number-1-7) var(--number-1-7) auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.mcp-connect-url-row button,
+.mcp-connect-card .mcp-connect-link {
+  align-items: center;
+  background: var(--accent);
+  border: var(--space-1px-7) solid var(--accent);
+  border-radius: var(--space-6px-33);
+  color: var(--surface);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: var(--number-800-12);
+  min-height: var(--space-38px-35);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.mcp-connect-card ol {
+  display: grid;
+  gap: var(--space-10px-27);
+  padding-left: var(--space-20px-52);
+}
+
+.mcp-connect-figure {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin: var(--number-0-2);
+}
+
+.mcp-connect-figure img {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: block;
+  height: auto;
+  max-width: var(--space-100pct-12);
+}
+
+.mcp-connect-figure figcaption {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+}
+
+.mcp-connect-back {
+  color: var(--accent-strong);
+  font-weight: var(--number-800-12);
+}
+
 .mypage-favorites-panel .section-heading button {
   background: var(--accent);
   border: var(--space-1px-7) solid var(--accent);

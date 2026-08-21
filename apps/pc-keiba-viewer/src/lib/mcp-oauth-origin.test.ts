@@ -2,6 +2,7 @@
 import { expect, it } from "vitest";
 
 import {
+  displayedMcpUrl,
   isCanonicalMcpResource,
   mcpResourceUrl,
   normalizeMcpResource,
@@ -50,4 +51,19 @@ it("reads origin from forwarded headers and rejects a missing host", () => {
   ).toBe("http://viewer.example.test");
   expect(originFromForwardedHeaders(new Headers())).toBe(null);
   expect(originFromForwardedHeaders(new Headers({ host: "   " }))).toBe(null);
+});
+
+it("displays an absolute MCP URL from the request origin or the browser origin", () => {
+  expect(displayedMcpUrl("https://viewer.example.test/mcp", "https://other.example.test")).toBe(
+    "https://viewer.example.test/mcp",
+  );
+  expect(displayedMcpUrl("/mcp", "https://viewer.example.test")).toBe(
+    "https://viewer.example.test/mcp",
+  );
+  expect(displayedMcpUrl("/mcp", "https://viewer.example.test/")).toBe(
+    "https://viewer.example.test/mcp",
+  );
+  expect(displayedMcpUrl("http://127.0.0.1:3000/mcp", null)).toBe("http://127.0.0.1:3000/mcp");
+  expect(displayedMcpUrl("/mcp", null)).toBe("/mcp");
+  expect(displayedMcpUrl("/mcp", "   ")).toBe("/mcp");
 });

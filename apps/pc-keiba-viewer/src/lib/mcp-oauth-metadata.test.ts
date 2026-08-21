@@ -11,6 +11,7 @@ it("builds protected resource metadata for the MCP resource", () => {
     authorization_servers: ["https://viewer.example.test"],
     bearer_methods_supported: ["header"],
     resource: "https://viewer.example.test/mcp",
+    resource_documentation: "https://viewer.example.test/mcp-connect",
     scopes_supported: ["mcp"],
   });
 });
@@ -25,7 +26,7 @@ it("builds authorization server metadata with PKCE S256 and DCR", () => {
     issuer: "https://viewer.example.test",
     registration_endpoint: "https://viewer.example.test/oauth/register",
     response_types_supported: ["code"],
-    scopes_supported: ["mcp"],
+    scopes_supported: ["mcp", "offline_access"],
     token_endpoint: "https://viewer.example.test/oauth/token",
     token_endpoint_auth_methods_supported: ["none"],
   });

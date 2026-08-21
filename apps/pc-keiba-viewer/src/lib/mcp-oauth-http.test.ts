@@ -48,7 +48,7 @@ it("serves protected resource and authorization server metadata", async () => {
     issuer: "https://viewer.example.test",
     registration_endpoint: "https://viewer.example.test/oauth/register",
     response_types_supported: ["code"],
-    scopes_supported: ["mcp"],
+    scopes_supported: ["mcp", "offline_access"],
     token_endpoint: "https://viewer.example.test/oauth/token",
     token_endpoint_auth_methods_supported: ["none"],
   });

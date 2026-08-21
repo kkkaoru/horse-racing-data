@@ -3,11 +3,13 @@
 import { mcpResourceUrl } from "./mcp-oauth-origin";
 
 export const MCP_OAUTH_SCOPE: string = "mcp";
+export const MCP_OAUTH_OFFLINE_SCOPE: string = "offline_access";
 
 export const buildProtectedResourceMetadata = (origin: string): Record<string, unknown> => ({
   authorization_servers: [origin],
   bearer_methods_supported: ["header"],
   resource: mcpResourceUrl(origin),
+  resource_documentation: `${origin}/mcp-connect`,
   scopes_supported: [MCP_OAUTH_SCOPE],
 });
 
@@ -20,7 +22,7 @@ export const buildAuthorizationServerMetadata = (origin: string): Record<string,
   issuer: origin,
   registration_endpoint: `${origin}/oauth/register`,
   response_types_supported: ["code"],
-  scopes_supported: [MCP_OAUTH_SCOPE],
+  scopes_supported: [MCP_OAUTH_SCOPE, MCP_OAUTH_OFFLINE_SCOPE],
   token_endpoint: `${origin}/oauth/token`,
   token_endpoint_auth_methods_supported: ["none"],
 });
