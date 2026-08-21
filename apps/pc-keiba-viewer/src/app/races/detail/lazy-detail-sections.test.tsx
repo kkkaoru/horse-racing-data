@@ -75,6 +75,26 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
         ),
       );
     }
+    if (url.endsWith("/sections/win-rate-heatmap")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [{ frameNumber: "1" }],
+            horseResults: [],
+            runners: [],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          },
+        ),
+      );
+    }
     return Promise.resolve(
       new Response(
         JSON.stringify({
@@ -330,6 +350,23 @@ test("LazyDetailSections renders a chart section error when the results fetch fa
         }),
       );
     }
+    if (url === "/api/races/2027/06/12/05/01/sections/win-rate-heatmap") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [],
+            horseResults: [],
+            runners: [],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
     return Promise.resolve(
       new Response(JSON.stringify({ type: "time-score" }), {
         headers: { "content-type": "application/json" },
@@ -393,6 +430,23 @@ test("LazyDetailSections renders a chart section error when the results payload 
           headers: { "content-type": "application/json" },
           status: 200,
         }),
+      );
+    }
+    if (url === "/api/races/2027/06/13/05/01/sections/win-rate-heatmap") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [],
+            horseResults: [],
+            runners: [],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
       );
     }
     return Promise.resolve(

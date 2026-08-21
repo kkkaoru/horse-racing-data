@@ -22,6 +22,15 @@ import {
   putDetailSectionCache,
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
+  buildWinRateHeatmapCacheKey,
+  isWinRateHeatmapSectionPayload,
+  serializeWinRateHeatmapCacheQuery,
+} from "../../../../../../../../../../lib/win-rate-heatmap-cache";
+import {
+  getCachedWinRateHeatmapPayload,
+  putWinRateHeatmapCache,
+} from "../../../../../../../../../../lib/win-rate-heatmap-cache.server";
+import {
   type DetailSection,
   getDetailSectionPayload,
   getFinishPositionBucketSectionData,
@@ -52,6 +61,7 @@ const SECTIONS = [
   "similar",
   "time-score",
   "training",
+  "win-rate-heatmap",
 ] as const satisfies readonly DetailSection[];
 
 const NON_EMPTY_MODEL_PREDICTION_FEATURES_MARKER = '"modelPredictionFeatures":[{';
@@ -241,6 +251,48 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
 
   const requestUrl = new URL(request.url);
   const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
+  if (section === "win-rate-heatmap") {
+    const heatmapCacheKey = buildWinRateHeatmapCacheKey({
+      day,
+      keibajoCode,
+      month,
+      query: serializeWinRateHeatmapCacheQuery(sectionSearchParams),
+      raceNumber,
+      year,
+    });
+    const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey);
+    if (cachedHeatmap) {
+      return NextResponse.json(cachedHeatmap, {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "X-Win-Rate-Heatmap-Cache": "HIT",
+        },
+      });
+    }
+    const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
+    if (!raceSource) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    const heatmapPayload = await getDetailSectionPayload(section, {
+      day,
+      keibajoCode,
+      month,
+      query: searchParamsToRecord(sectionSearchParams),
+      raceNumber,
+      raceSource,
+      year,
+    });
+    if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    await putWinRateHeatmapCache({ cacheKey: heatmapCacheKey, payload: heatmapPayload });
+    return NextResponse.json(heatmapPayload, {
+      headers: {
+        "Cache-Control": "private, max-age=0, no-store",
+        "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
+      },
+    });
+  }
   const defaultSectionRequest =
     stripDetailSectionCacheWarmParams(requestUrl.searchParams).toString() === "";
   const cacheableDefaultRequest =

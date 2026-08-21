@@ -53,7 +53,8 @@ type DetailSection =
   | "results"
   | "similar"
   | "time-score"
-  | "training";
+  | "training"
+  | "win-rate-heatmap";
 
 interface LazyDetailSectionsProps {
   day: string;
@@ -111,6 +112,7 @@ type AbilityPayload = {
 };
 
 type ConditionPayload = {
+  carriedWeightClassStats: WeightClassStatsRow[];
   conditionLabels: ConditionLabels & { runnerCount: string | null };
   finishPositionStats: FinishPositionStatsRow[];
   frameStats: FrameStatsRow[];
@@ -147,6 +149,17 @@ type SimilarPayload = {
   similarStatsIncomplete?: boolean;
   source: RaceSource;
   type: "similar";
+};
+
+type WinRateHeatmapPayload = {
+  bloodlineRows: BloodlineStatsRow[];
+  carriedWeightClassStats: WeightClassStatsRow[];
+  frameStats: FrameStatsRow[];
+  horseResults: HorseRaceResult[];
+  runners: Runner[];
+  similarRows: SimilarRaceStatsRow[];
+  type: "win-rate-heatmap";
+  weightClassStats: WeightClassStatsRow[];
 };
 
 type TimeScorePayload = {
@@ -207,7 +220,8 @@ type SectionPayload =
   | ResultsPayload
   | SimilarPayload
   | TimeScorePayload
-  | TrainingPayload;
+  | TrainingPayload
+  | WinRateHeatmapPayload;
 
 type SectionState =
   | { error: string; payload: null; status: "error" }
@@ -226,6 +240,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   similar: "同条件成績",
   "time-score": "総合評価スコア",
   training: "調教・追い切り",
+  "win-rate-heatmap": "勝率ヒートマップ",
 };
 
 // Not part of SECTION_TITLES because that map is keyed by DetailSection and this
@@ -304,6 +319,17 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
     return (
       name.startsWith("similarStats") ||
       name.startsWith("bloodlineStats") ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
+  }
+  if (section === "win-rate-heatmap") {
+    return (
+      name === "resultsSourceScope" ||
+      name.startsWith("analysisStats") ||
+      name.startsWith("analysisCell") ||
+      name.startsWith("bloodlineStats") ||
+      name.startsWith("similarStats") ||
+      name === "similarStatsVenue" ||
       GENERIC_STATS_QUERY_KEYS.has(name)
     );
   }
@@ -648,46 +674,30 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
 
 function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
-  const scoreState = useSectionPayload("time-score", props, searchParams);
-  const resultsState = useSectionPayload("results", props, searchParams);
-  const conditionState = useSectionPayload("condition", props, searchParams);
-  if (
-    (scoreState.status === "loading" && scoreState.payload === null) ||
-    (resultsState.status === "loading" && resultsState.payload === null) ||
-    (conditionState.status === "loading" && conditionState.payload === null)
-  ) {
+  const state = useSectionPayload("win-rate-heatmap", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
   }
-  if (scoreState.status === "error") {
-    return <SectionError error={scoreState.error} title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
   }
-  const payload = scoreState.payload;
-  if (!payload || payload.type !== "time-score") {
+  const payload = state.payload;
+  if (!payload || payload.type !== "win-rate-heatmap") {
     return <SectionError error="Invalid section payload" title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
   }
-  const horseResults = resultsState.payload?.type === "results" ? resultsState.payload.results : [];
-  const frameStats =
-    conditionState.payload?.type === "condition" ? (conditionState.payload.frameStats ?? []) : [];
-  const weightClassStats =
-    conditionState.payload?.type === "condition"
-      ? (conditionState.payload.weightClassStats ?? [])
-      : [];
   return (
     <section
-      aria-busy={
-        scoreState.status === "loading" ||
-        resultsState.status === "loading" ||
-        conditionState.status === "loading"
-      }
+      aria-busy={state.status === "loading"}
       className="similar-stats-section lazy-detail-section win-rate-heatmap-section"
     >
       <div className="section-heading compact">
         <h2>{WIN_RATE_HEATMAP_SECTION_TITLE}</h2>
       </div>
       <WinRateHeatmapSection
-        bloodlineRows={payload.bloodlineRows ?? []}
-        frameStats={frameStats}
-        horseResults={horseResults}
+        bloodlineRows={payload.bloodlineRows}
+        carriedWeightClassStats={payload.carriedWeightClassStats}
+        frameStats={payload.frameStats}
+        horseResults={payload.horseResults}
         keibajoCode={props.keibajoCode}
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
@@ -698,9 +708,9 @@ function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
           source: props.source,
           year: props.year,
         }}
-        runners={payload.runners ?? []}
-        similarRows={payload.similarRows ?? []}
-        weightClassStats={weightClassStats}
+        runners={payload.runners}
+        similarRows={payload.similarRows}
+        weightClassStats={payload.weightClassStats}
       />
     </section>
   );

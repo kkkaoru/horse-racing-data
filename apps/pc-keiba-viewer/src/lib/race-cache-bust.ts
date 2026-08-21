@@ -13,6 +13,7 @@ import {
   buildDetailSectionCacheKey,
   type DetailSectionCacheableSection,
 } from "./race-detail-section-cache";
+import { buildWinRateHeatmapCacheKey } from "./win-rate-heatmap-cache";
 
 // Generation counter key shape. Lives in `DETAIL_SECTION_CACHE_KV` next to
 // the actual cache entries so cache-warm / read paths can fold it into the
@@ -93,13 +94,21 @@ export const buildRaceCacheGenerationKey = (request: RaceCacheBustRequest): stri
   ].join(":");
 
 export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCacheBustKeySet => {
-  const mainKeys = DETAIL_SECTION_CACHEABLE_SECTIONS.map((section) =>
+  const sectionMainKeys = DETAIL_SECTION_CACHEABLE_SECTIONS.map((section) =>
     buildSectionMainKey(request, section),
   );
-  const staleKeys = mainKeys.map((key) => `${STALE_KEY_PREFIX}:${key}`);
+  const heatmapKey = buildWinRateHeatmapCacheKey({
+    day: request.mmdd.slice(2, 4),
+    keibajoCode: request.keibajoCode,
+    month: request.mmdd.slice(0, 2),
+    query: "",
+    raceNumber: request.raceBango,
+    year: request.year,
+  });
+  const staleKeys = sectionMainKeys.map((key) => `${STALE_KEY_PREFIX}:${key}`);
   return {
     generationKey: buildRaceCacheGenerationKey(request),
-    mainKeys,
+    mainKeys: [...sectionMainKeys, heatmapKey],
     staleKeys,
   };
 };

@@ -148,6 +148,7 @@ it("buildRaceCacheBustKeys generates main + stale entries for every cacheable se
     "race-detail-section:v5:2026:06:28:05:11:similar:default",
     "race-detail-section:v5:2026:06:28:05:11:time-score:default",
     "race-detail-section:v3:2026:06:28:05:11:training:default",
+    "pc-keiba-viewer:win-rate-heatmap:v1:2026:06:28:05:11:default",
   ]);
 });
 
