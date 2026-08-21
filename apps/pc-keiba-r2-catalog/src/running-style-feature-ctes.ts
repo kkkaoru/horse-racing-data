@@ -249,6 +249,27 @@ trainer_career as (
   from trainer_history
   group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango
 ),
+target_pedigree as (
+  select
+    t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
+    cast(coalesce(t.kyori, 0) as int) / ${DISTANCE_BAND_METERS} as kyori_band,
+    left(coalesce(t.track_code, ''), 1) as surface,
+    0 as rs_bucket,
+    um.ketto_joho_01b as target_sire,
+    um.ketto_joho_05b as target_damsire
+  from target t
+  left join ${masterTable} um on um.ketto_toroku_bango = t.ketto_toroku_bango
+),
+target_sires as (
+  select distinct target_sire
+  from target_pedigree
+  where target_sire is not null and trim(target_sire) <> ''
+),
+target_damsires as (
+  select distinct target_damsire
+  from target_pedigree
+  where target_damsire is not null and trim(target_damsire) <> ''
+),
 target_months as (
   select distinct cast(kaisai_nen as int) * 100 + cast(substr(kaisai_tsukihi, 1, 2) as int) as stats_year_month
   from target
@@ -269,7 +290,10 @@ pedigree_rec_um as (
     r.corner1_norm * 1.0 as corner1_norm
   from rec r
   left join ${masterTable} um on um.ketto_toroku_bango = r.ketto_toroku_bango
+  left join target_sires ts on ts.target_sire = um.ketto_joho_01b
+  left join target_damsires td on td.target_damsire = um.ketto_joho_05b
   where not (r.source = 'nar' and r.keibajo_code = '83')
+    and (ts.target_sire is not null or td.target_damsire is not null)
 ),
 sire_distance_monthly as (
   select race_year_month, ketto_joho_01b as sire, cast(coalesce(kyori, 0) as int) / ${DISTANCE_BAND_METERS} as kyori_band,
@@ -363,17 +387,6 @@ sire_running_style_stats as (
   from target_months tm
   join sire_running_style_monthly m on m.race_year_month < tm.stats_year_month
   group by tm.stats_year_month, m.sire, m.rs_bucket
-),
-target_pedigree as (
-  select
-    t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
-    cast(coalesce(t.kyori, 0) as int) / ${DISTANCE_BAND_METERS} as kyori_band,
-    left(coalesce(t.track_code, ''), 1) as surface,
-    0 as rs_bucket,
-    um.ketto_joho_01b as target_sire,
-    um.ketto_joho_05b as target_damsire
-  from target t
-  left join ${masterTable} um on um.ketto_toroku_bango = t.ketto_toroku_bango
 ),
 race_horses as (
   select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,

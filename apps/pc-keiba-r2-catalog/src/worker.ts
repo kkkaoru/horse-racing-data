@@ -97,6 +97,16 @@ const requireCode = (url: URL, name: string): string => {
   return code;
 };
 
+const parseUmaban = (url: URL): number | undefined => {
+  const value = url.searchParams.get("umaban");
+  if (value === null) return undefined;
+  const umaban = Number(value);
+  if (!Number.isInteger(umaban) || umaban < 1 || umaban > 18) {
+    throw new Error("umaban must be an integer from 1 to 18");
+  }
+  return umaban;
+};
+
 // raceBango is optional: omitting it builds every race at the venue in one
 // pass. The decade-wide history CTEs depend only on date + source, so a
 // venue-level build pays that scan once instead of once per race.
@@ -105,6 +115,7 @@ const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   keibajoCode: requireCode(url, "keibajoCode"),
   raceBango: parseCode(url, "raceBango"),
   source: parseRunningStyleSource(url),
+  umaban: parseUmaban(url),
 });
 
 const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
@@ -114,7 +125,7 @@ const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
 });
 
 const runningStyleCoalesceKey = (filters: RunningStyleFeatureFilters): string =>
-  `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}`;
+  `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}:${filters.umaban === undefined ? "all" : String(filters.umaban)}`;
 
 const cachedArrayResponse = async (
   descriptor: CacheDescriptor,

@@ -295,6 +295,34 @@ it("queries running-style features with no-store and bypasses Cache API and KV",
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("limit 18");
 });
 
+it("validates and forwards a running-style target umaban", async () => {
+  const harness = createHarness([{ ...featureRow(), umaban: 7 }]);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1&umaban=7",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch(
+    "try_cast(nullif(umaban, '') AS INT) = 7",
+  );
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("limit 1");
+
+  const invalid = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1&umaban=19",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(invalid.status).toBe(400);
+  await expect(invalid.json()).resolves.toStrictEqual({
+    error: "umaban must be an integer from 1 to 18",
+  });
+});
+
 it("retries running-style features without ORDER BY and sorts by umaban when R2 SQL rejects the query as too deep", async () => {
   const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
   const fetchImpl: Fetcher = async (input, init) => {

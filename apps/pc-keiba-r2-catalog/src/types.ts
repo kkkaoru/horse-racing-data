@@ -107,6 +107,7 @@ export interface RunningStyleFeatureFilters {
   keibajoCode: string;
   raceBango?: string;
   source: RunningStyleSourceScope;
+  umaban?: number;
 }
 
 export interface RaceTrainingFilters {

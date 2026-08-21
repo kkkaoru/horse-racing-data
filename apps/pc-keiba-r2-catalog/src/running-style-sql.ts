@@ -70,6 +70,14 @@ const validateFilters = (filters: RunningStyleFeatureFilters): void => {
   if (filters.raceBango !== undefined && !CODE_PATTERN.test(filters.raceBango)) {
     throw new Error("raceBango must contain two digits");
   }
+  if (
+    filters.umaban !== undefined &&
+    (!Number.isInteger(filters.umaban) ||
+      filters.umaban < 1 ||
+      filters.umaban > MAX_RUNNERS_PER_RACE)
+  ) {
+    throw new Error("umaban must be an integer from 1 to 18");
+  }
   if (filters.source === "ban-ei" && filters.keibajoCode !== "83") {
     throw new Error("keibajoCode must be 83 for ban-ei");
   }
@@ -109,6 +117,12 @@ const raceBangoPredicate = (raceBango: string | undefined): string =>
   raceBango === undefined
     ? ""
     : `AND race_bango = '${raceBango}'
+    `;
+
+const umabanPredicate = (umaban: number | undefined): string =>
+  umaban === undefined
+    ? ""
+    : `AND try_cast(nullif(umaban, '') AS INT) = ${String(umaban)}
     `;
 
 const targetPredicates = (
@@ -249,6 +263,8 @@ export const buildRunningStyleFeaturesQuery = (
   const source = sourceConfig(filters.source);
   const historyWhere = historyPredicates(filters, source);
   const targetWhere = targetPredicates(filters, source);
+  const targetRunnerWhere = `${targetWhere}
+    ${umabanPredicate(filters.umaban)}`;
   const historySe = tableName(env, source.runnerTable);
   const historyRa = tableName(env, source.raceTable);
   const master = tableName(env, source.masterTable);
@@ -265,7 +281,7 @@ history_ra AS (
 target_se AS (
   SELECT${runnerColumns}
   FROM ${historySe}
-  WHERE ${targetWhere}
+  WHERE ${targetRunnerWhere}
 ),
 target_ra AS (
   SELECT${raceColumns}
@@ -284,9 +300,11 @@ ${runningStyleFeatureCtesSql({
   masterTable: master,
   orderByColumns: filters.raceBango === undefined ? VENUE_ORDER_BY_COLUMNS : RACE_ORDER_BY_COLUMNS,
   rowLimit:
-    filters.raceBango === undefined
-      ? MAX_RUNNERS_PER_RACE * MAX_RACES_PER_VENUE_DAY
-      : MAX_RUNNERS_PER_RACE,
+    filters.umaban !== undefined
+      ? 1
+      : filters.raceBango === undefined
+        ? MAX_RUNNERS_PER_RACE * MAX_RACES_PER_VENUE_DAY
+        : MAX_RUNNERS_PER_RACE,
 })}`;
 };
 

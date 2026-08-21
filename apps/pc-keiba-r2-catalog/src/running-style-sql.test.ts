@@ -88,6 +88,20 @@ it("emits only fixed raw-table R2 SQL syntax", () => {
   expect(sql).not.toMatch(/\b(?:insert|update|delete|create|drop|alter)\b/iu);
 });
 
+it("limits pedigree aggregation to sires and damsires used by target runners", () => {
+  const sql = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
+    false,
+  );
+  expect(sql).toMatch("target_sires as (");
+  expect(sql).toMatch("target_damsires as (");
+  expect(sql).toMatch("left join target_sires ts on ts.target_sire = um.ketto_joho_01b");
+  expect(sql).toMatch("left join target_damsires td on td.target_damsire = um.ketto_joho_05b");
+  expect(sql).toMatch("and (ts.target_sire is not null or td.target_damsire is not null)");
+  expect(sql.indexOf("target_pedigree as (")).toBeLessThan(sql.indexOf("pedigree_rec_um as ("));
+});
+
 it("rejects unsafe filters and mismatched NAR categories", () => {
   const build = (overrides: Partial<Parameters<typeof buildRunningStyleFeaturesQuery>[1]>) =>
     buildRunningStyleFeaturesQuery(
@@ -104,6 +118,8 @@ it("rejects unsafe filters and mismatched NAR categories", () => {
   expect(() => build({ date: "2026-07-15" })).toThrow("date must match YYYYMMDD");
   expect(() => build({ keibajoCode: "5" })).toThrow("keibajoCode must contain two digits");
   expect(() => build({ raceBango: "1;" })).toThrow("raceBango must contain two digits");
+  expect(() => build({ umaban: 0 })).toThrow("umaban must be an integer from 1 to 18");
+  expect(() => build({ umaban: 19 })).toThrow("umaban must be an integer from 1 to 18");
   expect(() => build({ keibajoCode: "05", source: "ban-ei" })).toThrow(
     "keibajoCode must be 83 for ban-ei",
   );
@@ -117,6 +133,16 @@ it("rejects unsafe filters and mismatched NAR categories", () => {
       true,
     ),
   ).toThrow("R2_SQL_NAMESPACE must be an unquoted SQL identifier");
+});
+
+it("filters one target runner and caps the query at one row", () => {
+  const sql = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra", umaban: 7 },
+    false,
+  );
+  expect(sql.match(/try_cast\(nullif\(umaban, ''\) AS INT\) = 7/gu)).toHaveLength(1);
+  expect(sql).toMatch("select * from final_features limit 1");
 });
 
 it("drops the target race filter and widens the cap when raceBango is omitted", () => {
