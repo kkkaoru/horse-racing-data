@@ -23,6 +23,8 @@ _RAW_CATALOG_TABLES = (
     "jvd_ra",
     "jvd_se",
     "jvd_um",
+    "jvd_wc",
+    "netkeiba_training_workouts",
     "nvd_nu",
     "nvd_ra",
     "nvd_se",

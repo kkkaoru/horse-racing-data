@@ -133,6 +133,25 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
             ("chokyo_nengappi",),
         ),
         TableSpec(
+            "jvd_wc",
+            ("tracen_kubun", "chokyo_nengappi", "chokyo_jikoku", "ketto_toroku_bango"),
+            ("chokyo_nengappi",),
+        ),
+        TableSpec(
+            "netkeiba_training_workouts",
+            (
+                "kaisai_nen",
+                "kaisai_tsukihi",
+                "keibajo_code",
+                "race_bango",
+                "ketto_toroku_bango",
+                "workout_key",
+            ),
+            ("kaisai_nen", "kaisai_tsukihi"),
+            source_marker_range_column="updated_at",
+            source_marker_extra_hash_columns=("updated_at",),
+        ),
+        TableSpec(
             "nvd_se",
             (
                 "kaisai_nen",

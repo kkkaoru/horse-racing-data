@@ -474,7 +474,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
           <tbody>
             {sortedTrainings.map((training) => (
               <tr
-                key={`${training.umaban}-${training.trainingType}-${training.chokyoNengappi}-${training.chokyoJikoku}`}
+                key={`${training.umaban}-${training.trainingType}-${training.chokyoNengappi}-${training.chokyoJikoku}-${training.premiumWorkoutIndex ?? "jra"}`}
               >
                 <td>{formatRunnerNumber(training.umaban)}</td>
                 <td className="training-horse-cell">{cleanText(training.bamei)}</td>

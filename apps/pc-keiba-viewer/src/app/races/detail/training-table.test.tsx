@@ -133,4 +133,33 @@ describe("training table", () => {
     expect(screen.getByText("調教データなし馬")).toBeTruthy();
     expect(screen.getByText("-")).toBeTruthy();
   });
+
+  it("shows netkeiba fallback workout times together with its symbol", () => {
+    render(
+      <TrainingTable
+        sourceLabel="JRA"
+        trainings={[
+          training({
+            bamei: "現地調教馬",
+            course: "札幌ダート",
+            lapTime1f: "123",
+            premiumEvaluationGrade: "S",
+            premiumEvaluationText: "抜群",
+            premiumWorkoutIndex: 0,
+            timeGokei4f: "498",
+            tracenKubun: "札幌",
+            trainingDataSource: "netkeiba",
+            trainingType: "ダート",
+            umaban: "05",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("現地調教馬")).toBeTruthy();
+    expect(screen.getByText("49.8")).toBeTruthy();
+    expect(screen.getByText("12.3")).toBeTruthy();
+    expect(screen.getByText("抜群")).toBeTruthy();
+    expect(screen.getByText("S")).toBeTruthy();
+  });
 });

@@ -193,6 +193,8 @@ class ValidationTests(unittest.TestCase):
                 "jvd_ra",
                 "jvd_um",
                 "jvd_hc",
+                "jvd_wc",
+                "netkeiba_training_workouts",
                 "nvd_se",
                 "nvd_ra",
                 "nvd_um",
@@ -316,6 +318,45 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertIn('"chokyo_nengappi" = ?', hc_sql)
         self.assertEqual(hc_params, ["20260715"])
+        netkeiba_sql, netkeiba_params = subject.source_query(
+            subject.TABLE_SPECS["netkeiba_training_workouts"], "20260715"
+        )
+        self.assertIn('FROM source_pg.public."netkeiba_training_workouts"', netkeiba_sql)
+        self.assertIn('"kaisai_nen" = ?', netkeiba_sql)
+        self.assertIn('"kaisai_tsukihi" = ?', netkeiba_sql)
+        self.assertEqual(netkeiba_params, ["2026", "0715"])
+
+    def test_training_table_specs_preserve_keys_dates_and_source_markers(self) -> None:
+        self.assertEqual(
+            subject.TABLE_SPECS["jvd_wc"],
+            subject.TableSpec(
+                "jvd_wc",
+                (
+                    "tracen_kubun",
+                    "chokyo_nengappi",
+                    "chokyo_jikoku",
+                    "ketto_toroku_bango",
+                ),
+                ("chokyo_nengappi",),
+            ),
+        )
+        self.assertEqual(
+            subject.TABLE_SPECS["netkeiba_training_workouts"],
+            subject.TableSpec(
+                "netkeiba_training_workouts",
+                (
+                    "kaisai_nen",
+                    "kaisai_tsukihi",
+                    "keibajo_code",
+                    "race_bango",
+                    "ketto_toroku_bango",
+                    "workout_key",
+                ),
+                ("kaisai_nen", "kaisai_tsukihi"),
+                source_marker_range_column="updated_at",
+                source_marker_extra_hash_columns=("updated_at",),
+            ),
+        )
 
     def test_source_query_uses_year_equality_or_hc_range(self) -> None:
         sql, params = subject.source_query(
@@ -1591,6 +1632,24 @@ WHERE TRUE
         self.assertIn('coalesce("updated_at"::text, \'\')', sql)
         self.assertIn("race_source", sql)
         self.assertIn('FROM public."oversea_runner_identity"', sql)
+        self.assertNotIn("data_sakusei_nengappi", sql)
+        self.assertNotIn("record_id", sql)
+
+    def test_netkeiba_workout_marker_uses_updated_at_and_complete_primary_key(
+        self,
+    ) -> None:
+        sql = subject.source_marker_sql(
+            subject.TABLE_SPECS["netkeiba_training_workouts"],
+            '"kaisai_nen" = \'2026\' AND "kaisai_tsukihi" = \'0822\'',
+        )
+        self.assertIn('min("updated_at")::text', sql)
+        self.assertIn('max("updated_at")::text', sql)
+        self.assertIn('coalesce("updated_at"::text, \'\')', sql)
+        self.assertIn("keibajo_code", sql)
+        self.assertIn("race_bango", sql)
+        self.assertIn("ketto_toroku_bango", sql)
+        self.assertIn("workout_key", sql)
+        self.assertIn('FROM public."netkeiba_training_workouts"', sql)
         self.assertNotIn("data_sakusei_nengappi", sql)
         self.assertNotIn("record_id", sql)
 

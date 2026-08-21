@@ -108,3 +108,47 @@ export interface RunningStyleFeatureFilters {
   raceBango?: string;
   source: RunningStyleSourceScope;
 }
+
+export interface RaceTrainingFilters {
+  date: string;
+  keibajoCode: string;
+  raceBango: string;
+}
+
+export interface RaceTrainingRow {
+  babamawari: string | null;
+  bamei: string | null;
+  chokyoJikoku: string;
+  chokyoNengappi: string;
+  course: string | null;
+  currentJockeyName: string | null;
+  lapTime10f: string | null;
+  lapTime1f: string | null;
+  lapTime2f: string | null;
+  lapTime3f: string | null;
+  lapTime4f: string | null;
+  lapTime5f: string | null;
+  lapTime6f: string | null;
+  lapTime7f: string | null;
+  lapTime8f: string | null;
+  lapTime9f: string | null;
+  premiumCommentText?: string | null;
+  premiumEvaluationGrade?: string | null;
+  premiumEvaluationText?: string | null;
+  premiumWorkoutIndex?: number;
+  timeGokei10f: string | null;
+  timeGokei2f: string | null;
+  timeGokei3f: string | null;
+  timeGokei4f: string | null;
+  timeGokei5f: string | null;
+  timeGokei6f: string | null;
+  timeGokei7f: string | null;
+  timeGokei8f: string | null;
+  timeGokei9f: string | null;
+  tracenKubun: string | null;
+  trainerName: string | null;
+  trainingDataSource: "jra" | "netkeiba";
+  trainingRiderName: string | null;
+  trainingType: string;
+  umaban: string | null;
+}

@@ -10,6 +10,7 @@ import {
   populateCaches,
   purgeDescriptors,
   readKvRows,
+  trainingDescriptor,
 } from "./cache";
 import type { CacheStore, KvStore } from "./types";
 
@@ -58,6 +59,17 @@ it("builds canonical Cache API and KV keys", () => {
   );
   expect(cacheRequestFor({ date: "20260715", kind: "race-keys" }).url).toBe(
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-keys?date=20260715",
+  );
+  const training = trainingDescriptor({
+    date: "20260715",
+    keibajoCode: "05",
+    raceBango: "01",
+  });
+  expect(cacheRequestFor(training).url).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&keibajoCode=05&raceBango=01",
+  );
+  expect(kvKeyFor(training)).toBe(
+    "catalog:v2:v2/race-trainings?date=20260715&keibajoCode=05&raceBango=01",
   );
 });
 

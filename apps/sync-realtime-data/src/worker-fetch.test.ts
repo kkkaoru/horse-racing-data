@@ -43,6 +43,7 @@ vi.mock("./storage", () => ({
   listSchedulableRaceSourcesByDate: vi.fn(async () => []),
   getVenueLastRaceStartAtJst: vi.fn(async () => null),
   countRaceSourcesByDate: vi.fn(async () => 0),
+  countJraRaceSourcesByDate: vi.fn(async () => 0),
   countJraRaceSourcesMissingRaceDateFieldsByDate: vi.fn(async () => 0),
   listJraVenueTrackConditionSchedulesByDate: vi.fn(async () => []),
   markTrackConditionQueued: vi.fn(async () => {}),
@@ -274,6 +275,198 @@ it("fetch GET /health returns ok body", async () => {
   const response = await worker.fetch(new Request("https://x.test/health"), buildEnv(), buildCtx());
   expect(response.status).toBe(200);
   expect(await response.json()).toStrictEqual({ ok: true });
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects a mismatched admin token", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer wrong" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+  expect(await response.json()).toStrictEqual({ error: "forbidden" });
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects an unset admin token", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({ REALTIME_ADMIN_TOKEN: undefined }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects invalid JSON", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: "{",
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({ error: "invalid body" });
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects a missing race date", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects a malformed race date", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "2026-08-22", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects a missing source race id", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts rejects a malformed source race id", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "20260102010A" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts returns 503 without premium origin", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toStrictEqual({ error: "premium_fetch_not_configured" });
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts returns an empty array for public HTML", async () => {
+  const { default: worker } = await import("./worker");
+  const premiumRace = await import("./premium-race");
+  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValueOnce("<html>public page</html>");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://race.netkeiba.com" }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ workouts: [] });
+  expect(premiumRace.fetchPremiumHtml).toHaveBeenCalledWith(
+    expect.objectContaining({ origin: "https://race.netkeiba.com" }),
+    "https://race.netkeiba.com/race/oikiri.html?race_id=202601020101",
+  );
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts parses authenticated workout rows", async () => {
+  const { default: worker } = await import("./worker");
+  const premiumRace = await import("./premium-race");
+  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValueOnce(`
+    <div class="Icon_Account">signed in</div>
+    <tr class="OikiriDataHead1 HorseList">
+      <td class="Umaban">3</td><td class="Horse_Name">テストホース</td>
+      <td class="Date">8/20</td><td class="Time4F">54.0</td><td class="Lap1F">12.0</td>
+      <td class="Training_Critic">動き上々</td><td class="Rank_動き上々">A</td>
+    </tr>
+  `);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({
+      PREMIUM_RACE_ORIGIN: "https://premium.example",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/custom/{sourceRaceId}",
+    }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const payload = (await response.json()) as { workouts: Array<Record<string, unknown>> };
+  expect(payload.workouts).toHaveLength(1);
+  expect(payload.workouts[0]).toMatchObject({
+    evaluationGrade: "A",
+    horseNumber: "3",
+    lapTime1f: "120",
+    timeGokei4f: "0540",
+    trainingDate: "20260820",
+  });
+  expect(premiumRace.fetchPremiumHtml).toHaveBeenCalledWith(
+    expect.objectContaining({ cookie: null, proxyUrl: null }),
+    "https://premium.example/custom/202601020101",
+  );
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts returns 502 on upstream failure", async () => {
+  const { default: worker } = await import("./worker");
+  const premiumRace = await import("./premium-race");
+  vi.mocked(premiumRace.fetchPremiumHtml).mockRejectedValueOnce(new Error("upstream down"));
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://race.netkeiba.com" }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(502);
+  expect(await response.json()).toStrictEqual({ error: "premium_fetch_failed" });
 });
 
 it("fetch POST /api/jobs returns 403 when authorization mismatches", async () => {
@@ -2027,6 +2220,106 @@ it("fetch GET /api/internal/queue-health returns the four queue-health fields wh
     lastSuccessfulFetchWeightsAt: "2026-06-28T15:35:00+09:00",
     racesQueuedNotFetchedToday: 7,
     racesStuckOverThirtyMin: 3,
+  });
+});
+
+it("fetch GET /api/internal/discovery-status requires matching authorization", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/discovery-status?date=20260822", {
+      headers: { authorization: "Bearer wrong" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch GET /api/internal/discovery-status rejects a missing or malformed date", async () => {
+  const { default: worker } = await import("./worker");
+  const missing = await worker.fetch(
+    new Request("https://x.test/api/internal/discovery-status", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  const malformed = await worker.fetch(
+    new Request("https://x.test/api/internal/discovery-status?date=2026-08-22", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(missing.status).toBe(400);
+  expect(malformed.status).toBe(400);
+});
+
+it("fetch GET /api/internal/discovery-status reports incomplete JRA discovery", async () => {
+  const { default: worker } = await import("./worker");
+  const { fetchJraRacesByDate } = await import("./postgres");
+  const { countJraRaceSourcesByDate } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1000",
+      kaisai_kai: "02",
+      kaisai_nichime: "01",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0822",
+      keibajo_code: "01",
+      kyosomei_hondai: "Race 1",
+      race_bango: "01",
+    },
+    {
+      hasso_jikoku: "1030",
+      kaisai_kai: "02",
+      kaisai_nichime: "01",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0822",
+      keibajo_code: "01",
+      kyosomei_hondai: "Race 2",
+      race_bango: "02",
+    },
+  ]);
+  vi.mocked(countJraRaceSourcesByDate).mockResolvedValueOnce(1);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/discovery-status?date=20260822", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("retry-after")).toBe("10");
+  expect(await response.json()).toStrictEqual({
+    complete: false,
+    d1JraRaceCount: 1,
+    date: "20260822",
+    neonJraRaceCount: 2,
+  });
+});
+
+it("fetch GET /api/internal/discovery-status treats equal counts and zero-race days as complete", async () => {
+  const { default: worker } = await import("./worker");
+  const { fetchJraRacesByDate } = await import("./postgres");
+  const { countJraRaceSourcesByDate } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([]);
+  vi.mocked(countJraRaceSourcesByDate).mockResolvedValueOnce(0);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/discovery-status?date=20260823", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("retry-after")).toBeNull();
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    complete: true,
+    d1JraRaceCount: 0,
+    date: "20260823",
+    neonJraRaceCount: 0,
   });
 });
 

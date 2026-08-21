@@ -40,6 +40,41 @@ export interface PremiumTrainingReview {
   trainingDate: string;
 }
 
+export interface PremiumTrainingWorkout {
+  commentText: string | null;
+  course: string | null;
+  courseDirection: string | null;
+  evaluationGrade: string | null;
+  evaluationText: string | null;
+  horseName: string | null;
+  horseNumber: string;
+  lapTime10f: string | null;
+  lapTime1f: string | null;
+  lapTime2f: string | null;
+  lapTime3f: string | null;
+  lapTime4f: string | null;
+  lapTime5f: string | null;
+  lapTime6f: string | null;
+  lapTime7f: string | null;
+  lapTime8f: string | null;
+  lapTime9f: string | null;
+  riderName: string | null;
+  timeGokei10f: string | null;
+  timeGokei2f: string | null;
+  timeGokei3f: string | null;
+  timeGokei4f: string | null;
+  timeGokei5f: string | null;
+  timeGokei6f: string | null;
+  timeGokei7f: string | null;
+  timeGokei8f: string | null;
+  timeGokei9f: string | null;
+  tracenKubun: string | null;
+  trainingDate: string;
+  trainingTime: string;
+  trainingType: string;
+  workoutIndex: number;
+}
+
 export interface PremiumStableComment {
   commentText: string;
   evaluationGrade: number | null;
@@ -541,6 +576,25 @@ export const matchPremiumLinkToRace = (
   );
 };
 
+const extractFirstClassCell = (row: string, classNames: readonly string[]): string | null => {
+  for (const className of classNames) {
+    const cell = extractClassCell(row, className);
+    if (cell !== null) {
+      return cell;
+    }
+  }
+  return null;
+};
+
+const extractConfiguredOrDefaultClassCell = (
+  row: string,
+  configuredClass: string | undefined,
+  defaultClasses: readonly string[],
+): string | null =>
+  configuredClass
+    ? extractClassCell(row, configuredClass)
+    : extractFirstClassCell(row, defaultClasses);
+
 export const parsePremiumTrainingReviews = (
   html: string,
   env: {
@@ -554,7 +608,7 @@ export const parsePremiumTrainingReviews = (
     PREMIUM_RACE_WORK_TEXT_CLASS?: string;
   },
 ): PremiumTrainingReview[] => {
-  const rows = extractRowsByClass(html, env.PREMIUM_RACE_WORK_ROW_CLASS);
+  const rows = extractRowsByClass(html, env.PREMIUM_RACE_WORK_ROW_CLASS ?? "*");
   const reviews: PremiumTrainingReview[] = [];
   let currentHorse: {
     actionComment: string | null;
@@ -564,36 +618,85 @@ export const parsePremiumTrainingReviews = (
 
   for (const row of rows) {
     const rowHorseNumber = normalizeHorseNumber(
-      extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS),
+      extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS, [
+        "Umaban",
+        "Horse_Number",
+      ]),
     );
     if (rowHorseNumber) {
       currentHorse = {
         actionComment:
-          cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS)) || null,
-        horseName: cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS)) || null,
+          cleanText(
+            extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS, [
+              "Training_Comment",
+              "Comment",
+            ]),
+          ) || null,
+        horseName:
+          cleanText(
+            extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS, [
+              "Horse_Name",
+              "HorseName",
+            ]),
+          ) || null,
         horseNumber: rowHorseNumber,
       };
     }
 
     const horseNumber = rowHorseNumber ?? currentHorse?.horseNumber ?? null;
-    const trainingDate = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_DATE_CLASS));
-    const evaluationText = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_TEXT_CLASS));
-    const evaluationGrade = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_GRADE_CLASS));
+    const trainingDate = cleanText(
+      extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_DATE_CLASS, [
+        "Date",
+        "Training_Day",
+        "TrainingDate",
+      ]),
+    );
+    const evaluationText = cleanText(
+      extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_TEXT_CLASS, [
+        "Training_Critic",
+        "EvaluationText",
+      ]),
+    );
+    const evaluationGrade =
+      cleanText(
+        extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_GRADE_CLASS, [
+          "EvaluationGrade",
+        ]),
+      ) ||
+      cleanText(
+        row.match(
+          /<(?:td|span)\b[^>]*class=["'][^"']*\bRank_[^"']*["'][^>]*>([\s\S]*?)<\/(?:td|span)>/iu,
+        )?.[1],
+      );
     const riderName =
-      cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_RIDER_CLASS)) ||
-      extractRelativeCellText(row, env.PREMIUM_RACE_WORK_DATE_CLASS, 3);
+      cleanText(
+        extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_RIDER_CLASS, [
+          "Rider",
+          "TrainingRider",
+        ]),
+      ) || extractRelativeCellText(row, env.PREMIUM_RACE_WORK_DATE_CLASS, 3);
     if (!horseNumber || (!trainingDate && !evaluationText && !evaluationGrade && !riderName)) {
       continue;
     }
     reviews.push({
       commentText:
-        cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS)) ||
+        cleanText(
+          extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS, [
+            "Training_Comment",
+            "Comment",
+          ]),
+        ) ||
         currentHorse?.actionComment ||
         null,
       evaluationGrade: evaluationGrade || null,
       evaluationText: evaluationText || null,
       horseName:
-        cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS)) ||
+        cleanText(
+          extractConfiguredOrDefaultClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS, [
+            "Horse_Name",
+            "HorseName",
+          ]),
+        ) ||
         currentHorse?.horseName ||
         null,
       horseNumber,
@@ -603,6 +706,190 @@ export const parsePremiumTrainingReviews = (
   }
 
   return reviews;
+};
+
+// JVD stores workout times as integer tenths of a second (82.4s => "0824",
+// 12.3s => "123"). Normalizing at ingestion keeps the fallback payload
+// directly compatible with the viewer's existing Training contract.
+const normalizeNetkeibaTime = (
+  value: string | null | undefined,
+  padAsTotal = false,
+): string | null => {
+  const text = cleanText(value).replace(/[()秒]/gu, "");
+  const match = text.match(/\d+(?:\.\d)?/u)?.[0];
+  if (!match) {
+    return null;
+  }
+  const tenths = Math.round(Number(match) * 10);
+  if (!Number.isFinite(tenths) || tenths <= 0) {
+    return null;
+  }
+  return String(tenths).padStart(padAsTotal || tenths >= 1000 ? 4 : 3, "0");
+};
+
+const normalizeNetkeibaTrainingDate = (value: string, raceDate: string): string => {
+  const fullDate = value.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/u);
+  if (fullDate) {
+    return `${fullDate[1]}${fullDate[2]!.padStart(2, "0")}${fullDate[3]!.padStart(2, "0")}`;
+  }
+  const monthDay = value.match(/(\d{1,2})\D+(\d{1,2})/u);
+  if (!monthDay) {
+    return value;
+  }
+  const raceYear = Number(raceDate.slice(0, 4));
+  const raceMonth = Number(raceDate.slice(4, 6));
+  const trainingMonth = Number(monthDay[1]);
+  const year = raceMonth === 1 && trainingMonth === 12 ? raceYear - 1 : raceYear;
+  return `${year}${monthDay[1]!.padStart(2, "0")}${monthDay[2]!.padStart(2, "0")}`;
+};
+
+const extractNetkeibaTimeList = (
+  row: string,
+): { laps: Map<number, string>; totals: Map<number, string> } => {
+  const listHtml =
+    row.match(
+      /<ul\b[^>]*class=["'][^"']*\bTrainingTimeDataList\b[^"']*["'][^>]*>([\s\S]*?)<\/ul>/iu,
+    )?.[1] ?? null;
+  if (!listHtml) {
+    return { laps: new Map(), totals: new Map() };
+  }
+  const items = Array.from(listHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/giu)).map(
+    (match) => match[1]!,
+  );
+  const laps = new Map<number, string>();
+  const totals = new Map<number, string>();
+  items.forEach((item, index) => {
+    const furlong = items.length - index;
+    const lapHtml = extractFirstClassCell(item, ["RapTime", "LapTime"]);
+    const lap = normalizeNetkeibaTime(lapHtml);
+    const total = normalizeNetkeibaTime(lapHtml ? item.replace(lapHtml, "") : item, true);
+    if (lap) {
+      laps.set(furlong, lap);
+    }
+    if (furlong > 1 && total) {
+      totals.set(furlong, total);
+    }
+  });
+  return { laps, totals };
+};
+
+const extractNetkeibaNamedTime = (
+  row: string,
+  kind: "lap" | "total",
+  furlong: number,
+): string | null => {
+  const prefix = kind === "lap" ? "Lap" : "Time";
+  const camelPrefix = kind === "lap" ? "lapTime" : "timeGokei";
+  return normalizeNetkeibaTime(
+    extractFirstClassCell(row, [
+      `${prefix}${furlong}F`,
+      `${prefix}${furlong}f`,
+      `${camelPrefix}${furlong}f`,
+      kind === "total" ? `${furlong}F` : `Rap${furlong}F`,
+    ]),
+    kind === "total",
+  );
+};
+
+export const parseNetkeibaTrainingWorkouts = (
+  html: string,
+  raceDate: string,
+): PremiumTrainingWorkout[] => {
+  const workouts: PremiumTrainingWorkout[] = [];
+  const workoutCounts = new Map<string, number>();
+  let currentHorse: {
+    commentText: string | null;
+    evaluationGrade: string | null;
+    evaluationText: string | null;
+    horseName: string | null;
+    horseNumber: string;
+  } | null = null;
+
+  for (const row of extractRowsByClass(html, "*")) {
+    const rowHorseNumber = normalizeHorseNumber(
+      extractFirstClassCell(row, ["Umaban", "Horse_Number"]),
+    );
+    if (rowHorseNumber) {
+      currentHorse = {
+        commentText: cleanText(extractFirstClassCell(row, ["Training_Comment", "Comment"])) || null,
+        evaluationGrade:
+          cleanText(
+            row.match(
+              /<(?:td|span)\b[^>]*class=["'][^"']*\bRank_[^"']*["'][^>]*>([\s\S]*?)<\/(?:td|span)>/iu,
+            )?.[1],
+          ) || null,
+        evaluationText:
+          cleanText(extractFirstClassCell(row, ["Training_Critic", "EvaluationText"])) || null,
+        horseName: cleanText(extractFirstClassCell(row, ["Horse_Name", "HorseName"])) || null,
+        horseNumber: rowHorseNumber,
+      };
+    }
+    if (!currentHorse) {
+      continue;
+    }
+    const dateText = cleanText(
+      extractFirstClassCell(row, ["Date", "Training_Day", "TrainingDate"]),
+    );
+    const namedTimes = Array.from({ length: 10 }, (_, index) => 10 - index).map((furlong) => ({
+      furlong,
+      lap: extractNetkeibaNamedTime(row, "lap", furlong),
+      total: furlong === 1 ? null : extractNetkeibaNamedTime(row, "total", furlong),
+    }));
+    const listTimes = extractNetkeibaTimeList(row);
+    const hasTimes =
+      namedTimes.some(({ lap, total }) => Boolean(lap || total)) || listTimes.laps.size > 0;
+    if (!dateText || !hasTimes) {
+      continue;
+    }
+    const placeText = cleanText(
+      extractFirstClassCell(row, ["Course", "TrainingCourse", "Training_Place"]),
+    );
+    const workoutIndex = (workoutCounts.get(currentHorse.horseNumber) ?? 0) + 1;
+    workoutCounts.set(currentHorse.horseNumber, workoutIndex);
+    const time = (furlong: number, kind: "lap" | "total"): string | null => {
+      const named = namedTimes.find((item) => item.furlong === furlong);
+      return kind === "lap"
+        ? (named?.lap ?? listTimes.laps.get(furlong) ?? null)
+        : (named?.total ?? listTimes.totals.get(furlong) ?? null);
+    };
+    workouts.push({
+      commentText: currentHorse.commentText,
+      course: placeText || null,
+      courseDirection:
+        cleanText(extractFirstClassCell(row, ["CourseDirection", "Babamawari"])) || null,
+      evaluationGrade: currentHorse.evaluationGrade,
+      evaluationText: currentHorse.evaluationText,
+      horseName: currentHorse.horseName,
+      horseNumber: currentHorse.horseNumber,
+      lapTime10f: time(10, "lap"),
+      lapTime1f: time(1, "lap"),
+      lapTime2f: time(2, "lap"),
+      lapTime3f: time(3, "lap"),
+      lapTime4f: time(4, "lap"),
+      lapTime5f: time(5, "lap"),
+      lapTime6f: time(6, "lap"),
+      lapTime7f: time(7, "lap"),
+      lapTime8f: time(8, "lap"),
+      lapTime9f: time(9, "lap"),
+      riderName: cleanText(extractFirstClassCell(row, ["Rider", "TrainingRider"])) || null,
+      timeGokei10f: time(10, "total"),
+      timeGokei2f: time(2, "total"),
+      timeGokei3f: time(3, "total"),
+      timeGokei4f: time(4, "total"),
+      timeGokei5f: time(5, "total"),
+      timeGokei6f: time(6, "total"),
+      timeGokei7f: time(7, "total"),
+      timeGokei8f: time(8, "total"),
+      timeGokei9f: time(9, "total"),
+      tracenKubun: cleanText(extractFirstClassCell(row, ["Tracen", "TracenKubun"])) || null,
+      trainingDate: normalizeNetkeibaTrainingDate(dateText, raceDate),
+      trainingTime: cleanText(extractFirstClassCell(row, ["TrainingTime", "TimeOfDay"])),
+      trainingType:
+        cleanText(extractFirstClassCell(row, ["TrainingType", "CourseType"])) || placeText || "-",
+      workoutIndex,
+    });
+  }
+  return workouts;
 };
 
 export const parsePremiumStableComments = (
@@ -694,15 +981,14 @@ export const isPremiumDataTopHtmlAuthorized = (html: string): boolean =>
   !html.includes(PREMIUM_DATA_TOP_TEASER_DUMMY_BOX_MARKER) &&
   !html.includes(PREMIUM_DATA_TOP_TEASER_REGIST_BOX_MARKER);
 
-// netkeiba renders this gate text whenever the upstream session is unauthenticated.
-// Production verified 2026-06-20: the proxy intermittently returns HTTP 200 with the
-// subscription-prompt body, which we used to accept as a "successful" fetch and write
-// `status='ok'` with zero stable comments. We keep two substrings so the heuristic
-// stays specific (an authenticated detail page can mention "登録" in other contexts).
+// A login-only page has both gate strings and no account marker. The same strings can
+// also occur in authenticated page chrome, so text alone is not proof that the selected
+// proxy/cookie response is unauthenticated.
 const PREMIUM_LOGIN_PROMPT_MARKER_PRIMARY = "プレミアムサービス";
 const PREMIUM_LOGIN_PROMPT_MARKER_SECONDARY = "登録でご覧になれます";
 
 export const detectPremiumLoginPrompt = (html: string): boolean =>
+  !html.includes(PREMIUM_HTML_AUTHENTICATED_MARKER) &&
   html.includes(PREMIUM_LOGIN_PROMPT_MARKER_PRIMARY) &&
   html.includes(PREMIUM_LOGIN_PROMPT_MARKER_SECONDARY);
 

@@ -49,6 +49,12 @@ def test_attach_source_catalog_attaches_r2_catalog_read_only(
         "create schema pg",
     ]
     assert "create view pg.jvd_se as select * from catalog_raw.jvd_se" in con.statements
+    assert "create view pg.jvd_wc as select * from catalog_raw.jvd_wc" in con.statements
+    assert (
+        "create view pg.netkeiba_training_workouts as select * from "
+        "catalog_raw.netkeiba_training_workouts"
+        in con.statements
+    )
     assert "create view pg.nvd_ra as select * from catalog_raw.nvd_ra" in con.statements
     assert "create view pg.race_entry_corner_features as" in con.statements[-2]
     assert "from pg.jvd_se se" in con.statements[-2]

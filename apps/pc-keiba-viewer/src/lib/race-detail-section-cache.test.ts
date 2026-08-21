@@ -26,7 +26,7 @@ describe("race detail section cache helpers", () => {
 
   it("builds cache keys and API paths for detail sections", () => {
     expect(buildDetailSectionCacheKey(warmMessage)).toBe(
-      "race-detail-section:v3:2026:5:23:44:12:pace-prediction:default",
+      "race-detail-section:v4:2026:5:23:44:12:pace-prediction:default",
     );
     expect(buildDetailSectionApiPath(warmMessage)).toBe(
       "/api/races/2026/5/23/44/12/sections/pace-prediction",

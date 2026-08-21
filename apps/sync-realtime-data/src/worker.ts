@@ -60,6 +60,7 @@ import {
   parsePremiumStableComments,
   parsePremiumStateMessage,
   parsePremiumTrainingReviews,
+  parseNetkeibaTrainingWorkouts,
   summarizePremiumStableCommentHtml,
   type PremiumPaddockBulletin,
 } from "./premium-race";
@@ -78,6 +79,7 @@ import {
   completeResultFetch,
   completeTrackConditionFetch,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
+  countJraRaceSourcesByDate,
   countRaceSourcesByDate,
   failTrackConditionFetch,
   failResultFetch,
@@ -4257,15 +4259,16 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   // its own authenticity check rather than relying on that shared detector.
   const dataTopAuthorized = dataTopHtml ? isPremiumDataTopHtmlAuthorized(dataTopHtml) : false;
   const dataTopAuthRequired = Boolean(dataTopHtml) && !dataTopAuthorized;
-  // Detect the netkeiba subscription-prompt page across all three HTMLs.
-  // Production verified 2026-06-20: HTTP 200 responses occasionally contain
-  // only the login gate, and used to be persisted as `status='ok'` with zero
-  // stable_comments. We treat any of the three fetched bodies hitting the
-  // gate text as proof the proxy session was unauthenticated.
+  // Gate text also appears in authenticated page chrome. Treat it as an auth
+  // failure only when that specific page lacks its authoritative positive
+  // signal/content. This preserves login-only detection without retrying a
+  // fully fetched race forever because a sibling page contains an upsell.
+  const workLoginPromptDetected =
+    detectPremiumLoginPrompt(workHtml) && (trainingReviews?.length ?? 0) === 0;
+  const commentLoginPromptDetected = detectPremiumLoginPrompt(commentHtml) && !commentAuthorized;
+  const dataTopLoginPromptDetected = detectPremiumLoginPrompt(dataTopHtml) && !dataTopAuthorized;
   const loginPromptDetected =
-    detectPremiumLoginPrompt(workHtml) ||
-    detectPremiumLoginPrompt(commentHtml) ||
-    detectPremiumLoginPrompt(dataTopHtml);
+    workLoginPromptDetected || commentLoginPromptDetected || dataTopLoginPromptDetected;
   // Suppress the stable-comment replace when the proxy returned the preview
   // (unauthenticated) page: otherwise the unauth response (typically 3 rows)
   // would overwrite a previously stored authenticated snapshot (full field).
@@ -5158,6 +5161,49 @@ const isKeibajoCode = (value: string): boolean => /^[0-9A-Z]{2}$/u.test(value);
 const isTrendSource = (value: string | null): value is "jra" | "nar" =>
   value === "jra" || value === "nar";
 
+const NETKEIBA_TRAINING_WORKOUTS_PATH_TEMPLATE = "/race/oikiri.html?race_id={sourceRaceId}";
+const NETKEIBA_SOURCE_RACE_ID_PATTERN = /^\d{12}$/u;
+
+interface NetkeibaTrainingWorkoutsRequestBody {
+  raceDate: string;
+  sourceRaceId: string;
+}
+
+const parseNetkeibaTrainingWorkoutsRequestBody = (
+  value: unknown,
+): NetkeibaTrainingWorkoutsRequestBody | null => {
+  if (!isObjectRecord(value)) return null;
+  if (typeof value.raceDate !== "string" || !isYyyymmdd(value.raceDate)) return null;
+  if (
+    typeof value.sourceRaceId !== "string" ||
+    !NETKEIBA_SOURCE_RACE_ID_PATTERN.test(value.sourceRaceId)
+  ) {
+    return null;
+  }
+  return { raceDate: value.raceDate, sourceRaceId: value.sourceRaceId };
+};
+
+const fetchNetkeibaTrainingWorkouts = async (
+  env: Env,
+  body: NetkeibaTrainingWorkoutsRequestBody,
+): Promise<Response> => {
+  const config = getPremiumRaceConfig(env);
+  if (!config.origin) {
+    return json({ error: "premium_fetch_not_configured" }, { status: 503 });
+  }
+  try {
+    const workPathTemplate = config.workPathTemplate ?? NETKEIBA_TRAINING_WORKOUTS_PATH_TEMPLATE;
+    const workUrl = new URL(
+      workPathTemplate.replaceAll("{sourceRaceId}", body.sourceRaceId),
+      config.origin,
+    ).toString();
+    const html = await fetchPremiumHtml(config, workUrl);
+    return json({ workouts: parseNetkeibaTrainingWorkouts(html, body.raceDate) });
+  } catch {
+    return json({ error: "premium_fetch_failed" }, { status: 502 });
+  }
+};
+
 export const raceTrendDailyTrackQueryFromRequest = (
   url: URL,
 ): RaceTrendDailyTrackQueryParams | null => {
@@ -5212,6 +5258,47 @@ export default {
 
     if (url.pathname === "/health") {
       return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/internal/netkeiba-training-workouts" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = parseNetkeibaTrainingWorkoutsRequestBody(await request.json().catch(() => null));
+      if (!body) {
+        return json({ error: "invalid body" }, { status: 400 });
+      }
+      return fetchNetkeibaTrainingWorkouts(env, body);
+    }
+
+    if (url.pathname === "/api/internal/discovery-status" && request.method === "GET") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const date = url.searchParams.get("date");
+      if (date === null || !/^\d{8}$/u.test(date)) {
+        return json({ error: "invalid date" }, { status: 400 });
+      }
+      const [jraRaces, d1JraRaceCount] = await Promise.all([
+        fetchJraRacesByDate(env, date),
+        countJraRaceSourcesByDate(env.REALTIME_DB, date),
+      ]);
+      const complete = d1JraRaceCount >= jraRaces.length;
+      return json(
+        {
+          complete,
+          d1JraRaceCount,
+          date,
+          neonJraRaceCount: jraRaces.length,
+        },
+        {
+          headers: complete
+            ? { "cache-control": "private, no-store" }
+            : { "cache-control": "private, no-store", "retry-after": "10" },
+        },
+      );
     }
 
     if (url.pathname === "/api/internal/queue-health" && request.method === "GET") {

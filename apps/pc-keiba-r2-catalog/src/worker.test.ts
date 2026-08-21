@@ -186,6 +186,71 @@ it("queries fixed race-feature SQL and returns DailyRaceEntryRow objects", async
   expect(requestBody).toMatch("race_bango = '01'");
 });
 
+it("queries and caches race trainings with the Training-compatible envelope", async () => {
+  const harness = createHarness([
+    {
+      bamei: "Catalog Horse",
+      chokyo_jikoku: "0615",
+      chokyo_nengappi: "20260714",
+      premium_workout_index: 1,
+      training_data_source: "netkeiba",
+      training_type: "ウッド",
+      umaban: "07",
+    },
+  ]);
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?date=20260715&keibajoCode=5&raceBango=1"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Catalog-Cache")).toBe("r2-sql");
+  await expect(response.json()).resolves.toMatchObject({
+    rows: [
+      {
+        bamei: "Catalog Horse",
+        chokyoJikoku: "0615",
+        chokyoNengappi: "20260714",
+        premiumWorkoutIndex: 1,
+        trainingDataSource: "netkeiba",
+        trainingType: "ウッド",
+        umaban: "07",
+      },
+    ],
+  });
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("INNER JOIN pc_keiba.jvd_hc w");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch(
+    "FROM pc_keiba.netkeiba_training_workouts n",
+  );
+  expect(harness.cacheCalls.puts).toHaveLength(1);
+  expect(harness.kvCalls.puts).toHaveLength(1);
+});
+
+it("requires every race-training filter", async () => {
+  const harness = createHarness();
+  const missingDate = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?keibajoCode=05&raceBango=01"),
+    harness.env,
+    harness.dependencies,
+  );
+  const missingVenue = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?date=20260715&raceBango=01"),
+    harness.env,
+    harness.dependencies,
+  );
+  const missingRace = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?date=20260715&keibajoCode=05"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(missingDate.status).toBe(400);
+  await expect(missingDate.json()).resolves.toStrictEqual({ error: "date must match YYYYMMDD" });
+  expect(missingVenue.status).toBe(400);
+  await expect(missingVenue.json()).resolves.toStrictEqual({ error: "keibajoCode is required" });
+  expect(missingRace.status).toBe(400);
+  await expect(missingRace.json()).resolves.toStrictEqual({ error: "raceBango is required" });
+});
+
 it("queries running-style features with no-store and bypasses Cache API and KV", async () => {
   const harness = createHarness([
     {
@@ -742,7 +807,7 @@ it("supports authenticated DELETE purge without touching R2 SQL or raw data", as
   );
 });
 
-it("purges one source and race-specific cache key", async () => {
+it("purges one source and its exact race-training cache key", async () => {
   const harness = createHarness();
   const response = await handleRequest(
     new Request(
@@ -756,9 +821,12 @@ it("purges one source and race-specific cache key", async () => {
     harness.dependencies,
   );
   expect(response.status).toBe(200);
-  await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 1 });
+  await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 2 });
   expect(harness.cacheCalls.deletes[0]).toBe(
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&source=ban-ei&keibajoCode=83&raceBango=09",
+  );
+  expect(harness.cacheCalls.deletes[1]).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&keibajoCode=83&raceBango=09",
   );
 });
 

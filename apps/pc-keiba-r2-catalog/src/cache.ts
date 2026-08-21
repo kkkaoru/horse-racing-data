@@ -1,7 +1,19 @@
-import type { CacheStore, KvStore, RaceFeatureFilters, SourceScope } from "./types";
+import type {
+  CacheStore,
+  KvStore,
+  RaceFeatureFilters,
+  RaceTrainingFilters,
+  SourceScope,
+} from "./types";
 
 export type CacheDescriptor =
   | { date: string; kind: "race-keys" }
+  | {
+      date: string;
+      keibajoCode: string;
+      kind: "race-trainings";
+      raceBango: string;
+    }
   | {
       date: string;
       keibajoCode?: string;
@@ -20,6 +32,10 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("source", descriptor.source);
     if (descriptor.keibajoCode) url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     if (descriptor.raceBango) url.searchParams.set("raceBango", descriptor.raceBango);
+  }
+  if (descriptor.kind === "race-trainings") {
+    url.searchParams.set("keibajoCode", descriptor.keibajoCode);
+    url.searchParams.set("raceBango", descriptor.raceBango);
   }
   return new Request(url);
 };
@@ -104,4 +120,11 @@ export const featureDescriptor = (filters: RaceFeatureFilters): CacheDescriptor 
   kind: "race-features",
   raceBango: filters.raceBango,
   source: filters.source,
+});
+
+export const trainingDescriptor = (filters: RaceTrainingFilters): CacheDescriptor => ({
+  date: filters.date,
+  keibajoCode: filters.keibajoCode,
+  kind: "race-trainings",
+  raceBango: filters.raceBango,
 });

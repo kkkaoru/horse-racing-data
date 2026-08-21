@@ -286,6 +286,8 @@ export interface Training extends Record<string, unknown> {
   premiumCommentText?: string | null;
   premiumEvaluationGrade?: string | null;
   premiumEvaluationText?: string | null;
+  premiumWorkoutIndex?: number;
+  trainingDataSource?: "jra" | "netkeiba";
 }
 
 export interface StableComment extends Record<string, unknown> {

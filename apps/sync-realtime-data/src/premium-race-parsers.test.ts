@@ -9,9 +9,114 @@ import {
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
   parsePremiumStableComments,
+  parseNetkeibaTrainingWorkouts,
   parsePremiumTrainingReviews,
   sourceRaceIdCandidates,
 } from "./premium-race";
+
+it("parseNetkeibaTrainingWorkouts parses a same-row workout with its evaluation mark", () => {
+  const result = parseNetkeibaTrainingWorkouts(
+    `
+      <tr class="OikiriDataHead1 HorseList">
+        <td class="Umaban">3</td>
+        <td class="Horse_Name">テストホース</td>
+        <td class="Date">8/20</td>
+        <td class="TrainingType">ウッド</td>
+        <td class="Course">札幌ダート 良</td>
+        <td class="Time6F">82.4</td><td class="Lap6F">15.2</td>
+        <td class="Time5F">67.2</td><td class="Lap5F">14.1</td>
+        <td class="Time4F">53.1</td><td class="Lap4F">13.8</td>
+        <td class="Time3F">39.3</td><td class="Lap3F">13.2</td>
+        <td class="Time2F">26.1</td><td class="Lap2F">12.9</td>
+        <td class="Lap1F">13.2</td>
+        <td class="Training_Critic">動き上々</td><td class="Rank_動き上々">B</td>
+      </tr>
+    `,
+    "20260822",
+  );
+
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({
+    course: "札幌ダート 良",
+    evaluationGrade: "B",
+    evaluationText: "動き上々",
+    horseName: "テストホース",
+    horseNumber: "3",
+    lapTime1f: "132",
+    timeGokei6f: "0824",
+    trainingDate: "20260820",
+    trainingType: "ウッド",
+    workoutIndex: 1,
+  });
+});
+
+it("parseNetkeibaTrainingWorkouts inherits horse and mark across multiple detail rows", () => {
+  const result = parseNetkeibaTrainingWorkouts(
+    `
+      <tr class="OikiriDataHead1 HorseList">
+        <td class="Umaban">7</td><td class="Horse_Name">継承馬</td>
+        <td class="Training_Critic">絶好調</td><td class="Rank_絶好調">A</td>
+      </tr>
+      <tr class="OikiriData1">
+        <td class="Training_Day">12/30</td><td class="Training_Place">美浦W</td>
+        <td class="TrainingTimeData"><ul class="TrainingTimeDataList">
+          <li>55.0<span class="RapTime">14.0</span></li>
+          <li>41.0<span class="RapTime">13.5</span></li>
+          <li>27.5<span class="RapTime">13.0</span></li>
+          <li>14.5<span class="RapTime">14.5</span></li>
+        </ul></td>
+      </tr>
+      <tr class="OikiriData2">
+        <td class="Training_Day">1/2</td><td class="Training_Place">美浦坂路</td>
+        <td class="Time4F">54.0</td><td class="Lap1F">12.0</td>
+      </tr>
+    `,
+    "20260104",
+  );
+
+  expect(result).toHaveLength(2);
+  expect(result[0]).toMatchObject({
+    evaluationGrade: "A",
+    horseNumber: "7",
+    lapTime1f: "145",
+    timeGokei4f: "0550",
+    trainingDate: "20251230",
+    workoutIndex: 1,
+  });
+  expect(result[1]).toMatchObject({
+    evaluationGrade: "A",
+    lapTime1f: "120",
+    timeGokei4f: "0540",
+    trainingDate: "20260102",
+    workoutIndex: 2,
+  });
+});
+
+it("parsePremiumTrainingReviews reads public netkeiba oikiri classes without selector configuration", () => {
+  expect(
+    parsePremiumTrainingReviews(
+      `
+        <tr class="OikiriDataHead1 HorseList">
+          <td class="Umaban">3</td>
+          <td class="Horse_Name">テストホース</td>
+          <td class="Training_Critic">動き上々</td>
+          <td class="Rank_動き上々">B</td>
+        </tr>
+      `,
+      {},
+    ),
+  ).toStrictEqual([
+    {
+      commentText: null,
+      evaluationGrade: "B",
+      evaluationText: "動き上々",
+      horseName: "テストホース",
+      horseNumber: "3",
+      riderName: null,
+      trainingDate: "",
+    },
+  ]);
+});
 
 it("parsePremiumTrainingReviews returns rows when class selectors match", () => {
   const env = {
@@ -637,7 +742,7 @@ it("detectPremiumLoginPrompt fires when both subscription-gate markers appear", 
 it("detectPremiumLoginPrompt returns false on a fully authenticated detail page", async () => {
   const { detectPremiumLoginPrompt } = await import("./premium-race");
   const html =
-    '<div class="Icon_Account">user</div><table class="Comment_Table_Show_All">data</table>';
+    '<div class="Icon_Account">user</div><div>プレミアムサービス 登録でご覧になれます</div>';
   expect(detectPremiumLoginPrompt(html)).toBe(false);
 });
 

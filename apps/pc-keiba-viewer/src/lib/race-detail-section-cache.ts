@@ -12,8 +12,10 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // serving the pre-fix shape for up to DETAIL_SECTION_CACHE_AFTER_START_SECONDS
 // (6 hours) past post time, and the per-race cache-bust endpoint would need
 // to be called race-by-race to work around it. Bumping here invalidates every
-// section's cache at once instead.
-export const DETAIL_SECTION_CACHE_VERSION = "v3";
+// section's cache at once instead. Bumped v3->v4 on 2026-08-22 because the
+// training section now reads the official+netkeiba union from R2 Catalog;
+// cached pre-Catalog payloads must not survive the deployment.
+export const DETAIL_SECTION_CACHE_VERSION = "v4";
 const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v6";
 const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v5";
 const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v8";

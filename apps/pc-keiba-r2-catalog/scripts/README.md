@@ -15,6 +15,16 @@ table to the same-named Iceberg table. Derived tables such as
 CLI does not provide or configure a prediction-runtime PostgreSQL dependency;
 readers must use the raw catalog tables and derive features at query time.
 
+The Worker exposes the derived JRA training view as
+`GET /v1/race-trainings?date=YYYYMMDD&keibajoCode=NN&raceBango=NN`. The
+response is `{ "rows": [...] }` with Viewer-compatible `Training` fields and a
+`trainingDataSource` of `jra` or `netkeiba`. It joins the race's `jvd_se`
+runners to the preceding 14 days of `jvd_hc` and `jvd_wc`, unions the exact
+race's `netkeiba_training_workouts`, prefers the official row only when the
+complete workout signature is duplicated, and retains a placeholder for each
+runner without a real workout. Exact-race `/admin/purge` requests purge this
+view from Cache API and KV together with the race-feature entry.
+
 Required for writes:
 
 ```sh
@@ -36,6 +46,7 @@ Examples:
 ```sh
 uv run sync_r2_catalog.py --date 20260715 --dry-run
 uv run sync_r2_catalog.py --date 20260715 --tables nvd_se,nvd_ra
+uv run sync_r2_catalog.py --date 20260715 --tables jvd_se,jvd_hc,jvd_wc,netkeiba_training_workouts
 uv run sync_r2_catalog.py --full --tables jvd_um,nvd_um,nvd_nu,jvd_hn,jvd_bt
 uv run sync_r2_catalog.py --full --tables jvd_ra --year-scope 2010-2014
 uv run sync_r2_catalog.py --full --force
@@ -56,8 +67,9 @@ rewrite described below.
 
 Date-keyed tables no longer create one Iceberg partition per day. Tables with
 `kaisai_nen`/`kaisai_tsukihi` retain both raw columns but partition only by
-identity `kaisai_nen`. `jvd_hc` partitions by `truncate(4,
-chokyo_nengappi)`. Date mode uses the requested date only to select its calendar
+identity `kaisai_nen`. `jvd_hc` and `jvd_wc` partition by `truncate(4,
+chokyo_nengappi)`. `netkeiba_training_workouts` follows the race-date year
+partition and uses `updated_at` for its source marker. Date mode uses the requested date only to select its calendar
 year, extracts that entire year from local PostgreSQL, and atomically rewrites
 the year partition. It never reads Catalog rows to seed or merge that write.
 Master tables are skipped and require `--full`.

@@ -1,4 +1,5 @@
 import "server-only";
+import { getDatabaseTarget } from "../../../db/client";
 import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
@@ -67,6 +68,7 @@ import {
   isCornerPacePredictionSupported,
 } from "../../../lib/race-pace-prediction";
 import { getOrComputeRaceTimeStats } from "../../../lib/race-time-stats-cache.server";
+import { fetchRaceTrainingsFromCatalog } from "../../../lib/race-training-catalog.server";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
@@ -83,6 +85,7 @@ import type {
   StableComment,
   SimilarRaceStatsSettings,
   TimeScoreRow,
+  Training,
   PremiumDataTopHorse,
   WeightClassStatsRow,
 } from "../../../lib/race-types";
@@ -346,6 +349,29 @@ const fetchPremiumRacePayload = async (
   } catch {
     return { stableComments: [], trainingReviews: await fetchNetkeibaTrainingReviews(race) };
   }
+};
+
+const getRaceTrainingsWithCatalogFallback = async (
+  source: RaceSource,
+  year: string,
+  month: string,
+  day: string,
+  keibajoCode: string,
+  raceNumber: string,
+): Promise<Training[]> => {
+  if (source === "jra" && getDatabaseTarget() === "cloudflare") {
+    const catalogRows = await fetchRaceTrainingsFromCatalog({
+      day,
+      keibajoCode,
+      month,
+      raceBango: raceNumber,
+      year,
+    });
+    if (catalogRows && catalogRows.length > 0) {
+      return catalogRows;
+    }
+  }
+  return getRaceTrainings(source, year, month, day, keibajoCode, raceNumber);
 };
 
 const fetchNetkeibaTrainingReviews = async (race: RaceDetail): Promise<PremiumTrainingReview[]> => {
@@ -1480,7 +1506,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
   if (section === "training") {
     const [race, trainings] = await Promise.all([
       getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceTrainingsWithCatalogFallback(raceSource, year, month, day, keibajoCode, raceNumber),
     ]);
     const premiumPayload = race
       ? await fetchPremiumRacePayload(race)

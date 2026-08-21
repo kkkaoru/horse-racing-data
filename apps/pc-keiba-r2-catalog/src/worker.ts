@@ -8,6 +8,7 @@ import {
   populateCaches,
   purgeDescriptors,
   readKvRows,
+  trainingDescriptor,
   type CacheDescriptor,
 } from "./cache";
 import { coalesce } from "./inflight";
@@ -19,10 +20,12 @@ import {
   R2SqlQueryError,
 } from "./r2-sql";
 import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
+import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import type {
   Env,
   RaceFeatureFilters,
+  RaceTrainingFilters,
   RunningStyleFeatureFilters,
   RunningStyleSourceScope,
   SourceScope,
@@ -104,6 +107,12 @@ const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   source: parseRunningStyleSource(url),
 });
 
+const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
+  date: requireDate(url),
+  keibajoCode: requireCode(url, "keibajoCode"),
+  raceBango: requireCode(url, "raceBango"),
+});
+
 const runningStyleCoalesceKey = (filters: RunningStyleFeatureFilters): string =>
   `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}`;
 
@@ -176,6 +185,21 @@ const handleRaceFeatures = (
     dependencies,
     buildRaceFeaturesQuery(env, filters),
     normaliseDailyRaceEntryRow,
+  );
+};
+
+const handleRaceTrainings = (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseRaceTrainingFilters(url);
+  return queryAndCache(
+    trainingDescriptor(filters),
+    env,
+    dependencies,
+    buildRaceTrainingsQuery(env, filters),
+    normaliseRaceTrainingRow,
   );
 };
 
@@ -270,9 +294,13 @@ const purgeTargets = (url: URL): CacheDescriptor[] => {
       source: featureSource,
     }),
   );
+  const trainings =
+    keibajoCode === undefined || raceBango === undefined
+      ? []
+      : [trainingDescriptor({ date, keibajoCode, raceBango })];
   return source === undefined && keibajoCode === undefined && raceBango === undefined
     ? [{ date, kind: "race-keys" }, ...features]
-    : features;
+    : [...features, ...trainings];
 };
 
 const handlePurge = async (
@@ -304,6 +332,9 @@ export const handleRequest = async (
     }
     if (request.method === "GET" && url.pathname === "/v1/race-features") {
       return await handleRaceFeatures(url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/race-trainings") {
+      return await handleRaceTrainings(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/running-style-features") {
       return await handleRunningStyleFeatures(url, env, dependencies);

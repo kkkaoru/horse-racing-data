@@ -1790,7 +1790,7 @@ it("handleJob fetch-premium-race-data persists data-top horses when the login pr
   expect(parsedMessage.authRetryCount).toBe(1);
 });
 
-it("handleJob fetch-premium-race-data persists data-top horses when the authenticated marker is present", async () => {
+it("handleJob fetch-premium-race-data records ok when login text coexists with authoritative content", async () => {
   const { handleJob } = await import("./worker");
   const {
     getRaceSource,
@@ -1836,6 +1836,7 @@ it("handleJob fetch-premium-race-data persists data-top horses when the authenti
     if (typeof url === "string" && url.includes("/d/")) {
       return `
         <div class="Icon_Account">user</div>
+        <div>プレミアムサービス 登録でご覧になれます</div>
         <div class="DataPickupHorseArea">
           <dl>
             <dt><span class="Umaban_Num">1</span></dt>
@@ -1845,6 +1846,23 @@ it("handleJob fetch-premium-race-data persists data-top horses when the authenti
             </dd>
           </dl>
         </div>
+      `;
+    }
+    if (typeof url === "string" && url.includes("/c/")) {
+      return `
+        <table class="Comment_Table_Show_All"></table>
+        <div>プレミアムサービス 登録でご覧になれます</div>
+      `;
+    }
+    if (typeof url === "string" && url.includes("/w/")) {
+      return `
+        <tr class="OikiriDataHead1 HorseList">
+          <td class="Umaban">1</td>
+          <td class="Horse_Name">本物馬</td>
+          <td class="Training_Critic">好調</td>
+          <td class="Rank_好調">A</td>
+        </tr>
+        <div>プレミアムサービス 登録でご覧になれます</div>
       `;
     }
     return "";
@@ -1866,8 +1884,11 @@ it("handleJob fetch-premium-race-data persists data-top horses when the authenti
     { horseName: "本物馬", horseNumber: "1", rank: 1, reasons: ["本当の理由"] },
   ]);
   const parsedMessage = JSON.parse(String(updateCall?.message ?? "{}"));
+  expect(parsedMessage.loginPromptDetected).toBe(false);
+  expect(parsedMessage.commentAuthRequired).toBe(false);
   expect(parsedMessage.dataTopAuthorized).toBe(true);
   expect(parsedMessage.dataTopPersisted).toBe(true);
+  expect(parsedMessage.trainingReviewCount).toBe(1);
   expect(parsedMessage.authRetryCount).toBe(0);
 });
 

@@ -55,8 +55,12 @@ const {
   getTimeScoreRowsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
+  fetchRaceTrainingsFromCatalogMock,
+  getDatabaseTargetMock,
   getWeightClassStatsMock,
 } = vi.hoisted(() => ({
+  fetchRaceTrainingsFromCatalogMock: vi.fn<() => Promise<unknown[] | null>>(),
+  getDatabaseTargetMock: vi.fn<() => "cloudflare" | "local" | "neon">(),
   getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getCarriedWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getFinishPositionStatsMock: vi.fn<() => Promise<unknown[]>>(),
@@ -98,8 +102,16 @@ vi.mock("../../../db/queries", () => ({
   getTimeScoreRows: getTimeScoreRowsMock,
 }));
 
+vi.mock("../../../db/client", () => ({
+  getDatabaseTarget: getDatabaseTargetMock,
+}));
+
 vi.mock("../../../lib/race-time-stats-cache.server", () => ({
   getOrComputeRaceTimeStats: getRaceTimeStatsMock,
+}));
+
+vi.mock("../../../lib/race-training-catalog.server", () => ({
+  fetchRaceTrainingsFromCatalog: fetchRaceTrainingsFromCatalogMock,
 }));
 
 vi.mock("../../../lib/premium-data-top-cache.server", () => ({
@@ -284,6 +296,10 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 };
 
 beforeEach(() => {
+  fetchRaceTrainingsFromCatalogMock.mockReset();
+  fetchRaceTrainingsFromCatalogMock.mockResolvedValue(null);
+  getDatabaseTargetMock.mockReset();
+  getDatabaseTargetMock.mockReturnValue("cloudflare");
   getBloodlineStatsMock.mockReset();
   getCarriedWeightClassStatsMock.mockReset();
   getFinishPositionStatsMock.mockReset();
@@ -1696,11 +1712,129 @@ it("training payload decodes netkeiba oikiri.html as utf-8 and merges parsed rev
   expect(fetchMock.mock.calls[1]?.[0]).toBe(
     "https://race.netkeiba.com/race/oikiri.html?race_id=2025063811",
   );
+  expect(fetchRaceTrainingsFromCatalogMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    raceBango: "11",
+    year: "2025",
+  });
+  expect(getRaceTrainingsMock).toHaveBeenCalledTimes(1);
+  fetchMock.mockRestore();
+});
+
+it("training payload uses Catalog workout times and ignores D1 trainingWorkouts", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  fetchRaceTrainingsFromCatalogMock.mockResolvedValueOnce([
+    {
+      babamawari: "右",
+      bamei: "現地調教馬",
+      chokyoJikoku: "0600",
+      chokyoNengappi: "20251227",
+      course: "札幌ダート",
+      currentJockeyName: "騎手",
+      lapTime10f: null,
+      lapTime1f: "123",
+      lapTime2f: null,
+      lapTime3f: null,
+      lapTime4f: null,
+      lapTime5f: null,
+      lapTime6f: null,
+      lapTime7f: null,
+      lapTime8f: null,
+      lapTime9f: null,
+      timeGokei10f: null,
+      premiumWorkoutIndex: 0,
+      timeGokei2f: "247",
+      timeGokei3f: "372",
+      timeGokei4f: "498",
+      timeGokei5f: null,
+      timeGokei6f: null,
+      timeGokei7f: null,
+      timeGokei8f: null,
+      timeGokei9f: null,
+      tracenKubun: "札幌",
+      trainerName: "調教師",
+      trainingDataSource: "netkeiba",
+      trainingRiderName: "助手",
+      trainingType: "ダート",
+      umaban: "5",
+    },
+  ]);
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        stableComments: [],
+        trainingReviews: [
+          {
+            commentText: "状態良好",
+            evaluationGrade: "S",
+            evaluationText: "抜群",
+            horseNumber: "5",
+            riderName: "助手",
+            trainingDate: "20251227",
+          },
+        ],
+        trainingWorkouts: [
+          null,
+          { horseNumber: "5", trainingDate: "20251227", workoutIndex: "invalid" },
+          {
+            course: "札幌ダート",
+            courseDirection: "右",
+            evaluationGrade: "A",
+            evaluationText: "好気配",
+            horseName: "現地調教馬",
+            horseNumber: "5",
+            lapTime1f: "999",
+            riderName: "助手",
+            timeGokei2f: "247",
+            timeGokei3f: "372",
+            timeGokei4f: "498",
+            tracenKubun: "札幌",
+            trainingDate: "20251227",
+            trainingTime: "0600",
+            trainingType: "ダート",
+            workoutIndex: 0,
+          },
+        ],
+      }),
+      { headers: { "content-type": "application/json" }, status: 200 },
+    ),
+  );
+
+  const payload = await getDetailSectionPayload("training", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload?.type).toBe("training");
+  if (
+    !payload ||
+    payload.type !== "training" ||
+    !("trainings" in payload) ||
+    !Array.isArray(payload.trainings)
+  ) {
+    throw new Error("training payload expected");
+  }
+  expect(payload.trainings).toHaveLength(1);
+  expect(payload.trainings[0]?.chokyoNengappi).toBe("20251227");
+  expect(payload.trainings[0]?.timeGokei4f).toBe("498");
+  expect(payload.trainings[0]?.lapTime1f).toBe("123");
+  expect(payload.trainings[0]?.premiumEvaluationGrade).toBe("S");
+  expect(payload.trainings[0]?.trainingDataSource).toBe("netkeiba");
+  expect(getRaceTrainingsMock).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
   fetchMock.mockRestore();
 });
 
 it("training payload returns empty trainingReviews when netkeiba oikiri.html returns non-ok", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  fetchRaceTrainingsFromCatalogMock.mockResolvedValueOnce([]);
   getRaceTrainingsMock.mockResolvedValueOnce([]);
   const fetchMock = vi
     .spyOn(globalThis, "fetch")
@@ -1727,6 +1861,31 @@ it("training payload returns empty trainingReviews when netkeiba oikiri.html ret
     type: "training",
   });
   fetchMock.mockRestore();
+});
+
+it("training payload uses the PostgreSQL fallback directly for local development", async () => {
+  getDatabaseTargetMock.mockReturnValue("local");
+  getRaceDetailMock.mockResolvedValueOnce(null);
+  getRaceTrainingsMock.mockResolvedValueOnce([]);
+
+  const payload = await getDetailSectionPayload("training", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toStrictEqual({
+    sourceLabel: "JRA 中央競馬",
+    stableComments: [],
+    trainings: [],
+    type: "training",
+  });
+  expect(fetchRaceTrainingsFromCatalogMock).not.toHaveBeenCalled();
+  expect(getRaceTrainingsMock).toHaveBeenCalledTimes(1);
 });
 
 it("skips 斤量 class stats for ばんえい condition payloads", async () => {
