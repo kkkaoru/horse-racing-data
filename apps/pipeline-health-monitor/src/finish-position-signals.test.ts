@@ -31,7 +31,11 @@ const readiness = (deadline: "T-120" | "T-60" = "T-60"): PredictionReadinessResp
 });
 
 it("builds warning at T-120 and critical at T-60", () => {
-  expect(buildReadinessSignals(readiness("T-120"))[0]?.severity).toBe("warning");
+  const warning = buildReadinessSignals(readiness("T-120"))[0];
+  expect(warning?.severity).toBe("warning");
+  expect(warning?.key).toBe("finish-position-readiness:20260815:jra:05:01");
+  expect(warning?.fields[0]).toStrictEqual({ name: "Run date", value: "20260815" });
+  expect(warning?.title).toBe("finish-position predictions incomplete 20260815 jra:05:01");
   const critical = buildReadinessSignals(readiness("T-60"))[0];
   expect(critical?.severity).toBe("critical");
   expect(critical?.fields).toContainEqual({ name: "Coverage", value: "8/10" });

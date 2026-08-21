@@ -11,12 +11,24 @@ vi.mock("./finish-position-client", () => ({
 }));
 
 vi.mock("./incident-engine", () => ({
+  drainIncidentOutbox: vi.fn(async () => undefined),
   processIncidentSignal: vi.fn(async () => undefined),
   sendDailyMonitorHeartbeat: vi.fn(async () => undefined),
+  terminalCloseIncident: vi.fn(async () => undefined),
+}));
+
+vi.mock("./incident-state", () => ({
+  listOpenIncidentsBySignalPrefix: vi.fn(async () => []),
 }));
 
 import { fetchDeliveryCanaries, fetchPredictionReadiness } from "./finish-position-client";
-import { processIncidentSignal, sendDailyMonitorHeartbeat } from "./incident-engine";
+import {
+  drainIncidentOutbox,
+  processIncidentSignal,
+  sendDailyMonitorHeartbeat,
+  terminalCloseIncident,
+} from "./incident-engine";
+import { listOpenIncidentsBySignalPrefix, type IncidentState } from "./incident-state";
 import { fetchQueueHealth } from "./queue-health-client";
 import { isQuarterHourTick, runScheduled } from "./scheduled-handler";
 import type { AlertMessage, Env, QueueHealthMetrics } from "./types";
@@ -65,6 +77,7 @@ const FAILING_RESULTS_METRICS: QueueHealthMetrics = {
 };
 
 beforeEach(() => {
+  vi.mocked(listOpenIncidentsBySignalPrefix).mockResolvedValue([]);
   vi.mocked(fetchDeliveryCanaries).mockResolvedValue({
     canaries: [
       {
@@ -96,6 +109,7 @@ it("runs only the canary monitor on a five-minute non-quarter tick", async () =>
   const state = buildKvState();
   const env = buildEnv(state);
   await runScheduled({ env, now: new Date("2026-06-28T06:10:00Z") });
+  expect(drainIncidentOutbox).toHaveBeenCalledTimes(1);
   expect(sendDailyMonitorHeartbeat).toHaveBeenCalledTimes(1);
   expect(fetchDeliveryCanaries).toHaveBeenCalledTimes(1);
   expect(fetchPredictionReadiness).not.toHaveBeenCalled();
@@ -176,6 +190,7 @@ it("runScheduled produces a recovery alert and resets the counter when a previou
 });
 
 it("turns finish-position endpoint failures into incident signals", async () => {
+  vi.mocked(listOpenIncidentsBySignalPrefix).mockClear();
   vi.mocked(fetchDeliveryCanaries).mockRejectedValue(new Error("canary unavailable"));
   vi.mocked(fetchPredictionReadiness).mockRejectedValue(new Error("readiness unavailable"));
   vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
@@ -189,6 +204,35 @@ it("turns finish-position endpoint failures into incident signals", async () => 
     expect.anything(),
     expect.objectContaining({ key: "finish-position-monitor-endpoint:prediction-readiness" }),
     ON_WINDOW_NOW,
+  );
+  expect(listOpenIncidentsBySignalPrefix).not.toHaveBeenCalled();
+});
+
+it("terminal-closes only dated readiness incidents from past run dates", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  const state = (signalKey: string): IncidentState => ({
+    acknowledgedAt: null,
+    closedAt: null,
+    incidentId: signalKey,
+    lastSentAt: ON_WINDOW_NOW.toISOString(),
+    lastSeverity: "critical",
+    lastStage: "post",
+    openedAt: ON_WINDOW_NOW.toISOString(),
+    sendCount: 1,
+    signalKey,
+  });
+  const past = state("finish-position-readiness:20260627:nar:30:11");
+  const current = state("finish-position-readiness:20260628:nar:30:11");
+  const future = state("finish-position-readiness:20260629:nar:30:11");
+  const legacy = state("finish-position-readiness:nar:30:11");
+  vi.mocked(listOpenIncidentsBySignalPrefix).mockResolvedValue([past, current, future, legacy]);
+  await runScheduled({ env: buildEnv(buildKvState()), now: ON_WINDOW_NOW });
+  expect(terminalCloseIncident).toHaveBeenCalledTimes(1);
+  expect(terminalCloseIncident).toHaveBeenCalledWith(
+    expect.anything(),
+    past,
+    ON_WINDOW_NOW,
+    "The race remained incomplete when its active-day readiness observation window ended.",
   );
 });
 

@@ -9,26 +9,27 @@ import type {
 
 const CANARY_STALE_MS = 10 * 60 * 1000;
 
-const readinessSignal = (race: PredictionReadinessRace): IncidentSignal => ({
+const readinessSignal = (race: PredictionReadinessRace, runYmd: string): IncidentSignal => ({
   description:
     race.expectedCount === 0
       ? "No eligible entry rows are available, so readiness cannot be proven."
       : `${race.missingCount} of ${race.expectedCount} required predictions are missing.`,
   fields: [
+    { name: "Run date", value: runYmd },
     { name: "Race", value: race.raceKey },
     { name: "Post", value: race.raceStartAtJst },
     { name: "Coverage", value: `${race.predictionCount}/${race.expectedCount}` },
     { name: "Minutes to post", value: String(race.minutesToPost) },
   ],
-  key: `finish-position-readiness:${race.raceKey}`,
+  key: `finish-position-readiness:${runYmd}:${race.raceKey}`,
   ok: race.complete,
   severity: race.deadline === "T-120" ? "warning" : "critical",
   stage: race.deadline,
-  title: `finish-position predictions incomplete ${race.raceKey}`,
+  title: `finish-position predictions incomplete ${runYmd} ${race.raceKey}`,
 });
 
 export const buildReadinessSignals = (response: PredictionReadinessResponse): IncidentSignal[] =>
-  response.races.map(readinessSignal);
+  response.races.map((race) => readinessSignal(race, response.runYmd));
 
 export const buildCanarySignal = (response: DeliveryCanaryResponse, now: Date): IncidentSignal => {
   const overdue = response.canaries

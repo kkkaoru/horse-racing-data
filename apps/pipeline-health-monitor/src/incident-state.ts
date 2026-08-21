@@ -26,6 +26,27 @@ export const incidentOutboxKey = (incidentId: string): string => `${OUTBOX_PREFI
 export const getIncident = async (env: Env, signalKey: string): Promise<IncidentState | null> =>
   env.STATE_KV.get<IncidentState>(stateKey(signalKey), "json");
 
+const listOpenIncidentPage = async (
+  env: Env,
+  prefix: string,
+  cursor?: string,
+): Promise<IncidentState[]> => {
+  const page = await env.STATE_KV.list(cursor === undefined ? { prefix } : { cursor, prefix });
+  const states = await Promise.all(
+    page.keys.map((key) => env.STATE_KV.get<IncidentState>(key.name, "json")),
+  );
+  const openStates = states.filter(
+    (state): state is IncidentState => state !== null && state.closedAt === null,
+  );
+  if (page.list_complete) return openStates;
+  return [...openStates, ...(await listOpenIncidentPage(env, prefix, page.cursor))];
+};
+
+export const listOpenIncidentsBySignalPrefix = async (
+  env: Env,
+  signalPrefix: string,
+): Promise<IncidentState[]> => listOpenIncidentPage(env, stateKey(signalPrefix));
+
 export const putIncident = async (env: Env, state: IncidentState): Promise<void> => {
   await Promise.all([
     env.STATE_KV.put(stateKey(state.signalKey), JSON.stringify(state), {

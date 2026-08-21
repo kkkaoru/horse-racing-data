@@ -2,7 +2,6 @@
 
 import { notifyCustom, notifyDiscord, notifySlack } from "./notifiers";
 import {
-  closeIncident,
   getIncident,
   incidentOutboxKey,
   openIncident,
@@ -15,6 +14,10 @@ const TEN_MINUTES_MS = 10 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const OUTBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
+const OUTBOX_DRAIN_LIMIT = 25;
+const OUTBOX_VERSION = 1;
+const HEARTBEAT_TTL_SECONDS = 3 * 24 * 60 * 60;
+const HEARTBEAT_PREFIX = "monitor-heartbeat:";
 const RUNBOOK_URL =
   "apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -28,6 +31,8 @@ const ACTION_BY_SEVERITY: Record<AlertSeverity, string> = {
   recovery:
     "Verify prediction coverage and queue delivery are restored; take no further action unless the incident recurs.",
 };
+const TERMINAL_CLOSE_ACTION =
+  "Record the unresolved readiness miss for follow-up; this race is no longer observable by the active-day endpoint.";
 const TITLE_PREFIX_BY_SEVERITY: Record<AlertSeverity, string> = {
   warning: "[WARNING]",
   critical: "[CRITICAL]",
@@ -42,6 +47,44 @@ export interface IncidentSignal {
   title: string;
   description: string;
   fields: AlertField[];
+}
+
+type NotificationDestination = "custom" | "discord" | "slack";
+
+interface FailureCompletion {
+  kind: "failure";
+  incidentId: string;
+  signalKey: string;
+  sentAt: string;
+  severity: "critical" | "warning";
+  stage: string;
+  sendCount: number;
+}
+
+interface RecoveryCompletion {
+  kind: "recovery";
+  incidentId: string;
+  signalKey: string;
+  closedAt: string;
+}
+
+interface HeartbeatCompletion {
+  kind: "heartbeat";
+  key: string;
+  value: string;
+}
+
+type DeliveryCompletion = FailureCompletion | RecoveryCompletion | HeartbeatCompletion;
+
+interface IncidentOutbox {
+  version: number;
+  message: AlertMessage;
+  pendingDestinations: NotificationDestination[];
+  completion: DeliveryCompletion;
+}
+
+interface IncidentAlertMessage extends AlertMessage {
+  incidentId: string;
 }
 
 const elapsedSince = (iso: string, now: Date): number => now.getTime() - Date.parse(iso);
@@ -98,7 +141,7 @@ const buildMessage = (
   openedAt: string,
   severity: AlertSeverity,
   now: Date,
-): AlertMessage => ({
+): IncidentAlertMessage => ({
   checkName: signal.key,
   description: `${signal.description}\nRunbook: ${RUNBOOK_URL}`,
   fields: [
@@ -115,31 +158,126 @@ const buildMessage = (
   title: `${titlePrefix(severity)} ${signal.title}`,
 });
 
-const directNotificationPromises = (env: Env, message: AlertMessage): Promise<void>[] => {
-  const promises: Promise<void>[] = [];
-  if (env.DISCORD_ALERT_WEBHOOK_URL) {
-    promises.push(notifyDiscord({ message, webhookUrl: env.DISCORD_ALERT_WEBHOOK_URL }));
-  }
-  if (env.SLACK_ALERT_WEBHOOK_URL) {
-    promises.push(notifySlack({ message, webhookUrl: env.SLACK_ALERT_WEBHOOK_URL }));
-  }
-  if (env.CUSTOM_ALERT_WEBHOOK_URL) {
-    promises.push(notifyCustom({ message, webhookUrl: env.CUSTOM_ALERT_WEBHOOK_URL }));
-  }
-  return promises;
+const buildTerminalCloseMessage = (
+  state: IncidentState,
+  now: Date,
+  reason: string,
+): IncidentAlertMessage => ({
+  checkName: state.signalKey,
+  description: `${reason}\nRunbook: ${RUNBOOK_URL}`,
+  fields: [
+    { name: "Incident ID", value: state.incidentId },
+    { name: "First detected (JST)", value: formatJstIso(new Date(state.openedAt)) },
+    { name: "Duration", value: formatElapsedDuration(state.openedAt, now) },
+    { name: "Action", value: TERMINAL_CLOSE_ACTION },
+    { name: "Stage", value: "monitoring-window-ended-unresolved" },
+  ],
+  incidentId: state.incidentId,
+  severity: "recovery",
+  timestampJst: formatJstIso(now),
+  title: `[CLOSED UNRESOLVED] ${state.signalKey}`,
+});
+
+const configuredDestinations = (env: Env): NotificationDestination[] => {
+  const destinations: NotificationDestination[] = [];
+  if (env.DISCORD_ALERT_WEBHOOK_URL) destinations.push("discord");
+  if (env.SLACK_ALERT_WEBHOOK_URL) destinations.push("slack");
+  if (env.CUSTOM_ALERT_WEBHOOK_URL) destinations.push("custom");
+  return destinations.length === 0 ? ["discord"] : destinations;
 };
 
-const deliver = async (env: Env, message: AlertMessage): Promise<void> => {
-  const outboxKey = incidentOutboxKey(message.incidentId ?? message.checkName);
-  await env.STATE_KV.put(outboxKey, JSON.stringify(message), {
+const notifyDestination = async (
+  env: Env,
+  message: AlertMessage,
+  destination: NotificationDestination,
+): Promise<void> => {
+  if (destination === "discord") {
+    if (!env.DISCORD_ALERT_WEBHOOK_URL) throw new Error("discord notifier is not configured");
+    await notifyDiscord({ message, webhookUrl: env.DISCORD_ALERT_WEBHOOK_URL });
+    return;
+  }
+  if (destination === "slack") {
+    if (!env.SLACK_ALERT_WEBHOOK_URL) throw new Error("slack notifier is not configured");
+    await notifySlack({ message, webhookUrl: env.SLACK_ALERT_WEBHOOK_URL });
+    return;
+  }
+  if (!env.CUSTOM_ALERT_WEBHOOK_URL) throw new Error("custom notifier is not configured");
+  await notifyCustom({ message, webhookUrl: env.CUSTOM_ALERT_WEBHOOK_URL });
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isIncidentOutbox = (value: unknown): value is IncidentOutbox =>
+  isRecord(value) && value.version === OUTBOX_VERSION;
+
+const finalizeDelivery = async (env: Env, completion: DeliveryCompletion): Promise<void> => {
+  if (completion.kind === "heartbeat") {
+    await env.STATE_KV.put(completion.key, completion.value, {
+      expirationTtl: HEARTBEAT_TTL_SECONDS,
+    });
+    return;
+  }
+  const state = await getIncident(env, completion.signalKey);
+  if (state === null || state.incidentId !== completion.incidentId) return;
+  if (completion.kind === "recovery") {
+    await putIncident(env, { ...state, closedAt: completion.closedAt });
+    return;
+  }
+  await putIncident(env, {
+    ...state,
+    lastSentAt: completion.sentAt,
+    lastSeverity: completion.severity,
+    lastStage: completion.stage,
+    sendCount: Math.max(state.sendCount, completion.sendCount),
+  });
+};
+
+const attemptOutbox = async (env: Env, key: string, outbox: IncidentOutbox): Promise<void> => {
+  const results = await Promise.all(
+    outbox.pendingDestinations.map(async (destination) => {
+      try {
+        await notifyDestination(env, outbox.message, destination);
+        return null;
+      } catch (error) {
+        console.error(
+          "pipeline-health-monitor outbox destination delivery failed",
+          destination,
+          String(error),
+        );
+        return destination;
+      }
+    }),
+  );
+  const pendingDestinations = results.filter(
+    (destination): destination is NotificationDestination => destination !== null,
+  );
+  if (pendingDestinations.length > 0) {
+    await env.STATE_KV.put(key, JSON.stringify({ ...outbox, pendingDestinations }), {
+      expirationTtl: OUTBOX_TTL_SECONDS,
+    });
+    throw new Error(`incident delivery pending destinations=${pendingDestinations.join(",")}`);
+  }
+  await finalizeDelivery(env, outbox.completion);
+  await env.STATE_KV.delete(key);
+};
+
+const deliver = async (
+  env: Env,
+  message: IncidentAlertMessage,
+  completion: DeliveryCompletion,
+): Promise<void> => {
+  const outboxKey = incidentOutboxKey(message.incidentId);
+  const outbox: IncidentOutbox = {
+    completion,
+    message,
+    pendingDestinations: configuredDestinations(env),
+    version: OUTBOX_VERSION,
+  };
+  await env.STATE_KV.put(outboxKey, JSON.stringify(outbox), {
     expirationTtl: OUTBOX_TTL_SECONDS,
   });
-  const promises = directNotificationPromises(env, message);
-  if (promises.length === 0) {
-    throw new Error("no direct incident notifier configured");
-  }
-  await Promise.all(promises);
-  await env.STATE_KV.delete(outboxKey);
+  await attemptOutbox(env, outboxKey, outbox);
 };
 
 const sendFailure = async (
@@ -149,7 +287,6 @@ const sendFailure = async (
   now: Date,
 ): Promise<IncidentState> => {
   const message = buildMessage(signal, state.incidentId, state.openedAt, signal.severity, now);
-  await deliver(env, message);
   const sent: IncidentState = {
     ...state,
     lastSentAt: now.toISOString(),
@@ -157,12 +294,17 @@ const sendFailure = async (
     lastStage: signal.stage,
     sendCount: state.sendCount + 1,
   };
-  await putIncident(env, sent);
+  await deliver(env, message, {
+    incidentId: state.incidentId,
+    kind: "failure",
+    sendCount: sent.sendCount,
+    sentAt: now.toISOString(),
+    severity: signal.severity,
+    signalKey: state.signalKey,
+    stage: signal.stage,
+  });
   return sent;
 };
-
-const HEARTBEAT_PREFIX = "monitor-heartbeat:";
-const HEARTBEAT_TTL_SECONDS = 3 * 24 * 60 * 60;
 
 const heartbeatDateJst = (now: Date): string =>
   new Date(now.getTime() + JST_OFFSET_MS).toISOString().slice(0, 10);
@@ -171,7 +313,7 @@ export const sendDailyMonitorHeartbeat = async (env: Env, now: Date): Promise<vo
   const date = heartbeatDateJst(now);
   const key = `${HEARTBEAT_PREFIX}${date}`;
   if ((await env.STATE_KV.get(key)) !== null) return;
-  const message: AlertMessage = {
+  const message: IncidentAlertMessage = {
     checkName: "pipeline-health-monitor-heartbeat",
     description:
       "Scheduled prediction monitoring is running. Operators must investigate if this daily message is absent.",
@@ -188,8 +330,41 @@ export const sendDailyMonitorHeartbeat = async (env: Env, now: Date): Promise<vo
     timestampJst: formatJstIso(now),
     title: "[HEALTHY] pipeline health monitor daily heartbeat",
   };
-  await deliver(env, message);
-  await env.STATE_KV.put(key, now.toISOString(), { expirationTtl: HEARTBEAT_TTL_SECONDS });
+  await deliver(env, message, { key, kind: "heartbeat", value: now.toISOString() });
+};
+
+export const drainIncidentOutbox = async (env: Env): Promise<void> => {
+  const listed = await env.STATE_KV.list({ limit: OUTBOX_DRAIN_LIMIT, prefix: "incident-outbox:" });
+  await Promise.all(
+    listed.keys.map(async ({ name }) => {
+      const value: unknown = await env.STATE_KV.get(name, "json");
+      if (!isIncidentOutbox(value)) {
+        console.error("pipeline-health-monitor discarding unreadable legacy outbox", name);
+        await env.STATE_KV.delete(name);
+        return;
+      }
+      try {
+        await attemptOutbox(env, name, value);
+      } catch (error) {
+        console.error("pipeline-health-monitor outbox retry remains pending", name, String(error));
+      }
+    }),
+  );
+};
+
+export const terminalCloseIncident = async (
+  env: Env,
+  state: IncidentState,
+  now: Date,
+  reason: string,
+): Promise<void> => {
+  if (state.closedAt !== null) return;
+  await deliver(env, buildTerminalCloseMessage(state, now, reason), {
+    closedAt: now.toISOString(),
+    incidentId: state.incidentId,
+    kind: "recovery",
+    signalKey: state.signalKey,
+  });
 };
 
 export const processIncidentSignal = async (
@@ -201,8 +376,12 @@ export const processIncidentSignal = async (
   if (signal.ok) {
     if (existing === null || existing.closedAt !== null) return;
     const message = buildMessage(signal, existing.incidentId, existing.openedAt, "recovery", now);
-    await deliver(env, message);
-    await closeIncident(env, existing, now);
+    await deliver(env, message, {
+      closedAt: now.toISOString(),
+      incidentId: existing.incidentId,
+      kind: "recovery",
+      signalKey: existing.signalKey,
+    });
     return;
   }
   const state = await openIncident(env, signal.key, now);

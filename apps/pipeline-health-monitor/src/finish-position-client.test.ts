@@ -14,6 +14,22 @@ const makeEnv = (response: Response): { env: Env; fetchMock: ReturnType<typeof v
   };
 };
 
+const validRace = (deadline: string) => ({
+  complete: false,
+  deadline,
+  expectedCount: 10,
+  keibajoCode: "30",
+  minutesToPost: 30,
+  missingCount: 2,
+  newestPredictionAt: "2026-08-15T00:01:00Z",
+  oldestPredictionAt: null,
+  predictionCount: 8,
+  raceBango: "11",
+  raceKey: "nar:30:11",
+  raceStartAtJst: "2026-08-15T10:00:00+09:00",
+  source: "nar",
+});
+
 it("fetches authenticated prediction readiness through the service binding", async () => {
   const { env, fetchMock } = makeEnv(
     Response.json({ checkedAt: "now", races: [], runYmd: "20260815" }),
@@ -24,6 +40,33 @@ it("fetches authenticated prediction readiness through the service binding", asy
     "https://finish-position-cron.internal/api/internal/prediction-readiness",
   );
   expect(request.headers.get("authorization")).toBe("Bearer secret");
+});
+
+it("accepts fully validated readiness races and delivery canaries", async () => {
+  const readiness = makeEnv(
+    Response.json({
+      checkedAt: "now",
+      races: [validRace("T-120"), validRace("T-60"), validRace("T-30"), validRace("post")],
+      runYmd: "20260815",
+    }),
+  );
+  await expect(fetchPredictionReadiness(readiness.env)).resolves.toMatchObject({
+    runYmd: "20260815",
+  });
+  const canary = makeEnv(
+    Response.json({
+      canaries: [
+        {
+          consumedAt: "2026-08-15T00:01:00Z",
+          deliveryLagMs: 60_000,
+          enqueuedAt: "2026-08-15T00:00:00Z",
+          id: "canary",
+        },
+      ],
+      checkedAt: "now",
+    }),
+  );
+  await expect(fetchDeliveryCanaries(canary.env)).resolves.toMatchObject({ checkedAt: "now" });
 });
 
 it("fetches delivery canaries and rejects non-success responses", async () => {
@@ -45,6 +88,28 @@ it("rejects a health catch-all response instead of treating it as readiness", as
 it("rejects a health catch-all response instead of treating it as healthy canary data", async () => {
   const { env } = makeEnv(
     Response.json({ cron: "0 18 * * *", name: "finish-position-cron", ok: true }),
+  );
+  await expect(fetchDeliveryCanaries(env)).rejects.toThrow(
+    "delivery-canaries endpoint returned an unexpected response shape; delivery-canaries may not be deployed",
+  );
+});
+
+it("rejects malformed nested readiness races", async () => {
+  const { env } = makeEnv(
+    Response.json({
+      checkedAt: "now",
+      races: [{ complete: false, raceKey: "nar:30:11" }],
+      runYmd: "20260815",
+    }),
+  );
+  await expect(fetchPredictionReadiness(env)).rejects.toThrow(
+    "prediction-readiness endpoint returned an unexpected response shape; prediction-readiness may not be deployed",
+  );
+});
+
+it("rejects malformed nested delivery canaries", async () => {
+  const { env } = makeEnv(
+    Response.json({ canaries: [{ enqueuedAt: "now", id: "id" }], checkedAt: "now" }),
   );
   await expect(fetchDeliveryCanaries(env)).rejects.toThrow(
     "delivery-canaries endpoint returned an unexpected response shape; delivery-canaries may not be deployed",

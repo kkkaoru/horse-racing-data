@@ -8,12 +8,14 @@ vi.mock("./notifiers", () => ({
 
 import { acknowledgeIncident, getIncident } from "./incident-state";
 import {
+  drainIncidentOutbox,
   processIncidentSignal,
   sendDailyMonitorHeartbeat,
   shouldSendIncident,
+  terminalCloseIncident,
   type IncidentSignal,
 } from "./incident-engine";
-import { notifyDiscord } from "./notifiers";
+import { notifyCustom, notifyDiscord, notifySlack } from "./notifiers";
 import type { Env } from "./types";
 
 const makeEnv = (configured = true): { env: Env; store: Map<string, string> } => {
@@ -31,6 +33,12 @@ const makeEnv = (configured = true): { env: Env; store: Map<string, string> } =>
       put: vi.fn(async (key: string, value: string) => {
         store.set(key, value);
       }),
+      list: vi.fn(async (options: { prefix?: string }) => ({
+        keys: [...store.keys()]
+          .filter((key) => key.startsWith(options.prefix ?? ""))
+          .map((name) => ({ name })),
+        list_complete: true,
+      })),
     },
   } as unknown as Env;
   return { env, store };
@@ -48,6 +56,9 @@ const failingSignal = (stage = "T-60"): IncidentSignal => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(notifyDiscord).mockResolvedValue(undefined);
+  vi.mocked(notifySlack).mockResolvedValue(undefined);
+  vi.mocked(notifyCustom).mockResolvedValue(undefined);
 });
 
 it("sends the initial critical alert through direct Discord after persisting outbox", async () => {
@@ -127,12 +138,76 @@ it("sends one recovery, closes the incident, and ignores later healthy ticks", a
   expect((await getIncident(env, failingSignal().key))?.closedAt).toBe("2026-08-15T00:05:00.000Z");
 });
 
+it("terminal-closes an unobservable incident without calling it recovered", async () => {
+  const { env } = makeEnv();
+  const now = new Date("2026-08-16T00:00:00Z");
+  await processIncidentSignal(env, failingSignal(), new Date("2026-08-15T00:00:00Z"));
+  const state = await getIncident(env, failingSignal().key);
+  expect(state).not.toBeNull();
+  if (state === null) return;
+  await terminalCloseIncident(
+    env,
+    state,
+    now,
+    "The active-day observation window ended while predictions remained incomplete.",
+  );
+  expect(vi.mocked(notifyDiscord).mock.calls[1]?.[0].message.title).toBe(
+    "[CLOSED UNRESOLVED] readiness:jra:05:01",
+  );
+  expect(vi.mocked(notifyDiscord).mock.calls[1]?.[0].message.description).toBe(
+    "The active-day observation window ended while predictions remained incomplete.\nRunbook: apps/finish-position-cron/docs/prediction-readiness-monitor-design-2026-08-15.md",
+  );
+  const closed = await getIncident(env, failingSignal().key);
+  expect(closed?.closedAt).toBe("2026-08-16T00:00:00.000Z");
+  await terminalCloseIncident(env, closed ?? state, now, "ignored");
+  expect(notifyDiscord).toHaveBeenCalledTimes(2);
+});
+
 it("keeps the outbox pending when no direct notifier is configured", async () => {
   const { env, store } = makeEnv(false);
   await expect(
     processIncidentSignal(env, failingSignal(), new Date("2026-08-15T00:00:00Z")),
-  ).rejects.toThrow("no direct incident notifier configured");
+  ).rejects.toThrow("incident delivery pending destinations=discord");
   expect([...store.keys()].some((key) => key.startsWith("incident-outbox:"))).toBe(true);
+});
+
+it("drains only the destination that failed and finalizes incident state", async () => {
+  const { env, store } = makeEnv();
+  env.SLACK_ALERT_WEBHOOK_URL = "https://slack.example/webhook";
+  vi.mocked(notifySlack).mockRejectedValueOnce(new Error("slack unavailable"));
+  await expect(
+    processIncidentSignal(env, failingSignal(), new Date("2026-08-15T00:00:00Z")),
+  ).rejects.toThrow("pending destinations=slack");
+  expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  expect(notifySlack).toHaveBeenCalledTimes(1);
+  expect([...store.keys()].some((key) => key.startsWith("incident-outbox:"))).toBe(true);
+  await drainIncidentOutbox(env);
+  expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  expect(notifySlack).toHaveBeenCalledTimes(2);
+  expect((await getIncident(env, failingSignal().key))?.sendCount).toBe(1);
+  expect([...store.keys()].some((key) => key.startsWith("incident-outbox:"))).toBe(false);
+});
+
+it("delivers to every configured direct destination", async () => {
+  const { env } = makeEnv();
+  env.SLACK_ALERT_WEBHOOK_URL = "https://slack.example/webhook";
+  env.CUSTOM_ALERT_WEBHOOK_URL = "https://custom.example/webhook";
+  await processIncidentSignal(env, failingSignal(), new Date("2026-08-15T00:00:00Z"));
+  expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  expect(notifySlack).toHaveBeenCalledTimes(1);
+  expect(notifyCustom).toHaveBeenCalledTimes(1);
+});
+
+it("discards legacy outbox payloads that cannot be retried safely", async () => {
+  const { env, store } = makeEnv();
+  store.set("incident-outbox:legacy", JSON.stringify({ checkName: "legacy" }));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await drainIncidentOutbox(env);
+  expect(store.has("incident-outbox:legacy")).toBe(false);
+  expect(errorSpy).toHaveBeenCalledWith(
+    "pipeline-health-monitor discarding unreadable legacy outbox",
+    "incident-outbox:legacy",
+  );
 });
 
 it("sends one daily healthy heartbeat and uses the next JST date after 15:00 UTC", async () => {
