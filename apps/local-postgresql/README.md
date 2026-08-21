@@ -18,7 +18,9 @@ Local PostgreSQL always runs on Apple Container CLI. `compose.yml` is a
 legacy Docker Compose reference only — do not start it with colima/docker.
 Cloudflare Containers deploy (`wrangler deploy` in `finish-position-cron` /
 `mlflow-ui-proxy`) still needs a Docker API and uses colima via
-`scripts/ensure-docker-compat.sh`.
+`scripts/ensure-docker-compat.sh`. Those package scripts pass the deploy or
+dev command through the helper, so Colima is stopped automatically when the
+Docker-backed command exits if this invocation started it.
 
 If another PostgreSQL is already listening on port `5432`, stop it or change
 `POSTGRES_PORT` in `apps/local-postgresql/.env`.
@@ -44,6 +46,9 @@ Mac filesystem instead of inside the container writable layer.
 ```sh
 bun --cwd apps/local-postgresql start
 bun --cwd apps/local-postgresql stop
+bun --cwd apps/local-postgresql pc-keiba:update
+bun run --cwd apps/local-postgresql pc-keiba:update-and-sync
+bun run --cwd apps/local-postgresql scrape:netkeiba-training
 bun --cwd apps/local-postgresql logs
 bun --cwd apps/local-postgresql psql
 bun --cwd apps/local-postgresql status
@@ -58,6 +63,70 @@ bun --cwd apps/local-postgresql indexes:repair
 `start` runs `indexes:repair:quick` after PostgreSQL is healthy.
 `replica:push` also runs `indexes:repair:quick` before R2/Neon sync so XX002
 corruption cannot silently break ingest or push.
+
+`pc-keiba:update` starts local PostgreSQL, boots the configured Parallels VM
+(`PARALLELS_VM_NAME`, default `Windows 11`), and waits for the Windows-side
+PC-KEIBA update to finish. After a successful update it gracefully shuts down
+the VM and waits for the `stopped` state, releasing the Windows VM memory.
+When the update fails or times out, the VM is intentionally left running for
+inspection.
+
+The Windows-side updater must already be installed with
+`scripts/install-pc-keiba-auto-update.ps1`. The host command invokes
+`py -3.12 ... --wait --close-when-done`; override the Python launcher with
+`PARALLELS_PYTHON_COMMAND` when the Windows installation uses another command.
+Set `LOCAL_POSTGRES_AUTO_START=0` when PostgreSQL is already managed by another
+process.
+
+`pc-keiba:update-and-sync` is the end-to-end orchestrator. It keeps the
+individual commands independent and runs them in this strict order:
+
+1. `pc-keiba:update`
+2. verify that the Parallels VM is `stopped`
+3. `scrape:netkeiba-training` for JRA runners without an official `jvd_hc` or
+   `jvd_wc` workout in the preceding 14 days
+4. `replica:push` (R2 Catalog, then Neon)
+5. enqueue authenticated `sync-realtime-data` jobs for JST today and tomorrow;
+   after each `discover-urls` enqueue, poll the read-only discovery status until
+   D1 reaches the Neon JRA race count, then enqueue
+   `plan-premium-race-data-fetches`
+
+The orchestrator forces `PARALLELS_STOP_AFTER_SUCCESS=1`. If the Windows update
+fails, it does not start replica synchronization. If the VM is not confirmed
+stopped, it also refuses to sync. A replica failure is returned as a non-zero
+exit without repeating the already-completed Windows update. The final queue
+orchestration also fails closed: authorization and permanent HTTP failures stop
+the orchestrator, while network errors and HTTP 408/429/5xx responses are
+retried up to three times. Discovery runs outside the request lifetime in the
+Worker queue. The host polls `/api/internal/discovery-status` every 10 seconds
+for at most 15 minutes and does not enqueue premium planning until D1 has all
+Neon JRA races for that date. This prevents a successful replica push from
+being reported as a fully completed pipeline before newly synchronized races
+reach D1.
+
+The inline API uses `REALTIME_ADMIN_TOKEN` from the process environment, or
+falls back to `apps/sync-realtime-data/.dev.vars`. Override the production base
+URL with `SYNC_REALTIME_DATA_BASE_URL`. `SYNC_REALTIME_DATA_DATE=YYYYMMDD`
+overrides the JST base date; the following date is always derived and processed
+as well.
+
+`scrape:netkeiba-training` is also independently runnable. It idempotently
+applies `sql/20260822000000_create_netkeiba_training_workouts.sql`, queries JST
+today and tomorrow from local `jvd_ra`/`jvd_se`, and calls the authenticated
+`/api/internal/netkeiba-training-workouts` endpoint once per qualifying race.
+It joins response horse numbers to local `umaban` and `ketto_toroku_bango`, then
+upserts each race in one PostgreSQL transaction. Invalid authentication,
+invalid payloads, and upstream HTTP errors fail closed without deleting existing
+rows. An unpublished race with no workouts, or a non-empty response containing
+workouts only for runners that already have official data, is safely skipped
+and processing continues with the next race. Use the same
+`REALTIME_ADMIN_TOKEN`, `SYNC_REALTIME_DATA_BASE_URL`, and
+`SYNC_REALTIME_DATA_DATE` overrides as the post-sync discovery step.
+
+For a one-time cleanup of a Colima VM left by an older command, first confirm
+that no Docker workload is needed (`docker ps`), then run `colima stop` and
+verify with `colima status`. Do not stop a VM that owns another active Docker
+workload.
 
 ### New tables require separate Neon DDL
 

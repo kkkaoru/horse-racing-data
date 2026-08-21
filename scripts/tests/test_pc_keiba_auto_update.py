@@ -898,6 +898,34 @@ def test_safe_close_app_close_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mod.safe_close_app(main) is False
 
 
+def test_shutdown_windows_rejects_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod.sys, "platform", "darwin")
+    with pytest.raises(RuntimeError, match="supported only on Windows"):
+        mod.shutdown_windows()
+
+
+def test_shutdown_windows_requests_graceful_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    with patch("pc_keiba_auto_update.subprocess.run") as mock_run:
+        mod.shutdown_windows()
+    mock_run.assert_called_once_with(
+        [
+            "shutdown.exe",
+            "/s",
+            "/t",
+            "5",
+            "/d",
+            "p:0:0",
+            "/c",
+            "PC-KEIBA update completed",
+        ],
+        check=True,
+        timeout=mod.WINDOWS_SHUTDOWN_TIMEOUT_SEC,
+    )
+
+
 # ---------------------------------------------------------------------------
 # wait_for_completion / _dismiss_popups
 # ---------------------------------------------------------------------------
@@ -982,6 +1010,21 @@ def test_wait_for_completion_progress_appears_then_vanishes(
     monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+
+
+def test_wait_for_completion_succeeds_when_completed_progress_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 1
+    dismiss_popups = MagicMock()
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
+    monkeypatch.setattr(mod, "_dismiss_popups", dismiss_popups)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: True)
+
+    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+    assert dismiss_popups.call_count == 2
 
 
 def test_wait_for_completion_absent_while_progress_open_times_out(
@@ -1148,6 +1191,7 @@ def test_parse_args_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert a.wait is False
     assert a.dry_run is False
     assert a.close_when_done is False
+    assert a.shutdown_when_done is False
     assert a.lock_stale_min == 180
 
 
@@ -1155,12 +1199,21 @@ def test_parse_args_all_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["prog", "--wait", "--wait-minutes", "5", "--close-when-done", "--dry-run"],
+        [
+            "prog",
+            "--wait",
+            "--wait-minutes",
+            "5",
+            "--close-when-done",
+            "--shutdown-when-done",
+            "--dry-run",
+        ],
     )
     a = mod.parse_args()
     assert a.wait is True
     assert a.wait_minutes == 5
     assert a.close_when_done is True
+    assert a.shutdown_when_done is True
     assert a.dry_run is True
 
 
@@ -1258,7 +1311,11 @@ def test_main_connect_exhausts_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_main_wait_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["prog", "--wait", "--close-when-done"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prog", "--wait", "--close-when-done", "--shutdown-when-done"],
+    )
     monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
     monkeypatch.setattr(mod, "release_lock", lambda: None)
     monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
@@ -1273,8 +1330,11 @@ def test_main_wait_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: True)
     safe_close = MagicMock(return_value=True)
     monkeypatch.setattr(mod, "safe_close_app", safe_close)
+    shutdown = MagicMock()
+    monkeypatch.setattr(mod, "shutdown_windows", shutdown)
     assert mod.main() == 0
     safe_close.assert_called_once()
+    shutdown.assert_called_once()
 
 
 def test_main_wait_timeout_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1298,15 +1358,18 @@ def test_main_wait_timeout_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_main_in_progress_with_wait_until_done(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["prog", "--wait"])
+    monkeypatch.setattr(sys, "argv", ["prog", "--wait", "--shutdown-when-done"])
     monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
     monkeypatch.setattr(mod, "release_lock", lambda: None)
     monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
     monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: True)
     wait_fn = MagicMock(return_value=True)
     monkeypatch.setattr(mod, "wait_for_progress_window_to_finish", wait_fn)
+    shutdown = MagicMock()
+    monkeypatch.setattr(mod, "shutdown_windows", shutdown)
     assert mod.main() == 0
     wait_fn.assert_called_once()
+    shutdown.assert_called_once()
 
 
 def test_main_in_progress_with_wait_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

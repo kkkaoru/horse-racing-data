@@ -9,6 +9,7 @@ import {
   computePremiumPaddockContentHash,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
   countRaceSourcesByDate,
+  countJraRaceSourcesByDate,
   failResultFetch,
   failTrackConditionFetch,
   incrementEmptyResultAttempts,
@@ -400,6 +401,24 @@ it("countRaceSourcesByDate returns 0 when row missing", async () => {
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await countRaceSourcesByDate(db, "20260512")).toBe(0);
+});
+
+it("countJraRaceSourcesByDate scopes the count to JRA and returns a numeric value", async () => {
+  const first = vi.fn(async () => ({ count: "36" }));
+  const bind = vi.fn((..._values: unknown[]) => ({ first }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await countJraRaceSourcesByDate(db, "20260822")).toBe(36);
+  expect(prepare.mock.calls[0]?.[0]).toContain("where source = 'jra'");
+  expect(bind.mock.calls).toStrictEqual([["2026", "0822"]]);
+});
+
+it("countJraRaceSourcesByDate returns zero when the row is absent", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn((..._values: unknown[]) => ({ first }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await countJraRaceSourcesByDate(db, "20260823")).toBe(0);
 });
 
 it("countJraRaceSourcesMissingRaceDateFieldsByDate returns numeric count", async () => {

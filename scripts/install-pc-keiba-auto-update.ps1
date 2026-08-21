@@ -24,7 +24,7 @@
 #    $u='https://raw.githubusercontent.com/kkkaoru/horse-racing-data/main/scripts/install-pc-keiba-auto-update.ps1'; $d=Join-Path $env:TEMP 'install-pc-keiba-auto-update.ps1'; Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d; Unblock-File -LiteralPath $d; powershell -ExecutionPolicy Bypass -File $d
 #
 #    引数で実行時刻 / 頻度をカスタマイズ可能:
-#    powershell -ExecutionPolicy Bypass -File $d -DailyAt 03:00 -WaitForCompletion
+#    powershell -ExecutionPolicy Bypass -File $d -DailyAt 03:00 -WaitForCompletion -CloseWhenDone -ShutdownWhenDone
 #
 # 4. 完了後、以下で動作確認:
 #    Get-ScheduledTask -TaskName 'PC-KEIBA Auto Update'
@@ -70,6 +70,9 @@ param(
     # 完了後にアプリを閉じるか (--close-when-done を付加)
     [switch]$CloseWhenDone,
 
+    # 完了後にWindowsをシャットダウンするか (--shutdown-when-done を付加)
+    [switch]$ShutdownWhenDone,
+
     # --wait の最大分数
     [int]$WaitMinutes = 180
 )
@@ -79,6 +82,10 @@ $ErrorActionPreference = 'Stop'
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
+
+if ($ShutdownWhenDone -and -not $WaitForCompletion) {
+    throw "-ShutdownWhenDone requires -WaitForCompletion so shutdown is gated by a verified update completion."
+}
 
 # -----------------------------------------------------------------------------
 # 1. Python インストール
@@ -154,6 +161,7 @@ if ($WaitForCompletion) {
     $pyArgs += "$WaitMinutes"
 }
 if ($CloseWhenDone) { $pyArgs += '--close-when-done' }
+if ($ShutdownWhenDone) { $pyArgs += '--shutdown-when-done' }
 $pyArgsStr = $pyArgs -join ' '
 
 # py.exe / python.exe どちらでも対応

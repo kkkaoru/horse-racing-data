@@ -519,6 +519,25 @@ export const countRaceSourcesByDate = async (
   return Number(row?.count ?? 0);
 };
 
+export const countJraRaceSourcesByDate = async (
+  db: D1Database,
+  targetDate: string,
+): Promise<number> => {
+  const row = await db
+    .prepare(
+      `
+        select count(*) count
+        from realtime_race_sources
+        where source = 'jra'
+          and kaisai_nen = ?
+          and kaisai_tsukihi = ?
+      `,
+    )
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+};
+
 export const countJraRaceSourcesMissingRaceDateFieldsByDate = async (
   db: D1Database,
   targetDate: string,

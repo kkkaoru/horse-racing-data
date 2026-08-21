@@ -28,6 +28,7 @@ PC-KEIBA Database の「データ → 通常データ登録 → 開始」を pyw
   py -3.12 pc-keiba-auto-update.py                 # 起動 + 開始押下 (即時 exit, 完了非待機)
   py -3.12 pc-keiba-auto-update.py --wait          # 完了まで待機 (最大 --wait-minutes)
   py -3.12 pc-keiba-auto-update.py --close-when-done  # 完了後アプリを閉じる
+  py -3.12 pc-keiba-auto-update.py --wait --shutdown-when-done  # 完了後Windowsを停止
   py -3.12 pc-keiba-auto-update.py --dry-run       # 開始ボタンを押さず終了 (検証用)
 """
 
@@ -38,6 +39,7 @@ import contextlib
 import io
 import logging
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Iterator
@@ -111,6 +113,8 @@ CONNECT_BACKOFF_SEC = 5
 SW_MINIMIZE = 6
 START_CLICK_RETRIES = 3
 START_CLICK_SETTLE_SEC = 2
+WINDOWS_SHUTDOWN_DELAY_SEC: int = 5
+WINDOWS_SHUTDOWN_TIMEOUT_SEC: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +556,27 @@ def safe_close_app(main_window: UiWindow) -> bool:
         return False
 
 
+def shutdown_windows() -> None:
+    """Request a graceful Windows shutdown after a verified update."""
+    if sys.platform != "win32":
+        raise RuntimeError("--shutdown-when-done is supported only on Windows")
+    logging.info("Requesting graceful Windows shutdown after completed update")
+    subprocess.run(
+        [
+            "shutdown.exe",
+            "/s",
+            "/t",
+            str(WINDOWS_SHUTDOWN_DELAY_SEC),
+            "/d",
+            "p:0:0",
+            "/c",
+            "PC-KEIBA update completed",
+        ],
+        check=True,
+        timeout=WINDOWS_SHUTDOWN_TIMEOUT_SEC,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 完了待機 (任意)
 # ---------------------------------------------------------------------------
@@ -627,8 +652,10 @@ def wait_for_completion(
         with contextlib.suppress(Exception):
             main_window.set_focus()
         _dismiss_popups(main_window)
-        if pid is not None:
-            dismiss_completed_progress(pid)
+        if pid is not None and dismiss_completed_progress(pid):
+            logging.info("Completed progress dialog closed -> complete")
+            _dismiss_popups(main_window)
+            return True
         if _progress_visible(pid):
             saw_progress = _log_first(saw_progress, "進捗ウィンドウを検出 — 更新進行中")
             time.sleep(poll_sec)
@@ -769,6 +796,8 @@ def _finalize_wait(main_window: UiWindow, args: argparse.Namespace) -> None:
         raise _WaitTimedOut("完了待機がタイムアウトしました")
     if args.close_when_done:
         safe_close_app(main_window)
+    if args.shutdown_when_done:
+        shutdown_windows()
 
 
 def _handle_already_in_progress(pid: int, args: argparse.Namespace) -> None:
@@ -779,6 +808,8 @@ def _handle_already_in_progress(pid: int, args: argparse.Namespace) -> None:
         return
     if not wait_for_progress_window_to_finish(pid, max_minutes=args.wait_minutes):
         raise _WaitTimedOut("完了待機がタイムアウトしました")
+    if args.shutdown_when_done:
+        shutdown_windows()
 
 
 def _run_workflow(args: argparse.Namespace) -> None:
@@ -810,6 +841,11 @@ def parse_args() -> argparse.Namespace:
         "--close-when-done",
         action="store_true",
         help="完了後にアプリを閉じる (--wait と併用)",
+    )
+    ap.add_argument(
+        "--shutdown-when-done",
+        action="store_true",
+        help="完了後にWindowsを正常シャットダウン (--wait と併用)",
     )
     ap.add_argument("--dry-run", action="store_true", help="開始ボタンを押さずに終了")
     ap.add_argument(
