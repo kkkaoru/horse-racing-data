@@ -145,6 +145,9 @@ _CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
 _ENSURE_APPLE_CONTAINER_SCRIPT: Final[str] = "scripts/ensure-apple-container.sh"
 _ENSURE_DOCKER_COMPAT_SCRIPT: Final[str] = "scripts/ensure-docker-compat.sh"
 DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
+DEFAULT_DOCKER_WRAPPED_DEPLOY_TIMEOUT_S: Final[int] = (
+    DEFAULT_DOCKER_COMPAT_TIMEOUT_S + DEFAULT_CF_DEPLOY_TIMEOUT_S
+)
 
 _LOCAL_PG_URL: Final[str] = (
     "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
@@ -2052,18 +2055,19 @@ class ContinuousLearner:
             if self._cf_deploy_dir is not None
             else self._repo_root / _CONTAINER_APP_DIR
         )
-        _logger.info("│    ensuring Docker daemon (colima) for wrangler Containers")
+        _logger.info("│    deploying with temporary Docker daemon (colima)")
         subprocess.run(
-            ["bash", str(self._repo_root / _ENSURE_DOCKER_COMPAT_SCRIPT)],
-            check=True,
-            timeout=DEFAULT_DOCKER_COMPAT_TIMEOUT_S,
-        )
-        _logger.info("│    deploying from: %s", container_dir)
-        subprocess.run(
-            ["bunx", "wrangler", "deploy"],
+            [
+                "bash",
+                str(self._repo_root / _ENSURE_DOCKER_COMPAT_SCRIPT),
+                "--",
+                "bunx",
+                "wrangler",
+                "deploy",
+            ],
             cwd=str(container_dir),
             check=True,
-            timeout=DEFAULT_CF_DEPLOY_TIMEOUT_S,
+            timeout=DEFAULT_DOCKER_WRAPPED_DEPLOY_TIMEOUT_S,
         )
         _logger.info("│    CF Container deploy succeeded")
 

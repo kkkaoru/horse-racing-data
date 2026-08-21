@@ -3824,14 +3824,21 @@ def test_deploy_cf_container_runs_wrangler_deploy_in_container_dir() -> None:
         )
         with patch("subprocess.run") as mock_run:
             learner._deploy_cf_container()
-        ensure_cmd = mock_run.call_args_list[0].args[0]
         cmd = mock_run.call_args.args[0]
-        assert ensure_cmd == ["bash", "/repo/scripts/ensure-docker-compat.sh"]
-        assert mock_run.call_args_list[0].kwargs["timeout"] == subject.DEFAULT_DOCKER_COMPAT_TIMEOUT_S
-        assert cmd == ["bunx", "wrangler", "deploy"]
+        assert cmd == [
+            "bash",
+            "/repo/scripts/ensure-docker-compat.sh",
+            "--",
+            "bunx",
+            "wrangler",
+            "deploy",
+        ]
         assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-predict-container"
         assert mock_run.call_args.kwargs["check"] is True
-        assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_CF_DEPLOY_TIMEOUT_S
+        assert (
+            mock_run.call_args.kwargs["timeout"]
+            == subject.DEFAULT_DOCKER_WRAPPED_DEPLOY_TIMEOUT_S
+        )
 
 
 def test_deploy_calls_cf_container_when_cf_deploy_true() -> None:
@@ -5227,13 +5234,21 @@ def test_deploy_cf_container_uses_cf_deploy_dir_when_set() -> None:
         )
         with patch("subprocess.run") as mock_run:
             learner._deploy_cf_container()
-        ensure_cmd = mock_run.call_args_list[0].args[0]
         cmd = mock_run.call_args.args[0]
-        assert ensure_cmd == ["bash", "/repo/scripts/ensure-docker-compat.sh"]
-        assert cmd == ["bunx", "wrangler", "deploy"]
+        assert cmd == [
+            "bash",
+            "/repo/scripts/ensure-docker-compat.sh",
+            "--",
+            "bunx",
+            "wrangler",
+            "deploy",
+        ]
         assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-cron"
         assert mock_run.call_args.kwargs["check"] is True
-        assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_CF_DEPLOY_TIMEOUT_S
+        assert (
+            mock_run.call_args.kwargs["timeout"]
+            == subject.DEFAULT_DOCKER_WRAPPED_DEPLOY_TIMEOUT_S
+        )
 
 
 def test_deploy_cf_container_falls_back_to_container_app_dir_when_dir_none() -> None:

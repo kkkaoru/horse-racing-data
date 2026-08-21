@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "../../scripts/ensure-docker-compat.sh && wrangler deploy",
-    "dev": "../../scripts/ensure-docker-compat.sh && wrangler dev",
+    "deploy": "../../scripts/ensure-docker-compat.sh -- wrangler deploy",
+    "dev": "../../scripts/ensure-docker-compat.sh -- wrangler dev",
     "format": "oxfmt --write src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "format:check": "oxfmt --check src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",

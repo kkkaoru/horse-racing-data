@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "(cd ../finish-position-predict-container && bun run artifact:verify -- --artifact-root models --system finish-position) && ../../scripts/ensure-docker-compat.sh && wrangler deploy",
-    "dev": "../../scripts/ensure-docker-compat.sh && wrangler dev",
+    "deploy": "(cd ../finish-position-predict-container && bun run artifact:verify -- --artifact-root models --system finish-position) && ../../scripts/ensure-docker-compat.sh -- sh -c 'bun run d1:migrate && wrangler deploy'",
+    "dev": "../../scripts/ensure-docker-compat.sh -- wrangler dev",
     "d1:migrate": "wrangler d1 migrations apply finish-position-cron-db --remote",
     "d1:migrate:local": "wrangler d1 migrations apply finish-position-cron-db --local",
     "format": "oxfmt --write src package.json tsconfig.json vitest.config.ts wrangler.jsonc",

@@ -75,7 +75,9 @@ Worker / Container and `sync-realtime-data` coordination.
 - `../ensure-apple-container.sh` — start Apple Container CLI for local PG /
   predict batch / local image rebuild.
 - `../ensure-docker-compat.sh` — start colima only when wrangler Containers
-  need a Docker API. Stops any docker shadow of local PG on `:15432`.
+  need a Docker API. When invoked with `-- command`, it stops only the Colima
+  VM started by that command after the command exits. It also stops any docker
+  shadow of local PG on `:15432`.
 - `com.kkk4oru.finish-position-predict.plist` — LaunchAgent definition.
 - `finish-position-predict-daily.sh` — wrapper script that runs the legacy
   local Apple container pipeline (`finish-position-predict-local:split2`) once. Reads
