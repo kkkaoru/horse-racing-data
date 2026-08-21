@@ -582,6 +582,49 @@ test("FinishPositionPredictionTable shows the combined past-form label", () => {
   expect(label?.getAttribute("title")).toStrictEqual("過去成績補正（競走成績・近走・類似レース）");
 });
 
+test("FinishPositionPredictionTable accepts combined score data after the initial render", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const { rerender } = render(
+    <FinishPositionPredictionTable
+      combinedScoreData={null}
+      combinedScoreLoading={true}
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={sampleInputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+
+  expect(
+    document.querySelector(".finish-prediction-table tbody tr")?.querySelectorAll("td")[7]
+      ?.textContent,
+  ).toStrictEqual("");
+
+  rerender(
+    <FinishPositionPredictionTable
+      combinedScoreData={{
+        bloodlineRows: [],
+        correlationRows: [],
+        rows: [],
+        runners: [sampleRunner],
+        timeRows: [],
+      }}
+      combinedScoreLoading={false}
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={sampleInputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+
+  expect(
+    document.querySelector(".finish-prediction-table tbody tr")?.querySelectorAll("td")[7]
+      ?.textContent,
+  ).toStrictEqual("1.00");
+});
+
 test("FinishPositionPredictionTable removes a scratched horse from the rendered prediction rows", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
