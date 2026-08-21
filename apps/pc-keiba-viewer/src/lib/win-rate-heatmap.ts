@@ -12,6 +12,7 @@ import type {
   Runner,
   SimilarRaceStatsRow,
   StatsDetail,
+  WeightClassStatsRow,
 } from "./race-types";
 import { getRunnerDisplayNames } from "./runner-display";
 import { formatRunnerNumber, isOverseasKeibajoCode } from "./runner-format";
@@ -67,6 +68,7 @@ export interface BuildWinRateHeatmapRowsInput {
   liveWeightKgByHorse: Map<string, number>;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
+  weightClassStats?: readonly WeightClassStatsRow[];
 }
 
 export interface ShouldShowWinRateHeatmapWeightColumnInput {
@@ -351,7 +353,32 @@ const addFinishToWeightClassCounts = (
   winCount: counts.winCount + (rank === 1 ? 1 : 0),
 });
 
-const indexWeightClassRates = (
+const indexWeightClassStats = (
+  rows: readonly WeightClassStatsRow[],
+): Map<string, WeightClassRateCounts> =>
+  rows.reduce((index, row) => {
+    if (row.starts <= 0) {
+      return index;
+    }
+    return new Map(index).set(row.key, {
+      quinellaCount: row.quinellaCount,
+      showCount: row.showCount,
+      starts: row.starts,
+      winCount: row.winCount,
+    });
+  }, new Map<string, WeightClassRateCounts>());
+
+const resolveWeightClassRates = (
+  horseResults: HorseRaceResult[],
+  weightClassStats: readonly WeightClassStatsRow[] | undefined,
+): Map<string, WeightClassRateCounts> => {
+  if (weightClassStats !== undefined && weightClassStats.length > 0) {
+    return indexWeightClassStats(weightClassStats);
+  }
+  return indexWeightClassRatesFromHorseResults(horseResults);
+};
+
+const indexWeightClassRatesFromHorseResults = (
   horseResults: HorseRaceResult[],
 ): Map<string, WeightClassRateCounts> =>
   horseResults.reduce((index, result) => {
@@ -410,7 +437,7 @@ export const buildWinRateHeatmapRows = (
   const bloodlineByHorse = indexRowsByHorse(input.bloodlineRows);
   const horseResultsByNumber = indexHorseResultsByNumber(input.horseResults);
   const frameStatsByNumber = indexFrameStatsByNumber(input.frameStats);
-  const weightClassRates = indexWeightClassRates(input.horseResults);
+  const weightClassRates = resolveWeightClassRates(input.horseResults, input.weightClassStats);
   return input.runners
     .map((runner) => {
       const horseNumber = formatRunnerNumber(runner.umaban);

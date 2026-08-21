@@ -53,6 +53,7 @@ import type {
   Training,
   TimeScoreDetail,
   TimeScoreRow,
+  WeightClassStatsRow,
 } from "../lib/race-types";
 import { inferRaceSourceFromKeibajoCode, isOverseasKeibajoCode } from "../lib/runner-format";
 import {
@@ -86,6 +87,7 @@ import {
 
 const BLOODLINE_STATS_QUERY_VERSION = "v3";
 const FRAME_STATS_QUERY_VERSION = "v2-rates";
+const WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
 const RATE_PERCENT_DIVISOR = 10;
 const RATE_PERCENT_SCALE = 1000;
@@ -6851,6 +6853,115 @@ export const getFrameStats = cache(
           winRate:
             toNullableNumber(row.winRate) ??
             toRateFromCounts(toCount(row.winCount), toCount(row.count)),
+        }));
+      },
+    );
+  },
+);
+
+export const getWeightClassStats = cache(
+  async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<WeightClassStatsRow[]> => {
+    return withDbQueryCache(
+      ["getWeightClassStats", WEIGHT_CLASS_STATS_QUERY_VERSION, race, settings],
+      async () => {
+        const statsSource = getSingleStatsSource(race, settings);
+        const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+        const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+        const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const result = await getDb().execute<{
+          classKey: string;
+          quinellaCount: string;
+          quinellaRate: string | null;
+          showCount: string;
+          showRate: string | null;
+          starts: string;
+          winCount: string;
+          winRate: string | null;
+        }>(sql`
+      with matched_races as (
+        select
+          ra.kaisai_nen,
+          ra.kaisai_tsukihi,
+          ra.keibajo_code,
+          ra.race_bango
+        from ${raceTable} ra
+        where
+          ${buildHistoryRaceWhereSql({
+            race,
+            raceDate,
+            runnerTable,
+            settings,
+          })}
+      ),
+      weight_rows as (
+        select
+          nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric as kg,
+          nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '')::numeric
+            as finish_position
+        from matched_races
+        join ${runnerTable} se
+          on se.kaisai_nen = matched_races.kaisai_nen
+          and se.kaisai_tsukihi = matched_races.kaisai_tsukihi
+          and se.keibajo_code = matched_races.keibajo_code
+          and se.race_bango = matched_races.race_bango
+        where
+          se.keibajo_code not in ('81', '82', '83', '84')
+          and nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric > 0
+          and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+      ),
+      classed as (
+        select
+          case
+            when kg < 400 then 'le399'
+            when kg < 420 then '400-419'
+            when kg < 440 then '420-439'
+            when kg < 460 then '440-459'
+            when kg < 480 then '460-479'
+            when kg < 500 then '480-499'
+            when kg < 520 then '500-519'
+            when kg < 540 then '520-539'
+            else 'ge540'
+          end as "classKey",
+          finish_position
+        from weight_rows
+      )
+      select
+        "classKey",
+        count(*)::text as "starts",
+        count(*) filter (where finish_position = 1)::text as "winCount",
+        count(*) filter (where finish_position <= 2)::text as "quinellaCount",
+        count(*) filter (where finish_position <= 3)::text as "showCount",
+        round(
+          count(*) filter (where finish_position = 1) * 100.0 / nullif(count(*), 0),
+          1
+        )::text as "winRate",
+        round(
+          count(*) filter (where finish_position <= 2) * 100.0 / nullif(count(*), 0),
+          1
+        )::text as "quinellaRate",
+        round(
+          count(*) filter (where finish_position <= 3) * 100.0 / nullif(count(*), 0),
+          1
+        )::text as "showRate"
+      from classed
+      group by "classKey"
+    `);
+
+        return result.rows.map((row) => ({
+          key: row.classKey,
+          quinellaCount: toCount(row.quinellaCount),
+          quinellaRate:
+            toNullableNumber(row.quinellaRate) ??
+            toRateFromCounts(toCount(row.quinellaCount), toCount(row.starts)),
+          showCount: toCount(row.showCount),
+          showRate:
+            toNullableNumber(row.showRate) ??
+            toRateFromCounts(toCount(row.showCount), toCount(row.starts)),
+          starts: toCount(row.starts),
+          winCount: toCount(row.winCount),
+          winRate:
+            toNullableNumber(row.winRate) ??
+            toRateFromCounts(toCount(row.winCount), toCount(row.starts)),
         }));
       },
     );

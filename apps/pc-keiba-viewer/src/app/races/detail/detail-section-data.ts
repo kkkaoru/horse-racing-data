@@ -18,6 +18,7 @@ import {
   getRunningStyleBucketEvaluation,
   getSimilarRaceStats,
   getTimeScoreRows,
+  getWeightClassStats,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
@@ -81,6 +82,7 @@ import type {
   SimilarRaceStatsSettings,
   TimeScoreRow,
   PremiumDataTopHorse,
+  WeightClassStatsRow,
 } from "../../../lib/race-types";
 import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { isOverseasKeibajoCode } from "../../../lib/runner-format";
@@ -1554,6 +1556,10 @@ export const getDetailSectionPayload = async (
       }
     }
     const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = stats;
+    const weightClassStats: WeightClassStatsRow[] = await getWeightClassStats(
+      race,
+      resolvedSettings,
+    );
     return {
       conditionLabels: context.conditionAnalysisLabels,
       finishPositionStats,
@@ -1564,6 +1570,7 @@ export const getDetailSectionPayload = async (
       settings: resolvedSettings,
       source: race.source,
       type: section,
+      weightClassStats,
     };
   }
 

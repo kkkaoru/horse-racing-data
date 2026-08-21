@@ -35,6 +35,7 @@ import {
   getHorseRaceResults,
   getBloodlineStats,
   getFrameStats,
+  getWeightClassStats,
   getRaceAbilityTests,
   getRaceRunners,
   getRaceTimeStats,
@@ -788,6 +789,128 @@ it("getFrameStats maps win, quinella, and show rates per frame", async () => {
     "v2-rates",
     PERCLASS_703_RACE,
     settings,
+  ]);
+});
+
+it("getWeightClassStats maps win, quinella, and show rates per body-weight class", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        classKey: "480-499",
+        quinellaCount: "20",
+        quinellaRate: "25.0",
+        showCount: "32",
+        showRate: "40.0",
+        starts: "80",
+        winCount: "12",
+        winRate: "15.0",
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: 10,
+  };
+
+  await expect(getWeightClassStats(PERCLASS_703_RACE, settings)).resolves.toStrictEqual([
+    {
+      key: "480-499",
+      quinellaCount: 20,
+      quinellaRate: 25,
+      showCount: 32,
+      showRate: 40,
+      starts: 80,
+      winCount: 12,
+      winRate: 15,
+    },
+  ]);
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/btrim\(se\.bataiju\)/u);
+  expect(queryText).toMatch(/when kg < 400 then 'le399'/u);
+  expect(queryText).toMatch(/se\.keibajo_code not in \('81', '82', '83', '84'\)/u);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getWeightClassStats",
+    "v1",
+    PERCLASS_703_RACE,
+    settings,
+  ]);
+});
+
+it("getWeightClassStats computes rates from counts when the rate columns are null", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        classKey: "440-459",
+        quinellaCount: "2",
+        quinellaRate: null,
+        showCount: "4",
+        showRate: null,
+        starts: "10",
+        winCount: "1",
+        winRate: null,
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: false,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "nar",
+    years: 5,
+  };
+
+  await expect(getWeightClassStats(PERCLASS_703_RACE, settings)).resolves.toStrictEqual([
+    {
+      key: "440-459",
+      quinellaCount: 2,
+      quinellaRate: 20,
+      showCount: 4,
+      showRate: 40,
+      starts: 10,
+      winCount: 1,
+      winRate: 10,
+    },
   ]);
 });
 

@@ -25,6 +25,7 @@ import type {
   SimilarRaceStatsSettings,
   TimeScoreRow,
   Training,
+  WeightClassStatsRow,
 } from "../../../lib/race-types";
 import { AbilityTestTable } from "./ability-test-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
@@ -119,6 +120,7 @@ type ConditionPayload = {
   settings: SimilarRaceStatsSettings;
   source: RaceSource;
   type: "condition";
+  weightClassStats: WeightClassStatsRow[];
 };
 
 type BloodlinePayload = {
@@ -666,6 +668,10 @@ function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
   const horseResults = resultsState.payload?.type === "results" ? resultsState.payload.results : [];
   const frameStats =
     conditionState.payload?.type === "condition" ? (conditionState.payload.frameStats ?? []) : [];
+  const weightClassStats =
+    conditionState.payload?.type === "condition"
+      ? (conditionState.payload.weightClassStats ?? [])
+      : [];
   return (
     <section
       aria-busy={
@@ -694,6 +700,7 @@ function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
         }}
         runners={payload.runners ?? []}
         similarRows={payload.similarRows ?? []}
+        weightClassStats={weightClassStats}
       />
     </section>
   );

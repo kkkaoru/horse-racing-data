@@ -1577,6 +1577,80 @@ it("uses a live kilogram weight when stored bataiju is still empty", () => {
   ]);
 });
 
+it("uses similar-race weight-class rates instead of this field's past results", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "48",
+      liveWeightKgByHorse: new Map([["1", 453]]),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [{ ...horseWin, bataiju: "450", kakuteiChakujun: "05" }],
+      runners: [{ ...runnerOne, bataiju: "   " }],
+      similarRows: [],
+      weightClassStats: [
+        {
+          key: "440-459",
+          quinellaCount: 20,
+          quinellaRate: 25,
+          showCount: 32,
+          showRate: 40,
+          starts: 80,
+          winCount: 12,
+          winRate: 15,
+        },
+      ],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "440-459kg",
+      quinellaCount: 20,
+      quinellaRate: 25,
+      showCount: 32,
+      showRate: 40,
+      starts: 80,
+      winCount: 12,
+      winRate: 15,
+    },
+  ]);
+});
+
+it("skips similar-race weight-class rows that have no starts", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "48",
+      liveWeightKgByHorse: new Map([["1", 453]]),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [],
+      runners: [{ ...runnerOne, bataiju: "   " }],
+      similarRows: [],
+      weightClassStats: [
+        {
+          key: "440-459",
+          quinellaCount: 0,
+          quinellaRate: null,
+          showCount: 0,
+          showRate: null,
+          starts: 0,
+          winCount: 0,
+          winRate: null,
+        },
+      ],
+    }).map((row) => row.cells.weight),
+  ).toStrictEqual([
+    {
+      name: "440-459kg",
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+  ]);
+});
+
 it("leaves the weight cell empty when the current horse has no published weight", () => {
   expect(
     buildWinRateHeatmapRows({

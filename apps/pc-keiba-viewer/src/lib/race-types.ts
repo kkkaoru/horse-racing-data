@@ -773,3 +773,14 @@ export interface FrameStatsRow extends Record<string, unknown> {
   winRate: number | null;
   details: StatsDetail[];
 }
+
+export interface WeightClassStatsRow {
+  key: string;
+  quinellaCount: number;
+  quinellaRate: number | null;
+  showCount: number;
+  showRate: number | null;
+  starts: number;
+  winCount: number;
+  winRate: number | null;
+}

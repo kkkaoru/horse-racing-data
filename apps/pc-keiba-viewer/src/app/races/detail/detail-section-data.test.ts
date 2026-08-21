@@ -70,6 +70,7 @@ vi.mock("../../../db/queries", () => ({
   getFinishPositionSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
   getFinishPositionStats: vi.fn<() => Promise<unknown[]>>(),
   getFrameStats: vi.fn<() => Promise<unknown[]>>(),
+  getWeightClassStats: vi.fn<() => Promise<unknown[]>>(),
   getHorseRaceResults: vi.fn<() => Promise<unknown[]>>(),
   getPayoutStats: vi.fn<() => Promise<unknown[]>>(),
   getRaceAbilityTests: vi.fn<() => Promise<unknown[]>>(),

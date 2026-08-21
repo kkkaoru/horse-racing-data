@@ -10,6 +10,7 @@ import type {
   HorseRaceResult,
   Runner,
   SimilarRaceStatsRow,
+  WeightClassStatsRow,
 } from "../../../lib/race-types";
 import {
   buildWinRateHeatmapColorScaleGradient,
@@ -45,6 +46,7 @@ interface WinRateHeatmapSectionProps {
   realtimeRequest: RealtimeRaceRequest;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
+  weightClassStats?: readonly WeightClassStatsRow[];
 }
 
 interface WinRateHeatmapSwatchProps {
@@ -181,6 +183,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   realtimeRequest,
   runners,
   similarRows,
+  weightClassStats,
 }: WinRateHeatmapSectionProps) {
   const [openTooltipKey, setOpenTooltipKey] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
@@ -247,6 +250,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     liveWeightKgByHorse,
     runners,
     similarRows,
+    weightClassStats,
   });
   if (rows.length === 0) {
     return <p className="empty-state">勝率ヒートマップを表示する出走馬がありません。</p>;

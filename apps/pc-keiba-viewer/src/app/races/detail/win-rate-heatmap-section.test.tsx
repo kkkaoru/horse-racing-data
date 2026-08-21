@@ -889,3 +889,53 @@ it("shows the horse-weight column from the live weight stream when stored bataij
   expect(screen.getByText("馬体重")).toBeDefined();
   expect(screen.getByText("480-499kg")).toBeDefined();
 });
+
+it("shows similar-race weight-class rates for a blank NAR bataiju plus live kilograms", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-08-21T13:58:41+09:00",
+    horses: [
+      {
+        changeAmount: 6,
+        changeSign: "+",
+        horseName: "Alpha",
+        horseNumber: "1",
+        weight: 453,
+      },
+    ],
+  });
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[horsePastWin]}
+      keibajoCode="48"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "21",
+        keibajoCode: "48",
+        month: "08",
+        raceNumber: "01",
+        source: "nar",
+        year: "2026",
+      }}
+      runners={[runner]}
+      similarRows={[]}
+      weightClassStats={[
+        {
+          key: "440-459",
+          quinellaCount: 20,
+          quinellaRate: 25,
+          showCount: 32,
+          showRate: 40,
+          starts: 80,
+          winCount: 12,
+          winRate: 15,
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText("馬体重")).toBeDefined();
+  expect(screen.getByText("440-459kg")).toBeDefined();
+  expect(screen.getAllByText("15.0%").length).toBe(2);
+  expect(screen.queryByText("0.0%")).toBeNull();
+});
