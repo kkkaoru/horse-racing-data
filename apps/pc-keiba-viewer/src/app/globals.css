@@ -9453,9 +9453,9 @@ fieldset.stats-section-toggle-wrap {
 
 .win-rate-heatmap-table {
   border-collapse: collapse;
-  min-width: var(--space-880px-154);
+  min-width: var(--space-980px-171);
   table-layout: fixed;
-  width: max(var(--space-100pct-12), var(--space-880px-154));
+  width: max(var(--space-100pct-12), var(--space-980px-171));
 }
 
 .win-rate-heatmap-col-number,
@@ -9518,14 +9518,17 @@ fieldset.stats-section-toggle-wrap {
 }
 
 .win-rate-heatmap-tooltip {
+  align-items: center;
   background: var(--surface);
   border: var(--space-1px-7) solid var(--line);
   border-radius: var(--space-6px-33);
   box-shadow: var(--number-0-2) var(--space-8px-28) var(--space-18px-31)
     var(--color-rgba-15-23-42-0-18-59);
   color: var(--ink);
+  display: flex;
   font-size: var(--space-15px-1);
   font-weight: var(--number-800-12);
+  gap: var(--space-6px-33);
   left: var(--space-50pct-13);
   opacity: var(--number-0-2);
   padding: var(--space-6px-33) var(--space-8px-28);
@@ -9536,6 +9539,11 @@ fieldset.stats-section-toggle-wrap {
   visibility: hidden;
   white-space: nowrap;
   z-index: var(--number-20-3);
+}
+
+.win-rate-heatmap-tooltip-starts {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-700-14);
 }
 
 .win-rate-heatmap-swatch.tooltip-open .win-rate-heatmap-tooltip {

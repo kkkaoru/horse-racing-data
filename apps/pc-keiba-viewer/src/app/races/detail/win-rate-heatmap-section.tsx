@@ -20,11 +20,13 @@ import {
   formatWinRateHeatmapColorScaleAriaLabel,
   formatWinRateHeatmapColorScaleCaption,
   formatWinRateHeatmapColorScaleTick,
+  formatWinRateHeatmapTooltipStarts,
   formatWinRateHeatmapValue,
   getVisibleWinRateHeatmapColumns,
   getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapColorScaleTracks,
   getWinRateHeatmapTooltipName,
+  shouldShowWinRateHeatmapCarriedWeightColumn,
   shouldShowWinRateHeatmapWeightColumn,
   WIN_RATE_HEATMAP_COLOR_SCALE_TICKS,
   WIN_RATE_HEATMAP_VIEW_MODES,
@@ -40,6 +42,7 @@ import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-cli
 
 interface WinRateHeatmapSectionProps {
   bloodlineRows: BloodlineStatsRow[];
+  carriedWeightClassStats?: readonly WeightClassStatsRow[];
   frameStats: FrameStatsRow[];
   horseResults: HorseRaceResult[];
   keibajoCode: string;
@@ -58,6 +61,7 @@ interface WinRateHeatmapSwatchProps {
   isOpen: boolean;
   metric: WinRateHeatmapRateMetric;
   onToggle: () => void;
+  showStarts: boolean;
 }
 
 interface WinRateHeatmapColorScaleProps {
@@ -66,6 +70,7 @@ interface WinRateHeatmapColorScaleProps {
 
 const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
 const HEATMAP_MOBILE_TOOLTIP_QUERY = "(max-width: 720px)";
+const DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS: boolean = false;
 
 const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }): string => {
   if (input.isLastRow && input.isOpen) {
@@ -137,6 +142,19 @@ const WinRateHeatmapColorScale = ({ metrics }: WinRateHeatmapColorScaleProps) =>
   </div>
 );
 
+const heatmapSwatchAriaLabel = (input: {
+  cell: WinRateHeatmapCell;
+  column: WinRateHeatmapColumn;
+  frameNumber: string;
+  startsLabel: string | null;
+}): string => {
+  const nameLabel =
+    input.column.key === "frame"
+      ? `${input.column.label} ${input.frameNumber}`
+      : `${input.column.label} ${getWinRateHeatmapTooltipName(input.cell)}`;
+  return input.startsLabel === null ? nameLabel : `${nameLabel} ${input.startsLabel}`;
+};
+
 const WinRateHeatmapSwatch = ({
   cell,
   column,
@@ -146,19 +164,17 @@ const WinRateHeatmapSwatch = ({
   isOpen,
   metric,
   onToggle,
+  showStarts,
 }: WinRateHeatmapSwatchProps) => {
   const value = cell[metric.key];
+  const startsLabel = showStarts ? formatWinRateHeatmapTooltipStarts(cell.starts) : null;
   return (
     <td
       className={heatmapSwatchClassName({ isLastRow, isOpen })}
       style={{ backgroundColor: winRateHeatmapBackground(value, metric.hue) }}
     >
       <button
-        aria-label={
-          column.key === "frame"
-            ? `${column.label} ${frameNumber}`
-            : `${column.label} ${getWinRateHeatmapTooltipName(cell)}`
-        }
+        aria-label={heatmapSwatchAriaLabel({ cell, column, frameNumber, startsLabel })}
         aria-expanded={isOpen}
         className="win-rate-heatmap-swatch-button"
         type="button"
@@ -173,6 +189,9 @@ const WinRateHeatmapSwatch = ({
           ) : (
             getWinRateHeatmapTooltipName(cell)
           )}
+          {startsLabel === null ? null : (
+            <span className="win-rate-heatmap-tooltip-starts">{startsLabel}</span>
+          )}
         </span>
       </button>
     </td>
@@ -181,6 +200,7 @@ const WinRateHeatmapSwatch = ({
 
 export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   bloodlineRows,
+  carriedWeightClassStats,
   frameStats,
   horseResults,
   keibajoCode,
@@ -190,6 +210,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   weightClassStats,
 }: WinRateHeatmapSectionProps) {
   const [openTooltipKey, setOpenTooltipKey] = useState<string | null>(null);
+  const [showStarts, setShowStarts] = useState(DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS);
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
     DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   );
@@ -245,9 +266,17 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     liveWeightKgByHorse,
     runners,
   });
-  const visibleColumns = getVisibleWinRateHeatmapColumns(showWeight);
+  const showCarriedWeight = shouldShowWinRateHeatmapCarriedWeightColumn({
+    keibajoCode,
+    runners,
+  });
+  const visibleColumns = getVisibleWinRateHeatmapColumns({
+    showCarriedWeight,
+    showWeight,
+  });
   const rows = buildWinRateHeatmapRows({
     bloodlineRows,
+    carriedWeightClassStats,
     frameStats,
     horseResults,
     keibajoCode,
@@ -276,6 +305,16 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
             {mode.label}
           </label>
         ))}
+        <label className="running-style-bucket-toggle-label">
+          <input
+            checked={showStarts}
+            type="checkbox"
+            onChange={() => {
+              setShowStarts((current) => !current);
+            }}
+          />
+          レース数
+        </label>
       </fieldset>
       <WinRateHeatmapColorScale metrics={visibleRateMetrics} />
       <div className="stats-table-wrap win-rate-heatmap-table-wrap">
@@ -328,6 +367,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                         isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
                         key={tooltipKey}
                         metric={metric}
+                        showStarts={showStarts}
                         onToggle={() => {
                           if (!isMobileTooltip) {
                             return;

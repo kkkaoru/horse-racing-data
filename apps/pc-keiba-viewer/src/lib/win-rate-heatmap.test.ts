@@ -16,8 +16,11 @@ import {
   formatWinRateHeatmapColorScaleAriaLabel,
   formatWinRateHeatmapColorScaleCaption,
   formatWinRateHeatmapColorScaleTick,
+  formatWinRateHeatmapStarts,
+  formatWinRateHeatmapTooltipStarts,
   formatWinRateHeatmapValue,
   getVisibleWinRateHeatmapColumns,
+  shouldShowWinRateHeatmapCarriedWeightColumn,
   getVisibleWinRateHeatmapRateMetrics,
   getWinRateHeatmapColorScaleTracks,
   getWinRateHeatmapTooltipName,
@@ -341,10 +344,11 @@ const horseSecond: HorseRaceResult = {
   zogenSa: null,
 };
 
-it("exports heatmap columns for frame, weight, horse, jockey, trainer, and bloodline", () => {
+it("exports heatmap columns for frame, weight, carried weight, horse, jockey, trainer, and bloodline", () => {
   expect(WIN_RATE_HEATMAP_COLUMNS).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "weight", label: "馬体重" },
+    { key: "carriedWeight", label: "斤量" },
     { key: "horse", label: "馬" },
     { key: "jockey", label: "騎手" },
     { key: "trainer", label: "調教師" },
@@ -352,9 +356,12 @@ it("exports heatmap columns for frame, weight, horse, jockey, trainer, and blood
     { key: "damSire", label: "母父" },
     { key: "sireSire", label: "父父" },
   ]);
-  expect(getVisibleWinRateHeatmapColumns(true)).toStrictEqual([
+  expect(
+    getVisibleWinRateHeatmapColumns({ showCarriedWeight: true, showWeight: true }),
+  ).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "weight", label: "馬体重" },
+    { key: "carriedWeight", label: "斤量" },
     { key: "horse", label: "馬" },
     { key: "jockey", label: "騎手" },
     { key: "trainer", label: "調教師" },
@@ -362,7 +369,9 @@ it("exports heatmap columns for frame, weight, horse, jockey, trainer, and blood
     { key: "damSire", label: "母父" },
     { key: "sireSire", label: "父父" },
   ]);
-  expect(getVisibleWinRateHeatmapColumns(false)).toStrictEqual([
+  expect(
+    getVisibleWinRateHeatmapColumns({ showCarriedWeight: false, showWeight: false }),
+  ).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "horse", label: "馬" },
     { key: "jockey", label: "騎手" },
@@ -480,6 +489,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           winCount: 5,
           winRate: 10,
         },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: 2,
+          quinellaRate: 100,
+          showCount: 2,
+          showRate: 100,
+          starts: 2,
+          winCount: 1,
+          winRate: 50,
+        },
         weight: {
           name: null,
           quinellaCount: null,
@@ -566,6 +585,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           starts: 50,
           winCount: 5,
           winRate: 10,
+        },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: 2,
+          quinellaRate: 100,
+          showCount: 2,
+          showRate: 100,
+          starts: 2,
+          winCount: 1,
+          winRate: 50,
         },
         weight: {
           name: null,
@@ -683,6 +712,16 @@ it("looks up frame rates by wakuban when the stored frame number is zero-padded"
           winCount: null,
           winRate: null,
         },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         weight: {
           name: null,
           quinellaCount: null,
@@ -788,6 +827,16 @@ it("treats non-finite frame rates as missing heatmap values", () => {
         },
         trainer: {
           name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
           quinellaCount: null,
           quinellaRate: null,
           showCount: null,
@@ -967,6 +1016,16 @@ it("ignores frame stats whose frame number cannot be displayed", () => {
           winCount: null,
           winRate: null,
         },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         weight: {
           name: null,
           quinellaCount: null,
@@ -999,6 +1058,16 @@ it("skips horse results whose current number cannot be displayed", () => {
   ).toStrictEqual([
     {
       cells: {
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: 1,
+          quinellaRate: 100,
+          showCount: 1,
+          showRate: 100,
+          starts: 1,
+          winCount: 1,
+          winRate: 100,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -1175,6 +1244,16 @@ it("treats blank, zero, and non-numeric finish positions as missing horse rates"
           winCount: null,
           winRate: null,
         },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         weight: {
           name: null,
           quinellaCount: null,
@@ -1277,6 +1356,16 @@ it("uses a dash when the runner has no displayable horse name", () => {
           winCount: null,
           winRate: null,
         },
+        carriedWeight: {
+          name: "55.5kg以上57kg以下",
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         weight: {
           name: null,
           quinellaCount: null,
@@ -1357,6 +1446,24 @@ it("omits the percent sign and writes zero without a decimal in the compact heat
   expect(formatWinRateHeatmapValue(100, true)).toBe("100");
   expect(formatWinRateHeatmapValue(100.9, true)).toBe("100");
   expect(formatWinRateHeatmapValue(0, true)).toBe("0");
+});
+
+it("formats heatmap start counts as integers", () => {
+  expect(formatWinRateHeatmapStarts(null)).toBe("-");
+  expect(formatWinRateHeatmapStarts(undefined)).toBe("-");
+  expect(formatWinRateHeatmapStarts(Number.NaN)).toBe("-");
+  expect(formatWinRateHeatmapStarts(80)).toBe("80");
+  expect(formatWinRateHeatmapStarts(0)).toBe("0");
+  expect(formatWinRateHeatmapStarts(12.9)).toBe("12");
+});
+
+it("formats heatmap tooltip start counts in parentheses", () => {
+  expect(formatWinRateHeatmapTooltipStarts(null)).toBe(null);
+  expect(formatWinRateHeatmapTooltipStarts(undefined)).toBe(null);
+  expect(formatWinRateHeatmapTooltipStarts(Number.NaN)).toBe(null);
+  expect(formatWinRateHeatmapTooltipStarts(80)).toBe("(80)");
+  expect(formatWinRateHeatmapTooltipStarts(0)).toBe("(0)");
+  expect(formatWinRateHeatmapTooltipStarts(12.9)).toBe("(12)");
 });
 
 it("uses a dash when the heatmap tooltip name is missing", () => {
@@ -1507,6 +1614,48 @@ it("hides the horse-weight column for overseas venues and when no runner has a w
   ).toBe(true);
 });
 
+it("hides the carried-weight column for overseas venues and when no runner has a declared 斤量", () => {
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "A8",
+      runners: [runnerOne],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [{ ...runnerOne, futanJuryo: null }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [{ ...runnerOne, futanJuryo: "000" }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [runnerOne],
+    }),
+  ).toBe(true);
+});
+
+it("hides the carried-weight column for ばんえい venues", () => {
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "81",
+      runners: [runnerOne],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "83",
+      runners: [runnerOne],
+    }),
+  ).toBe(false);
+});
+
 it("maps a horse onto the 20kg weight-class rates computed from past races", () => {
   expect(
     buildWinRateHeatmapRows({
@@ -1585,6 +1734,43 @@ it("uses a live kilogram weight when stored bataiju is still empty", () => {
       starts: 1,
       winCount: 1,
       winRate: 100,
+    },
+  ]);
+});
+
+it("maps a horse onto similar-race carried-weight class rates", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      carriedWeightClassStats: [
+        {
+          key: "55.5-57",
+          quinellaCount: 20,
+          quinellaRate: 25,
+          showCount: 32,
+          showRate: 40,
+          starts: 80,
+          winCount: 12,
+          winRate: 15,
+        },
+      ],
+      frameStats: [],
+      horseResults: [{ ...horseWin, futanJuryo: "570", kakuteiChakujun: "05" }],
+      runners: [runnerOne],
+      similarRows: [],
+    }).map((row) => row.cells.carriedWeight),
+  ).toStrictEqual([
+    {
+      name: "55.5kg以上57kg以下",
+      quinellaCount: 20,
+      quinellaRate: 25,
+      showCount: 32,
+      showRate: 40,
+      starts: 80,
+      winCount: 12,
+      winRate: 15,
     },
   ]);
 });

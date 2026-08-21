@@ -42,6 +42,11 @@ type GetFinishPositionBucketEvaluationFn = (args: {
 
 const {
   getBloodlineStatsMock,
+  getCarriedWeightClassStatsMock,
+  getFinishPositionStatsMock,
+  getFrameStatsMock,
+  getHorseRaceResultsMock,
+  getPayoutStatsMock,
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceTimeStatsMock,
@@ -50,8 +55,14 @@ const {
   getTimeScoreRowsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
+  getWeightClassStatsMock,
 } = vi.hoisted(() => ({
   getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getCarriedWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getFinishPositionStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getFrameStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getHorseRaceResultsMock: vi.fn<() => Promise<unknown[]>>(),
+  getPayoutStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
   getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
   getRaceTimeStatsMock: vi.fn<() => Promise<unknown>>(),
@@ -60,6 +71,7 @@ const {
   getTimeScoreRowsMock: vi.fn<() => Promise<unknown[]>>(),
   getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
   getFinishPositionBucketEvaluationMock: vi.fn<GetFinishPositionBucketEvaluationFn>(),
+  getWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
 }));
 
 vi.mock("../../../db/queries", () => ({
@@ -68,11 +80,12 @@ vi.mock("../../../db/queries", () => ({
   getBloodlineStats: getBloodlineStatsMock,
   getFinishPositionBucketEvaluation: getFinishPositionBucketEvaluationMock,
   getFinishPositionSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
-  getFinishPositionStats: vi.fn<() => Promise<unknown[]>>(),
-  getFrameStats: vi.fn<() => Promise<unknown[]>>(),
-  getWeightClassStats: vi.fn<() => Promise<unknown[]>>(),
-  getHorseRaceResults: vi.fn<() => Promise<unknown[]>>(),
-  getPayoutStats: vi.fn<() => Promise<unknown[]>>(),
+  getFinishPositionStats: getFinishPositionStatsMock,
+  getFrameStats: getFrameStatsMock,
+  getWeightClassStats: getWeightClassStatsMock,
+  getCarriedWeightClassStats: getCarriedWeightClassStatsMock,
+  getHorseRaceResults: getHorseRaceResultsMock,
+  getPayoutStats: getPayoutStatsMock,
   getRaceAbilityTests: vi.fn<() => Promise<unknown[]>>(),
   getRaceDetail: getRaceDetailMock,
   getRacePaceModelPredictionFeatures: vi.fn<() => Promise<unknown[]>>(),
@@ -272,6 +285,11 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 
 beforeEach(() => {
   getBloodlineStatsMock.mockReset();
+  getCarriedWeightClassStatsMock.mockReset();
+  getFinishPositionStatsMock.mockReset();
+  getFrameStatsMock.mockReset();
+  getHorseRaceResultsMock.mockReset();
+  getPayoutStatsMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceTimeStatsMock.mockReset();
@@ -280,6 +298,7 @@ beforeEach(() => {
   getTimeScoreRowsMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
   getFinishPositionBucketEvaluationMock.mockReset();
+  getWeightClassStatsMock.mockReset();
 });
 
 it("uses the stable title-relaxed default for ban-ei rate statistics", async () => {
@@ -1708,4 +1727,139 @@ it("training payload returns empty trainingReviews when netkeiba oikiri.html ret
     type: "training",
   });
   fetchMock.mockRestore();
+});
+
+it("skips 斤量 class stats for ばんえい condition payloads", async () => {
+  getRaceDetailMock.mockResolvedValue(BAN_EI_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getFinishPositionStatsMock.mockResolvedValue([{ count: 1 }]);
+  getFrameStatsMock.mockResolvedValue([{ count: 1 }]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([{ key: "le49" }]);
+
+  const payload = await getDetailSectionPayload("condition", {
+    day: "30",
+    keibajoCode: "83",
+    month: "05",
+    query: { statsVenue: "1" },
+    raceNumber: "11",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [],
+    type: "condition",
+  });
+  expect(getCarriedWeightClassStatsMock).not.toHaveBeenCalled();
+  expect(getWeightClassStatsMock).toHaveBeenCalledTimes(1);
+});
+
+it("loads 斤量 class stats for non-ばんえい condition payloads", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getFinishPositionStatsMock.mockResolvedValue([{ count: 1 }]);
+  getFrameStatsMock.mockResolvedValue([{ count: 1 }]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([{ key: "55.5-57" }]);
+
+  const payload = await getDetailSectionPayload("condition", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: { statsVenue: "1" },
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    type: "condition",
+  });
+  expect(getCarriedWeightClassStatsMock).toHaveBeenCalledTimes(1);
+});
+
+it("returns null heatmap payload when time-score data is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(null);
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(payload).toBeNull();
+});
+
+it("assembles heatmap payload from time-score, results, and condition sections", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getSimilarRaceStatsMock.mockResolvedValue([]);
+  getBloodlineStatsMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([{ umaban: "01" }]);
+  getFinishPositionStatsMock.mockResolvedValue([{ count: 1 }]);
+  getFrameStatsMock.mockResolvedValue([{ count: 1, frameNumber: "1" }]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([{ key: "480-499" }]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([{ key: "55.5-57" }]);
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: { statsVenue: "1" },
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    frameStats: [{ count: 1, frameNumber: "1" }],
+    horseResults: [{ umaban: "01" }],
+    type: "win-rate-heatmap",
+    weightClassStats: [{ key: "480-499" }],
+  });
 });

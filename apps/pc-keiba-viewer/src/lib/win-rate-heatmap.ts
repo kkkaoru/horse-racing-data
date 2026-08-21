@@ -1,3 +1,4 @@
+import { getCarriedWeightClass, parseCarriedWeightKg } from "./carried-weight-class";
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 import { cleanText } from "./format";
 import {
@@ -15,9 +16,10 @@ import type {
   WeightClassStatsRow,
 } from "./race-types";
 import { getRunnerDisplayNames } from "./runner-display";
-import { formatRunnerNumber, isOverseasKeibajoCode } from "./runner-format";
+import { formatRunnerNumber, isBanEiKeibajoCode, isOverseasKeibajoCode } from "./runner-format";
 
 export type WinRateHeatmapMetricKey =
+  | "carriedWeight"
   | "damSire"
   | "frame"
   | "horse"
@@ -68,6 +70,7 @@ export interface BuildWinRateHeatmapRowsInput {
   liveWeightKgByHorse: Map<string, number>;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
+  carriedWeightClassStats?: readonly WeightClassStatsRow[];
   weightClassStats?: readonly WeightClassStatsRow[];
 }
 
@@ -75,6 +78,16 @@ export interface ShouldShowWinRateHeatmapWeightColumnInput {
   keibajoCode: string;
   liveWeightKgByHorse: Map<string, number>;
   runners: Runner[];
+}
+
+export interface ShouldShowWinRateHeatmapCarriedWeightColumnInput {
+  keibajoCode: string;
+  runners: Runner[];
+}
+
+export interface GetVisibleWinRateHeatmapColumnsInput {
+  showCarriedWeight: boolean;
+  showWeight: boolean;
 }
 
 interface WeightClassRateCounts {
@@ -102,6 +115,7 @@ interface BuildRateCellInput {
 export const WIN_RATE_HEATMAP_COLUMNS: readonly WinRateHeatmapColumn[] = [
   { key: "frame", label: "枠" },
   { key: "weight", label: "馬体重" },
+  { key: "carriedWeight", label: "斤量" },
   { key: "horse", label: "馬" },
   { key: "jockey", label: "騎手" },
   { key: "trainer", label: "調教師" },
@@ -400,25 +414,69 @@ const indexWeightClassRatesFromHorseResults = (
     return new Map(index).set(weightClass.key, addFinishToWeightClassCounts(current, rank));
   }, new Map<string, WeightClassRateCounts>());
 
-const toWeightHeatmapCell = (
-  kg: number | null,
+const toClassHeatmapCell = (
+  classInfo: { key: string; label: string } | null,
   ratesByClass: Map<string, WeightClassRateCounts>,
 ): WinRateHeatmapCell => {
-  if (kg === null) {
+  if (classInfo === null) {
     return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
-  const weightClass = getHorseWeightClass(kg);
-  const counts = ratesByClass.get(weightClass.key);
+  const counts = ratesByClass.get(classInfo.key);
   if (counts === undefined || counts.starts === 0) {
-    return { ...EMPTY_WIN_RATE_HEATMAP_CELL, name: weightClass.label };
+    return { ...EMPTY_WIN_RATE_HEATMAP_CELL, name: classInfo.label };
   }
   return buildRateCell({
-    name: weightClass.label,
+    name: classInfo.label,
     quinellaCount: counts.quinellaCount,
     showCount: counts.showCount,
     starts: counts.starts,
     winCount: counts.winCount,
   });
+};
+
+const toWeightHeatmapCell = (
+  kg: number | null,
+  ratesByClass: Map<string, WeightClassRateCounts>,
+): WinRateHeatmapCell =>
+  kg === null
+    ? EMPTY_WIN_RATE_HEATMAP_CELL
+    : toClassHeatmapCell(getHorseWeightClass(kg), ratesByClass);
+
+const toCarriedWeightHeatmapCell = (
+  kg: number | null,
+  ratesByClass: Map<string, WeightClassRateCounts>,
+): WinRateHeatmapCell =>
+  kg === null
+    ? EMPTY_WIN_RATE_HEATMAP_CELL
+    : toClassHeatmapCell(getCarriedWeightClass(kg), ratesByClass);
+
+const indexCarriedWeightClassRatesFromHorseResults = (
+  horseResults: HorseRaceResult[],
+): Map<string, WeightClassRateCounts> =>
+  horseResults.reduce((index, result) => {
+    const kg = parseCarriedWeightKg(result.futanJuryo);
+    const rank = parseFinishPosition(result.kakuteiChakujun);
+    if (kg === null || rank === null) {
+      return index;
+    }
+    const carriedClass = getCarriedWeightClass(kg);
+    const current = index.get(carriedClass.key) ?? {
+      quinellaCount: 0,
+      showCount: 0,
+      starts: 0,
+      winCount: 0,
+    };
+    return new Map(index).set(carriedClass.key, addFinishToWeightClassCounts(current, rank));
+  }, new Map<string, WeightClassRateCounts>());
+
+const resolveCarriedWeightClassRates = (
+  horseResults: HorseRaceResult[],
+  carriedWeightClassStats: readonly WeightClassStatsRow[] | undefined,
+): Map<string, WeightClassRateCounts> => {
+  if (carriedWeightClassStats !== undefined && carriedWeightClassStats.length > 0) {
+    return indexWeightClassStats(carriedWeightClassStats);
+  }
+  return indexCarriedWeightClassRatesFromHorseResults(horseResults);
 };
 
 const compareHeatmapRows = (left: WinRateHeatmapRow, right: WinRateHeatmapRow): number => {
@@ -438,6 +496,10 @@ export const buildWinRateHeatmapRows = (
   const horseResultsByNumber = indexHorseResultsByNumber(input.horseResults);
   const frameStatsByNumber = indexFrameStatsByNumber(input.frameStats);
   const weightClassRates = resolveWeightClassRates(input.horseResults, input.weightClassStats);
+  const carriedWeightClassRates = resolveCarriedWeightClassRates(
+    input.horseResults,
+    input.carriedWeightClassStats,
+  );
   return input.runners
     .map((runner) => {
       const horseNumber = formatRunnerNumber(runner.umaban);
@@ -451,8 +513,13 @@ export const buildWinRateHeatmapRows = (
         keibajoCode: input.keibajoCode,
         liveWeightKgByHorse: input.liveWeightKgByHorse,
       });
+      const currentCarriedWeightKg = parseCarriedWeightKg(runner.futanJuryo);
       return {
         cells: {
+          carriedWeight: toCarriedWeightHeatmapCell(
+            currentCarriedWeightKg,
+            carriedWeightClassRates,
+          ),
           damSire: toHeatmapCell(bloodline?.get("damSire")),
           frame: toFrameHeatmapCell(frameStatsByNumber.get(frameNumber), frameNumber),
           horse: buildHorseRateCell(horseName, horseResultsByNumber.get(horseNumber) ?? []),
@@ -488,12 +555,27 @@ export const shouldShowWinRateHeatmapWeightColumn = (
   );
 };
 
+export const shouldShowWinRateHeatmapCarriedWeightColumn = (
+  input: ShouldShowWinRateHeatmapCarriedWeightColumnInput,
+): boolean => {
+  if (isOverseasKeibajoCode(input.keibajoCode) || isBanEiKeibajoCode(input.keibajoCode)) {
+    return false;
+  }
+  return input.runners.some((runner) => parseCarriedWeightKg(runner.futanJuryo) !== null);
+};
+
 export const getVisibleWinRateHeatmapColumns = (
-  showWeight: boolean,
+  input: GetVisibleWinRateHeatmapColumnsInput,
 ): readonly WinRateHeatmapColumn[] =>
-  showWeight
-    ? WIN_RATE_HEATMAP_COLUMNS
-    : WIN_RATE_HEATMAP_COLUMNS.filter((column) => column.key !== "weight");
+  WIN_RATE_HEATMAP_COLUMNS.filter((column) => {
+    if (column.key === "weight") {
+      return input.showWeight;
+    }
+    if (column.key === "carriedWeight") {
+      return input.showCarriedWeight;
+    }
+    return true;
+  });
 
 export const winRateHeatmapBackground = (rate: number | null | undefined, hue: number): string => {
   const numericRate = toHeatmapNumber(rate);
@@ -552,6 +634,18 @@ export const formatWinRateHeatmapValue = (
     return numericRate.toFixed(1);
   }
   return `${numericRate.toFixed(1)}%`;
+};
+
+export const formatWinRateHeatmapStarts = (starts: number | null | undefined): string => {
+  const numericStarts = toHeatmapNumber(starts);
+  return numericStarts === null ? "-" : String(Math.floor(numericStarts));
+};
+
+export const formatWinRateHeatmapTooltipStarts = (
+  starts: number | null | undefined,
+): string | null => {
+  const formattedStarts = formatWinRateHeatmapStarts(starts);
+  return formattedStarts === "-" ? null : `(${formattedStarts})`;
 };
 
 export const getVisibleWinRateHeatmapRateMetrics = (

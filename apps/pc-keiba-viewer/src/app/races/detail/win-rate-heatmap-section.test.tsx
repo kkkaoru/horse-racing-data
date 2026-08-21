@@ -277,19 +277,24 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.getByText("番")).toBeDefined();
   expect(screen.getByText("枠")).toBeDefined();
   expect(screen.queryByText("馬体重")).toBeNull();
+  expect(screen.getByText("斤量")).toBeDefined();
   expect(screen.getByText("馬")).toBeDefined();
   expect(screen.getByText("騎手")).toBeDefined();
   expect(screen.getByText("調教師")).toBeDefined();
   expect(screen.getByText("父")).toBeDefined();
   expect(screen.getByText("母父")).toBeDefined();
   expect(screen.getByText("父父")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(7);
+  expect(screen.getAllByText("勝").length).toBe(8);
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("20.0%")).toBeDefined();
   expect(screen.getByText("10.0%")).toBeDefined();
   expect(screen.getByText("12.0%")).toBeDefined();
   expect(screen.getByText("15.0%")).toBeDefined();
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toBeDefined();
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", false);
+  expect(screen.queryByText("(80)")).toBeNull();
+  expect(screen.queryByText("(40)")).toBeNull();
   expect(screen.queryByText("25.0%")).toBeNull();
   expect(screen.queryByText("37.5%")).toBeNull();
   expect(screen.queryByText("16.0%")).toBeNull();
@@ -369,7 +374,7 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
     "checked",
     false,
   );
-  expect(screen.getAllByText("連").length).toBe(7);
+  expect(screen.getAllByText("連").length).toBe(8);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("30.0%")).toBeDefined();
@@ -407,7 +412,7 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
     "checked",
     false,
   );
-  expect(screen.getAllByText("複").length).toBe(7);
+  expect(screen.getAllByText("複").length).toBe(8);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.getByText("45.0%")).toBeDefined();
@@ -441,9 +446,9 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(7);
-  expect(screen.getAllByText("連").length).toBe(7);
-  expect(screen.getAllByText("複").length).toBe(7);
+  expect(screen.getAllByText("勝").length).toBe(8);
+  expect(screen.getAllByText("連").length).toBe(8);
+  expect(screen.getAllByText("複").length).toBe(8);
   expect(screen.getByText("15.0")).toBeDefined();
   expect(screen.getAllByText("30.0").length).toBe(2);
   expect(screen.getByText("45.0")).toBeDefined();
@@ -599,7 +604,7 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
   expect(
     document.querySelector(".win-rate-heatmap-tooltip .frame-number-badge.frame-1"),
   ).toBeDefined();
-  expect(screen.getAllByRole("tooltip").length).toBe(7);
+  expect(screen.getAllByRole("tooltip").length).toBe(8);
 });
 
 it("does not pin a heatmap tooltip on click in desktop view", () => {
@@ -846,6 +851,51 @@ it("subscribes with addListener when addEventListener is missing", () => {
   expect(listeners.size).toBe(0);
 });
 
+it("shows heatmap start counts in the tooltip when the レース数 checkbox is checked", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.textContent).toBe("15.0%");
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-tooltip-starts")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["(40)", "(80)", "(50)", "(200)"]);
+});
+
+it("hides the 斤量 column for ばんえい races", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="83"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "21",
+        keibajoCode: "83",
+        month: "08",
+        raceNumber: "11",
+        source: "nar",
+        year: "2026",
+      }}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.queryByText("斤量")).toBeNull();
+  expect(screen.getAllByText("勝").length).toBe(7);
+});
+
 it("hides the horse-weight column for overseas races even when a runner has a weight", () => {
   render(
     <WinRateHeatmapSection
@@ -883,9 +933,11 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     />,
   );
   expect(screen.getByText("馬体重")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(8);
-  expect(screen.getAllByText("100.0%").length).toBe(2);
+  expect(screen.getByText("斤量")).toBeDefined();
+  expect(screen.getAllByText("勝").length).toBe(9);
+  expect(screen.getAllByText("100.0%").length).toBe(3);
   expect(screen.getByText("480-499kg")).toBeDefined();
+  expect(screen.getByText("55.5kg以上57kg以下")).toBeDefined();
   const headings = [...document.querySelectorAll("thead tr:first-child th")].map(
     (heading) => heading.textContent,
   );
@@ -893,6 +945,7 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     "番",
     "枠",
     "馬体重",
+    "斤量",
     "馬",
     "騎手",
     "調教師",

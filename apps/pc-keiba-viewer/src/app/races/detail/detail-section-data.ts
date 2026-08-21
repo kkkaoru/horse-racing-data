@@ -18,6 +18,7 @@ import {
   getRunningStyleBucketEvaluation,
   getSimilarRaceStats,
   getTimeScoreRows,
+  getCarriedWeightClassStats,
   getWeightClassStats,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
@@ -70,6 +71,7 @@ import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
   FrameStatsRow,
+  HorseRaceResult,
   OverallScoreDetail,
   OverallScoreRow,
   PayoutStatsRow,
@@ -112,7 +114,8 @@ export type DetailSection =
   | "running-style"
   | "similar"
   | "time-score"
-  | "training";
+  | "training"
+  | "win-rate-heatmap";
 
 export interface RunningStyleBucketSectionPayload {
   bucketEvaluation: RunningStyleBucketMetrics | null;
@@ -1438,10 +1441,7 @@ const buildRunningStyleBucketSectionPayload = async (
   };
 };
 
-export const getDetailSectionPayload = async (
-  section: DetailSection,
-  params: DetailSectionParams,
-) => {
+const loadDetailSectionPayload = async (section: DetailSection, params: DetailSectionParams) => {
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
 
   if (section === "premium-data-top") {
@@ -1556,11 +1556,17 @@ export const getDetailSectionPayload = async (
       }
     }
     const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = stats;
-    const weightClassStats: WeightClassStatsRow[] = await getWeightClassStats(
-      race,
-      resolvedSettings,
-    );
+    const [weightClassStats, carriedWeightClassStats]: [
+      WeightClassStatsRow[],
+      WeightClassStatsRow[],
+    ] = await Promise.all([
+      getWeightClassStats(race, resolvedSettings),
+      isBanEiKeibajoCode(race.keibajoCode)
+        ? Promise.resolve([])
+        : getCarriedWeightClassStats(race, resolvedSettings),
+    ]);
     return {
+      carriedWeightClassStats,
       conditionLabels: context.conditionAnalysisLabels,
       finishPositionStats,
       frameStats,
@@ -1943,5 +1949,73 @@ export const getDetailSectionPayload = async (
     ...getSimilarStatsFallbackPayload(race, resolvedSettings),
     source: race.source,
     type: "similar" satisfies DetailSection,
+  };
+};
+
+interface HeatmapTimeScoreSource {
+  bloodlineRows: BloodlineStatsRow[];
+  runners: Runner[];
+  similarRows: SimilarRaceStatsRow[];
+  type: "time-score";
+}
+
+interface HeatmapResultsSource {
+  results: HorseRaceResult[];
+  type: "results";
+}
+
+interface HeatmapConditionSource {
+  carriedWeightClassStats: WeightClassStatsRow[];
+  frameStats: FrameStatsRow[];
+  type: "condition";
+  weightClassStats: WeightClassStatsRow[];
+}
+
+const isRecordPayload = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isHeatmapTimeScoreSource = (value: unknown): value is HeatmapTimeScoreSource =>
+  isRecordPayload(value) &&
+  value.type === "time-score" &&
+  Array.isArray(value.bloodlineRows) &&
+  Array.isArray(value.runners) &&
+  Array.isArray(value.similarRows);
+
+const isHeatmapResultsSource = (value: unknown): value is HeatmapResultsSource =>
+  isRecordPayload(value) && value.type === "results" && Array.isArray(value.results);
+
+const isHeatmapConditionSource = (value: unknown): value is HeatmapConditionSource =>
+  isRecordPayload(value) &&
+  value.type === "condition" &&
+  Array.isArray(value.carriedWeightClassStats) &&
+  Array.isArray(value.frameStats) &&
+  Array.isArray(value.weightClassStats);
+
+export const getDetailSectionPayload = async (
+  section: DetailSection,
+  params: DetailSectionParams,
+) => {
+  if (section !== "win-rate-heatmap") {
+    return loadDetailSectionPayload(section, params);
+  }
+  const [timeScorePayload, resultsPayload, conditionPayload] = await Promise.all([
+    loadDetailSectionPayload("time-score", params),
+    loadDetailSectionPayload("results", params),
+    loadDetailSectionPayload("condition", params),
+  ]);
+  if (!isHeatmapTimeScoreSource(timeScorePayload)) {
+    return null;
+  }
+  const conditionSource = isHeatmapConditionSource(conditionPayload) ? conditionPayload : null;
+  return {
+    bloodlineRows: timeScorePayload.bloodlineRows,
+    carriedWeightClassStats:
+      conditionSource === null ? [] : conditionSource.carriedWeightClassStats,
+    frameStats: conditionSource === null ? [] : conditionSource.frameStats,
+    horseResults: isHeatmapResultsSource(resultsPayload) ? resultsPayload.results : [],
+    runners: timeScorePayload.runners,
+    similarRows: timeScorePayload.similarRows,
+    type: "win-rate-heatmap",
+    weightClassStats: conditionSource === null ? [] : conditionSource.weightClassStats,
   };
 };
