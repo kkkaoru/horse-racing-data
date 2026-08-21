@@ -545,6 +545,9 @@ export const formatWinRateHeatmapValue = (
   if (compact && numericRate === 0) {
     return "0";
   }
+  if (compact && numericRate >= MAX_WIN_RATE) {
+    return String(Math.floor(numericRate));
+  }
   if (compact) {
     return numericRate.toFixed(1);
   }

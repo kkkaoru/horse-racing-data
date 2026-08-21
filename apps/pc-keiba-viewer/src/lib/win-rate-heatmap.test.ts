@@ -1353,6 +1353,9 @@ it("omits the percent sign and writes zero without a decimal in the compact heat
   expect(formatWinRateHeatmapValue(Number.NaN, true)).toBe("-");
   expect(formatWinRateHeatmapValue(12.5, true)).toBe("12.5");
   expect(formatWinRateHeatmapValue(10, true)).toBe("10.0");
+  expect(formatWinRateHeatmapValue(99.9, true)).toBe("99.9");
+  expect(formatWinRateHeatmapValue(100, true)).toBe("100");
+  expect(formatWinRateHeatmapValue(100.9, true)).toBe("100");
   expect(formatWinRateHeatmapValue(0, true)).toBe("0");
 });
 

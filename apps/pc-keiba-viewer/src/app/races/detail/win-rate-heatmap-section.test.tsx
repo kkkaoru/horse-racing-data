@@ -512,6 +512,35 @@ it("writes a compact zero without a decimal in the combined heatmap cells", () =
   expect(screen.queryByText("0.0")).toBeNull();
 });
 
+it("truncates three-digit combined heatmap values to an integer", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[
+        {
+          ...frameOne,
+          quinellaCount: 40,
+          quinellaRate: 100,
+          showCount: 40,
+          showRate: 100.9,
+          winCount: 40,
+          winRate: 100,
+        },
+      ]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
+  expect(screen.getAllByText("100").length).toBe(3);
+  expect(screen.queryByText("100.0")).toBeNull();
+  expect(screen.queryByText("100.0%")).toBeNull();
+  expect(screen.queryByText("100.9")).toBeNull();
+});
+
 it("shows computed frame win rate when the payload omits rate fields but includes counts", () => {
   render(
     <WinRateHeatmapSection
