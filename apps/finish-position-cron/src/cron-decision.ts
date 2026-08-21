@@ -3,9 +3,10 @@
 //
 // NOTE: The legacy monolithic predict cron is intentionally absent from
 // wrangler.jsonc because start()-style container batches can be idle-reaped
-// before the DuckDB feature build completes. Production full runs are
-// Cloudflare-owned per-race: sync-realtime-data calls POST /run after
-// running-style completes, and this Worker enqueues container work.
+// before the DuckDB feature build completes. Production first runs are
+// Cloudflare-owned per-race: sync-realtime-data requests a prewarm after the
+// source-day running-style barrier, and this Worker enqueues only after the
+// fresh day-base object is confirmed as a HIT.
 
 import type { PredictCategory } from "./types";
 
@@ -43,7 +44,7 @@ const PAD_CHAR = "0";
 
 // The historical monolithic schedule preserved as the canonical "predict cron"
 // name. "0 18 * * *" is 18:00 UTC == JST 03:00. Re-enabling it in wrangler.jsonc
-// is NOT the production path; use the Cloudflare per-race POST /run queue path.
+// is NOT the production path; use the feature-HIT-gated per-race queue path.
 export const PREDICT_CRON = "0 18 * * *";
 
 // Warm cron: 17:55 UTC == JST 02:55 (5 min before NAR/ban-ei 03:00 prediction)
@@ -69,9 +70,8 @@ export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 // Feature-build cron: 21:00 UTC == JST 06:00 (early enough for a JRA DAY_CHAIN
 // to finish before the 09:40 first post) plus 00:30 UTC == JST 09:30 catch-up.
 // The worker treats these as day-base PREWARM (/prewarm-day-base) only -- a
-// shared feature artifact, not prediction generation. Production full per-race
-// runs are triggered by sync-realtime-data after running-style completion via
-// POST /run.
+// shared feature artifact, not prediction generation. The event-driven admin
+// request carries an explicit generation intent and waits for the same HIT.
 export const FEATURE_BUILD_CRON_EARLY = "0 21 * * *";
 export const FEATURE_BUILD_CRON = "30 0 * * *";
 

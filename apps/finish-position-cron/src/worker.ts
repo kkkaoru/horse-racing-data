@@ -122,6 +122,7 @@ interface AdminCompleteFocusedFullRaceRequest extends InternalRescoreRaceRequest
 
 interface AdminPrewarmDayBaseRequest {
   category?: PredictCategory;
+  generatePredictionsAfterHit?: boolean;
   runYmd: string;
 }
 
@@ -326,9 +327,16 @@ const parseAdminPrewarmDayBaseBody = (
   const runYmd = requestedRunYmd === undefined ? fallbackRunYmd : requestedRunYmd;
   if (!isValidRunYmd(runYmd)) return null;
   const category = body[CATEGORY_FIELD];
-  if (category === undefined) return { runYmd };
+  const generatePredictionsAfterHit = body.generatePredictionsAfterHit;
+  if (generatePredictionsAfterHit !== undefined && typeof generatePredictionsAfterHit !== "boolean")
+    return null;
+  const generationFlag =
+    generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {};
+  if (category === undefined) {
+    return generatePredictionsAfterHit === true ? null : { runYmd };
+  }
   if (!isValidRescoreCategory(category)) return null;
-  return { category, runYmd };
+  return { category, ...generationFlag, runYmd };
 };
 
 const parseAdminCompleteFocusedFullRaceBody = (
@@ -690,6 +698,9 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
           category: parsed.category,
           daysAhead,
           env,
+          ...(parsed.generatePredictionsAfterHit === true
+            ? { generatePredictionsAfterHit: true }
+            : {}),
           runYmd: parsed.runYmd,
         });
   return Response.json({
@@ -809,11 +820,8 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     return;
   }
   if (shouldRunCoordinatorCron(event.cron)) {
-    // Per-race timing layer: enqueue rescore messages for races within T-X of
-    // post time, scoped to env.RESCORE_CATEGORIES (JRA only as of 2026-07-11).
-    // Routes to the existing container held /predict mode=rescore path — does
-    // not start a new container class or touch the predict / warm crons. A
-    // shadow no-op when env.COORDINATOR_ENABLED !== "1".
+    // Legacy/manual compatibility only. No production cron is registered for
+    // this path; normal second-pass generation is weight-event driven.
     await runRaceCoordinatorTick({
       env,
       leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,

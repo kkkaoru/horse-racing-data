@@ -59,10 +59,9 @@ export interface Env {
   // callers/tests need not set it -- an unset value fails the kick's bearer
   // auth against sync-realtime-data (logged, never thrown).
   REALTIME_ADMIN_TOKEN?: string;
-  // Feature flag for the per-race rescore coordinator. "1" enables enqueueing;
-  // any other value (including unset) keeps it in shadow — the cron still fires
-  // but enqueues nothing, so deploying the coordinator does not change
-  // production predictions. Optional so existing callers/tests need not set it.
+  // Legacy/manual feature flag for the per-race time coordinator. Production
+  // has no coordinator cron: the second prediction is exclusively triggered
+  // after sync-realtime-data successfully persists horse weights.
   COORDINATOR_ENABLED?: string;
   // Comma-separated PredictCategory list gating which categories the per-race
   // coordinator enqueues rescore for (e.g. "jra" or "jra,nar"). Unset/empty or
@@ -180,6 +179,10 @@ export interface DayBasePickupMessage {
   category: PredictCategory;
   runYmd: string;
   attempt: number;
+  // True only when the source-day running-style barrier requested the first
+  // prediction pass. Scheduled prewarms leave this false/absent and only warm
+  // the artifact; the pickup fans out after it proves the fresh object landed.
+  generatePredictionsAfterHit?: boolean;
 }
 
 export interface PredictQueueMessage {
@@ -197,10 +200,10 @@ export interface PredictQueueMessage {
   // Backward-compatible field for older queued messages. Focused per-race full
   // builds intentionally ignore it and use the stable race-scoped DO name.
   requestId?: string;
-  // Gates event-driven full-build bypasses: when sync-realtime-data finishes
-  // running-style, it can trigger POST /run with skipDedup=true so the queue
-  // consumer skips the per-category claimRun dedup gate. Absent/false keeps the
-  // normal dedup path.
+  // Gates event-driven full-build bypasses. After the fresh day-base HIT is
+  // proven, the fanout uses skipDedup=true so each race enters the focused-full
+  // coordinator instead of the legacy per-category claim. Absent/false keeps
+  // the normal dedup path.
   skipDedup?: boolean;
   // Durable lifecycle ID for self-heal detection -> enqueue -> consume ->
   // prediction completion accounting. Absent on unrelated legacy messages.

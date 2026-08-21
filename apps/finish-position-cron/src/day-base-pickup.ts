@@ -7,6 +7,7 @@
 
 import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { releaseContainerSlot } from "./do-state";
+import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { DayBasePickupMessage, Env, PredictCategory } from "./types";
 
@@ -15,6 +16,7 @@ interface EnqueueDayBasePickupParams {
   category: PredictCategory;
   env: Env;
   runYmd: string;
+  generatePredictionsAfterHit?: boolean;
 }
 
 interface ConsumeDayBasePickupParams {
@@ -36,6 +38,11 @@ export const isDayBasePickupMessage = (value: unknown): value is DayBasePickupMe
   if (value.type !== DAY_BASE_PICKUP_TYPE) return false;
   if (typeof value.category !== "string" || value.category.length === 0) return false;
   if (typeof value.runYmd !== "string" || value.runYmd.length === 0) return false;
+  if (
+    value.generatePredictionsAfterHit !== undefined &&
+    typeof value.generatePredictionsAfterHit !== "boolean"
+  )
+    return false;
   return typeof value.attempt === "number" && Number.isInteger(value.attempt) && value.attempt > 0;
 };
 
@@ -49,6 +56,7 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
     category: params.category,
     runYmd: params.runYmd,
     type: DAY_BASE_PICKUP_TYPE,
+    ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),
   };
   await params.env.PREDICT_QUEUE.send(message, { delaySeconds: DAY_BASE_PICKUP_DELAY_SECONDS });
   console.log(
@@ -85,6 +93,9 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     console.log(
       `[day-base-pickup] landed category=${category} runYmd=${runYmd} attempt=${attempt}`,
     );
+    if (message.generatePredictionsAfterHit === true) {
+      await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
+    }
     await releaseDayBasePickupSlot(env, category, runYmd);
     return;
   }
@@ -99,6 +110,7 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     attempt: attempt + 1,
     category,
     env,
+    ...(message.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
     runYmd,
   });
 };

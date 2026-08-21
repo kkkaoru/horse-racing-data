@@ -22,6 +22,7 @@ import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
 import { DAY_BASE_PICKUP_FIRST_ATTEMPT, enqueueDayBasePickup } from "./day-base-pickup";
 import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
+import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
@@ -50,6 +51,7 @@ interface PrewarmCategoryParams {
   daysAhead: number;
   env: Env;
   runYmd: string;
+  generatePredictionsAfterHit?: boolean;
 }
 
 interface RunDayBasePrewarmParams {
@@ -214,6 +216,15 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     console.warn(
       `[day-base-prewarm] container slot ${claim.state ?? "capped"} doName=${doName} kind=${DAY_BASE_SLOT_KIND} category=${category} runYmd=${runYmd} -- skipping start`,
     );
+    if (params.generatePredictionsAfterHit === true) {
+      await enqueueDayBasePickup({
+        attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
+        category,
+        env,
+        generatePredictionsAfterHit: true,
+        runYmd,
+      });
+    }
     return false;
   }
   let releaseSlot = true;
@@ -224,13 +235,24 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     const result = await handlePrewarmResponse({ category, response, runYmd });
     // Only the container can declare an existing R2 object fresh because its
     // prewarm fast path compares the live Catalog + running-style watermark.
-    if (result?.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) return true;
-    if (await landDayBaseFromPickup({ category, env, runYmd })) return true;
+    if (result?.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) {
+      if (params.generatePredictionsAfterHit === true) {
+        await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
+      }
+      return true;
+    }
+    if (await landDayBaseFromPickup({ category, env, runYmd })) {
+      if (params.generatePredictionsAfterHit === true) {
+        await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
+      }
+      return true;
+    }
     if (result?.status !== PREWARM_ACCEPTED_STATUS) return false;
     await enqueueDayBasePickup({
       attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
       category,
       env,
+      ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
       runYmd,
     });
     // The detached DAY_CHAIN still owns this capacity. Its delayed pickup

@@ -3,19 +3,26 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { DayBasePickupMessage, Env } from "./types";
 
-const { headDayBaseObjectMock, pickUpPrewarmDayBaseMock, releaseContainerSlotMock } = vi.hoisted(
-  () => ({
-    headDayBaseObjectMock: vi.fn(async (): Promise<{ size: number } | null> => null),
-    pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
-    releaseContainerSlotMock: vi.fn(async () => undefined),
-  }),
-);
+const {
+  fanOutPredictionsAfterDayBaseHitMock,
+  headDayBaseObjectMock,
+  pickUpPrewarmDayBaseMock,
+  releaseContainerSlotMock,
+} = vi.hoisted(() => ({
+  fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
+  headDayBaseObjectMock: vi.fn(async (): Promise<{ size: number } | null> => null),
+  pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
+  releaseContainerSlotMock: vi.fn(async () => undefined),
+}));
 
 vi.mock("./day-base-prewarm-pickup", () => ({
   headDayBaseObject: headDayBaseObjectMock,
   pickUpPrewarmDayBase: pickUpPrewarmDayBaseMock,
 }));
 vi.mock("./do-state", () => ({ releaseContainerSlot: releaseContainerSlotMock }));
+vi.mock("./feature-hit-prediction", () => ({
+  fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
+}));
 
 import {
   consumeDayBasePickup,
@@ -47,6 +54,7 @@ beforeEach(() => {
   headDayBaseObjectMock.mockReset();
   pickUpPrewarmDayBaseMock.mockReset();
   releaseContainerSlotMock.mockClear();
+  fanOutPredictionsAfterDayBaseHitMock.mockClear();
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
 });
@@ -92,6 +100,11 @@ test("isDayBasePickupMessage rejects an empty runYmd", () => {
       type: "day-base-pickup",
     }),
   ).toBe(false);
+});
+
+test("isDayBasePickupMessage validates the optional feature-hit generation flag", () => {
+  expect(isDayBasePickupMessage({ ...pickupBody, generatePredictionsAfterHit: true })).toBe(true);
+  expect(isDayBasePickupMessage({ ...pickupBody, generatePredictionsAfterHit: "yes" })).toBe(false);
 });
 
 test("isDayBasePickupQueueMessage reads the message body", () => {
@@ -155,6 +168,22 @@ test("consumeDayBasePickup logs landed after a successful pickup", async () => {
   logSpy.mockRestore();
 });
 
+test("consumeDayBasePickup fans out only after a fresh pickup lands", async () => {
+  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
+  headDayBaseObjectMock.mockResolvedValueOnce({ size: 80 });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: { ...pickupBody, generatePredictionsAfterHit: true },
+  });
+  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env: expect.any(Object),
+    runYmd: "20260817",
+  });
+  logSpy.mockRestore();
+});
+
 test("consumeDayBasePickup re-enqueues when pickup still misses", async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await consumeDayBasePickup({ env: makeEnv(), message: pickupBody });
@@ -167,6 +196,26 @@ test("consumeDayBasePickup re-enqueues when pickup still misses", async () => {
     },
     { delaySeconds: 180 },
   );
+  logSpy.mockRestore();
+});
+
+test("consumeDayBasePickup preserves the feature-hit generation intent while retrying", async () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: { ...pickupBody, generatePredictionsAfterHit: true },
+  });
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 2,
+      category: "ban-ei",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260817",
+      type: DAY_BASE_PICKUP_TYPE,
+    },
+    { delaySeconds: 180 },
+  );
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
   logSpy.mockRestore();
 });
 

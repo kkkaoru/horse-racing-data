@@ -14,8 +14,9 @@
   // idle-reaped before the DuckDB feature build completes, and because
   // production prediction generation is per-race only (keibajoCode +
   // raceBango required on every /run and queue message). Full production
-  // runs are triggered per race by sync-realtime-data via POST /run; this
-  // Worker fans them into Queues/Containers.
+  // first runs are armed by sync-realtime-data only after the source-day feat
+  // barrier and then fanned out after a fresh day-base HIT. The only normal
+  // second pass is the event-driven horse-weight rescore.
   // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
   // before prediction windows and during race hours. They complete in <1s and
   // are safe to run inside a Worker (no container involved).
@@ -28,32 +29,17 @@
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
       // JST 06:00 — day-base PREWARM (shared feature artifact via
       // /prewarm-day-base). Starts before first JRA post so DAY_CHAIN can
-      // finish; first race may still lazy-build once if this is still running.
-      // Not prediction generation; deliberately outside the per-race scope
-      // guard. See src/day-base-prewarm.ts.
+      // finish. Not prediction generation; the source-day event later rechecks
+      // freshness and only a confirmed HIT can fan out the first predictions.
+      // See src/day-base-prewarm.ts.
       "0 21 * * *",
       // JST 09:30 — day-base PREWARM catch-up if the 06:00 run missed.
       "30 0 * * *",
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
-      // Per-race coordinator cron (every 10 min, JST 10:00-20:59): inspects
-      // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore
-      // message for each race within T-X of post time, for the categories
-      // listed in vars.RESCORE_CATEGORIES (JRA only as of 2026-07-11). The
-      // enqueued message is consumed by the existing container held /predict
-      // mode=rescore path — it never starts a new container class or touches
-      // the predict / warm crons, and mode=rescore shares the same model
-      // resolution + cell routing as the full pass (see race-coordinator.ts).
-      "*/10 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator
-      // Coverage self-healing + pre-race readiness cron (every 15 min, JST
-      // 10:00-20:59, offset 7 min from the coordinator/warm crons above so no
-      // race-hours tick collides): per-race replacement for
-      // race-prediction-guard.sh's day-wide COUNT check (doc §4.3,
-      // docs/cf-only-serving-architecture.md). Same tick (1) re-enqueues races
-      // whose post time is >15 min past and still missing a complete prediction
-      // and (2) enqueues mode=full skipDedup for incomplete races in
-      // (now, now+PRE_RACE_LEAD_MINUTES] so user-visible predictions exist
-      // before post (see src/coverage-self-heal.ts).
-      "7,22,37,52 1-11 * * *", // JST 10:00-20:59 — coverage self-heal + pre-race readiness
+      // There is intentionally no timed prediction/rescore coordinator here.
+      // A timer could consume the per-race rescore claim before weights arrive
+      // or create an extra full pass. Repair remains available through the
+      // authenticated admin paths, not as a normal generation.
       // race_entry_corner_features refresh (§4.4, src/corner-features-refresh.ts):
       // morning run populates pre-race entrant rows before the JRA pre-wake/
       // day-base prewarm crons above read them; evening run (after the last

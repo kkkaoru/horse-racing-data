@@ -14,6 +14,7 @@ type DayBaseHeadResult = DayBaseHeadHit | null;
 const {
   claimContainerSlotMock,
   enumerateTodaysRacesMock,
+  fanOutPredictionsAfterDayBaseHitMock,
   headDayBaseObjectMock,
   pickUpPrewarmDayBaseMock,
   releaseContainerSlotMock,
@@ -22,6 +23,7 @@ const {
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
   enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
+  fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
   headDayBaseObjectMock: vi.fn(async (): Promise<DayBaseHeadResult> => null),
   pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
   releaseContainerSlotMock: vi.fn(async () => undefined),
@@ -41,6 +43,9 @@ vi.mock("./day-base-prewarm-pickup", () => ({
     `feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet`,
   headDayBaseObject: headDayBaseObjectMock,
   pickUpPrewarmDayBase: pickUpPrewarmDayBaseMock,
+}));
+vi.mock("./feature-hit-prediction", () => ({
+  fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
 }));
 
 import { prewarmCategory, runDayBasePrewarm } from "./day-base-prewarm";
@@ -76,6 +81,7 @@ const isRequest = (value: unknown): value is Request =>
 
 beforeEach(() => {
   enumerateTodaysRacesMock.mockClear();
+  fanOutPredictionsAfterDayBaseHitMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
@@ -294,6 +300,58 @@ test("prewarmCategory logs a success outcome when the container returns status s
     "[day-base-prewarm] success category=jra runYmd=20260628 status=success parquetKey=jra/20260628/day-base.parquet watermark=absent error=-",
   );
   logSpy.mockRestore();
+});
+
+test("prewarmCategory fans out predictions only when a fresh HIT and generation intent coincide", async () => {
+  containerDoFetchMock.mockResolvedValue(
+    new Response(
+      resultLineBody({
+        category: "jra",
+        parquetKey: "jra/20260822/day-base.parquet",
+        runDate: "20260822",
+        status: "success",
+      }),
+      { status: 200 },
+    ),
+  );
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await prewarmCategory({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    generatePredictionsAfterHit: true,
+    runYmd: "20260822",
+  });
+  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.any(Object),
+    runYmd: "20260822",
+  });
+  logSpy.mockRestore();
+});
+
+test("prewarmCategory arms a pickup when a feature-hit request finds the category slot busy", async () => {
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "leased" });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await prewarmCategory({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    generatePredictionsAfterHit: true,
+    runYmd: "20260822",
+  });
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 1,
+      category: "jra",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260822",
+      type: "day-base-pickup",
+    },
+    { delaySeconds: 180 },
+  );
+  warnSpy.mockRestore();
 });
 
 test("prewarmCategory logs an empty outcome when the container returns status empty", async () => {

@@ -3285,8 +3285,10 @@ const readRescoreTriggerOutcome = async (response: Response): Promise<RescoreTri
 
 // Fire-and-forget event-driven trigger fired right after a successful horse
 // weight write to D1. Failures (binding missing, token missing, network) are
-// swallowed and logged so they never fail the weight write. The next weight
-// fetch will re-trigger; the 5-min coordinator cron also remains a backstop.
+// swallowed and logged so they never fail the already-committed weight write.
+// The finish-position coordinator deduplicates repeated weight events for the
+// same race; there is intentionally no timer-based rescore backstop because it
+// could consume the one second-pass claim before weights arrive.
 export const triggerRescoreAfterWeights = async (env: Env, raceKey: string): Promise<void> => {
   const binding = env.FINISH_POSITION_CRON;
   const token = env.TRIGGER_TOKEN;

@@ -348,6 +348,26 @@ test("admin prewarm-day-base rejects an invalid category", async () => {
   expect(prewarmCategoryMock).not.toHaveBeenCalled();
 });
 
+test("admin prewarm-day-base rejects an invalid or unscoped generation intent", async () => {
+  const invalidFlag = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", generatePredictionsAfterHit: "yes", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  const unscopedFlag = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ generatePredictionsAfterHit: true, runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  expect(invalidFlag.status).toBe(400);
+  expect(unscopedFlag.status).toBe(400);
+  expect(prewarmCategoryMock).not.toHaveBeenCalled();
+});
+
 test("admin prewarm-day-base dispatches one category", async () => {
   const response = await handleFetch(
     adminPrewarmDayBaseRequest(
@@ -367,6 +387,28 @@ test("admin prewarm-day-base dispatches one category", async () => {
     expect.objectContaining({ category: "ban-ei", daysAhead: 2, runYmd: "20260817" }),
   );
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm-day-base forwards the feature-hit generation intent", async () => {
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        generatePredictionsAfterHit: true,
+        runYmd: "20260817",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(prewarmCategoryMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    env: expect.any(Object),
+    generatePredictionsAfterHit: true,
+    runYmd: "20260817",
+  });
 });
 
 test("admin prewarm-day-base without category warms every scheduled category", async () => {
