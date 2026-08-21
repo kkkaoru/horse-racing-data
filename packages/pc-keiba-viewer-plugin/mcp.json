@@ -3,8 +3,8 @@
   "mcpServers": {
     "pc-keiba-viewer": {
       "type": "stdio",
-      "command": "bun",
-      "args": ["${PLUGIN_ROOT}/src/run-mcp-stdio-proxy.ts"]
+      "command": "python3",
+      "args": ["${PLUGIN_ROOT}/src/run_mcp_stdio_proxy.py"]
     }
   }
 }

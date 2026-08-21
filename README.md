@@ -47,4 +47,4 @@ copilot plugin install pc-keiba-viewer@horse-racing-data
 
 Prefer remote `/mcp` plus OAuth (no static Bearer). Optional stdio proxy env vars are documented in [`packages/pc-keiba-viewer-plugin/README.md`](packages/pc-keiba-viewer-plugin/README.md).
 
-Requires `bun` on `PATH` for the stdio proxy.
+Requires `python3` on `PATH` for the optional stdio proxy (standard library only).

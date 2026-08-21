@@ -104,12 +104,15 @@ pre-commit:
     test-horse-racing-schema:
       glob: "packages/horse-racing-schema/**/*.ts"
       run: bun run --filter horse-racing-schema test
-    tsc-pc-keiba-viewer-plugin:
-      glob: "packages/pc-keiba-viewer-plugin/**/*.ts"
-      run: bun run --filter pc-keiba-viewer-plugin tsc
-    test-pc-keiba-viewer-plugin:
-      glob: "packages/pc-keiba-viewer-plugin/**/*.ts"
-      run: bun run --filter pc-keiba-viewer-plugin test:coverage
+    python-pc-keiba-viewer-plugin:
+      glob:
+        - "packages/pc-keiba-viewer-plugin/src/*.{py,pyi}"
+        - "packages/pc-keiba-viewer-plugin/src/**/*.{py,pyi}"
+        - "packages/pc-keiba-viewer-plugin/tests/*.{py,pyi}"
+        - "packages/pc-keiba-viewer-plugin/tests/**/*.{py,pyi}"
+        - "packages/pc-keiba-viewer-plugin/pyproject.toml"
+        - "packages/pc-keiba-viewer-plugin/mcp.json"
+      run: bun run --filter pc-keiba-viewer-plugin python:check
     tsc-catboost-json-tree:
       glob: "packages/catboost-json-tree/**/*.ts"
       run: bun run --filter catboost-json-tree tsc

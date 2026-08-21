@@ -19,8 +19,9 @@ OAuth tokens in the agent. Discovery uses Protected Resource Metadata and
 Authorization Server Metadata (PKCE S256, DCR and CIMD).
 
 Preferred client setup: remote MCP URL ending in `/mcp`, no static
-Authorization header. Optional machine path: stdio proxy with
-`PC_KEIBA_VIEWER_MCP_URL` and `MCP_AUTH_TOKEN`.
+Authorization header. Optional machine path: Python 3 stdio proxy
+(`python3`, standard library only) with `PC_KEIBA_VIEWER_MCP_URL` and
+`MCP_AUTH_TOKEN`.
 
 Pages and browser APIs never read the MCP token.
 

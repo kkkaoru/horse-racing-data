@@ -1,0 +1,9 @@
+{
+  "include": ["src", "tests"],
+  "exclude": [".venv", "node_modules"],
+  "extraPaths": ["src"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "venvPath": ".",
+  "venv": ".venv"
+}

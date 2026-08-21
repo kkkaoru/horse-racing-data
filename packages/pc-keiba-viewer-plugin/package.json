@@ -3,19 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "bun run tsc && bun run lint && bun run format:check && bun run test:coverage",
+    "check": "bun run format:check && bun run lint && bun run python:check",
     "format": "bunx oxfmt",
     "format:check": "bunx oxfmt --check",
     "lint": "bunx oxlint",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "tsc": "tsc --noEmit"
+    "python:check": "uv run ruff check src tests && uv run ruff format --check src tests && uv run ty check src tests && uv run basedpyright src tests && uv run pytest",
+    "test": "uv run pytest",
+    "test:coverage": "uv run pytest"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "catalog:",
     "oxfmt": "catalog:",
-    "oxlint": "catalog:",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
+    "oxlint": "catalog:"
   }
 }
