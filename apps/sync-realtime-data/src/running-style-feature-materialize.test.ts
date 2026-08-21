@@ -11,6 +11,15 @@ vi.mock("./running-style-catalog-client", async (importOriginal) => {
     fetchRunningStyleFeaturesFromCatalog: vi.fn(),
   };
 });
+vi.mock("./finish-position-lite-pool", () => ({
+  getFinishPositionPool: vi.fn(() => ({ query: vi.fn() })),
+}));
+vi.mock("./running-style-feature-sql", () => ({
+  buildRunningStyleFeaturesForRaceFromPostgres: vi.fn(),
+}));
+vi.mock("./running-style-finish-feature-hit", () => ({
+  loadRunningStyleFeaturesFromFinishPositionDayBase: vi.fn(async () => null),
+}));
 vi.mock("./running-style-feature-parquet", () => ({
   buildRunningStyleFeatureParquetKey: vi.fn(() => "features.parquet"),
   loadRunningStyleFeatureParquet: vi.fn(),
@@ -36,6 +45,7 @@ vi.mock("./format-error", () => ({
 const makeEnv = (writeEnabled: string): Env =>
   Object.assign(JSON.parse("{}"), {
     PC_KEIBA_R2_CATALOG: { fetch: vi.fn() },
+    FEATURES_ARCHIVE: {},
     REALTIME_DB: {},
     RUNNING_STYLE_D1_WRITE_ENABLED: writeEnabled,
     RUNNING_STYLE_MODELS: {},
@@ -52,8 +62,78 @@ const RACE: RunningStyleRaceParams = {
 const rows = (): RaceHorseFeatureRow[] =>
   JSON.parse('[{"raceKey":"jra:20260513:08:01","umaban":1}]');
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockRejectedValue(
+    new Error("PostgreSQL fallback unavailable"),
+  );
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(null);
+});
+
+it("uses the finish-position day-base HIT before Catalog", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const env = makeEnv("1");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({ env, featureNames: ["f1"], race: RACE }),
+  ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: true, rows: rows() });
+  expect(loadRunningStyleFeaturesFromFinishPositionDayBase).toHaveBeenCalledWith({
+    bucket: env.FEATURES_ARCHIVE,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
+    "Running-style features HIT finish-position day-base for jra:20260513:08:01",
+  );
+});
+
+it("falls back to Catalog when the finish-position day-base read fails", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockRejectedValue(
+    new Error("invalid day-base parquet"),
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: true, rows: rows() });
+  expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe(
+    "Running-style finish-position day-base MISS for jra:20260513:08:01: invalid day-base parquet",
+  );
 });
 
 it("ignores a stale processed object and refreshes it from Catalog", async () => {
@@ -145,6 +225,55 @@ it("falls back to R2 parquet when Catalog is unavailable and coverage is complet
   expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
   expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
     "Running-style features catalog unavailable, using R2 parquet fallback features.parquet: PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+});
+
+it("rebuilds and writes the current Parquet from PostgreSQL when Catalog is unavailable", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const env = makeEnv("1");
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(
+    new Error("running-style Catalog request timed out after 45000ms"),
+  );
+  vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+    elapsedMs: 321,
+    rows: rows(),
+    sqlRows: 1,
+  });
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({ env, featureNames: ["f1"], race: RACE }),
+  ).resolves.toStrictEqual({
+    featuresR2Key: "features.parquet",
+    rebuilt: true,
+    rows: rows(),
+  });
+  expect(getFinishPositionPool).toHaveBeenCalledWith(env);
+  expect(buildRunningStyleFeaturesForRaceFromPostgres).toHaveBeenCalledWith(
+    vi.mocked(getFinishPositionPool).mock.results[0]?.value,
+    RACE,
+    ["f1"],
+  );
+  expect(putRunningStyleFeatureParquet).toHaveBeenCalledWith(
+    env.RUNNING_STYLE_MODELS,
+    "features.parquet",
+    rows(),
+    ["f1"],
+  );
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style Catalog unavailable, rebuilt from PostgreSQL mirror in 321ms: running-style Catalog request timed out after 45000ms",
   );
 });
 

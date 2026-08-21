@@ -167,6 +167,30 @@ it("keeps the bare message when the Catalog error body cannot be read", async ()
   );
 });
 
+it("bounds a running-style Catalog request and classifies the timeout as unavailable", async () => {
+  vi.useFakeTimers();
+  const catalog = {
+    fetch: vi.fn<(request: Request) => Promise<Response>>(
+      (request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    ),
+  };
+  const { fetchRunningStyleFeaturesFromCatalog, isCatalogUnavailableError } =
+    await import("./running-style-catalog-client");
+  const pending = fetchRunningStyleFeaturesFromCatalog(catalog, RACE, ["f1"]).catch(
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(45_000);
+  const failure: unknown = await pending;
+  expect(failure instanceof Error ? failure.message : "").toBe(
+    "running-style Catalog request timed out after 45000ms",
+  );
+  expect(isCatalogUnavailableError(failure)).toBe(true);
+  vi.useRealTimers();
+});
+
 it("truncates an oversized Catalog error detail to the bounded cap", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   const catalog = catalogReturningBody(JSON.stringify({ code: 7003, detail: "x".repeat(1000) }));

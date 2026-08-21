@@ -184,6 +184,7 @@
         "@dsnp/parquetjs": "catalog:",
         "@duckdb/node-api": "1.5.3-r.3",
         "horse-racing-realtime": "workspace:*",
+        "hyparquet": "1.26.0",
         "pg": "catalog:",
         "pg-cloudflare": "catalog:",
         "thrift": "0.23.0",

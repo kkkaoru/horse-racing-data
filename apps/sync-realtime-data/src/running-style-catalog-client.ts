@@ -9,6 +9,7 @@ import type { CatalogServiceBinding } from "./types";
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 export const RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1";
 const CATALOG_HTTP_5XX_PATTERN = /PC_KEIBA_R2_CATALOG \S+ failed with HTTP 5\d\d/;
+const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 45_000;
 // Bounded slice of a failing Catalog response body appended to the thrown error so
 // the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
 // HTTP status. Never echoes request headers or env values.
@@ -127,11 +128,32 @@ const catalogErrorDetail = (body: string): string => {
 
 export const isCatalogUnavailableError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes("r2_sql_unavailable") || CATALOG_HTTP_5XX_PATTERN.test(message);
+  return (
+    message.includes("r2_sql_unavailable") ||
+    message.includes("running-style Catalog request timed out") ||
+    CATALOG_HTTP_5XX_PATTERN.test(message)
+  );
 };
 
-const fetchCatalogJson = async (catalog: CatalogServiceBinding, url: URL): Promise<unknown> => {
-  const response = await catalog.fetch(new Request(url, { method: "GET" }));
+const fetchCatalogJson = async (
+  catalog: CatalogServiceBinding,
+  url: URL,
+  timeoutMs?: number,
+): Promise<unknown> => {
+  const controller = new AbortController();
+  const timeoutId =
+    timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+  const response = await catalog
+    .fetch(new Request(url, { method: "GET", signal: controller.signal }))
+    .catch((error: unknown) => {
+      if (controller.signal.aborted && timeoutMs !== undefined) {
+        throw new Error(`running-style Catalog request timed out after ${String(timeoutMs)}ms`);
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    });
   if (!response.ok) {
     // Safe: the ok path below returns before this branch, so the body stream is
     // read at most once. A body that cannot be read degrades to the bare message.
@@ -161,7 +183,7 @@ export const fetchRunningStyleFeaturesFromCatalog = async (
   url.searchParams.set("source", catalogSource);
   url.searchParams.set("keibajoCode", keibajoCode);
   url.searchParams.set("raceBango", race.raceBango.padStart(2, "0"));
-  const payload = await fetchCatalogJson(catalog, url);
+  const payload = await fetchCatalogJson(catalog, url, RUNNING_STYLE_CATALOG_TIMEOUT_MS);
   if (!isRecord(payload) || payload.generation !== RUNNING_STYLE_CATALOG_GENERATION) {
     throw new Error("catalog running-style response has invalid generation");
   }

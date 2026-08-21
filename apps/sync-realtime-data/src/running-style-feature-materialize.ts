@@ -2,6 +2,7 @@
 // local-PostgreSQL-sourced raw Iceberg tables exposed by the catalog Worker.
 
 import { formatError } from "./format-error";
+import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
   fetchRunningStyleFeaturesFromCatalog,
   isCatalogUnavailableError,
@@ -12,6 +13,8 @@ import {
   putRunningStyleFeatureParquet,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
+import { buildRunningStyleFeaturesForRaceFromPostgres } from "./running-style-feature-sql";
+import { loadRunningStyleFeaturesFromFinishPositionDayBase } from "./running-style-finish-feature-hit";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import {
   buildRunningStyleFlatModelKey,
@@ -60,15 +63,55 @@ interface BuildAndPutRunningStyleFeatureParquetInternalResult extends Materializ
   rows: ReadonlyArray<RaceHorseFeatureRow>;
 }
 
+const loadAuthoritativeFeatureRows = async (
+  params: MaterializeRunningStyleFeatureParquetParams,
+): Promise<ReadonlyArray<RaceHorseFeatureRow>> => {
+  try {
+    const hit = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+      bucket: params.env.FEATURES_ARCHIVE,
+      featureNames: params.featureNames,
+      race: params.race,
+    });
+    if (hit !== null && hit.length > 0) {
+      console.log(
+        `Running-style features HIT finish-position day-base for ${buildRunningStyleRaceKey(params.race)}`,
+      );
+      return hit;
+    }
+  } catch (error) {
+    console.warn(
+      `Running-style finish-position day-base MISS for ${buildRunningStyleRaceKey(params.race)}: ${formatError(error)}`,
+    );
+  }
+  try {
+    return await fetchRunningStyleFeaturesFromCatalog(
+      params.env.PC_KEIBA_R2_CATALOG,
+      params.race,
+      params.featureNames,
+    );
+  } catch (catalogError) {
+    if (!isCatalogUnavailableError(catalogError)) throw catalogError;
+    try {
+      const postgres = await buildRunningStyleFeaturesForRaceFromPostgres(
+        getFinishPositionPool(params.env),
+        params.race,
+        params.featureNames,
+      );
+      console.error(
+        `Running-style Catalog unavailable, rebuilt from PostgreSQL mirror in ${String(postgres.elapsedMs)}ms: ${formatError(catalogError)}`,
+      );
+      return postgres.rows;
+    } catch {
+      throw catalogError;
+    }
+  }
+};
+
 const buildAndPutRunningStyleFeatureParquetInternal = async (
   params: MaterializeRunningStyleFeatureParquetParams,
 ): Promise<BuildAndPutRunningStyleFeatureParquetInternalResult> => {
   const raceKey = buildRunningStyleRaceKey(params.race);
-  const rows = await fetchRunningStyleFeaturesFromCatalog(
-    params.env.PC_KEIBA_R2_CATALOG,
-    params.race,
-    params.featureNames,
-  );
+  const rows = await loadAuthoritativeFeatureRows(params);
   if (rows.length === 0) {
     throw new Error(`no running-style feature rows found for race ${raceKey}`);
   }
