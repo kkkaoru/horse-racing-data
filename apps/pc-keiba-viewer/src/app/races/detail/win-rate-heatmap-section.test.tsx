@@ -444,9 +444,12 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getAllByText("勝").length).toBe(7);
   expect(screen.getAllByText("連").length).toBe(7);
   expect(screen.getAllByText("複").length).toBe(7);
-  expect(screen.getByText("15.0%")).toBeDefined();
-  expect(screen.getAllByText("30.0%").length).toBe(2);
-  expect(screen.getByText("45.0%")).toBeDefined();
+  expect(screen.getByText("15.0")).toBeDefined();
+  expect(screen.getAllByText("30.0").length).toBe(2);
+  expect(screen.getByText("45.0")).toBeDefined();
+  expect(screen.queryByText("15.0%")).toBeNull();
+  expect(screen.queryByText("30.0%")).toBeNull();
+  expect(screen.queryByText("45.0%")).toBeNull();
   expect(
     screen.getByRole("figure", {
       name: "勝率、連対率、複勝率の色は0%から40%以上まで濃くなります",
@@ -479,6 +482,34 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(combinedWinSwatch.style.backgroundColor).toBe("hsl(272, 49%, 71%)");
   expect(combinedQuinellaSwatch.style.backgroundColor).toBe("hsl(272, 77%, 45%)");
   expect(combinedShowSwatch.style.backgroundColor).toBe("hsl(272, 95%, 28%)");
+});
+
+it("writes a compact zero without a decimal in the combined heatmap cells", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[
+        {
+          ...frameOne,
+          quinellaCount: 0,
+          quinellaRate: 0,
+          showCount: 0,
+          showRate: 0,
+          winCount: 0,
+          winRate: 0,
+        },
+      ]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
+  expect(screen.getAllByText("0").length).toBe(3);
+  expect(screen.queryByText("0.0%")).toBeNull();
+  expect(screen.queryByText("0.0")).toBeNull();
 });
 
 it("shows computed frame win rate when the payload omits rate fields but includes counts", () => {

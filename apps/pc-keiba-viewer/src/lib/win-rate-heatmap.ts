@@ -534,9 +534,21 @@ export const formatWinRateHeatmapColorScaleAriaLabel = (
 ): string =>
   `${metrics.map((metric) => metric.label).join("、")}の色は0%から${WIN_RATE_HEATMAP_COLOR_SCALE_MAX_RATE}%以上まで濃くなります`;
 
-export const formatWinRateHeatmapValue = (rate: number | null | undefined): string => {
+export const formatWinRateHeatmapValue = (
+  rate: number | null | undefined,
+  compact: boolean,
+): string => {
   const numericRate = toHeatmapNumber(rate);
-  return numericRate === null ? "-" : `${numericRate.toFixed(1)}%`;
+  if (numericRate === null) {
+    return "-";
+  }
+  if (compact && numericRate === 0) {
+    return "0";
+  }
+  if (compact) {
+    return numericRate.toFixed(1);
+  }
+  return `${numericRate.toFixed(1)}%`;
 };
 
 export const getVisibleWinRateHeatmapRateMetrics = (

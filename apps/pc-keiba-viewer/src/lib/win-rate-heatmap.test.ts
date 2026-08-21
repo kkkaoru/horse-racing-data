@@ -1340,11 +1340,20 @@ it("maps heatmap view modes to win, quinella, show, or all three rate metrics", 
 });
 
 it("formats missing rates as a dash and numeric rates with one decimal", () => {
-  expect(formatWinRateHeatmapValue(null)).toBe("-");
-  expect(formatWinRateHeatmapValue(undefined)).toBe("-");
-  expect(formatWinRateHeatmapValue(Number.NaN)).toBe("-");
-  expect(formatWinRateHeatmapValue(12.5)).toBe("12.5%");
-  expect(formatWinRateHeatmapValue(0)).toBe("0.0%");
+  expect(formatWinRateHeatmapValue(null, false)).toBe("-");
+  expect(formatWinRateHeatmapValue(undefined, false)).toBe("-");
+  expect(formatWinRateHeatmapValue(Number.NaN, false)).toBe("-");
+  expect(formatWinRateHeatmapValue(12.5, false)).toBe("12.5%");
+  expect(formatWinRateHeatmapValue(0, false)).toBe("0.0%");
+});
+
+it("omits the percent sign and writes zero without a decimal in the compact heatmap", () => {
+  expect(formatWinRateHeatmapValue(null, true)).toBe("-");
+  expect(formatWinRateHeatmapValue(undefined, true)).toBe("-");
+  expect(formatWinRateHeatmapValue(Number.NaN, true)).toBe("-");
+  expect(formatWinRateHeatmapValue(12.5, true)).toBe("12.5");
+  expect(formatWinRateHeatmapValue(10, true)).toBe("10.0");
+  expect(formatWinRateHeatmapValue(0, true)).toBe("0");
 });
 
 it("uses a dash when the heatmap tooltip name is missing", () => {

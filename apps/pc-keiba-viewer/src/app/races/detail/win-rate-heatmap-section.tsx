@@ -52,6 +52,7 @@ interface WinRateHeatmapSectionProps {
 interface WinRateHeatmapSwatchProps {
   cell: WinRateHeatmapCell;
   column: WinRateHeatmapColumn;
+  compactValue: boolean;
   frameNumber: string;
   isLastRow: boolean;
   isOpen: boolean;
@@ -139,6 +140,7 @@ const WinRateHeatmapColorScale = ({ metrics }: WinRateHeatmapColorScaleProps) =>
 const WinRateHeatmapSwatch = ({
   cell,
   column,
+  compactValue,
   frameNumber,
   isLastRow,
   isOpen,
@@ -162,7 +164,9 @@ const WinRateHeatmapSwatch = ({
         type="button"
         onClick={onToggle}
       >
-        <span className="win-rate-heatmap-swatch-value">{formatWinRateHeatmapValue(value)}</span>
+        <span className="win-rate-heatmap-swatch-value">
+          {formatWinRateHeatmapValue(value, compactValue)}
+        </span>
         <span className="win-rate-heatmap-tooltip" role="tooltip">
           {column.key === "frame" ? (
             <FrameNumberBadge value={frameNumber} />
@@ -318,6 +322,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                       <WinRateHeatmapSwatch
                         cell={cell}
                         column={column}
+                        compactValue={viewMode === "all"}
                         frameNumber={row.frameNumber}
                         isLastRow={rowIndex === rows.length - 1}
                         isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
