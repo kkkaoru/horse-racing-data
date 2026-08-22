@@ -7119,6 +7119,21 @@ fieldset.stats-section-toggle-wrap {
   white-space: nowrap;
 }
 
+.finish-prediction-generated-at {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  font-weight: var(--number-700-14);
+  margin: var(--number-0-2) var(--number-0-2) var(--space-14px-55);
+  padding: var(--space-10px-27) var(--space-16px-10);
+}
+
+.finish-prediction-generated-missing {
+  background: color-mix(in srgb, var(--gold) var(--space-14pct-123), var(--surface));
+  border-color: color-mix(in srgb, var(--gold) var(--space-42pct-124), var(--surface));
+  color: color-mix(in srgb, var(--gold) var(--space-72pct-125), var(--ink));
+}
+
 .finish-prediction-stddev-info {
   background: var(--surface);
   border: var(--space-1px-7) solid var(--line);
@@ -9636,6 +9651,12 @@ fieldset.stats-section-toggle-wrap {
   grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
 }
 
+.win-rate-heatmap-color-scale-track-body {
+  display: grid;
+  gap: var(--space-4px-18);
+  width: var(--space-100pct-12);
+}
+
 .win-rate-heatmap-color-scale-track-label {
   font-size: var(--space-13px-92);
   font-weight: var(--number-700-14);
@@ -9674,11 +9695,20 @@ fieldset.stats-section-toggle-wrap {
   width: var(--space-100pct-12);
 }
 
-.win-rate-heatmap-table {
+.stats-table.win-rate-heatmap-table {
   border-collapse: collapse;
-  min-width: var(--space-980px-171);
+  min-width: var(--number-0-2);
   table-layout: fixed;
-  width: max(var(--space-100pct-12), var(--space-980px-171));
+  width: var(--space-100pct-12);
+}
+
+.stats-table.win-rate-heatmap-table-combined {
+  min-width: var(--number-0-2);
+}
+
+/* Combined 勝率+連対率+複勝率: hide "%" even if the suffix span is reintroduced. */
+.stats-table.win-rate-heatmap-table-combined .win-rate-heatmap-swatch-value-suffix {
+  display: none;
 }
 
 .win-rate-heatmap-col-number,
@@ -9694,16 +9724,36 @@ fieldset.stats-section-toggle-wrap {
   z-index: var(--number-1-7);
 }
 
-.win-rate-heatmap-table th,
-.win-rate-heatmap-table td {
-  padding: var(--space-6px-33) var(--space-2px-25);
+body .win-rate-heatmap-table th,
+body .win-rate-heatmap-table td {
+  font-size: var(--space-10px-27);
+  line-height: var(--number-1-4-50);
+  overflow: visible;
+  padding: var(--space-8px-28) var(--space-1px-7);
   text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
-.win-rate-heatmap-rate-heading {
-  font-size: var(--space-13px-92);
+body .win-rate-heatmap-table thead th:not(.win-rate-heatmap-number) {
+  font-size: var(--space-10px-27);
+  line-height: var(--number-1-35-27);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: keep-all;
+}
+
+body .win-rate-heatmap-table .win-rate-heatmap-rate-heading,
+body .win-rate-heatmap-table td.win-rate-heatmap-swatch {
+  min-width: var(--space-44px-23);
+  width: auto;
+}
+
+body .win-rate-heatmap-table .win-rate-heatmap-rate-heading {
+  font-size: var(--space-9px-21);
   font-weight: var(--number-700-14);
-  padding: var(--space-4px-18) var(--space-2px-25);
+  padding: var(--space-6px-33) var(--number-0-2);
+  white-space: nowrap;
 }
 
 .win-rate-heatmap-table td.win-rate-heatmap-swatch {
@@ -9713,7 +9763,7 @@ fieldset.stats-section-toggle-wrap {
 .win-rate-heatmap-swatch {
   min-width: var(--number-0-2);
   overflow: visible;
-  padding: var(--space-6px-33) var(--space-2px-25);
+  padding: var(--space-6px-33) var(--number-0-2);
 }
 
 .win-rate-heatmap-swatch.tooltip-open {
@@ -9725,19 +9775,40 @@ fieldset.stats-section-toggle-wrap {
   border: var(--number-0-2);
   color: inherit;
   cursor: pointer;
-  display: block;
+  display: grid;
   font: inherit;
+  justify-items: center;
   padding: var(--number-0-2);
   position: relative;
   touch-action: pan-x pan-y;
   width: var(--space-100pct-12);
 }
 
-.win-rate-heatmap-swatch-value {
-  font-size: var(--space-13px-92);
+body .win-rate-heatmap-table .win-rate-heatmap-swatch-value,
+body .win-rate-heatmap-table .win-rate-heatmap-swatch-starts {
+  font-size: var(--space-10px-27);
   font-variant-numeric: tabular-nums;
   font-weight: var(--number-700-14);
+  line-height: var(--number-1-35-27);
   white-space: nowrap;
+}
+
+body .win-rate-heatmap-table .win-rate-heatmap-swatch-value-suffix {
+  color: inherit;
+  font-size: inherit;
+  font-variant-numeric: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  vertical-align: inherit;
+}
+
+body .win-rate-heatmap-table .win-rate-heatmap-swatch-starts {
+  font-size: var(--space-9px-21);
+}
+
+.win-rate-heatmap-swatch-zero {
+  opacity: var(--number-0-5-10);
 }
 
 .win-rate-heatmap-tooltip {
@@ -9757,7 +9828,7 @@ fieldset.stats-section-toggle-wrap {
   padding: var(--space-6px-33) var(--space-8px-28);
   pointer-events: none;
   position: absolute;
-  top: calc(var(--space-100pct-12) + var(--space-4px-18));
+  top: calc(var(--space-100pct-12) + var(--space-32px-8));
   transform: translateX(var(--space-50pct-36));
   visibility: hidden;
   white-space: nowrap;
@@ -9788,8 +9859,14 @@ fieldset.stats-section-toggle-wrap {
 }
 
 .win-rate-heatmap-tooltip-above .win-rate-heatmap-tooltip {
-  bottom: calc(var(--space-100pct-12) + var(--space-4px-18));
+  bottom: calc(var(--space-100pct-12) + var(--space-32px-8));
   top: auto;
+}
+
+.win-rate-heatmap-tooltip-left .win-rate-heatmap-tooltip {
+  left: auto;
+  right: var(--number-0-2);
+  transform: none;
 }
 
 @media (max-width: 720px) {
@@ -9815,6 +9892,10 @@ fieldset.stats-section-toggle-wrap {
   .win-rate-heatmap-swatch.tooltip-open .win-rate-heatmap-tooltip {
     opacity: var(--number-1-7);
     visibility: visible;
+  }
+
+  .win-rate-heatmap-swatch-value-suffix {
+    display: none;
   }
 }
 

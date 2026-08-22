@@ -55,11 +55,20 @@ const {
   getTimeScoreRowsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
+  fetchConditionHistoryStatsFromCatalogMock,
+  fetchHorseRaceResultsFromCatalogMock,
   fetchRaceTrainingsFromCatalogMock,
+  fetchWinRateHeatmapStatsFromCatalogMock,
+  getCachedDetailSectionResponseMock,
   getDatabaseTargetMock,
   getWeightClassStatsMock,
 } = vi.hoisted(() => ({
+  fetchConditionHistoryStatsFromCatalogMock: vi.fn<() => Promise<unknown>>(),
+  fetchHorseRaceResultsFromCatalogMock: vi.fn<() => Promise<unknown[] | null>>(),
   fetchRaceTrainingsFromCatalogMock: vi.fn<() => Promise<unknown[] | null>>(),
+  fetchWinRateHeatmapStatsFromCatalogMock:
+    vi.fn<(query: Record<string, unknown>) => Promise<unknown>>(),
+  getCachedDetailSectionResponseMock: vi.fn<() => Promise<Response | null>>(),
   getDatabaseTargetMock: vi.fn<() => "cloudflare" | "local" | "neon">(),
   getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getCarriedWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
@@ -110,8 +119,26 @@ vi.mock("../../../lib/race-time-stats-cache.server", () => ({
   getOrComputeRaceTimeStats: getRaceTimeStatsMock,
 }));
 
+vi.mock("../../../lib/condition-history-catalog.server", () => ({
+  fetchConditionHistoryStatsFromCatalog: fetchConditionHistoryStatsFromCatalogMock,
+}));
+
+vi.mock("../../../lib/horse-race-results-catalog.server", () => ({
+  fetchHorseRaceResultsFromCatalog: fetchHorseRaceResultsFromCatalogMock,
+}));
+
 vi.mock("../../../lib/race-training-catalog.server", () => ({
   fetchRaceTrainingsFromCatalog: fetchRaceTrainingsFromCatalogMock,
+}));
+
+vi.mock("../../../lib/win-rate-heatmap-catalog.server", () => ({
+  fetchWinRateHeatmapStatsFromCatalog: fetchWinRateHeatmapStatsFromCatalogMock,
+  groupCatalogBloodlineRows: (rows: unknown) => rows,
+  groupCatalogSimilarRows: (rows: unknown) => rows,
+}));
+
+vi.mock("../../../lib/race-detail-section-cache.server", () => ({
+  getCachedDetailSectionResponse: getCachedDetailSectionResponseMock,
 }));
 
 vi.mock("../../../lib/premium-data-top-cache.server", () => ({
@@ -296,8 +323,16 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 };
 
 beforeEach(() => {
+  fetchConditionHistoryStatsFromCatalogMock.mockReset();
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue(null);
+  fetchHorseRaceResultsFromCatalogMock.mockReset();
+  fetchHorseRaceResultsFromCatalogMock.mockResolvedValue(null);
   fetchRaceTrainingsFromCatalogMock.mockReset();
   fetchRaceTrainingsFromCatalogMock.mockResolvedValue(null);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockReset();
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue(null);
+  getCachedDetailSectionResponseMock.mockReset();
+  getCachedDetailSectionResponseMock.mockResolvedValue(null);
   getDatabaseTargetMock.mockReset();
   getDatabaseTargetMock.mockReturnValue("cloudflare");
   getBloodlineStatsMock.mockReset();
@@ -503,7 +538,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
-it("rejects a timed-out parallel domestic bloodline fallback", async () => {
+it("keeps the first similar bloodline rows when the bloodline fallback times out", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -553,7 +588,7 @@ it("rejects a timed-out parallel domestic bloodline fallback", async () => {
     });
     payloadPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(6_000);
-    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
+    await expect(payloadPromise).resolves.toMatchObject({ type: "similar" });
 
     expect(getBloodlineStatsMock.mock.calls.length).toBeGreaterThan(2);
   } finally {
@@ -561,7 +596,7 @@ it("rejects a timed-out parallel domestic bloodline fallback", async () => {
   }
 });
 
-it("rejects a timed-out similar fallback", async () => {
+it("keeps the first similar rows when the similar fallback times out", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -626,7 +661,10 @@ it("rejects a timed-out similar fallback", async () => {
     });
     payloadPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(6_000);
-    await expect(payloadPromise).rejects.toThrow("similar statistics fallback timed out");
+    await expect(payloadPromise).resolves.toMatchObject({
+      similarStatsIncomplete: true,
+      type: "similar",
+    });
   } finally {
     vi.useRealTimers();
   }
@@ -835,7 +873,7 @@ it("keeps legitimate zero person rows when fallback candidates are exhausted", a
   expect(payload).toMatchObject({ rows: zeroRows, similarStatsIncomplete: true });
 });
 
-it("rejects a timed-out time-score person fallback", async () => {
+it("keeps the first time-score person rows when the similar fallback times out", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -873,13 +911,16 @@ it("rejects a timed-out time-score person fallback", async () => {
     });
     payloadPromise.catch(() => undefined);
     await vi.runAllTimersAsync();
-    await expect(payloadPromise).rejects.toThrow("similar statistics fallback timed out");
+    await expect(payloadPromise).resolves.toMatchObject({
+      similarStatsIncomplete: true,
+      type: "time-score",
+    });
   } finally {
     vi.useRealTimers();
   }
 });
 
-it("rejects a timed-out standalone bloodline fallback", async () => {
+it("keeps the first bloodline rows when the standalone bloodline fallback times out", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -899,13 +940,16 @@ it("rejects a timed-out standalone bloodline fallback", async () => {
     });
     payloadPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(6_000);
-    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
+    await expect(payloadPromise).resolves.toMatchObject({
+      bloodlineStatsIncomplete: true,
+      type: "bloodline",
+    });
   } finally {
     vi.useRealTimers();
   }
 });
 
-it("rejects a timed-out time-score bloodline fallback", async () => {
+it("keeps the first time-score bloodline rows when the bloodline fallback times out", async () => {
   vi.useFakeTimers();
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -957,7 +1001,10 @@ it("rejects a timed-out time-score bloodline fallback", async () => {
     });
     payloadPromise.catch(() => undefined);
     await vi.runAllTimersAsync();
-    await expect(payloadPromise).rejects.toThrow("bloodline statistics fallback timed out");
+    await expect(payloadPromise).resolves.toMatchObject({
+      bloodlineStatsIncomplete: true,
+      type: "time-score",
+    });
   } finally {
     vi.useRealTimers();
   }
@@ -1965,7 +2012,385 @@ it("loads 斤量 class stats for non-ばんえい condition payloads", async () 
   expect(getCarriedWeightClassStatsMock).toHaveBeenCalledTimes(1);
 });
 
-it("returns null heatmap payload when time-score data is missing", async () => {
+it("falls back to live results when cached heatmap source JSON is invalid", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(new Response("not-json"))
+    .mockResolvedValueOnce(null);
+  getHorseRaceResultsMock.mockResolvedValue([{ umaban: "03" }]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getFinishPositionStatsMock.mockResolvedValue([]);
+  getFrameStatsMock.mockResolvedValue([]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([]);
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(payload).toMatchObject({
+    horseResults: [{ umaban: "03" }],
+    type: "win-rate-heatmap",
+  });
+  expect(getHorseRaceResultsMock).toHaveBeenCalledTimes(1);
+});
+
+it("reuses cached results and condition payloads for heatmap assembly", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        carriedWeightClassStats: [{ key: "55.5-57" }],
+        frameStats: [{ count: 1, frameNumber: "1" }],
+        type: "condition",
+        weightClassStats: [{ key: "480-499" }],
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    horseResults: [{ umaban: "01" }],
+    type: "win-rate-heatmap",
+    weightClassStats: [{ key: "480-499" }],
+  });
+  expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("keeps frameStats from condition payloads that omit weight class arrays", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        frameStats: [{ count: 8, frameNumber: "1", winRate: 12.5 }],
+        type: "condition",
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [{ count: 8, frameNumber: "1", winRate: 12.5 }],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("reuses cached condition payloads whose frameStats array is empty", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        frameStats: [],
+        type: "condition",
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("drops condition payloads that omit frameStats so heatmap frames stay empty", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        carriedWeightClassStats: [{ key: "55.5-57" }],
+        type: "condition",
+        weightClassStats: [{ key: "480-499" }],
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("keeps frameStats when carriedWeightClassStats is not an array", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        carriedWeightClassStats: "missing",
+        frameStats: [{ count: 1, frameNumber: "1" }],
+        type: "condition",
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [{ count: 1, frameNumber: "1" }],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("keeps frameStats when weightClassStats is not an array", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        frameStats: [{ count: 1, frameNumber: "1" }],
+        type: "condition",
+        weightClassStats: "missing",
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [{ count: 1, frameNumber: "1" }],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("defaults omitted carriedWeightClassStats and keeps present weightClassStats", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        frameStats: [{ count: 2, frameNumber: "3" }],
+        type: "condition",
+        weightClassStats: [{ key: "480-499" }],
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [{ count: 2, frameNumber: "3" }],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [{ key: "480-499" }],
+  });
+});
+
+it("defaults omitted weightClassStats and keeps present carriedWeightClassStats", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock
+    .mockResolvedValueOnce(Response.json({ results: [{ umaban: "01" }], type: "results" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        carriedWeightClassStats: [{ key: "55.5-57" }],
+        frameStats: [{ count: 2, frameNumber: "3" }],
+        type: "condition",
+      }),
+    );
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "22",
+    keibajoCode: "55",
+    month: "08",
+    query: {},
+    raceNumber: "10",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    frameStats: [{ count: 2, frameNumber: "3" }],
+    horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+});
+
+it("propagates Catalog heatmap failures instead of storing empty rates", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+  await expect(
+    getDetailSectionPayload("win-rate-heatmap", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
+});
+
+it("returns null heatmap payload when race detail is missing", async () => {
   getRaceDetailMock.mockResolvedValue(null);
   const payload = await getDetailSectionPayload("win-rate-heatmap", {
     day: "28",
@@ -1977,11 +2402,14 @@ it("returns null heatmap payload when time-score data is missing", async () => {
     year: "2025",
   });
   expect(payload).toBeNull();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).not.toHaveBeenCalled();
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
 });
 
-it("assembles heatmap payload from time-score, results, and condition sections", async () => {
+it("assembles heatmap payload from Catalog stats, results, and condition sections", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
-  getRaceRunnersMock.mockResolvedValue([]);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
   getTimeScoreRowsMock.mockResolvedValue([]);
   getRaceTimeStatsMock.mockResolvedValue({
     averageKohan3f: null,
@@ -1995,8 +2423,40 @@ it("assembles heatmap payload from time-score, results, and condition sections",
     raceCount: 1,
     targetRaces: [],
   });
-  getSimilarRaceStatsMock.mockResolvedValue([]);
-  getBloodlineStatsMock.mockResolvedValue([]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Sire",
+        quinellaCount: 1,
+        quinellaRate: 10,
+        showCount: 1,
+        showRate: 10,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Jockey",
+        quinellaCount: 1,
+        quinellaRate: 10,
+        showCount: 1,
+        showRate: 10,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+  });
   getHorseRaceResultsMock.mockResolvedValue([{ umaban: "01" }]);
   getFinishPositionStatsMock.mockResolvedValue([{ count: 1 }]);
   getFrameStatsMock.mockResolvedValue([{ count: 1, frameNumber: "1" }]);
@@ -2015,10 +2475,915 @@ it("assembles heatmap payload from time-score, results, and condition sections",
   });
 
   expect(payload).toMatchObject({
+    bloodlineRows: [{ details: [], name: "Sire" }],
     carriedWeightClassStats: [{ key: "55.5-57" }],
     frameStats: [{ count: 1, frameNumber: "1" }],
     horseResults: [{ umaban: "01" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [{ details: [], name: "Jockey" }],
     type: "win-rate-heatmap",
     weightClassStats: [{ key: "480-499" }],
   });
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(1);
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
+    day: "28",
+    includeDistance: true,
+    includeJockeyFrame: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "06",
+    month: "12",
+    raceNumber: "11",
+    source: "jra",
+    year: "2025",
+    years: 10,
+  });
+});
+
+it("sends the 10-year Catalog window when similar stats years are all", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getFinishPositionStatsMock.mockResolvedValue([]);
+  getFrameStatsMock.mockResolvedValue([]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+
+  await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: { statsYears: "all" },
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
+    day: "28",
+    includeDistance: true,
+    includeJockeyFrame: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "06",
+    month: "12",
+    raceNumber: "11",
+    source: "jra",
+    year: "2025",
+    years: 10,
+  });
+});
+
+it("keeps heatmap horse and condition stats when Catalog stats are unavailable", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [],
+  });
+  getHorseRaceResultsMock.mockResolvedValue([{ umaban: "02" }]);
+  getFinishPositionStatsMock.mockResolvedValue([{ count: 1 }]);
+  getFrameStatsMock.mockResolvedValue([{ count: 1, frameNumber: "1" }]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([{ key: "480-499" }]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([{ key: "55.5-57" }]);
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    bloodlineRows: [],
+    horseResults: [{ umaban: "02" }],
+    runners: [OVERSEAS_RUNNER],
+    similarRows: [],
+    type: "win-rate-heatmap",
+  });
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("similar payload uses Catalog rows with includeOwner and skips Neon stats", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "ディープインパクト",
+        quinellaCount: 4,
+        quinellaRate: 20,
+        showCount: 6,
+        showRate: 30,
+        starts: 20,
+        winCount: 2,
+        winRate: 10,
+      },
+    ],
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "ルメール",
+        quinellaCount: 3,
+        quinellaRate: 15,
+        showCount: 4,
+        showRate: 20,
+        starts: 20,
+        winCount: 2,
+        winRate: 10,
+      },
+      {
+        category: "owner",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "社台",
+        quinellaCount: 2,
+        quinellaRate: 10,
+        showCount: 3,
+        showRate: 15,
+        starts: 20,
+        winCount: 1,
+        winRate: 5,
+      },
+    ],
+  });
+
+  const payload = await getDetailSectionPayload("similar", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    bloodlineRows: [{ name: "ディープインパクト" }],
+    rows: [{ name: "ルメール" }, { name: "社台" }],
+    type: "similar",
+  });
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toMatchObject({
+    includeOwner: true,
+    keibajoCode: "06",
+    source: "jra",
+  });
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0] ?? {},
+      "includeJockeyFrame",
+    ),
+  ).toBe(false);
+});
+
+it("similar payload falls back to Neon when Catalog binding is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getSimilarRaceStatsMock.mockResolvedValue([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 20,
+      name: "Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock.mockResolvedValue([]);
+
+  const payload = await getDetailSectionPayload("similar", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "similar" });
+  expect(getSimilarRaceStatsMock).toHaveBeenCalled();
+  expect(getBloodlineStatsMock).toHaveBeenCalled();
+});
+
+it("similar payload marks incomplete Catalog coverage without the Neon relax fallback", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Uncomputed Jockey",
+        quinellaCount: 0,
+        quinellaRate: 0,
+        showCount: 0,
+        showRate: 0,
+        starts: 0,
+        winCount: 0,
+        winRate: 0,
+      },
+    ],
+  });
+
+  const payload = await getDetailSectionPayload("similar", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    similarStatsIncomplete: true,
+    type: "similar",
+  });
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("similar payload throws when Catalog returns HTTP 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+
+  await expect(
+    getDetailSectionPayload("similar", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("bloodline payload uses Catalog rows and skips Neon stats", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "ディープインパクト",
+        quinellaCount: 4,
+        quinellaRate: 20,
+        showCount: 6,
+        showRate: 30,
+        starts: 20,
+        winCount: 2,
+        winRate: 10,
+      },
+    ],
+    similarRows: [],
+  });
+
+  const payload = await getDetailSectionPayload("bloodline", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    rows: [{ name: "ディープインパクト" }],
+    type: "bloodline",
+  });
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toMatchObject({
+    keibajoCode: "06",
+    source: "jra",
+  });
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0] ?? {},
+      "includeOwner",
+    ),
+  ).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0] ?? {},
+      "includeJockeyFrame",
+    ),
+  ).toBe(false);
+});
+
+it("bloodline payload throws when Catalog returns HTTP 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+
+  await expect(
+    getDetailSectionPayload("bloodline", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("results payload uses Catalog rows and skips Neon history", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchHorseRaceResultsFromCatalogMock.mockResolvedValue([{ umaban: "07" }]);
+
+  const payload = await getDetailSectionPayload("results", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    results: [{ umaban: "07" }],
+    type: "results",
+  });
+  expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
+});
+
+it("results payload falls back to Neon when Catalog binding is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getHorseRaceResultsMock.mockResolvedValue([{ umaban: "03" }]);
+
+  const payload = await getDetailSectionPayload("results", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    results: [{ umaban: "03" }],
+    type: "results",
+  });
+  expect(getHorseRaceResultsMock).toHaveBeenCalledOnce();
+});
+
+it("results payload throws when Catalog returns HTTP 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchHorseRaceResultsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog horse race results failed: 502"),
+  );
+
+  await expect(
+    getDetailSectionPayload("results", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog horse race results failed: 502");
+  expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
+});
+
+it("condition payload uses Catalog stats, empties payouts, and skips Neon", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    finishPositionStats: [{ count: 2, details: [], finishPosition: 1 }],
+    frameStats: [{ count: 8, details: [], frameNumber: "1" }],
+    raceTimeStats: {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [{ horseNumber: "1", score: 0.7 }],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 12,
+      targetRaces: [],
+    },
+    weightClassStats: [{ key: "480-499" }],
+  });
+
+  const payload = await getDetailSectionPayload("condition", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    finishPositionStats: [{ finishPosition: 1 }],
+    frameStats: [{ frameNumber: "1" }],
+    payoutStats: [],
+    type: "condition",
+    weightClassStats: [{ key: "480-499" }],
+  });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+  expect(getPayoutStatsMock).not.toHaveBeenCalled();
+  expect(getFinishPositionStatsMock).not.toHaveBeenCalled();
+  expect(getWeightClassStatsMock).not.toHaveBeenCalled();
+  expect(getCarriedWeightClassStatsMock).not.toHaveBeenCalled();
+  expect(getRaceTimeStatsMock).not.toHaveBeenCalled();
+});
+
+it("condition payload keeps Ban'ei carried weights empty when Catalog succeeds", async () => {
+  getRaceDetailMock.mockResolvedValue(BAN_EI_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    carriedWeightClassStats: [{ key: "le49" }],
+    finishPositionStats: [],
+    frameStats: [],
+    raceTimeStats: {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 0,
+      targetRaces: [],
+    },
+    weightClassStats: [],
+  });
+
+  const payload = await getDetailSectionPayload("condition", {
+    day: "30",
+    keibajoCode: "83",
+    month: "05",
+    query: {},
+    raceNumber: "11",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [],
+    type: "condition",
+  });
+  expect(getCarriedWeightClassStatsMock).not.toHaveBeenCalled();
+});
+
+it("condition payload throws when Catalog returns HTTP 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog condition history stats failed: 502"),
+  );
+
+  await expect(
+    getDetailSectionPayload("condition", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog condition history stats failed: 502");
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("time-score payload uses Catalog similar/bloodline and Catalog raceTimeStats", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getTimeScoreRowsMock.mockResolvedValue([
+    { horseName: "A", horseNumber: "1", jockeyName: "J", score: 0.8, details: [] },
+  ]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Sire",
+        quinellaCount: 1,
+        quinellaRate: 10,
+        showCount: 1,
+        showRate: 10,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Jockey",
+        quinellaCount: 1,
+        quinellaRate: 10,
+        showCount: 1,
+        showRate: 10,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+  });
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    carriedWeightClassStats: [],
+    finishPositionStats: [],
+    frameStats: [],
+    raceTimeStats: {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [{ horseName: "A", horseNumber: "1", score: 0.6, details: [] }],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 4,
+      targetRaces: [],
+    },
+    weightClassStats: [],
+  });
+
+  const payload = await getDetailSectionPayload("time-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    bloodlineRows: [{ name: "Sire" }],
+    correlationRows: [{ horseNumber: "1", score: 0.6 }],
+    similarRows: [{ name: "Jockey" }],
+    type: "time-score",
+  });
+  expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+  expect(getRaceTimeStatsMock).not.toHaveBeenCalled();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toMatchObject({
+    includeOwner: true,
+  });
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0] ?? {},
+      "includeJockeyFrame",
+    ),
+  ).toBe(false);
+});
+
+it("time-score payload uses Neon race time stats when Catalog correlationRows are empty", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    carriedWeightClassStats: [],
+    finishPositionStats: [],
+    frameStats: [],
+    raceTimeStats: {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 0,
+      targetRaces: [],
+    },
+    weightClassStats: [],
+  });
+  getRaceTimeStatsMock.mockResolvedValue({
+    correlationRows: [{ horseNumber: "1", score: 0.4 }],
+  });
+
+  const payload = await getDetailSectionPayload("time-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    correlationRows: [{ horseNumber: "1", score: 0.4 }],
+    type: "time-score",
+  });
+  expect(getRaceTimeStatsMock).toHaveBeenCalledOnce();
+});
+
+it("overall-score payload composes cached time-score with Catalog bloodline", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "Sire",
+        quinellaCount: 4,
+        quinellaRate: 20,
+        showCount: 6,
+        showRate: 30,
+        starts: 20,
+        winCount: 2,
+        winRate: 10,
+      },
+    ],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock.mockResolvedValue(
+    Response.json({
+      correlationRows: [{ horseNumber: "1", horseName: "A", score: 0.7, details: [] }],
+      rows: [{ horseNumber: "1", horseName: "A", jockeyName: "J", score: 0.8, details: [] }],
+      type: "time-score",
+    }),
+  );
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getTimeScoreRowsMock).not.toHaveBeenCalled();
+  expect(getRaceTimeStatsMock).not.toHaveBeenCalled();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("overall-score payload falls back to Neon bloodline when Catalog binding is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getBloodlineStatsMock.mockResolvedValue([]);
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({ correlationRows: [] });
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+});
+
+it("overall-score payload uses Catalog raceTimeStats when time-score cache is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    carriedWeightClassStats: [],
+    finishPositionStats: [],
+    frameStats: [],
+    raceTimeStats: {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [{ horseNumber: "1", horseName: "A", score: 0.55, details: [] }],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 3,
+      targetRaces: [],
+    },
+    weightClassStats: [],
+  });
+  getTimeScoreRowsMock.mockResolvedValue([
+    { horseName: "A", horseNumber: "1", jockeyName: "J", score: 0.5, details: [] },
+  ]);
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getTimeScoreRowsMock).toHaveBeenCalledOnce();
+  expect(getRaceTimeStatsMock).not.toHaveBeenCalled();
+});
+
+it("overall-score payload uses Neon time rows when time-score cache is missing", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getTimeScoreRowsMock.mockResolvedValue([
+    { horseName: "A", horseNumber: "1", jockeyName: "J", score: 0.5, details: [] },
+  ]);
+  getRaceTimeStatsMock.mockResolvedValue({ correlationRows: [] });
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getTimeScoreRowsMock).toHaveBeenCalledOnce();
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
+it("overall-score payload ignores invalid cached time-score JSON and uses Neon time rows", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock.mockResolvedValue(Response.json({ type: "results" }));
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({ correlationRows: [] });
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getTimeScoreRowsMock).toHaveBeenCalledOnce();
+});
+
+it("overall-score payload ignores unreadable cached time-score JSON and uses Neon time rows", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    similarRows: [],
+  });
+  getCachedDetailSectionResponseMock.mockResolvedValue(new Response("not-json"));
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({ correlationRows: [] });
+
+  const payload = await getDetailSectionPayload("overall-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(getTimeScoreRowsMock).toHaveBeenCalledOnce();
+});
+
+it("overall-score payload throws when Catalog returns HTTP 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+
+  await expect(
+    getDetailSectionPayload("overall-score", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
 });

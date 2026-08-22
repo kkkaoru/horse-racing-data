@@ -1,5 +1,5 @@
 // bun で実行する (bunx vitest)
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -15,6 +15,10 @@ import type {
   Runner,
   SimilarRaceStatsRow,
 } from "../../../lib/race-types";
+import {
+  loadHeatmapShowStartsForCurrentUser,
+  persistHeatmapShowStartsForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
 import { useRealtimeRacePayload } from "./realtime-client";
 import { WinRateHeatmapSection } from "./win-rate-heatmap-section";
 
@@ -28,6 +32,13 @@ vi.mock("./realtime-client", () => ({
   useRealtimeRacePayload: vi.fn<
     () => { error: string | null; payload: RealtimeRacePayload | null }
   >(() => ({ error: null, payload: null })),
+}));
+
+vi.mock("../../../lib/user-preferences-indexeddb", () => ({
+  loadHeatmapShowStartsForCurrentUser: vi.fn<() => Promise<boolean>>(async () => false),
+  persistHeatmapShowStartsForCurrentUser: vi.fn<(showStarts: boolean) => Promise<void>>(
+    async () => undefined,
+  ),
 }));
 
 interface MockMediaQueryEvent {
@@ -79,6 +90,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(useHorseWeightStream).mockReturnValue(null);
   vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockReset();
+  vi.mocked(persistHeatmapShowStartsForCurrentUser).mockReset();
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockResolvedValue(false);
+  vi.mocked(persistHeatmapShowStartsForCurrentUser).mockResolvedValue(undefined);
 });
 
 const heatmapRealtimeRequest = {
@@ -160,6 +175,21 @@ const similarTrainer: SimilarRaceStatsRow = {
   showRate: 20,
   starts: 50,
   winCount: 5,
+  winRate: 10,
+};
+
+const similarJockeyFrame: SimilarRaceStatsRow = {
+  category: "jockeyFrame",
+  currentHorseNumbers: "1",
+  details: [],
+  horseCount: 0,
+  name: "Jockey A",
+  quinellaCount: 8,
+  quinellaRate: 20,
+  showCount: 12,
+  showRate: 30,
+  starts: 40,
+  winCount: 4,
   winRate: 10,
 };
 
@@ -245,6 +275,86 @@ const horsePastWin: HorseRaceResult = {
   zogenSa: null,
 };
 
+it("shows only 父 and 母父 bloodline columns and a 20 percent win scale for ばんえい", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="83"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "22",
+        keibajoCode: "83",
+        month: "08",
+        raceNumber: "12",
+        source: "nar",
+        year: "2026",
+      }}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  expect(screen.getByText("父")).toBeDefined();
+  expect(screen.getByText("母父")).toBeDefined();
+  expect(screen.queryByText("父父")).toBeNull();
+  expect(screen.queryByText("父母父")).toBeNull();
+  expect(screen.queryByText("父父父")).toBeNull();
+  expect(screen.queryByText("母父父")).toBeNull();
+  expect(screen.queryByText("母母父")).toBeNull();
+  expect(screen.queryByText("斤量")).toBeNull();
+  expect(screen.getByText("20%以上")).toBeDefined();
+  expect(screen.queryByText("40%以上")).toBeNull();
+  expect(screen.queryByText("80%以上")).toBeNull();
+  expect(screen.queryByText("0%")).toBeNull();
+  expect(screen.queryByText("5%")).toBeNull();
+  expect(screen.getByText("10%")).toBeDefined();
+  expect(screen.getByText("12.5%")).toBeDefined();
+  expect(screen.getByText("15%")).toBeDefined();
+  expect(screen.getByText("17.5%")).toBeDefined();
+  expect(
+    screen.getByRole("figure", { name: "勝率の色は10%から20%以上まで濃くなります" }),
+  ).toBeDefined();
+});
+
+it("shows per-metric ばんえい color-scale tracks in combined view", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="83"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "22",
+        keibajoCode: "83",
+        month: "08",
+        raceNumber: "12",
+        source: "nar",
+        year: "2026",
+      }}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-color-scale-track-label")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["勝", "連", "複"]);
+  expect(screen.getByText("20%以上")).toBeDefined();
+  expect(screen.getByText("30%以上")).toBeDefined();
+  expect(screen.getByText("45%以上")).toBeDefined();
+  expect(screen.getByText("12.5%")).toBeDefined();
+  expect(screen.queryByText("50%以上")).toBeNull();
+  expect(
+    screen.getByRole("figure", {
+      name: "勝率は10%から20%以上、連対率は16%から30%以上、複勝率は20%から45%以上まで濃くなります",
+    }),
+  ).toBeDefined();
+});
+
 it("shows an empty state when there are no runners", () => {
   render(
     <WinRateHeatmapSection
@@ -279,22 +389,36 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.queryByText("馬体重")).toBeNull();
   expect(screen.getByText("斤量")).toBeDefined();
   expect(screen.getByText("馬")).toBeDefined();
+  expect(screen.getByText("騎手枠別")).toBeDefined();
   expect(screen.getByText("騎手")).toBeDefined();
   expect(screen.getByText("調教師")).toBeDefined();
   expect(screen.getByText("父")).toBeDefined();
   expect(screen.getByText("母父")).toBeDefined();
   expect(screen.getByText("父父")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(8);
+  expect(screen.getByText("父母父")).toBeDefined();
+  expect(screen.getByText("父父父")).toBeDefined();
+  expect(screen.getByText("母父父")).toBeDefined();
+  expect(screen.getByText("母母父")).toBeDefined();
+  expect(screen.getByText("40%以上")).toBeDefined();
+  expect(screen.getAllByText("勝").length).toBe(13);
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
-  expect(screen.getByText("20.0%")).toBeDefined();
-  expect(screen.getByText("10.0%")).toBeDefined();
-  expect(screen.getByText("12.0%")).toBeDefined();
-  expect(screen.getByText("15.0%")).toBeDefined();
+  expect(screen.getByText("20.0")).toBeDefined();
+  expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")?.textContent).toBe("%");
+  expect(screen.getByText("10.0")).toBeDefined();
+  expect(screen.getByText("12.0")).toBeDefined();
+  expect(screen.getByText("15.0")).toBeDefined();
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.className).toBe(
+    "win-rate-heatmap-swatch-value",
+  );
   expect(screen.getByRole("checkbox", { name: "レース数" })).toBeDefined();
   expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", false);
-  expect(screen.queryByText("(80)")).toBeNull();
-  expect(screen.queryByText("(40)")).toBeNull();
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")).toBeNull();
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-tooltip-starts")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["(40)", "(80)", "(50)", "(200)"]);
   expect(screen.queryByText("25.0%")).toBeNull();
   expect(screen.queryByText("37.5%")).toBeNull();
   expect(screen.queryByText("16.0%")).toBeNull();
@@ -320,6 +444,9 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(tableWrap?.contains(viewToggle)).toBe(false);
   expect(tableWrap?.querySelector(".win-rate-heatmap-table") instanceof HTMLTableElement).toBe(
     true,
+  );
+  expect(tableWrap?.querySelector(".win-rate-heatmap-table")?.className).toBe(
+    "stats-table win-rate-heatmap-table",
   );
   expect(document.querySelector(".running-style-bucket-controls")).toBeNull();
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", true);
@@ -374,10 +501,10 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
     "checked",
     false,
   );
-  expect(screen.getAllByText("連").length).toBe(8);
+  expect(screen.getAllByText("連").length).toBe(13);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
-  expect(screen.getByText("30.0%")).toBeDefined();
+  expect(screen.getByText("30.0")).toBeDefined();
   expect(screen.queryByText("15.0%")).toBeNull();
   expect(screen.queryByText("45.0%")).toBeNull();
   expect(
@@ -412,10 +539,10 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
     "checked",
     false,
   );
-  expect(screen.getAllByText("複").length).toBe(8);
+  expect(screen.getAllByText("複").length).toBe(13);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("連")).toBeNull();
-  expect(screen.getByText("45.0%")).toBeDefined();
+  expect(screen.getByText("45.0")).toBeDefined();
   expect(screen.queryByText("15.0%")).toBeNull();
   expect(
     screen.getByRole("figure", { name: "複勝率の色は0%から40%以上まで濃くなります" }),
@@ -446,12 +573,14 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(8);
-  expect(screen.getAllByText("連").length).toBe(8);
-  expect(screen.getAllByText("複").length).toBe(8);
+  expect(screen.getAllByText("勝").length).toBe(13);
+  expect(screen.getAllByText("連").length).toBe(13);
+  expect(screen.getAllByText("複").length).toBe(13);
   expect(screen.getByText("15.0")).toBeDefined();
   expect(screen.getAllByText("30.0").length).toBe(2);
   expect(screen.getByText("45.0")).toBeDefined();
+  expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")).toBeNull();
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.textContent).toBe("15.0");
   expect(screen.queryByText("15.0%")).toBeNull();
   expect(screen.queryByText("30.0%")).toBeNull();
   expect(screen.queryByText("45.0%")).toBeNull();
@@ -462,6 +591,9 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   ).toBeDefined();
   expect(document.querySelector(".win-rate-heatmap-color-scale")?.className).toBe(
     "win-rate-heatmap-color-scale",
+  );
+  expect(document.querySelector(".win-rate-heatmap-table")?.className).toBe(
+    "stats-table win-rate-heatmap-table win-rate-heatmap-table-combined",
   );
   expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(1);
   const combinedScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
@@ -487,9 +619,12 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(combinedWinSwatch.style.backgroundColor).toBe("hsl(272, 49%, 71%)");
   expect(combinedQuinellaSwatch.style.backgroundColor).toBe("hsl(272, 77%, 45%)");
   expect(combinedShowSwatch.style.backgroundColor).toBe("hsl(272, 95%, 28%)");
+  expect(combinedWinSwatch.style.color).toBe("var(--ink)");
+  expect(combinedQuinellaSwatch.style.color).toBe("var(--surface)");
+  expect(combinedShowSwatch.style.color).toBe("var(--surface)");
 });
 
-it("writes a compact zero without a decimal in the combined heatmap cells", () => {
+it("writes a zero rate with one decimal in the combined heatmap cells", () => {
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
@@ -512,12 +647,42 @@ it("writes a compact zero without a decimal in the combined heatmap cells", () =
     />,
   );
   fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
-  expect(screen.getAllByText("0").length).toBe(3);
-  expect(screen.queryByText("0.0%")).toBeNull();
-  expect(screen.queryByText("0.0")).toBeNull();
+  expect(screen.getAllByText("0.0").length).toBe(3);
+  expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")).toBeNull();
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.textContent).toBe("0.0");
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.className).toBe(
+    "win-rate-heatmap-swatch-value win-rate-heatmap-swatch-zero",
+  );
 });
 
-it("truncates three-digit combined heatmap values to an integer", () => {
+it("writes 4-digit start counts with parentheses in the combined heatmap", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[
+        {
+          ...similarJockey,
+          starts: 1234,
+        },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")).toBeNull();
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-swatch-starts")].map(
+      (element) => element.textContent,
+    ),
+  ).toStrictEqual(["(1234)", "(1234)", "(1234)"]);
+});
+
+it("keeps three-digit combined heatmap values at one decimal place", () => {
   render(
     <WinRateHeatmapSection
       bloodlineRows={[]}
@@ -540,10 +705,8 @@ it("truncates three-digit combined heatmap values to an integer", () => {
     />,
   );
   fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
-  expect(screen.getAllByText("100").length).toBe(3);
-  expect(screen.queryByText("100.0")).toBeNull();
-  expect(screen.queryByText("100.0%")).toBeNull();
-  expect(screen.queryByText("100.9")).toBeNull();
+  expect(screen.getAllByText("100.0").length).toBe(2);
+  expect(screen.getByText("100.9")).toBeDefined();
 });
 
 it("shows computed frame win rate when the payload omits rate fields but includes counts", () => {
@@ -558,7 +721,7 @@ it("shows computed frame win rate when the payload omits rate fields but include
       similarRows={[]}
     />,
   );
-  expect(screen.getByText("15.0%")).toBeDefined();
+  expect(screen.getByText("15.0")).toBeDefined();
 });
 
 it("renders a dash instead of throwing when frame win rate is not a finite number", () => {
@@ -589,6 +752,26 @@ it("renders a dash instead of throwing when frame win rate is not a finite numbe
   ).toBeDefined();
 });
 
+it("adds the scheduled frame badge to the 騎手枠別 tooltip next to the jockey name", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarJockeyFrame]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "騎手枠別 1 Jockey A (40)" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "騎手 Jockey A (80)" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "枠 1 (40)" })).toBeDefined();
+  expect(
+    document.querySelectorAll(".win-rate-heatmap-tooltip .frame-number-badge.frame-1").length,
+  ).toBe(2);
+});
+
 it("shows missing frame rates as dashes when no matching frame row exists", () => {
   render(
     <WinRateHeatmapSection
@@ -604,7 +787,7 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
   expect(
     document.querySelector(".win-rate-heatmap-tooltip .frame-number-badge.frame-1"),
   ).toBeDefined();
-  expect(screen.getAllByRole("tooltip").length).toBe(8);
+  expect(screen.getAllByRole("tooltip").length).toBe(13);
 });
 
 it("does not pin a heatmap tooltip on click in desktop view", () => {
@@ -851,7 +1034,7 @@ it("subscribes with addListener when addEventListener is missing", () => {
   expect(listeners.size).toBe(0);
 });
 
-it("shows heatmap start counts in the tooltip when the レース数 checkbox is checked", () => {
+it("shows heatmap start counts on cells when the レース数 checkbox is checked", async () => {
   render(
     <WinRateHeatmapSection
       bloodlineRows={[bloodlineSire]}
@@ -865,11 +1048,229 @@ it("shows heatmap start counts in the tooltip when the レース数 checkbox is 
   );
   fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
   expect(document.querySelector(".win-rate-heatmap-swatch-value")?.textContent).toBe("15.0%");
+  await waitFor(() => {
+    expect(vi.mocked(persistHeatmapShowStartsForCurrentUser).mock.calls).toStrictEqual([[true]]);
+  });
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.className).toBe(
+    "win-rate-heatmap-swatch-starts",
+  );
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-swatch-starts")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["(40)", "(80)", "(50)", "(200)"]);
   expect(
     [...document.querySelectorAll(".win-rate-heatmap-tooltip-starts")].map(
       (node) => node.textContent,
     ),
   ).toStrictEqual(["(40)", "(80)", "(50)", "(200)"]);
+});
+
+it("restores the レース数 checkbox from the current user preference", async () => {
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockResolvedValue(true);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  await waitFor(() => {
+    expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", true);
+  });
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-swatch-starts")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["(40)", "(80)", "(50)", "(200)"]);
+});
+
+it("keeps the レース数 checkbox off when preference load fails", async () => {
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockRejectedValue(new Error("idb unavailable"));
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", false);
+});
+
+it("keeps a レース数 toggle made before preference load finishes", async () => {
+  const load: { resolve: (value: boolean) => void } = {
+    resolve: (_value: boolean) => undefined,
+  };
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        load.resolve = resolve;
+      }),
+  );
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", true);
+  load.resolve(false);
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", true);
+});
+
+it("keeps the レース数 checkbox on after a persist failure", async () => {
+  vi.mocked(persistHeatmapShowStartsForCurrentUser).mockRejectedValue(
+    new Error("idb write failed"),
+  );
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", true);
+});
+
+it("does not apply a heatmap preference after the section unmounts", async () => {
+  const load: { resolve: (value: boolean) => void } = {
+    resolve: (_value: boolean) => undefined,
+  };
+  vi.mocked(loadHeatmapShowStartsForCurrentUser).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        load.resolve = resolve;
+      }),
+  );
+  const view = render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  view.unmount();
+  load.resolve(true);
+  await act(async () => undefined);
+  expect(vi.mocked(persistHeatmapShowStartsForCurrentUser).mock.calls).toStrictEqual([]);
+});
+
+it("fades 0.0% cell text so the heatmap color remains visible", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[
+        {
+          ...frameOne,
+          quinellaCount: 0,
+          quinellaRate: 0,
+          showCount: 0,
+          showRate: 0,
+          winCount: 0,
+          winRate: 0,
+        },
+      ]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.textContent).toBe("0.0%");
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.className).toBe(
+    "win-rate-heatmap-swatch-value win-rate-heatmap-swatch-zero",
+  );
+});
+
+it("fades a (0) start count on the heatmap even when the rate is not zero", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[
+        {
+          ...similarJockey,
+          quinellaCount: 0,
+          quinellaRate: 12.5,
+          showCount: 0,
+          showRate: 12.5,
+          starts: 0,
+          winCount: 0,
+          winRate: 12.5,
+        },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  expect(screen.getByText("12.5").className).toBe("win-rate-heatmap-swatch-value");
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.textContent).toBe("(0)");
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.className).toBe(
+    "win-rate-heatmap-swatch-starts win-rate-heatmap-swatch-zero",
+  );
+});
+
+it("fades zero rates and zero start counts on combined heatmap cells", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[
+        {
+          ...frameOne,
+          quinellaCount: 0,
+          quinellaRate: 0,
+          showCount: 0,
+          showRate: 0,
+          winCount: 0,
+          winRate: 0,
+        },
+      ]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "勝率+連対率+複勝率" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "レース数" }));
+  expect(document.querySelector(".win-rate-heatmap-swatch-value")?.className).toBe(
+    "win-rate-heatmap-swatch-value win-rate-heatmap-swatch-zero",
+  );
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.className).toBe(
+    "win-rate-heatmap-swatch-starts win-rate-heatmap-swatch-zero",
+  );
+  expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.textContent).toBe("(40)");
 });
 
 it("hides the 斤量 column for ばんえい races", () => {
@@ -893,6 +1294,7 @@ it("hides the 斤量 column for ばんえい races", () => {
     />,
   );
   expect(screen.queryByText("斤量")).toBeNull();
+  expect(screen.getByText("騎手枠別")).toBeDefined();
   expect(screen.getAllByText("勝").length).toBe(7);
 });
 
@@ -917,7 +1319,7 @@ it("hides the horse-weight column for overseas races even when a runner has a we
     />,
   );
   expect(screen.queryByText("馬体重")).toBeNull();
-  expect(screen.getAllByText("勝").length).toBe(7);
+  expect(screen.getAllByText("勝").length).toBe(12);
 });
 
 it("shows the horse-weight column after 枠 when a domestic runner has a published weight", () => {
@@ -934,8 +1336,8 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
   );
   expect(screen.getByText("馬体重")).toBeDefined();
   expect(screen.getByText("斤量")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(9);
-  expect(screen.getAllByText("100.0%").length).toBe(3);
+  expect(screen.getAllByText("勝").length).toBe(14);
+  expect(screen.getAllByText("100.0").length).toBe(3);
   expect(screen.getByText("480-499kg")).toBeDefined();
   expect(screen.getByText("55.5kg以上57kg以下")).toBeDefined();
   const headings = [...document.querySelectorAll("thead tr:first-child th")].map(
@@ -947,15 +1349,20 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     "馬体重",
     "斤量",
     "馬",
+    "騎手枠別",
     "騎手",
     "調教師",
     "父",
     "母父",
     "父父",
+    "父母父",
+    "父父父",
+    "母父父",
+    "母母父",
   ]);
 });
 
-it("points the last-row heatmap tooltip up and leaves earlier rows pointing down", () => {
+it("points the last two heatmap rows' tooltips up and leaves earlier rows pointing down", () => {
   installMatchMediaMock(true);
   render(
     <WinRateHeatmapSection
@@ -964,19 +1371,30 @@ it("points the last-row heatmap tooltip up and leaves earlier rows pointing down
       horseResults={[]}
       keibajoCode="05"
       realtimeRequest={heatmapRealtimeRequest}
-      runners={[runner, { ...runner, bamei: "Beta", kettoTorokuBango: "2020100002", umaban: "02" }]}
+      runners={[
+        runner,
+        { ...runner, bamei: "Beta", kettoTorokuBango: "2020100002", umaban: "02" },
+        { ...runner, bamei: "Gamma", kettoTorokuBango: "2020100003", umaban: "03" },
+      ]}
       similarRows={[]}
     />,
   );
   const firstRowSwatch = document.querySelector("tbody tr:first-child td.win-rate-heatmap-swatch");
+  const secondRowSwatch = document.querySelector(
+    "tbody tr:nth-child(2) td.win-rate-heatmap-swatch",
+  );
   const lastRowSwatch = document.querySelector("tbody tr:last-child td.win-rate-heatmap-swatch");
   if (!(firstRowSwatch instanceof HTMLTableCellElement)) {
     throw new Error("expected first-row heatmap swatch");
+  }
+  if (!(secondRowSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected second-row heatmap swatch");
   }
   if (!(lastRowSwatch instanceof HTMLTableCellElement)) {
     throw new Error("expected last-row heatmap swatch");
   }
   expect(firstRowSwatch.className).toBe("win-rate-heatmap-swatch");
+  expect(secondRowSwatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
   expect(lastRowSwatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
   const firstRowButton = firstRowSwatch.querySelector(".win-rate-heatmap-swatch-button");
   if (!(firstRowButton instanceof HTMLButtonElement)) {
@@ -1049,6 +1467,52 @@ it("shows similar-race weight-class rates for a blank NAR bataiju plus live kilo
   );
   expect(screen.getByText("馬体重")).toBeDefined();
   expect(screen.getByText("440-459kg")).toBeDefined();
-  expect(screen.getAllByText("15.0%").length).toBe(2);
-  expect(screen.queryByText("0.0%")).toBeNull();
+  expect(screen.getAllByText("15.0").length).toBe(2);
+  expect(screen.queryByText("0.0")).toBeNull();
+});
+it("adds a left-flipped tooltip class on the last heatmap column cells", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  const swatches = document.querySelectorAll(".win-rate-heatmap-swatch");
+  const lastSwatch = swatches[swatches.length - 1];
+  const firstSwatch = swatches[0];
+  if (!(lastSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected last heatmap swatch");
+  }
+  if (!(firstSwatch instanceof HTMLTableCellElement)) {
+    throw new Error("expected first heatmap swatch");
+  }
+  expect(lastSwatch.className).toBe(
+    "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above win-rate-heatmap-tooltip-left",
+  );
+  expect(firstSwatch.className).toBe("win-rate-heatmap-swatch win-rate-heatmap-tooltip-above");
+});
+
+it("renders a percent suffix span that mobile CSS can hide independently", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  const valueNodes = document.querySelectorAll(".win-rate-heatmap-swatch-value");
+  const numericValueCount = [...valueNodes].filter((node) => node.textContent !== "-").length;
+  expect(document.querySelectorAll(".win-rate-heatmap-swatch-value-suffix").length).toBe(
+    numericValueCount,
+  );
+  expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")?.textContent).toBe("%");
 });

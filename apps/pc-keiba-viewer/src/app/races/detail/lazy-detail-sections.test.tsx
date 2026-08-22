@@ -212,8 +212,12 @@ vi.mock("./ability-test-table", () => ({
 }));
 
 vi.mock("./race-condition-analysis-section", () => ({
-  RaceConditionAnalysisSection: () => (
-    <div data-testid="race-condition-analysis-stub">condition</div>
+  RaceConditionAnalysisSection: ({ afterTargetRaces }: { afterTargetRaces?: React.ReactNode }) => (
+    <>
+      <h3>対象レース一覧</h3>
+      {afterTargetRaces === undefined ? null : afterTargetRaces}
+      <div data-testid="race-condition-analysis-stub">condition</div>
+    </>
   ),
 }));
 
@@ -290,13 +294,21 @@ test("LazyDetailSections renders the results chart section directly below the re
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "同条件レース分析"]);
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("win-rate-heatmap-stub").textContent).toStrictEqual("heatmap");
   });
   const resultsStub = screen.getByTestId("horse-race-results-table-stub");
   const heatmapStub = screen.getByTestId("win-rate-heatmap-stub");
   const chartStub = screen.getByTestId("horse-race-results-chart-stub");
   expect(resultsStub.compareDocumentPosition(chartStub)).toStrictEqual(4);
   expect(chartStub.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
+  const conditionHeading = screen.getByRole("heading", { name: "同条件レース分析" });
+  const targetRaceHeading = screen.getByRole("heading", { name: "対象レース一覧" });
+  expect(conditionHeading.compareDocumentPosition(targetRaceHeading)).toStrictEqual(4);
+  expect(targetRaceHeading.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
+  expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
   expect(heatmapStub.getAttribute("data-horse-results")).toStrictEqual("0");
   expect(heatmapStub.getAttribute("data-frame-stats")).toStrictEqual("1");
   expect(chartStub.getAttribute("data-runners-passed")).toStrictEqual("present");
@@ -395,7 +407,7 @@ test("LazyDetailSections renders a chart section error when the results fetch fa
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "同条件レース分析"]);
   });
 });
 
@@ -477,6 +489,122 @@ test("LazyDetailSections renders a chart section error when the results payload 
   await waitFor(() => {
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
-    ).toStrictEqual(["競走成績", "競走成績グラフ", "勝率ヒートマップ", "同条件レース分析"]);
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "同条件レース分析"]);
   });
+});
+
+test("LazyDetailSections renders training before heatmap and heatmap immediately above condition analysis", async () => {
+  installMatchMediaMockTimeScore(false);
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url.endsWith("/sections/results")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            classConditionName: null,
+            currentDistance: null,
+            currentKeibajoCode: "05",
+            currentRaceDate: "20270601",
+            currentTrackCode: null,
+            defaultIncludeClass: false,
+            results: [],
+            runners: [],
+            source: "jra",
+            sourceScope: "all",
+            type: "results",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/sections/training")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sourceLabel: "src",
+            stableComments: [
+              {
+                commentText: "好調",
+                evaluationGrade: 1,
+                evaluationText: "好調",
+                fetchedAt: "2027-06-14T00:00:00.000Z",
+                frameNumber: "1",
+                horseName: "テストホース",
+                horseNumber: "01",
+              },
+            ],
+            trainings: [{ bamei: "テストホース", umaban: "01" }],
+            type: "training",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/sections/condition")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ type: "condition" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    if (url.endsWith("/sections/win-rate-heatmap")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [{ frameNumber: "1" }],
+            horseResults: [],
+            runners: [],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="14"
+        keibajoCode="05"
+        month="06"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2027"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("training-table-stub").textContent).toStrictEqual("training");
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
+    ).toStrictEqual(["競走成績", "競走成績グラフ", "調教・追い切り", "同条件レース分析"]);
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("win-rate-heatmap-stub").textContent).toStrictEqual("heatmap");
+  });
+  expect(screen.getByRole("heading", { name: "厩舎コメント" }).tagName).toBe("H3");
+  expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
+  const trainingHeading = screen.getByRole("heading", { name: "調教・追い切り" });
+  const stableHeading = screen.getByRole("heading", { name: "厩舎コメント" });
+  const targetRaceHeading = screen.getByRole("heading", { name: "対象レース一覧" });
+  const heatmapStub = screen.getByTestId("win-rate-heatmap-stub");
+  const conditionHeading = screen.getByRole("heading", { name: "同条件レース分析" });
+  expect(trainingHeading.compareDocumentPosition(stableHeading)).toStrictEqual(4);
+  expect(stableHeading.compareDocumentPosition(conditionHeading)).toStrictEqual(4);
+  expect(conditionHeading.compareDocumentPosition(targetRaceHeading)).toStrictEqual(4);
+  expect(targetRaceHeading.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
 });

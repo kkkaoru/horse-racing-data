@@ -100,7 +100,7 @@ it("deletes a corrupt Cache API heatmap entry and falls through to KV", async ()
   expect(cache.delete).toHaveBeenCalledTimes(1);
   expect(cache.put).toHaveBeenCalledTimes(1);
   const stored = cache.put.mock.calls[0]?.[1];
-  expect(stored?.headers.get("Cache-Control")).toBe("public, max-age=172800");
+  expect(stored?.headers.get("Cache-Control")).toBe("public, max-age=129600");
 });
 
 it("rejects a Cache API heatmap body that is not the section payload", async () => {
@@ -167,7 +167,26 @@ it("returns null when both Cache API and KV miss", async () => {
   await expect(getCachedWinRateHeatmapPayload("heatmap-key")).resolves.toBe(null);
 });
 
-it("writes heatmap payloads to Cache API and KV with a 48 hour TTL", async () => {
+it("throws when heatmap KV is unavailable", async () => {
+  const cache = buildCacheStub();
+  setDefaultCache(cache);
+  getCloudflareContextMock.mockResolvedValue({ ctx: null, env: {} });
+  await expect(
+    putWinRateHeatmapCache({ cacheKey: "heatmap-key", payload: HEATMAP_PAYLOAD }),
+  ).rejects.toThrow("DETAIL_SECTION_CACHE_KV is unavailable");
+});
+
+it("keeps the KV write when Cache API put fails", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  cache.put.mockRejectedValue(new Error("cache api failed"));
+  setDefaultCache(cache);
+  getCloudflareContextMock.mockResolvedValue({ ctx: null, env: { DETAIL_SECTION_CACHE_KV: kv } });
+  await putWinRateHeatmapCache({ cacheKey: "heatmap-key", payload: HEATMAP_PAYLOAD });
+  expect(kv.put).toHaveBeenCalledTimes(1);
+});
+
+it("writes heatmap payloads to Cache API and KV with a 36 hour TTL", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();
   setDefaultCache(cache);
@@ -181,6 +200,6 @@ it("writes heatmap payloads to Cache API and KV with a 48 hour TTL", async () =>
     expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
   });
   const stored = cache.put.mock.calls[0]?.[1];
-  expect(stored?.headers.get("Cache-Control")).toBe("public, max-age=172800");
+  expect(stored?.headers.get("Cache-Control")).toBe("public, max-age=129600");
   expect(await stored?.json()).toStrictEqual(HEATMAP_PAYLOAD);
 });

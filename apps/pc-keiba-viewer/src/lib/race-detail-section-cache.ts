@@ -16,8 +16,13 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // training section now reads the official+netkeiba union from R2 Catalog;
 // cached pre-Catalog payloads must not survive the deployment.
 export const DETAIL_SECTION_CACHE_VERSION = "v4";
-const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v6";
-const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v5";
+// Bumped v6->v7 on 2026-08-23 because condition payloads from R2 Catalog omit
+// payouts and detail arrays. Cached Neon jsonb payloads must not survive.
+const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v7";
+// Bumped v7->v9 on 2026-08-23 because similar/bloodline/time-score now prefer
+// R2 Catalog rows with empty details. Cached Neon jsonb payloads must not
+// survive. v8 remains the overseas history version.
+const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v9";
 const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v8";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
@@ -36,14 +41,24 @@ export const DETAIL_SECTION_CACHEABLE_SECTIONS = [
   "training",
 ] as const;
 
+export const DETAIL_SECTION_QUEUE_HEATMAP_SECTION = "win-rate-heatmap";
+
 export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
   "time-score",
   "results",
   "training",
   "condition",
+  "similar",
+  DETAIL_SECTION_QUEUE_HEATMAP_SECTION,
+  "bloodline",
+  "overall-score",
 ] as const;
 
 export type DetailSectionCacheableSection = (typeof DETAIL_SECTION_CACHEABLE_SECTIONS)[number];
+
+export type DetailSectionQueueWarmSection =
+  | DetailSectionCacheableSection
+  | typeof DETAIL_SECTION_QUEUE_HEATMAP_SECTION;
 
 const usesOverseasHistory = (section: DetailSectionCacheableSection): boolean =>
   section === "bloodline" ||
@@ -79,7 +94,7 @@ export interface DetailSectionCacheWarmMessage {
   keibajoCode: string;
   month: string;
   raceNumber: string;
-  section: DetailSectionCacheableSection;
+  section: DetailSectionQueueWarmSection;
   source: RaceSource;
   year: string;
 }
@@ -96,7 +111,9 @@ export const buildDetailSectionCacheKey = ({
   raceNumber,
   section,
   year,
-}: Omit<DetailSectionCacheWarmMessage, "source">): string =>
+}: Omit<DetailSectionCacheWarmMessage, "section" | "source"> & {
+  section: DetailSectionCacheableSection;
+}): string =>
   [
     "race-detail-section",
     getDetailSectionCacheVersion(section, keibajoCode),

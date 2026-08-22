@@ -18,6 +18,8 @@ import type {
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
+  formatFinishPredictionGeneratedAtLabel,
+  hasFinishPredictionModelOutput,
   ODDS_POPULARITY_DEFAULT_STRENGTH,
   ODDS_POPULARITY_MAX_STRENGTH,
   ODDS_POPULARITY_STRENGTH_STEP,
@@ -802,10 +804,22 @@ export function FinishPositionPredictionTable({
     realtimeRequest.year,
   ]);
 
+  const modelPredictionFeatures =
+    inputs.modelPredictionFeatures === undefined ? [] : inputs.modelPredictionFeatures;
+  const generatedAtClassName = hasFinishPredictionModelOutput(modelPredictionFeatures)
+    ? "finish-prediction-generated-at"
+    : "finish-prediction-generated-at finish-prediction-generated-missing";
+  const generatedAtNotice = (
+    <p className={generatedAtClassName}>
+      {formatFinishPredictionGeneratedAtLabel(modelPredictionFeatures)}
+    </p>
+  );
+
   if (displayRows.length === 0) {
     return (
       <>
         <WrappedFinishPredictionEvaluation evaluation={evaluation} />
+        {generatedAtNotice}
         <p className="empty-state">着順予測を表示できるデータがありません。</p>
       </>
     );
@@ -927,6 +941,7 @@ export function FinishPositionPredictionTable({
               チェックを外すとその補正を無効化 / スライダー0で人気・単勝を反映しません
             </span>
           </div>
+          {generatedAtNotice}
           <div className="stats-table-wrap">
             <table className="stats-table analysis-table finish-prediction-table">
               <colgroup>

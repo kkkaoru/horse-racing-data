@@ -19,6 +19,30 @@ export const formatDisplayDate = (year: string, monthDay: string): string => {
   return `${year}年${month}月${day}日`;
 };
 
+const JST_YMD_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
+
+export const formatIsoTimestampAsJstDate = (value: string): string | null => {
+  const ymdMatch = JST_YMD_PATTERN.exec(value);
+  if (ymdMatch !== null) {
+    return `${ymdMatch[1]}年${Number(ymdMatch[2])}月${Number(ymdMatch[3])}日`;
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+  }).format(new Date(parsed));
+  const match = JST_YMD_PATTERN.exec(ymd);
+  if (match === null) {
+    return null;
+  }
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`;
+};
+
 export const formatTime = (hhmm: string | null | undefined): string => {
   const value = trim(hhmm);
   if (value.length !== 4) {

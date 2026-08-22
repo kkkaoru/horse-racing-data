@@ -85,7 +85,121 @@ import {
   overseaRunnerSourceId,
 } from "./schema";
 
-const BLOODLINE_STATS_QUERY_VERSION = "v3";
+const BLOODLINE_STATS_QUERY_VERSION = "v5";
+
+const trimmedKettoColumn = (alias: string, column: string) =>
+  sql`nullif(regexp_replace(${sql.raw(`${alias}.${column}`)}, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')`;
+
+const coalescedKettoName = (column: string) =>
+  sql`coalesce(
+            ${trimmedKettoColumn("primary_um", column)},
+            ${trimmedKettoColumn("secondary_um", column)},
+            ${trimmedKettoColumn("tertiary_um", column)},
+            '不明'
+          )`;
+
+const BLOODLINE_KETTO_COLUMNS: readonly {
+  category: BloodlineStatsRow["category"];
+  column: string;
+}[] = [
+  { category: "sire", column: "ketto_joho_01b" },
+  { category: "damSire", column: "ketto_joho_05b" },
+  { category: "sireSire", column: "ketto_joho_03b" },
+  { category: "sireDamSire", column: "ketto_joho_09b" },
+  { category: "sireSireSire", column: "ketto_joho_07b" },
+  { category: "damSireSire", column: "ketto_joho_11b" },
+  { category: "damDamSire", column: "ketto_joho_13b" },
+];
+
+const bloodlineColumnIdent = (category: BloodlineStatsRow["category"]) => sql.raw(`"${category}"`);
+
+const BLOODLINE_PEDIGREE_FALLBACKS = new Map<BloodlineStatsRow["category"], ReturnType<typeof sql>>(
+  [
+    ["damSire", sql`nullif(btrim(pedigree.dam_sire_name), '')`],
+    ["sire", sql`nullif(btrim(pedigree.sire_name), '')`],
+    ["sireSire", sql`nullif(btrim(pedigree.sire_sire_name), '')`],
+  ],
+);
+
+const currentEntryBloodlineExpr = (entry: {
+  category: BloodlineStatsRow["category"];
+  column: string;
+}) => {
+  const pedigreeFallback = BLOODLINE_PEDIGREE_FALLBACKS.get(entry.category);
+  return pedigreeFallback
+    ? sql`coalesce(
+            ${trimmedKettoColumn("primary_um", entry.column)},
+            ${trimmedKettoColumn("secondary_um", entry.column)},
+            ${trimmedKettoColumn("tertiary_um", entry.column)},
+            ${pedigreeFallback},
+            '不明'
+          ) as ${bloodlineColumnIdent(entry.category)}`
+    : sql`${coalescedKettoName(entry.column)} as ${bloodlineColumnIdent(entry.category)}`;
+};
+
+const CURRENT_ENTRIES_BLOODLINE_SELECT = sql.join(
+  BLOODLINE_KETTO_COLUMNS.map((entry) => currentEntryBloodlineExpr(entry)),
+  sql`,
+          `,
+);
+
+const TARGET_ENTRIES_SELECT = sql.join(
+  BLOODLINE_KETTO_COLUMNS.map(
+    (entry) =>
+      sql`select ${sql.raw(`'${entry.category}'`)}::text as category, ${bloodlineColumnIdent(entry.category)} as name, umaban, "umabanSort", wakuban, ketto_toroku_bango
+        from current_entries`,
+  ),
+  sql`
+        union all
+        `,
+);
+
+const BLOODLINE_LATERAL_SELECT = sql.join(
+  BLOODLINE_KETTO_COLUMNS.map(
+    (entry) => sql`${coalescedKettoName(entry.column)} ${bloodlineColumnIdent(entry.category)}`,
+  ),
+  sql`,
+            `,
+);
+
+const bloodlineRelationColumns = (relation: string) =>
+  sql.join(
+    BLOODLINE_KETTO_COLUMNS.map((entry) => sql.raw(`${relation}."${entry.category}"`)),
+    sql`,
+          `,
+  );
+
+const bloodlineTargetsMatch = (relation: string) =>
+  sql.join(
+    BLOODLINE_KETTO_COLUMNS.map(
+      (entry) => sql`(
+            targets.category = ${sql.raw(`'${entry.category}'`)}
+            and targets.name = ${sql.raw(`${relation}."${entry.category}"`)}
+          )`,
+    ),
+    sql`
+          or `,
+  );
+
+const filteredHorseKeyUnions = (
+  sources: readonly { alias: string; table: typeof jvdUm | typeof nvdUm | typeof nvdNu }[],
+) =>
+  sql.join(
+    sources.flatMap((source) =>
+      BLOODLINE_KETTO_COLUMNS.map(
+        (entry) =>
+          sql`select ${sql.raw(`${source.alias}.ketto_toroku_bango`)}
+        from ${source.table} ${sql.raw(source.alias)}
+        join targets
+          on targets.category = ${sql.raw(`'${entry.category}'`)}
+          and targets.name = ${trimmedKettoColumn(source.alias, entry.column)}`,
+      ),
+    ),
+    sql`
+        union
+        `,
+  );
+
 const FRAME_STATS_QUERY_VERSION = "v2-rates";
 const WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
 const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
@@ -3176,6 +3290,16 @@ const calculateFinishPositionScoreStddev = (
   return Math.sqrt(variance);
 };
 
+const toPredictionGeneratedAt = (value: Date | string | null): string | null => {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return null;
+};
+
 // Returns null -- no badge -- when the race has no computable stddev.
 const calculateFinishPositionConfidenceTier = (
   stddev: number | null,
@@ -3209,6 +3333,7 @@ export const getFinishPositionLambdarankPredictions = cache(
             model_version: string;
             predicted_rank: number;
             predicted_score: string | null;
+            prediction_generated_at: Date | string | null;
             shusso_tosu: number | null;
             umaban: number;
           }>(sql`
@@ -3317,6 +3442,7 @@ export const getFinishPositionLambdarankPredictions = cache(
               p.umaban,
               p.predicted_score,
               p.predicted_rank,
+              p.prediction_generated_at,
               (
                 select count(*)
                 from race_finish_position_model_predictions p2
@@ -3355,6 +3481,7 @@ export const getFinishPositionLambdarankPredictions = cache(
               modelVersion: row.model_version,
               predictedFinishNorm,
               predictedScoreStddev: stddev,
+              predictionGeneratedAt: toPredictionGeneratedAt(row.prediction_generated_at),
               showProbability: null,
               winProbability: null,
             };
@@ -4271,7 +4398,7 @@ export const getBloodlineStats = cache(
         const raceTitleCondition = getStatsRaceTitleCondition(race);
         const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
         const result = await getDb().execute<{
-          category: "damSire" | "sire" | "sireSire";
+          category: BloodlineStatsRow["category"];
           currentHorseNumbers: string;
           name: string;
           details: unknown;
@@ -4290,27 +4417,7 @@ export const getBloodlineStats = cache(
           se.umaban::int as "umabanSort",
           se.wakuban,
           se.ketto_toroku_bango,
-          coalesce(
-            nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(btrim(pedigree.sire_name), ''),
-            '不明'
-          ) as sire,
-          coalesce(
-            nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(btrim(pedigree.sire_sire_name), ''),
-            '不明'
-          ) as "sireSire",
-          coalesce(
-            nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            nullif(btrim(pedigree.dam_sire_name), ''),
-            '不明'
-          ) as "damSire"
+          ${CURRENT_ENTRIES_BLOODLINE_SELECT}
         from ${runnerTable} se
         left join ${primaryHorseTable} primary_um
           on primary_um.ketto_toroku_bango = se.ketto_toroku_bango
@@ -4336,14 +4443,7 @@ export const getBloodlineStats = cache(
           and se.race_bango = ${race.raceBango}
       ),
       target_entries as (
-        select 'sire'::text as category, sire as name, umaban, "umabanSort", wakuban, ketto_toroku_bango
-        from current_entries
-        union all
-        select 'damSire'::text as category, "damSire" as name, umaban, "umabanSort", wakuban, ketto_toroku_bango
-        from current_entries
-        union all
-        select 'sireSire'::text as category, "sireSire" as name, umaban, "umabanSort", wakuban, ketto_toroku_bango
-        from current_entries
+        ${TARGET_ENTRIES_SELECT}
       ),
       targets as (
         select
@@ -4359,66 +4459,16 @@ export const getBloodlineStats = cache(
         from targets
       ),
       filtered_horse_keys as (
-        select primary_um.ketto_toroku_bango
-        from ${primaryHorseTable} primary_um
-        join targets
-          on targets.category = 'sire'
-          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select primary_um.ketto_toroku_bango
-        from ${primaryHorseTable} primary_um
-        join targets
-          on targets.category = 'sireSire'
-          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select primary_um.ketto_toroku_bango
-        from ${primaryHorseTable} primary_um
-        join targets
-          on targets.category = 'damSire'
-          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select secondary_um.ketto_toroku_bango
-        from ${secondaryHorseTable} secondary_um
-        join targets
-          on targets.category = 'sire'
-          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select secondary_um.ketto_toroku_bango
-        from ${secondaryHorseTable} secondary_um
-        join targets
-          on targets.category = 'sireSire'
-          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select secondary_um.ketto_toroku_bango
-        from ${secondaryHorseTable} secondary_um
-        join targets
-          on targets.category = 'damSire'
-          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select tertiary_um.ketto_toroku_bango
-        from ${tertiaryHorseTable} tertiary_um
-        join targets
-          on targets.category = 'sire'
-          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select tertiary_um.ketto_toroku_bango
-        from ${tertiaryHorseTable} tertiary_um
-        join targets
-          on targets.category = 'sireSire'
-          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
-        union
-        select tertiary_um.ketto_toroku_bango
-        from ${tertiaryHorseTable} tertiary_um
-        join targets
-          on targets.category = 'damSire'
-          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        ${filteredHorseKeyUnions([
+          { alias: "primary_um", table: primaryHorseTable },
+          { alias: "secondary_um", table: secondaryHorseTable },
+          { alias: "tertiary_um", table: tertiaryHorseTable },
+        ])}
       ),
       filtered_horse_bloodlines as materialized (
         select
           horse_keys.ketto_toroku_bango,
-          bloodline.sire,
-          bloodline."sireSire",
-          bloodline."damSire"
+          ${bloodlineRelationColumns("bloodline")}
         from filtered_horse_keys horse_keys
         left join ${primaryHorseTable} primary_um
           on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
@@ -4428,24 +4478,7 @@ export const getBloodlineStats = cache(
           on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
         cross join lateral (
           select
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) sire,
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) "sireSire",
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) "damSire"
+            ${BLOODLINE_LATERAL_SELECT}
         ) bloodline
       ),
       ancestor_horse_keys as (
@@ -4472,9 +4505,7 @@ export const getBloodlineStats = cache(
           horse_keys.category,
           horse_keys.name,
           horse_keys.ketto_toroku_bango,
-          bloodline.sire,
-          bloodline."sireSire",
-          bloodline."damSire"
+          ${bloodlineRelationColumns("bloodline")}
         from ancestor_horse_keys horse_keys
         left join ${primaryHorseTable} primary_um
           on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
@@ -4484,24 +4515,7 @@ export const getBloodlineStats = cache(
           on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
         cross join lateral (
           select
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) sire,
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) "sireSire",
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) "damSire"
+            ${BLOODLINE_LATERAL_SELECT}
         ) bloodline
       ),
       matched_entries as (
@@ -4524,22 +4538,11 @@ export const getBloodlineStats = cache(
           se.tansho_ninkijun,
           se.tansho_odds,
           se.ketto_toroku_bango,
-          filtered_horse_bloodlines.sire,
-          filtered_horse_bloodlines."sireSire",
-          filtered_horse_bloodlines."damSire"
+          ${bloodlineRelationColumns("filtered_horse_bloodlines")}
         from filtered_horse_bloodlines
         join targets
           on (
-            targets.category = 'sire'
-            and targets.name = filtered_horse_bloodlines.sire
-          )
-          or (
-            targets.category = 'sireSire'
-            and targets.name = filtered_horse_bloodlines."sireSire"
-          )
-          or (
-            targets.category = 'damSire'
-            and targets.name = filtered_horse_bloodlines."damSire"
+            ${bloodlineTargetsMatch("filtered_horse_bloodlines")}
           )
         join ${jvdSe} se
           on se.ketto_toroku_bango = filtered_horse_bloodlines.ketto_toroku_bango
@@ -4610,22 +4613,11 @@ export const getBloodlineStats = cache(
           se.tansho_ninkijun,
           se.tansho_odds,
           se.ketto_toroku_bango,
-          filtered_horse_bloodlines.sire,
-          filtered_horse_bloodlines."sireSire",
-          filtered_horse_bloodlines."damSire"
+          ${bloodlineRelationColumns("filtered_horse_bloodlines")}
         from filtered_horse_bloodlines
         join targets
           on (
-            targets.category = 'sire'
-            and targets.name = filtered_horse_bloodlines.sire
-          )
-          or (
-            targets.category = 'sireSire'
-            and targets.name = filtered_horse_bloodlines."sireSire"
-          )
-          or (
-            targets.category = 'damSire'
-            and targets.name = filtered_horse_bloodlines."damSire"
+            ${bloodlineTargetsMatch("filtered_horse_bloodlines")}
           )
         join ${nvdSe} se
           on se.ketto_toroku_bango = filtered_horse_bloodlines.ketto_toroku_bango
@@ -4696,9 +4688,7 @@ export const getBloodlineStats = cache(
           se.tansho_ninkijun,
           se.tansho_odds,
           se.ketto_toroku_bango,
-          ancestor_horse_bloodlines.sire,
-          ancestor_horse_bloodlines."sireSire",
-          ancestor_horse_bloodlines."damSire"
+          ${bloodlineRelationColumns("ancestor_horse_bloodlines")}
         from ancestor_horse_bloodlines
         join ${jvdSe} se
           on se.ketto_toroku_bango = ancestor_horse_bloodlines.ketto_toroku_bango
@@ -4769,9 +4759,7 @@ export const getBloodlineStats = cache(
           se.tansho_ninkijun,
           se.tansho_odds,
           se.ketto_toroku_bango,
-          ancestor_horse_bloodlines.sire,
-          ancestor_horse_bloodlines."sireSire",
-          ancestor_horse_bloodlines."damSire"
+          ${bloodlineRelationColumns("ancestor_horse_bloodlines")}
         from ancestor_horse_bloodlines
         join ${nvdSe} se
           on se.ketto_toroku_bango = ancestor_horse_bloodlines.ketto_toroku_bango
@@ -4840,9 +4828,7 @@ export const getBloodlineStats = cache(
           matched_entries.tansho_ninkijun,
           matched_entries.tansho_odds,
           matched_entries.ketto_toroku_bango,
-          matched_entries.sire,
-          matched_entries."sireSire",
-          matched_entries."damSire"
+          ${bloodlineRelationColumns("matched_entries")}
         from matched_entries
       ),
       stats_source as (
@@ -4863,9 +4849,7 @@ export const getBloodlineStats = cache(
           grouped_entries.tansho_ninkijun,
           grouped_entries.tansho_odds,
           grouped_entries.ketto_toroku_bango,
-          grouped_entries.sire,
-          grouped_entries."sireSire",
-          grouped_entries."damSire"
+          ${bloodlineRelationColumns("grouped_entries")}
         from grouped_entries
         join targets
           on targets.category = grouped_entries.category
@@ -4911,7 +4895,7 @@ export const getBloodlineStats = cache(
             jsonb_agg(
               jsonb_build_object(
                 'date', ranked_details.kaisai_nen || ranked_details.kaisai_tsukihi,
-                'sireName', ranked_details.sire,
+                'sireName', ranked_details."sire",
                 'sireSireName', ranked_details."sireSire",
                 'damSireName', ranked_details."damSire",
                 'keibajoCode', ranked_details.keibajo_code,

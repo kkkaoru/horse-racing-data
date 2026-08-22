@@ -489,6 +489,82 @@ test("CorrectionMasterCheckbox: indeterminate true when a flag is off but streng
   expect(el.indeterminate).toStrictEqual(true);
 });
 
+test("FinishPositionPredictionTable shows that predictions have not been generated", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={sampleInputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(screen.getByText("このレースの着順予測はまだ生成されていません。")).toBeTruthy();
+  expect(document.querySelector(".finish-prediction-generated-missing")).toBeTruthy();
+});
+
+test("FinishPositionPredictionTable shows the generated date immediately before the ranking table", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={{
+        ...sampleInputs,
+        modelPredictionFeatures: [
+          {
+            horseNumber: "01",
+            modelVersion: "test-model",
+            predictedFinishNorm: 0.2,
+            predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+            showProbability: null,
+            winProbability: null,
+          },
+        ],
+      }}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const notice = screen.getByText("予測生成日: 2026年8月22日");
+  expect(notice.className).toBe("finish-prediction-generated-at");
+  expect(notice.nextElementSibling?.className).toBe("stats-table-wrap");
+});
+
+test("FinishPositionPredictionTable shows a generated notice when the timestamp is missing", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={{
+        ...sampleInputs,
+        modelPredictionFeatures: [
+          {
+            horseNumber: "01",
+            modelVersion: "test-model",
+            predictedFinishNorm: 0.2,
+            showProbability: null,
+            winProbability: null,
+          },
+        ],
+      }}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(screen.getByText("着順予測は生成済みです。").className).toBe(
+    "finish-prediction-generated-at",
+  );
+});
+
 test("FinishPositionPredictionTable renders the strength slider at 0 (raw model) with no stored preference", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {

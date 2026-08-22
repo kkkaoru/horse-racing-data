@@ -316,12 +316,15 @@ export const parsePredictionFinishPositionFeatures = (
     if (typeof horseNumber !== "string" || typeof modelVersion !== "string") {
       return null;
     }
+    const predictionGeneratedAt = raw.predictionGeneratedAt;
     features.push({
       confidenceTier: toConfidenceTier(raw.confidenceTier),
       horseNumber,
       modelVersion,
       predictedFinishNorm: toNullableNumber(raw.predictedFinishNorm),
       predictedScoreStddev: toNullableNumber(raw.predictedScoreStddev),
+      predictionGeneratedAt:
+        typeof predictionGeneratedAt === "string" ? predictionGeneratedAt : null,
       showProbability: toNullableNumber(raw.showProbability),
       winProbability: toNullableNumber(raw.winProbability),
     });

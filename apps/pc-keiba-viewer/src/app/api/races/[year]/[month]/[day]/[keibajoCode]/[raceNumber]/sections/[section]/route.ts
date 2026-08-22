@@ -11,6 +11,7 @@ import {
 } from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
 import {
   buildDetailSectionCacheKey,
+  DETAIL_SECTION_CACHE_WARM_PARAM,
   isDefaultDetailSectionCacheRequest,
   PREDICTION_REFRESH_PARAM,
   stripDetailSectionCacheWarmParams,
@@ -285,7 +286,39 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    await putWinRateHeatmapCache({ cacheKey: heatmapCacheKey, payload: heatmapPayload });
+    const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
+    const storeHeatmap = putWinRateHeatmapCache({
+      cacheKey: heatmapCacheKey,
+      payload: heatmapPayload,
+    });
+    if (isQueueWarm) {
+      try {
+        await storeHeatmap;
+      } catch {
+        return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
+      }
+      return NextResponse.json(heatmapPayload, {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
+        },
+      });
+    }
+    try {
+      const executionContext = await getExecutionContext();
+      if (executionContext === null) {
+        await storeHeatmap;
+      } else {
+        executionContext.waitUntil(storeHeatmap);
+      }
+    } catch {
+      return NextResponse.json(heatmapPayload, {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "X-Win-Rate-Heatmap-Cache": "MISS",
+        },
+      });
+    }
     return NextResponse.json(heatmapPayload, {
       headers: {
         "Cache-Control": "private, max-age=0, no-store",

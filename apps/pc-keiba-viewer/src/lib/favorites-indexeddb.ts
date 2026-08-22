@@ -3,9 +3,10 @@
 import { dedupeFavorites, favoriteKey, type FavoriteItem } from "./favorites";
 
 const DB_NAME = "pc-keiba-viewer";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = "favorites";
 const USER_IDENTITY_STORE = "userIdentity";
+const USER_PREFERENCES_STORE = "userPreferences";
 
 const openFavoritesDb = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
@@ -20,6 +21,9 @@ const openFavoritesDb = (): Promise<IDBDatabase> =>
       }
       if (!db.objectStoreNames.contains(USER_IDENTITY_STORE)) {
         db.createObjectStore(USER_IDENTITY_STORE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(USER_PREFERENCES_STORE)) {
+        db.createObjectStore(USER_PREFERENCES_STORE, { keyPath: "userId" });
       }
     });
     request.addEventListener("success", () => {

@@ -1209,11 +1209,19 @@ it("getBloodlineStats supplies source-native pedigree names only through complet
   expect(queryText).toMatch(/nullif\(btrim\(pedigree\.sire_name\), ''\)/u);
   expect(queryText).toMatch(/nullif\(btrim\(pedigree\.sire_sire_name\), ''\)/u);
   expect(queryText).toMatch(/nullif\(btrim\(pedigree\.dam_sire_name\), ''\)/u);
+  expect(queryText).toMatch(/ketto_joho_07b/u);
+  expect(queryText).toMatch(/ketto_joho_09b/u);
+  expect(queryText).toMatch(/ketto_joho_11b/u);
+  expect(queryText).toMatch(/ketto_joho_13b/u);
+  expect(queryText).toMatch(/'sireDamSire'::text as category/u);
+  expect(queryText).toMatch(/'sireSireSire'::text as category/u);
+  expect(queryText).toMatch(/'damSireSire'::text as category/u);
+  expect(queryText).toMatch(/'damDamSire'::text as category/u);
   expect(queryText).toMatch(/select count\(distinct ancestor_identity\.ketto_toroku_bango\)/u);
   expect(queryText).toMatch(/\) <= 1/u);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
     "getBloodlineStats",
-    "v3",
+    "v5",
     PERCLASS_703_RACE,
     expect.any(Object),
   ]);
@@ -2095,6 +2103,7 @@ it("getFinishPositionLambdarankPredictions references prediction_generated_at on
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(/max\(p\.prediction_generated_at\) as recency/u);
   expect(queryText).toMatch(/max\(p3\.prediction_generated_at\) as recency/u);
+  expect(queryText).toMatch(/p\.prediction_generated_at/u);
   expect(queryText).not.toMatch(/p\.predicted_at/u);
   expect(queryText).not.toMatch(/p3\.predicted_at/u);
 });
@@ -2135,6 +2144,7 @@ it("getFinishPositionLambdarankPredictions translates execute rows into predicti
         model_version: "iter23-jra-cb-ensemble-703-v8",
         predicted_rank: 1,
         predicted_score: "0.91",
+        prediction_generated_at: "2026-08-22T01:15:00.000Z",
         shusso_tosu: 2,
         umaban: 1,
       },
@@ -2142,6 +2152,7 @@ it("getFinishPositionLambdarankPredictions translates execute rows into predicti
         model_version: "iter23-jra-cb-ensemble-703-v8",
         predicted_rank: 2,
         predicted_score: "0.55",
+        prediction_generated_at: new Date("2026-08-22T01:15:00.000Z"),
         shusso_tosu: 2,
         umaban: 2,
       },
@@ -2157,8 +2168,39 @@ it("getFinishPositionLambdarankPredictions translates execute rows into predicti
   expect(result[0]?.predictedFinishNorm).toBe(0);
   expect(result[0]?.showProbability).toBe(null);
   expect(result[0]?.winProbability).toBe(null);
+  expect(result[0]?.predictionGeneratedAt).toBe("2026-08-22T01:15:00.000Z");
   expect(result[1]?.horseNumber).toBe("2");
   expect(result[1]?.predictedFinishNorm).toBe(1);
+  expect(result[1]?.predictionGeneratedAt).toBe("2026-08-22T01:15:00.000Z");
+});
+
+it("getFinishPositionLambdarankPredictions drops empty or invalid generated timestamps", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        prediction_generated_at: "",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "0.55",
+        prediction_generated_at: new Date(Number.NaN),
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result[0]?.predictionGeneratedAt).toBe(null);
+  expect(result[1]?.predictionGeneratedAt).toBe(null);
 });
 
 it("getFinishPositionLambdarankPredictions computes a low confidenceTier from a tight within-race predicted_score spread", async () => {

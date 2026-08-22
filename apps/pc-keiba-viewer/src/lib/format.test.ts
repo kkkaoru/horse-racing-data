@@ -7,6 +7,7 @@ import {
   formatDate,
   formatDisplayDate,
   formatDistance,
+  formatIsoTimestampAsJstDate,
   formatKeibajo,
   formatRaceNumber,
   formatTime,
@@ -26,6 +27,9 @@ describe("format helpers", () => {
   it("formats date values", () => {
     expect(formatDate("2026", "0510")).toBe("2026-05-10");
     expect(formatDisplayDate("2026", "0510")).toBe("2026年5月10日");
+    expect(formatIsoTimestampAsJstDate("2026-08-21T16:00:00.000Z")).toBe("2026年8月22日");
+    expect(formatIsoTimestampAsJstDate("2026-08-22")).toBe("2026年8月22日");
+    expect(formatIsoTimestampAsJstDate("not-a-date")).toBe(null);
   });
 
   it("formats time, race number, distance, and counts", () => {

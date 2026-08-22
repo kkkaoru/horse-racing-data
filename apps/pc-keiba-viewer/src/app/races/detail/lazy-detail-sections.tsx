@@ -323,15 +323,7 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
     );
   }
   if (section === "win-rate-heatmap") {
-    return (
-      name === "resultsSourceScope" ||
-      name.startsWith("analysisStats") ||
-      name.startsWith("analysisCell") ||
-      name.startsWith("bloodlineStats") ||
-      name.startsWith("similarStats") ||
-      name === "similarStatsVenue" ||
-      GENERIC_STATS_QUERY_KEYS.has(name)
-    );
+    return name.startsWith("similarStats") || GENERIC_STATS_QUERY_KEYS.has(name);
   }
   return false;
 };
@@ -672,26 +664,53 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
   );
 }
 
-function LazyWinRateHeatmapSection(props: LazyDetailSectionsProps) {
-  const searchParams = useSearchParams();
-  const state = useSectionPayload("win-rate-heatmap", props, searchParams);
+function LazyWinRateHeatmapSection(
+  props: LazyDetailSectionsProps & { heatmapState: SectionState },
+) {
+  const state = props.heatmapState;
   if (state.status === "loading" && state.payload === null) {
-    return <SectionSkeleton title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+    return (
+      <section className="stats-category-section win-rate-heatmap-section" aria-busy="true">
+        <div className="section-heading compact">
+          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
+        </div>
+        <div className="detail-section-skeleton">
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      </section>
+    );
   }
   if (state.status === "error") {
-    return <SectionError error={state.error} title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+    return (
+      <section className="stats-category-section win-rate-heatmap-section">
+        <div className="section-heading compact">
+          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
+        </div>
+        <p className="empty-state">データを取得できませんでした: {state.error}</p>
+      </section>
+    );
   }
   const payload = state.payload;
   if (!payload || payload.type !== "win-rate-heatmap") {
-    return <SectionError error="Invalid section payload" title={WIN_RATE_HEATMAP_SECTION_TITLE} />;
+    return (
+      <section className="stats-category-section win-rate-heatmap-section">
+        <div className="section-heading compact">
+          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
+        </div>
+        <p className="empty-state">データを取得できませんでした: Invalid section payload</p>
+      </section>
+    );
   }
   return (
     <section
       aria-busy={state.status === "loading"}
-      className="similar-stats-section lazy-detail-section win-rate-heatmap-section"
+      className="stats-category-section win-rate-heatmap-section"
     >
       <div className="section-heading compact">
-        <h2>{WIN_RATE_HEATMAP_SECTION_TITLE}</h2>
+        <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
       </div>
       <WinRateHeatmapSection
         bloodlineRows={payload.bloodlineRows}
@@ -994,6 +1013,7 @@ function LazyAbilitySection(props: LazyDetailSectionsProps) {
 
 function LazyConditionSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
+  const heatmapState = useSectionPayload("win-rate-heatmap", props, searchParams);
   const state = useSectionPayload("condition", props, searchParams);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.condition} />;
@@ -1014,6 +1034,7 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         <h2>同条件レース分析</h2>
       </div>
       <RaceConditionAnalysisSection
+        afterTargetRaces={<LazyWinRateHeatmapSection {...props} heatmapState={heatmapState} />}
         finishPositionStats={payload.finishPositionStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}
@@ -1027,7 +1048,6 @@ export function LazyDetailSections(props: LazyDetailSectionsProps) {
     <>
       <LazyResultsSection {...props} />
       <LazyResultsChartSection {...props} />
-      <LazyWinRateHeatmapSection {...props} />
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />

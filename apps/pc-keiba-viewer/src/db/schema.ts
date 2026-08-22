@@ -75,6 +75,10 @@ const horseMasterColumns = {
   damName: varchar("ketto_joho_02b", { length: 36 }),
   sireSireName: varchar("ketto_joho_03b", { length: 36 }),
   damSireName: varchar("ketto_joho_05b", { length: 36 }),
+  sireSireSireName: varchar("ketto_joho_07b", { length: 36 }),
+  sireDamSireName: varchar("ketto_joho_09b", { length: 36 }),
+  damSireSireName: varchar("ketto_joho_11b", { length: 36 }),
+  damDamSireName: varchar("ketto_joho_13b", { length: 36 }),
 };
 
 export const jvdCs = pgTable("jvd_cs", {

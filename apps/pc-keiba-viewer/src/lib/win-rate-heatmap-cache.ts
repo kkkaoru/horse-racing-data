@@ -8,8 +8,11 @@ import type {
   WeightClassStatsRow,
 } from "./race-types";
 
-export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 48 * 60 * 60;
-export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v1";
+export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 36 * 60 * 60;
+// Bumped v7->v8 because heatmap Catalog rows now include per-umaban jockeyFrame
+// rates and the table gained a 騎手枠別 column. Cached pre-jockeyFrame payloads
+// must not survive.
+export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v8";
 export const WIN_RATE_HEATMAP_CACHE_URL_BASE =
   "https://pc-keiba-viewer.local/win-rate-heatmap-cache/";
 const WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT = "default";

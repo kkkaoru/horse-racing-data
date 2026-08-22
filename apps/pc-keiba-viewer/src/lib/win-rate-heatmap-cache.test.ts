@@ -11,8 +11,12 @@ import {
   serializeWinRateHeatmapCacheQuery,
 } from "./win-rate-heatmap-cache";
 
-it("uses a 48 hour heatmap cache TTL", () => {
-  expect(WIN_RATE_HEATMAP_CACHE_TTL_SECONDS).toBe(172800);
+it("uses heatmap cache namespace v8", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v8");
+});
+
+it("uses a 36 hour heatmap cache TTL", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_TTL_SECONDS).toBe(129600);
 });
 
 it("builds a per-race heatmap cache key with a default query token", () => {

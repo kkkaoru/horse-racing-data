@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromResults,
+  formatFinishPredictionGeneratedAtLabel,
+  getLatestFinishPredictionGeneratedAt,
+  hasFinishPredictionModelOutput,
   type FinishPredictionBuildInputs,
 } from "./finish-position-prediction";
 import type { HorseRaceResult, Runner } from "./race-types";
@@ -1452,4 +1455,155 @@ describe("buildFinishPredictionMarketOverrides", () => {
     const overrides = buildFinishPredictionMarketOverrides([{ combination: "3" }]);
     expect(overrides.get("3")).toStrictEqual({ odds: null, popularity: null });
   });
+});
+
+it("labels missing model predictions as not generated", () => {
+  expect(hasFinishPredictionModelOutput([])).toBe(false);
+  expect(
+    hasFinishPredictionModelOutput([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: null,
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe(false);
+  expect(formatFinishPredictionGeneratedAtLabel([])).toBe(
+    "このレースの着順予測はまだ生成されていません。",
+  );
+});
+
+it("labels generated predictions with the latest JST date", () => {
+  expect(
+    hasFinishPredictionModelOutput([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe(true);
+  expect(
+    getLatestFinishPredictionGeneratedAt([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "2026-08-20T00:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.4,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("2026-08-21T16:00:00.000Z");
+  expect(
+    formatFinishPredictionGeneratedAtLabel([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("予測生成日: 2026年8月22日");
+});
+
+it("keeps a generated label when the timestamp is missing or invalid", () => {
+  expect(
+    formatFinishPredictionGeneratedAtLabel([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("着順予測は生成済みです。");
+  expect(
+    formatFinishPredictionGeneratedAtLabel([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "not-a-date",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("着順予測は生成済みです。");
+  expect(
+    getLatestFinishPredictionGeneratedAt([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "not-a-date",
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.4,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("2026-08-21T16:00:00.000Z");
+  expect(
+    getLatestFinishPredictionGeneratedAt([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.4,
+        predictionGeneratedAt: "2026-08-20T00:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("2026-08-21T16:00:00.000Z");
+  expect(
+    getLatestFinishPredictionGeneratedAt([
+      {
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.2,
+        predictionGeneratedAt: "2026-08-21T16:00:00.000Z",
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.4,
+        predictionGeneratedAt: "not-a-date",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  ).toBe("2026-08-21T16:00:00.000Z");
 });

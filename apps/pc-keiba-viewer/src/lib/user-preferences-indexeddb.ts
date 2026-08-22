@@ -1,18 +1,20 @@
 "use client";
 
-// Run with: bunx vitest run src/lib/user-identity-indexeddb.test.ts
+// bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
+
+import { getOrCreateUserId } from "./user-identity-indexeddb";
+import { DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS } from "./win-rate-heatmap";
 
 const DB_NAME = "pc-keiba-viewer";
 const DB_VERSION = 3;
 const FAVORITES_STORE = "favorites";
 const USER_IDENTITY_STORE = "userIdentity";
 const USER_PREFERENCES_STORE = "userPreferences";
-const USER_IDENTITY_KEY = "singleton";
 
-export interface StoredUserIdentity {
-  userId: string;
-  createdAt: string;
+interface UserPreferencesRow {
+  showHeatmapStarts: boolean;
   updatedAt: string;
+  userId: string;
 }
 
 const isBrowser = (): boolean => typeof window !== "undefined" && typeof indexedDB !== "undefined";
@@ -29,7 +31,7 @@ const ensureStores = (db: IDBDatabase): void => {
   }
 };
 
-const openUserIdentityDb = (): Promise<IDBDatabase> =>
+const openPreferencesDb = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.addEventListener("error", () => {
@@ -47,15 +49,15 @@ const withStore = async <T>(
   mode: IDBTransactionMode,
   callback: (store: IDBObjectStore) => IDBRequest<T> | void,
 ): Promise<T | undefined> => {
-  const db = await openUserIdentityDb();
+  const db = await openPreferencesDb();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(USER_IDENTITY_STORE, mode);
-    const store = transaction.objectStore(USER_IDENTITY_STORE);
+    const transaction = db.transaction(USER_PREFERENCES_STORE, mode);
+    const store = transaction.objectStore(USER_PREFERENCES_STORE);
     const request = callback(store);
-    let result: T | undefined;
+    const holder: { result: T | undefined } = { result: undefined };
     if (request) {
       request.addEventListener("success", () => {
-        result = request.result;
+        holder.result = request.result;
       });
       request.addEventListener("error", () => {
         reject(request.error);
@@ -63,7 +65,7 @@ const withStore = async <T>(
     }
     transaction.addEventListener("complete", () => {
       db.close();
-      resolve(result);
+      resolve(holder.result);
     });
     transaction.addEventListener("error", () => {
       db.close();
@@ -72,67 +74,44 @@ const withStore = async <T>(
   });
 };
 
-interface UserIdentityRow extends StoredUserIdentity {
-  key: string;
-}
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-const isUserIdentityRow = (value: unknown): value is UserIdentityRow =>
+const isUserPreferencesRow = (value: unknown): value is UserPreferencesRow =>
   isRecord(value) &&
   typeof value.userId === "string" &&
-  typeof value.createdAt === "string" &&
-  typeof value.updatedAt === "string";
+  typeof value.updatedAt === "string" &&
+  typeof value.showHeatmapStarts === "boolean";
 
-const readRow = async (): Promise<UserIdentityRow | null> => {
-  const row = await withStore<unknown>("readonly", (store) => store.get(USER_IDENTITY_KEY));
-  return isUserIdentityRow(row) ? row : null;
-};
-
-const writeRow = async (row: UserIdentityRow): Promise<void> => {
-  await withStore("readwrite", (store) => {
-    store.put(row);
-  });
-};
-
-export const getUserId = async (): Promise<string | null> => {
-  if (!isBrowser()) {
-    return null;
+export const getHeatmapShowStarts = async (userId: string): Promise<boolean> => {
+  if (!isBrowser() || userId.length === 0) {
+    return DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS;
   }
-  const row = await readRow();
-  return row ? row.userId : null;
+  const row = await withStore<unknown>("readonly", (store) => store.get(userId));
+  return isUserPreferencesRow(row) ? row.showHeatmapStarts : DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS;
 };
 
-export const getOrCreateUserId = async (): Promise<string> => {
-  if (!isBrowser()) {
-    return "";
-  }
-  const existing = await readRow();
-  if (existing) {
-    return existing.userId;
-  }
-  const timestamp = new Date().toISOString();
-  const newUserId = crypto.randomUUID();
-  await writeRow({
-    key: USER_IDENTITY_KEY,
-    userId: newUserId,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-  return newUserId;
-};
-
-export const setUserId = async (id: string): Promise<void> => {
-  if (!isBrowser()) {
+export const setHeatmapShowStarts = async (userId: string, showStarts: boolean): Promise<void> => {
+  if (!isBrowser() || userId.length === 0) {
     return;
   }
-  const existing = await readRow();
-  const timestamp = new Date().toISOString();
-  await writeRow({
-    key: USER_IDENTITY_KEY,
-    userId: id,
-    createdAt: existing ? existing.createdAt : timestamp,
-    updatedAt: timestamp,
+  await withStore("readwrite", (store) => {
+    store.put({
+      showHeatmapStarts: showStarts,
+      updatedAt: new Date().toISOString(),
+      userId,
+    });
   });
+};
+
+export const loadHeatmapShowStartsForCurrentUser = async (): Promise<boolean> => {
+  const userId = await getOrCreateUserId();
+  return getHeatmapShowStarts(userId);
+};
+
+export const persistHeatmapShowStartsForCurrentUser = async (
+  showStarts: boolean,
+): Promise<void> => {
+  const userId = await getOrCreateUserId();
+  await setHeatmapShowStarts(userId, showStarts);
 };

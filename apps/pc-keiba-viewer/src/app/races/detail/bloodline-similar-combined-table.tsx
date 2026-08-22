@@ -19,7 +19,7 @@ import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 type BloodlineCategory = BloodlineStatsRow["category"];
-type SimilarCategory = SimilarRaceStatsRow["category"];
+type SimilarCategory = "jockey" | "owner" | "trainer";
 
 export type CombinedScoreRow = {
   bloodline: ScoreGroup<BloodlineCategory>;
@@ -77,9 +77,13 @@ interface BuildCombinedScoreRowsInput {
 }
 
 const BLOODLINE_CATEGORY_LABELS: Record<BloodlineCategory, string> = {
+  damDamSire: "母母父",
   damSire: "母父",
+  damSireSire: "母父父",
   sire: "父",
+  sireDamSire: "父母父",
   sireSire: "父父",
+  sireSireSire: "父父父",
 };
 
 const SIMILAR_CATEGORY_LABELS: Record<SimilarCategory, string> = {
@@ -88,13 +92,28 @@ const SIMILAR_CATEGORY_LABELS: Record<SimilarCategory, string> = {
   trainer: "調教師",
 };
 
-const BLOODLINE_CATEGORY_ORDER: BloodlineCategory[] = ["sire", "damSire", "sireSire"];
+const BLOODLINE_CATEGORY_ORDER: BloodlineCategory[] = [
+  "sire",
+  "damSire",
+  "sireSire",
+  "sireDamSire",
+  "sireSireSire",
+  "damSireSire",
+  "damDamSire",
+];
 const SIMILAR_CATEGORY_ORDER: SimilarCategory[] = ["jockey", "trainer", "owner"];
 
+const isSimilarTableCategory = (value: SimilarRaceStatsRow["category"]): value is SimilarCategory =>
+  value === "jockey" || value === "owner" || value === "trainer";
+
 const BLOODLINE_SCORE_WEIGHTS: Record<BloodlineCategory, number> = {
+  damDamSire: 0,
   damSire: 0.35,
+  damSireSire: 0,
   sire: 0.45,
+  sireDamSire: 0,
   sireSire: 0.2,
+  sireSireSire: 0,
 };
 
 const METRIC_SCORE_WEIGHTS = {
@@ -111,9 +130,13 @@ export const createDefaultScoreTargets = (): ScoreTargets => ({
     time: true,
   },
   bloodline: {
+    damDamSire: true,
     damSire: true,
+    damSireSire: true,
     sire: true,
+    sireDamSire: true,
     sireSire: true,
+    sireSireSire: true,
   },
   similar: {
     jockey: true,
@@ -258,7 +281,12 @@ export const buildCombinedScoreRows = ({
     toScoredRows(bloodlineRows.filter((row) => row.category === category)),
   );
   const scoredSimilarRows = SIMILAR_CATEGORY_ORDER.flatMap((category) =>
-    toScoredRows(rows.filter((row) => row.category === category)),
+    toScoredRows(
+      rows.filter(
+        (row): row is SimilarRaceStatsRow & { category: SimilarCategory } =>
+          isSimilarTableCategory(row.category) && row.category === category,
+      ),
+    ),
   );
   const bloodlineRowsByHorse = getRowsByHorse(scoredBloodlineRows);
   const similarRowsByHorse = getRowsByHorse(scoredSimilarRows);
@@ -274,9 +302,13 @@ export const buildCombinedScoreRows = ({
     const bloodline: ScoreGroup<BloodlineCategory> = {
       categoryRows: {},
       categoryScores: {
+        damDamSire: 0,
         damSire: 0,
+        damSireSire: 0,
         sire: 0,
+        sireDamSire: 0,
         sireSire: 0,
+        sireSireSire: 0,
       },
       horseCount: 0,
       starts: 0,
@@ -477,9 +509,13 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
       return {
         ...current,
         bloodline: {
+          damDamSire: nextEnabled,
           damSire: nextEnabled,
+          damSireSire: nextEnabled,
           sire: nextEnabled,
+          sireDamSire: nextEnabled,
           sireSire: nextEnabled,
+          sireSireSire: nextEnabled,
         },
       };
     });

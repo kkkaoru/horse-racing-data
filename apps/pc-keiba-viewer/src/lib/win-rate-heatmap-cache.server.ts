@@ -111,10 +111,10 @@ export const putWinRateHeatmapCache = async ({
   const cacheRequest = createWinRateHeatmapCacheRequest(cacheKey);
   const defaultCache = getDefaultCache();
   const { env } = await safeGetCloudflareRuntime();
-  await Promise.all([
-    writeCacheApi(defaultCache, cacheRequest, body),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, {
-      expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
-    }),
-  ]);
+  const kv = env?.DETAIL_SECTION_CACHE_KV;
+  if (!kv) {
+    throw new Error("DETAIL_SECTION_CACHE_KV is unavailable");
+  }
+  await kv.put(cacheKey, body, { expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS });
+  await writeCacheApi(defaultCache, cacheRequest, body).catch(() => undefined);
 };

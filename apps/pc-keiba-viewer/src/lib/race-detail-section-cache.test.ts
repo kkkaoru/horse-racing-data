@@ -71,35 +71,56 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "44",
         section: "bloodline",
       }),
-    ).toBe("race-detail-section:v5:2026:5:23:44:12:bloodline:default");
+    ).toBe("race-detail-section:v9:2026:5:23:44:12:bloodline:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "similar",
       }),
-    ).toBe("race-detail-section:v5:2026:5:23:44:12:similar:default");
+    ).toBe("race-detail-section:v9:2026:5:23:44:12:similar:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v5:2026:5:23:44:12:time-score:default");
+    ).toBe("race-detail-section:v9:2026:5:23:44:12:time-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "A8",
         section: "condition",
       }),
-    ).toBe("race-detail-section:v6:2026:5:23:A8:12:condition:default");
+    ).toBe("race-detail-section:v7:2026:5:23:A8:12:condition:default");
   });
 
   it("validates cacheable sections and default warm targets", () => {
     expect(isDetailSectionCacheableSection("results")).toBe(true);
     expect(isDetailSectionCacheableSection("unknown")).toBe(false);
-    expect(DETAIL_SECTION_CACHEABLE_SECTIONS).toContain("pace-prediction");
-    expect(DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS).toContain("condition");
+    expect(isDetailSectionCacheableSection("win-rate-heatmap")).toBe(false);
+    expect([...DETAIL_SECTION_CACHEABLE_SECTIONS]).toStrictEqual([
+      "ability",
+      "bloodline",
+      "condition",
+      "premium-data-top",
+      "overall-score",
+      "pace-prediction",
+      "results",
+      "similar",
+      "time-score",
+      "training",
+    ]);
+    expect([...DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS]).toStrictEqual([
+      "time-score",
+      "results",
+      "training",
+      "condition",
+      "similar",
+      "win-rate-heatmap",
+      "bloodline",
+      "overall-score",
+    ]);
   });
 
   it("detects default cacheable requests without extra query params", () => {

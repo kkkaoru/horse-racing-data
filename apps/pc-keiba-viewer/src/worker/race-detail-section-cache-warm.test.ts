@@ -2,6 +2,7 @@
 import { expect, it, vi } from "vitest";
 
 import {
+  handleRaceDetailSectionCacheQueue,
   scheduleDueRaceTrendCache,
   scheduleRaceDetailSsrCacheWarm,
   scheduleTodayRaceDetailSectionCache,
@@ -130,6 +131,76 @@ it("schedule-ssr-warm-with-date-adds-query", async () => {
   expect(request.url).toBe(
     "https://pc-keiba-viewer.local/api/cache-warm/race-detail-ssr?date=2026-06-01",
   );
+});
+
+it("warms cheaper sections before heatmap and retries unstored heatmap responses", async () => {
+  const worker = {
+    fetch: vi
+      .fn<FetchFn>()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response("{}", {
+          headers: { "X-Win-Rate-Heatmap-Cache": "MISS" },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("{}", {
+          headers: { "X-Win-Rate-Heatmap-Cache": "MISS-STORED" },
+          status: 200,
+        }),
+      ),
+  };
+  const resultsMessage = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "22",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "results" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  const heatmapMessage = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "22",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "win-rate-heatmap" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  const env = buildEnv();
+  const ctx = buildCtx();
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [heatmapMessage, resultsMessage], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    ctx,
+  );
+  const firstUrl = worker.fetch.mock.calls[0]?.[0];
+  expect(firstUrl).toBeInstanceOf(Request);
+  if (!(firstUrl instanceof Request)) throw new Error("Request expected");
+  expect(new URL(firstUrl.url).pathname).toBe("/api/races/2026/08/22/07/10/sections/results");
+  expect(resultsMessage.ack).toHaveBeenCalledTimes(1);
+  expect(heatmapMessage.retry).toHaveBeenCalledTimes(1);
+  expect(heatmapMessage.ack).not.toHaveBeenCalled();
+  expect(consoleMock).toHaveBeenCalledTimes(1);
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [heatmapMessage], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    ctx,
+  );
+  expect(heatmapMessage.ack).toHaveBeenCalledTimes(1);
 });
 
 it("schedule-ssr-warm-throws-on-non-ok-response", async () => {

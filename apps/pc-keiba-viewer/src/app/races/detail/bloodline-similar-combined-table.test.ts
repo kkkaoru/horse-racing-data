@@ -43,7 +43,15 @@ test("createDefaultScoreTargets returns a complete independent value", () => {
 
   expect(first).toStrictEqual({
     base: { correlation: true, time: true },
-    bloodline: { damSire: true, sire: true, sireSire: true },
+    bloodline: {
+      damDamSire: true,
+      damSire: true,
+      damSireSire: true,
+      sire: true,
+      sireDamSire: true,
+      sireSire: true,
+      sireSireSire: true,
+    },
     similar: { jockey: true, owner: true, trainer: true },
   });
   expect(first === second).toBe(false);

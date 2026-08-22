@@ -56,23 +56,43 @@ const SORT_LABELS: Record<RateSortKey, string> = {
 };
 
 const CATEGORY_LABELS: Record<BloodlineCategory, string> = {
+  damDamSire: "母母父",
   damSire: "母父",
+  damSireSire: "母父父",
   sire: "父",
+  sireDamSire: "父母父",
   sireSire: "父父",
+  sireSireSire: "父父父",
 };
 
 const CATEGORY_TITLE_LABELS: Record<BloodlineCategory, string> = {
+  damDamSire: "母母父の勝率",
   damSire: "母父の勝率",
+  damSireSire: "母父父の勝率",
   sire: "父の勝率",
+  sireDamSire: "父母父の勝率",
   sireSire: "父父の勝率",
+  sireSireSire: "父父父の勝率",
 };
 
-const CATEGORY_ORDER: BloodlineCategory[] = ["sire", "damSire", "sireSire"];
+const CATEGORY_ORDER: BloodlineCategory[] = [
+  "sire",
+  "damSire",
+  "sireSire",
+  "sireDamSire",
+  "sireSireSire",
+  "damSireSire",
+  "damDamSire",
+];
 
 const CATEGORY_SCORE_WEIGHTS: Record<BloodlineCategory, number> = {
+  damDamSire: 0,
   damSire: 0.35,
+  damSireSire: 0,
   sire: 0.45,
+  sireDamSire: 0,
   sireSire: 0.2,
+  sireSireSire: 0,
 };
 
 const METRIC_SCORE_WEIGHTS = {
@@ -243,9 +263,15 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
       const horseNumber = formatRunnerNumber(runner.umaban);
       const categoryRows = categoryRowsByHorse.get(horseNumber) ?? {};
       const categoryScores: Record<BloodlineCategory, number> = {
+        damDamSire: categoryRows.damDamSire ? (rowScores.get(categoryRows.damDamSire) ?? 0) : 0,
         damSire: categoryRows.damSire ? (rowScores.get(categoryRows.damSire) ?? 0) : 0,
+        damSireSire: categoryRows.damSireSire ? (rowScores.get(categoryRows.damSireSire) ?? 0) : 0,
         sire: categoryRows.sire ? (rowScores.get(categoryRows.sire) ?? 0) : 0,
+        sireDamSire: categoryRows.sireDamSire ? (rowScores.get(categoryRows.sireDamSire) ?? 0) : 0,
         sireSire: categoryRows.sireSire ? (rowScores.get(categoryRows.sireSire) ?? 0) : 0,
+        sireSireSire: categoryRows.sireSireSire
+          ? (rowScores.get(categoryRows.sireSireSire) ?? 0)
+          : 0,
       };
       const rawScore = CATEGORY_ORDER.reduce(
         (total, category) => total + categoryScores[category] * CATEGORY_SCORE_WEIGHTS[category],

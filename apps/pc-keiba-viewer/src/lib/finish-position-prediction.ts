@@ -1,5 +1,5 @@
 import type { RaceSource } from "./codes";
-import { cleanText } from "./format";
+import { cleanText, formatIsoTimestampAsJstDate } from "./format";
 import { isSameJockeyName } from "./jockey-name";
 import type {
   FinishPositionModelPredictionFeature,
@@ -73,6 +73,53 @@ type ScoreCandidate = {
 };
 
 export const RACE_FINISH_PREDICTION_RESULTS_EVENT = "pc-keiba:finish-prediction-results";
+
+export const FINISH_PREDICTION_NOT_GENERATED_LABEL =
+  "このレースの着順予測はまだ生成されていません。";
+export const FINISH_PREDICTION_GENERATED_WITHOUT_DATE_LABEL = "着順予測は生成済みです。";
+
+export const hasFinishPredictionModelOutput = (
+  features: readonly FinishPositionModelPredictionFeature[],
+): boolean => features.some((feature) => feature.predictedFinishNorm !== null);
+
+export const getLatestFinishPredictionGeneratedAt = (
+  features: readonly FinishPositionModelPredictionFeature[],
+): string | null => {
+  const timestamps = features.flatMap((feature) => {
+    const value = feature.predictionGeneratedAt;
+    return typeof value === "string" && value.length > 0 ? [value] : [];
+  });
+  if (timestamps.length === 0) {
+    return null;
+  }
+  return timestamps.reduce((latest, current) => {
+    const latestMs = Date.parse(latest);
+    const currentMs = Date.parse(current);
+    if (!Number.isFinite(currentMs)) {
+      return latest;
+    }
+    if (!Number.isFinite(latestMs) || currentMs > latestMs) {
+      return current;
+    }
+    return latest;
+  });
+};
+
+export const formatFinishPredictionGeneratedAtLabel = (
+  features: readonly FinishPositionModelPredictionFeature[],
+): string => {
+  if (!hasFinishPredictionModelOutput(features)) {
+    return FINISH_PREDICTION_NOT_GENERATED_LABEL;
+  }
+  const generatedAt = getLatestFinishPredictionGeneratedAt(features);
+  if (generatedAt === null) {
+    return FINISH_PREDICTION_GENERATED_WITHOUT_DATE_LABEL;
+  }
+  const dateLabel = formatIsoTimestampAsJstDate(generatedAt);
+  return dateLabel === null
+    ? FINISH_PREDICTION_GENERATED_WITHOUT_DATE_LABEL
+    : `予測生成日: ${dateLabel}`;
+};
 
 export const buildFinishPredictionMarketOverrides = (
   tanshoRows: ReadonlyArray<{

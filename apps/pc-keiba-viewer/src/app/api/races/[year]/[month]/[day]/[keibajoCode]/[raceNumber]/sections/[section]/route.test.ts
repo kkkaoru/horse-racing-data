@@ -44,20 +44,22 @@ vi.mock("../../../../../../../../../../lib/finish-prediction-inputs-cache.server
 
 vi.mock("../../../../../../../../../../lib/race-detail-section-cache", () => ({
   buildDetailSectionCacheKey: mocks.buildDetailSectionCacheKeyMock,
+  DETAIL_SECTION_CACHE_WARM_PARAM: "__cacheWarm",
   isDefaultDetailSectionCacheRequest: mocks.isDefaultDetailSectionCacheRequestMock,
   PREDICTION_REFRESH_PARAM: "__predictionRefresh",
   stripDetailSectionCacheWarmParams: mocks.stripDetailSectionCacheWarmParamsMock,
 }));
 
-vi.mock("../../../../../../../../../../lib/win-rate-heatmap-cache", () => ({
-  buildWinRateHeatmapCacheKey: mocks.buildWinRateHeatmapCacheKeyMock,
-  isWinRateHeatmapSectionPayload: (value: unknown) =>
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    value.type === "win-rate-heatmap",
-  serializeWinRateHeatmapCacheQuery: mocks.serializeWinRateHeatmapCacheQueryMock,
-}));
+vi.mock("../../../../../../../../../../lib/win-rate-heatmap-cache", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../../../../../../../../../lib/win-rate-heatmap-cache")
+  >("../../../../../../../../../../lib/win-rate-heatmap-cache");
+  return {
+    ...actual,
+    buildWinRateHeatmapCacheKey: mocks.buildWinRateHeatmapCacheKeyMock,
+    serializeWinRateHeatmapCacheQuery: mocks.serializeWinRateHeatmapCacheQueryMock,
+  };
+});
 
 vi.mock("../../../../../../../../../../lib/win-rate-heatmap-cache.server", () => ({
   getCachedWinRateHeatmapPayload: mocks.getCachedWinRateHeatmapPayloadMock,
@@ -89,6 +91,7 @@ const {
   getStaleDetailSectionBodyMock,
   isDefaultDetailSectionCacheRequestMock,
   putWinRateHeatmapCacheMock,
+  safeGetCloudflareExecutionContextMock,
   serializeWinRateHeatmapCacheQueryMock,
   stripDetailSectionCacheWarmParamsMock,
 } = mocks;
@@ -111,6 +114,7 @@ beforeEach(() => {
   buildWinRateHeatmapCacheKeyMock.mockReturnValue("win-rate-heatmap-cache-key");
   serializeWinRateHeatmapCacheQueryMock.mockReturnValue("default");
   putWinRateHeatmapCacheMock.mockResolvedValue(undefined);
+  safeGetCloudflareExecutionContextMock.mockResolvedValue(null);
 });
 
 it("returns fresh bucket merged with cached static payload when finish-prediction cache hits and raceSource is truthy", async () => {
@@ -957,6 +961,78 @@ it("stores a computed win-rate heatmap payload in Cache API and KV", async () =>
   expect(response.status).toBe(200);
   expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS-STORED");
   expect(putWinRateHeatmapCacheMock).toHaveBeenCalledTimes(1);
+});
+
+it("returns 503 for queue heatmap warms when cache storage fails", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getDetailSectionPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  putWinRateHeatmapCacheMock.mockRejectedValueOnce(new Error("kv put failed"));
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toStrictEqual({ error: "heatmap_cache_store_failed" });
+});
+
+it("still returns a computed heatmap payload when cache storage fails", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getDetailSectionPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
+  putWinRateHeatmapCacheMock.mockRejectedValueOnce(new Error("kv put failed"));
+  const response = await GET(
+    new Request("https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap"),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS");
+  expect(await response.json()).toStrictEqual({
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    weightClassStats: [],
+  });
 });
 
 it("returns 404 when a win-rate heatmap race source is missing", async () => {

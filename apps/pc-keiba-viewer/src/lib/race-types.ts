@@ -368,7 +368,7 @@ export interface AbilityTest extends Record<string, unknown> {
 }
 
 export interface SimilarRaceStatsRow extends Record<string, unknown> {
-  category: "jockey" | "owner" | "trainer";
+  category: "jockey" | "jockeyFrame" | "owner" | "trainer";
   currentHorseNumbers: string;
   name: string;
   details: StatsDetail[];
@@ -385,7 +385,14 @@ export interface SimilarRaceStatsRow extends Record<string, unknown> {
 }
 
 export interface BloodlineStatsRow extends Record<string, unknown> {
-  category: "damSire" | "sire" | "sireSire";
+  category:
+    | "damDamSire"
+    | "damSire"
+    | "damSireSire"
+    | "sire"
+    | "sireDamSire"
+    | "sireSire"
+    | "sireSireSire";
   currentHorseNumbers: string;
   name: string;
   details: StatsDetail[];
@@ -694,6 +701,7 @@ export interface FinishPositionModelPredictionFeature extends Record<string, unk
   horseNumber: string;
   modelVersion: string;
   predictedFinishNorm: number | null;
+  predictionGeneratedAt?: string | null;
   // Race-level raw within-race predicted_score standard deviation -- the same
   // value confidenceTier is derived from, exposed directly so the display
   // layer can show the actual number plus an explanation rather than a

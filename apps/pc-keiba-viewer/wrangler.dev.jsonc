@@ -10,10 +10,12 @@
     {
       "binding": "DETAIL_SECTION_CACHE_KV",
       "id": "a013fdf6e7224c3ab0c227be3c899073",
+      "remote": true,
     },
     {
       "binding": "PADDOCK_STATE_KV",
       "id": "1cb633c48a084a428d3ce3e0f844f7d1",
+      "remote": true,
     },
   ],
   "vars": {
@@ -45,6 +47,7 @@
     {
       "binding": "FINISH_POSITION_MODELS",
       "bucket_name": "pc-keiba-finish-position-models",
+      "remote": true,
     },
   ],
 }

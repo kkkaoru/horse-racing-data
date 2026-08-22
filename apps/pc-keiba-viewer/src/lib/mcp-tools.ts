@@ -188,7 +188,11 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       additionalProperties: false,
       properties: {
         ...RACE_ROUTE_PROPERTIES,
-        showStarts: { description: "When true, include (n) start labels.", type: "boolean" },
+        showStarts: {
+          description:
+            "When true, show (n) start counts on heatmap cells. Tooltips always include start counts.",
+          type: "boolean",
+        },
         viewMode: {
           description: "Heatmap view mode.",
           enum: ["winRate", "quinellaRate", "showRate", "all"],

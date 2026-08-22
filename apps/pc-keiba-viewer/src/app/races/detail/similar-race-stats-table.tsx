@@ -18,7 +18,10 @@ import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 type RateSortKey = "score" | "showRate" | "quinellaRate" | "winRate";
 type SortDirection = "asc" | "desc";
-type StatsCategory = SimilarRaceStatsRow["category"];
+type StatsCategory = "jockey" | "owner" | "trainer";
+
+const isSimilarTableCategory = (value: SimilarRaceStatsRow["category"]): value is StatsCategory =>
+  value === "jockey" || value === "owner" || value === "trainer";
 
 interface ScoredSimilarRaceStatsRow extends SimilarRaceStatsRow {
   score: number;
@@ -257,9 +260,13 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
       Partial<Record<StatsCategory, ScoredSimilarRaceStatsRow>>
     >();
     for (const row of scoredRows) {
+      if (!isSimilarTableCategory(row.category)) {
+        continue;
+      }
+      const tableCategory = row.category;
       for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
         const currentRows = categoryRowsByHorse.get(horseNumber);
-        categoryRowsByHorse.set(horseNumber, { ...currentRows, [row.category]: row });
+        categoryRowsByHorse.set(horseNumber, { ...currentRows, [tableCategory]: row });
       }
     }
 

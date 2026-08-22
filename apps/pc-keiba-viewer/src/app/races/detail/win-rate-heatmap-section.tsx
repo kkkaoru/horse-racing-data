@@ -1,6 +1,14 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 
 import { indexLiveHorseWeightKg } from "../../../lib/horse-weight-class";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
@@ -13,6 +21,10 @@ import type {
   WeightClassStatsRow,
 } from "../../../lib/race-types";
 import {
+  loadHeatmapShowStartsForCurrentUser,
+  persistHeatmapShowStartsForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
+import {
   buildWinRateHeatmapColorScaleGradient,
   buildWinRateHeatmapDisplay,
   DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
@@ -21,7 +33,7 @@ import {
   formatWinRateHeatmapColorScaleCaption,
   formatWinRateHeatmapColorScaleTick,
   getWinRateHeatmapColorScaleTracks,
-  WIN_RATE_HEATMAP_COLOR_SCALE_TICKS,
+  type WinRateHeatmapColorScales,
   WIN_RATE_HEATMAP_VIEW_MODES,
   type WinRateHeatmapDisplaySwatch,
   type WinRateHeatmapRateMetric,
@@ -44,31 +56,45 @@ interface WinRateHeatmapSectionProps {
 
 interface WinRateHeatmapSwatchProps {
   frameNumber: string;
-  isLastRow: boolean;
+  isLastColumn: boolean;
   isOpen: boolean;
   onToggle: () => void;
   swatch: WinRateHeatmapDisplaySwatch;
+  tooltipAbove: boolean;
+  viewMode: WinRateHeatmapViewMode;
 }
 
 interface WinRateHeatmapColorScaleProps {
   metrics: readonly WinRateHeatmapRateMetric[];
+  scales: WinRateHeatmapColorScales;
 }
 
 const WIN_RATE_HEATMAP_VIEW_RADIO_NAME = "win-rate-heatmap-view";
 const HEATMAP_MOBILE_TOOLTIP_QUERY = "(max-width: 720px)";
+const HEATMAP_TOOLTIP_ABOVE_ROW_COUNT: number = 2;
 
-const heatmapSwatchClassName = (input: { isLastRow: boolean; isOpen: boolean }): string => {
-  if (input.isLastRow && input.isOpen) {
-    return "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above tooltip-open";
+const heatmapSwatchClassName = (input: {
+  isLastColumn: boolean;
+  isOpen: boolean;
+  tooltipAbove: boolean;
+}): string => {
+  const classNames = ["win-rate-heatmap-swatch"];
+  if (input.tooltipAbove) {
+    classNames.push("win-rate-heatmap-tooltip-above");
   }
-  if (input.isLastRow) {
-    return "win-rate-heatmap-swatch win-rate-heatmap-tooltip-above";
+  if (input.isLastColumn) {
+    classNames.push("win-rate-heatmap-tooltip-left");
   }
   if (input.isOpen) {
-    return "win-rate-heatmap-swatch tooltip-open";
+    classNames.push("tooltip-open");
   }
-  return "win-rate-heatmap-swatch";
+  return classNames.join(" ");
 };
+
+const heatmapTableClassName = (viewMode: WinRateHeatmapViewMode): string =>
+  viewMode === "all"
+    ? "stats-table win-rate-heatmap-table win-rate-heatmap-table-combined"
+    : "stats-table win-rate-heatmap-table";
 
 const subscribeHeatmapMobileTooltip = (onStoreChange: () => void): (() => void) => {
   if (typeof window === "undefined" || !window.matchMedia) {
@@ -96,76 +122,184 @@ const getHeatmapMobileTooltipSnapshot = (): boolean =>
 
 const getHeatmapMobileTooltipServerSnapshot = (): boolean => false;
 
-const WinRateHeatmapColorScale = ({ metrics }: WinRateHeatmapColorScaleProps) => (
-  <div className="win-rate-heatmap-color-scale-slot">
-    <figure
-      aria-label={formatWinRateHeatmapColorScaleAriaLabel(metrics)}
-      className="win-rate-heatmap-color-scale"
-    >
-      <figcaption className="win-rate-heatmap-color-scale-heading">
-        {formatWinRateHeatmapColorScaleCaption(metrics)}
-      </figcaption>
-      <div className="win-rate-heatmap-color-scale-tracks">
-        {getWinRateHeatmapColorScaleTracks(metrics).map((metric) => (
-          <div
-            className="win-rate-heatmap-color-scale-track win-rate-heatmap-color-scale-track-solo"
-            key={metric.key}
-          >
-            <div
-              className="win-rate-heatmap-color-scale-bar"
-              style={{ backgroundImage: buildWinRateHeatmapColorScaleGradient(metric.hue) }}
-            />
+const isHeatmapTooltipAboveRow = (rowIndex: number, rowCount: number): boolean =>
+  rowIndex >= rowCount - HEATMAP_TOOLTIP_ABOVE_ROW_COUNT;
+
+const WinRateHeatmapColorScale = ({ metrics, scales }: WinRateHeatmapColorScaleProps) => {
+  const tracks = getWinRateHeatmapColorScaleTracks(metrics, scales);
+  const firstTrack = tracks[0];
+  const sharedScale =
+    tracks.length === 1 && firstTrack !== undefined ? scales[firstTrack.key] : null;
+  return (
+    <div className="win-rate-heatmap-color-scale-slot">
+      <figure
+        aria-label={formatWinRateHeatmapColorScaleAriaLabel(metrics, scales)}
+        className={
+          tracks.length > 1
+            ? "win-rate-heatmap-color-scale win-rate-heatmap-color-scale-stacked"
+            : "win-rate-heatmap-color-scale"
+        }
+      >
+        <figcaption className="win-rate-heatmap-color-scale-heading">
+          {formatWinRateHeatmapColorScaleCaption(metrics)}
+        </figcaption>
+        <div className="win-rate-heatmap-color-scale-tracks">
+          {tracks.map((metric) => {
+            const scale = scales[metric.key];
+            return (
+              <div
+                className={
+                  tracks.length === 1
+                    ? "win-rate-heatmap-color-scale-track win-rate-heatmap-color-scale-track-solo"
+                    : "win-rate-heatmap-color-scale-track"
+                }
+                key={metric.key}
+              >
+                {tracks.length === 1 ? null : (
+                  <span className="win-rate-heatmap-color-scale-track-label">
+                    {metric.shortLabel}
+                  </span>
+                )}
+                <div className="win-rate-heatmap-color-scale-track-body">
+                  <div
+                    className="win-rate-heatmap-color-scale-bar"
+                    style={{
+                      backgroundImage: buildWinRateHeatmapColorScaleGradient({
+                        hue: metric.hue,
+                        maxRate: scale.maxRate,
+                        minRate: scale.minRate,
+                        ticks: scale.ticks,
+                      }),
+                    }}
+                  />
+                  {tracks.length === 1 ? null : (
+                    <div className="win-rate-heatmap-color-scale-ticks">
+                      {scale.ticks.map((rate) => (
+                        <span key={rate}>
+                          {formatWinRateHeatmapColorScaleTick(rate, scale.maxRate)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {sharedScale === null ? null : (
+          <div className="win-rate-heatmap-color-scale-ticks">
+            {sharedScale.ticks.map((rate) => (
+              <span key={rate}>
+                {formatWinRateHeatmapColorScaleTick(rate, sharedScale.maxRate)}
+              </span>
+            ))}
           </div>
-        ))}
-      </div>
-      <div className="win-rate-heatmap-color-scale-ticks">
-        {WIN_RATE_HEATMAP_COLOR_SCALE_TICKS.map((rate) => (
-          <span key={rate}>{formatWinRateHeatmapColorScaleTick(rate)}</span>
-        ))}
-      </div>
-    </figure>
-  </div>
-);
+        )}
+      </figure>
+    </div>
+  );
+};
+
+const heatmapSwatchValueClassName = (isZero: boolean): string =>
+  isZero
+    ? "win-rate-heatmap-swatch-value win-rate-heatmap-swatch-zero"
+    : "win-rate-heatmap-swatch-value";
+
+const heatmapSwatchStartsClassName = (isZero: boolean): string =>
+  isZero
+    ? "win-rate-heatmap-swatch-starts win-rate-heatmap-swatch-zero"
+    : "win-rate-heatmap-swatch-starts";
+
+// Combined 勝率+連対率+複勝率 stacks three rates in a narrow cell.
+// Never append "%" there: it overflows 4-digit starts and dense rates.
+// Single-metric modes keep the suffix so the unit stays visible on desktop.
+const heatmapSwatchValueSuffix = (
+  viewMode: WinRateHeatmapViewMode,
+  valueLabel: string,
+): string | null => (viewMode === "all" || valueLabel === "-" ? null : "%");
+
+const heatmapSwatchNameLabel = (input: {
+  frameNumber: string;
+  swatch: WinRateHeatmapDisplaySwatch;
+}): string => {
+  if (input.swatch.columnKey === "jockeyFrame") {
+    return `${input.swatch.columnLabel} ${input.frameNumber} ${input.swatch.name}`;
+  }
+  if (input.swatch.columnKey === "frame") {
+    return `${input.swatch.columnLabel} ${input.frameNumber}`;
+  }
+  return `${input.swatch.columnLabel} ${input.swatch.name}`;
+};
 
 const heatmapSwatchAriaLabel = (input: {
   frameNumber: string;
   swatch: WinRateHeatmapDisplaySwatch;
 }): string => {
-  const nameLabel =
-    input.swatch.columnKey === "frame"
-      ? `${input.swatch.columnLabel} ${input.frameNumber}`
-      : `${input.swatch.columnLabel} ${input.swatch.name}`;
+  const nameLabel = heatmapSwatchNameLabel(input);
   return input.swatch.startsLabel === null ? nameLabel : `${nameLabel} ${input.swatch.startsLabel}`;
+};
+
+const heatmapTooltipNameContent = (input: {
+  frameNumber: string;
+  swatch: WinRateHeatmapDisplaySwatch;
+}): ReactNode => {
+  if (input.swatch.columnKey === "frame") {
+    return <FrameNumberBadge value={input.frameNumber} />;
+  }
+  if (input.swatch.columnKey === "jockeyFrame") {
+    return (
+      <>
+        <FrameNumberBadge value={input.frameNumber} />
+        {input.swatch.name}
+      </>
+    );
+  }
+  return input.swatch.name;
 };
 
 const WinRateHeatmapSwatch = ({
   frameNumber,
-  isLastRow,
+  isLastColumn,
   isOpen,
   onToggle,
   swatch,
-}: WinRateHeatmapSwatchProps) => (
-  <td
-    className={heatmapSwatchClassName({ isLastRow, isOpen })}
-    style={{ backgroundColor: swatch.background }}
-  >
-    <button
-      aria-label={heatmapSwatchAriaLabel({ frameNumber, swatch })}
-      aria-expanded={isOpen}
-      className="win-rate-heatmap-swatch-button"
-      type="button"
-      onClick={onToggle}
+  tooltipAbove,
+  viewMode,
+}: WinRateHeatmapSwatchProps) => {
+  const valueSuffix = heatmapSwatchValueSuffix(viewMode, swatch.valueLabel);
+  return (
+    <td
+      className={heatmapSwatchClassName({ isLastColumn, isOpen, tooltipAbove })}
+      style={{ backgroundColor: swatch.background, color: swatch.foreground }}
     >
-      <span className="win-rate-heatmap-swatch-value">{swatch.valueLabel}</span>
-      <span className="win-rate-heatmap-tooltip" role="tooltip">
-        {swatch.columnKey === "frame" ? <FrameNumberBadge value={frameNumber} /> : swatch.name}
-        {swatch.startsLabel === null ? null : (
-          <span className="win-rate-heatmap-tooltip-starts">{swatch.startsLabel}</span>
+      <button
+        aria-label={heatmapSwatchAriaLabel({ frameNumber, swatch })}
+        aria-expanded={isOpen}
+        className="win-rate-heatmap-swatch-button"
+        type="button"
+        onClick={onToggle}
+      >
+        <span className={heatmapSwatchValueClassName(swatch.isZeroValue)}>
+          {swatch.valueLabel}
+          {valueSuffix === null ? null : (
+            <span className="win-rate-heatmap-swatch-value-suffix">{valueSuffix}</span>
+          )}
+        </span>
+        {swatch.graphStartsLabel === null ? null : (
+          <span className={heatmapSwatchStartsClassName(swatch.isZeroGraphStarts)}>
+            {swatch.graphStartsLabel}
+          </span>
         )}
-      </span>
-    </button>
-  </td>
-);
+        <span className="win-rate-heatmap-tooltip" role="tooltip">
+          {heatmapTooltipNameContent({ frameNumber, swatch })}
+          {swatch.startsLabel === null ? null : (
+            <span className="win-rate-heatmap-tooltip-starts">{swatch.startsLabel}</span>
+          )}
+        </span>
+      </button>
+    </td>
+  );
+};
 
 export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   bloodlineRows,
@@ -183,6 +317,22 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
     DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   );
+  const hasEditedShowStarts = useRef(false);
+  useEffect(() => {
+    const loadState = { cancelled: false };
+    void loadHeatmapShowStartsForCurrentUser()
+      .then((stored) => {
+        if (loadState.cancelled || hasEditedShowStarts.current) {
+          return undefined;
+        }
+        setShowStarts(stored);
+        return undefined;
+      })
+      .catch(() => undefined);
+    return () => {
+      loadState.cancelled = true;
+    };
+  }, []);
   const isMobileTooltip = useSyncExternalStore(
     subscribeHeatmapMobileTooltip,
     getHeatmapMobileTooltipSnapshot,
@@ -244,6 +394,8 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   if (display.empty) {
     return <p className="empty-state">勝率ヒートマップを表示する出走馬がありません。</p>;
   }
+  const lastVisibleColumnKey =
+    display.visibleColumns[display.visibleColumns.length - 1]?.key ?? null;
   return (
     <div className="win-rate-heatmap-wrap">
       <fieldset aria-label="表示指標" className="win-rate-heatmap-view-toggle">
@@ -266,15 +418,18 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
             checked={showStarts}
             type="checkbox"
             onChange={() => {
-              setShowStarts((current) => !current);
+              const nextShowStarts = !showStarts;
+              hasEditedShowStarts.current = true;
+              setShowStarts(nextShowStarts);
+              void persistHeatmapShowStartsForCurrentUser(nextShowStarts).catch(() => undefined);
             }}
           />
           レース数
         </label>
       </fieldset>
-      <WinRateHeatmapColorScale metrics={display.visibleRateMetrics} />
+      <WinRateHeatmapColorScale metrics={display.visibleRateMetrics} scales={display.colorScales} />
       <div className="stats-table-wrap win-rate-heatmap-table-wrap">
-        <table className="stats-table win-rate-heatmap-table">
+        <table className={heatmapTableClassName(display.viewMode)}>
           <colgroup>
             <col className="win-rate-heatmap-col-number" />
           </colgroup>
@@ -314,10 +469,12 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
                   return (
                     <WinRateHeatmapSwatch
                       frameNumber={row.frameNumber}
-                      isLastRow={rowIndex === display.rows.length - 1}
+                      isLastColumn={swatch.columnKey === lastVisibleColumnKey}
                       isOpen={isMobileTooltip && openTooltipKey === tooltipKey}
+                      tooltipAbove={isHeatmapTooltipAboveRow(rowIndex, display.rows.length)}
                       key={tooltipKey}
                       swatch={swatch}
+                      viewMode={display.viewMode}
                       onToggle={() => {
                         if (!isMobileTooltip) {
                           return;

@@ -268,6 +268,7 @@ it("parsePredictionFinishPositionFeatures parses a feature array", () => {
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 0.25,
       predictedScoreStddev: 1.4,
+      predictionGeneratedAt: null,
       showProbability: 0.12,
       winProbability: 0.05,
     },
@@ -293,6 +294,7 @@ it("parsePredictionFinishPositionFeatures accepts a {features:[]} envelope", () 
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 0.25,
       predictedScoreStddev: null,
+      predictionGeneratedAt: null,
       showProbability: null,
       winProbability: null,
     },
@@ -346,6 +348,32 @@ it("parsePredictionFinishPositionFeatures maps non-number and unknown fields to 
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: null,
       predictedScoreStddev: null,
+      predictionGeneratedAt: null,
+      showProbability: null,
+      winProbability: null,
+    },
+  ]);
+});
+
+it("parsePredictionFinishPositionFeatures keeps a predictionGeneratedAt string", () => {
+  const body = JSON.stringify([
+    {
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: 0.25,
+      predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
+      showProbability: null,
+      winProbability: null,
+    },
+  ]);
+  expect(parsePredictionFinishPositionFeatures(body)).toStrictEqual([
+    {
+      confidenceTier: null,
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: 0.25,
+      predictedScoreStddev: null,
+      predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
       showProbability: null,
       winProbability: null,
     },

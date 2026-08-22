@@ -8,7 +8,7 @@ import {
   getTomorrowJstDateParts,
   parseIsoDateParts,
   type DetailSectionCacheWarmMessage,
-  type DetailSectionCacheableSection,
+  type DetailSectionQueueWarmSection,
 } from "../../../../lib/race-detail-section-cache";
 import { isCornerPacePredictionSupported } from "../../../../lib/race-pace-prediction";
 
@@ -34,8 +34,8 @@ const getRaceSections = (race: {
   distance?: string | null;
   keibajoCode: string;
   source: "jra" | "nar";
-}): DetailSectionCacheableSection[] => {
-  const sections: DetailSectionCacheableSection[] = [...DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS];
+}): DetailSectionQueueWarmSection[] => {
+  const sections: DetailSectionQueueWarmSection[] = [...DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS];
   if (race.source === "nar") {
     sections.push("ability");
   }

@@ -3,6 +3,7 @@ import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import {
   DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
   buildDetailSectionCacheKey,
+  type DetailSectionCacheableSection,
   type DetailSectionCacheWarmMessage,
 } from "./race-detail-section-cache";
 import {
@@ -302,5 +303,7 @@ export const putDetailSectionCache = async ({
 };
 
 export const buildDetailSectionCacheKeyForMessage = (
-  message: Omit<DetailSectionCacheWarmMessage, "source">,
+  message: Omit<DetailSectionCacheWarmMessage, "section" | "source"> & {
+    section: DetailSectionCacheableSection;
+  },
 ): string => buildDetailSectionCacheKey(message);

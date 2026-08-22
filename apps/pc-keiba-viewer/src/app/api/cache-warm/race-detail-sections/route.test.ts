@@ -182,4 +182,15 @@ it("POST enqueues default sections for a JRA race using the queue's sendBatch", 
   expect(message.keibajoCode).toStrictEqual("05");
   expect(message.raceNumber).toStrictEqual("01");
   expect(message.source).toStrictEqual("jra");
+  expect(payload.map((entry) => entry.body.section).toSorted()).toStrictEqual([
+    "bloodline",
+    "condition",
+    "overall-score",
+    "pace-prediction",
+    "results",
+    "similar",
+    "time-score",
+    "training",
+    "win-rate-heatmap",
+  ]);
 });

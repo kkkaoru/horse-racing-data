@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, memo, useEffect, useState } from "react";
+import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
 
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type {
@@ -14,6 +14,7 @@ import { FrameNumberBadge } from "./frame-number-badge";
 import { formatRaceTimeDecimalTenths, formatRaceTimeTenths } from "./race-time-stats-metrics";
 
 interface RaceConditionAnalysisSectionProps {
+  afterTargetRaces: ReactNode;
   finishPositionStats: FinishPositionStatsRow[];
   payoutStats: PayoutStatsRow[];
   raceTimeStats: RaceTimeStats;
@@ -53,6 +54,7 @@ const buildRaceHref = (date: string, keibajoCode: string, raceNumber: string): s
 };
 
 export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisSection({
+  afterTargetRaces,
   finishPositionStats,
   payoutStats,
   raceTimeStats,
@@ -181,6 +183,8 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
             </table>
           </div>
         </section>
+
+        {afterTargetRaces}
 
         <section className="stats-category-section">
           <div className="section-heading compact">
