@@ -1403,6 +1403,49 @@ it("getRaceTimeStats matches past races with cell track and grade predicates", a
   expect(queryText).not.toMatch(/ra\.kyoso_kigo_code = /u);
 });
 
+it("getRaceTimeStats excludes graded races from ungraded JRA open matching", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceTimeStats(
+    {
+      ...PERCLASS_703_RACE,
+      gradeCode: null,
+      kyosoJokenCode: "999",
+      kyosoJokenMeisho: "オープン",
+    },
+    {
+      cellMatching: true,
+      classConditionName: "オープン",
+      includeAge: true,
+      includeBloodlineAncestors: true,
+      includeClass: true,
+      includeConditionKey: false,
+      includeDistance: true,
+      includeFrame: false,
+      includeGrade: false,
+      includeMonthWindow: false,
+      includeNarOnly: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: false,
+      includeRunnerCount: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTrackCode: true,
+      includeTurn: false,
+      includeVenue: true,
+      includeWeight: false,
+      runnerCount: null,
+      sourceScope: "jra",
+      years: 10,
+    },
+  );
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/is distinct from '999'/u);
+  expect(queryText).toMatch(/nullif\(btrim\(coalesce\(ra\.grade_code, ''\)\), ''\) is null/u);
+});
+
 it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when all flags are on", async () => {
   executeMock.mockResolvedValue({ rows: [PERFECT_AGGREGATE_ROW] });
   await getRunningStyleBucketEvaluation({ filter: ALL_FLAGS_ON_FILTER });
@@ -2840,6 +2883,8 @@ it("get-race-trainings-sql-left-joins-runners-with-no-workout-rows", async () =>
   // of showing one placeholder row per entrant.
   expect(/no_workout_runners as \(/u.test(queryText)).toBe(true);
   expect(/from all_workouts/u.test(queryText)).toBe(true);
+  expect(queryText).toMatch(/n\.rider_name as "trainingRiderName"/u);
+  expect(queryText).toMatch(/n\.training_type/u);
 });
 
 it("get-race-trainings-partitions workout rows by runner number for real and placeholder IDs", async () => {

@@ -11,8 +11,8 @@ import {
   serializeWinRateHeatmapCacheQuery,
 } from "./win-rate-heatmap-cache";
 
-it("uses heatmap cache namespace v8", () => {
-  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v8");
+it("uses heatmap cache namespace v10", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v10");
 });
 
 it("uses a 36 hour heatmap cache TTL", () => {

@@ -402,6 +402,31 @@ it("uses cell classification flags for condition analysis past-race matching", a
   });
 });
 
+it("enables cell-matching grade for JRA G3 condition analysis", async () => {
+  getRaceDetailMock.mockResolvedValueOnce({
+    ...JRA_RACE,
+    gradeCode: "C",
+    kyosomeiHondai: "札幌記念",
+  });
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+
+  const context = await getDetailStatsContext({
+    day: "23",
+    keibajoCode: "01",
+    month: "08",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2026",
+  });
+
+  expect(context?.conditionAnalysisSettings).toMatchObject({
+    cellMatching: true,
+    includeGrade: true,
+    includeTrackCode: true,
+  });
+});
+
 it("turns off the analysis cell venue flag from analysisCellKeibajo=0", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
@@ -2489,10 +2514,16 @@ it("assembles heatmap payload from Catalog stats, results, and condition section
   expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(1);
   expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
     day: "28",
+    includeAge: true,
+    includeClass: true,
+    includeConditionKey: false,
     includeDistance: true,
+    includeGrade: true,
     includeJockeyFrame: true,
-    includeSurface: true,
-    includeTurn: true,
+    includeRaceTitle: false,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
     includeVenue: true,
     keibajoCode: "06",
     month: "12",
@@ -2541,10 +2572,16 @@ it("sends the 10-year Catalog window when similar stats years are all", async ()
 
   expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
     day: "28",
+    includeAge: true,
+    includeClass: true,
+    includeConditionKey: false,
     includeDistance: true,
+    includeGrade: true,
     includeJockeyFrame: true,
-    includeSurface: true,
-    includeTurn: true,
+    includeRaceTitle: false,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
     includeVenue: true,
     keibajoCode: "06",
     month: "12",
@@ -2935,9 +2972,10 @@ it("results payload throws when Catalog returns HTTP 502", async () => {
   expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
 });
 
-it("condition payload uses Catalog stats, empties payouts, and skips Neon", async () => {
+it("condition payload uses Catalog stats, fills payouts from Neon, and skips other Neon history", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getPayoutStatsMock.mockResolvedValue([{ betType: "単勝", count: 12 }]);
   fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
     carriedWeightClassStats: [{ key: "55.5-57" }],
     finishPositionStats: [{ count: 2, details: [], finishPosition: 1 }],
@@ -2952,7 +2990,22 @@ it("condition payload uses Catalog stats, empties payouts, and skips Neon", asyn
       medianKohan3f: null,
       medianRaceTime: null,
       raceCount: 12,
-      targetRaces: [],
+      targetRaces: [
+        {
+          date: "20241027",
+          horseName: "イクイノックス",
+          horseNumber: "05",
+          jockeyName: "ルメール",
+          keibajoCode: "05",
+          kohan3f: "351",
+          ownerName: "シルク",
+          popularity: "01",
+          raceName: "天皇賞",
+          raceNumber: "08",
+          raceTime: "1450",
+          trainerName: "堀",
+        },
+      ],
     },
     weightClassStats: [{ key: "480-499" }],
   });
@@ -2971,12 +3024,12 @@ it("condition payload uses Catalog stats, empties payouts, and skips Neon", asyn
     carriedWeightClassStats: [{ key: "55.5-57" }],
     finishPositionStats: [{ finishPosition: 1 }],
     frameStats: [{ frameNumber: "1" }],
-    payoutStats: [],
+    payoutStats: [{ betType: "単勝", count: 12 }],
     type: "condition",
     weightClassStats: [{ key: "480-499" }],
   });
   expect(getFrameStatsMock).not.toHaveBeenCalled();
-  expect(getPayoutStatsMock).not.toHaveBeenCalled();
+  expect(getPayoutStatsMock).toHaveBeenCalledOnce();
   expect(getFinishPositionStatsMock).not.toHaveBeenCalled();
   expect(getWeightClassStatsMock).not.toHaveBeenCalled();
   expect(getCarriedWeightClassStatsMock).not.toHaveBeenCalled();
@@ -2986,6 +3039,19 @@ it("condition payload uses Catalog stats, empties payouts, and skips Neon", asyn
 it("condition payload keeps Ban'ei carried weights empty when Catalog succeeds", async () => {
   getRaceDetailMock.mockResolvedValue(BAN_EI_RACE);
   getRaceRunnersMock.mockResolvedValue([]);
+  getPayoutStatsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 1,
+    targetRaces: [{ date: "20260501", horseName: "A", horseNumber: "1" }],
+  });
   fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
     carriedWeightClassStats: [{ key: "le49" }],
     finishPositionStats: [],
@@ -3022,25 +3088,45 @@ it("condition payload keeps Ban'ei carried weights empty when Catalog succeeds",
   expect(getCarriedWeightClassStatsMock).not.toHaveBeenCalled();
 });
 
-it("condition payload throws when Catalog returns HTTP 502", async () => {
+it("condition payload falls back to Neon when Catalog returns HTTP 502", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
   fetchConditionHistoryStatsFromCatalogMock.mockRejectedValue(
     new Error("R2 Catalog condition history stats failed: 502"),
   );
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 4,
+    targetRaces: [{ date: "20241027", horseName: "A", horseNumber: "1" }],
+  });
+  getPayoutStatsMock.mockResolvedValue([]);
+  getFinishPositionStatsMock.mockResolvedValue([]);
+  getFrameStatsMock.mockResolvedValue([{ count: 3, frameNumber: "1" }]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([]);
 
-  await expect(
-    getDetailSectionPayload("condition", {
-      day: "28",
-      keibajoCode: "06",
-      month: "12",
-      query: {},
-      raceNumber: "11",
-      raceSource: "jra",
-      year: "2025",
-    }),
-  ).rejects.toThrow("R2 Catalog condition history stats failed: 502");
-  expect(getFrameStatsMock).not.toHaveBeenCalled();
+  const payload = await getDetailSectionPayload("condition", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    frameStats: [{ frameNumber: "1" }],
+    type: "condition",
+  });
+  expect(getFrameStatsMock.mock.calls.length > 0).toBe(true);
 });
 
 it("time-score payload uses Catalog similar/bloodline and Catalog raceTimeStats", async () => {

@@ -608,3 +608,77 @@ test("LazyDetailSections renders training before heatmap and heatmap immediately
   expect(conditionHeading.compareDocumentPosition(targetRaceHeading)).toStrictEqual(4);
   expect(targetRaceHeading.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
 });
+
+test("LazyDetailSections still shows the heatmap when the condition section fetch fails", async () => {
+  installMatchMediaMockTimeScore(false);
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url === "/api/races/2027/06/16/05/01/sections/condition") {
+      return Promise.resolve(new Response("", { status: 502, statusText: "Bad Gateway" }));
+    }
+    if (url === "/api/races/2027/06/16/05/01/sections/win-rate-heatmap") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [],
+            horseResults: [],
+            runners: [],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url === "/api/races/2027/06/16/05/01/sections/results") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            classConditionName: null,
+            currentDistance: null,
+            currentKeibajoCode: "05",
+            currentRaceDate: "20270616",
+            currentTrackCode: null,
+            defaultIncludeClass: false,
+            results: [],
+            runners: [],
+            source: "jra",
+            sourceScope: "all",
+            type: "results",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="16"
+        keibajoCode="05"
+        month="06"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2027"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(screen.getByText("データを取得できませんでした: 502 Bad Gateway")).toBeDefined();
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("win-rate-heatmap-stub").textContent).toStrictEqual("heatmap");
+  });
+  expect(screen.getByRole("heading", { name: "同条件レース分析" })).toBeDefined();
+  expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
+});

@@ -12,6 +12,7 @@ import {
   getFinishPredictionDimensionFlags,
   resolveFinishPositionBucketModelVersion,
 } from "./finish-prediction-dimensions";
+import { ANALYSIS_CELL_PARAM_NAMES } from "./past-race-cell-matching";
 
 it("returns all flags ON by default for NAR non-banei without grade", () => {
   const flags = getFinishPredictionDimensionFlags({
@@ -62,7 +63,7 @@ it("forces kyosoJoken OFF when source is NAR even if user enabled it", () => {
   expect(flags.kyosoJoken).toBe(false);
 });
 
-it("forces condition and grade OFF when source is JRA", () => {
+it("forces condition OFF and keeps grade ON for JRA graded races", () => {
   const flags = getFinishPredictionDimensionFlags({
     query: {},
     source: "jra",
@@ -70,6 +71,37 @@ it("forces condition and grade OFF when source is JRA", () => {
     isBanEi: false,
   });
   expect(flags.condition).toBe(false);
+  expect(flags.grade).toBe(true);
+});
+
+it("keeps grade ON by default for JRA G3", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: {},
+    source: "jra",
+    gradeCode: "C",
+    isBanEi: false,
+  });
+  expect(flags.grade).toBe(true);
+});
+
+it("turns grade OFF for JRA G3 when the query param equals 0", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: { finishPredictionGrade: "0" },
+    source: "jra",
+    gradeCode: "C",
+    isBanEi: false,
+  });
+  expect(flags.grade).toBe(false);
+});
+
+it("turns analysis-cell grade OFF for JRA G3 when analysisCellGrade equals 0", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: { analysisCellGrade: "0" },
+    source: "jra",
+    gradeCode: "C",
+    isBanEi: false,
+    paramNames: ANALYSIS_CELL_PARAM_NAMES,
+  });
   expect(flags.grade).toBe(false);
 });
 

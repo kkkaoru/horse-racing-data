@@ -7,13 +7,20 @@ import type {
   FinishPositionStatsRow,
   FrameStatsRow,
   RaceTimeStats,
+  RaceTimeTargetRace,
   WeightClassStatsRow,
 } from "./race-types";
 
 export interface ConditionHistoryCatalogQuery {
   day: string;
+  includeAge?: boolean;
+  includeClass?: boolean;
+  includeConditionKey?: boolean;
   includeDistance: boolean;
+  includeGrade?: boolean;
+  includeRaceTitle?: boolean;
   includeSurface: boolean;
+  includeTrackCode?: boolean;
   includeTurn: boolean;
   includeVenue: boolean;
   keibajoCode: string;
@@ -237,6 +244,64 @@ const parseCorrelationRow = (value: unknown): ConditionCorrelationRow | null => 
   };
 };
 
+const parseRowList = <T>(value: unknown, parseRow: (row: unknown) => T | null): T[] | null => {
+  if (!Array.isArray(value)) return null;
+  const rows = value.map(parseRow);
+  return rows.some((row) => row === null) ? null : rows.filter((row) => row !== null);
+};
+
+const stringField = (value: unknown): string | null => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  return null;
+};
+
+const parseTargetRace = (value: unknown): RaceTimeTargetRace | null => {
+  if (!isRecord(value)) return null;
+  const date = requiredString(value.date);
+  const horseName = requiredString(value.horseName);
+  const horseNumber = requiredString(value.horseNumber);
+  const jockeyName = requiredString(value.jockeyName);
+  const keibajoCode = requiredString(value.keibajoCode);
+  const kohan3f = stringField(value.kohan3f);
+  const ownerName = requiredString(value.ownerName);
+  const popularity = stringField(value.popularity);
+  const raceName = stringField(value.raceName);
+  const raceNumber = requiredString(value.raceNumber);
+  const raceTime = stringField(value.raceTime);
+  const trainerName = requiredString(value.trainerName);
+  if (
+    date === null ||
+    horseName === null ||
+    horseNumber === null ||
+    jockeyName === null ||
+    keibajoCode === null ||
+    kohan3f === null ||
+    ownerName === null ||
+    popularity === null ||
+    raceName === null ||
+    raceNumber === null ||
+    raceTime === null ||
+    trainerName === null
+  ) {
+    return null;
+  }
+  return {
+    date,
+    horseName,
+    horseNumber,
+    jockeyName,
+    keibajoCode,
+    kohan3f,
+    ownerName,
+    popularity,
+    raceName,
+    raceNumber,
+    raceTime,
+    trainerName,
+  };
+};
+
 const parseRaceTimeStats = (value: unknown): RaceTimeStats | null => {
   if (!isRecord(value)) return null;
   if (value.correlationRows !== undefined && !Array.isArray(value.correlationRows)) return null;
@@ -263,6 +328,9 @@ const parseRaceTimeStats = (value: unknown): RaceTimeStats | null => {
     ? value.correlationRows.map(parseCorrelationRow)
     : [];
   if (correlationRows.some((row) => row === null)) return null;
+  const targetRaces =
+    value.targetRaces === undefined ? [] : parseRowList(value.targetRaces, parseTargetRace);
+  if (targetRaces === null) return null;
   return {
     averageKohan3f,
     averageRaceTime,
@@ -273,14 +341,8 @@ const parseRaceTimeStats = (value: unknown): RaceTimeStats | null => {
     medianKohan3f,
     medianRaceTime,
     raceCount,
-    targetRaces: [],
+    targetRaces,
   };
-};
-
-const parseRowList = <T>(value: unknown, parseRow: (row: unknown) => T | null): T[] | null => {
-  if (!Array.isArray(value)) return null;
-  const rows = value.map(parseRow);
-  return rows.some((row) => row === null) ? null : rows.filter((row) => row !== null);
 };
 
 export const buildConditionHistoryCatalogUrl = (query: ConditionHistoryCatalogQuery): URL => {
@@ -296,6 +358,24 @@ export const buildConditionHistoryCatalogUrl = (query: ConditionHistoryCatalogQu
   url.searchParams.set("includeDistance", flagParam(query.includeDistance));
   url.searchParams.set("includeSurface", flagParam(query.includeSurface));
   url.searchParams.set("includeTurn", flagParam(query.includeTurn));
+  if (query.includeGrade === true) {
+    url.searchParams.set("includeGrade", "1");
+  }
+  if (query.includeTrackCode === true) {
+    url.searchParams.set("includeTrackCode", "1");
+  }
+  if (query.includeAge === true) {
+    url.searchParams.set("includeAge", "1");
+  }
+  if (query.includeClass === true) {
+    url.searchParams.set("includeClass", "1");
+  }
+  if (query.includeConditionKey === true) {
+    url.searchParams.set("includeConditionKey", "1");
+  }
+  if (query.includeRaceTitle === true) {
+    url.searchParams.set("includeRaceTitle", "1");
+  }
   return url;
 };
 

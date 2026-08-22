@@ -77,6 +77,46 @@ it("appends includeOwner=1 only when similar-section owner rows are requested", 
   );
 });
 
+it("appends includeGrade=1 and includeTrackCode=1 only when those cell filters are requested", () => {
+  expect(
+    buildWinRateHeatmapCatalogUrl({
+      ...query,
+      includeGrade: true,
+      includeTrackCode: true,
+    }).toString(),
+  ).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeGrade=1&includeTrackCode=1",
+  );
+  expect(buildWinRateHeatmapCatalogUrl({ ...query, includeGrade: false }).toString()).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0",
+  );
+});
+
+it("appends class, age, condition-key, and race-title flags only when requested", () => {
+  expect(
+    buildWinRateHeatmapCatalogUrl({
+      ...query,
+      includeAge: true,
+      includeClass: true,
+      includeConditionKey: true,
+      includeRaceTitle: true,
+    }).toString(),
+  ).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
+  );
+  expect(
+    buildWinRateHeatmapCatalogUrl({
+      ...query,
+      includeAge: false,
+      includeClass: false,
+      includeConditionKey: false,
+      includeRaceTitle: false,
+    }).toString(),
+  ).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0",
+  );
+});
+
 it("appends includeJockeyFrame=1 only when heatmap jockey-frame rows are requested", () => {
   expect(buildWinRateHeatmapCatalogUrl({ ...query, includeJockeyFrame: true }).toString()).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeJockeyFrame=1",

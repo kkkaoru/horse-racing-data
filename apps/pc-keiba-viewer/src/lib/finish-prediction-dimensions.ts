@@ -229,7 +229,7 @@ export const getFinishPredictionDimensionFlags = (
   const kyosoJoken = source === "nar" ? false : kyosoJokenRaw;
   const condition = source === "jra" ? false : conditionRaw;
   const track = isBanEi ? false : trackRaw;
-  const gradeAllowed = source !== "jra" && isGradeEligible(gradeCode);
+  const gradeAllowed = isGradeEligible(gradeCode);
   const grade = gradeAllowed ? gradeRaw : false;
   const raceName = isRaceNameEligible(gradeCode) ? raceNameRaw : false;
   return {

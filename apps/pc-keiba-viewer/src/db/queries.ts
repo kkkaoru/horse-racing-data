@@ -3734,6 +3734,48 @@ export const getRaceTrainings = cache(
           on w.ketto_toroku_bango = r.ketto_toroku_bango
         cross join race_window rw
         where w.chokyo_nengappi between rw.start_date and rw.end_date
+        union all
+        select
+          r.umaban,
+          r.bamei,
+          r."currentJockeyName",
+          r."trainerName",
+          n.rider_name as "trainingRiderName",
+          coalesce(nullif(n.training_type, ''), '-') as "trainingType",
+          n.tracen_kubun as "tracenKubun",
+          n.chokyo_nengappi as "chokyoNengappi",
+          n.chokyo_jikoku as "chokyoJikoku",
+          n.course,
+          n.babamawari,
+          n.time_gokei_10f as "timeGokei10f",
+          n.lap_time_10f as "lapTime10f",
+          n.time_gokei_9f as "timeGokei9f",
+          n.lap_time_9f as "lapTime9f",
+          n.time_gokei_8f as "timeGokei8f",
+          n.lap_time_8f as "lapTime8f",
+          n.time_gokei_7f as "timeGokei7f",
+          n.lap_time_7f as "lapTime7f",
+          n.time_gokei_6f as "timeGokei6f",
+          n.lap_time_6f as "lapTime6f",
+          n.time_gokei_5f as "timeGokei5f",
+          n.lap_time_5f as "lapTime5f",
+          n.time_gokei_4f as "timeGokei4f",
+          n.lap_time_4f as "lapTime4f",
+          n.time_gokei_3f as "timeGokei3f",
+          n.lap_time_3f as "lapTime3f",
+          n.time_gokei_2f as "timeGokei2f",
+          n.lap_time_2f as "lapTime2f",
+          n.lap_time_1f as "lapTime1f",
+          r.ketto_toroku_bango
+        from runners r
+        join ${sql.identifier("netkeiba_training_workouts")} n
+          on n.ketto_toroku_bango = r.ketto_toroku_bango
+          and n.kaisai_nen = ${year}
+          and n.kaisai_tsukihi = ${monthDay}
+          and n.keibajo_code = ${keibajoCode}
+          and n.race_bango = ${raceNumber}
+        cross join race_window nw
+        where n.chokyo_nengappi between nw.start_date and nw.end_date
       ),
       -- jvd_hc/jvd_wc only cover training done at the two JRA tracen (Miho/Ritto), so
       -- runners stabled elsewhere during the meet (common for the Hokkaido summer
@@ -4262,6 +4304,11 @@ const buildCellHistoryRacePredicates = (
           ''
         ) is not distinct from ${currentRaceName === "" ? null : currentRaceName}
       )
+    )
+    and (
+      ${race.kyosoJokenCode} is distinct from '999'
+      or nullif(btrim(${race.gradeCode ?? ""}), '') is not null
+      or nullif(btrim(coalesce(${table}.grade_code, '')), '') is null
     )
   `;
 };

@@ -34,6 +34,9 @@ describe("race detail section cache helpers", () => {
     expect(buildDetailSectionCacheKey({ ...warmMessage, section: "premium-data-top" })).toContain(
       ":v2:",
     );
+    expect(buildDetailSectionCacheKey({ ...warmMessage, section: "training" })).toBe(
+      "race-detail-section:v5:2026:5:23:44:12:training:default",
+    );
   });
 
   it("uses new overseas history keys without invalidating domestic sections", () => {
@@ -92,7 +95,7 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "A8",
         section: "condition",
       }),
-    ).toBe("race-detail-section:v7:2026:5:23:A8:12:condition:default");
+    ).toBe("race-detail-section:v11:2026:5:23:A8:12:condition:default");
   });
 
   it("validates cacheable sections and default warm targets", () => {

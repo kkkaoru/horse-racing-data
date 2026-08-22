@@ -1499,8 +1499,14 @@ const buildWinRateHeatmapCatalogQuery = (
 ): WinRateHeatmapCatalogQuery => {
   const query: WinRateHeatmapCatalogQuery = {
     day: params.day,
+    includeAge: settings.includeAge,
+    includeClass: settings.includeClass,
+    includeConditionKey: settings.includeConditionKey,
     includeDistance: settings.includeDistance,
+    includeGrade: settings.includeGrade,
+    includeRaceTitle: settings.includeRaceTitle,
     includeSurface: settings.includeSurface,
+    includeTrackCode: settings.includeTrackCode,
     includeTurn: settings.includeTurn,
     includeVenue: settings.includeVenue,
     keibajoCode: params.keibajoCode,
@@ -1533,20 +1539,31 @@ const loadConditionHistoryCatalogStats = async (
   params: DetailSectionParams,
   settings: SimilarRaceStatsSettings,
   source: RaceSource,
-) =>
-  fetchConditionHistoryStatsFromCatalog({
-    day: params.day,
-    includeDistance: settings.includeDistance,
-    includeSurface: settings.includeSurface,
-    includeTurn: settings.includeTurn,
-    includeVenue: settings.includeVenue,
-    keibajoCode: params.keibajoCode,
-    month: params.month,
-    raceNumber: params.raceNumber,
-    source,
-    year: params.year,
-    years: heatmapStatsYears(settings.years),
-  });
+) => {
+  try {
+    return await fetchConditionHistoryStatsFromCatalog({
+      day: params.day,
+      includeAge: settings.includeAge,
+      includeClass: settings.includeClass,
+      includeConditionKey: settings.includeConditionKey,
+      includeDistance: settings.includeDistance,
+      includeGrade: settings.includeGrade,
+      includeRaceTitle: settings.includeRaceTitle,
+      includeSurface: settings.includeSurface,
+      includeTrackCode: settings.includeTrackCode,
+      includeTurn: settings.includeTurn,
+      includeVenue: settings.includeVenue,
+      keibajoCode: params.keibajoCode,
+      month: params.month,
+      raceNumber: params.raceNumber,
+      source,
+      year: params.year,
+      years: heatmapStatsYears(settings.years),
+    });
+  } catch {
+    return null;
+  }
+};
 
 const isCachedTimeScorePayload = (value: unknown): value is CachedTimeScorePayload =>
   typeof value === "object" &&
@@ -1703,6 +1720,15 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       race.source,
     );
     if (catalogCondition !== null) {
+      const [raceTimeStats, payoutStats] = await Promise.all([
+        catalogCondition.raceTimeStats.targetRaces.length > 0
+          ? Promise.resolve(catalogCondition.raceTimeStats)
+          : getOrComputeRaceTimeStats({
+              race,
+              settings: context.conditionAnalysisSettings,
+            }),
+        getPayoutStats(race, context.conditionAnalysisSettings),
+      ]);
       return {
         carriedWeightClassStats: isBanEiKeibajoCode(race.keibajoCode)
           ? []
@@ -1710,8 +1736,8 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         conditionLabels: context.conditionAnalysisLabels,
         finishPositionStats: catalogCondition.finishPositionStats,
         frameStats: catalogCondition.frameStats,
-        payoutStats: [],
-        raceTimeStats: catalogCondition.raceTimeStats,
+        payoutStats,
+        raceTimeStats,
         runners,
         settings: context.conditionAnalysisSettings,
         source: race.source,
@@ -2286,18 +2312,13 @@ export const getDetailSectionPayload = async (
   }
   const [catalogStats, resultsPayload, conditionPayload] = await Promise.all([
     fetchWinRateHeatmapStatsFromCatalog({
-      day: params.day,
-      includeDistance: context.statsSettings.includeDistance,
+      ...buildWinRateHeatmapCatalogQuery(
+        params,
+        context.conditionAnalysisSettings,
+        context.race.source,
+        false,
+      ),
       includeJockeyFrame: true,
-      includeSurface: context.statsSettings.includeSurface,
-      includeTurn: context.statsSettings.includeTurn,
-      includeVenue: context.statsSettings.includeVenue,
-      keibajoCode: params.keibajoCode,
-      month: params.month,
-      raceNumber: params.raceNumber,
-      source: context.race.source,
-      year: params.year,
-      years: heatmapStatsYears(context.statsSettings.years),
     }),
     loadHeatmapSectionSource("results", params),
     loadHeatmapSectionSource("condition", params),

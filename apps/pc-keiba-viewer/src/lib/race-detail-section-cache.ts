@@ -16,9 +16,14 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 // training section now reads the official+netkeiba union from R2 Catalog;
 // cached pre-Catalog payloads must not survive the deployment.
 export const DETAIL_SECTION_CACHE_VERSION = "v4";
-// Bumped v6->v7 on 2026-08-23 because condition payloads from R2 Catalog omit
-// payouts and detail arrays. Cached Neon jsonb payloads must not survive.
-const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v7";
+// Bumped v4->v5 on 2026-08-23 because training now unions netkeiba backup
+// workouts (including intermediate type=1 pages). Cached official-only
+// placeholder payloads must not survive.
+const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v5";
+// Bumped v10->v11 on 2026-08-23 because Catalog condition history now filters
+// by cell-matching class, age, condition-key, race-title, and ungraded-OP
+// empty-grade. Cached mixed-class payloads must not survive.
+const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v11";
 // Bumped v7->v9 on 2026-08-23 because similar/bloodline/time-score now prefer
 // R2 Catalog rows with empty details. Cached Neon jsonb payloads must not
 // survive. v8 remains the overseas history version.
@@ -76,6 +81,9 @@ const getDetailSectionCacheVersion = (
   }
   if (section === "condition") {
     return CONDITION_DETAIL_SECTION_CACHE_VERSION;
+  }
+  if (section === "training") {
+    return TRAINING_DETAIL_SECTION_CACHE_VERSION;
   }
   if (
     (section === "bloodline" || section === "similar" || section === "time-score") &&

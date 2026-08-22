@@ -100,7 +100,22 @@ const catalogPayload = {
     medianKohan3f: 35,
     medianRaceTime: 96,
     raceCount: 12,
-    targetRaces: [{ date: "20260101" }],
+    targetRaces: [
+      {
+        date: "20241027",
+        horseName: "イクイノックス",
+        horseNumber: "05",
+        jockeyName: "ルメール",
+        keibajoCode: "05",
+        kohan3f: "351",
+        ownerName: "シルク",
+        popularity: "01",
+        raceName: "天皇賞",
+        raceNumber: "08",
+        raceTime: "1450",
+        trainerName: "堀",
+      },
+    ],
   },
   weightClassStats: [
     {
@@ -123,6 +138,32 @@ beforeEach(() => {
 it("builds the condition-history Catalog URL with padded race identity and include flags", () => {
   expect(buildConditionHistoryCatalogUrl(query).toString()).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/condition-history-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0",
+  );
+});
+
+it("appends includeGrade=1 and includeTrackCode=1 on the condition-history Catalog URL", () => {
+  expect(
+    buildConditionHistoryCatalogUrl({
+      ...query,
+      includeGrade: true,
+      includeTrackCode: true,
+    }).toString(),
+  ).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/condition-history-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeGrade=1&includeTrackCode=1",
+  );
+});
+
+it("appends class, age, condition-key, and race-title flags on the condition-history Catalog URL", () => {
+  expect(
+    buildConditionHistoryCatalogUrl({
+      ...query,
+      includeAge: true,
+      includeClass: true,
+      includeConditionKey: true,
+      includeRaceTitle: true,
+    }).toString(),
+  ).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/condition-history-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
   );
 });
 
@@ -200,7 +241,22 @@ it("maps Catalog condition history aggregates onto viewer stats with empty detai
       medianKohan3f: 35,
       medianRaceTime: 96,
       raceCount: 12,
-      targetRaces: [],
+      targetRaces: [
+        {
+          date: "20241027",
+          horseName: "イクイノックス",
+          horseNumber: "05",
+          jockeyName: "ルメール",
+          keibajoCode: "05",
+          kohan3f: "351",
+          ownerName: "シルク",
+          popularity: "01",
+          raceName: "天皇賞",
+          raceNumber: "08",
+          raceTime: "1450",
+          trainerName: "堀",
+        },
+      ],
     },
     weightClassStats: [
       {

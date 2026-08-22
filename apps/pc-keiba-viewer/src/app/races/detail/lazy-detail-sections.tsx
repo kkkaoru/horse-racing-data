@@ -1018,12 +1018,23 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.condition} />;
   }
+  const heatmap = <LazyWinRateHeatmapSection {...props} heatmapState={heatmapState} />;
   if (state.status === "error") {
-    return <SectionError error={state.error} title={SECTION_TITLES.condition} />;
+    return (
+      <>
+        <SectionError error={state.error} title={SECTION_TITLES.condition} />
+        {heatmap}
+      </>
+    );
   }
   const payload = state.payload;
   if (!payload || payload.type !== "condition") {
-    return <SectionError error="Invalid section payload" title={SECTION_TITLES.condition} />;
+    return (
+      <>
+        <SectionError error="Invalid section payload" title={SECTION_TITLES.condition} />
+        {heatmap}
+      </>
+    );
   }
   return (
     <section
@@ -1034,7 +1045,7 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         <h2>同条件レース分析</h2>
       </div>
       <RaceConditionAnalysisSection
-        afterTargetRaces={<LazyWinRateHeatmapSection {...props} heatmapState={heatmapState} />}
+        afterTargetRaces={heatmap}
         finishPositionStats={payload.finishPositionStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}

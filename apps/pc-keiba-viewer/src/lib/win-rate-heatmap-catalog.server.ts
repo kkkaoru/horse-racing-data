@@ -4,10 +4,16 @@ import type { BloodlineStatsRow, SimilarRaceStatsRow } from "./race-types";
 
 export interface WinRateHeatmapCatalogQuery {
   day: string;
+  includeAge?: boolean;
+  includeClass?: boolean;
+  includeConditionKey?: boolean;
   includeDistance: boolean;
+  includeGrade?: boolean;
   includeJockeyFrame?: boolean;
   includeOwner?: boolean;
+  includeRaceTitle?: boolean;
   includeSurface: boolean;
+  includeTrackCode?: boolean;
   includeTurn: boolean;
   includeVenue: boolean;
   keibajoCode: string;
@@ -248,6 +254,24 @@ export const buildWinRateHeatmapCatalogUrl = (query: WinRateHeatmapCatalogQuery)
   }
   if (query.includeJockeyFrame === true) {
     url.searchParams.set("includeJockeyFrame", "1");
+  }
+  if (query.includeGrade === true) {
+    url.searchParams.set("includeGrade", "1");
+  }
+  if (query.includeTrackCode === true) {
+    url.searchParams.set("includeTrackCode", "1");
+  }
+  if (query.includeAge === true) {
+    url.searchParams.set("includeAge", "1");
+  }
+  if (query.includeClass === true) {
+    url.searchParams.set("includeClass", "1");
+  }
+  if (query.includeConditionKey === true) {
+    url.searchParams.set("includeConditionKey", "1");
+  }
+  if (query.includeRaceTitle === true) {
+    url.searchParams.set("includeRaceTitle", "1");
   }
   return url;
 };
