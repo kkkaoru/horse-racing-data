@@ -250,22 +250,6 @@ from jvd_se se
 join jvd_ra ra using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
 where se.kaisai_nen || se.kaisai_tsukihi in ('${dates.base}', '${dates.next}')
   and se.ketto_toroku_bango !~ '^0+$'
-  and not exists (
-    select 1 from jvd_hc hc
-    where hc.ketto_toroku_bango = se.ketto_toroku_bango
-      and to_date(hc.chokyo_nengappi, 'YYYYMMDD') >=
-        to_date(se.kaisai_nen || se.kaisai_tsukihi, 'YYYYMMDD') - interval '14 days'
-      and to_date(hc.chokyo_nengappi, 'YYYYMMDD') <
-        to_date(se.kaisai_nen || se.kaisai_tsukihi, 'YYYYMMDD')
-  )
-  and not exists (
-    select 1 from jvd_wc wc
-    where wc.ketto_toroku_bango = se.ketto_toroku_bango
-      and to_date(wc.chokyo_nengappi, 'YYYYMMDD') >=
-        to_date(se.kaisai_nen || se.kaisai_tsukihi, 'YYYYMMDD') - interval '14 days'
-      and to_date(wc.chokyo_nengappi, 'YYYYMMDD') <
-        to_date(se.kaisai_nen || se.kaisai_tsukihi, 'YYYYMMDD')
-  )
 order by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango, se.umaban;
 `;
 
@@ -505,26 +489,32 @@ export const runTrainingScrape = async (
 ): Promise<number> => {
   const races = await dependencies.loadCandidates();
   if (races.length === 0) {
-    dependencies.log("No JRA runners without official 14-day workouts were found.");
+    dependencies.log("No JRA runners were found for the discovery dates.");
     return 0;
   }
   const counts = await races.reduce<Promise<number[]>>(async (pending, race) => {
     const completed = await pending;
-    const workouts = await dependencies.fetchWorkouts(race);
-    if (workouts.length === 0) {
-      dependencies.log(`Skipped race ${race.sourceRaceId}: netkeiba returned no workouts.`);
+    try {
+      const workouts = await dependencies.fetchWorkouts(race);
+      if (workouts.length === 0) {
+        dependencies.log(`Skipped race ${race.sourceRaceId}: netkeiba returned no workouts.`);
+        return [...completed, 0];
+      }
+      const rows = joinWorkoutsToRunners(race, workouts, dependencies.now());
+      if (rows.length === 0) {
+        dependencies.log(
+          `Skipped race ${race.sourceRaceId}: netkeiba workouts did not match local runners.`,
+        );
+        return [...completed, 0];
+      }
+      await dependencies.upsertRace(rows);
+      dependencies.log(`Stored ${rows.length} netkeiba workouts for race ${race.sourceRaceId}.`);
+      return [...completed, rows.length];
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      dependencies.log(`Failed race ${race.sourceRaceId}: ${detail}`);
       return [...completed, 0];
     }
-    const rows = joinWorkoutsToRunners(race, workouts, dependencies.now());
-    if (rows.length === 0) {
-      dependencies.log(
-        `Skipped race ${race.sourceRaceId}: netkeiba workouts did not match runners missing official workouts.`,
-      );
-      return [...completed, 0];
-    }
-    await dependencies.upsertRace(rows);
-    dependencies.log(`Stored ${rows.length} netkeiba workouts for race ${race.sourceRaceId}.`);
-    return [...completed, rows.length];
   }, Promise.resolve([]));
   return counts.reduce((total, count) => total + count, 0);
 };

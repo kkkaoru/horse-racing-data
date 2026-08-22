@@ -61,7 +61,7 @@ it("updates PC-KEIBA, verifies the stopped VM, then syncs replicas", async () =>
   expect(log.mock.calls).toStrictEqual([
     ["Step 1/5: updating PC-KEIBA data through the Parallels Windows VM..."],
     ["Step 2/5: verifying that the Windows VM stopped after the update..."],
-    ["Step 3/5: importing missing JRA training workouts from netkeiba..."],
+    ["Step 3/5: importing JRA training workouts from netkeiba as backup..."],
     ["Step 4/5: syncing local PostgreSQL to R2 Catalog and Neon..."],
     ["Step 5/5: discovering synced races and planning premium fetches..."],
     ["PC-KEIBA update, R2 Catalog/Neon sync, and realtime discovery completed successfully."],
@@ -191,7 +191,7 @@ it("fails closed when realtime discovery fails after a successful replica sync",
   expect(log.mock.calls).toStrictEqual([
     ["Step 1/5: updating PC-KEIBA data through the Parallels Windows VM..."],
     ["Step 2/5: verifying that the Windows VM stopped after the update..."],
-    ["Step 3/5: importing missing JRA training workouts from netkeiba..."],
+    ["Step 3/5: importing JRA training workouts from netkeiba as backup..."],
     ["Step 4/5: syncing local PostgreSQL to R2 Catalog and Neon..."],
     ["Step 5/5: discovering synced races and planning premium fetches..."],
   ]);

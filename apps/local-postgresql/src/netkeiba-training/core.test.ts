@@ -69,15 +69,14 @@ const race: CandidateRace = {
   sourceRaceId: "202605040811",
 };
 
-it("builds a two-day JRA candidate query guarded by both official workout tables", () => {
+it("builds a two-day JRA candidate query for every runner as netkeiba backup", () => {
   const sql = buildCandidateQuery({ base: "20260822", next: "20260823" });
   expect(sql).toContain("in ('20260822', '20260823')");
-  expect(sql).toContain("from jvd_hc hc");
-  expect(sql).toContain("from jvd_wc wc");
-  expect(sql).toContain("interval '14 days'");
-  expect(sql).toContain("hc.chokyo_nengappi");
-  expect(sql).toContain("wc.chokyo_nengappi");
+  expect(sql).toContain("from jvd_se se");
   expect(sql).toContain("lpad(ra.kaisai_kai, 2, '0')");
+  expect(sql).not.toContain("from jvd_hc hc");
+  expect(sql).not.toContain("from jvd_wc wc");
+  expect(sql).not.toContain("interval '14 days'");
 });
 
 it("parses candidate JSON lines and groups runners by source race", () => {
@@ -175,7 +174,7 @@ it("scrapes and upserts races sequentially", async () => {
   expect(log.mock.calls).toStrictEqual([["Stored 1 netkeiba workouts for race 202605040811."]]);
 });
 
-it("does nothing when official workouts cover all runners", async () => {
+it("does nothing when no JRA runners exist for the discovery dates", async () => {
   const fetchWorkouts = vi.fn();
   const upsertRace = vi.fn();
   const log = vi.fn<(message: string) => void>();
@@ -190,9 +189,7 @@ it("does nothing when official workouts cover all runners", async () => {
   ).toBe(0);
   expect(fetchWorkouts).not.toHaveBeenCalled();
   expect(upsertRace).not.toHaveBeenCalled();
-  expect(log.mock.calls).toStrictEqual([
-    ["No JRA runners without official 14-day workouts were found."],
-  ]);
+  expect(log.mock.calls).toStrictEqual([["No JRA runners were found for the discovery dates."]]);
 });
 
 it("safely skips an unpublished race with an empty workout set", async () => {
@@ -285,9 +282,7 @@ it("safely skips unmatched candidate horses and continues with the next race", a
   expect(upsertRace).toHaveBeenCalledOnce();
   expect(upsertRace.mock.calls[0]?.[0][0]?.sourceRaceId).toBe("202605040812");
   expect(log.mock.calls).toStrictEqual([
-    [
-      "Skipped race 202605040811: netkeiba workouts did not match runners missing official workouts.",
-    ],
+    ["Skipped race 202605040811: netkeiba workouts did not match local runners."],
     ["Stored 1 netkeiba workouts for race 202605040812."],
   ]);
 });
@@ -357,19 +352,53 @@ it("fails closed before local mutation on missing auth and remote HTTP errors", 
     .mockResolvedValueOnce(
       '{"raceDate":"20260822","sourceRaceId":"202605040811","kaisaiNen":"2026","kaisaiTsukihi":"0822","keibajoCode":"05","raceBango":"11","umaban":"01","kettoTorokuBango":"2023100001","bamei":"Horse One"}\n',
     );
+  const log = vi.fn<(message: string) => void>();
   await expect(
     runNetkeibaTrainingImport({
       apiBaseUrl: "https://sync.example",
       dates: { base: "20260822", next: "20260823" },
       executeSql,
       fetcher: vi.fn().mockResolvedValue(new Response("upstream failed", { status: 502 })),
-      log: vi.fn(),
+      log,
       migrationSql: "migration",
       now: () => new Date("2026-08-22T01:00:00.000Z"),
       token: "secret",
     }),
-  ).rejects.toThrow(
-    "Netkeiba training API failed for race 202605040811 with HTTP 502: upstream failed",
-  );
+  ).resolves.toBe(0);
   expect(executeSql).toHaveBeenCalledTimes(2);
+  expect(log.mock.calls).toStrictEqual([
+    [
+      "Failed race 202605040811: Netkeiba training API failed for race 202605040811 with HTTP 502: upstream failed",
+    ],
+  ]);
+});
+
+it("continues to later races when one netkeiba fetch throws", async () => {
+  const upsertRace = vi
+    .fn<(rows: ReturnType<typeof joinWorkoutsToRunners>) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const log = vi.fn<(message: string) => void>();
+  const secondRace: CandidateRace = {
+    ...race,
+    raceBango: "12",
+    runners: [{ ...race.runners[0]!, raceBango: "12", sourceRaceId: "202605040812" }],
+    sourceRaceId: "202605040812",
+  };
+  expect(
+    await runTrainingScrape({
+      fetchWorkouts: vi
+        .fn<(candidate: CandidateRace) => Promise<NetkeibaWorkout[]>>()
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce([workout]),
+      loadCandidates: vi.fn().mockResolvedValue([race, secondRace]),
+      log,
+      now: () => new Date("2026-08-22T01:00:00.000Z"),
+      upsertRace,
+    }),
+  ).toBe(1);
+  expect(upsertRace).toHaveBeenCalledOnce();
+  expect(log.mock.calls).toStrictEqual([
+    ["Failed race 202605040811: timeout"],
+    ["Stored 1 netkeiba workouts for race 202605040812."],
+  ]);
 });

@@ -96,7 +96,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
     options.appDir,
     "scrape:netkeiba-training",
   ] as const;
-  options.log("Step 3/5: importing missing JRA training workouts from netkeiba...");
+  options.log("Step 3/5: importing JRA training workouts from netkeiba as backup...");
   const trainingResult = await options.runCommand(trainingCommand);
   requireSuccess(trainingCommand, trainingResult);
 
