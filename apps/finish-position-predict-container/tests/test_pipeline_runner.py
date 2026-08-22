@@ -1212,9 +1212,7 @@ def test_build_day_base_commits_running_style_foundation_before_day_layers(
         Path(args[-1]).mkdir(parents=True, exist_ok=True)
         events.append(args[0])
 
-    def commit(
-        category: str, target_date: str, base_dir: Path, watermark: tuple[str, int]
-    ) -> None:
+    def commit(category: str, target_date: str, base_dir: Path, watermark: tuple[str, int]) -> None:
         assert base_dir == _day_base_dir("jra", "20260822") / "base"
         assert (category, target_date, watermark) == ("jra", "20260822", ("20260822", 477))
         events.append("foundation")
@@ -3231,6 +3229,7 @@ def test_build_upcoming_feature_rows_split_falls_back_to_inline_build_day_base(
 ):
     import pandas as pd
 
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "unknown-role")
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     day_base_dir = tmp_path / "daybase-final"
@@ -3281,6 +3280,100 @@ def test_build_upcoming_feature_rows_split_falls_back_to_inline_build_day_base(
 
     assert result is not None
     assert called == [("jra", "20260712", 0, "postgresql://u:p@h/db", None)]
+
+
+def test_build_upcoming_feature_rows_split_race_chain_miss_requires_day_base_without_building(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_lib.container_role import DayBaseRequiredError
+
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: None)
+
+    def unexpected_build(*args: object, **kwargs: object) -> None:
+        raise AssertionError("race-chain role must not build a day base inline")
+
+    monkeypatch.setattr(pipeline_runner, "build_day_base", unexpected_build)
+
+    with pytest.raises(
+        DayBaseRequiredError,
+        match=("DAY_BASE_REQUIRED: day-base unavailable category=jra target_date=20260712"),
+    ):
+        pipeline_runner.build_upcoming_feature_rows_split(
+            "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+        )
+
+
+def test_build_upcoming_feature_rows_split_race_chain_hit_matches_legacy_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import pandas as pd
+
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: day_base_dir)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
+
+    def fake_build_pipeline_from_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        day_base_dir_arg: Path,
+        final_dir: Path,
+        target_race: str,
+        realtime_odds_path: Path | None = None,
+        venue_weather_dir: Path | None = None,
+    ) -> bool:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "race_id": ["jra:2026:0712:05:11", "jra:2026:0712:05:12"],
+                "umaban": [1, 2],
+            }
+        ).to_parquet(final_dir / "data.parquet")
+        return True
+
+    monkeypatch.setattr(
+        pipeline_runner, "build_pipeline_from_day_base", fake_build_pipeline_from_day_base
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result == {"jra:2026:0712:05:11": [{"race_id": "jra:2026:0712:05:11", "umaban": 1}]}
+
+
+def test_build_upcoming_feature_rows_split_race_chain_wraps_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_lib.container_role import DayBaseRequiredError
+
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+
+    def raiser(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", raiser)
+
+    with pytest.raises(
+        DayBaseRequiredError,
+        match=(
+            "DAY_BASE_REQUIRED: race-chain error category=jra target_date=20260712 "
+            "target_race=05:11: RuntimeError"
+        ),
+    ) as error_info:
+        pipeline_runner.build_upcoming_feature_rows_split(
+            "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+        )
+
+    assert isinstance(error_info.value.__cause__, RuntimeError)
 
 
 def test_build_upcoming_feature_rows_split_returns_none_on_exception(

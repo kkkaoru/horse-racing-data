@@ -52,6 +52,11 @@ from time import perf_counter
 from typing import IO, Final
 
 from predict_lib.conn_url import is_catalog_source_url
+from predict_lib.container_role import (
+    DayBaseRequiredError,
+    PredictContainerRole,
+    predict_container_role,
+)
 from predict_lib.debug_log import debug_log, debug_logs_enabled, record_debug_progress
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
@@ -1475,9 +1480,7 @@ def build_day_base(
         # "no watermark found" (safe fail-closed rebuild), never this
         # build's own success.
         if source_outcome is None:
-            source_outcome = _compute_source_watermark_outcome(
-                category, target_date, database_url
-            )
+            source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
         rs_watermark = _compute_rs_watermark(category, target_date, r2_config)
         watermark = _combine_watermarks(source_outcome.value, rs_watermark)
         if watermark is not None:
@@ -1926,13 +1929,12 @@ def build_upcoming_feature_rows_split(
 ) -> Mapping[str, list[Mapping[str, object]]] | None:
     """Focused per-race build via the day-base + RACE_CHAIN split path.
 
-    Returns ``None`` on ANY gap -- day-base unavailable and could not be built
-    inline, entry-list drift, or any exception -- so the caller falls back to
-    the existing, unmodified :func:`build_upcoming_feature_rows` (full
-    ``LAYER_CHAIN``) for this race. This preserves the mandatory
-    fail-safe / never-fail-closed contract: a day-base problem degrades to the
-    slower-but-correct full path rather than serving a stale or incomplete
-    feature vector.
+    In the default legacy role, returns ``None`` on any gap so the caller can
+    fall back to the full ``LAYER_CHAIN``. In the ``race-chain`` role, a gap
+    raises :class:`DayBaseRequiredError`; this lightweight container must
+    never build a whole-day base or execute the full chain. The stable
+    ``DAY_BASE_REQUIRED`` error code lets the Worker retry or reroute the work
+    to a day-base-capable container.
 
     ``target_race`` (``"keibajo_code:race_bango"``) is REQUIRED here -- this
     function is for the focused per-race full path
@@ -1949,9 +1951,14 @@ def build_upcoming_feature_rows_split(
     already-deployed ``mode=rescore`` path is the freshness layer for
     late-binding odds/weight columns (see :func:`build_day_base`'s docstring).
     """
+    role = predict_container_role()
     try:
         day_base_dir = ensure_day_base(category, target_date, days_ahead, database_url, r2_config)
         if day_base_dir is None:
+            if role is PredictContainerRole.RACE_CHAIN:
+                raise DayBaseRequiredError(
+                    f"day-base unavailable category={category} target_date={target_date}"
+                )
             day_base_dir = build_day_base(
                 category,
                 target_date,
@@ -1964,6 +1971,11 @@ def build_upcoming_feature_rows_split(
         if not day_base_covers_entry_list(
             day_base_dir, category, target_date, target_race, database_url
         ):
+            if role is PredictContainerRole.RACE_CHAIN:
+                raise DayBaseRequiredError(
+                    f"entry-list drift category={category} target_date={target_date} "
+                    f"target_race={target_race}"
+                )
             return None
         final_dir = _final_parquet_dir(category)
         built = build_pipeline_from_day_base(
@@ -1976,14 +1988,26 @@ def build_upcoming_feature_rows_split(
             target_race,
         )
         if not built:
+            if role is PredictContainerRole.RACE_CHAIN:
+                raise DayBaseRequiredError(
+                    f"race-chain build failed category={category} target_date={target_date} "
+                    f"target_race={target_race}"
+                )
             return None
         import pandas as pd
 
         frame = pd.read_parquet(final_dir)
         return _group_parquet_rows(frame, target_race=target_race)
+    except DayBaseRequiredError:
+        raise
     except Exception as exc:
         _log_pipeline_progress(
             f"build_upcoming_feature_rows_split failed category={category} "
             f"target_race={target_race} error={exc}"
         )
+        if role is PredictContainerRole.RACE_CHAIN:
+            raise DayBaseRequiredError(
+                f"race-chain error category={category} target_date={target_date} "
+                f"target_race={target_race}: {type(exc).__name__}"
+            ) from exc
         return None

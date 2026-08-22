@@ -877,7 +877,7 @@ def _start_server_with_cache_store(
     return httpd, thread, port
 
 
-def test_focused_full_cache_route_returns_found_true_and_consumes_entry() -> None:
+def test_focused_full_cache_route_returns_found_true_without_consuming_entry() -> None:
     store = FocusedFullCacheStore()
     store.put(
         "jra:20260712:05:09",
@@ -901,13 +901,19 @@ def test_focused_full_cache_route_returns_found_true_and_consumes_entry() -> Non
             "perRaceParquets": None,
         }
 
-        # A second pickup for the same race must find nothing -- pop() consumes.
+        # Keep the payload until the container is destroyed. If the Worker's
+        # first R2 PUT fails, its redelivery must be able to fetch it again.
         status_again, body_again = _get(
             port,
             "/focused-full-cache?category=jra&runDate=20260712&keibajoCode=05&raceBango=09",
         )
         assert status_again == 200
-        assert json.loads(body_again.decode()) == {"found": False}
+        assert json.loads(body_again.decode()) == {
+            "found": True,
+            "parquetBase64": "YQ==",
+            "parquetKey": "feat-cache/jra/20260712/05/09/features.parquet",
+            "perRaceParquets": None,
+        }
     finally:
         _stop_threading_server(httpd, thread)
 
@@ -1279,9 +1285,10 @@ def test_make_prewarm_fn_commits_running_style_foundation_payload(
         database_url: str,
         **kwargs: object,
     ) -> Path:
-        callback = cast("Callable[[Category, str, Path, tuple[str, int]], None]", kwargs[
-            "running_style_foundation_commit_fn"
-        ])
+        callback = cast(
+            "Callable[[Category, str, Path, tuple[str, int]], None]",
+            kwargs["running_style_foundation_commit_fn"],
+        )
         callback(category, target_date, base_dir, ("20260822", 477))
         return tmp_path / "final"
 
@@ -3219,7 +3226,7 @@ def _capture_target_race(captured: dict[str, object]) -> Callable[..., Mapping[s
         target_race: str | None = None,
     ) -> Mapping[str, list[Mapping[str, object]]]:
         captured["target_race"] = target_race
-        return {}
+        return {"jra:2026:0628:01:05": [{"umaban": 1}]}
 
     return _fake_build
 
@@ -3306,6 +3313,78 @@ def test_predict_category_filters_to_target_race_before_score_and_flush(
     scored = captured["races"]
     assert isinstance(scored, dict)
     assert list(scored.keys()) == ["jra:2026:0712:05:11"]
+
+
+def test_predict_category_scoped_empty_features_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_build(
+        category: Category,
+        window: predict_upcoming.PredictWindow,
+        target_race: str | None = None,
+        r2_config: object = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        return {}
+
+    def unexpected_score_and_flush(
+        database_url: str,
+        category: Category,
+        models_dir: Path,
+        races: Mapping[str, Sequence[Mapping[str, object]]],
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        raise AssertionError("zero-feature focused run must not attempt scoring")
+
+    monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
+    monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", unexpected_score_and_flush)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "focused prediction produced zero active feature rows category=jra "
+            "target_date=20260712 target_race=05:11"
+        ),
+    ):
+        predict_upcoming.predict_category(
+            _DB_URL,
+            "jra",
+            Path("/models"),
+            predict_upcoming.PredictWindow(
+                target_date="20260712", days_ahead=0, database_url=_DB_URL
+            ),
+            target_race="05:11",
+        )
+
+
+def test_predict_category_scoped_zero_write_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_build(
+        category: Category,
+        window: predict_upcoming.PredictWindow,
+        target_race: str | None = None,
+        r2_config: object = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        return {"jra:2026:0712:05:11": [{"umaban": 1}]}
+
+    monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
+    monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", lambda *args, **kwargs: 0)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "focused prediction wrote zero rows category=jra target_date=20260712 target_race=05:11"
+        ),
+    ):
+        predict_upcoming.predict_category(
+            _DB_URL,
+            "jra",
+            Path("/models"),
+            predict_upcoming.PredictWindow(
+                target_date="20260712", days_ahead=0, database_url=_DB_URL
+            ),
+            target_race="05:11",
+        )
 
 
 def test_predict_category_without_target_race_keeps_all_races(
@@ -3600,6 +3679,63 @@ def test_build_feature_rows_falls_back_to_full_when_split_returns_none(
 
     assert result == {"race-2": [{"umaban": 2}]}
     assert len(full_called) == 1
+
+
+def test_build_feature_rows_race_chain_never_falls_back_to_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+    from predict_lib.container_role import DayBaseRequiredError
+
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
+    monkeypatch.delenv("DAY_BASE_SPLIT_ENABLED", raising=False)
+    monkeypatch.setattr(
+        pipeline_runner, "build_upcoming_feature_rows_split", lambda *args, **kwargs: None
+    )
+
+    def unexpected_full(
+        *args: object, **kwargs: object
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("race-chain role must not execute the full layer chain")
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows", unexpected_full)
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    with pytest.raises(
+        DayBaseRequiredError,
+        match=(
+            "DAY_BASE_REQUIRED: race-chain returned no rows category=jra "
+            "target_date=20260712 target_race=05:11"
+        ),
+    ):
+        _build_feature_rows("jra", window, target_race="05:11")
+
+
+def test_build_feature_rows_race_chain_rejects_whole_day_full_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+    from predict_lib.container_role import DayBaseRequiredError
+
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
+
+    def unexpected_full(
+        *args: object, **kwargs: object
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("race-chain role must not execute the full layer chain")
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows", unexpected_full)
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    with pytest.raises(
+        DayBaseRequiredError,
+        match="DAY_BASE_REQUIRED: focused race scope is required",
+    ):
+        _build_feature_rows("jra", window)
 
 
 def test_build_feature_rows_skips_split_when_flag_disabled(

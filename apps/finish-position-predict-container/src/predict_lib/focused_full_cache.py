@@ -14,7 +14,7 @@ detached pipeline finishes, the HTTP response that would have carried the
 payload bytes has already ended. This store lets the detached thread hand the
 computed payload off to a *later*, separate HTTP request: the Worker's queue
 consumer polls Neon for completion on redelivery, and once it observes a
-race is done, it makes one follow-up call to fetch (and consume) this race's
+race is done, it makes a follow-up call to fetch this race's
 cached payload so it can still be proxied to R2 through the normal channel.
 
 Population must never fail the underlying prediction run (log-only, per the
@@ -57,10 +57,10 @@ class FocusedFullCachePayload:
 class FocusedFullCacheStore:
     """Thread-safe, bounded, TTL-evicting store keyed by focused-full race key.
 
-    ``pop`` consumes the entry (removes it on read) so a Worker pickup never
-    re-delivers stale bytes on a later retry -- the next retry simply finds
-    nothing cached, which is the same degraded-but-functional outcome as any
-    other cache miss in this system.
+    The serving endpoint uses ``peek`` so a transient Worker-to-R2 write
+    failure can fetch the same immutable payload again. Capacity and TTL bound
+    retained entries; successful completion destroys the container after an
+    R2 HEAD confirms the object landed.
     """
 
     def __init__(

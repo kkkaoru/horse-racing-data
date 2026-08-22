@@ -1032,9 +1032,21 @@ def predict_category(
         races = filter_races_by_scope(
             _as_entry_map(races), race_scope_from_target_race(target_race)
         )
-    return _score_and_flush_races(
+        active_entry_count = sum(len(entries) for entries in races.values())
+        if active_entry_count == 0:
+            raise RuntimeError(
+                f"focused prediction produced zero active feature rows category={category} "
+                f"target_date={window.target_date} target_race={target_race}"
+            )
+    written = _score_and_flush_races(
         database_url, category, models_dir, races, card_max_race_bango=card_max_race_bango
     )
+    if target_race is not None and written == 0:
+        raise RuntimeError(
+            f"focused prediction wrote zero rows category={category} "
+            f"target_date={window.target_date} target_race={target_race}"
+        )
+    return written
 
 
 def _load_booster_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
@@ -1162,13 +1174,21 @@ def _build_feature_rows(
         build_upcoming_feature_rows,
         build_upcoming_feature_rows_split,
     )
+    from predict_lib.container_role import (
+        DayBaseRequiredError,
+        PredictContainerRole,
+        predict_container_role,
+    )
     from predict_lib.pipeline_args import is_day_base_split_enabled
 
-    if (
-        target_race is not None
-        and is_day_base_split_enabled(category)
-        and not is_scoped_rescore_cache_miss_fallback()
-    ):
+    role = predict_container_role()
+    if role is PredictContainerRole.RACE_CHAIN and target_race is None:
+        raise DayBaseRequiredError("focused race scope is required")
+
+    use_split = role is PredictContainerRole.RACE_CHAIN or (
+        is_day_base_split_enabled(category) and not is_scoped_rescore_cache_miss_fallback()
+    )
+    if target_race is not None and use_split:
         split_rows = build_upcoming_feature_rows_split(
             category,
             window.target_date,
@@ -1179,6 +1199,11 @@ def _build_feature_rows(
         )
         if split_rows is not None:
             return split_rows
+        if role is PredictContainerRole.RACE_CHAIN:
+            raise DayBaseRequiredError(
+                f"race-chain returned no rows category={category} "
+                f"target_date={window.target_date} target_race={target_race}"
+            )
 
     return build_upcoming_feature_rows(
         category,
@@ -1626,9 +1651,7 @@ def _make_prewarm_fn(
                 raise RuntimeError("running-style foundation parquet missing after base build")
             encoded = base64.b64encode(parquet_file.read_bytes()).decode("ascii")
             prewarm_commit_fn(
-                build_r2_running_style_foundation_key(
-                    foundation_category, foundation_run_date
-                ),
+                build_r2_running_style_foundation_key(foundation_category, foundation_run_date),
                 encoded,
                 {
                     "maxDataSakuseiNengappi": entrant_watermark[0],
@@ -2395,7 +2418,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             payload = (
-                self.focused_full_cache_store.pop(build_focused_full_race_key(cache_result))
+                self.focused_full_cache_store.peek(build_focused_full_race_key(cache_result))
                 if self.focused_full_cache_store is not None
                 else None
             )
