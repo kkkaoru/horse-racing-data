@@ -308,7 +308,7 @@ it("exportRunningStyleParquetForDay paginates D1 across multiple batches", async
     .mockResolvedValueOnce({ results: fullBatch })
     .mockResolvedValueOnce({ results: [buildRow(501)] });
   const bind = vi.fn(() => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
   const put = vi.fn(async (_key: string, _body: Uint8Array, _options?: unknown) => undefined);
   const env = {
     FEATURES_ARCHIVE: { put } as unknown as R2Bucket,
@@ -321,4 +321,9 @@ it("exportRunningStyleParquetForDay paginates D1 across multiple batches", async
   });
   expect(result.rowCount).toBe(501);
   expect(all).toHaveBeenCalledTimes(2);
+  expect(bind).toHaveBeenNthCalledWith(1, "jra:20260607:", "jra:20260607;", 500, 0);
+  expect(bind).toHaveBeenNthCalledWith(2, "jra:20260607:", "jra:20260607;", 500, 500);
+  const sql = prepare.mock.calls[0]?.[0];
+  expect(sql).toMatch(/where race_key >= \? and race_key < \?/u);
+  expect(sql).not.toMatch(/race_key like/u);
 });

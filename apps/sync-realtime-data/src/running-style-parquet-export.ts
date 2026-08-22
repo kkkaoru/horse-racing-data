@@ -237,7 +237,8 @@ export const serializeRunningStylePredictionParquet = async (
 
 const fetchPredictionRowsBatch = async (
   db: D1Database,
-  prefix: string,
+  rangeStart: string,
+  rangeEnd: string,
   offset: number,
 ): Promise<D1PredictionRow[]> => {
   const result = await db
@@ -247,11 +248,11 @@ const fetchPredictionRowsBatch = async (
               p_nige, p_senkou, p_sashi, p_oikomi,
               predicted_label, predicted_at
          from race_running_styles
-        where race_key like ?
+        where race_key >= ? and race_key < ?
         order by race_key, horse_number
         limit ? offset ?`,
     )
-    .bind(`${prefix}%`, D1_SELECT_BATCH_SIZE, offset)
+    .bind(rangeStart, rangeEnd, D1_SELECT_BATCH_SIZE, offset)
     .all<D1PredictionRow>();
   return result.results;
 };
@@ -261,12 +262,13 @@ const queryPredictionRowsForDay = async (
   source: "jra" | "nar",
   dateYmd: string,
 ): Promise<D1PredictionRow[]> => {
-  const prefix = `${source}:${dateYmd}:`;
+  const rangeStart = `${source}:${dateYmd}:`;
+  const rangeEnd = `${source}:${dateYmd};`;
   const collectPage = async (
     pageOffset: number,
     acc: D1PredictionRow[],
   ): Promise<D1PredictionRow[]> => {
-    const batch = await fetchPredictionRowsBatch(db, prefix, pageOffset);
+    const batch = await fetchPredictionRowsBatch(db, rangeStart, rangeEnd, pageOffset);
     if (batch.length === 0) return acc;
     const next = acc.concat(batch);
     if (batch.length < D1_SELECT_BATCH_SIZE) return next;

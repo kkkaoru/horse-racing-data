@@ -8,6 +8,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { RunningStyleRaceParams } from "./running-style-features";
 import {
   buildFinishPositionDayBaseKey,
+  buildRunningStyleFoundationKey,
   clearFinishPositionDayBaseCache,
   loadRunningStyleFeaturesFromFinishPositionDayBase,
 } from "./running-style-finish-feature-hit";
@@ -105,6 +106,40 @@ it("builds the shared finish-position day-base key", () => {
   expect(buildFinishPositionDayBaseKey(RACE)).toBe(
     "feat-daybase/catalog-v1/jra/20260822/features.parquet",
   );
+});
+
+it("builds the RS-independent daily foundation key", () => {
+  expect(buildRunningStyleFoundationKey(RACE)).toBe(
+    "feat-running-style-base/catalog-v1/jra/20260822/features.parquet",
+  );
+});
+
+it("prefers the daily foundation and falls back to the final day-base", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const foundationKey = buildRunningStyleFoundationKey(RACE);
+  const dayBaseKey = buildFinishPositionDayBaseKey(RACE);
+  const head = vi.fn(async (key: string) =>
+    key === foundationKey ? null : { customMetadata: metadata, etag: "final-etag" },
+  );
+  const get = vi.fn(async (key: string) =>
+    key === dayBaseKey
+      ? {
+          arrayBuffer: vi.fn(async () => bytes),
+          customMetadata: metadata,
+          etag: "final-etag",
+        }
+      : null,
+  );
+
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket: { get, head } as unknown as R2Bucket,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+
+  expect(rows).toHaveLength(1);
+  expect(head.mock.calls.map(([key]) => key)).toStrictEqual([foundationKey, dayBaseKey]);
+  expect(get).toHaveBeenCalledWith(dayBaseKey);
 });
 
 it("returns a complete race slice and reuses the etag cache", async () => {

@@ -7,6 +7,7 @@ import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
 const DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
+const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
 const DAY_BASE_FILE = "features.parquet";
 const MAX_CACHED_DAY_BASES = 4;
 const WATERMARK_METADATA_KEYS = [
@@ -64,6 +65,9 @@ const hasFreshnessMetadata = (object: R2Object): boolean => {
 
 export const buildFinishPositionDayBaseKey = (params: RunningStyleRaceParams): string =>
   `${DAY_BASE_PREFIX}/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
+
+export const buildRunningStyleFoundationKey = (params: RunningStyleRaceParams): string =>
+  `${RUNNING_STYLE_FOUNDATION_PREFIX}/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
 
 const toFeatureRow = (
   raw: Record<string, unknown>,
@@ -142,19 +146,29 @@ export const loadRunningStyleFeaturesFromFinishPositionDayBase = async (params: 
   race: RunningStyleRaceParams;
 }): Promise<ReadonlyArray<RaceHorseFeatureRow> | null> => {
   if (params.bucket === undefined) return null;
-  const key = buildFinishPositionDayBaseKey(params.race);
-  const cacheKey = `${key}\u0000${params.featureNames.join("\u0000")}`;
-  const head = await params.bucket.head(key);
-  if (head === null || !hasFreshnessMetadata(head)) return null;
-  const cached = dayBaseCache.get(cacheKey);
-  if (cached !== undefined && cached.etag === head.etag) {
-    return cached.rowsByRace.get(buildRunningStyleRaceKey(params.race)) ?? null;
+  const raceKey = buildRunningStyleRaceKey(params.race);
+  const keys = [
+    buildRunningStyleFoundationKey(params.race),
+    buildFinishPositionDayBaseKey(params.race),
+  ];
+  for (const key of keys) {
+    const cacheKey = `${key}\u0000${params.featureNames.join("\u0000")}`;
+    const head = await params.bucket.head(key);
+    if (head === null || !hasFreshnessMetadata(head)) continue;
+    const cached = dayBaseCache.get(cacheKey);
+    if (cached !== undefined && cached.etag === head.etag) {
+      const rows = cached.rowsByRace.get(raceKey);
+      if (rows !== undefined && rows.length > 0) return rows;
+      continue;
+    }
+    const object = await params.bucket.get(key);
+    if (object === null || !hasFreshnessMetadata(object)) continue;
+    const rowsByRace = await decodeDayBase(await object.arrayBuffer(), params.featureNames);
+    rememberDayBase(cacheKey, { etag: object.etag, rowsByRace });
+    const rows = rowsByRace.get(raceKey);
+    if (rows !== undefined && rows.length > 0) return rows;
   }
-  const object = await params.bucket.get(key);
-  if (object === null || !hasFreshnessMetadata(object)) return null;
-  const rowsByRace = await decodeDayBase(await object.arrayBuffer(), params.featureNames);
-  rememberDayBase(cacheKey, { etag: object.etag, rowsByRace });
-  return rowsByRace.get(buildRunningStyleRaceKey(params.race)) ?? null;
+  return null;
 };
 
 export const clearFinishPositionDayBaseCache = (): void => {
