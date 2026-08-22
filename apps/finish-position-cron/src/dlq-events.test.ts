@@ -28,6 +28,7 @@ test("buildDlqEventRecord returns a normalised per-race record", () => {
     keibajoCode: "02",
     mode: "full",
     queueAttempts: null,
+    queueMessageId: null,
     raceBango: "01",
     redriveCount: 0,
     redriven: true,
@@ -82,10 +83,11 @@ test("buildDlqEventRecord keeps failure snapshot and queueAttempts when provided
   expect(record.queueAttempts).toBe(16);
 });
 
-test("buildDlqEventInsertSql targets the dlq events table including error columns", () => {
+test("buildDlqEventInsertSql inserts message identity idempotently", () => {
   expect(buildDlqEventInsertSql()).toBe(
-    `insert into finish_position_predict_dlq_events (run_ymd, category, mode, keibajo_code, race_bango, redrive_count, redriven, error_name, error_message, error_stack, http_status, http_body_excerpt, queue_attempts)
-     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+    `insert into finish_position_predict_dlq_events (run_ymd, category, mode, keibajo_code, race_bango, queue_message_id, redrive_count, redriven, error_name, error_message, error_stack, http_status, http_body_excerpt, queue_attempts)
+     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+     on conflict do nothing`,
   );
 });
 
@@ -100,6 +102,7 @@ test("buildDlqEventBindParams orders params to match the placeholders and encode
     keibajoCode: "83",
     mode: "full",
     queueAttempts: 16,
+    queueMessageId: "dlq-msg-1",
     raceBango: "03",
     redriveCount: 0,
     redriven: true,
@@ -111,6 +114,7 @@ test("buildDlqEventBindParams orders params to match the placeholders and encode
     "full",
     "83",
     "03",
+    "dlq-msg-1",
     0,
     1,
     "Error",
@@ -134,6 +138,7 @@ test("buildDlqEventBindParams encodes redriven false as 0", () => {
     "20260712",
     "nar",
     "rescore",
+    null,
     null,
     null,
     1,

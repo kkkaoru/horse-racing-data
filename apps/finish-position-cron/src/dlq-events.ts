@@ -11,6 +11,7 @@ export interface DlqEventRecord extends PredictFailureSnapshot {
   mode: PredictMode;
   keibajoCode: string | null;
   raceBango: string | null;
+  queueMessageId: string | null;
   redriveCount: number;
   redriven: boolean;
   queueAttempts: number | null;
@@ -22,6 +23,7 @@ interface BuildDlqEventRecordInput {
   mode: PredictMode;
   keibajoCode?: string;
   raceBango?: string;
+  queueMessageId?: string | null;
   redriveCount: number;
   redriven: boolean;
   queueAttempts?: number | null;
@@ -58,6 +60,7 @@ export const buildDlqEventRecord = (input: BuildDlqEventRecordInput): DlqEventRe
     keibajoCode: input.keibajoCode ?? null,
     mode: input.mode,
     queueAttempts: input.queueAttempts ?? null,
+    queueMessageId: input.queueMessageId ?? null,
     raceBango: input.raceBango ?? null,
     redriveCount: input.redriveCount,
     redriven: input.redriven,
@@ -69,8 +72,9 @@ export const emptyPredictFailure = (): PredictFailureSnapshot => ({ ...EMPTY_FAI
 
 // Parameterised single-row INSERT bound through D1 prepare().bind(...).
 export const buildDlqEventInsertSql = (): string =>
-  `insert into ${DLQ_EVENTS_TABLE} (run_ymd, category, mode, keibajo_code, race_bango, redrive_count, redriven, error_name, error_message, error_stack, http_status, http_body_excerpt, queue_attempts)
-     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`;
+  `insert into ${DLQ_EVENTS_TABLE} (run_ymd, category, mode, keibajo_code, race_bango, queue_message_id, redrive_count, redriven, error_name, error_message, error_stack, http_status, http_body_excerpt, queue_attempts)
+     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+     on conflict do nothing`;
 
 // Positional bind parameters in the same order as the INSERT placeholders.
 // D1 does not accept JS booleans as bind params, so redriven is passed as 0/1.
@@ -80,6 +84,7 @@ export const buildDlqEventBindParams = (
   string,
   PredictCategory,
   PredictMode,
+  string | null,
   string | null,
   string | null,
   number,
@@ -96,6 +101,7 @@ export const buildDlqEventBindParams = (
   record.mode,
   record.keibajoCode,
   record.raceBango,
+  record.queueMessageId,
   record.redriveCount,
   record.redriven ? 1 : 0,
   record.errorName,
