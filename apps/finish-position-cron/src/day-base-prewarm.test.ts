@@ -48,7 +48,13 @@ vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
 }));
 
-import { prewarmCategory, runDayBasePrewarm } from "./day-base-prewarm";
+import {
+  enqueueDayBasePrewarm,
+  isDayBasePrewarmMessage,
+  isDayBasePrewarmQueueMessage,
+  prewarmCategory,
+  runDayBasePrewarm,
+} from "./day-base-prewarm";
 import type { Env } from "./types";
 
 const containerDoFetchMock = vi.fn((_request: Request) =>
@@ -79,13 +85,60 @@ const resultLineBody = (fields: Record<string, string>): string =>
 const isRequest = (value: unknown): value is Request =>
   typeof value === "object" && value !== null && "url" in value;
 
+test("validates day-base prewarm messages and queue wrappers", () => {
+  const valid = {
+    category: "jra",
+    daysAhead: 0,
+    requestedAt: "2026-08-22T00:00:00.000Z",
+    runYmd: "20260822",
+    type: "day-base-prewarm",
+  };
+  expect(isDayBasePrewarmMessage(valid)).toBe(true);
+  expect(isDayBasePrewarmQueueMessage({ body: valid } as Message<unknown>)).toBe(true);
+  for (const invalid of [
+    null,
+    {},
+    { ...valid, type: "other" },
+    { ...valid, category: "overseas" },
+    { ...valid, runYmd: 20260822 },
+    { ...valid, runYmd: "2026-08-22" },
+    { ...valid, daysAhead: "0" },
+    { ...valid, daysAhead: Number.NaN },
+    { ...valid, requestedAt: 1 },
+    { ...valid, generatePredictionsAfterHit: "yes" },
+  ]) {
+    expect(isDayBasePrewarmMessage(invalid)).toBe(false);
+  }
+});
+
+test("enqueueDayBasePrewarm preserves generation intent and explicit request time", async () => {
+  const env = makeEnv();
+  await enqueueDayBasePrewarm({
+    category: "ban-ei",
+    daysAhead: 0,
+    env,
+    generatePredictionsAfterHit: true,
+    requestedAt: new Date("2026-08-22T00:00:00.000Z"),
+    runYmd: "20260822",
+  });
+  expect(queueSendMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    daysAhead: 0,
+    generatePredictionsAfterHit: true,
+    requestedAt: "2026-08-22T00:00:00.000Z",
+    runYmd: "20260822",
+    type: "day-base-prewarm",
+  });
+});
+
 beforeEach(() => {
   enumerateTodaysRacesMock.mockClear();
   fanOutPredictionsAfterDayBaseHitMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
-  queueSendMock.mockClear();
+  queueSendMock.mockReset();
+  queueSendMock.mockResolvedValue(undefined);
   headDayBaseObjectMock.mockReset();
   pickUpPrewarmDayBaseMock.mockReset();
   claimContainerSlotMock.mockClear();
@@ -119,11 +172,17 @@ test("runDayBasePrewarm dedupes categories from a mixed-category race list and d
   ]);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
-  expect(containerDoIdFromNameMock).toHaveBeenCalledTimes(3);
-  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-jra");
-  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-nar");
-  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
-  expect(containerDoFetchMock).toHaveBeenCalledTimes(3);
+  expect(queueSendMock).toHaveBeenCalledTimes(3);
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", type: "day-base-prewarm" }),
+  );
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "nar", type: "day-base-prewarm" }),
+  );
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "ban-ei", type: "day-base-prewarm" }),
+  );
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
   logSpy.mockRestore();
 });
 
@@ -151,50 +210,21 @@ test("runDayBasePrewarm logs a start line before enumerating, so an uncaught thr
   logSpy.mockRestore();
 });
 
-test("runDayBasePrewarm continues warming other categories when one category's DO fetch rejects", async () => {
+test("runDayBasePrewarm continues enqueueing other categories when one queue send rejects", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([
     { category: "jra", keibajoCode: "05", raceBango: "01" },
     { category: "nar", keibajoCode: "44", raceBango: "01" },
   ]);
-  containerDoFetchMock.mockImplementation((request: Request) => {
-    if (request.url.includes("category=jra")) return Promise.reject(new Error("boom"));
-    return Promise.resolve(
-      new Response(
-        resultLineBody({
-          category: "nar",
-          parquetKey: "nar/20260628/day-base.parquet",
-          runDate: "20260628",
-          status: "success",
-        }),
-        { status: 200 },
-      ),
-    );
-  });
+  queueSendMock.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await expect(
     runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
   ).resolves.toBe(false);
-  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
-  const firstCall = containerDoFetchMock.mock.calls[0];
-  if (firstCall === undefined) throw new Error("expected first fetch");
-  const firstRequest = firstCall[0];
-  if (!isRequest(firstRequest)) throw new Error("expected first Request");
-  const secondCall = containerDoFetchMock.mock.calls[1];
-  if (secondCall === undefined) throw new Error("expected second fetch");
-  const secondRequest = secondCall[0];
-  if (!isRequest(secondRequest)) throw new Error("expected second Request");
-  expect(firstRequest.url).toBe(
-    "http://do/prewarm-day-base?category=jra&daysAhead=2&runDate=20260628",
-  );
-  expect(secondRequest.url).toBe(
-    "http://do/prewarm-day-base?category=nar&daysAhead=2&runDate=20260628",
-  );
+  expect(queueSendMock).toHaveBeenCalledTimes(2);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] failed category=jra runYmd=20260628: Error: boom",
-  );
-  expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] success category=nar runYmd=20260628 status=success parquetKey=nar/20260628/day-base.parquet watermark=absent error=-",
+    "[day-base-prewarm] enqueue failed category=jra runYmd=20260628: Error: boom",
   );
   errorSpy.mockRestore();
   logSpy.mockRestore();
@@ -437,6 +467,7 @@ test("prewarmCategory releases the day-base slot after a non-ok HTTP response", 
     doName: "predict-ban-ei",
     env: expect.any(Object),
     kind: "day-base",
+    workKey: "day-base:20260628:ban-ei",
   });
   warnSpy.mockRestore();
 });
@@ -656,7 +687,7 @@ test("prewarmCategory returns true after a started build then pickup lands the o
   logSpy.mockRestore();
 });
 
-test("runDayBasePrewarm revalidates every category even when day-base objects are present", async () => {
+test("runDayBasePrewarm queues every category without directly reading or starting containers", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([
     { category: "jra", keibajoCode: "05", raceBango: "01" },
     { category: "nar", keibajoCode: "44", raceBango: "01" },
@@ -665,9 +696,10 @@ test("runDayBasePrewarm revalidates every category even when day-base objects ar
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await expect(
     runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
-  ).resolves.toBe(false);
-  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
-  expect(pickUpPrewarmDayBaseMock).toHaveBeenCalledTimes(2);
+  ).resolves.toBe(true);
+  expect(queueSendMock).toHaveBeenCalledTimes(2);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
   logSpy.mockRestore();
 });
 
@@ -764,6 +796,7 @@ test("prewarmCategory claims a Ban-ei reserved day-base slot before starting", a
     env: expect.any(Object),
     kind: "day-base",
     staleAfterMs: 3_600_000,
+    workKey: "day-base:20260628:ban-ei",
   });
 });
 
@@ -795,6 +828,7 @@ test("prewarmCategory releases the day-base slot after pickup lands the object",
     doName: "predict-jra",
     env: expect.any(Object),
     kind: "day-base",
+    workKey: "day-base:20260628:jra",
   });
   logSpy.mockRestore();
 });
@@ -813,6 +847,7 @@ test("prewarmCategory releases the day-base slot when the container fetch throws
     doName: "predict-nar",
     env: expect.any(Object),
     kind: "day-base",
+    workKey: "day-base:20260628:nar",
   });
   errorSpy.mockRestore();
 });

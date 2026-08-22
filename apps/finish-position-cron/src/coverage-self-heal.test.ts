@@ -3,11 +3,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env, PredictCategory } from "./types";
 
-interface ClaimResult {
-  proceed: boolean;
-  state?: string;
-}
-
 interface RaceSourceRow {
   source: string;
   keibajo_code: string;
@@ -30,34 +25,29 @@ interface EnqueuePredictCallParams {
   keibajoCode: string;
   mode: string;
   raceBango: string;
+  raceStartAtJst: string;
   runDate: string;
   runYmd: string;
   skipDedup: boolean;
 }
 
-const {
-  claimFocusedFullRaceMock,
-  enqueuePredictMock,
-  isFocusedFullPredictionCompleteMock,
-  isOldDateRunYmdMock,
-} = vi.hoisted(() => {
-  const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-  const enqueuePredict = vi.fn(
-    async (_params: EnqueuePredictCallParams): Promise<PredictCategory[]> => ["jra"],
-  );
-  const isFocusedFullPredictionComplete = vi.fn(
-    async (_params: CompletionCallParams): Promise<boolean> => false,
-  );
-  const isOldDateRunYmd = vi.fn((): boolean => false);
-  return {
-    claimFocusedFullRaceMock: claimFocusedFullRace,
-    enqueuePredictMock: enqueuePredict,
-    isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
-    isOldDateRunYmdMock: isOldDateRunYmd,
-  };
-});
+const { enqueuePredictMock, isFocusedFullPredictionCompleteMock, isOldDateRunYmdMock } = vi.hoisted(
+  () => {
+    const enqueuePredict = vi.fn(
+      async (_params: EnqueuePredictCallParams): Promise<PredictCategory[]> => ["jra"],
+    );
+    const isFocusedFullPredictionComplete = vi.fn(
+      async (_params: CompletionCallParams): Promise<boolean> => false,
+    );
+    const isOldDateRunYmd = vi.fn((): boolean => false);
+    return {
+      enqueuePredictMock: enqueuePredict,
+      isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
+      isOldDateRunYmdMock: isOldDateRunYmd,
+    };
+  },
+);
 
-vi.mock("./do-state", () => ({ claimFocusedFullRace: claimFocusedFullRaceMock }));
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueuePredictMock }));
 vi.mock("./focused-full-completion", () => ({
   isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
@@ -129,7 +119,6 @@ const EMPTY_SUMMARY = {
 };
 
 beforeEach(() => {
-  claimFocusedFullRaceMock.mockClear();
   enqueuePredictMock.mockClear();
   isFocusedFullPredictionCompleteMock.mockClear();
   isOldDateRunYmdMock.mockClear();
@@ -142,7 +131,6 @@ beforeEach(() => {
   cronBindMock.mockClear();
   cronPrepareMock.mockClear();
   lastEnqueuedAtMock.mockResolvedValue(null);
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   enqueuePredictMock.mockResolvedValue(["jra"]);
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   isOldDateRunYmdMock.mockReturnValue(false);
@@ -150,8 +138,8 @@ beforeEach(() => {
   cronFirstMock.mockResolvedValue(null);
 });
 
-test("COVERAGE_SELF_HEAL_CRON is the every-15-min race-hours schedule offset by 7 minutes", () => {
-  expect(COVERAGE_SELF_HEAL_CRON).toBe("7,22,37,52 1-11 * * *");
+test("COVERAGE_SELF_HEAL_CRON covers late local races and is offset by 7 minutes", () => {
+  expect(COVERAGE_SELF_HEAL_CRON).toBe("7,22,37,52 1-14 * * *");
 });
 
 test("pre-race readiness constants mirror weight lead and keep separate budgets", () => {
@@ -181,7 +169,7 @@ test("isEscalatedRetryDue respects the backoff interval against D1 UTC timestamp
 });
 
 test("shouldRunCoverageSelfHealCron matches the configured cron", () => {
-  expect(shouldRunCoverageSelfHealCron("7,22,37,52 1-11 * * *")).toBe(true);
+  expect(shouldRunCoverageSelfHealCron("7,22,37,52 1-14 * * *")).toBe(true);
 });
 
 test("shouldRunCoverageSelfHealCron rejects a different cron", () => {
@@ -412,17 +400,8 @@ test("runCoverageSelfHeal enqueues a fresh skipDedup focused-full message and re
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue(null);
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
-  expect(claimFocusedFullRaceMock).toHaveBeenCalledWith({
-    category: "jra",
-    env: expect.anything(),
-    keibajoCode: "05",
-    raceBango: "11",
-    runYmd: "20260712",
-    staleAfterMs: 900000,
-  });
   expect(enqueuePredictMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 2,
@@ -431,6 +410,7 @@ test("runCoverageSelfHeal enqueues a fresh skipDedup focused-full message and re
     keibajoCode: "05",
     mode: "full",
     raceBango: "11",
+    raceStartAtJst: "2026-07-12T10:00:00+09:00",
     runDate: "2026-07-12",
     runYmd: "20260712",
     skipDedup: true,
@@ -482,7 +462,6 @@ test("runCoverageSelfHeal passes the D1 prior-enqueue count through to the re-en
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: 1 });
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
@@ -516,9 +495,9 @@ test("runCoverageSelfHeal skips enqueueing and reports in-flight when the DO cla
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: 0 });
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: false, state: "started" });
+  enqueuePredictMock.mockResolvedValue([]);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
-  expect(enqueuePredictMock).not.toHaveBeenCalled();
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
   expect(cronRunMock).not.toHaveBeenCalled();
   expect(summary).toStrictEqual({
     ...EMPTY_SUMMARY,
@@ -544,7 +523,6 @@ test("runCoverageSelfHeal escalates instead of re-enqueueing once the per-race p
   cronFirstMock.mockResolvedValue({ count: 2 });
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
-  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(enqueuePredictMock).not.toHaveBeenCalled();
   expect(cronBindMock).toHaveBeenNthCalledWith(
     2,
@@ -624,7 +602,6 @@ test("runCoverageSelfHeal enqueues pre-race incomplete races as mode=full skipDe
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue(null);
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).toHaveBeenCalledWith({
@@ -635,6 +612,7 @@ test("runCoverageSelfHeal enqueues pre-race incomplete races as mode=full skipDe
     keibajoCode: "44",
     mode: "full",
     raceBango: "06",
+    raceStartAtJst: "2026-07-12T16:00:00+09:00",
     runDate: "2026-07-12",
     runYmd: "20260712",
     skipDedup: true,
@@ -676,7 +654,6 @@ test("runCoverageSelfHeal skips complete pre-race candidates without enqueueing"
   isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).not.toHaveBeenCalled();
-  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(summary).toStrictEqual({
     ...EMPTY_SUMMARY,
     alreadyComplete: 1,
@@ -710,7 +687,6 @@ test("runCoverageSelfHeal processes pre-race candidates earliest-post first and 
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue(null);
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(PRE_RACE_ENQUEUE_CAP_PER_TICK);
@@ -749,7 +725,6 @@ test("runCoverageSelfHeal keeps post-race heal independent of pre-race prior cou
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: 0 });
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
@@ -826,7 +801,6 @@ test("runCoverageSelfHeal keeps retrying an incomplete pre-race race after escal
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: MAX_PRE_RACE_ENQUEUES_PER_RACE });
   lastEnqueuedAtMock.mockResolvedValue({ last_enqueued_at: "2026-07-12 05:25:00" });
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
@@ -877,9 +851,9 @@ test("runCoverageSelfHeal does not enqueue an escalated pre-race retry while the
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: MAX_PRE_RACE_ENQUEUES_PER_RACE });
   lastEnqueuedAtMock.mockResolvedValue({ last_enqueued_at: "2026-07-12 05:20:00" });
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: false, state: "started" });
+  enqueuePredictMock.mockResolvedValue([]);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
-  expect(enqueuePredictMock).not.toHaveBeenCalled();
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
   expect(summary).toStrictEqual({
     ...EMPTY_SUMMARY,
     alreadyInFlight: 1,
@@ -913,7 +887,6 @@ test("runCoverageSelfHeal does not let a pre-race failure block post-race heal",
     },
   );
   cronFirstMock.mockResolvedValue(null);
-  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });

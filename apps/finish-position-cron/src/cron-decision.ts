@@ -17,6 +17,7 @@ interface RaceSourceRow {
   source: string;
   keibajo_code: string;
   race_bango: string;
+  race_start_at_jst?: string;
 }
 
 // One race the feature-build cron should fan a per-race full build out to.
@@ -26,10 +27,11 @@ export interface RaceEntry {
   category: PredictCategory;
   keibajoCode: string;
   raceBango: string;
+  raceStartAtJst?: string;
 }
 
 const ENUMERATE_RACES_SQL =
-  "SELECT DISTINCT source, keibajo_code, race_bango FROM realtime_race_sources WHERE kaisai_nen = ? AND kaisai_tsukihi = ? ORDER BY source, keibajo_code, race_bango";
+  "SELECT DISTINCT source, keibajo_code, race_bango, race_start_at_jst FROM realtime_race_sources WHERE kaisai_nen = ? AND kaisai_tsukihi = ? ORDER BY race_start_at_jst ASC, source ASC, keibajo_code ASC, race_bango ASC";
 const RUN_YMD_YEAR_START = 0;
 const RUN_YMD_YEAR_END = 4;
 const RUN_YMD_LENGTH = 8;
@@ -53,9 +55,6 @@ export const WARM_CRON_PRE_NAR = "55 17 * * *";
 // Warm cron: 00:25 UTC == JST 09:25 (5 min before JRA 09:30 prediction)
 export const WARM_CRON_PRE_JRA = "25 0 * * *";
 
-// Warm cron: every 30 min during race hours (01:00-11:59 UTC == JST 10:00-20:59)
-export const WARM_CRON_RACE_HOURS = "*/30 1-11 * * *";
-
 // Rescore cron: every 20 min during race hours (01:00-11:59 UTC == JST 10:00-20:59)
 // NOTE: This cron is NOT active in wrangler.jsonc triggers yet — enabled after pilot phase.
 export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
@@ -75,11 +74,7 @@ export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 export const FEATURE_BUILD_CRON_EARLY = "0 21 * * *";
 export const FEATURE_BUILD_CRON = "30 0 * * *";
 
-const WARM_CRONS: ReadonlySet<string> = new Set([
-  WARM_CRON_PRE_NAR,
-  WARM_CRON_PRE_JRA,
-  WARM_CRON_RACE_HOURS,
-]);
+const WARM_CRONS: ReadonlySet<string> = new Set([WARM_CRON_PRE_NAR, WARM_CRON_PRE_JRA]);
 
 const RESCORE_CRONS: ReadonlySet<string> = new Set([RESCORE_CRON_RACE_HOURS]);
 
@@ -128,6 +123,7 @@ const toRaceEntry = (row: RaceSourceRow): RaceEntry => {
     category: resolveRaceCategory(row.source, keibajoCode),
     keibajoCode,
     raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+    ...(row.race_start_at_jst ? { raceStartAtJst: row.race_start_at_jst } : {}),
   };
 };
 

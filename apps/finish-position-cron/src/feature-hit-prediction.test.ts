@@ -27,8 +27,18 @@ beforeEach(() => {
 
 test("fans out one full prediction per category race after the caller proves a HIT", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([
-    { category: "jra", keibajoCode: "05", raceBango: "01" },
-    { category: "jra", keibajoCode: "05", raceBango: "02" },
+    {
+      category: "jra",
+      keibajoCode: "05",
+      raceBango: "01",
+      raceStartAtJst: "2026-08-22T09:50:00+09:00",
+    },
+    {
+      category: "jra",
+      keibajoCode: "05",
+      raceBango: "02",
+      raceStartAtJst: "2026-08-22T10:20:00+09:00",
+    },
     { category: "nar", keibajoCode: "44", raceBango: "01" },
   ]);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -46,14 +56,54 @@ test("fans out one full prediction per category race after the caller proves a H
     keibajoCode: "05",
     mode: "full",
     raceBango: "01",
+    raceStartAtJst: "2026-08-22T09:50:00+09:00",
     runDate: "2026-08-22",
     runYmd: "20260822",
     skipDedup: true,
   });
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2",
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0",
   );
   logSpy.mockRestore();
+});
+
+test("waits for each earlier post-time enqueue before sending the next race", async () => {
+  enumerateTodaysRacesMock.mockResolvedValue([
+    { category: "jra", keibajoCode: "01", raceBango: "01" },
+    { category: "jra", keibajoCode: "05", raceBango: "01" },
+  ]);
+  let releaseFirst: (() => void) | undefined;
+  enqueuePredictMock.mockImplementationOnce(
+    () =>
+      new Promise<string[]>((resolve) => {
+        releaseFirst = () => resolve(["jra"]);
+      }),
+  );
+
+  const fanOut = fanOutPredictionsAfterDayBaseHit({
+    category: "jra",
+    env,
+    runYmd: "20260822",
+  });
+  await vi.waitFor(() => expect(enqueuePredictMock).toHaveBeenCalledTimes(1));
+  releaseFirst?.();
+  await fanOut;
+
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      keibajoCode: "01",
+      raceBango: "01",
+    }),
+  );
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({
+      keibajoCode: "05",
+      raceBango: "01",
+    }),
+  );
 });
 
 test("does not enqueue another category and reports an empty category day", async () => {
@@ -66,5 +116,21 @@ test("does not enqueue another category and reports an empty category day", asyn
     fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
   ).resolves.toBe(0);
   expect(enqueuePredictMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
+});
+
+test("reports only newly reserved races when another producer already owns one", async () => {
+  enumerateTodaysRacesMock.mockResolvedValue([
+    { category: "jra", keibajoCode: "01", raceBango: "01" },
+    { category: "jra", keibajoCode: "01", raceBango: "02" },
+  ]);
+  enqueuePredictMock.mockResolvedValueOnce([]).mockResolvedValueOnce(["jra"]);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await expect(
+    fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
+  ).resolves.toBe(1);
+  expect(logSpy).toHaveBeenCalledWith(
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=1",
+  );
   logSpy.mockRestore();
 });

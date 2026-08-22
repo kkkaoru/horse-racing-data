@@ -4,16 +4,20 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { RetryErrorLookupRow } from "./retry-errors";
 import type { Env, PredictQueueMessage } from "./types";
 
-const { clearContainerSlotMock, completeFocusedFullRaceMock } = vi.hoisted(() => {
-  const clearContainerSlot = vi.fn(async () => undefined);
-  const completeFocusedFullRace = vi.fn(async () => undefined);
-  return {
-    clearContainerSlotMock: clearContainerSlot,
-    completeFocusedFullRaceMock: completeFocusedFullRace,
-  };
-});
+const { checkContainerSlotStopMock, clearContainerSlotMock, completeFocusedFullRaceMock } =
+  vi.hoisted(() => {
+    const checkContainerSlotStop = vi.fn(async () => true);
+    const clearContainerSlot = vi.fn(async () => undefined);
+    const completeFocusedFullRace = vi.fn(async () => undefined);
+    return {
+      checkContainerSlotStopMock: checkContainerSlotStop,
+      clearContainerSlotMock: clearContainerSlot,
+      completeFocusedFullRaceMock: completeFocusedFullRace,
+    };
+  });
 
 vi.mock("./do-state", () => ({
+  checkContainerSlotStop: checkContainerSlotStopMock,
   clearContainerSlot: clearContainerSlotMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
 }));
@@ -23,15 +27,26 @@ import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 const ackMock = vi.fn();
 const retryMock = vi.fn();
 const sendMock = vi.fn();
+const controlSendMock = vi.fn();
 const runMock = vi.fn(async () => ({ success: true }));
 const firstMock = vi.fn(async (): Promise<RetryErrorLookupRow | null> => null);
 const bindMock = vi.fn(() => ({ first: firstMock, run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
+const containerFetchMock = vi.fn(async () => new Response(null, { status: 204 }));
 
 const makeEnv = (): Env =>
   ({
     FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
+    FINISH_POSITION_PREDICT_CONTAINER: {
+      get: vi.fn(() => ({ fetch: containerFetchMock })),
+      idFromName: vi.fn((name: string) => ({ name })),
+    } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
+    CONTAINER_CONTROL_QUEUE: {
+      send: controlSendMock,
+    } as unknown as NonNullable<Env["CONTAINER_CONTROL_QUEUE"]>,
     PREDICT_QUEUE: { send: sendMock } as unknown as Env["PREDICT_QUEUE"],
+    PREDICT_RUN_COORDINATOR: {} as Env["PREDICT_RUN_COORDINATOR"],
+    TRIGGER_TOKEN: "secret-token",
   }) as unknown as Env;
 
 const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<PredictQueueMessage> =>
@@ -61,6 +76,12 @@ beforeEach(() => {
   retryMock.mockClear();
   sendMock.mockClear();
   sendMock.mockResolvedValue(undefined);
+  controlSendMock.mockClear();
+  controlSendMock.mockResolvedValue(undefined);
+  containerFetchMock.mockClear();
+  containerFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+  checkContainerSlotStopMock.mockClear();
+  checkContainerSlotStopMock.mockResolvedValue(true);
   runMock.mockClear();
   runMock.mockResolvedValue({ success: true });
   firstMock.mockClear();
@@ -148,6 +169,7 @@ test("records a durable event row for a focused-full message", async () => {
     "full",
     "02",
     "01",
+    "dlq-msg-1",
     0,
     1,
     ...nullFailureBindTail,
@@ -211,6 +233,77 @@ test("does not redrive a message that already exhausted the redrive budget", asy
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
+test("queues terminal container cleanup for an exhausted focused-full message", async () => {
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        dlqRedriveCount: 1,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-jra",
+      type: "container-stop",
+      workKey: "focused-full:20260712:jra:02:01",
+    }),
+  );
+  expect(clearContainerSlotMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("queues terminal container cleanup for an exhausted rescore message", async () => {
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        dlqRedriveCount: 1,
+        keibajoCode: "35",
+        mode: "rescore",
+        raceBango: "08",
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-nar",
+      type: "container-stop",
+      workKey: "rescore:20260712:nar:35:08",
+    }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("retries exhausted focused-full cleanup when the control queue is unavailable", async () => {
+  const env = { ...makeEnv(), CONTAINER_CONTROL_QUEUE: undefined };
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        dlqRedriveCount: 1,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        skipDedup: true,
+      }),
+    ]),
+    env,
+  );
+
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  consoleError.mockRestore();
+});
+
 test("still records the event row with redriven=false when the budget is exhausted", async () => {
   await handleDlqQueue(
     makeBatch([makeMessage({ dlqRedriveCount: 1, keibajoCode: "02", raceBango: "01" })]),
@@ -222,6 +315,7 @@ test("still records the event row with redriven=false when the budget is exhaust
     "full",
     "02",
     "01",
+    "dlq-msg-1",
     1,
     0,
     ...nullFailureBindTail,
@@ -251,6 +345,7 @@ test("copies lastFailure from the message body onto the dlq event row", async ()
     "full",
     "83",
     "06",
+    "dlq-msg-1",
     0,
     1,
     "Error",
@@ -280,6 +375,7 @@ test("looks up the latest retry error by message id when the body has no lastFai
     "full",
     "05",
     "11",
+    "dlq-msg-1",
     0,
     1,
     "Error",
@@ -317,6 +413,7 @@ test("treats an empty lastFailure object as absent and falls back to D1 lookup",
     "full",
     "83",
     "11",
+    "dlq-msg-1",
     0,
     1,
     "Error",
@@ -348,6 +445,7 @@ test("uses retry-error queueAttempts when the DLQ message has no attempts", asyn
     "full",
     "44",
     "08",
+    "dlq-msg-1",
     0,
     1,
     "Error",
@@ -391,6 +489,7 @@ test("falls back to race-key retry-error lookup when message id is absent", asyn
     "full",
     "44",
     "07",
+    null,
     0,
     1,
     "Error",
@@ -442,4 +541,67 @@ test("processes every message in the batch independently", async () => {
   );
   expect(runMock).toHaveBeenCalledTimes(2);
   expect(ackMock).toHaveBeenCalledTimes(2);
+});
+
+test("acks exhausted container control and day-base prewarm messages with an error log", async () => {
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const messages = [
+    {
+      ack: ackMock,
+      body: {
+        force: true,
+        name: "predict-jra-0",
+        requestedAt: "2026-08-22T00:00:00.000Z",
+        type: "container-stop",
+      },
+      retry: retryMock,
+    },
+    {
+      ack: ackMock,
+      body: {
+        category: "jra",
+        daysAhead: 0,
+        requestedAt: "2026-08-22T00:00:00.000Z",
+        runYmd: "20260822",
+        type: "day-base-prewarm",
+      },
+      retry: retryMock,
+    },
+  ];
+  await handleDlqQueue(
+    { messages, queue: DLQ_QUEUE_NAME } as unknown as MessageBatch<
+      import("./types").PredictQueueBody | import("./types").ContainerControlMessage
+    >,
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(2);
+  expect(runMock).not.toHaveBeenCalled();
+  expect(consoleError).toHaveBeenCalledTimes(2);
+  consoleError.mockRestore();
+});
+
+test("retries an exhausted container stop when the direct DLQ attempt fails", async () => {
+  containerFetchMock.mockRejectedValueOnce(new Error("container unavailable"));
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const message = {
+    ack: ackMock,
+    body: {
+      force: true,
+      name: "predict-jra-0",
+      requestedAt: "2026-08-22T00:00:00.000Z",
+      type: "container-stop",
+    },
+    retry: retryMock,
+  };
+
+  await handleDlqQueue(
+    { messages: [message], queue: DLQ_QUEUE_NAME } as unknown as MessageBatch<
+      import("./types").ContainerControlMessage
+    >,
+    makeEnv(),
+  );
+
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  consoleError.mockRestore();
 });

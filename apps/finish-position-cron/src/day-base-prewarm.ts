@@ -19,18 +19,24 @@
 
 import { CONTAINER_DAY_BASE_SLOT_STALE_MS, type ContainerSlotKind } from "./container-slot-cap";
 import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
-import { DAY_BASE_PICKUP_FIRST_ATTEMPT, enqueueDayBasePickup } from "./day-base-pickup";
+import {
+  DAY_BASE_PICKUP_FIRST_ATTEMPT,
+  buildDayBaseWorkKey,
+  enqueueDayBasePickup,
+} from "./day-base-pickup";
 import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { enqueueContainerStop } from "./container-control";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
-import type { Env, PredictCategory } from "./types";
+import type { DayBasePrewarmMessage, Env, PredictCategory } from "./types";
 
 type PrewarmResultType = "result";
 type PrewarmSuccessStatus = "success";
 type PrewarmAcceptedStatus = "accepted";
 type PrewarmEmptyStatus = "empty";
+export type PrewarmCategoryOutcome = "failed" | "landed" | "pickup-scheduled";
 
 interface PrewarmNdjsonLine {
   type: string;
@@ -60,6 +66,10 @@ interface RunDayBasePrewarmParams {
   runYmd: string;
 }
 
+interface EnqueueDayBasePrewarmParams extends PrewarmCategoryParams {
+  requestedAt?: Date;
+}
+
 interface LogPrewarmResultParams {
   category: PredictCategory;
   result: PrewarmResultLine;
@@ -76,6 +86,7 @@ interface ReleaseDayBaseSlotParams {
   category: PredictCategory;
   doName: string;
   env: Env;
+  runYmd: string;
 }
 
 // Deliberately stays category-scoped (never resolvePredictDoName) even when
@@ -93,9 +104,37 @@ const PREWARM_ACCEPTED_STATUS: PrewarmAcceptedStatus = "accepted";
 const PREWARM_EMPTY_STATUS: PrewarmEmptyStatus = "empty";
 const NONE_LABEL: string = "-";
 const DAY_BASE_SLOT_KIND: ContainerSlotKind = "day-base";
+export const DAY_BASE_PREWARM_TYPE = "day-base-prewarm";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+export const isDayBasePrewarmMessage = (value: unknown): value is DayBasePrewarmMessage =>
+  isRecord(value) &&
+  value.type === DAY_BASE_PREWARM_TYPE &&
+  (value.category === "jra" || value.category === "nar" || value.category === "ban-ei") &&
+  typeof value.runYmd === "string" &&
+  /^\d{8}$/u.test(value.runYmd) &&
+  typeof value.daysAhead === "number" &&
+  Number.isFinite(value.daysAhead) &&
+  typeof value.requestedAt === "string" &&
+  (value.generatePredictionsAfterHit === undefined ||
+    typeof value.generatePredictionsAfterHit === "boolean");
+
+export const isDayBasePrewarmQueueMessage = (
+  message: Message<unknown>,
+): message is Message<DayBasePrewarmMessage> => isDayBasePrewarmMessage(message.body);
+
+export const enqueueDayBasePrewarm = async (params: EnqueueDayBasePrewarmParams): Promise<void> => {
+  await params.env.PREDICT_QUEUE.send({
+    category: params.category,
+    daysAhead: params.daysAhead,
+    ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
+    requestedAt: (params.requestedAt ?? new Date()).toISOString(),
+    runYmd: params.runYmd,
+    type: DAY_BASE_PREWARM_TYPE,
+  });
+};
 
 const isPrewarmNdjsonLine = (value: unknown): value is PrewarmNdjsonLine =>
   isRecord(value) && typeof value.type === "string";
@@ -181,11 +220,14 @@ const landDayBaseFromPickup = async (
 };
 
 const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): Promise<void> => {
+  const workKey = buildDayBaseWorkKey(params.category, params.runYmd);
   try {
+    if (await enqueueContainerStop(params.env, params.doName, workKey)) return;
     await releaseContainerSlot({
       doName: params.doName,
       env: params.env,
       kind: DAY_BASE_SLOT_KIND,
+      workKey,
     });
   } catch (releaseErr) {
     console.error(
@@ -198,7 +240,9 @@ const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): P
 // per-race lazy day-base build is the safety net when this cache warm fails
 // or times out, so every failure path here is caught and logged instead of
 // propagated.
-export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<boolean> => {
+export const prewarmCategoryWithOutcome = async (
+  params: PrewarmCategoryParams,
+): Promise<PrewarmCategoryOutcome> => {
   const { category, daysAhead, env, runYmd } = params;
   // Do not trust R2 presence or an old in-process pickup here. The
   // container's prewarm endpoint must first compare the object's metadata
@@ -211,6 +255,7 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     env,
     kind: DAY_BASE_SLOT_KIND,
     staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
+    workKey: buildDayBaseWorkKey(category, runYmd),
   });
   if (!claim.proceed) {
     console.warn(
@@ -225,7 +270,7 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
         runYmd,
       });
     }
-    return false;
+    return params.generatePredictionsAfterHit === true ? "pickup-scheduled" : "failed";
   }
   let releaseSlot = true;
   try {
@@ -239,15 +284,15 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
-      return true;
+      return "landed";
     }
     if (await landDayBaseFromPickup({ category, env, runYmd })) {
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
-      return true;
+      return "landed";
     }
-    if (result?.status !== PREWARM_ACCEPTED_STATUS) return false;
+    if (result?.status !== PREWARM_ACCEPTED_STATUS) return "failed";
     await enqueueDayBasePickup({
       attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
       category,
@@ -262,18 +307,21 @@ export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<bo
     console.warn(
       `[day-base-prewarm] pickup-scheduled category=${category} runYmd=${runYmd} status=missing-object parquetKey=feat-daybase/catalog-v1/${category}/${runYmd}/features.parquet watermark=absent error=day-base object missing after prewarm`,
     );
-    return false;
+    return "pickup-scheduled";
   } catch (err) {
     console.error(
       `[day-base-prewarm] failed category=${category} runYmd=${runYmd}: ${String(err)}`,
     );
-    return false;
+    return "failed";
   } finally {
     if (releaseSlot) {
-      await releaseDayBaseSlotBestEffort({ category, doName, env });
+      await releaseDayBaseSlotBestEffort({ category, doName, env, runYmd });
     }
   }
 };
+
+export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<boolean> =>
+  (await prewarmCategoryWithOutcome(params)) === "landed";
 
 const distinctCategories = (races: readonly RaceEntry[]): PredictCategory[] => [
   ...new Set(races.map((race) => race.category)),
@@ -312,8 +360,15 @@ export const runDayBasePrewarm = async (params: RunDayBasePrewarmParams): Promis
     return false;
   }
   console.log(`[day-base-prewarm] dispatching runYmd=${runYmd} categories=${categories.join(",")}`);
-  const landed = await Promise.all(
-    categories.map((category) => prewarmCategory({ category, daysAhead, env, runYmd })),
+  const queued = await Promise.allSettled(
+    categories.map((category) => enqueueDayBasePrewarm({ category, daysAhead, env, runYmd })),
   );
-  return landed.every((ok) => ok);
+  queued.forEach((result, index) => {
+    if (result.status === "rejected") {
+      console.error(
+        `[day-base-prewarm] enqueue failed category=${categories[index] ?? "-"} runYmd=${runYmd}: ${String(result.reason)}`,
+      );
+    }
+  });
+  return queued.every((result) => result.status === "fulfilled");
 };

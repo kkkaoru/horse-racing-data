@@ -5,6 +5,18 @@ import type { Env } from "./types";
 import { enqueuePredict } from "./queue-producer";
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 
+const { failFocusedFullRaceEnqueueMock, reserveFocusedFullRaceEnqueueMock } = vi.hoisted(() => ({
+  failFocusedFullRaceEnqueueMock: vi.fn(async () => undefined),
+  reserveFocusedFullRaceEnqueueMock: vi.fn(
+    async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
+  ),
+}));
+
+vi.mock("./do-state", () => ({
+  failFocusedFullRaceEnqueue: failFocusedFullRaceEnqueueMock,
+  reserveFocusedFullRaceEnqueue: reserveFocusedFullRaceEnqueueMock,
+}));
+
 const sendMock = vi.fn(async () => undefined);
 
 const makeEnv = (): Env => ({
@@ -25,7 +37,11 @@ const basePerRace = {
 } as const;
 
 beforeEach(() => {
-  sendMock.mockClear();
+  sendMock.mockReset();
+  sendMock.mockResolvedValue(undefined);
+  failFocusedFullRaceEnqueueMock.mockClear();
+  reserveFocusedFullRaceEnqueueMock.mockReset();
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: true });
 });
 
 test("enqueuePredict sends all 3 categories when category is omitted", async () => {
@@ -162,6 +178,31 @@ test("enqueuePredict attaches keibajoCode and raceBango for a per-race full buil
   });
 });
 
+test("enqueuePredict attaches raceStartAtJst when day-base fanout provides it", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "07",
+    mode: "full",
+    raceBango: "11",
+    raceStartAtJst: "2026-08-22T17:50:00+09:00",
+    runDate: "2026-08-22",
+    runYmd: "20260822",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    keibajoCode: "07",
+    mode: "full",
+    raceBango: "11",
+    raceStartAtJst: "2026-08-22T17:50:00+09:00",
+    runDate: "2026-08-22",
+    runDateIso: "2026-08-22",
+    runYmd: "20260822",
+  });
+});
+
 test("enqueuePredict preserves downstream full per-race trigger fields with skipDedup without requestId", async () => {
   const randomUuidSpy = vi
     .spyOn(crypto, "randomUUID")
@@ -191,7 +232,7 @@ test("enqueuePredict preserves downstream full per-race trigger fields with skip
       runYmd: "20260628",
       skipDedup: true,
     });
-    expect(randomUuidSpy).not.toHaveBeenCalled();
+    expect(randomUuidSpy).toHaveBeenCalledTimes(1);
   } finally {
     randomUuidSpy.mockRestore();
   }
@@ -427,6 +468,39 @@ test("enqueuePredict records tracked self-heal lifecycle around queue send", asy
   expect(prepareMock).toHaveBeenCalledTimes(2);
 });
 
+test("enqueuePredict keeps its reservation after Queue send when enqueued telemetry fails", async () => {
+  const runMock = vi
+    .fn(async () => undefined)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error("D1 unavailable"));
+  const prepareMock = vi.fn(() => ({ bind: vi.fn(() => ({ run: runMock })) }));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const env = {
+    ...makeEnv(),
+    FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
+  };
+  await expect(
+    enqueuePredict({
+      category: "jra",
+      daysAhead: 2,
+      deliveryTrackingId: "tracking-id",
+      env,
+      mode: "full",
+      runDate: "2026-08-23",
+      runYmd: "20260823",
+      skipDedup: true,
+      ...basePerRace,
+    }),
+  ).resolves.toStrictEqual(["jra"]);
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(failFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "Failed to record enqueued prediction delivery:",
+    "Error: D1 unavailable",
+  );
+  errorSpy.mockRestore();
+});
+
 test("enqueuePredict multi-category path still requires per-race fields", async () => {
   await enqueuePredict({
     daysAhead: 2,
@@ -447,4 +521,139 @@ test("enqueuePredict multi-category path still requires per-race fields", async 
     runDateIso: "2026-06-03",
     runYmd: "20260603",
   });
+});
+
+test("enqueuePredict suppresses a duplicate full enqueue reserved by another producer", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "enqueued" });
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-08-23",
+    runYmd: "20260823",
+    skipDedup: true,
+  });
+  expect(categories).toStrictEqual([]);
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(failFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict releases its full enqueue reservation when Queue send fails", async () => {
+  const randomUuidSpy = vi
+    .spyOn(crypto, "randomUUID")
+    .mockReturnValue("00000000-0000-4000-8000-000000000002");
+  sendMock.mockRejectedValueOnce(new Error("queue unavailable"));
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 2,
+      env: makeEnv(),
+      keibajoCode: "44",
+      mode: "full",
+      raceBango: "03",
+      runDate: "2026-08-23",
+      runYmd: "20260823",
+      skipDedup: true,
+    }),
+  ).rejects.toThrow("queue unavailable");
+  expect(failFocusedFullRaceEnqueueMock).toHaveBeenCalledWith({
+    category: "nar",
+    env: expect.anything(),
+    keibajoCode: "44",
+    raceBango: "03",
+    reservationId: "00000000-0000-4000-8000-000000000002",
+    runYmd: "20260823",
+  });
+  randomUuidSpy.mockRestore();
+});
+
+test("enqueuePredict preserves Queue failure when reservation release also fails", async () => {
+  sendMock.mockRejectedValueOnce(new Error("queue unavailable"));
+  failFocusedFullRaceEnqueueMock.mockRejectedValueOnce(new Error("coordinator unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 2,
+      env: makeEnv(),
+      keibajoCode: "44",
+      mode: "full",
+      raceBango: "03",
+      runDate: "2026-08-23",
+      runYmd: "20260823",
+      skipDedup: true,
+    }),
+  ).rejects.toThrow("queue unavailable");
+  expect(errorSpy).toHaveBeenCalledWith(
+    "Failed to release focused-full enqueue reservation:",
+    "Error: coordinator unavailable",
+  );
+  errorSpy.mockRestore();
+});
+
+test("enqueuePredict force full bypasses semantic reservation", async () => {
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    force: true,
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-08-23",
+    runYmd: "20260823",
+    skipDedup: true,
+  });
+  expect(categories).toStrictEqual(["jra"]);
+  expect(reserveFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict legacy full without skipDedup keeps category-run dedup and bypasses focused reservation", async () => {
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-08-23",
+    runYmd: "20260823",
+  });
+  expect(categories).toStrictEqual(["jra"]);
+  expect(reserveFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict rescore bypasses focused-full semantic reservation", async () => {
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 0,
+    env: makeEnv(),
+    keibajoCode: "05",
+    mode: "rescore",
+    raceBango: "11",
+    runDate: "2026-08-23",
+    runYmd: "20260823",
+  });
+  expect(categories).toStrictEqual(["jra"]);
+  expect(reserveFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict rescore Queue failure does not release a focused-full reservation", async () => {
+  sendMock.mockRejectedValueOnce(new Error("rescore queue unavailable"));
+  await expect(
+    enqueuePredict({
+      category: "jra",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "05",
+      mode: "rescore",
+      raceBango: "11",
+      runDate: "2026-08-23",
+      runYmd: "20260823",
+    }),
+  ).rejects.toThrow("rescore queue unavailable");
+  expect(failFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
 });

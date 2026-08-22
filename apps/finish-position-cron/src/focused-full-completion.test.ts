@@ -38,7 +38,7 @@ const buildCatalogRows = (count = 12): Record<string, unknown>[] =>
     track_code: null,
   }));
 
-const { catalogFetchMock, neonMock, queryMock } = vi.hoisted(() => {
+const { cacheHeadMock, catalogFetchMock, neonMock, queryMock } = vi.hoisted(() => {
   const query = vi.fn(
     async (_query: string, _params: readonly unknown[]): Promise<unknown> => [{ actual_rows: 12 }],
   );
@@ -54,16 +54,22 @@ const { catalogFetchMock, neonMock, queryMock } = vi.hoisted(() => {
         })),
       }),
   );
-  return { catalogFetchMock: catalogFetch, neonMock: vi.fn(() => ({ query })), queryMock: query };
+  return {
+    cacheHeadMock: vi.fn(),
+    catalogFetchMock: catalogFetch,
+    neonMock: vi.fn(() => ({ query })),
+    queryMock: query,
+  };
 });
 
 vi.mock("@neondatabase/serverless", () => ({ neon: neonMock }));
 
-import { isFocusedFullPredictionComplete } from "./focused-full-completion";
+import { isFocusedFullPredictionComplete, isPerRaceRescoreReady } from "./focused-full-completion";
 
 const makeEnv = (): Env =>
   Object.assign(Object.create(null), {
     NEON_DATABASE_URL: "postgres://example",
+    FEATURES_CACHE: { head: cacheHeadMock } as unknown as R2Bucket,
     PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
   });
 
@@ -72,11 +78,60 @@ const setCatalogRows = (rows: readonly Record<string, unknown>[]): void => {
 };
 
 beforeEach(() => {
+  cacheHeadMock.mockReset();
   catalogFetchMock.mockReset();
   queryMock.mockReset();
   setCatalogRows(buildCatalogRows());
   queryMock.mockResolvedValue([{ actual_rows: 12 }]);
   neonMock.mockClear();
+});
+
+test("rescore is ready only after Neon completion and the per-race R2 cache both exist", async () => {
+  cacheHeadMock.mockResolvedValue({ key: "cached" });
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "1",
+      raceBango: "4",
+      runYmd: "20260822",
+    }),
+  ).resolves.toBe(true);
+
+  expect(cacheHeadMock).toHaveBeenCalledWith(
+    "feat-cache/catalog-v1/jra/20260822/01/04/features.parquet",
+  );
+});
+
+test("rescore stays deferred when Neon is complete but the per-race R2 cache is missing", async () => {
+  cacheHeadMock.mockResolvedValue(null);
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "01",
+      raceBango: "04",
+      runYmd: "20260822",
+    }),
+  ).resolves.toBe(false);
+});
+
+test("rescore does not query R2 while the initial prediction is incomplete", async () => {
+  queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "01",
+      raceBango: "04",
+      runYmd: "20260822",
+    }),
+  ).resolves.toBe(false);
+
+  expect(cacheHeadMock).not.toHaveBeenCalled();
 });
 
 test("uses raw Catalog entries and only queries Neon prediction output", async () => {

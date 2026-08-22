@@ -6,6 +6,7 @@
 // pickup after the first-day build (10-15m) has had time to commit.
 
 import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { enqueueContainerStop } from "./container-control";
 import { releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
@@ -26,9 +27,15 @@ interface ConsumeDayBasePickupParams {
 
 export const DAY_BASE_PICKUP_TYPE = "day-base-pickup";
 export const DAY_BASE_PICKUP_DELAY_SECONDS = 180;
-export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 6;
+// The Python day-base pipeline has a 30-minute deadline. Eleven 3-minute
+// pickup polls cover 33 minutes, so the Worker can observe either the final
+// object or the authoritative pipeline timeout before releasing its slot.
+export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 11;
 export const DAY_BASE_PICKUP_FIRST_ATTEMPT = 1;
 const DAY_BASE_SLOT_KIND = "day-base";
+
+export const buildDayBaseWorkKey = (category: PredictCategory, runYmd: string): string =>
+  `day-base:${runYmd}:${category}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -69,16 +76,27 @@ const releaseDayBasePickupSlot = async (
   category: PredictCategory,
   runYmd: string,
 ): Promise<void> => {
+  const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
+  const workKey = buildDayBaseWorkKey(category, runYmd);
   try {
+    if (await enqueueContainerStop(env, doName, workKey)) return;
     await releaseContainerSlot({
-      doName: `${PREDICT_DO_NAME_PREFIX}${category}`,
+      doName,
       env,
       kind: DAY_BASE_SLOT_KIND,
+      workKey,
     });
   } catch (error) {
     console.error(
-      `[day-base-pickup] failed to release slot category=${category} runYmd=${runYmd}: ${String(error)}`,
+      `[day-base-pickup] failed to hand off container stop category=${category} runYmd=${runYmd}: ${String(error)}`,
     );
+    try {
+      await releaseContainerSlot({ doName, env, kind: DAY_BASE_SLOT_KIND, workKey });
+    } catch (releaseError) {
+      console.error(
+        `[day-base-pickup] failed to release slot category=${category} runYmd=${runYmd}: ${String(releaseError)}`,
+      );
+    }
   }
 };
 

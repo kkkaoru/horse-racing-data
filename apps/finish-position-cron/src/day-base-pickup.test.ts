@@ -164,8 +164,30 @@ test("consumeDayBasePickup logs landed after a successful pickup", async () => {
     doName: "predict-ban-ei",
     env: expect.any(Object),
     kind: "day-base",
+    workKey: "day-base:20260817:ban-ei",
   });
   logSpy.mockRestore();
+});
+
+test("consumeDayBasePickup queues a work-owned stop when the control queue is bound", async () => {
+  headDayBaseObjectMock.mockResolvedValueOnce({ size: 80 });
+  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
+  const send = vi.fn(async () => undefined);
+  const env = {
+    ...makeEnv(),
+    CONTAINER_CONTROL_QUEUE: { send } as unknown as NonNullable<Env["CONTAINER_CONTROL_QUEUE"]>,
+  };
+
+  await consumeDayBasePickup({ env, message: pickupBody });
+
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-ban-ei",
+      type: "container-stop",
+      workKey: "day-base:20260817:ban-ei",
+    }),
+  );
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
 });
 
 test("consumeDayBasePickup fans out only after a fresh pickup lands", async () => {
@@ -227,7 +249,7 @@ test("consumeDayBasePickup stops after the last attempt", async () => {
   });
   expect(queueSendMock).not.toHaveBeenCalled();
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=6",
+    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=11",
   );
   warnSpy.mockRestore();
 });

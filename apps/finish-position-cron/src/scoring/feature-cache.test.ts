@@ -15,12 +15,26 @@ const SAMPLE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "sample-ca
 const sampleBytes = new Uint8Array(readFileSync(SAMPLE_PARQUET_PATH));
 
 test("buildFeatCacheKey mirrors the container feat-cache key layout", () => {
-  expect(buildFeatCacheKey("jra", "20260619")).toBe("feat-cache/jra/20260619/features.parquet");
+  expect(buildFeatCacheKey("jra", "20260619")).toBe(
+    "feat-cache/catalog-v1/jra/20260619/features.parquet",
+  );
 });
 
 test("buildPerRaceFeatCacheKey nests keibajoCode + raceBango under the run date", () => {
   expect(buildPerRaceFeatCacheKey("jra", "20260620", "05", "09")).toBe(
-    "feat-cache/jra/20260620/05/09/features.parquet",
+    "feat-cache/catalog-v1/jra/20260620/05/09/features.parquet",
+  );
+});
+
+test("buildPerRaceFeatCacheKey zero-pads unpadded venue and race codes", () => {
+  expect(buildPerRaceFeatCacheKey("nar", "20260620", "5", "9")).toBe(
+    "feat-cache/catalog-v1/nar/20260620/05/09/features.parquet",
+  );
+});
+
+test("buildPerRaceFeatCacheKey uses the same catalog generation for ban-ei", () => {
+  expect(buildPerRaceFeatCacheKey("ban-ei", "20260620", "83", "1")).toBe(
+    "feat-cache/catalog-v1/ban-ei/20260620/83/01/features.parquet",
   );
 });
 

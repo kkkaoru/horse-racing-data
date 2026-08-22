@@ -373,6 +373,7 @@ const buildRescoreMessage = (params: BuildRescoreMessageParams): PredictQueueMes
   keibajoCode: params.target.keibajoCode,
   mode: RESCORE_MODE,
   raceBango: params.target.raceBango,
+  raceStartAtJst: params.target.raceStartAtJst,
   runDate: params.date,
   runDateIso: params.date,
   runYmd: params.runYmd,
@@ -473,8 +474,11 @@ export const resolveRescoreCategories = (env: Env): PredictCategory[] => {
 // Claim a synthetic WR race in the DO (strong consistency) and, when this is
 // the first claim of the half-hour slot for the category, enumerate every
 // race registered for the category+day (the same realtime_race_sources scan
-// planRescoreForCategory uses) and enqueue one per-race rescore message per
-// race -- so each lands on isPerRaceRescore's dispatch path in
+// planRescoreForCategory uses). Each real race is then claimed with the same
+// semantic key planRescoreForCategory uses and is only enqueued when that
+// claim proceeds. This makes the fan-out and near-post planner converge on a
+// single per-race dispatch instead of independently enqueueing duplicates.
+// Each accepted message lands on isPerRaceRescore's dispatch path in
 // queue-consumer.ts exactly like the near-post per-race rescore does,
 // letting each individually hit the per-race watermarked R2 cache
 // (predict_upcoming._fetch_watermarked_per_race_cache) instead of falling
@@ -484,10 +488,11 @@ export const resolveRescoreCategories = (env: Env): PredictCategory[] => {
 // its fallback rebuilds EVERY race for the day in one call -- the largest
 // remaining cost this coordinator could trigger. Deduped per-category
 // per-half-hour (the JST half-hour slot is the synthetic raceBango) exactly
-// as before; that one claim gates whether the whole fan-out fires this
-// tick, not each individual race. Returns the number of per-race messages
-// enqueued (0 when the claim is rejected or the day has no races for this
-// category -- both are legitimate no-op outcomes, not errors).
+// as before; that one claim gates whether the whole fan-out fires this tick,
+// while the real-race claims deduplicate against every other rescore source.
+// Returns the number of per-race messages enqueued (0 when the synthetic
+// claim is rejected, every real race was already claimed, or the day has no
+// races for this category -- all are legitimate no-op outcomes, not errors).
 export const triggerWeightRebuildIfNeeded = async (
   params: WeightRebuildParams,
 ): Promise<number> => {
@@ -502,23 +507,22 @@ export const triggerWeightRebuildIfNeeded = async (
     return 0;
   }
   const rows = await listRacesForCategory(params.env, params.category, params.runYmd);
-  await Promise.all(
+  const claimResults = await Promise.all(
     rows.map((row) =>
-      params.env.PREDICT_QUEUE.send(
-        buildRescoreMessage({
-          category: params.category,
-          date: params.date,
-          runYmd: params.runYmd,
-          target: {
-            keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
-            raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
-            raceStartAtJst: row.race_start_at_jst,
-          },
-        }),
-      ),
+      claimAndEnqueueRace({
+        category: params.category,
+        date: params.date,
+        env: params.env,
+        runYmd: params.runYmd,
+        target: {
+          keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
+          raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+          raceStartAtJst: row.race_start_at_jst,
+        },
+      }),
     ),
   );
-  return rows.length;
+  return claimResults.filter((proceeded) => proceeded).length;
 };
 
 export const runRaceCoordinatorTick = async (

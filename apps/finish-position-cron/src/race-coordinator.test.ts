@@ -251,6 +251,7 @@ test("planRescoreForCategory enqueues a per-race rescore message for an in-windo
     keibajoCode: "05",
     mode: "rescore",
     raceBango: "11",
+    raceStartAtJst: "2026-06-19T14:10:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
@@ -699,12 +700,35 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
   });
   expect(enqueued).toBe(3);
   expect(sendMock).toHaveBeenCalledTimes(3);
+  expect(claimRescoreRaceMock).toHaveBeenCalledTimes(4);
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "05",
+    raceBango: "02",
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(4, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "02",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
   expect(sendMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
     daysAhead: 0,
     keibajoCode: "05",
     mode: "rescore",
     raceBango: "01",
+    raceStartAtJst: "2026-06-19T10:10:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
@@ -715,6 +739,7 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
     keibajoCode: "05",
     mode: "rescore",
     raceBango: "02",
+    raceStartAtJst: "2026-06-19T10:40:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
@@ -725,6 +750,7 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
     keibajoCode: "02",
     mode: "rescore",
     raceBango: "11",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
@@ -745,7 +771,7 @@ test("triggerWeightRebuildIfNeeded enqueues nothing on a day with zero registere
   expect(sendMock).not.toHaveBeenCalled();
 });
 
-test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async () => {
+test("triggerWeightRebuildIfNeeded does not scan or send when its synthetic claim is rejected", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: false, state: "enqueued" });
   stubD1Rows([
     { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
@@ -761,12 +787,78 @@ test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async 
   expect(enqueued).toBe(0);
 });
 
-test("runRaceCoordinatorTick triggers a weight-rebuild per-race fan-out for categories with enqueued races", async () => {
-  // The single stubbed race both falls inside the near-post window (drives
-  // planRescoreForCategory's own enqueue) and is the only row
-  // listRacesForCategory returns for the weight-rebuild fan-out -- so this
-  // one race is dispatched twice, once by each independent mechanism, both
-  // producing the identical per-race rescore message shape.
+test("triggerWeightRebuildIfNeeded skips a real race that another rescore source already claimed", async () => {
+  claimRescoreRaceMock
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: false, state: "enqueued" });
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
+  const enqueued = await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(enqueued).toBe(0);
+});
+
+test("triggerWeightRebuildIfNeeded suppresses a repeated fan-out within the same half-hour", async () => {
+  claimRescoreRaceMock
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: false, state: "enqueued" });
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
+  const firstEnqueued = await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  const secondEnqueued = await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    now: new Date("2026-06-19T05:17:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenCalledTimes(3);
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1400",
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1400",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(firstEnqueued).toBe(1);
+  expect(secondEnqueued).toBe(0);
+});
+
+test("runRaceCoordinatorTick deduplicates the near-post enqueue against its weight fan-out", async () => {
+  claimRescoreRaceMock
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: false, state: "enqueued" });
   stubD1Rows([
     { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
   ]);
@@ -782,13 +874,21 @@ test("runRaceCoordinatorTick triggers a weight-rebuild per-race fan-out for cate
     raceBango: "1400",
     runYmd: "20260619",
   });
-  expect(sendMock).toHaveBeenCalledTimes(2);
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
   expect(sendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
     keibajoCode: "05",
     mode: "rescore",
     raceBango: "11",
+    raceStartAtJst: "2026-06-19T14:10:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",

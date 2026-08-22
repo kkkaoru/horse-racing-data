@@ -2,14 +2,8 @@
 
 import type { Message } from "@cloudflare/workers-types";
 import { isDayBasePickupMessage } from "./day-base-pickup";
-import type {
-  DayBasePickupMessage,
-  DeliveryCanaryMessage,
-  Env,
-  PredictQueueMessage,
-} from "./types";
-
-type PredictQueueBody = PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage;
+import { isDayBasePrewarmMessage } from "./day-base-prewarm";
+import type { DeliveryCanaryMessage, Env, PredictQueueBody, PredictQueueMessage } from "./types";
 
 const CANARY_TYPE = "delivery-canary";
 const LATEST_CANARY_LIMIT = 12;
@@ -41,7 +35,9 @@ export const isDeliveryCanaryQueueMessage = (
 export const isPredictQueueMessage = (
   message: Message<PredictQueueBody>,
 ): message is Message<PredictQueueMessage> =>
-  !isDeliveryCanaryMessage(message.body) && !isDayBasePickupMessage(message.body);
+  !isDeliveryCanaryMessage(message.body) &&
+  !isDayBasePickupMessage(message.body) &&
+  !isDayBasePrewarmMessage(message.body);
 
 export const enqueueDeliveryCanary = async (
   env: Env,

@@ -12,6 +12,7 @@ import {
   CONTAINER_SLOT_RETRY_DELAY_SECONDS,
   CONTAINER_SLOT_STALE_MS,
   decideContainerSlotClaim,
+  isContainerSlotStopAllowed,
   isReservedContainerLane,
   pruneStaleContainerSlots,
   clearContainerSlotLease,
@@ -33,8 +34,8 @@ const makeLease = (
   ...overrides,
 });
 
-test("container max instances stays at the wrangler ceiling of 12", () => {
-  expect(CONTAINER_MAX_INSTANCES).toBe(12);
+test("container max instances matches the observed effective ceiling of 10", () => {
+  expect(CONTAINER_MAX_INSTANCES).toBe(10);
 });
 
 test("reserved Ban-ei headroom is exactly two start slots", () => {
@@ -42,7 +43,7 @@ test("reserved Ban-ei headroom is exactly two start slots", () => {
 });
 
 test("general pool is max instances minus reserved Ban-ei headroom", () => {
-  expect(CONTAINER_GENERAL_SLOT_MAX).toBe(10);
+  expect(CONTAINER_GENERAL_SLOT_MAX).toBe(8);
 });
 
 test("rescore unique-DO cap is three so one category instance each", () => {
@@ -147,6 +148,38 @@ test("decideContainerSlotClaim preserves custom expiry and work ownership", () =
     ],
     proceed: true,
   });
+});
+
+test("the same work owner can reclaim its slot for terminal cleanup", () => {
+  const lease = makeLease({ doName: "predict-jra-1", workKey: "work-1" });
+  const decision = decideContainerSlotClaim([lease], {
+    allowSameOwner: true,
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    now: NOW_MS + 1,
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    workKey: "work-1",
+  });
+
+  expect(decision).toStrictEqual({ leases: [lease], proceed: true });
+});
+
+test("terminal stop ownership rejects a newer owner but allows safe cleanup", () => {
+  const owned = [makeLease({ doName: "predict-jra-1", workKey: "new-work" })];
+
+  expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "old-work", NOW_MS)).toBe(false);
+  expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "new-work", NOW_MS)).toBe(true);
+  expect(isContainerSlotStopAllowed(owned, "predict-nar-1", "old-work", NOW_MS)).toBe(true);
+  expect(isContainerSlotStopAllowed(owned, "predict-jra-1", undefined, NOW_MS)).toBe(true);
+  expect(
+    isContainerSlotStopAllowed(
+      [makeLease({ doName: "predict-jra-1", workKey: undefined })],
+      "predict-jra-1",
+      "work-1",
+      NOW_MS,
+    ),
+  ).toBe(false);
 });
 
 test("decideContainerSlotClaim starts the first unique DO", () => {
@@ -494,13 +527,11 @@ test("ten general unique DOs cap an eleventh JRA focused-full shard", () => {
 });
 
 test("Ban-ei focused-full still starts when the general pool is full", () => {
-  const tenGeneral: ContainerSlotLease[] = [
+  const eightGeneral: ContainerSlotLease[] = [
     makeLease({ doName: "predict-jra-0" }),
     makeLease({ doName: "predict-jra-1" }),
-    makeLease({ doName: "predict-jra-2" }),
     makeLease({ category: "nar", doName: "predict-nar-0" }),
     makeLease({ category: "nar", doName: "predict-nar-1" }),
-    makeLease({ category: "nar", doName: "predict-nar-2" }),
     makeLease({ category: "jra", doName: "predict-jra", kind: "rescore", rescoreHolders: 1 }),
     makeLease({ category: "nar", doName: "predict-nar", kind: "rescore", rescoreHolders: 1 }),
     makeLease({
@@ -511,7 +542,7 @@ test("Ban-ei focused-full still starts when the general pool is full", () => {
     }),
     makeLease({ category: "jra", doName: "predict-jra-extra" }),
   ];
-  const banei = decideContainerSlotClaim(tenGeneral, {
+  const banei = decideContainerSlotClaim(eightGeneral, {
     category: "ban-ei",
     doName: "predict-ban-ei-0",
     kind: "focused-full",
@@ -519,7 +550,7 @@ test("Ban-ei focused-full still starts when the general pool is full", () => {
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
   });
   expect(banei.proceed).toBe(true);
-  expect(banei.leases[10]).toStrictEqual({
+  expect(banei.leases[8]).toStrictEqual({
     category: "ban-ei",
     doName: "predict-ban-ei-0",
     holders: 1,
@@ -530,13 +561,11 @@ test("Ban-ei focused-full still starts when the general pool is full", () => {
 });
 
 test("Ban-ei day-base still starts as the second reserved slot", () => {
-  const tenGeneralPlusOneReserved: ContainerSlotLease[] = [
+  const eightGeneralPlusOneReserved: ContainerSlotLease[] = [
     makeLease({ doName: "predict-jra-0" }),
     makeLease({ doName: "predict-jra-1" }),
-    makeLease({ doName: "predict-jra-2" }),
     makeLease({ category: "nar", doName: "predict-nar-0" }),
     makeLease({ category: "nar", doName: "predict-nar-1" }),
-    makeLease({ category: "nar", doName: "predict-nar-2" }),
     makeLease({ category: "jra", doName: "predict-jra", kind: "rescore", rescoreHolders: 1 }),
     makeLease({ category: "nar", doName: "predict-nar", kind: "rescore", rescoreHolders: 1 }),
     makeLease({
@@ -552,7 +581,7 @@ test("Ban-ei day-base still starts as the second reserved slot", () => {
       kind: "focused-full",
     }),
   ];
-  const dayBase = decideContainerSlotClaim(tenGeneralPlusOneReserved, {
+  const dayBase = decideContainerSlotClaim(eightGeneralPlusOneReserved, {
     category: "ban-ei",
     doName: "predict-ban-ei-day",
     kind: "day-base",
@@ -560,7 +589,7 @@ test("Ban-ei day-base still starts as the second reserved slot", () => {
     staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
   });
   expect(dayBase.proceed).toBe(true);
-  expect(dayBase.leases[11]).toStrictEqual({
+  expect(dayBase.leases[9]).toStrictEqual({
     category: "ban-ei",
     doName: "predict-ban-ei-day",
     holders: 1,
@@ -642,18 +671,16 @@ test("clearContainerSlotLease drops a multi-holder destroyed DO so the cap can s
 });
 
 test("clearContainerSlotLease then a new general claim proceeds when the ghost lease had filled the cap", () => {
-  const tenth = decideContainerSlotClaim(
+  const eighth = decideContainerSlotClaim(
     [
       makeLease({ doName: "predict-nar-0", category: "nar", holders: 4 }),
       makeLease({ doName: "predict-nar-1", category: "nar" }),
       makeLease({ doName: "predict-nar-2", category: "nar" }),
       makeLease({ doName: "predict-jra-0", category: "jra" }),
       makeLease({ doName: "predict-jra-1", category: "jra" }),
-      makeLease({ doName: "predict-jra-2", category: "jra" }),
       makeLease({ doName: "predict-jra", category: "jra" }),
       makeLease({ doName: "predict-nar", category: "nar" }),
       makeLease({ doName: "predict-ban-ei", category: "ban-ei", kind: "rescore" }),
-      makeLease({ doName: "predict-ban-ei-0", category: "ban-ei", kind: "rescore" }),
     ],
     {
       category: "jra",
@@ -663,10 +690,10 @@ test("clearContainerSlotLease then a new general claim proceeds when the ghost l
       staleAfterMs: CONTAINER_SLOT_STALE_MS,
     },
   );
-  expect(tenth.proceed).toBe(false);
-  expect(tenth.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
+  expect(eighth.proceed).toBe(false);
+  expect(eighth.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
   const cleared = clearContainerSlotLease(
-    tenth.leases,
+    eighth.leases,
     "predict-nar-0",
     NOW_MS,
     CONTAINER_SLOT_STALE_MS,

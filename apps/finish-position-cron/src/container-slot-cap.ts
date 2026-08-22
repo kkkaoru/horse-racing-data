@@ -22,6 +22,7 @@ export interface ContainerSlotLease {
 }
 
 export interface ContainerSlotClaimParams {
+  allowSameOwner?: boolean;
   category: string;
   doName: string;
   kind: ContainerSlotKind;
@@ -43,8 +44,8 @@ export interface ReservedLaneParams {
 
 // Matches wrangler.jsonc containers[0].max_instances. Kept here so the
 // software cap and the platform ceiling cannot drift independently of the
-// comments that document why 12 stays.
-export const CONTAINER_MAX_INSTANCES = 12;
+// comments that document the account's observed effective ceiling.
+export const CONTAINER_MAX_INSTANCES = 10;
 // Ban-ei day-base + Ban-ei focused-full keep two start slots even when JRA/NAR
 // rescore/focused-full work has filled the general pool.
 export const CONTAINER_RESERVED_HEADROOM = 2;
@@ -137,9 +138,28 @@ export const decideContainerSlotClaim = (
 ): ContainerSlotClaimDecision => {
   const live = pruneStaleContainerSlots(leases, params.now);
   const existing = live.find((lease) => lease.doName === params.doName);
+  if (
+    existing !== undefined &&
+    params.allowSameOwner === true &&
+    params.workKey !== undefined &&
+    existing.workKey === params.workKey
+  ) {
+    return { leases: [...live], proceed: true };
+  }
   return existing === undefined
     ? decideNewContainerSlotClaim(live, params)
     : decideSharedContainerSlotClaim(live, existing, params);
+};
+
+export const isContainerSlotStopAllowed = (
+  leases: readonly ContainerSlotLease[],
+  doName: string,
+  workKey: string | undefined,
+  now: number,
+): boolean => {
+  if (workKey === undefined) return true;
+  const existing = pruneStaleContainerSlots(leases, now).find((lease) => lease.doName === doName);
+  return existing === undefined || existing.workKey === workKey;
 };
 
 export const releaseContainerSlotLease = (
@@ -154,7 +174,7 @@ export const releaseContainerSlotLease = (
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.flatMap((lease) => {
     if (lease.doName !== doName) return [lease];
-    if (workKey !== undefined && lease.workKey !== undefined && lease.workKey !== workKey) {
+    if (workKey !== undefined && lease.workKey !== workKey) {
       return [lease];
     }
     const nextHolders = lease.holders - HOLDER_INCREMENT;
@@ -192,8 +212,7 @@ export const touchContainerSlotLease = (
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.map((lease) =>
-    lease.doName === doName &&
-    (workKey === undefined || lease.workKey === undefined || lease.workKey === workKey)
+    lease.doName === doName && (workKey === undefined || lease.workKey === workKey)
       ? {
           category: lease.category,
           doName: lease.doName,
@@ -217,8 +236,6 @@ export const clearContainerSlotLease = (
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return pruneStaleContainerSlots(leases, now).filter(
-    (lease) =>
-      lease.doName !== doName ||
-      (workKey !== undefined && lease.workKey !== undefined && lease.workKey !== workKey),
+    (lease) => lease.doName !== doName || (workKey !== undefined && lease.workKey !== workKey),
   );
 };

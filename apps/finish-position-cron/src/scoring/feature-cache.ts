@@ -1,7 +1,8 @@
 // Run with bun. Read the Stage-1 R2 feature-cache parquet and group rows into
 // per-race entry records for Stage-2 rescore. The cache is a single parquet per
 // (category, runDate) put by the container's _try_r2_put — key format
-// ``feat-cache/{category}/{runDate}/features.parquet`` (serve.build_r2_feat_cache_key).
+// ``feat-cache/catalog-v1/{category}/{runDate}/features.parquet``
+// (serve.build_r2_feat_cache_key).
 // Each row carries the full early-binding feature set + a ``race_id`` column
 // (``source:kaisai_nen:kaisai_tsukihi:keibajo_code:race_bango``) so the day's
 // rows split into races exactly like pipeline_runner's frame.groupby(race_id).
@@ -19,7 +20,9 @@ import type { FeatureEntry } from "./feature-projection";
 import type { JraRaceEntry } from "./jra-scorer";
 
 const FEAT_CACHE_PREFIX = "feat-cache";
+const RAW_CATALOG_GENERATION = "catalog-v1";
 const CACHE_FILE_NAME = "features.parquet";
+const RACE_KEY_PAD_WIDTH = 2;
 const RACE_ID_FIELD = "race_id";
 const KETTO_FIELD = "ketto_toroku_bango";
 const UMABAN_FIELD = "umaban";
@@ -30,19 +33,23 @@ const TANSHO_ODDS_FIELD = "tansho_odds";
 const TANSHO_NINKIJUN_FIELD = "tansho_ninkijun";
 const WEIGHT_DIFF_FIELD = "weight_diff_from_avg";
 
-// feat-cache/{category}/{runDate}/features.parquet — mirrors serve.py.
+// feat-cache/catalog-v1/{category}/{runDate}/features.parquet — mirrors serve.py.
 export const buildFeatCacheKey = (category: string, runDate: string): string =>
-  `${FEAT_CACHE_PREFIX}/${category}/${runDate}/${CACHE_FILE_NAME}`;
+  `${FEAT_CACHE_PREFIX}/${RAW_CATALOG_GENERATION}/${category}/${runDate}/${CACHE_FILE_NAME}`;
 
-// feat-cache/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet —
-// the per-race cache parquet holding only one race's rows (no grouping needed).
+// feat-cache/catalog-v1/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet
+// — the per-race cache parquet holding only one race's rows (no grouping needed).
 export const buildPerRaceFeatCacheKey = (
   category: string,
   runDate: string,
   keibajoCode: string,
   raceBango: string,
 ): string =>
-  `${FEAT_CACHE_PREFIX}/${category}/${runDate}/${keibajoCode}/${raceBango}/${CACHE_FILE_NAME}`;
+  `${FEAT_CACHE_PREFIX}/${RAW_CATALOG_GENERATION}/${category}/${runDate}/${keibajoCode
+    .trim()
+    .padStart(RACE_KEY_PAD_WIDTH, "0")}/${raceBango
+    .trim()
+    .padStart(RACE_KEY_PAD_WIDTH, "0")}/${CACHE_FILE_NAME}`;
 
 export interface CachedRaceRows {
   raceId: string;

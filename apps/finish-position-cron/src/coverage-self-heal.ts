@@ -4,10 +4,9 @@
 // Post-race path (unchanged contract): for every race whose post time is more
 // than a grace window in the past, check the same Neon completion query the
 // queue consumer already trusts (isFocusedFullPredictionComplete); for any
-// race still incomplete, check the focused-full DO claim before touching
-// anything, and only re-enqueue a fresh skipDedup focused-full message for a
-// race with no claim (a coordinator/discovery gap) or a stale/terminal-error
-// claim. A race with a fresh in-flight claim is left alone.
+// race still incomplete, enqueue through the shared producer reservation. The
+// producer sends only when no fresh focused-full lineage exists; a race with a
+// fresh in-flight reservation/claim is left alone.
 //
 // Pre-race readiness path (PRE_RACE_READY): the post-race path cannot fix
 // user-visible gaps before post by design (isPastGraceWindow). Production
@@ -20,7 +19,6 @@
 // not burn the post-race MAX_SELF_HEAL budget (counted via recorded_at vs
 // race start -- no D1 migration).
 
-import { claimFocusedFullRace } from "./do-state";
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import { isOldDateRunYmd } from "./old-date-guard";
 import { enqueuePredict } from "./queue-producer";
@@ -32,12 +30,12 @@ import {
   buildCoverageGapEventRecord,
 } from "./coverage-gap-events";
 
-// Every 15 min during JST 10:00-20:59 (01-11 UTC), offset by 7 minutes from
+// Every 15 min during JST 10:00-23:59 (01-14 UTC), offset by 7 minutes from
 // both the existing */10 per-race rescore coordinator and the */30 Neon
 // warm cron so no two race-hours crons ever fire on the same tick (mirrors
 // the offset reasoning already used for COORDINATOR_CRON_RACE_HOURS in
 // cron-decision.ts). Same tick also runs the pre-race readiness scan.
-export const COVERAGE_SELF_HEAL_CRON = "7,22,37,52 1-11 * * *";
+export const COVERAGE_SELF_HEAL_CRON = "7,22,37,52 1-14 * * *";
 const SELF_HEAL_GRACE_MINUTES = 15;
 // Mirrors WEIGHT_FETCH_LEAD_MINUTES in sync-realtime-data (180): open the
 // pre-race readiness window early enough that a worst-case serialised
@@ -67,12 +65,6 @@ export const MAX_PRE_RACE_ENQUEUES_PER_RACE = 2;
 // a dead container is not stampeded every tick, while a 180-min lead window
 // still gets several more attempts before post.
 export const PRE_RACE_ESCALATED_RETRY_MINUTES = 30;
-// Mirrors FOCUSED_FULL_IN_FLIGHT_STALE_MS in queue-consumer.ts (duplicated,
-// not imported, matching the same duplication precedent day-base-prewarm.ts
-// already established for PREDICT_CONTAINER_NAME_PREFIX -- avoids coupling
-// this module to a file locked for concurrent edits by another agent this
-// session). Keep in sync if that value ever changes.
-const SELF_HEAL_FOCUSED_FULL_STALE_MS = 15 * 60 * 1000;
 const RUN_YMD_YEAR_END = 4;
 const RUN_YMD_LENGTH = 8;
 const KEIBAJO_PAD_WIDTH = 2;
@@ -211,7 +203,7 @@ const pad = (value: string, width: number): string => value.padStart(width, PAD_
 // jra source -> jra; otherwise keibajo 83 (帯広) is ban-ei and every other
 // nar-source keibajo is plain nar. Duplicated from cron-decision.ts's
 // resolveRaceCategory (not imported) per the same locked-file avoidance
-// reasoning as SELF_HEAL_FOCUSED_FULL_STALE_MS above.
+// reasoning as the other scheduling constants above.
 const resolveRaceCategory = (source: string, keibajoCode: string): PredictCategory => {
   if (source === JRA_SOURCE) return JRA_CATEGORY;
   if (keibajoCode === BAN_EI_KEIBAJO_CODE) return BAN_EI_CATEGORY;
@@ -381,7 +373,7 @@ const enqueueGapFill = async (
 ): Promise<HealOutcome> => {
   const { candidate, env, runDate, runYmd } = params;
   const escalated = options?.escalated === true;
-  await enqueuePredict({
+  const enqueuedCategories = await enqueuePredict({
     category: candidate.category,
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
     deliveryTrackingId: crypto.randomUUID(),
@@ -389,10 +381,12 @@ const enqueueGapFill = async (
     keibajoCode: candidate.keibajoCode,
     mode: FULL_MODE,
     raceBango: candidate.raceBango,
+    raceStartAtJst: candidate.raceStartAtJst,
     runDate,
     runYmd,
     skipDedup: true,
   });
+  if (enqueuedCategories.length === 0) return "in-flight";
   await recordCoverageGapEvent({
     candidate,
     enqueued: true,
@@ -455,15 +449,6 @@ const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> 
         return await escalateCandidate(params, priorEnqueueCount);
       }
     }
-    const claim = await claimFocusedFullRace({
-      category: candidate.category,
-      env,
-      keibajoCode: candidate.keibajoCode,
-      raceBango: candidate.raceBango,
-      runYmd,
-      staleAfterMs: SELF_HEAL_FOCUSED_FULL_STALE_MS,
-    });
-    if (!claim.proceed) return "in-flight";
     if (
       candidate.phase === "pre-race" &&
       preRaceEnqueuedThisTick.count >= PRE_RACE_ENQUEUE_CAP_PER_TICK

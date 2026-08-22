@@ -11,7 +11,6 @@ import {
   RESCORE_CRON_RACE_HOURS,
   WARM_CRON_PRE_JRA,
   WARM_CRON_PRE_NAR,
-  WARM_CRON_RACE_HOURS,
   shouldRunCoordinatorCron,
   shouldRunFeatureBuildCron,
   shouldRunPredictCron,
@@ -49,10 +48,6 @@ test("WARM_CRON_PRE_JRA is the JST 09:25 schedule", () => {
   expect(WARM_CRON_PRE_JRA).toBe("25 0 * * *");
 });
 
-test("WARM_CRON_RACE_HOURS is the every-30-min race-hours schedule", () => {
-  expect(WARM_CRON_RACE_HOURS).toBe("*/30 1-11 * * *");
-});
-
 test("shouldRunWarmCron matches the pre-NAR warm cron", () => {
   expect(shouldRunWarmCron("55 17 * * *")).toBe(true);
 });
@@ -61,8 +56,8 @@ test("shouldRunWarmCron matches the pre-JRA warm cron", () => {
   expect(shouldRunWarmCron("25 0 * * *")).toBe(true);
 });
 
-test("shouldRunWarmCron matches the race-hours warm cron", () => {
-  expect(shouldRunWarmCron("*/30 1-11 * * *")).toBe(true);
+test("shouldRunWarmCron rejects the retired race-hours keep-warm cron", () => {
+  expect(shouldRunWarmCron("*/30 1-11 * * *")).toBe(false);
 });
 
 test("shouldRunWarmCron rejects the predict cron", () => {
@@ -200,13 +195,27 @@ test("enumerateTodaysRaces skips an overseas JRA venue so it is not a domestic j
 
 test("enumerateTodaysRaces maps a jra source row to the jra category", async () => {
   const allMock = vi.fn(async () => ({
-    results: [{ keibajo_code: "05", race_bango: "11", source: "jra" }],
+    results: [
+      {
+        keibajo_code: "05",
+        race_bango: "11",
+        race_start_at_jst: "2026-06-28T15:30:00+09:00",
+        source: "jra",
+      },
+    ],
   }));
   const bindMock = vi.fn(() => ({ all: allMock }));
   const prepareMock = vi.fn(() => ({ bind: bindMock }));
   const db = { prepare: prepareMock } as unknown as D1Database;
   const races = await enumerateTodaysRaces(db, "20260628");
-  expect(races).toStrictEqual([{ category: "jra", keibajoCode: "05", raceBango: "11" }]);
+  expect(races).toStrictEqual([
+    {
+      category: "jra",
+      keibajoCode: "05",
+      raceBango: "11",
+      raceStartAtJst: "2026-06-28T15:30:00+09:00",
+    },
+  ]);
 });
 
 test("enumerateTodaysRaces maps a nar-source keibajo 83 row to the ban-ei category", async () => {
@@ -249,6 +258,11 @@ test("enumerateTodaysRaces binds the kaisai_nen and kaisai_tsukihi parsed from r
   const db = { prepare: prepareMock } as unknown as D1Database;
   await enumerateTodaysRaces(db, "20260628");
   expect(bindMock).toHaveBeenCalledWith("2026", "0628");
+  expect(prepareMock).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "ORDER BY race_start_at_jst ASC, source ASC, keibajo_code ASC, race_bango ASC",
+    ),
+  );
 });
 
 test("enumerateTodaysRaces returns an empty array when no races run today", async () => {

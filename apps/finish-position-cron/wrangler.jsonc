@@ -17,9 +17,10 @@
   // first runs are armed by sync-realtime-data only after the source-day feat
   // barrier and then fanned out after a fresh day-base HIT. The only normal
   // second pass is the event-driven horse-weight rescore.
-  // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
-  // before prediction windows and during race hours. They complete in <1s and
-  // are safe to run inside a Worker (no container involved).
+  // Targeted warm crons issue a lightweight SELECT 1 five minutes before the
+  // two prediction windows. The old every-30-minute race-hours keep-warm cron
+  // was removed when Neon auto-suspend returned to five minutes: it could not
+  // keep the endpoint continuously warm and only added unconditional compute.
   "triggers": {
     "crons": [
       // Tiny queue-delivery canary only: no container or Neon access. Covers
@@ -35,7 +36,10 @@
       "0 21 * * *",
       // JST 09:30 — day-base PREWARM catch-up if the 06:00 run missed.
       "30 0 * * *",
-      "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
+      // JST 10:07-23:52 — pre-race readiness and bounded post-race repair.
+      // Extending through 23:52 lets the final NAR/Ban-ei races enter their
+      // post-time grace window instead of ending the monitor before last post.
+      "7,22,37,52 1-14 * * *",
       // There is intentionally no timed prediction/rescore coordinator here.
       // A timer could consume the per-race rescore claim before weights arrive
       // or create an extra full pass. Repair remains available through the
@@ -91,7 +95,7 @@
       // day-base keep 2 reserved start slots. Queue consumers retry in 30s
       // when a claim is busy/capped so Ban-ei /run is not stuck behind
       // JRA/NAR rescores occupying max_concurrency.
-      "max_instances": 12,
+      "max_instances": 10,
     },
   ],
   "durable_objects": {
@@ -290,7 +294,13 @@
     "RACE_SHARDED_DO": "1",
   },
   "queues": {
-    "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],
+    "producers": [
+      { "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" },
+      {
+        "binding": "CONTAINER_CONTROL_QUEUE",
+        "queue": "finish-position-container-control-queue",
+      },
+    ],
     "consumers": [
       {
         "queue": "finish-position-predict-queue",
@@ -332,7 +342,7 @@
         // recalculate against max_instances AND container-slot-cap.ts
         // together.
         "max_concurrency": 6,
-        // max_retries: 16 (raised from 12 on 2026-07-11) replaces the implicit
+        // max_retries: 100 replaces the implicit
         // Cloudflare platform default of 3 retries. Focused per-race full
         // messages get a fast "accepted" result while the container's real
         // pipeline keeps running in a detached non-daemon thread. The queue
@@ -342,13 +352,14 @@
         // focused-full in-flight gate (claimFocusedFullRace,
         // src/predict-run-coordinator.ts) prevents redeliveries from starting
         // duplicate pipelines while the original detached build is still
-        // running; that gate now refreshes its heartbeat on every poll that
-        // observes the race as still in flight
-        // (FOCUSED_FULL_IN_FLIGHT_STALE_MS in src/queue-consumer.ts, 15 min).
-        // 150s x 16 retries = a 40-minute total retry budget per message,
-        // comfortably above the worst-case observed/extrapolated single-run
-        // duration (raised from 12 retries / 30 min alongside the reliability
-        // fix below). Reordering note (2026-07-11 defect fix): the retry
+        // running. Queue redelivery does not refresh that claim; the
+        // coordinator promotes it stale after 31 minutes of no authoritative
+        // progress (FOCUSED_FULL_IN_FLIGHT_STALE_MS in src/queue-consumer.ts).
+        // Busy/deferred work and ordinary failures retry the original Queue message with an
+        // attempts-based delay capped at 300s. Cloudflare's supported maximum
+        // of 100 retries provides enough time for a full race-day burst while
+        // remaining strictly bounded and preserving one message id. Reordering
+        // note (2026-07-11 defect fix): the retry
         // budget must exceed FOCUSED_FULL_IN_FLIGHT_STALE_MS with real margin
         // -- the old 30-minute budget was SHORTER than the old 35-minute
         // stale window, so a genuinely dead detached pipeline could never be
@@ -361,7 +372,7 @@
         // it now has a consumer (see the dlq-consumer entry below and
         // src/dlq-consumer.ts) that logs a durable ERROR row and re-enqueues
         // once instead of dropping the message silently.
-        "max_retries": 16,
+        "max_retries": 100,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
       // Dead-letter consumer: messages land here only after exhausting
@@ -384,6 +395,14 @@
         "max_batch_size": 10,
         "max_batch_timeout": 30,
         "max_retries": 3,
+      },
+      {
+        "queue": "finish-position-container-control-queue",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_concurrency": 1,
+        "max_retries": 16,
+        "dead_letter_queue": "finish-position-predict-dlq",
       },
     ],
   },

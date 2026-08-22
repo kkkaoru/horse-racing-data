@@ -101,7 +101,8 @@ export interface Env {
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
-  PREDICT_QUEUE: Queue<PredictQueueMessage | DeliveryCanaryMessage | DayBasePickupMessage>;
+  PREDICT_QUEUE: Queue<PredictQueueBody>;
+  CONTAINER_CONTROL_QUEUE?: Queue<ContainerControlMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;
   // R2 S3 credentials forwarded into the container env so the Python rescore path
@@ -185,6 +186,23 @@ export interface DayBasePickupMessage {
   generatePredictionsAfterHit?: boolean;
 }
 
+export interface DayBasePrewarmMessage {
+  type: "day-base-prewarm";
+  category: PredictCategory;
+  runYmd: string;
+  daysAhead: number;
+  requestedAt: string;
+  generatePredictionsAfterHit?: boolean;
+}
+
+export interface ContainerControlMessage {
+  type: "container-stop";
+  force?: boolean;
+  name: string;
+  requestedAt: string;
+  workKey?: string;
+}
+
 export interface PredictQueueMessage {
   runDate: string;
   runDateIso: string;
@@ -197,6 +215,10 @@ export interface PredictQueueMessage {
   // so the existing consumer is unaffected.
   keibajoCode?: string;
   raceBango?: string;
+  // Scheduled post time from realtime_race_sources. Day-base fanout includes
+  // it so downstream queue ordering can prioritize imminent races. Optional
+  // for backward compatibility with manual/admin and already queued messages.
+  raceStartAtJst?: string;
   // Backward-compatible field for older queued messages. Focused per-race full
   // builds intentionally ignore it and use the stable race-scoped DO name.
   requestId?: string;
@@ -214,6 +236,10 @@ export interface PredictQueueMessage {
   // Cloudflare retry attempt count) with this incremented, bounded by
   // MAX_BUSY_REQUEUES in queue-consumer.ts. Absent on the first send.
   busyRequeueCount?: number;
+  // First time a horse-weight rescore was deferred behind its initial full
+  // prediction/cache. Preserved across fresh Queue messages so deferral stays
+  // cheap and bounded without falling into immediate retry + DLQ storms.
+  rescoreDeferredAt?: string;
   // Number of times this message has been re-enqueued by dlq-consumer.ts
   // after landing in the dead-letter queue (finish-position-predict-dlq),
   // having exhausted the primary queue's max_retries. Bounded by
@@ -259,6 +285,12 @@ export interface PredictQueueMessage {
   // all three guards active.
   force?: boolean;
 }
+
+export type PredictQueueBody =
+  | PredictQueueMessage
+  | DeliveryCanaryMessage
+  | DayBasePickupMessage
+  | DayBasePrewarmMessage;
 
 export interface PredictRunState {
   status: "started" | "success" | "error";

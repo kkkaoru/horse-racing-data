@@ -1,6 +1,7 @@
 // Run with bun. Raw-Catalog-backed completion guard for focused per-race full messages.
 
 import { neon } from "@neondatabase/serverless";
+import { buildPerRaceFeatCacheKey } from "./scoring/feature-cache";
 import type { Env, PredictCategory } from "./types";
 
 interface CompletionParams {
@@ -253,4 +254,23 @@ export const isFocusedFullPredictionComplete = async (
   const stage1ModelVersion = STAGE1_MARKET_FREE_MODEL_VERSIONS[params.category];
   if (stage1ModelVersion === undefined) return false;
   return countMatchesModelVersion({ ...shared, modelVersion: stage1ModelVersion });
+};
+
+export const isPerRaceFeatureCachePresent = async (params: CompletionParams): Promise<boolean> => {
+  const cacheKey = buildPerRaceFeatCacheKey(
+    params.category,
+    params.runYmd,
+    params.keibajoCode,
+    params.raceBango,
+  );
+  return (await params.env.FEATURES_CACHE.head(cacheKey)) !== null;
+};
+
+// Rescore must never be the first prediction pass. It also requires the
+// per-race R2 feature cache: Neon completion alone is insufficient because the
+// Python rescore path falls back to a long full rebuild when that cache is
+// absent, monopolizing the canonical container and delaying later races.
+export const isPerRaceRescoreReady = async (params: CompletionParams): Promise<boolean> => {
+  if (!(await isFocusedFullPredictionComplete(params))) return false;
+  return isPerRaceFeatureCachePresent(params);
 };

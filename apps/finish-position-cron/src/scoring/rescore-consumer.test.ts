@@ -51,8 +51,8 @@ const emptyBytes = new Uint8Array(readFileSync(EMPTY_PARQUET_PATH));
 const PER_RACE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "per-race-cache.parquet");
 const threeRaceBytes = new Uint8Array(readFileSync(PER_RACE_PARQUET_PATH));
 
-const PER_RACE_CACHE_KEY = "feat-cache/jra/20260614/05/11/features.parquet";
-const WHOLE_DAY_CACHE_KEY = "feat-cache/jra/20260614/features.parquet";
+const PER_RACE_CACHE_KEY = "feat-cache/catalog-v1/jra/20260614/05/11/features.parquet";
+const WHOLE_DAY_CACHE_KEY = "feat-cache/catalog-v1/jra/20260614/features.parquet";
 
 const cbModel = parseCatBoostJsonModel(cbSmall);
 const xgbModel = parseXgboostJsonModel(xgbSmall);

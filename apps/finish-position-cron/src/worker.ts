@@ -14,34 +14,25 @@ import {
   shouldRunRescoreCron,
   shouldRunWarmCron,
 } from "./cron-decision";
-import { prewarmCategory, runDayBasePrewarm } from "./day-base-prewarm";
+import { enqueueDayBasePrewarm, runDayBasePrewarm } from "./day-base-prewarm";
+import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import {
   enqueueDeliveryCanary,
   listDeliveryCanaries,
   shouldRunDeliveryCanaryCron,
 } from "./delivery-canary";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
-import { CONTAINER_SLOT_STALE_MS, type ContainerSlotKind } from "./container-slot-cap";
-import {
-  claimContainerSlot,
-  claimRescoreRace,
-  clearContainerSlot,
-  completeFocusedFullRace,
-  releaseContainerSlot,
-} from "./do-state";
+import { consumeContainerStop, isContainerControlQueueMessage } from "./container-control";
+import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
-import { PREDICT_DO_NAME_PREFIX, resolvePredictDoName } from "./predict-do-shard";
+import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
-import { retryPopulateViewerDisplayCache } from "./prediction-cache-warm";
 import { getPredictionReadiness } from "./prediction-readiness";
+import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
-import {
-  DEFAULT_RESCORE_LEAD_MINUTES,
-  resolveCardMaxRaceBangoForKochi,
-  runRaceCoordinatorTick,
-} from "./race-coordinator";
+import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
 import {
   runRunningStyleKickMorningGap,
   runRunningStyleKickTomorrowPrewarm,
@@ -51,8 +42,9 @@ import {
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
-  DeliveryCanaryMessage,
+  ContainerControlMessage,
   Env,
+  PredictQueueBody,
   PredictCategory,
   PredictMode,
   PredictQueueMessage,
@@ -84,14 +76,12 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const FOCUSED_FULL_SLOT_KIND: ContainerSlotKind = "focused-full";
 const ADMIN_STOP_CONTAINERS_PATH = "/api/admin/stop-predict-containers";
 const ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH = "/api/admin/complete-focused-full-race";
 const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_PREWARM_DAY_BASE_PATH = "/api/admin/prewarm-day-base";
-const ADMIN_STOP_CONTAINER_DO_PATH = "/__admin/stop-container";
-const PREDICT_DO_HOST = "http://do";
-const PREDICT_PATH = "/predict";
+const ADMIN_PICKUP_DAY_BASE_PATH = "/api/admin/pickup-day-base";
+export const CONTAINER_CONTROL_QUEUE_NAME = "finish-position-container-control-queue";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
 const INTERNAL_READINESS_PATH = "/api/internal/prediction-readiness";
@@ -124,22 +114,6 @@ interface AdminPrewarmDayBaseRequest {
   category?: PredictCategory;
   generatePredictionsAfterHit?: boolean;
   runYmd: string;
-}
-
-interface StopContainerResult {
-  name: string;
-  ok: boolean;
-  status: number;
-}
-
-interface ReleaseContainerSlotBestEffortParams {
-  doName: string;
-  env: Env;
-  kind: ContainerSlotKind;
-}
-
-interface AttachSlotReleaseOnStreamEndParams extends ReleaseContainerSlotBestEffortParams {
-  response: Response;
 }
 
 export { FinishPositionPredictContainer, PredictRunCoordinator };
@@ -283,6 +257,9 @@ export const isAdminRunFocusedFullRaceRequest = (method: string, pathname: strin
 
 export const isAdminPrewarmDayBaseRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PREWARM_DAY_BASE_PATH;
+
+export const isAdminPickupDayBaseRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PICKUP_DAY_BASE_PATH;
 
 const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
   typeof value === "string" && VALID_CATEGORIES.has(value);
@@ -433,172 +410,8 @@ const parseStopContainerNames = (body: Record<string, unknown>): string[] | null
   return parsed.length === names.length ? parsed : null;
 };
 
-const stopPredictContainer = async (
-  env: Env,
-  authorization: string,
-  name: string,
-): Promise<StopContainerResult> => {
-  const startedAt = Date.now();
-  console.warn(`[predict-worker] admin-stop container start name=${name}`);
-  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(name);
-  const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
-  const response = await stub.fetch(
-    new Request(`http://do${ADMIN_STOP_CONTAINER_DO_PATH}`, {
-      headers: { authorization },
-      method: INTERNAL_RESCORE_RACE_METHOD,
-    }),
-  );
-  console.warn(
-    `[predict-worker] admin-stop container response name=${name} status=${
-      response.status
-    } ok=${response.ok} durationMs=${Date.now() - startedAt}`,
-  );
-  if (response.ok) {
-    try {
-      await clearContainerSlot({ doName: name, env });
-    } catch (err) {
-      console.error(
-        `[predict-worker] admin-stop failed to clear container slot name=${name}:`,
-        String(err),
-      );
-    }
-  }
-  return { name, ok: response.ok, status: response.status };
-};
-
-const releaseContainerSlotBestEffort = async (
-  params: ReleaseContainerSlotBestEffortParams,
-): Promise<void> => {
-  try {
-    await releaseContainerSlot({
-      doName: params.doName,
-      env: params.env,
-      kind: params.kind,
-    });
-  } catch (err) {
-    console.error(
-      `[predict-worker] failed to release container slot doName=${params.doName} kind=${params.kind}:`,
-      String(err),
-    );
-  }
-};
-
-const attachSlotReleaseOnStreamEnd = async (
-  params: AttachSlotReleaseOnStreamEndParams,
-): Promise<Response> => {
-  if (params.response.body === null) {
-    await releaseContainerSlotBestEffort(params);
-    return params.response;
-  }
-  const released = { done: false };
-  const releaseOnce = async (): Promise<void> => {
-    if (released.done) return;
-    released.done = true;
-    await releaseContainerSlotBestEffort(params);
-  };
-  return new Response(
-    params.response.body.pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          controller.enqueue(chunk);
-        },
-        flush: releaseOnce,
-      }),
-    ),
-    {
-      headers: params.response.headers,
-      status: params.response.status,
-      statusText: params.response.statusText,
-    },
-  );
-};
-
-const buildFocusedFullPredictUrl = (
-  body: InternalRescoreRaceRequest,
-  cardMaxRaceBango: number | undefined,
-): string => {
-  const searchParams = new URLSearchParams({
-    category: body.category,
-    daysAhead: String(RESCORE_DAYS_AHEAD),
-    keibajoCode: body.keibajoCode,
-    mode: DEFAULT_MODE,
-    raceBango: body.raceBango,
-    runDate: body.runYmd,
-  });
-  if (body.debug === true) searchParams.set("debug", "1");
-  if (body.force === true) searchParams.set("force", "1");
-  if (cardMaxRaceBango !== undefined) {
-    searchParams.set("cardMaxRaceBango", String(cardMaxRaceBango));
-  }
-  return `${PREDICT_DO_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
-};
-
-const runFocusedFullRace = async (
-  env: Env,
-  body: InternalRescoreRaceRequest,
-): Promise<Response> => {
-  const startedAt = Date.now();
-  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({
-    env,
-    keibajoCode: body.keibajoCode,
-    runYmd: body.runYmd,
-  });
-  const predictUrl = buildFocusedFullPredictUrl(body, cardMaxRaceBango);
-  const doName = resolvePredictDoName({
-    category: body.category,
-    env,
-    keibajoCode: body.keibajoCode,
-    raceBango: body.raceBango,
-  });
-  const claim = await claimContainerSlot({
-    category: body.category,
-    doName,
-    env,
-    kind: FOCUSED_FULL_SLOT_KIND,
-    staleAfterMs: CONTAINER_SLOT_STALE_MS,
-  });
-  if (!claim.proceed) {
-    console.warn(
-      `[predict-worker] container slot ${claim.state ?? "capped"} doName=${doName} kind=${FOCUSED_FULL_SLOT_KIND} ${describeRaceRequest(body)}`,
-    );
-    return Response.json(
-      { error: "container slot unavailable", ok: false, state: claim.state ?? "capped" },
-      { status: HTTP_SERVICE_UNAVAILABLE },
-    );
-  }
-  if (body.debug) {
-    console.warn(`[predict-worker] admin-run-focused-full start ${describeRaceRequest(body)}`);
-  }
-  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
-  const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
-  try {
-    const response = await stub.fetch(new Request(predictUrl));
-    if (body.debug) {
-      console.warn(
-        `[predict-worker] admin-run-focused-full response ${describeRaceRequest(body)} status=${
-          response.status
-        } ok=${response.ok} durationMs=${Date.now() - startedAt}`,
-      );
-    }
-    return attachSlotReleaseOnStreamEnd({
-      doName,
-      env,
-      kind: FOCUSED_FULL_SLOT_KIND,
-      response,
-    });
-  } catch (err) {
-    await releaseContainerSlotBestEffort({
-      doName,
-      env,
-      kind: FOCUSED_FULL_SLOT_KIND,
-    });
-    throw err;
-  }
-};
-
 const handleAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
-  const authorization = request.headers.get("authorization");
-  if (authorization === null || !isAuthorized(authorization, env.TRIGGER_TOKEN)) {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     console.warn("[predict-worker] admin-stop unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
@@ -611,16 +424,25 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
   console.warn(
     `[predict-worker] admin-stop requested count=${names.length} names=${names.join(",")}`,
   );
-  const results: StopContainerResult[] = [];
-  for (const name of names) {
-    results.push(await stopPredictContainer(env, authorization, name));
+  if (env.CONTAINER_CONTROL_QUEUE === undefined) {
+    return Response.json(
+      { error: "container control queue unavailable", ok: false },
+      { status: HTTP_SERVICE_UNAVAILABLE },
+    );
   }
-  console.warn(
-    `[predict-worker] admin-stop completed ok=${results.every((result) => result.ok)} results=${JSON.stringify(
-      results,
-    )}`,
+  const requestedAt = new Date().toISOString();
+  const controlQueue = env.CONTAINER_CONTROL_QUEUE;
+  await Promise.all(
+    names.map((name) =>
+      controlQueue.send({
+        force: true,
+        name,
+        requestedAt,
+        type: "container-stop",
+      } satisfies ContainerControlMessage),
+    ),
   );
-  return Response.json({ ok: results.every((result) => result.ok), results });
+  return Response.json({ names, ok: true, queued: names.length }, { status: HTTP_ACCEPTED });
 };
 
 const guardedAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
@@ -631,11 +453,7 @@ const guardedAdminStopContainers = async (request: Request, env: Env): Promise<R
   }
 };
 
-const handleAdminRunFocusedFullRace = async (
-  request: Request,
-  env: Env,
-  ctx?: ExecutionContext,
-): Promise<Response> => {
+const handleAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     console.warn("[predict-worker] admin-run-focused-full unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
@@ -646,32 +464,26 @@ const handleAdminRunFocusedFullRace = async (
     console.warn("[predict-worker] admin-run-focused-full invalid request");
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
   }
-  const response = await runFocusedFullRace(env, parsed);
-  const populate = retryPopulateViewerDisplayCache({
+  const runDate = buildRunDateFromYmd(parsed.runYmd);
+  await enqueuePredict({
     category: parsed.category,
+    daysAhead: RESCORE_DAYS_AHEAD,
+    ...(parsed.debug === true ? { debug: true } : {}),
     env,
+    ...(parsed.force === true ? { force: true } : {}),
     keibajoCode: parsed.keibajoCode,
+    mode: DEFAULT_MODE,
     raceBango: parsed.raceBango,
+    runDate,
     runYmd: parsed.runYmd,
+    skipDedup: true,
   });
-  if (ctx === undefined) {
-    void populate;
-  } else {
-    ctx.waitUntil(populate);
-  }
-  return new Response(response.body, {
-    headers: response.headers,
-    status: response.status,
-  });
+  return Response.json({ ok: true, queued: true, ...parsed }, { status: HTTP_ACCEPTED });
 };
 
-const guardedAdminRunFocusedFullRace = async (
-  request: Request,
-  env: Env,
-  ctx?: ExecutionContext,
-): Promise<Response> => {
+const guardedAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
   try {
-    return await handleAdminRunFocusedFullRace(request, env, ctx);
+    return await handleAdminRunFocusedFullRace(request, env);
   } catch (error) {
     return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
   }
@@ -687,14 +499,20 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
     console.warn("[predict-worker] admin-prewarm-day-base invalid request");
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
   }
-  const daysAhead = Number(env.PREDICT_DAYS_AHEAD);
+  // The object key and freshness watermark are both scoped to exactly
+  // runYmd. Building runYmd+1/+2 into that same object makes today's urgent
+  // pre-weight pass needlessly expensive and lets future-day changes escape
+  // the target-day watermark. Admin/source-event prewarms therefore build one
+  // exact day; scheduled catch-up can still enumerate and dispatch each day
+  // independently.
+  const daysAhead = 0;
   console.warn(
     `[predict-worker] admin-prewarm-day-base start runYmd=${parsed.runYmd} category=${parsed.category ?? "all"}`,
   );
-  const landed =
+  const queued =
     parsed.category === undefined
       ? await runDayBasePrewarm({ daysAhead, env, runYmd: parsed.runYmd })
-      : await prewarmCategory({
+      : (await enqueueDayBasePrewarm({
           category: parsed.category,
           daysAhead,
           env,
@@ -702,17 +520,67 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
             ? { generatePredictionsAfterHit: true }
             : {}),
           runYmd: parsed.runYmd,
-        });
-  return Response.json({
-    category: parsed.category ?? "all",
-    ok: landed,
-    runYmd: parsed.runYmd,
-  });
+        }),
+        true);
+  return Response.json(
+    {
+      category: parsed.category ?? "all",
+      ok: queued,
+      queued,
+      runYmd: parsed.runYmd,
+    },
+    { status: HTTP_ACCEPTED },
+  );
 };
 
 const guardedAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Response> => {
   try {
     return await handleAdminPrewarmDayBase(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
+const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] admin-pickup-day-base unauthorized");
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const parsed = parseAdminPrewarmDayBaseBody(await parseBody(request), getRunYmdJst(new Date()));
+  if (parsed === null || parsed.category === undefined) {
+    console.warn("[predict-worker] admin-pickup-day-base invalid request");
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  console.warn(
+    `[predict-worker] admin-pickup-day-base start runYmd=${parsed.runYmd} category=${parsed.category}`,
+  );
+  const pickedUp = await pickUpPrewarmDayBase({
+    category: parsed.category,
+    env,
+    runYmd: parsed.runYmd,
+  });
+  const landed =
+    (await headDayBaseObject({ category: parsed.category, env, runYmd: parsed.runYmd })) !== null;
+  const racesEnqueued =
+    landed && parsed.generatePredictionsAfterHit === true
+      ? await fanOutPredictionsAfterDayBaseHit({
+          category: parsed.category,
+          env,
+          runYmd: parsed.runYmd,
+        })
+      : 0;
+  return Response.json({
+    category: parsed.category,
+    ok: landed,
+    pickedUp,
+    racesEnqueued,
+    runYmd: parsed.runYmd,
+  });
+};
+
+const guardedAdminPickupDayBase = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleAdminPickupDayBase(request, env);
   } catch (error) {
     return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
   }
@@ -777,11 +645,7 @@ const handleDeliveryCanaries = async (request: Request, env: Env): Promise<Respo
   });
 };
 
-export const handleFetch = async (
-  request: Request,
-  env: Env,
-  ctx?: ExecutionContext,
-): Promise<Response> => {
+export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
   if (isTriggerRequest(request.method, url.pathname)) {
     return guardedTrigger(request, env);
@@ -793,10 +657,13 @@ export const handleFetch = async (
     return guardedAdminCompleteFocusedFullRace(request, env);
   }
   if (isAdminRunFocusedFullRaceRequest(request.method, url.pathname)) {
-    return guardedAdminRunFocusedFullRace(request, env, ctx);
+    return guardedAdminRunFocusedFullRace(request, env);
   }
   if (isAdminPrewarmDayBaseRequest(request.method, url.pathname)) {
     return guardedAdminPrewarmDayBase(request, env);
+  }
+  if (isAdminPickupDayBaseRequest(request.method, url.pathname)) {
+    return guardedAdminPickupDayBase(request, env);
   }
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);
@@ -917,25 +784,38 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
 // came from, so route accordingly instead of running the two independent
 // consumer implementations against the wrong batch shape.
 export const handleQueueBatch = async (
-  batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
+  batch: MessageBatch<PredictQueueBody | ContainerControlMessage>,
   env: Env,
 ): Promise<void> => {
-  if (batch.queue === DLQ_QUEUE_NAME) {
-    await handleDlqQueue(batch, env);
+  if (batch.queue === CONTAINER_CONTROL_QUEUE_NAME) {
+    for (const message of batch.messages) {
+      if (!isContainerControlQueueMessage(message)) continue;
+      try {
+        await consumeContainerStop(env, message.body);
+        message.ack();
+      } catch (error) {
+        console.error("[container-control] stop failed:", String(error));
+        message.retry({ delaySeconds: 30 });
+      }
+    }
     return;
   }
-  await handleQueue(batch, env);
+  if (batch.queue === DLQ_QUEUE_NAME) {
+    await handleDlqQueue(batch as MessageBatch<PredictQueueBody | ContainerControlMessage>, env);
+    return;
+  }
+  await handleQueue(batch as MessageBatch<PredictQueueBody>, env);
 };
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    return handleFetch(request, env, ctx);
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    return handleFetch(request, env);
   },
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env);
   },
   async queue(
-    batch: MessageBatch<PredictQueueMessage | DeliveryCanaryMessage>,
+    batch: MessageBatch<PredictQueueBody | ContainerControlMessage>,
     env: Env,
   ): Promise<void> {
     await handleQueueBatch(batch, env);

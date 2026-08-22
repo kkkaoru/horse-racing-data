@@ -25,13 +25,18 @@ const makeEnv = (): Env => ({
 import {
   claimContainerSlot,
   claimFocusedFullRace,
+  claimRescoreExecution,
   claimRescoreRace,
   claimRun,
+  checkContainerSlotStop,
   clearContainerSlot,
   completeFocusedFullRace,
+  completeRescoreRace,
   completeRun,
+  failFocusedFullRaceEnqueue,
   getRunState,
   releaseContainerSlot,
+  reserveFocusedFullRaceEnqueue,
   touchContainerSlot,
 } from "./do-state";
 
@@ -185,6 +190,80 @@ test("claimRescoreRace throws when DO returns non-200", async () => {
   ).rejects.toThrow("DO claim-race failed: 500");
 });
 
+test("claimRescoreExecution sends execution ownership and stale budget", async () => {
+  await claimRescoreExecution({
+    category: "jra",
+    env: makeEnv(),
+    executionId: "queue-message-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260823",
+    staleAfterMs: 1_860_000,
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/claim-rescore-execution");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "jra",
+    executionId: "queue-message-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260823",
+    staleAfterMs: 1_860_000,
+  });
+});
+
+test("claimRescoreExecution rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    claimRescoreExecution({
+      category: "jra",
+      env: makeEnv(),
+      executionId: "queue-message-1",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260823",
+      staleAfterMs: 1_860_000,
+    }),
+  ).rejects.toThrow("DO claim-rescore-execution failed: 503");
+});
+
+test("completeRescoreRace sends matching execution ownership and status", async () => {
+  await completeRescoreRace({
+    category: "jra",
+    env: makeEnv(),
+    executionId: "queue-message-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260823",
+    status: "success",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/complete-rescore-race");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "jra",
+    executionId: "queue-message-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260823",
+    status: "success",
+  });
+});
+
+test("completeRescoreRace rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    completeRescoreRace({
+      category: "jra",
+      env: makeEnv(),
+      executionId: "queue-message-1",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260823",
+      status: "error",
+    }),
+  ).rejects.toThrow("DO complete-rescore-race failed: 503");
+});
+
 test("claimFocusedFullRace calls DO /claim-focused-full-race with stale budget", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
   const result = await claimFocusedFullRace({
@@ -249,6 +328,95 @@ test("claimFocusedFullRace throws when DO returns non-200", async () => {
   ).rejects.toThrow("DO claim-focused-full-race failed: 500");
 });
 
+test("reserveFocusedFullRaceEnqueue sends semantic race identity and resolved DO name", async () => {
+  await reserveFocusedFullRaceEnqueue({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "03",
+    raceStartAtJst: "2026-08-23T10:50:00+09:00",
+    reservationId: "reservation-1",
+    runYmd: "20260823",
+    staleAfterMs: 1_860_000,
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/reserve-focused-full-race-enqueue");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "jra",
+    doName: "predict-jra",
+    keibajoCode: "05",
+    raceBango: "03",
+    raceStartAtJst: "2026-08-23T10:50:00+09:00",
+    reservationId: "reservation-1",
+    runYmd: "20260823",
+    staleAfterMs: 1_860_000,
+  });
+});
+
+test("reserveFocusedFullRaceEnqueue returns an existing reservation state", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ proceed: false, state: "enqueued" }));
+  await expect(
+    reserveFocusedFullRaceEnqueue({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "44",
+      raceBango: "03",
+      reservationId: "reservation-2",
+      runYmd: "20260823",
+      staleAfterMs: 1_860_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "enqueued" });
+});
+
+test("reserveFocusedFullRaceEnqueue rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    reserveFocusedFullRaceEnqueue({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "44",
+      raceBango: "03",
+      reservationId: "reservation-2",
+      runYmd: "20260823",
+      staleAfterMs: 1_860_000,
+    }),
+  ).rejects.toThrow("DO reserve-focused-full-race-enqueue failed: 503");
+});
+
+test("failFocusedFullRaceEnqueue marks the matching reservation failed", async () => {
+  await failFocusedFullRaceEnqueue({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "44",
+    raceBango: "03",
+    reservationId: "reservation-2",
+    runYmd: "20260823",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/fail-focused-full-race-enqueue");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "nar",
+    keibajoCode: "44",
+    raceBango: "03",
+    reservationId: "reservation-2",
+    runYmd: "20260823",
+  });
+});
+
+test("failFocusedFullRaceEnqueue rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    failFocusedFullRaceEnqueue({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "44",
+      raceBango: "03",
+      reservationId: "reservation-2",
+      runYmd: "20260823",
+    }),
+  ).rejects.toThrow("DO fail-focused-full-race-enqueue failed: 503");
+});
+
 test("completeFocusedFullRace calls DO /complete-focused-full-race", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   await completeFocusedFullRace({
@@ -289,6 +457,53 @@ test("claimContainerSlot calls DO /claim-container-slot with the unique DO field
   expect(body.doName).toBe("predict-jra");
   expect(body.kind).toBe("rescore");
   expect(body.staleAfterMs).toBe(1200000);
+});
+
+test("claimContainerSlot forwards same-owner cleanup permission", async () => {
+  await claimContainerSlot({
+    allowSameOwner: true,
+    category: "jra",
+    doName: "predict-jra-1",
+    env: makeEnv(),
+    kind: "focused-full",
+    staleAfterMs: 1_200_000,
+    workKey: "work-1",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  await expect(request.json()).resolves.toMatchObject({ allowSameOwner: true, workKey: "work-1" });
+});
+
+test("checkContainerSlotStop returns coordinator ownership decision", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ allowed: false }));
+  const env = makeEnv();
+
+  await expect(
+    checkContainerSlotStop({
+      doName: "predict-jra-1",
+      env,
+      requestedAt: "2026-08-22T00:00:00.000Z",
+      workKey: "old-work",
+    }),
+  ).resolves.toBe(false);
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/check-container-slot-stop");
+  await expect(request.json()).resolves.toStrictEqual({
+    doName: "predict-jra-1",
+    requestedAt: "2026-08-22T00:00:00.000Z",
+    workKey: "old-work",
+  });
+});
+
+test("checkContainerSlotStop rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    checkContainerSlotStop({
+      doName: "predict-jra-1",
+      env: makeEnv(),
+      requestedAt: "2026-08-22T00:00:00.000Z",
+      workKey: "work-1",
+    }),
+  ).rejects.toThrow("DO check-container-slot-stop failed: 503");
 });
 
 test("claimContainerSlot returns proceed:false when the DO reports capped", async () => {
