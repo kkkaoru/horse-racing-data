@@ -1,4 +1,4 @@
-// Run with bun. One-shot pickup of a completed focused-full race's R2
+// Run with bun. Retry-safe pickup of a completed focused-full race's R2
 // feat-cache payload from the container's bounded in-process cache store.
 //
 // Why this exists: the container's R2 credentials are read-only (direct
@@ -15,7 +15,7 @@
 // The container now holds a completed run's payload in a small in-process
 // store (predict_lib.focused_full_cache.FocusedFullCacheStore) and exposes it
 // via GET /focused-full-cache. This module fetches that endpoint exactly
-// once, right after queue-consumer.ts's redelivery poll confirms Neon
+// after queue-consumer.ts's redelivery poll confirms Neon
 // completion, and proxies any payload found through the SAME R2-write path
 // the live NDJSON stream uses (container-ndjson-proxy.ts's
 // proxyResultParquetsToR2) -- so a Stage-2 rescore for this race can hit the
@@ -24,6 +24,11 @@
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
 import type { PredictResultLine } from "./ndjson-stream";
 import { resolvePredictDoName } from "./predict-do-shard";
+import {
+  qualifyPredictionContainerDoName,
+  resolveContainerNamespaceForRole,
+  type PredictionContainerRole,
+} from "./race-container-routing";
 import type { Env, PredictCategory } from "./types";
 
 const FOCUSED_FULL_CACHE_PATH = "/focused-full-cache";
@@ -41,6 +46,7 @@ interface FocusedFullCachePickupParams {
   keibajoCode: string;
   raceBango: string;
   debug?: boolean;
+  containerRole?: PredictionContainerRole;
 }
 
 interface FocusedFullCacheResponseBody {
@@ -80,11 +86,15 @@ export const pickUpFocusedFullCache = async (
   params: FocusedFullCachePickupParams,
 ): Promise<void> => {
   const { env, category, runYmd, keibajoCode, raceBango, debug } = params;
-  const doName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
+  const doName = qualifyPredictionContainerDoName(
+    resolvePredictDoName({ category, env, keibajoCode, raceBango }),
+    params.containerRole ?? "legacy",
+  );
   const url = buildFocusedFullCacheUrl(params);
   try {
-    const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
-    const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+    const namespace = resolveContainerNamespaceForRole(env, params.containerRole);
+    const doId = namespace.idFromName(doName);
+    const stub = namespace.get(doId);
     const response = await stub.fetch(new Request(url));
     if (!response.ok) {
       console.warn(

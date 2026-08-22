@@ -16,6 +16,7 @@ vi.mock("./do-state", () => ({
 import {
   consumeContainerStop,
   enqueueContainerStop,
+  enqueueContainerStopForRole,
   isContainerControlMessage,
   isContainerControlQueueMessage,
 } from "./container-control";
@@ -23,12 +24,18 @@ import {
 const idFromNameMock = vi.fn(() => ({ name: "container-id" }));
 const stubFetchMock = vi.fn<(...args: [Request]) => Promise<Response>>();
 const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
+const raceIdFromNameMock = vi.fn(() => ({ name: "race-container-id" }));
+const raceGetMock = vi.fn(() => ({ fetch: stubFetchMock }));
 
 const makeEnv = (): Env =>
   ({
     FINISH_POSITION_PREDICT_CONTAINER: {
       get: getMock,
       idFromName: idFromNameMock,
+    },
+    FINISH_POSITION_RACE_CHAIN_CONTAINER: {
+      get: raceGetMock,
+      idFromName: raceIdFromNameMock,
     },
     PREDICT_RUN_COORDINATOR: {},
     TRIGGER_TOKEN: "secret-token",
@@ -48,6 +55,8 @@ beforeEach(() => {
   clearContainerSlotMock.mockResolvedValue(undefined);
   getMock.mockClear();
   idFromNameMock.mockClear();
+  raceGetMock.mockClear();
+  raceIdFromNameMock.mockClear();
   stubFetchMock.mockReset();
 });
 
@@ -114,6 +123,17 @@ test("treats an already-stopped 204 response as an idempotent success", async ()
   });
 });
 
+test("stops the explicitly targeted race-chain binding", async () => {
+  const env = makeEnv();
+  stubFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+  await consumeContainerStop(env, { ...message, role: "race-chain" });
+
+  expect(raceIdFromNameMock).toHaveBeenCalledWith("predict-jra-1");
+  expect(raceGetMock).toHaveBeenCalledTimes(1);
+  expect(idFromNameMock).not.toHaveBeenCalled();
+});
+
 test("throws on a non-2xx container response and preserves the queue retry", async () => {
   const env = makeEnv();
   stubFetchMock.mockResolvedValueOnce(new Response("busy", { status: 503 }));
@@ -152,6 +172,7 @@ test("validates container control messages and queue wrappers", () => {
     { ...message, name: 1 },
     { name: message.name, type: "container-stop" },
     { ...message, requestedAt: 1 },
+    { ...message, role: "unknown" },
   ]) {
     expect(isContainerControlMessage(invalid)).toBe(false);
   }
@@ -173,4 +194,37 @@ test("enqueueContainerStop returns false without a binding and sends optional wo
     expect.objectContaining({ name: "predict-nar", type: "container-stop" }),
   );
   expect(send.mock.calls[1]?.[0]).not.toHaveProperty("workKey");
+});
+
+test("enqueueContainerStopForRole records an unambiguous binding role", async () => {
+  await expect(
+    enqueueContainerStopForRole({
+      env: makeEnv(),
+      name: "race-chain-predict-jra-1",
+      role: "race-chain",
+      workKey: "work-2",
+    }),
+  ).resolves.toBe(false);
+  const send = vi.fn(async (_message: ContainerControlMessage) => undefined);
+  const env = {
+    ...makeEnv(),
+    CONTAINER_CONTROL_QUEUE: { send } as unknown as NonNullable<Env["CONTAINER_CONTROL_QUEUE"]>,
+  };
+
+  await expect(
+    enqueueContainerStopForRole({
+      env,
+      name: "race-chain-predict-jra-1",
+      role: "race-chain",
+      workKey: "work-2",
+    }),
+  ).resolves.toBe(true);
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "race-chain-predict-jra-1",
+      role: "race-chain",
+      type: "container-stop",
+      workKey: "work-2",
+    }),
+  );
 });

@@ -874,7 +874,7 @@ test("pickUpPrewarmDayBase returns false when the proxy write rejects", async ()
   warnSpy.mockRestore();
 });
 
-test("pickUpPrewarmDayBase tries the next shard after an empty category DO", async () => {
+test("pickUpPrewarmDayBase does not cold-start race shards after an empty day-base owner", async () => {
   stubFetchMock.mockResolvedValueOnce(
     new Response(JSON.stringify({ found: false }), { status: 200 }),
   );
@@ -903,9 +903,9 @@ test("pickUpPrewarmDayBase tries the next shard after an empty category DO", asy
     env,
     runYmd: "20260817",
   });
-  expect(ok).toBe(true);
+  expect(ok).toBe(false);
   expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei-0");
+  expect(idFromNameMock).not.toHaveBeenCalledWith("predict-ban-ei-0");
   expect(idFromNameMock).not.toHaveBeenCalledWith("predict-ban-ei-1");
-  expect(proxyResultParquetsToRMock).toHaveBeenCalledTimes(1);
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
 });

@@ -3,13 +3,23 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { RaceEntry } from "./cron-decision";
 
-const { enqueuePredictMock, enumerateTodaysRacesMock } = vi.hoisted(() => ({
-  enqueuePredictMock: vi.fn(async () => ["jra"]),
-  enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
-}));
+const { enqueuePredictMock, enumerateTodaysRacesMock, getRunningStyleRaceReadinessMock } =
+  vi.hoisted(() => ({
+    enqueuePredictMock: vi.fn(async () => ["jra"]),
+    enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
+    getRunningStyleRaceReadinessMock: vi.fn(
+      async (params: {
+        races: readonly RaceEntry[];
+      }): Promise<readonly { race: RaceEntry; reason: string | null }[]> =>
+        params.races.map((race) => ({ race, reason: null })),
+    ),
+  }));
 
 vi.mock("./cron-decision", () => ({ enumerateTodaysRaces: enumerateTodaysRacesMock }));
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueuePredictMock }));
+vi.mock("./running-style-readiness", () => ({
+  getRunningStyleRaceReadiness: getRunningStyleRaceReadinessMock,
+}));
 
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import type { Env } from "./types";
@@ -23,6 +33,7 @@ beforeEach(() => {
   enqueuePredictMock.mockClear();
   enumerateTodaysRacesMock.mockReset();
   enumerateTodaysRacesMock.mockResolvedValue([]);
+  getRunningStyleRaceReadinessMock.mockClear();
 });
 
 test("fans out one full prediction per category race after the caller proves a HIT", async () => {
@@ -48,6 +59,25 @@ test("fans out one full prediction per category race after the caller proves a H
   ).resolves.toBe(2);
 
   expect(enumerateTodaysRacesMock).toHaveBeenCalledWith(env.REALTIME_DB, "20260822");
+  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    db: env.REALTIME_DB,
+    races: [
+      {
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "01",
+        raceStartAtJst: "2026-08-22T09:50:00+09:00",
+      },
+      {
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "02",
+        raceStartAtJst: "2026-08-22T10:20:00+09:00",
+      },
+    ],
+    runYmd: "20260822",
+  });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
   expect(enqueuePredictMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
@@ -62,7 +92,7 @@ test("fans out one full prediction per category race after the caller proves a H
     skipDedup: true,
   });
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0",
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0 runningStyleIncomplete=0",
   );
   logSpy.mockRestore();
 });
@@ -130,7 +160,36 @@ test("reports only newly reserved races when another producer already owns one",
     fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
   ).resolves.toBe(1);
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=1",
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=1 runningStyleIncomplete=0",
   );
+  logSpy.mockRestore();
+});
+
+test("skips only the race whose running-style entrants are incomplete", async () => {
+  const readyRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "01" };
+  const incompleteRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "02" };
+  enumerateTodaysRacesMock.mockResolvedValue([readyRace, incompleteRace]);
+  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
+    { race: readyRace, reason: null },
+    { race: incompleteRace, reason: "prediction-count-7-of-14" },
+  ]);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await expect(
+    fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
+  ).resolves.toBe(1);
+
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
+  expect(enqueuePredictMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "01", raceBango: "01" }),
+  );
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[feature-hit-prediction] skipped-running-style-incomplete category=jra runYmd=20260822 keibajoCode=01 raceBango=02 reason=prediction-count-7-of-14",
+  );
+  expect(logSpy).toHaveBeenCalledWith(
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=0 runningStyleIncomplete=1",
+  );
+  warnSpy.mockRestore();
   logSpy.mockRestore();
 });

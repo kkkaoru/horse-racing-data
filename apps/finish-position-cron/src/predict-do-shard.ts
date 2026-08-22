@@ -95,16 +95,7 @@ const resolveShardIndex = (keibajoCode: string, raceBango: string, maxConcurrent
 export const listDayBasePickupDoNames = (params: {
   category: string;
   env: Env;
-}): readonly string[] => {
-  const unshardedName = `${PREDICT_DO_NAME_PREFIX}${params.category}`;
-  if (!isRaceShardingEnabled(params.env)) return [unshardedName];
-  const maxConcurrent = resolveShardMaxConcurrent(params.env);
-  const shardNames = Array.from(
-    { length: maxConcurrent },
-    (_value, index) => `${unshardedName}-${index}`,
-  );
-  return [unshardedName, ...shardNames];
-};
+}): readonly string[] => [`${PREDICT_DO_NAME_PREFIX}${params.category}`];
 
 export const resolvePredictDoName = (params: ResolvePredictDoNameParams): string => {
   const { category, env, keibajoCode, raceBango, shareCategoryInstance } = params;

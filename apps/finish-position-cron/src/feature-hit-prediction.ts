@@ -3,6 +3,7 @@
 
 import { enumerateTodaysRaces } from "./cron-decision";
 import { enqueuePredict } from "./queue-producer";
+import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface FanOutPredictionsAfterDayBaseHitParams {
@@ -25,12 +26,26 @@ export const fanOutPredictionsAfterDayBaseHit = async (
 ): Promise<number> => {
   const races = await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd);
   const categoryRaces = races.filter((race) => race.category === params.category);
+  const readiness = await getRunningStyleRaceReadiness({
+    category: params.category,
+    db: params.env.REALTIME_DB,
+    races: categoryRaces,
+    runYmd: params.runYmd,
+  });
+  const readyRaces = readiness.filter((item) => item.reason === null).map((item) => item.race);
+  readiness
+    .filter((item) => item.reason !== null)
+    .forEach((item) =>
+      console.warn(
+        `[feature-hit-prediction] skipped-running-style-incomplete category=${params.category} runYmd=${params.runYmd} keibajoCode=${item.race.keibajoCode} raceBango=${item.race.raceBango} reason=${item.reason}`,
+      ),
+    );
   const runDate = buildRunDate(params.runYmd);
   const enqueueResults: PredictCategory[][] = [];
   // enumerateTodaysRaces is ordered by post time. Send sequentially so the
   // Queue observes the same order instead of letting concurrent network
   // completion reorder later races ahead of today's early starters.
-  for (const race of categoryRaces) {
+  for (const race of readyRaces) {
     enqueueResults.push(
       await enqueuePredict({
         category: params.category,
@@ -48,7 +63,7 @@ export const fanOutPredictionsAfterDayBaseHit = async (
   }
   const enqueuedCount = enqueueResults.flat().length;
   console.log(
-    `[feature-hit-prediction] enqueued category=${params.category} runYmd=${params.runYmd} races=${enqueuedCount} duplicates=${categoryRaces.length - enqueuedCount}`,
+    `[feature-hit-prediction] enqueued category=${params.category} runYmd=${params.runYmd} races=${enqueuedCount} duplicates=${readyRaces.length - enqueuedCount} runningStyleIncomplete=${categoryRaces.length - readyRaces.length}`,
   );
   return enqueuedCount;
 };

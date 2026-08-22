@@ -1,6 +1,9 @@
 // Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container) + queue handlers.
 
-import { FinishPositionPredictContainer } from "./container-class";
+import {
+  FinishPositionPredictContainer,
+  FinishPositionRaceChainContainer,
+} from "./container-class";
 import {
   refreshCornerFeatures,
   shouldRunCornerFeaturesRefreshCron,
@@ -116,7 +119,7 @@ interface AdminPrewarmDayBaseRequest {
   runYmd: string;
 }
 
-export { FinishPositionPredictContainer, PredictRunCoordinator };
+export { FinishPositionPredictContainer, FinishPositionRaceChainContainer, PredictRunCoordinator };
 
 const healthResponse = (): Response =>
   Response.json({ cron: PREDICT_CRON, name: "finish-position-cron", ok: true });

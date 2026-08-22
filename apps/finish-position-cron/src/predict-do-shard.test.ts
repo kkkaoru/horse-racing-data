@@ -166,10 +166,10 @@ test("listDayBasePickupDoNames is the unsharded category DO when sharding is off
   ]);
 });
 
-test("listDayBasePickupDoNames includes the category DO and every shard when sharding is on", () => {
+test("listDayBasePickupDoNames only probes the day-base owner when race sharding is on", () => {
   expect(
     listDayBasePickupDoNames({ category: "ban-ei", env: makeEnv({ RACE_SHARDED_DO: "1" }) }),
-  ).toStrictEqual(["predict-ban-ei", "predict-ban-ei-0", "predict-ban-ei-1", "predict-ban-ei-2"]);
+  ).toStrictEqual(["predict-ban-ei"]);
 });
 
 test("shareCategoryInstance keeps a NAR rescore on the unsharded category DO when sharding is on", () => {

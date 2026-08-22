@@ -13,14 +13,77 @@ import { Container } from "@cloudflare/containers";
 import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import type { Env } from "./types";
 
+type PredictContainerRole = "legacy" | "race-chain";
+
+type PredictContainerEnvironment = Pick<
+  Env,
+  | "DAY_BASE_SPLIT_ENABLED"
+  | "NAR_TRANSFORMER_BLEND_ENABLED"
+  | "NEON_DATABASE_URL"
+  | "PREDICT_DAYS_AHEAD"
+  | "R2_ACCESS_KEY_ID"
+  | "R2_ACCOUNT_ID"
+  | "R2_BUCKET"
+  | "R2_CATALOG_TOKEN"
+  | "R2_CATALOG_URI"
+  | "R2_CATALOG_WAREHOUSE"
+  | "R2_SECRET_ACCESS_KEY"
+  | "SOURCE_DATABASE_URL"
+  | "STAGE1_PRESERVED_ODDS_GATE_ENABLED"
+  | "VENUE_WEATHER_URL"
+>;
+
+export interface BuildPredictContainerEnvVarsOptions {
+  env: PredictContainerEnvironment;
+  inheritedEnvVars: Readonly<Record<string, string>>;
+}
+
 const DEFAULT_PORT = 8080;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
 const SLEEP_AFTER = "20m";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
+const EMPTY_ENV_VARS: Readonly<Record<string, string>> = Object.freeze({});
 const ADMIN_STOP_PATH = "/__admin/stop-container";
 const AUTH_HEADER = "authorization";
 const BEARER_PREFIX = "Bearer ";
+const LEGACY_CONTAINER_ROLE: PredictContainerRole = "legacy";
+const RACE_CHAIN_CONTAINER_ROLE: PredictContainerRole = "race-chain";
+
+const mergePredictContainerEnvVars = (
+  { env, inheritedEnvVars }: BuildPredictContainerEnvVarsOptions,
+  role: PredictContainerRole,
+): Record<string, string> => ({
+  ...inheritedEnvVars,
+  MODELS_DIR: MODELS_DIR_DEFAULT,
+  NEON_DATABASE_URL: env.NEON_DATABASE_URL,
+  PREDICT_DAYS_AHEAD: env.PREDICT_DAYS_AHEAD,
+  PREDICT_SERVE_MODE: "http",
+  NAR_TRANSFORMER_BLEND_ENABLED: env.NAR_TRANSFORMER_BLEND_ENABLED ?? EMPTY_ENV_VALUE,
+  STAGE1_PRESERVED_ODDS_GATE_ENABLED: env.STAGE1_PRESERVED_ODDS_GATE_ENABLED ?? EMPTY_ENV_VALUE,
+  DAY_BASE_SPLIT_ENABLED: env.DAY_BASE_SPLIT_ENABLED ?? EMPTY_ENV_VALUE,
+  SOURCE_DATABASE_URL: env.SOURCE_DATABASE_URL ?? EMPTY_ENV_VALUE,
+  R2_ACCOUNT_ID: env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
+  R2_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
+  R2_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
+  R2_BUCKET: env.R2_BUCKET ?? EMPTY_ENV_VALUE,
+  R2_CATALOG_TOKEN: env.R2_CATALOG_TOKEN ?? EMPTY_ENV_VALUE,
+  R2_CATALOG_URI: env.R2_CATALOG_URI ?? EMPTY_ENV_VALUE,
+  R2_CATALOG_WAREHOUSE: env.R2_CATALOG_WAREHOUSE ?? EMPTY_ENV_VALUE,
+  VENUE_WEATHER_URL: env.VENUE_WEATHER_URL ?? EMPTY_ENV_VALUE,
+  PYTHONUNBUFFERED: "1",
+  // Role is authoritative class configuration. Keep it after inherited vars
+  // so per-instance Container options cannot impersonate another resource role.
+  PREDICT_CONTAINER_ROLE: role,
+});
+
+export const buildLegacyPredictContainerEnvVars = (
+  options: BuildPredictContainerEnvVarsOptions,
+): Record<string, string> => mergePredictContainerEnvVars(options, LEGACY_CONTAINER_ROLE);
+
+export const buildRaceChainPredictContainerEnvVars = (
+  options: BuildPredictContainerEnvVarsOptions,
+): Record<string, string> => mergePredictContainerEnvVars(options, RACE_CHAIN_CONTAINER_ROLE);
 
 const isDebugRequest = (url: URL): boolean => {
   const value = url.searchParams.get("debug");
@@ -51,6 +114,13 @@ export class FinishPositionPredictContainer extends Container<Env> {
   override sleepAfter = SLEEP_AFTER;
   override enableInternet = true;
 
+  protected buildContainerEnvVars(): Record<string, string> {
+    return buildLegacyPredictContainerEnvVars({
+      env: this.env,
+      inheritedEnvVars: this.envVars ?? EMPTY_ENV_VARS,
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const requestSummary = describePredictRequest(url);
@@ -64,26 +134,7 @@ export class FinishPositionPredictContainer extends Container<Env> {
       console.warn(`[predict-container-do] admin-stop destroyed ${requestSummary}`);
       return Response.json({ ok: true });
     }
-    this.envVars = {
-      MODELS_DIR: MODELS_DIR_DEFAULT,
-      NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
-      PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
-      PREDICT_SERVE_MODE: "http",
-      NAR_TRANSFORMER_BLEND_ENABLED: this.env.NAR_TRANSFORMER_BLEND_ENABLED ?? EMPTY_ENV_VALUE,
-      STAGE1_PRESERVED_ODDS_GATE_ENABLED:
-        this.env.STAGE1_PRESERVED_ODDS_GATE_ENABLED ?? EMPTY_ENV_VALUE,
-      DAY_BASE_SPLIT_ENABLED: this.env.DAY_BASE_SPLIT_ENABLED ?? EMPTY_ENV_VALUE,
-      SOURCE_DATABASE_URL: this.env.SOURCE_DATABASE_URL ?? EMPTY_ENV_VALUE,
-      R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
-      R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
-      R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
-      R2_BUCKET: this.env.R2_BUCKET ?? EMPTY_ENV_VALUE,
-      R2_CATALOG_TOKEN: this.env.R2_CATALOG_TOKEN ?? EMPTY_ENV_VALUE,
-      R2_CATALOG_URI: this.env.R2_CATALOG_URI ?? EMPTY_ENV_VALUE,
-      R2_CATALOG_WAREHOUSE: this.env.R2_CATALOG_WAREHOUSE ?? EMPTY_ENV_VALUE,
-      VENUE_WEATHER_URL: this.env.VENUE_WEATHER_URL ?? EMPTY_ENV_VALUE,
-      PYTHONUNBUFFERED: "1",
-    };
+    this.envVars = this.buildContainerEnvVars();
     const startedAt = Date.now();
     const debug = isDebugRequest(url);
     try {
@@ -114,5 +165,16 @@ export class FinishPositionPredictContainer extends Container<Env> {
         { status: 502 },
       );
     }
+  }
+}
+
+// Distinct Durable Object class gives Wrangler a separate Container
+// application/resource profile while preserving the proven request proxy.
+export class FinishPositionRaceChainContainer extends FinishPositionPredictContainer {
+  protected override buildContainerEnvVars(): Record<string, string> {
+    return buildRaceChainPredictContainerEnvVars({
+      env: this.env,
+      inheritedEnvVars: this.envVars ?? EMPTY_ENV_VARS,
+    });
   }
 }

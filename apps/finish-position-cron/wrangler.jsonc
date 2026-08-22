@@ -97,12 +97,30 @@
       // JRA/NAR rescores occupying max_concurrency.
       "max_instances": 10,
     },
+    {
+      // Default-off race-chain canary. The Worker routes only allowlisted,
+      // focused-full work whose metadata-bearing day-base object is present;
+      // day-base and all fallback work remain on standard-4 above.
+      "class_name": "FinishPositionRaceChainContainer",
+      "image": "../finish-position-predict-container/Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": {
+        "vcpu": 2,
+        "memory_mib": 6144,
+        "disk_mb": 12000,
+      },
+      "max_instances": 1,
+    },
   ],
   "durable_objects": {
     "bindings": [
       {
         "class_name": "FinishPositionPredictContainer",
         "name": "FINISH_POSITION_PREDICT_CONTAINER",
+      },
+      {
+        "class_name": "FinishPositionRaceChainContainer",
+        "name": "FINISH_POSITION_RACE_CHAIN_CONTAINER",
       },
       // Strong-consistency run dedup/state coordinator (replaces KV PREDICT_STATE).
       {
@@ -119,6 +137,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["PredictRunCoordinator"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["FinishPositionRaceChainContainer"],
     },
   ],
   "d1_databases": [
@@ -292,6 +314,11 @@
     // than "1") and revert max_concurrency to 3, then redeploy -- one step, no
     // code change (apps/pc-keiba-viewer/docs/probes/campaign-summary-2026-07-17.md §g).
     "RACE_SHARDED_DO": "1",
+    // Kept off until the Python race-chain path has a fail-closed
+    // no-inline-day-base-build switch. Worker-side R2 HEAD proves presence,
+    // but cannot prove the live Catalog/running-style watermark still matches.
+    "RACE_CHAIN_CONTAINER_ENABLED": "0",
+    "RACE_CHAIN_CONTAINER_CATEGORIES": "jra",
   },
   "queues": {
     "producers": [

@@ -15,6 +15,10 @@ export interface CatalogServiceBinding {
 
 export interface Env {
   FINISH_POSITION_PREDICT_CONTAINER: DurableObjectNamespace<Container<Env>>;
+  // Default-off canary binding for focused race-chain work. It is optional in
+  // the type so local/test environments and a partially rolled-back Worker
+  // fail closed to FINISH_POSITION_PREDICT_CONTAINER.
+  FINISH_POSITION_RACE_CHAIN_CONTAINER?: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_CRON_DB: D1Database;
   // Read-only D1 binding to the sync-realtime-data DB. The per-race coordinator
   // reads realtime_race_sources.race_start_at_jst (JST ISO post-time) from here
@@ -98,6 +102,11 @@ export interface Env {
   // `wrangler secret put DAY_BASE_SPLIT_ENABLED`. Optional so existing
   // callers/tests need not set it.
   DAY_BASE_SPLIT_ENABLED?: string;
+  // Default-off race-chain Container canary. Both the exact "1" flag and a
+  // comma-separated category allowlist entry are required. Routing also
+  // requires a metadata-bearing R2 day-base object at dispatch time.
+  RACE_CHAIN_CONTAINER_ENABLED?: string;
+  RACE_CHAIN_CONTAINER_CATEGORIES?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
@@ -200,6 +209,8 @@ export interface ContainerControlMessage {
   force?: boolean;
   name: string;
   requestedAt: string;
+  // Missing means the legacy binding for already-queued control messages.
+  role?: "legacy" | "race-chain";
   workKey?: string;
 }
 

@@ -1,6 +1,7 @@
 // Run with bun. Tests for the queue consumer (DO-backed dedup).
 
 import { beforeEach, expect, test, vi } from "vitest";
+import type { RaceEntry } from "./cron-decision";
 import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
 import type { PredictionKvPublishResult } from "./prediction-kv-writer";
 import type { Env, PredictQueueMessage } from "./types";
@@ -38,6 +39,7 @@ const {
   isFocusedFullPredictionCompleteMock,
   isPerRaceFeatureCachePresentMock,
   isPerRaceRescoreReadyMock,
+  getRunningStyleRaceReadinessMock,
 } = vi.hoisted(() => {
   const claimContainerSlot = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
@@ -81,6 +83,12 @@ const {
   const isFocusedFullPredictionComplete = vi.fn(async (): Promise<boolean> => false);
   const isPerRaceFeatureCachePresent = vi.fn(async (): Promise<boolean> => true);
   const isPerRaceRescoreReady = vi.fn(async (): Promise<boolean> => true);
+  const getRunningStyleRaceReadiness = vi.fn(
+    async (params: {
+      races: readonly RaceEntry[];
+    }): Promise<readonly { race: RaceEntry; reason: string | null }[]> =>
+      params.races.map((race) => ({ race, reason: null })),
+  );
   return {
     claimContainerSlotMock: claimContainerSlot,
     claimFocusedFullRaceMock: claimFocusedFullRace,
@@ -95,6 +103,7 @@ const {
     isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
     isPerRaceFeatureCachePresentMock: isPerRaceFeatureCachePresent,
     isPerRaceRescoreReadyMock: isPerRaceRescoreReady,
+    getRunningStyleRaceReadinessMock: getRunningStyleRaceReadiness,
     isOldDateRunYmdMock: isOldDateRunYmd,
     parseNdjsonStreamMock: parseNdjsonStream,
     publishFinishPositionPredictionCacheForCategoryMock:
@@ -152,6 +161,10 @@ vi.mock("./focused-full-completion", () => ({
   isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
   isPerRaceFeatureCachePresent: isPerRaceFeatureCachePresentMock,
   isPerRaceRescoreReady: isPerRaceRescoreReadyMock,
+}));
+
+vi.mock("./running-style-readiness", () => ({
+  getRunningStyleRaceReadiness: getRunningStyleRaceReadinessMock,
 }));
 
 const { consumeDayBasePickupMock } = vi.hoisted(() => ({
@@ -301,6 +314,7 @@ beforeEach(() => {
   isFocusedFullPredictionCompleteMock.mockClear();
   isPerRaceFeatureCachePresentMock.mockClear();
   isPerRaceRescoreReadyMock.mockClear();
+  getRunningStyleRaceReadinessMock.mockClear();
   consumeDayBasePickupMock.mockClear();
   warmPredictionCacheForRaceMock.mockResolvedValue(true);
   warmPredictionCacheForCategoryMock.mockResolvedValue(0);
@@ -339,6 +353,72 @@ beforeEach(() => {
       },
     ),
   );
+});
+
+test("defers an RS-incomplete focused-full before any Container or coordinator claim", async () => {
+  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
+    {
+      race: { category: "jra", keibajoCode: "05", raceBango: "11" },
+      reason: "prediction-count-7-of-14",
+    },
+  ]);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const message = makeMessage({ skipDedup: true });
+
+  await handleQueue(makeBatch([message]), makeEnv());
+
+  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    db: expect.anything(),
+    races: [{ category: "jra", keibajoCode: "05", raceBango: "11" }],
+    runYmd: "20260603",
+  });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(getMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] focused-full deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=running-style-prediction-count-7-of-14 attempts=3 delaySeconds=70",
+  );
+  warnSpy.mockRestore();
+});
+
+test("fails closed before claims when focused-full readiness returns no race", async () => {
+  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([]);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 1)]), makeEnv());
+
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] focused-full deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=running-style-state-missing attempts=1 delaySeconds=30",
+  );
+  warnSpy.mockRestore();
+});
+
+test("retries without claims when focused-full readiness query fails", async () => {
+  getRunningStyleRaceReadinessMock.mockRejectedValueOnce(new Error("D1 unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 2)]), makeEnv());
+
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 50 });
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(getMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[predict-queue] focused-full running-style readiness failed before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11:",
+    "Error: D1 unavailable",
+  );
+  errorSpy.mockRestore();
 });
 
 test("acks day-scoped messages without container fetch or claimRun", async () => {
@@ -480,6 +560,47 @@ test("targets a race-sharded DO for a focused per-race full skipDedup message wh
     { ...makeEnv(), RACE_SHARDED_DO: "1" },
   );
   expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-1");
+});
+
+test("routes only an allowlisted focused-full R2 day-base hit to the race-chain binding", async () => {
+  const raceIdFromName = vi.fn(() => ({ name: "race-chain-id" }));
+  const raceGet = vi.fn(() => ({ fetch: stubFetchMock }));
+  const head = vi.fn(async () => ({
+    customMetadata: {
+      "max-data-sakusei-nengappi": "20260823090000",
+      "row-count": "12",
+      "rs-predicted-at-max": "20260823090500",
+      "rs-row-count": "12",
+    },
+  }));
+  const env: Env = {
+    ...makeEnv(),
+    FEATURES_CACHE: { head } as unknown as R2Bucket,
+    FINISH_POSITION_RACE_CHAIN_CONTAINER: {
+      get: raceGet,
+      idFromName: raceIdFromName,
+    } as unknown as NonNullable<Env["FINISH_POSITION_RACE_CHAIN_CONTAINER"]>,
+    RACE_CHAIN_CONTAINER_CATEGORIES: "jra",
+    RACE_CHAIN_CONTAINER_ENABLED: "1",
+  };
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "01",
+        mode: "full",
+        raceBango: "03",
+        runYmd: "20260823",
+        skipDedup: true,
+      }),
+    ]),
+    env,
+  );
+
+  expect(head).toHaveBeenCalledWith("feat-daybase/catalog-v1/jra/20260823/features.parquet");
+  expect(raceIdFromName).toHaveBeenCalledWith("race-chain-predict-jra");
+  expect(raceGet).toHaveBeenCalledTimes(2);
+  expect(idFromNameMock).not.toHaveBeenCalled();
 });
 
 test("threads cardMaxRaceBango into a Kochi focused-full skipDedup query URL", async () => {
@@ -3409,7 +3530,7 @@ test("retries without acknowledging when a successful rescore stop cannot be que
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "[container-control] enqueue stop failed name=predict-jra:",
+    "[container-control] enqueue stop failed name=predict-jra role=legacy:",
     "Error: control queue unavailable",
   );
   errorSpy.mockRestore();
