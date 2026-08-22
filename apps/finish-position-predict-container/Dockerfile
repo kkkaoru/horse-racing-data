@@ -8,10 +8,7 @@
 # image_build_context set to the repo root, COPYing the viewer pipeline scripts
 # in. The wrangler.jsonc in apps/finish-position-cron references this Dockerfile.
 
-FROM python:3.12-slim AS base
-
-# uv for fast, reproducible dependency install (bun/uv only; no pip-by-hand).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+FROM python:3.12-slim AS runtime-base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -28,9 +25,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq5 libgomp1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Build Python's runtime site-packages and the DuckDB extension cache in an
+# intermediate stage. Neither uv/uvx nor their download cache is copied into
+# the production image.
+FROM runtime-base AS python-deps
+
+# uv for fast, reproducible dependency install (bun/uv only; no pip-by-hand).
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Install Python deps from this app's pyproject (locked at build time).
 COPY apps/finish-position-predict-container/pyproject.toml ./pyproject.toml
-RUN uv pip install --system \
+RUN uv pip install --system --no-cache \
     "catboost>=1.2.10" \
     "duckdb==1.5.5" \
     "lightgbm>=4.5.0" \
@@ -51,6 +56,34 @@ RUN uv pip install --system \
 # apps/pc-keiba-viewer/src/scripts/finish-position-features/add-similar-race-features.py
 # and sibling layer scripts.
 RUN python3 -c "import duckdb; connection=duckdb.connect(); connection.execute('INSTALL iceberg'); connection.execute('INSTALL httpfs'); connection.execute('INSTALL postgres')"
+
+# Verify the full local source tree, then copy only the artifacts reachable by
+# current production selectors into a fresh tree. The 457 MiB historical model
+# directory remains in this intermediate stage and never enters the runtime
+# image; the selected finish-position closure is currently about 35 MiB.
+FROM runtime-base AS model-artifacts
+
+COPY apps/finish-position-predict-container/src /app/src
+COPY apps/finish-position-predict-container/production-artifacts.json /app/production-artifacts.json
+COPY apps/finish-position-predict-container/models /artifact-source
+
+ENV PYTHONPATH=/app/src
+
+RUN python -m predict_lib.artifact_integrity \
+        --artifact-root /artifact-source \
+        --system finish-position \
+        --stage-root /selected-models \
+    && python -m predict_lib.artifact_integrity \
+        --artifact-root /selected-models \
+        --system finish-position
+
+FROM runtime-base AS runtime
+
+# Copy only installed runtime packages and pre-installed DuckDB extensions.
+# The uv executables and dependency download/cache layers remain in
+# python-deps and therefore do not contribute to the production image.
+COPY --from=python-deps /usr/local /usr/local
+COPY --from=python-deps /root/.duckdb /root/.duckdb
 
 # The container's own predict entrypoint + pure helpers.
 COPY apps/finish-position-predict-container/src /app/src
@@ -79,18 +112,12 @@ COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 # These model artifacts are gitignored scratch (apps/finish-position-predict-
 # container/models/, see .gitignore) staged into the build context before deploy.
 #
-# Per-class artifacts (Phase B-2 ENSEMBLE_ACTIVATION_703) are baked under
-#   /models/finish-position/jra/per-class/{kyoso_joken_code}/{model_version}/
-# matching predict_lib.model_meta.build_r2_object_key. For class 703 the recursive
-# COPY below pulls in the 4 ensemble member single-shot boosters
-#   iter20-jra-cb-perclass-703-v8/model.json
-#   iter20-jra-cb-perclass-703-hpo-v8/model.json
-#   iter21-jra-cb-chain-703-v8/model.json
-#   iter22-jra-cb-residual-703-v8/model.json
-# plus the iter23-jra-cb-ensemble-703-v8/manifest.json that ensemble_scorer.py
-# loads to drive the weighted blend. See docs/finish-position-accuracy/runbook/
-# PER_CLASS_ROUTING.md.
-COPY apps/finish-position-predict-container/models /models
+# Per-class routing is currently disabled, so historical per-class artifacts
+# are intentionally excluded. If a selector enables them in the future,
+# derive_selected_artifact_keys must first include their complete member and
+# manifest closure; the staging verifier will then fail closed until every
+# selected byte is present in production-artifacts.json.
+COPY --from=model-artifacts /selected-models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline:/app/pipeline/finish-position-features
 

@@ -27,6 +27,7 @@ from predict_lib.artifact_integrity import (
     manifest_root_sha256,
     observe_artifact_tree,
     parse_manifest,
+    stage_artifact_tree,
     verify_observations,
     verify_selector_closure,
 )
@@ -408,6 +409,52 @@ def test_observe_artifact_tree_reports_unreadable_file(
             state="unavailable",
         ),
     )
+
+
+def test_stage_artifact_tree_copies_only_selected_files(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    selected_model = source_root / "finish-position/jra/selected/model.json"
+    selected_metadata = source_root / "finish-position/jra/selected/metadata.json"
+    unselected_model = source_root / "finish-position/jra/old/model.json"
+    selected_model.parent.mkdir(parents=True)
+    unselected_model.parent.mkdir(parents=True)
+    selected_model.write_text("selected-model", encoding="utf-8")
+    selected_metadata.write_text("selected-metadata", encoding="utf-8")
+    unselected_model.write_text("old-model", encoding="utf-8")
+    target_root = tmp_path / "staged"
+
+    staged = stage_artifact_tree(
+        source_root,
+        target_root,
+        frozenset(
+            {
+                "finish-position/jra/selected/model.json",
+                "finish-position/jra/selected/metadata.json",
+            }
+        ),
+    )
+
+    assert staged == (
+        "finish-position/jra/selected/metadata.json",
+        "finish-position/jra/selected/model.json",
+    )
+    assert (target_root / "finish-position/jra/selected/model.json").read_text(
+        encoding="utf-8"
+    ) == "selected-model"
+    assert (target_root / "finish-position/jra/selected/metadata.json").read_text(
+        encoding="utf-8"
+    ) == "selected-metadata"
+    assert not (target_root / "finish-position/jra/old/model.json").exists()
+
+
+def test_stage_artifact_tree_rejects_existing_target(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "staged"
+    source_root.mkdir()
+    target_root.mkdir()
+
+    with pytest.raises(FileExistsError):
+        stage_artifact_tree(source_root, target_root, frozenset())
 
 
 def test_combine_reports_merges_and_deduplicates_warnings() -> None:
@@ -944,6 +991,78 @@ def test_main_without_system_verifies_all_selected_artifacts(
     assert output["selected_count"] == 24
 
 
+def test_main_stage_requires_artifact_root_and_system(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    exit_code = main(["--stage-root", str(tmp_path / "staged")])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["status"] == "INTEGRITY_FAILURE"
+    assert output["findings"][0]["message"] == (
+        "--stage-root requires both --artifact-root and --system"
+    )
+
+
+def test_main_stages_only_after_successful_verification(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = load_manifest()
+    artifact = next(
+        item
+        for item in manifest.artifacts
+        if item.serving_key == "finish-position/jra/jra-cb-v10-prior-corner274-2013/model.json"
+    )
+    artifact_root = tmp_path / "models"
+    stage_root = tmp_path / "staged"
+    staged_calls: list[tuple[Path, Path, frozenset[str]]] = []
+
+    monkeypatch.setattr(
+        artifact_integrity,
+        "derive_selected_artifact_keys",
+        lambda **_kwargs: frozenset({artifact.serving_key}),
+    )
+    monkeypatch.setattr(
+        artifact_integrity,
+        "observe_artifact_tree",
+        lambda _root, _keys: (
+            ArtifactObservation(
+                serving_key=artifact.serving_key,
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+                state="present",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_integrity,
+        "stage_artifact_tree",
+        lambda source, target, keys: staged_calls.append((source, target, keys)) or (),
+    )
+
+    exit_code = main(
+        [
+            "--artifact-root",
+            str(artifact_root),
+            "--system",
+            "finish-position",
+            "--stage-root",
+            str(stage_root),
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["status"] == "MATCH"
+    assert staged_calls == [
+        (
+            artifact_root,
+            stage_root,
+            frozenset({"finish-position/jra/jra-cb-v10-prior-corner274-2013/model.json"}),
+        )
+    ]
+
+
 def test_main_invalid_manifest_fails(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     path = tmp_path / "manifest.json"
     path.write_text("{}", encoding="utf-8")
@@ -1270,8 +1389,7 @@ def test_disabled_stage1_routing_is_unselected_warning_only(tmp_path: Path) -> N
 
     assert report.status == "MATCH"
     assert any(
-        warning
-        == f"unselected manifest artifact: {_STAGE1_JRA_KEY_PREFIX}metadata.json"
+        warning == f"unselected manifest artifact: {_STAGE1_JRA_KEY_PREFIX}metadata.json"
         for warning in report.warnings
     )
     assert any(
@@ -1305,23 +1423,32 @@ def test_stage1_manifested_bundle_matches_tracked_routing_model_version() -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_dockerfile_runs_artifact_verifier_after_baking_models() -> None:
+def test_dockerfile_stages_only_selected_models_and_verifies_runtime_tree() -> None:
     dockerfile = (REPO_ROOT / "apps/finish-position-predict-container/Dockerfile").read_text(
         encoding="utf-8"
     )
     lines = dockerfile.splitlines()
-    models_copy_index = next(
+    source_copy_index = next(
         index
         for index, line in enumerate(lines)
-        if line.startswith("COPY") and line.endswith("models /models")
+        if line == "COPY apps/finish-position-predict-container/models /artifact-source"
+    )
+    staged_copy_index = next(
+        index
+        for index, line in enumerate(lines)
+        if line == "COPY --from=model-artifacts /selected-models /models"
     )
     verify_run_index = next(
         index
         for index, line in enumerate(lines)
-        if line.startswith("RUN") and "predict_lib.artifact_integrity" in line
+        if line.startswith("RUN")
+        and "predict_lib.artifact_integrity" in line
+        and "--artifact-root /models" in line
     )
 
-    assert verify_run_index > models_copy_index
+    assert source_copy_index < staged_copy_index < verify_run_index
+    assert "--stage-root /selected-models" in dockerfile
+    assert "COPY apps/finish-position-predict-container/models /models" not in dockerfile
     assert "--artifact-root /models" in lines[verify_run_index]
     assert "--system finish-position" in lines[verify_run_index]
 

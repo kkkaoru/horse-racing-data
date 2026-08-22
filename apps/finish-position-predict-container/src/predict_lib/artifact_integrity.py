@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -474,9 +475,7 @@ def _validate_running_style_calibration_coverage(manifest: ProductionArtifactMan
     running_style = [
         artifact for artifact in manifest.artifacts if artifact.system == "running-style"
     ]
-    model_categories = {
-        artifact.category for artifact in running_style if artifact.role == "model"
-    }
+    model_categories = {artifact.category for artifact in running_style if artifact.role == "model"}
     calibrator_categories = {
         artifact.category for artifact in running_style if artifact.role == "calibrator"
     }
@@ -861,6 +860,29 @@ def observe_artifact_tree(
     return tuple(observations)
 
 
+def stage_artifact_tree(
+    source_root: Path,
+    target_root: Path,
+    selected_keys: frozenset[str],
+) -> tuple[str, ...]:
+    """Copy a verified selector closure into a fresh runtime artifact tree.
+
+    The target must not already exist so a selector change cannot leave stale
+    model files in a cached build layer. Callers must verify the source tree
+    before invoking this function; missing source files remain explicit I/O
+    failures instead of producing a partial runtime tree.
+    """
+    target_root.mkdir(parents=True, exist_ok=False)
+    staged: list[str] = []
+    for serving_key in sorted(selected_keys):
+        source_path = source_root / serving_key
+        target_path = target_root / serving_key
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, target_path)
+        staged.append(serving_key)
+    return tuple(staged)
+
+
 def _filter_selected_keys(
     manifest: ProductionArtifactManifest,
     selected_keys: frozenset[str],
@@ -882,6 +904,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Verify production artifact integrity")
     parser.add_argument("--manifest", type=Path, default=MANIFEST_PATH)
     parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument(
+        "--stage-root",
+        type=Path,
+        help="Copy the verified --system selector closure into this fresh directory.",
+    )
     parser.add_argument(
         "--system",
         choices=("finish-position", "running-style"),
@@ -928,6 +955,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = derive_selected_artifact_keys(nar_transformer_enabled=nar_transformer_override)
         static_report = verify_selector_closure(manifest, selected)
         report = static_report
+        if args.stage_root is not None and (args.artifact_root is None or args.system is None):
+            raise ValueError("--stage-root requires both --artifact-root and --system")
         if args.artifact_root is not None:
             system = args.system
             selected_for_observation = _filter_selected_keys(manifest, selected, system)
@@ -936,6 +965,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 static_report,
                 verify_observations(manifest, selected_for_observation, observations),
             )
+            if args.stage_root is not None and report.status == "MATCH":
+                stage_artifact_tree(args.artifact_root, args.stage_root, selected_for_observation)
     except (ManifestValidationError, ValueError, json.JSONDecodeError) as error:
         print(_error_report("INTEGRITY_FAILURE", str(error)))
         return 1
