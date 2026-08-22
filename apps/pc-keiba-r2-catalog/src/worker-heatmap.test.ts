@@ -203,7 +203,7 @@ it("keeps includeOwner=0 on the default similar SQL and cache key", async () => 
     years: 10,
   });
   expect(cacheRequestFor(descriptor).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1",
   );
 });
 
@@ -232,7 +232,7 @@ it("keeps includeJockeyFrame=0 on the default similar SQL and cache key", async 
     years: 10,
   });
   expect(cacheRequestFor(descriptor).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1",
   );
 });
 
@@ -261,7 +261,40 @@ it("splits the heatmap cache key and similar SQL when includeJockeyFrame=1", asy
     years: 10,
   });
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1",
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1&ungradedOp=1",
+  );
+  expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
+});
+
+it("splits the heatmap cache key and similar SQL when includeClass=1", async () => {
+  const harness = createHeatmapHarness();
+  const response = await handleRequest(
+    new Request(`${heatmapUrl}&includeClass=1&includeAge=1`),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(harness.queryBodies.join("\n")).toMatch(
+    "btrim(coalesce(ra.kyoso_joken_code, '')) = btrim(coalesce(cr.kyoso_joken_code, ''))",
+  );
+  expect(harness.queryBodies.join("\n")).toMatch(
+    "btrim(coalesce(ra.kyoso_shubetsu_code, '')) = btrim(coalesce(cr.kyoso_shubetsu_code, ''))",
+  );
+  const descriptor = heatmapStatsDescriptor({
+    date: "20260822",
+    includeAge: true,
+    includeClass: true,
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "07",
+    raceBango: "08",
+    source: "jra",
+    years: 10,
+  });
+  expect(kvKeyFor(descriptor)).toBe(
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&includeAge=1&includeClass=1",
   );
   expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
 });
@@ -290,7 +323,7 @@ it("splits the heatmap cache key and similar SQL when includeOwner=1", async () 
     years: 10,
   });
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1",
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&ungradedOp=1",
   );
   expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
 });
@@ -353,4 +386,12 @@ it("rejects heatmap stats requests with missing or invalid filters", async () =>
   expect(badDate.status).toBe(400);
   expect(badOwner.status).toBe(400);
   expect(badJockeyFrame.status).toBe(400);
+  const badClass = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=08&day=22&keibajoCode=07&raceNumber=08&source=jra&includeClass=2",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(badClass.status).toBe(400);
 });

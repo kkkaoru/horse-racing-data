@@ -38,6 +38,17 @@ const CODE_PATTERN: RegExp = /^\d{2}$/u;
 const MIN_STATS_YEARS: number = 1;
 const MAX_STATS_YEARS: number = 50;
 const UNKNOWN_NAME: string = "不明";
+const RACE_TITLE_GRADE_CODES = "('A', 'F')";
+const UNGRADED_OPEN_JOKEN_CODE = "999";
+const CELL_CONDITION_LABEL_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["005", "1勝クラス"],
+  ["010", "2勝クラス"],
+  ["016", "3勝クラス"],
+  ["701", "新馬"],
+  ["702", "未出走"],
+  ["703", "未勝利"],
+  ["999", "オープン"],
+];
 
 const BLOODLINE_CATEGORIES: ReadonlyArray<WinRateHeatmapBloodlineCategory> = [
   "sire",
@@ -245,6 +256,26 @@ const historyDateSql = (filters: WinRateHeatmapStatsFilters, alias: string): str
     AND ${alias}.kaisai_nen <= '${filters.date.slice(0, 4)}'`;
 };
 
+const codeColumnSql = (alias: string, column: string): string =>
+  `btrim(coalesce(${alias}.${column}, ''))`;
+
+const conditionKeySql = (alias: string): string => {
+  const whenClauses = CELL_CONDITION_LABEL_PAIRS.map(
+    ([code, label]) =>
+      `WHEN ${codeColumnSql(alias, "kyoso_joken_code")} = '${code}' THEN '${label}'`,
+  ).join("\n      ");
+  return `CASE
+      ${whenClauses}
+      ELSE nullif(split_part(${codeColumnSql(alias, "kyoso_joken_meisho")}, ' ', 1), '')
+    END`;
+};
+
+const ungradedOpenFilterSql = (): string => `AND (
+      ${codeColumnSql("cr", "kyoso_joken_code")} <> '${UNGRADED_OPEN_JOKEN_CODE}'
+      OR ${codeColumnSql("cr", "grade_code")} <> ''
+      OR ${codeColumnSql("ra", "grade_code")} = ''
+    )`;
+
 export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
   const venueSql = filters.includeVenue ? `AND ra.keibajo_code = '${filters.keibajoCode}'` : "";
   const distanceSql = filters.includeDistance
@@ -269,12 +300,51 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
       )
     )`
     : "";
+  const trackCodeSql =
+    filters.includeTrackCode === true
+      ? `AND ${codeColumnSql("ra", "track_code")} = ${codeColumnSql("cr", "track_code")}
+    AND ${codeColumnSql("cr", "track_code")} <> ''`
+      : "";
+  const gradeSql =
+    filters.includeGrade === true
+      ? `AND ${codeColumnSql("ra", "grade_code")} = ${codeColumnSql("cr", "grade_code")}
+    AND ${codeColumnSql("cr", "grade_code")} <> ''`
+      : "";
+  const ageSql =
+    filters.includeAge === true
+      ? `AND ${codeColumnSql("ra", "kyoso_shubetsu_code")} = ${codeColumnSql("cr", "kyoso_shubetsu_code")}
+    AND ${codeColumnSql("cr", "kyoso_shubetsu_code")} <> ''`
+      : "";
+  const classSql =
+    filters.includeClass === true
+      ? `AND ${codeColumnSql("ra", "kyoso_joken_code")} = ${codeColumnSql("cr", "kyoso_joken_code")}
+    AND ${codeColumnSql("cr", "kyoso_joken_code")} <> ''`
+      : "";
+  const conditionKeyFilterSql =
+    filters.includeConditionKey === true
+      ? `AND ${conditionKeySql("ra")} IS NOT DISTINCT FROM ${conditionKeySql("cr")}
+    AND ${conditionKeySql("cr")} IS NOT NULL`
+      : "";
+  const raceTitleSql =
+    filters.includeRaceTitle === true
+      ? `AND ${codeColumnSql("cr", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}
+    AND ${trimmedSql("cr.kyosomei_hondai")} IS NOT NULL
+    AND ${trimmedSql("ra.kyosomei_hondai")} = ${trimmedSql("cr.kyosomei_hondai")}
+    AND ${codeColumnSql("ra", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}`
+      : "";
   return `${historyDateSql(filters, "ra")}
     AND ${historyDateSql(filters, "se")}
     ${venueSql}
     ${distanceSql}
     ${surfaceSql}
-    ${turnSql}`;
+    ${turnSql}
+    ${trackCodeSql}
+    ${gradeSql}
+    ${ageSql}
+    ${classSql}
+    ${conditionKeyFilterSql}
+    ${raceTitleSql}
+    ${ungradedOpenFilterSql()}`;
 };
 
 export const finishPositionSql = (alias: string): string =>
@@ -299,6 +369,11 @@ export const currentRaceCteSql = (
     keibajo_code,
     race_bango,
     track_code,
+    grade_code,
+    kyoso_shubetsu_code,
+    kyoso_joken_code,
+    kyoso_joken_meisho,
+    kyosomei_hondai,
     try_cast(nullif(btrim(coalesce(kyori, '')), '') AS INT) AS kyori_int
   FROM ${tableName(env, currentTables(filters.source).raceTable)}
   WHERE ${currentRaceIdentitySql(filters)}

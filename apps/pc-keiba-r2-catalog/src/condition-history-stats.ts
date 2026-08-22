@@ -5,6 +5,7 @@ import type {
   ConditionFrameStatsRow,
   ConditionHistoryStatsPayload,
   ConditionRaceTimeStats,
+  ConditionTargetRace,
   ConditionWeightClassStatsRow,
   R2SqlCatalogConfig,
   WinRateHeatmapStatsFilters,
@@ -29,7 +30,7 @@ const SCORE_SCALE: number = 100;
 const BAN_EI_KEIBAJO_CODES: ReadonlyArray<string> = ["81", "82", "83", "84"];
 const EMPTY_DETAILS: [] = [];
 const EMPTY_CORRELATION_ROWS: [] = [];
-const EMPTY_TARGET_RACES: [] = [];
+const TARGET_RACE_LIMIT: number = 500;
 
 const BODY_WEIGHT_CLASS_SQL: string = `CASE
     WHEN body_weight < 400 THEN 'le399'
@@ -100,6 +101,11 @@ const integerSelect = (expr: string, empty: string): string =>
 
 const doubleSelect = (expr: string): string =>
   `try_cast(nullif(btrim(coalesce(${expr}, '')), '') AS DOUBLE)`;
+
+const trimmedNameSql = (column: string): string =>
+  `coalesce(nullif(btrim(replace(coalesce(${column}, ''), chr(12288), '')), ''), '-')`;
+
+const paddedCodeSql = (column: string): string => `lpad(btrim(coalesce(${column}, '')), 2, '0')`;
 
 const matchedHistoryArmSql = (input: {
   env: R2SqlCatalogConfig;
@@ -295,6 +301,58 @@ SELECT
 FROM matched_history`;
 };
 
+export const buildConditionTargetRacesQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  return `
+WITH ${currentRaceCteSql(env, checked)},
+matched_history AS (
+  ${unionHistorySql(
+    historyTables(checked).map((tables) =>
+      matchedHistoryArmSql({
+        env,
+        extraJoin: "",
+        extraWhere: `AND ${finishPositionSql("se")} = 1
+    AND ${doubleSelect("se.soha_time")} IS NOT NULL
+    AND ${doubleSelect("se.soha_time")} > 0`,
+        filters: checked,
+        selectList: `concat(ra.kaisai_nen, ra.kaisai_tsukihi) AS target_race_date,
+    ${paddedCodeSql("ra.keibajo_code")} AS keibajo_code,
+    ${paddedCodeSql("ra.race_bango")} AS race_bango,
+    coalesce(nullif(btrim(coalesce(ra.kyosomei_hondai, '')), ''), '') AS race_name,
+    ${paddedCodeSql("se.umaban")} AS umaban,
+    ${trimmedNameSql("se.bamei")} AS bamei,
+    ${trimmedNameSql("se.kishumei_ryakusho")} AS jockey_name,
+    ${trimmedNameSql("se.chokyoshimei_ryakusho")} AS trainer_name,
+    ${trimmedNameSql("se.banushimei")} AS owner_name,
+    ${doubleSelect("se.soha_time")} AS race_time,
+    ${doubleSelect("se.kohan_3f")} AS kohan_3f,
+    coalesce(nullif(btrim(coalesce(se.tansho_ninkijun, '')), ''), '') AS popularity`,
+        tables,
+      }),
+    ),
+  )}
+)
+SELECT
+  target_race_date,
+  keibajo_code,
+  race_bango,
+  race_name,
+  umaban,
+  bamei,
+  jockey_name,
+  trainer_name,
+  owner_name,
+  race_time,
+  kohan_3f,
+  popularity
+FROM matched_history
+ORDER BY target_race_date DESC, race_bango ASC
+LIMIT ${String(TARGET_RACE_LIMIT)}`;
+};
+
 const rawFrameScore = (averageFinish: number | null, medianFinish: number | null): number => {
   const averagePart = averageFinish !== null && averageFinish !== 0 ? 1 / averageFinish : 0;
   const medianPart = medianFinish !== null && medianFinish !== 0 ? 1 / medianFinish : 0;
@@ -391,13 +449,35 @@ export const emptyRaceTimeStats = (): ConditionRaceTimeStats => ({
   medianKohan3f: null,
   medianRaceTime: null,
   raceCount: 0,
-  targetRaces: EMPTY_TARGET_RACES,
+  targetRaces: [],
+});
+
+const textOrEmpty = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  return "";
+};
+
+export const normaliseTargetRaceRow = (raw: Record<string, unknown>): ConditionTargetRace => ({
+  date: requiredString(raw.target_race_date, "target_race_date"),
+  horseName: requiredString(raw.bamei, "bamei"),
+  horseNumber: requiredString(raw.umaban, "umaban"),
+  jockeyName: requiredString(raw.jockey_name, "jockey_name"),
+  keibajoCode: requiredString(raw.keibajo_code, "keibajo_code"),
+  kohan3f: textOrEmpty(raw.kohan_3f),
+  ownerName: requiredString(raw.owner_name, "owner_name"),
+  popularity: textOrEmpty(raw.popularity),
+  raceName: textOrEmpty(raw.race_name),
+  raceNumber: requiredString(raw.race_bango, "race_bango"),
+  raceTime: textOrEmpty(raw.race_time),
+  trainerName: requiredString(raw.trainer_name, "trainer_name"),
 });
 
 export const normaliseRaceTimeStats = (
   raw: Record<string, unknown> | undefined,
+  targetRaces: ConditionTargetRace[],
 ): ConditionRaceTimeStats => {
-  if (raw === undefined) return emptyRaceTimeStats();
+  if (raw === undefined) return { ...emptyRaceTimeStats(), targetRaces };
   return {
     averageKohan3f: roundedOrNull(raw.average_kohan_3f, RATE_SCALE),
     averageRaceTime: roundedOrNull(raw.average_race_time, RATE_SCALE),
@@ -408,7 +488,7 @@ export const normaliseRaceTimeStats = (
     medianKohan3f: roundedOrNull(raw.median_kohan_3f, RATE_SCALE),
     medianRaceTime: roundedOrNull(raw.median_race_time, RATE_SCALE),
     raceCount: requiredInteger(raw.race_count, "race_count"),
-    targetRaces: EMPTY_TARGET_RACES,
+    targetRaces,
   };
 };
 
@@ -417,11 +497,15 @@ export const normaliseConditionHistoryStatsPayload = (input: {
   finishRows: ReadonlyArray<Record<string, unknown>>;
   frameRows: ReadonlyArray<Record<string, unknown>>;
   raceTimeRows: ReadonlyArray<Record<string, unknown>>;
+  targetRaceRows: ReadonlyArray<Record<string, unknown>>;
   weightRows: ReadonlyArray<Record<string, unknown>>;
 }): ConditionHistoryStatsPayload => ({
   carriedWeightClassStats: input.carriedRows.map(normaliseWeightClassRow),
   finishPositionStats: input.finishRows.map(normaliseFinishPositionRow),
   frameStats: scoredFrameRows(input.frameRows.map(normaliseFrameRow)),
-  raceTimeStats: normaliseRaceTimeStats(input.raceTimeRows[0]),
+  raceTimeStats: normaliseRaceTimeStats(
+    input.raceTimeRows[0],
+    input.targetRaceRows.map(normaliseTargetRaceRow),
+  ),
   weightClassStats: input.weightRows.map(normaliseWeightClassRow),
 });

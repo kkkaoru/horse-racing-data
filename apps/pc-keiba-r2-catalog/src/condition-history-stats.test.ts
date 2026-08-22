@@ -4,7 +4,9 @@ import {
   buildConditionFinishPositionStatsQuery,
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
+  buildConditionTargetRacesQuery,
   buildConditionWeightClassStatsQuery,
+  normaliseTargetRaceRow,
   isBanEiKeibajo,
   normaliseConditionHistoryStatsPayload,
   normaliseFinishPositionRow,
@@ -96,6 +98,66 @@ it("builds finish-position and race-time aggregate SQL without detail arrays", (
   expect(time).toMatch("AS INT) = 1");
   expect(time).toMatch("approx_percentile_cont(race_time, 0.5)");
   expect(time).not.toMatch("jsonb_agg");
+});
+
+it("builds winner target-race list SQL without jsonb_agg", () => {
+  const sql = buildConditionTargetRacesQuery(config, jraFilters);
+  expect(sql).toMatch("AS target_race_date");
+  expect(sql).toMatch("AS INT) = 1");
+  expect(sql).toMatch("LIMIT 500");
+  expect(sql).toMatch("FROM pc_keiba.jvd_se se");
+  expect(sql).not.toMatch("jsonb_agg");
+});
+
+it("applies class, age, condition-key, race-title, and ungraded-open filters to condition history", () => {
+  const sql = buildConditionFrameStatsQuery(config, {
+    ...jraFilters,
+    includeAge: true,
+    includeClass: true,
+    includeConditionKey: true,
+    includeRaceTitle: true,
+  });
+  expect(sql).toMatch(
+    "btrim(coalesce(ra.kyoso_joken_code, '')) = btrim(coalesce(cr.kyoso_joken_code, ''))",
+  );
+  expect(sql).toMatch(
+    "btrim(coalesce(ra.kyoso_shubetsu_code, '')) = btrim(coalesce(cr.kyoso_shubetsu_code, ''))",
+  );
+  expect(sql).toMatch("THEN '1勝クラス'");
+  expect(sql).toMatch("IN ('A', 'F')");
+  expect(sql).toMatch("btrim(coalesce(cr.kyoso_joken_code, '')) <> '999'");
+});
+
+it("maps a target-race winner row onto the viewer camelCase shape", () => {
+  expect(
+    normaliseTargetRaceRow({
+      bamei: "イクイノックス",
+      jockey_name: "ルメール",
+      keibajo_code: "05",
+      kohan_3f: 351,
+      owner_name: "シルク",
+      popularity: "01",
+      race_bango: 8,
+      race_name: "天皇賞",
+      race_time: 1450,
+      target_race_date: "20241027",
+      trainer_name: "堀",
+      umaban: "05",
+    }),
+  ).toStrictEqual({
+    date: "20241027",
+    horseName: "イクイノックス",
+    horseNumber: "05",
+    jockeyName: "ルメール",
+    keibajoCode: "05",
+    kohan3f: "351",
+    ownerName: "シルク",
+    popularity: "01",
+    raceName: "天皇賞",
+    raceNumber: "8",
+    raceTime: "1450",
+    trainerName: "堀",
+  });
 });
 
 it("rejects unsafe namespace and invalid heatmap filters", () => {
@@ -196,7 +258,7 @@ it("maps finish-position aggregates and always clears details", () => {
 });
 
 it("maps race-time scalars and returns zeros when the query is empty", () => {
-  expect(normaliseRaceTimeStats(undefined)).toStrictEqual({
+  expect(normaliseRaceTimeStats(undefined, [])).toStrictEqual({
     averageKohan3f: null,
     averageRaceTime: null,
     correlationRows: [],
@@ -209,15 +271,18 @@ it("maps race-time scalars and returns zeros when the query is empty", () => {
     targetRaces: [],
   });
   expect(
-    normaliseRaceTimeStats({
-      average_kohan_3f: "35.15",
-      average_race_time: 1345.44,
-      fastest_kohan_3f: 34,
-      fastest_race_time: "1330",
-      median_kohan_3f: Number.NaN,
-      median_race_time: {},
-      race_count: "8",
-    }),
+    normaliseRaceTimeStats(
+      {
+        average_kohan_3f: "35.15",
+        average_race_time: 1345.44,
+        fastest_kohan_3f: 34,
+        fastest_race_time: "1330",
+        median_kohan_3f: Number.NaN,
+        median_race_time: {},
+        race_count: "8",
+      },
+      [],
+    ),
   ).toStrictEqual({
     averageKohan3f: 35.2,
     averageRaceTime: 1345.4,
@@ -281,6 +346,7 @@ it("normalises the combined payload and min-max frame scores", () => {
         },
       ],
       raceTimeRows: [{ race_count: 3, average_race_time: 1400 }],
+      targetRaceRows: [],
       weightRows: [
         {
           class_key: "480-499",
@@ -408,6 +474,7 @@ it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
         },
       ],
       raceTimeRows: [],
+      targetRaceRows: [],
       weightRows: [],
     }).frameStats,
   ).toStrictEqual([
@@ -465,6 +532,7 @@ it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
         },
       ],
       raceTimeRows: [],
+      targetRaceRows: [],
       weightRows: [],
     }).frameStats,
   ).toStrictEqual([
@@ -505,9 +573,12 @@ it("rejects incomplete aggregate rows", () => {
     }),
   ).toThrow("R2 SQL row is missing count");
   expect(() =>
-    normaliseRaceTimeStats({
-      race_count: 2n ** 1024n,
-    }),
+    normaliseRaceTimeStats(
+      {
+        race_count: 2n ** 1024n,
+      },
+      [],
+    ),
   ).toThrow("R2 SQL row is missing race_count");
   expect(() =>
     normaliseConditionHistoryStatsPayload({
@@ -525,6 +596,7 @@ it("rejects incomplete aggregate rows", () => {
         },
       ],
       raceTimeRows: [],
+      targetRaceRows: [],
       weightRows: [],
     }),
   ).toThrow("R2 SQL row is missing frame_number");

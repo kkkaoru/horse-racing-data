@@ -216,6 +216,21 @@ export interface ConditionFinishPositionStatsRow {
   medianPopularity: number | null;
 }
 
+export interface ConditionTargetRace {
+  date: string;
+  horseName: string;
+  horseNumber: string;
+  jockeyName: string;
+  keibajoCode: string;
+  kohan3f: string;
+  ownerName: string;
+  popularity: string;
+  raceName: string;
+  raceNumber: string;
+  raceTime: string;
+  trainerName: string;
+}
+
 export interface ConditionRaceTimeStats {
   averageKohan3f: number | null;
   averageRaceTime: number | null;
@@ -226,7 +241,7 @@ export interface ConditionRaceTimeStats {
   medianKohan3f: number | null;
   medianRaceTime: number | null;
   raceCount: number;
-  targetRaces: [];
+  targetRaces: ConditionTargetRace[];
 }
 
 export interface ConditionHistoryStatsPayload {
@@ -250,10 +265,16 @@ export type WinRateHeatmapSimilarKind = "jockey" | "jockeyFrame" | "owner" | "tr
 
 export interface WinRateHeatmapStatsFilters {
   date: string;
+  includeAge?: boolean;
+  includeClass?: boolean;
+  includeConditionKey?: boolean;
   includeDistance: boolean;
+  includeGrade?: boolean;
   includeJockeyFrame?: boolean;
   includeOwner?: boolean;
+  includeRaceTitle?: boolean;
   includeSurface: boolean;
+  includeTrackCode?: boolean;
   includeTurn: boolean;
   includeVenue: boolean;
   keibajoCode: string;

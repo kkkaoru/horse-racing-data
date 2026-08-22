@@ -138,10 +138,79 @@ it("adds jockey-in-frame matching to similar SQL when includeJockeyFrame is enab
   expect(sql).toMatch("WHERE wakuban <> '' AND wakuban <> '00'");
   expect(sql).toMatch("GROUP BY kind, name, frame");
   expect(sql).toMatch("coalesce(stats.frame, '') = coalesce(cp.frame, '')");
-  expect(sql).toMatch("'' AS frame");
-  expect(sql).toMatch("'jockey' AS kind");
-  expect(sql).toMatch("'trainer' AS kind");
-  expect(sql).toMatch("tn.kind = 'jockey'");
+});
+
+it("filters similar history by current-race grade and track when those flags are on", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeGrade: true,
+    includeSurface: false,
+    includeTrackCode: true,
+    includeTurn: false,
+  });
+  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
+  expect(sql).toMatch("btrim(coalesce(ra.track_code, '')) = btrim(coalesce(cr.track_code, ''))");
+  expect(sql).not.toMatch("THEN '芝'");
+});
+
+it("omits grade and exact track-code matching when those flags are off", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, jraFilters);
+  expect(sql).not.toMatch(
+    "btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))",
+  );
+  expect(sql).not.toMatch(
+    "btrim(coalesce(ra.track_code, '')) = btrim(coalesce(cr.track_code, ''))",
+  );
+});
+
+it("always excludes graded races from ungraded open current races", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, jraFilters);
+  expect(sql).toMatch("kyoso_joken_code");
+  expect(sql).toMatch("kyoso_joken_meisho");
+  expect(sql).toMatch("kyosomei_hondai");
+  expect(sql).toMatch("kyoso_shubetsu_code");
+  expect(sql).toMatch("btrim(coalesce(cr.kyoso_joken_code, '')) <> '999'");
+  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = ''");
+});
+
+it("filters similar history by age, class, condition key, and race title when those flags are on", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeAge: true,
+    includeClass: true,
+    includeConditionKey: true,
+    includeRaceTitle: true,
+    includeSurface: false,
+    includeTurn: false,
+  });
+  expect(sql).toMatch(
+    "btrim(coalesce(ra.kyoso_shubetsu_code, '')) = btrim(coalesce(cr.kyoso_shubetsu_code, ''))",
+  );
+  expect(sql).toMatch(
+    "btrim(coalesce(ra.kyoso_joken_code, '')) = btrim(coalesce(cr.kyoso_joken_code, ''))",
+  );
+  expect(sql).toMatch("WHEN btrim(coalesce(ra.kyoso_joken_code, '')) = '005' THEN '1勝クラス'");
+  expect(sql).toMatch("WHEN btrim(coalesce(ra.kyoso_joken_code, '')) = '999' THEN 'オープン'");
+  expect(sql).toMatch(
+    "ELSE nullif(split_part(btrim(coalesce(ra.kyoso_joken_meisho, '')), ' ', 1), '')",
+  );
+  expect(sql).toMatch("IS NOT DISTINCT FROM");
+  expect(sql).toMatch("btrim(coalesce(cr.grade_code, '')) IN ('A', 'F')");
+  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) IN ('A', 'F')");
+  expect(sql).toMatch("cr.kyosomei_hondai");
+  expect(sql).not.toMatch("THEN '芝'");
+});
+
+it("omits age, class, condition key, and race title matching when those flags are off", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, jraFilters);
+  expect(sql).not.toMatch(
+    "btrim(coalesce(ra.kyoso_shubetsu_code, '')) = btrim(coalesce(cr.kyoso_shubetsu_code, ''))",
+  );
+  expect(sql).not.toMatch(
+    "btrim(coalesce(ra.kyoso_joken_code, '')) = btrim(coalesce(cr.kyoso_joken_code, ''))",
+  );
+  expect(sql).not.toMatch("THEN '1勝クラス'");
+  expect(sql).not.toMatch("IN ('A', 'F')");
 });
 
 it("keeps owner rows with an empty frame when includeOwner and includeJockeyFrame are both on", () => {

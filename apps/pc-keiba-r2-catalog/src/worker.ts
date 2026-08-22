@@ -36,6 +36,7 @@ import {
   buildConditionFinishPositionStatsQuery,
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
+  buildConditionTargetRacesQuery,
   buildConditionWeightClassStatsQuery,
   isBanEiKeibajo,
   normaliseConditionHistoryStatsPayload,
@@ -213,10 +214,16 @@ const parseOptionalIncludeFlag = (url: URL, name: string): boolean => {
 
 const parseWinRateHeatmapFilters = (url: URL): WinRateHeatmapStatsFilters => ({
   date: parseHeatmapDate(url),
+  includeAge: parseOptionalIncludeFlag(url, "includeAge"),
+  includeClass: parseOptionalIncludeFlag(url, "includeClass"),
+  includeConditionKey: parseOptionalIncludeFlag(url, "includeConditionKey"),
   includeDistance: parseIncludeFlag(url, "includeDistance"),
+  includeGrade: parseOptionalIncludeFlag(url, "includeGrade"),
   includeJockeyFrame: parseOptionalIncludeFlag(url, "includeJockeyFrame"),
   includeOwner: parseOptionalIncludeFlag(url, "includeOwner"),
+  includeRaceTitle: parseOptionalIncludeFlag(url, "includeRaceTitle"),
   includeSurface: parseIncludeFlag(url, "includeSurface"),
+  includeTrackCode: parseOptionalIncludeFlag(url, "includeTrackCode"),
   includeTurn: parseIncludeFlag(url, "includeTurn"),
   includeVenue: parseIncludeFlag(url, "includeVenue"),
   keibajoCode: requireCode(url, "keibajoCode"),
@@ -283,6 +290,12 @@ const heatmapCoalesceKey = (filters: WinRateHeatmapStatsFilters): string =>
     filters.includeTurn ? "1" : "0",
     filters.includeOwner === true ? "1" : "0",
     filters.includeJockeyFrame === true ? "1" : "0",
+    filters.includeGrade === true ? "1" : "0",
+    filters.includeTrackCode === true ? "1" : "0",
+    filters.includeAge === true ? "1" : "0",
+    filters.includeClass === true ? "1" : "0",
+    filters.includeConditionKey === true ? "1" : "0",
+    filters.includeRaceTitle === true ? "1" : "0",
   ].join(":");
 
 const conditionHistoryCoalesceKey = (filters: WinRateHeatmapStatsFilters): string =>
@@ -297,6 +310,12 @@ const conditionHistoryCoalesceKey = (filters: WinRateHeatmapStatsFilters): strin
     filters.includeDistance ? "1" : "0",
     filters.includeSurface ? "1" : "0",
     filters.includeTurn ? "1" : "0",
+    filters.includeGrade === true ? "1" : "0",
+    filters.includeTrackCode === true ? "1" : "0",
+    filters.includeAge === true ? "1" : "0",
+    filters.includeClass === true ? "1" : "0",
+    filters.includeConditionKey === true ? "1" : "0",
+    filters.includeRaceTitle === true ? "1" : "0",
   ].join(":");
 
 const heatmapStatsBody = async (
@@ -451,17 +470,17 @@ const conditionHistoryStatsBody = async (
         ),
     executeR2Sql(env, buildConditionFinishPositionStatsQuery(env, filters), dependencies.fetchImpl),
   ]);
-  const raceTimeRows = await executeR2Sql(
-    env,
-    buildConditionRaceTimeStatsQuery(env, filters),
-    dependencies.fetchImpl,
-  );
+  const [raceTimeRows, targetRaceRows] = await Promise.all([
+    executeR2Sql(env, buildConditionRaceTimeStatsQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
+  ]);
   return JSON.stringify(
     normaliseConditionHistoryStatsPayload({
       carriedRows,
       finishRows,
       frameRows,
       raceTimeRows,
+      targetRaceRows,
       weightRows,
     }),
   );

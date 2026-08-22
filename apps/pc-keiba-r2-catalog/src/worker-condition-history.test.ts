@@ -14,6 +14,7 @@ const queryKind = (query: string): string => {
   if (query.includes("AS body_weight")) return "weight";
   if (query.includes("AS carried_weight")) return "carried";
   if (query.includes("IN (1, 2, 3, 4, 5)")) return "finish";
+  if (query.includes("AS target_race_date")) return "target-races";
   if (query.includes("AS race_count")) return "race-time";
   if (query.includes("AS frame_number")) return "frame";
   return "other";
@@ -127,6 +128,29 @@ const createConditionHarness = () => {
         success: true,
       });
     }
+    if (kind === "target-races") {
+      return Response.json({
+        result: {
+          rows: [
+            {
+              bamei: "イクイノックス",
+              jockey_name: "ルメール",
+              keibajo_code: "05",
+              kohan_3f: 351,
+              owner_name: "シルク",
+              popularity: "01",
+              race_bango: "08",
+              race_name: "天皇賞",
+              race_time: 1450,
+              target_race_date: "20241027",
+              trainer_name: "堀",
+              umaban: "05",
+            },
+          ],
+        },
+        success: true,
+      });
+    }
     return Response.json({
       result: {
         rows: [
@@ -219,7 +243,22 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
       medianKohan3f: 35,
       medianRaceTime: 1390,
       raceCount: 8,
-      targetRaces: [],
+      targetRaces: [
+        {
+          date: "20241027",
+          horseName: "イクイノックス",
+          horseNumber: "05",
+          jockeyName: "ルメール",
+          keibajoCode: "05",
+          kohan3f: "351",
+          ownerName: "シルク",
+          popularity: "01",
+          raceName: "天皇賞",
+          raceNumber: "08",
+          raceTime: "1450",
+          trainerName: "堀",
+        },
+      ],
     },
     weightClassStats: [
       {
@@ -236,7 +275,7 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
   });
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4)).toStrictEqual(["race-time"]);
+  expect(harness.fetchCalls.slice(4).toSorted()).toStrictEqual(["race-time", "target-races"]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
     date: "20260822",
@@ -264,7 +303,8 @@ it("omits the carried-weight query for Ban'ei venues", async () => {
   );
   expect(response.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
-  expect(harness.fetchCalls.slice(2)).toStrictEqual(["finish", "race-time"]);
+  expect(harness.fetchCalls.slice(2, 3)).toStrictEqual(["finish"]);
+  expect(harness.fetchCalls.slice(3).toSorted()).toStrictEqual(["race-time", "target-races"]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error("expected object");
@@ -281,7 +321,7 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   expect(second.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4)).toStrictEqual(["race-time"]);
+  expect(harness.fetchCalls.slice(4).toSorted()).toStrictEqual(["race-time", "target-races"]);
   expect(harness.inflight.max).toBe(2);
 });
 

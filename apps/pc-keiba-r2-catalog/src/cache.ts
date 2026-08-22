@@ -25,10 +25,16 @@ export type CacheDescriptor =
     }
   | {
       date: string;
+      includeAge?: boolean;
+      includeClass?: boolean;
+      includeConditionKey?: boolean;
       includeDistance: boolean;
+      includeGrade?: boolean;
       includeJockeyFrame?: boolean;
       includeOwner?: boolean;
+      includeRaceTitle?: boolean;
       includeSurface: boolean;
+      includeTrackCode?: boolean;
       includeTurn: boolean;
       includeVenue: boolean;
       keibajoCode: string;
@@ -47,8 +53,14 @@ export type CacheDescriptor =
     }
   | {
       date: string;
+      includeAge?: boolean;
+      includeClass?: boolean;
+      includeConditionKey?: boolean;
       includeDistance: boolean;
+      includeGrade?: boolean;
+      includeRaceTitle?: boolean;
       includeSurface: boolean;
+      includeTrackCode?: boolean;
       includeTurn: boolean;
       includeVenue: boolean;
       keibajoCode: string;
@@ -58,8 +70,32 @@ export type CacheDescriptor =
       years: number;
     };
 
+interface CellClassCacheFlags {
+  includeAge?: boolean;
+  includeClass?: boolean;
+  includeConditionKey?: boolean;
+  includeGrade?: boolean;
+  includeRaceTitle?: boolean;
+  includeTrackCode?: boolean;
+}
+
 const CACHE_ORIGIN = "https://pc-keiba-r2-catalog-cache.internal";
 const CACHE_VERSION = "v2";
+const UNGRADED_OPEN_CACHE_TOKEN = "1";
+
+const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
+  if (enabled === true) url.searchParams.set(name, "1");
+};
+
+const appendCellClassCacheParams = (url: URL, descriptor: CellClassCacheFlags): void => {
+  url.searchParams.set("ungradedOp", UNGRADED_OPEN_CACHE_TOKEN);
+  appendTrueFlag(url, "includeGrade", descriptor.includeGrade);
+  appendTrueFlag(url, "includeTrackCode", descriptor.includeTrackCode);
+  appendTrueFlag(url, "includeAge", descriptor.includeAge);
+  appendTrueFlag(url, "includeClass", descriptor.includeClass);
+  appendTrueFlag(url, "includeConditionKey", descriptor.includeConditionKey);
+  appendTrueFlag(url, "includeRaceTitle", descriptor.includeRaceTitle);
+};
 
 export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
   const url = new URL(`/${CACHE_VERSION}/${descriptor.kind}`, CACHE_ORIGIN);
@@ -84,8 +120,9 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
     url.searchParams.set("nameTrim", "ideographic");
     url.searchParams.set("emptyTurnBypass", "1");
-    if (descriptor.includeOwner === true) url.searchParams.set("includeOwner", "1");
-    if (descriptor.includeJockeyFrame === true) url.searchParams.set("includeJockeyFrame", "1");
+    appendTrueFlag(url, "includeOwner", descriptor.includeOwner);
+    appendTrueFlag(url, "includeJockeyFrame", descriptor.includeJockeyFrame);
+    appendCellClassCacheParams(url, descriptor);
   }
   if (descriptor.kind === "horse-race-results") {
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
@@ -102,6 +139,8 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("includeDistance", descriptor.includeDistance ? "1" : "0");
     url.searchParams.set("includeSurface", descriptor.includeSurface ? "1" : "0");
     url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
+    url.searchParams.set("targetRaces", "1");
+    appendCellClassCacheParams(url, descriptor);
   }
   return new Request(url);
 };
@@ -233,10 +272,16 @@ export const trainingDescriptor = (filters: RaceTrainingFilters): CacheDescripto
 
 export const heatmapStatsDescriptor = (filters: WinRateHeatmapStatsFilters): CacheDescriptor => ({
   date: filters.date,
+  includeAge: filters.includeAge === true,
+  includeClass: filters.includeClass === true,
+  includeConditionKey: filters.includeConditionKey === true,
   includeDistance: filters.includeDistance,
+  includeGrade: filters.includeGrade === true,
   includeJockeyFrame: filters.includeJockeyFrame === true,
   includeOwner: filters.includeOwner === true,
+  includeRaceTitle: filters.includeRaceTitle === true,
   includeSurface: filters.includeSurface,
+  includeTrackCode: filters.includeTrackCode === true,
   includeTurn: filters.includeTurn,
   includeVenue: filters.includeVenue,
   keibajoCode: filters.keibajoCode,
@@ -259,8 +304,14 @@ export const conditionHistoryStatsDescriptor = (
   filters: WinRateHeatmapStatsFilters,
 ): CacheDescriptor => ({
   date: filters.date,
+  includeAge: filters.includeAge === true,
+  includeClass: filters.includeClass === true,
+  includeConditionKey: filters.includeConditionKey === true,
   includeDistance: filters.includeDistance,
+  includeGrade: filters.includeGrade === true,
+  includeRaceTitle: filters.includeRaceTitle === true,
   includeSurface: filters.includeSurface,
+  includeTrackCode: filters.includeTrackCode === true,
   includeTurn: filters.includeTurn,
   includeVenue: filters.includeVenue,
   keibajoCode: filters.keibajoCode,
