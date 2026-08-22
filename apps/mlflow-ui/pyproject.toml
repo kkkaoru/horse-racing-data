@@ -1,7 +1,7 @@
 [project]
 name = "mlflow-ui"
 version = "0.0.0"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 # mlflow's `mlflow server` breaks on Python 3.14 (importlib.abc Traversable
 # bug); pin to 3.12 to match repo standard and avoid it. Full mlflow (not
 # mlflow-skinny) because this package runs the actual UI/tracking server.
