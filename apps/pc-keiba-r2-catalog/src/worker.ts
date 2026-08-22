@@ -1,12 +1,17 @@
 import {
   cacheRequestFor,
+  conditionHistoryStatsDescriptor,
   featureDescriptor,
+  heatmapStatsDescriptor,
+  horseRaceResultsDescriptor,
   jsonRowsResponse,
   kvKeyFor,
   parsePositiveSeconds,
   populateCacheApi,
   populateCaches,
   purgeDescriptors,
+  readKvConditionHistoryStats,
+  readKvHeatmapStats,
   readKvRows,
   trainingDescriptor,
   type CacheDescriptor,
@@ -22,19 +27,48 @@ import {
 import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
 import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
+import {
+  buildHorseRaceResultsQuery,
+  normaliseHorseRaceResultRow,
+  uniqueHorseRaceResults,
+} from "./horse-race-results";
+import {
+  buildConditionFinishPositionStatsQuery,
+  buildConditionFrameStatsQuery,
+  buildConditionRaceTimeStatsQuery,
+  buildConditionWeightClassStatsQuery,
+  isBanEiKeibajo,
+  normaliseConditionHistoryStatsPayload,
+} from "./condition-history-stats";
+import {
+  buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapSimilarQuery,
+  normaliseWinRateHeatmapStatsPayload,
+} from "./win-rate-heatmap-stats";
 import type {
+  CatalogSource,
   Env,
+  HorseRaceResultsFilters,
+  HorseRaceResultsSourceScope,
+  KvStore,
   RaceFeatureFilters,
   RaceTrainingFilters,
   RunningStyleFeatureFilters,
   RunningStyleSourceScope,
   SourceScope,
+  WinRateHeatmapStatsFilters,
   WorkerDependencies,
 } from "./types";
 
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{1,2}$/u;
+const YEAR_PATTERN: RegExp = /^\d{4}$/u;
 const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-ei"];
+const DEFAULT_STATS_YEARS: number = 10;
+const MIN_STATS_YEARS: number = 1;
+const MAX_STATS_YEARS: number = 50;
+const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
+const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
 // the protocol's limit" -- see running-style-feature-ctes.ts's
 // includeOrderBy docstring for why this happens and only for large-enough
@@ -124,13 +158,102 @@ const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
   raceBango: requireCode(url, "raceBango"),
 });
 
+const compactUtcDate = (timestamp: number): string =>
+  new Date(timestamp).toISOString().slice(0, 10).replaceAll("-", "");
+
+const parseHeatmapDate = (url: URL): string => {
+  const year = url.searchParams.get("year") ?? "";
+  const month = url.searchParams.get("month") ?? "";
+  const day = url.searchParams.get("day") ?? "";
+  if (!YEAR_PATTERN.test(year)) throw new Error("year must match YYYY");
+  if (!CODE_PATTERN.test(month)) throw new Error("month must contain one or two digits");
+  if (!CODE_PATTERN.test(day)) throw new Error("day must contain one or two digits");
+  const date = `${year}${month.padStart(2, "0")}${day.padStart(2, "0")}`;
+  const timestamp = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(4, 6)) - 1,
+    Number(date.slice(6, 8)),
+  );
+  if (compactUtcDate(timestamp) !== date) {
+    throw new Error("year, month, and day must be a valid calendar date");
+  }
+  return date;
+};
+
+const parseHeatmapSource = (url: URL): CatalogSource => {
+  const value = url.searchParams.get("source");
+  if (value === null) throw new Error("source is required");
+  if (value === "jra" || value === "nar") return value;
+  throw new Error("source must be jra or nar");
+};
+
+const parseIncludeFlag = (url: URL, name: string): boolean => {
+  const value = url.searchParams.get(name);
+  if (value === null || value === "1") return true;
+  if (value === "0") return false;
+  throw new Error(`${name} must be 0 or 1`);
+};
+
+const parseYears = (url: URL): number => {
+  const value = url.searchParams.get("years");
+  if (value === null) return DEFAULT_STATS_YEARS;
+  const years = Number(value);
+  if (!Number.isInteger(years) || years < MIN_STATS_YEARS || years > MAX_STATS_YEARS) {
+    throw new Error("years must be an integer from 1 to 50");
+  }
+  return years;
+};
+
+const parseOptionalIncludeFlag = (url: URL, name: string): boolean => {
+  const value = url.searchParams.get(name);
+  if (value === null || value === "0") return false;
+  if (value === "1") return true;
+  throw new Error(`${name} must be 0 or 1`);
+};
+
+const parseWinRateHeatmapFilters = (url: URL): WinRateHeatmapStatsFilters => ({
+  date: parseHeatmapDate(url),
+  includeDistance: parseIncludeFlag(url, "includeDistance"),
+  includeJockeyFrame: parseOptionalIncludeFlag(url, "includeJockeyFrame"),
+  includeOwner: parseOptionalIncludeFlag(url, "includeOwner"),
+  includeSurface: parseIncludeFlag(url, "includeSurface"),
+  includeTurn: parseIncludeFlag(url, "includeTurn"),
+  includeVenue: parseIncludeFlag(url, "includeVenue"),
+  keibajoCode: requireCode(url, "keibajoCode"),
+  raceBango: requireCode(url, "raceNumber"),
+  source: parseHeatmapSource(url),
+  years: parseYears(url),
+});
+
+const parseRaceBangoOrNumber = (url: URL): string => {
+  if (url.searchParams.get("raceBango") !== null) return requireCode(url, "raceBango");
+  if (url.searchParams.get("raceNumber") !== null) return requireCode(url, "raceNumber");
+  throw new Error("raceBango is required");
+};
+
+const parseHorseRaceResultsSourceScope = (url: URL): HorseRaceResultsSourceScope => {
+  const value = url.searchParams.get("sourceScope");
+  if (value === null || value === "all") return "all";
+  if (value === "jra" || value === "nar") return value;
+  throw new Error("sourceScope must be all, jra, or nar");
+};
+
+const parseHorseRaceResultsFilters = (url: URL): HorseRaceResultsFilters => ({
+  date: requireDate(url),
+  keibajoCode: requireCode(url, "keibajoCode"),
+  raceBango: parseRaceBangoOrNumber(url),
+  source: parseHeatmapSource(url),
+  sourceScope: parseHorseRaceResultsSourceScope(url),
+});
+
 const runningStyleCoalesceKey = (filters: RunningStyleFeatureFilters): string =>
   `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}:${filters.umaban === undefined ? "all" : String(filters.umaban)}`;
 
-const cachedArrayResponse = async (
+const cachedCatalogResponse = async (
   descriptor: CacheDescriptor,
   env: Env,
   dependencies: WorkerDependencies,
+  readKv: (kv: KvStore, key: string) => Promise<string | null>,
 ): Promise<Response | null> => {
   const request = cacheRequestFor(descriptor);
   const cached = await dependencies.cache.match(request);
@@ -139,24 +262,89 @@ const cachedArrayResponse = async (
     response.headers.set("X-Catalog-Cache", "cache-api");
     return response;
   }
-  const kvBody = await readKvRows(env.CATALOG_KV, kvKeyFor(descriptor));
+  const kvBody = await readKv(env.CATALOG_KV, kvKeyFor(descriptor));
   if (kvBody === null) return null;
   const cacheTtl = parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60);
   await Promise.allSettled([populateCacheApi(dependencies.cache, request, kvBody, cacheTtl)]);
   return jsonRowsResponse(kvBody, "kv");
 };
 
-const queryAndCache = async (
+const heatmapCoalesceKey = (filters: WinRateHeatmapStatsFilters): string =>
+  [
+    "heatmap",
+    filters.source,
+    filters.date,
+    filters.keibajoCode,
+    filters.raceBango,
+    String(filters.years),
+    filters.includeVenue ? "1" : "0",
+    filters.includeDistance ? "1" : "0",
+    filters.includeSurface ? "1" : "0",
+    filters.includeTurn ? "1" : "0",
+    filters.includeOwner === true ? "1" : "0",
+    filters.includeJockeyFrame === true ? "1" : "0",
+  ].join(":");
+
+const conditionHistoryCoalesceKey = (filters: WinRateHeatmapStatsFilters): string =>
+  [
+    "condition-history",
+    filters.source,
+    filters.date,
+    filters.keibajoCode,
+    filters.raceBango,
+    String(filters.years),
+    filters.includeVenue ? "1" : "0",
+    filters.includeDistance ? "1" : "0",
+    filters.includeSurface ? "1" : "0",
+    filters.includeTurn ? "1" : "0",
+  ].join(":");
+
+const heatmapStatsBody = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: WinRateHeatmapStatsFilters,
+): Promise<string> => {
+  const [bloodlineRows, similarRows] = await Promise.all([
+    executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), dependencies.fetchImpl),
+  ]);
+  return JSON.stringify(normaliseWinRateHeatmapStatsPayload({ bloodlineRows, similarRows }));
+};
+
+const handleWinRateHeatmapStats = async (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseWinRateHeatmapFilters(url);
+  const descriptor = heatmapStatsDescriptor(filters);
+  const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvHeatmapStats);
+  if (cached) return cached;
+  const body = await coalesce(heatmapCoalesceKey(filters), () =>
+    heatmapStatsBody(env, dependencies, filters),
+  );
+  await populateCaches(
+    dependencies.cache,
+    env.CATALOG_KV,
+    descriptor,
+    body,
+    HEATMAP_CACHE_API_TTL_SECONDS,
+    HEATMAP_KV_TTL_SECONDS,
+  );
+  return jsonRowsResponse(body, "r2-sql");
+};
+
+const queryAndCacheRows = async (
   descriptor: CacheDescriptor,
   env: Env,
   dependencies: WorkerDependencies,
   query: string,
-  normalise: (row: Record<string, unknown>) => unknown,
+  toRows: (rows: ReadonlyArray<Record<string, unknown>>) => unknown[],
 ): Promise<Response> => {
-  const cached = await cachedArrayResponse(descriptor, env, dependencies);
+  const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRows);
   if (cached) return cached;
   const rows = await executeR2Sql(env, query, dependencies.fetchImpl);
-  const body = JSON.stringify({ rows: rows.map(normalise) });
+  const body = JSON.stringify({ rows: toRows(rows) });
   await populateCaches(
     dependencies.cache,
     env.CATALOG_KV,
@@ -167,6 +355,15 @@ const queryAndCache = async (
   );
   return jsonRowsResponse(body, "r2-sql");
 };
+
+const queryAndCache = async (
+  descriptor: CacheDescriptor,
+  env: Env,
+  dependencies: WorkerDependencies,
+  query: string,
+  normalise: (row: Record<string, unknown>) => unknown,
+): Promise<Response> =>
+  queryAndCacheRows(descriptor, env, dependencies, query, (rows) => rows.map(normalise));
 
 const handleRaceKeys = (
   url: URL,
@@ -212,6 +409,90 @@ const handleRaceTrainings = (
     buildRaceTrainingsQuery(env, filters),
     normaliseRaceTrainingRow,
   );
+};
+
+const handleHorseRaceResults = (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseHorseRaceResultsFilters(url);
+  return queryAndCacheRows(
+    horseRaceResultsDescriptor(filters),
+    env,
+    dependencies,
+    buildHorseRaceResultsQuery(env, filters),
+    (rows) => uniqueHorseRaceResults(rows.map(normaliseHorseRaceResultRow)),
+  );
+};
+
+const conditionHistoryStatsBody = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: WinRateHeatmapStatsFilters,
+): Promise<string> => {
+  // Workers outbound TCP cap is 6. Run R2 SQL in pairs, like heatmap
+  // bloodline then similar, so a miss cannot stampede five sockets at once.
+  const [frameRows, weightRows] = await Promise.all([
+    executeR2Sql(env, buildConditionFrameStatsQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(
+      env,
+      buildConditionWeightClassStatsQuery({ env, filters, kind: "body" }),
+      dependencies.fetchImpl,
+    ),
+  ]);
+  const [carriedRows, finishRows] = await Promise.all([
+    isBanEiKeibajo(filters.keibajoCode)
+      ? Promise.resolve<Record<string, unknown>[]>([])
+      : executeR2Sql(
+          env,
+          buildConditionWeightClassStatsQuery({ env, filters, kind: "carried" }),
+          dependencies.fetchImpl,
+        ),
+    executeR2Sql(env, buildConditionFinishPositionStatsQuery(env, filters), dependencies.fetchImpl),
+  ]);
+  const raceTimeRows = await executeR2Sql(
+    env,
+    buildConditionRaceTimeStatsQuery(env, filters),
+    dependencies.fetchImpl,
+  );
+  return JSON.stringify(
+    normaliseConditionHistoryStatsPayload({
+      carriedRows,
+      finishRows,
+      frameRows,
+      raceTimeRows,
+      weightRows,
+    }),
+  );
+};
+
+const handleConditionHistoryStats = async (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseWinRateHeatmapFilters(url);
+  const descriptor = conditionHistoryStatsDescriptor(filters);
+  const cached = await cachedCatalogResponse(
+    descriptor,
+    env,
+    dependencies,
+    readKvConditionHistoryStats,
+  );
+  if (cached) return cached;
+  const body = await coalesce(conditionHistoryCoalesceKey(filters), () =>
+    conditionHistoryStatsBody(env, dependencies, filters),
+  );
+  await populateCaches(
+    dependencies.cache,
+    env.CATALOG_KV,
+    descriptor,
+    body,
+    HEATMAP_CACHE_API_TTL_SECONDS,
+    HEATMAP_KV_TTL_SECONDS,
+  );
+  return jsonRowsResponse(body, "r2-sql");
 };
 
 const isExpressionTooDeepError = (error: unknown): boolean =>
@@ -349,6 +630,15 @@ export const handleRequest = async (
     }
     if (request.method === "GET" && url.pathname === "/v1/running-style-features") {
       return await handleRunningStyleFeatures(url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/win-rate-heatmap-stats") {
+      return await handleWinRateHeatmapStats(url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/horse-race-results") {
+      return await handleHorseRaceResults(url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/condition-history-stats") {
+      return await handleConditionHistoryStats(url, env, dependencies);
     }
     if (
       (request.method === "POST" || request.method === "DELETE") &&

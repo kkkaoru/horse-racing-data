@@ -3,12 +3,17 @@ import { expect, it, vi } from "vitest";
 import {
   cacheRequestFor,
   featureDescriptor,
+  conditionHistoryStatsDescriptor,
+  heatmapStatsDescriptor,
+  horseRaceResultsDescriptor,
   jsonRowsResponse,
   kvKeyFor,
   parsePositiveSeconds,
   populateCacheApi,
   populateCaches,
   purgeDescriptors,
+  readKvConditionHistoryStats,
+  readKvHeatmapStats,
   readKvRows,
   trainingDescriptor,
 } from "./cache";
@@ -71,6 +76,140 @@ it("builds canonical Cache API and KV keys", () => {
   expect(kvKeyFor(training)).toBe(
     "catalog:v2:v2/race-trainings?date=20260715&keibajoCode=05&raceBango=01",
   );
+  const heatmap = heatmapStatsDescriptor({
+    date: "20260715",
+    includeDistance: true,
+    includeSurface: false,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "05",
+    raceBango: "01",
+    source: "jra",
+    years: 10,
+  });
+  expect(cacheRequestFor(heatmap).url).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1",
+  );
+  expect(kvKeyFor(heatmap)).toBe(
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1",
+  );
+  expect(
+    cacheRequestFor(
+      heatmapStatsDescriptor({
+        date: "20260715",
+        includeDistance: false,
+        includeSurface: false,
+        includeTurn: false,
+        includeVenue: false,
+        keibajoCode: "06",
+        raceBango: "11",
+        source: "nar",
+        years: 5,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=06&raceBango=11&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&nameTrim=ideographic&emptyTurnBypass=1",
+  );
+  expect(
+    cacheRequestFor(
+      heatmapStatsDescriptor({
+        date: "20260715",
+        includeDistance: true,
+        includeOwner: true,
+        includeSurface: false,
+        includeTurn: true,
+        includeVenue: true,
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        years: 10,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1",
+  );
+  expect(
+    cacheRequestFor(
+      heatmapStatsDescriptor({
+        date: "20260715",
+        includeDistance: true,
+        includeJockeyFrame: true,
+        includeOwner: false,
+        includeSurface: false,
+        includeTurn: true,
+        includeVenue: true,
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        years: 10,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1",
+  );
+  expect(
+    cacheRequestFor(
+      heatmapStatsDescriptor({
+        date: "20260715",
+        includeDistance: true,
+        includeJockeyFrame: true,
+        includeOwner: true,
+        includeSurface: false,
+        includeTurn: true,
+        includeVenue: true,
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        years: 10,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&includeJockeyFrame=1",
+  );
+  const horseResults = horseRaceResultsDescriptor({
+    date: "20260715",
+    keibajoCode: "05",
+    raceBango: "01",
+    source: "jra",
+    sourceScope: "all",
+  });
+  expect(cacheRequestFor(horseResults).url).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/horse-race-results?date=20260715&keibajoCode=05&raceBango=01&source=jra&sourceScope=all",
+  );
+  expect(
+    cacheRequestFor(
+      conditionHistoryStatsDescriptor({
+        date: "20260715",
+        includeDistance: true,
+        includeSurface: false,
+        includeTurn: true,
+        includeVenue: true,
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        years: 10,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1",
+  );
+  expect(
+    cacheRequestFor(
+      conditionHistoryStatsDescriptor({
+        date: "20260715",
+        includeDistance: false,
+        includeSurface: false,
+        includeTurn: false,
+        includeVenue: false,
+        keibajoCode: "83",
+        raceBango: "09",
+        source: "nar",
+        years: 5,
+      }),
+    ).url,
+  ).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=83&raceBango=09&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0",
+  );
 });
 
 it("uses only positive integer TTL values", () => {
@@ -86,6 +225,39 @@ it("reads only valid rows envelopes from KV", async () => {
   await expect(readKvRows(kvMocks("{}").kv, "key")).resolves.toBe(null);
   await expect(readKvRows(kvMocks("bad").kv, "key")).resolves.toBe(null);
   await expect(readKvRows(kvMocks(null).kv, "key")).resolves.toBe(null);
+});
+
+it("reads only condition-history-stats envelopes from KV", async () => {
+  const valid =
+    '{"frameStats":[],"weightClassStats":[],"carriedWeightClassStats":[],"finishPositionStats":[],"raceTimeStats":{}}';
+  await expect(readKvConditionHistoryStats(kvMocks(valid).kv, "key")).resolves.toBe(valid);
+  await expect(readKvConditionHistoryStats(kvMocks('{"rows":[]}').kv, "key")).resolves.toBe(null);
+  await expect(
+    readKvConditionHistoryStats(kvMocks('{"frameStats":[],"weightClassStats":[]}').kv, "key"),
+  ).resolves.toBe(null);
+  await expect(
+    readKvConditionHistoryStats(
+      kvMocks(
+        '{"frameStats":[],"weightClassStats":[],"carriedWeightClassStats":[],"finishPositionStats":[],"raceTimeStats":[]}',
+      ).kv,
+      "key",
+    ),
+  ).resolves.toBe(null);
+  await expect(readKvConditionHistoryStats(kvMocks("[]").kv, "key")).resolves.toBe(null);
+  await expect(readKvConditionHistoryStats(kvMocks("bad").kv, "key")).resolves.toBe(null);
+  await expect(readKvConditionHistoryStats(kvMocks(null).kv, "key")).resolves.toBe(null);
+});
+
+it("reads only heatmap-stats envelopes from KV", async () => {
+  await expect(
+    readKvHeatmapStats(kvMocks('{"bloodlineRows":[],"similarRows":[]}').kv, "key"),
+  ).resolves.toBe('{"bloodlineRows":[],"similarRows":[]}');
+  await expect(readKvHeatmapStats(kvMocks('{"rows":[]}').kv, "key")).resolves.toBe(null);
+  await expect(readKvHeatmapStats(kvMocks('{"bloodlineRows":[]}').kv, "key")).resolves.toBe(null);
+  await expect(readKvHeatmapStats(kvMocks('{"similarRows":[]}').kv, "key")).resolves.toBe(null);
+  await expect(readKvHeatmapStats(kvMocks("[]").kv, "key")).resolves.toBe(null);
+  await expect(readKvHeatmapStats(kvMocks("bad").kv, "key")).resolves.toBe(null);
+  await expect(readKvHeatmapStats(kvMocks(null).kv, "key")).resolves.toBe(null);
 });
 
 it("creates cache responses and writes Cache API plus KV", async () => {

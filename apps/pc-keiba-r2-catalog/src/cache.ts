@@ -1,9 +1,11 @@
 import type {
   CacheStore,
+  HorseRaceResultsFilters,
   KvStore,
   RaceFeatureFilters,
   RaceTrainingFilters,
   SourceScope,
+  WinRateHeatmapStatsFilters,
 } from "./types";
 
 export type CacheDescriptor =
@@ -20,6 +22,40 @@ export type CacheDescriptor =
       kind: "race-features";
       raceBango?: string;
       source: SourceScope;
+    }
+  | {
+      date: string;
+      includeDistance: boolean;
+      includeJockeyFrame?: boolean;
+      includeOwner?: boolean;
+      includeSurface: boolean;
+      includeTurn: boolean;
+      includeVenue: boolean;
+      keibajoCode: string;
+      kind: "win-rate-heatmap-stats";
+      raceBango: string;
+      source: "jra" | "nar";
+      years: number;
+    }
+  | {
+      date: string;
+      keibajoCode: string;
+      kind: "horse-race-results";
+      raceBango: string;
+      source: "jra" | "nar";
+      sourceScope: "all" | "jra" | "nar";
+    }
+  | {
+      date: string;
+      includeDistance: boolean;
+      includeSurface: boolean;
+      includeTurn: boolean;
+      includeVenue: boolean;
+      keibajoCode: string;
+      kind: "condition-history-stats";
+      raceBango: string;
+      source: "jra" | "nar";
+      years: number;
     };
 
 const CACHE_ORIGIN = "https://pc-keiba-r2-catalog-cache.internal";
@@ -36,6 +72,36 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
   if (descriptor.kind === "race-trainings") {
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
+  }
+  if (descriptor.kind === "win-rate-heatmap-stats") {
+    url.searchParams.set("keibajoCode", descriptor.keibajoCode);
+    url.searchParams.set("raceBango", descriptor.raceBango);
+    url.searchParams.set("source", descriptor.source);
+    url.searchParams.set("years", String(descriptor.years));
+    url.searchParams.set("includeVenue", descriptor.includeVenue ? "1" : "0");
+    url.searchParams.set("includeDistance", descriptor.includeDistance ? "1" : "0");
+    url.searchParams.set("includeSurface", descriptor.includeSurface ? "1" : "0");
+    url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
+    url.searchParams.set("nameTrim", "ideographic");
+    url.searchParams.set("emptyTurnBypass", "1");
+    if (descriptor.includeOwner === true) url.searchParams.set("includeOwner", "1");
+    if (descriptor.includeJockeyFrame === true) url.searchParams.set("includeJockeyFrame", "1");
+  }
+  if (descriptor.kind === "horse-race-results") {
+    url.searchParams.set("keibajoCode", descriptor.keibajoCode);
+    url.searchParams.set("raceBango", descriptor.raceBango);
+    url.searchParams.set("source", descriptor.source);
+    url.searchParams.set("sourceScope", descriptor.sourceScope);
+  }
+  if (descriptor.kind === "condition-history-stats") {
+    url.searchParams.set("keibajoCode", descriptor.keibajoCode);
+    url.searchParams.set("raceBango", descriptor.raceBango);
+    url.searchParams.set("source", descriptor.source);
+    url.searchParams.set("years", String(descriptor.years));
+    url.searchParams.set("includeVenue", descriptor.includeVenue ? "1" : "0");
+    url.searchParams.set("includeDistance", descriptor.includeDistance ? "1" : "0");
+    url.searchParams.set("includeSurface", descriptor.includeSurface ? "1" : "0");
+    url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
   }
   return new Request(url);
 };
@@ -59,6 +125,42 @@ export const readKvRows = async (kv: KvStore, key: string): Promise<string | nul
   try {
     const parsed: unknown = JSON.parse(value);
     return isRecord(parsed) && Array.isArray(parsed.rows) ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+export const readKvHeatmapStats = async (kv: KvStore, key: string): Promise<string | null> => {
+  const value = await kv.get(key);
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) &&
+      Array.isArray(parsed.bloodlineRows) &&
+      Array.isArray(parsed.similarRows)
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+export const readKvConditionHistoryStats = async (
+  kv: KvStore,
+  key: string,
+): Promise<string | null> => {
+  const value = await kv.get(key);
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) &&
+      Array.isArray(parsed.frameStats) &&
+      Array.isArray(parsed.weightClassStats) &&
+      Array.isArray(parsed.carriedWeightClassStats) &&
+      Array.isArray(parsed.finishPositionStats) &&
+      isRecord(parsed.raceTimeStats)
+      ? value
+      : null;
   } catch {
     return null;
   }
@@ -127,4 +229,43 @@ export const trainingDescriptor = (filters: RaceTrainingFilters): CacheDescripto
   keibajoCode: filters.keibajoCode,
   kind: "race-trainings",
   raceBango: filters.raceBango,
+});
+
+export const heatmapStatsDescriptor = (filters: WinRateHeatmapStatsFilters): CacheDescriptor => ({
+  date: filters.date,
+  includeDistance: filters.includeDistance,
+  includeJockeyFrame: filters.includeJockeyFrame === true,
+  includeOwner: filters.includeOwner === true,
+  includeSurface: filters.includeSurface,
+  includeTurn: filters.includeTurn,
+  includeVenue: filters.includeVenue,
+  keibajoCode: filters.keibajoCode,
+  kind: "win-rate-heatmap-stats",
+  raceBango: filters.raceBango,
+  source: filters.source,
+  years: filters.years,
+});
+
+export const horseRaceResultsDescriptor = (filters: HorseRaceResultsFilters): CacheDescriptor => ({
+  date: filters.date,
+  keibajoCode: filters.keibajoCode,
+  kind: "horse-race-results",
+  raceBango: filters.raceBango,
+  source: filters.source,
+  sourceScope: filters.sourceScope,
+});
+
+export const conditionHistoryStatsDescriptor = (
+  filters: WinRateHeatmapStatsFilters,
+): CacheDescriptor => ({
+  date: filters.date,
+  includeDistance: filters.includeDistance,
+  includeSurface: filters.includeSurface,
+  includeTurn: filters.includeTurn,
+  includeVenue: filters.includeVenue,
+  keibajoCode: filters.keibajoCode,
+  kind: "condition-history-stats",
+  raceBango: filters.raceBango,
+  source: filters.source,
+  years: filters.years,
 });

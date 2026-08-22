@@ -116,6 +116,179 @@ export interface RaceTrainingFilters {
   raceBango: string;
 }
 
+export type HorseRaceResultsSourceScope = "all" | "jra" | "nar";
+
+export interface HorseRaceResultsFilters {
+  date: string;
+  keibajoCode: string;
+  raceBango: string;
+  source: CatalogSource;
+  sourceScope: HorseRaceResultsSourceScope;
+}
+
+export interface HorseRaceResultRow {
+  babajotaiCodeDirt: string | null;
+  babajotaiCodeShiba: string | null;
+  bamei: string | null;
+  banushimei: string | null;
+  barei: string | null;
+  bataiju: string | null;
+  blinkerShiyoKubun: string | null;
+  chokyoshimeiRyakusho: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
+  currentBarei: string | null;
+  currentJockey: string | null;
+  currentSeibetsuCode: string | null;
+  currentUmaban: string | null;
+  futanJuryo: string | null;
+  gradeCode: string | null;
+  hassoJikoku: string | null;
+  juryoShubetsuCode: string | null;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  kakuteiChakujun: string | null;
+  keibajoCode: string;
+  kettoTorokuBango: string | null;
+  kishumeiRyakusho: string | null;
+  kohan3f: string | null;
+  kyori: string | null;
+  kyosoJokenCode: string | null;
+  kyosoJokenMeisho: string | null;
+  kyosoKigoCode: string | null;
+  kyosomeiFukudai: string | null;
+  kyosomeiHondai: string | null;
+  kyosomeiKakkonai: string | null;
+  kyosoShubetsuCode: string | null;
+  raceBango: string;
+  seibetsuCode: string | null;
+  shussoTosu: string | null;
+  sohaTime: string | null;
+  tanshoNinkijun: string | null;
+  tanshoOdds: string | null;
+  tenkoCode: string | null;
+  timeSa: string | null;
+  trackCode: string | null;
+  umaban: string | null;
+  wakuban: string | null;
+  zogenFugo: string | null;
+  zogenSa: string | null;
+}
+
+export interface ConditionFrameStatsRow {
+  averageFinish: number | null;
+  averagePopularity: number | null;
+  count: number;
+  details: [];
+  frameNumber: string;
+  medianFinish: number | null;
+  medianPopularity: number | null;
+  quinellaCount: number;
+  quinellaRate: number;
+  runnerCount: number | null;
+  score: number;
+  showCount: number;
+  showRate: number;
+  winCount: number;
+  winRate: number;
+}
+
+export interface ConditionWeightClassStatsRow {
+  key: string;
+  quinellaCount: number;
+  quinellaRate: number;
+  showCount: number;
+  showRate: number;
+  starts: number;
+  winCount: number;
+  winRate: number;
+}
+
+export interface ConditionFinishPositionStatsRow {
+  averageOdds: number | null;
+  averagePopularity: number | null;
+  count: number;
+  details: [];
+  finishPosition: number;
+  medianOdds: number | null;
+  medianPopularity: number | null;
+}
+
+export interface ConditionRaceTimeStats {
+  averageKohan3f: number | null;
+  averageRaceTime: number | null;
+  correlationRows: [];
+  fastestDetail: null;
+  fastestKohan3f: number | null;
+  fastestRaceTime: number | null;
+  medianKohan3f: number | null;
+  medianRaceTime: number | null;
+  raceCount: number;
+  targetRaces: [];
+}
+
+export interface ConditionHistoryStatsPayload {
+  carriedWeightClassStats: ConditionWeightClassStatsRow[];
+  finishPositionStats: ConditionFinishPositionStatsRow[];
+  frameStats: ConditionFrameStatsRow[];
+  raceTimeStats: ConditionRaceTimeStats;
+  weightClassStats: ConditionWeightClassStatsRow[];
+}
+
+export type WinRateHeatmapBloodlineCategory =
+  | "damDamSire"
+  | "damSire"
+  | "damSireSire"
+  | "sire"
+  | "sireDamSire"
+  | "sireSire"
+  | "sireSireSire";
+
+export type WinRateHeatmapSimilarKind = "jockey" | "jockeyFrame" | "owner" | "trainer";
+
+export interface WinRateHeatmapStatsFilters {
+  date: string;
+  includeDistance: boolean;
+  includeJockeyFrame?: boolean;
+  includeOwner?: boolean;
+  includeSurface: boolean;
+  includeTurn: boolean;
+  includeVenue: boolean;
+  keibajoCode: string;
+  raceBango: string;
+  source: CatalogSource;
+  years: number;
+}
+
+export interface WinRateHeatmapBloodlineRow {
+  category: WinRateHeatmapBloodlineCategory;
+  details: [];
+  name: string;
+  places: number;
+  shows: number;
+  starts: number;
+  umaban: number;
+  wins: number;
+}
+
+export interface WinRateHeatmapSimilarRow {
+  details: [];
+  kind: WinRateHeatmapSimilarKind;
+  name: string;
+  places: number;
+  shows: number;
+  starts: number;
+  umaban: number;
+  wins: number;
+}
+
+export interface WinRateHeatmapStatsPayload {
+  bloodlineRows: WinRateHeatmapBloodlineRow[];
+  similarRows: WinRateHeatmapSimilarRow[];
+}
+
 export interface RaceTrainingRow {
   babamawari: string | null;
   bamei: string | null;
