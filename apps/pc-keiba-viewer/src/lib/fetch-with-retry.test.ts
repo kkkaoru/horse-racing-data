@@ -62,6 +62,66 @@ it("retries on network errors thrown by fetch", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
+it("falls back to XMLHttpRequest when an injected fetch wrapper breaks a same-origin GET", async () => {
+  const fetchMock = vi.fn<FetchSignature>().mockRejectedValue(new TypeError("Failed to fetch"));
+  vi.stubGlobal("fetch", fetchMock);
+  const open = vi.fn<(method: string, url: string | URL) => void>();
+  const send = vi.fn<(this: XMLHttpRequest) => void>(function (this: XMLHttpRequest) {
+    Object.defineProperties(this, {
+      responseText: { configurable: true, value: '{"ok":true}' },
+      status: { configurable: true, value: 200 },
+      statusText: { configurable: true, value: "OK" },
+    });
+    this.dispatchEvent(new Event("load"));
+  });
+  const xhr = new XMLHttpRequest();
+  vi.spyOn(xhr, "open").mockImplementation(open);
+  vi.spyOn(xhr, "send").mockImplementation(send);
+  vi.stubGlobal(
+    "XMLHttpRequest",
+    vi.fn(function () {
+      return xhr;
+    }),
+  );
+
+  const response = await fetchWithRetry("/api/race", undefined, { sleep: noSleep });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ ok: true });
+  expect(open).toHaveBeenCalledWith("GET", "http://localhost:3000/api/race");
+  expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("does not use XMLHttpRequest for a cross-origin fetch failure", async () => {
+  const fetchMock = vi.fn<FetchSignature>().mockRejectedValue(new TypeError("Failed to fetch"));
+  vi.stubGlobal("fetch", fetchMock);
+  const xhr = vi.fn<() => XMLHttpRequest>();
+  vi.stubGlobal("XMLHttpRequest", xhr);
+
+  await expect(
+    fetchWithRetry("https://example.test/data", undefined, { attempts: 1, sleep: noSleep }),
+  ).rejects.toThrow("Failed to fetch");
+
+  expect(xhr).toHaveBeenCalledTimes(0);
+});
+
+it("does not use XMLHttpRequest for a failed same-origin POST", async () => {
+  const fetchMock = vi.fn<FetchSignature>().mockRejectedValue(new TypeError("Failed to fetch"));
+  vi.stubGlobal("fetch", fetchMock);
+  const xhr = vi.fn<() => XMLHttpRequest>();
+  vi.stubGlobal("XMLHttpRequest", xhr);
+
+  await expect(
+    fetchWithRetry(
+      "/api/race",
+      { body: "payload", method: "POST" },
+      { attempts: 1, sleep: noSleep },
+    ),
+  ).rejects.toThrow("Failed to fetch");
+
+  expect(xhr).toHaveBeenCalledTimes(0);
+});
+
 it("does not retry on AbortError", async () => {
   const abortError = new DOMException("aborted", "AbortError");
   const fetchMock = vi.fn<FetchSignature>().mockRejectedValue(abortError);
