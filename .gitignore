@@ -175,6 +175,9 @@ apps/sync-realtime-data/running-style/
 apps/pc-keiba-viewer/finish-position/*
 # Keep the v8 baked lookups (small static parquet, source of truth for runtime).
 !apps/pc-keiba-viewer/finish-position/lookups/
+# Local R2 day-base / running-style-base parquet downloads (not source of truth)
+apps/**/feat-daybase/
+apps/**/feat-running-style-base/
 catboost_info/
 
 # Baked finish-position model artifacts staged into the container build context
