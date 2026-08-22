@@ -1184,6 +1184,96 @@ def test_build_day_base_returns_none_when_base_build_empty(
     assert result is None
 
 
+def test_build_day_base_commits_running_style_foundation_before_day_layers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ("script-a.py",))
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+    )
+    events: list[str] = []
+
+    def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
+        return ["base", str(args[5])]
+
+    def fake_layer_argv(*args: object, **kwargs: object) -> list[str]:
+        return ["layer", str(args[4])]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+        events.append(args[0])
+
+    def commit(
+        category: str, target_date: str, base_dir: Path, watermark: tuple[str, int]
+    ) -> None:
+        assert base_dir == _day_base_dir("jra", "20260822") / "base"
+        assert (category, target_date, watermark) == ("jra", "20260822", ("20260822", 477))
+        events.append("foundation")
+
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", fake_base_argv)
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    result = pipeline_runner.build_day_base(
+        "jra",
+        "20260822",
+        0,
+        "r2-catalog://pc-keiba",
+        running_style_foundation_commit_fn=commit,
+    )
+
+    assert result is not None
+    assert events == ["base", "foundation", "layer"]
+
+
+def test_build_day_base_keeps_building_when_foundation_commit_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ())
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "build_base_argv", lambda *args, **_kwargs: ["base", str(args[5])]
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "run_with_stderr_capture",
+        lambda args: Path(args[-1]).mkdir(parents=True, exist_ok=True),
+    )
+
+    def fail_commit(*_args: object) -> None:
+        raise RuntimeError("R2 handoff failed")
+
+    result = pipeline_runner.build_day_base(
+        "jra",
+        "20260822",
+        0,
+        "r2-catalog://pc-keiba",
+        running_style_foundation_commit_fn=fail_commit,
+    )
+
+    assert result is not None
+
+
 def test_build_day_base_resets_stale_day_dir_before_building(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

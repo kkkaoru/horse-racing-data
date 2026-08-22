@@ -60,6 +60,7 @@ from predict_lib.serve import (
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
+    build_r2_running_style_foundation_key,
     build_result_line,
     has_single_race_scope,
     is_focused_full_request,
@@ -1089,6 +1090,12 @@ def test_parse_day_base_cache_identity_rejects_short_key() -> None:
 def test_build_r2_day_base_key_format() -> None:
     key = build_r2_day_base_key("jra", "20260712")
     assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_build_r2_running_style_foundation_key_format() -> None:
+    assert build_r2_running_style_foundation_key("jra", "20260822") == (
+        "feat-running-style-base/catalog-v1/jra/20260822/features.parquet"
+    )
 
 
 def test_build_r2_day_base_key_nar() -> None:

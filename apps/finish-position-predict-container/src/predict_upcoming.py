@@ -135,6 +135,7 @@ from predict_lib.serve import (
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
+    build_r2_running_style_foundation_key,
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
@@ -1585,7 +1586,11 @@ def _make_predict_fn(
     return _predict, _parquet_payload, _per_race_parquet_payloads, _populate_focused_full_cache
 
 
-def _make_prewarm_fn(database_url: str, r2_config: R2Config | None = None) -> PrewarmBuildFn:
+def _make_prewarm_fn(
+    database_url: str,
+    r2_config: R2Config | None = None,
+    prewarm_commit_fn: PrewarmCommitFn | None = None,
+) -> PrewarmBuildFn:
     """Build the ``GET /prewarm-day-base`` build callable bound to ``database_url``.
 
     Mirrors ``_make_predict_fn``'s closure-binding pattern: ``serve.py`` stays
@@ -1607,7 +1612,41 @@ def _make_prewarm_fn(database_url: str, r2_config: R2Config | None = None) -> Pr
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
-        return build_day_base(category, run_date, days_ahead, database_url, r2_config=r2_config)
+
+        def _commit_running_style_foundation(
+            foundation_category: Category,
+            foundation_run_date: str,
+            base_dir: Path,
+            entrant_watermark: tuple[str, int],
+        ) -> None:
+            if prewarm_commit_fn is None:
+                return
+            parquet_file = next(iter(sorted(base_dir.rglob("*.parquet"))), None)
+            if parquet_file is None:
+                raise RuntimeError("running-style foundation parquet missing after base build")
+            encoded = base64.b64encode(parquet_file.read_bytes()).decode("ascii")
+            prewarm_commit_fn(
+                build_r2_running_style_foundation_key(
+                    foundation_category, foundation_run_date
+                ),
+                encoded,
+                {
+                    "maxDataSakuseiNengappi": entrant_watermark[0],
+                    "rowCount": entrant_watermark[1],
+                    "rsPredictedAtMax": "none",
+                    "rsRowCount": 0,
+                },
+                None,
+            )
+
+        return build_day_base(
+            category,
+            run_date,
+            days_ahead,
+            database_url,
+            r2_config=r2_config,
+            running_style_foundation_commit_fn=_commit_running_style_foundation,
+        )
 
     return _prewarm
 
@@ -2634,7 +2673,8 @@ def main() -> int:
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
         focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
-        prewarm_fn = _make_prewarm_fn(source_url, r2)
+        prewarm_commit_fn = _make_prewarm_commit_fn(focused_full_cache_store)
+        prewarm_fn = _make_prewarm_fn(source_url, r2, prewarm_commit_fn)
         print(
             f"[predict-startup] binding HTTP server on :{HTTP_PORT}",
             file=sys.stderr,
@@ -2652,7 +2692,7 @@ def main() -> int:
             cache_populate_fn,
             focused_full_cache_store,
             _make_prewarm_existing_object_fn(r2, source_url),
-            _make_prewarm_commit_fn(focused_full_cache_store),
+            prewarm_commit_fn,
             run_prewarm_in_background,
         )
         return 0  # unreachable but satisfies the return type

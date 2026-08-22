@@ -94,7 +94,7 @@ _build_feature_rows = cast(
     getattr(predict_upcoming, _BUILD_FEATURE_ROWS_ATTR),
 )
 _make_prewarm_fn = cast(
-    Callable[[str, R2Config | None], Callable[[str, str, int], Path | None]],
+    Callable[..., Callable[[str, str, int], Path | None]],
     getattr(predict_upcoming, _MAKE_PREWARM_FN_ATTR),
 )
 _make_rescore_fn = cast(
@@ -1239,8 +1239,18 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
         r2_config: R2Config | None = None,
+        running_style_foundation_commit_fn: Callable[..., None] | None = None,
     ) -> Path | None:
-        captured.append((category, target_date, days_ahead, database_url, r2_config))
+        captured.append(
+            (
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                r2_config,
+                running_style_foundation_commit_fn,
+            )
+        )
         return Path("/tmp/daybase-final")
 
     monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
@@ -1250,7 +1260,51 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
     result = prewarm_fn("nar", "20260712", 2)
 
     assert result == Path("/tmp/daybase-final")
-    assert captured == [("nar", "20260712", 2, "postgresql://u:p@h/db", r2)]
+    assert captured[0][0:5] == ("nar", "20260712", 2, "postgresql://u:p@h/db", r2)
+    assert callable(captured[0][5])
+
+
+def test_make_prewarm_fn_commits_running_style_foundation_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    (base_dir / "features.parquet").write_bytes(b"FOUNDATION")
+    committed: list[tuple[object, ...]] = []
+
+    def fake_build_day_base(
+        category: Category,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        **kwargs: object,
+    ) -> Path:
+        callback = cast("Callable[[Category, str, Path, tuple[str, int]], None]", kwargs[
+            "running_style_foundation_commit_fn"
+        ])
+        callback(category, target_date, base_dir, ("20260822", 477))
+        return tmp_path / "final"
+
+    monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
+
+    prewarm_fn = _make_prewarm_fn(
+        "r2-catalog://pc-keiba",
+        None,
+        lambda *args: committed.append(args),
+    )
+    prewarm_fn("jra", "20260822", 0)
+
+    assert len(committed) == 1
+    key, encoded, watermark, watermark_error = committed[0]
+    assert key == "feat-running-style-base/catalog-v1/jra/20260822/features.parquet"
+    assert base64.b64decode(cast(str, encoded)) == b"FOUNDATION"
+    assert watermark == {
+        "maxDataSakuseiNengappi": "20260822",
+        "rowCount": 477,
+        "rsPredictedAtMax": "none",
+        "rsRowCount": 0,
+    }
+    assert watermark_error is None
 
 
 def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) -> None:

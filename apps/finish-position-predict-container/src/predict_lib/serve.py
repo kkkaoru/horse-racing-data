@@ -778,6 +778,16 @@ directly-scoreable parquet. Conflating the two keys would let a rescore
 request silently load a day-base-only parquet missing the RACE_CHAIN columns,
 corrupting the feature vector without raising."""
 
+R2_RUNNING_STYLE_FOUNDATION_PREFIX: Final[str] = "feat-running-style-base"
+"""R2 prefix for the RS-independent DuckDB base emitted before DAY_CHAIN.
+
+The full day-base includes PACESTYLE and therefore cannot exist until the
+running-style day has completed.  Running-style inference, however, needs the
+same early feature columns that are already present in the DuckDB base.  A
+separate namespace breaks that dependency cycle without making the final
+day-base or rescore paths accept a partially processed parquet.
+"""
+
 
 def build_prewarm_cache_key(category: str, run_date: str) -> str:
     """In-process store key for a completed day-base parquet awaiting Worker PUT."""
@@ -813,6 +823,14 @@ def build_r2_day_base_key(category: str, run_date: str) -> str:
     """
     return (
         f"{R2_DAY_BASE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/features.parquet"
+    )
+
+
+def build_r2_running_style_foundation_key(category: str, run_date: str) -> str:
+    """Return the R2 key for the RS-independent daily foundation parquet."""
+    return (
+        f"{R2_RUNNING_STYLE_FOUNDATION_PREFIX}/{R2_RAW_CATALOG_GENERATION}/"
+        f"{category}/{run_date}/features.parquet"
     )
 
 

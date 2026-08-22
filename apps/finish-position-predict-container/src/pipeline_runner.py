@@ -678,6 +678,9 @@ DayBaseWatermark = tuple[str, int, str, int]
 rs_row_count)`` -- the combined freshness signal :func:`ensure_day_base`
 trusts a cached day-base against."""
 
+RunningStyleFoundationCommitFn = Callable[[Category, str, Path, tuple[str, int]], None]
+"""Publish the RS-independent base after its entrant watermark is known."""
+
 
 def _compute_rs_watermark(
     category: Category, target_date: str, r2_config: R2Config | None
@@ -1244,6 +1247,7 @@ def build_day_base(
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
     r2_config: R2Config | None = None,
+    running_style_foundation_commit_fn: RunningStyleFoundationCommitFn | None = None,
 ) -> Path | None:
     """Run the DuckDB base build + DAY_CHAIN layers once per category+day.
 
@@ -1377,6 +1381,27 @@ def build_day_base(
             f"reason=no-parquet elapsed_seconds=0.000"
         )
         return None
+    source_outcome: SourceWatermarkOutcome | None = None
+    if is_catalog_source_url(database_url):
+        source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
+        if (
+            category in _RS_WATERMARK_CATEGORIES
+            and source_outcome.value is not None
+            and running_style_foundation_commit_fn is not None
+        ):
+            try:
+                running_style_foundation_commit_fn(
+                    category, target_date, base_dir, source_outcome.value
+                )
+                _log_pipeline_progress(
+                    f"step=running-style-foundation status=committed category={category} "
+                    f"target_date={target_date}"
+                )
+            except Exception as exc:
+                debug_log(
+                    f"[day-base] running-style foundation commit failed category={category} "
+                    f"target_date={target_date} error={exc}"
+                )
     current = base_dir
     for index, script in enumerate(chain):
         nxt = day_dir / f"layer-{index}"
@@ -1449,7 +1474,10 @@ def build_day_base(
         # failed watermark compute/write here degrades the NEXT call to
         # "no watermark found" (safe fail-closed rebuild), never this
         # build's own success.
-        source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
+        if source_outcome is None:
+            source_outcome = _compute_source_watermark_outcome(
+                category, target_date, database_url
+            )
         rs_watermark = _compute_rs_watermark(category, target_date, r2_config)
         watermark = _combine_watermarks(source_outcome.value, rs_watermark)
         if watermark is not None:
