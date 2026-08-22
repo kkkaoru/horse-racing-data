@@ -1,7 +1,7 @@
 // Run with bun. Reads the shared finish-position day-base before rebuilding
 // the same early-binding running-style inputs from Catalog/PostgreSQL.
 
-import { parquetReadObjects } from "hyparquet";
+import { parquetReadObjects, type AsyncBuffer } from "hyparquet";
 
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
@@ -9,7 +9,7 @@ import type { RaceHorseFeatureRow } from "./running-style-r2";
 const DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
 const DAY_BASE_FILE = "features.parquet";
-const MAX_CACHED_DAY_BASES = 4;
+const MAX_CACHED_RACES = 2;
 const WATERMARK_METADATA_KEYS = [
   "max-data-sakusei-nengappi",
   "row-count",
@@ -32,12 +32,52 @@ const PEER_INPUT_FEATURES = {
 
 interface CachedDayBase {
   etag: string;
-  rowsByRace: ReadonlyMap<string, ReadonlyArray<RaceHorseFeatureRow>>;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
 }
 
 const dayBaseCache = new Map<string, CachedDayBase>();
 
-const toNumberOrNull = (value: unknown): number | null => {
+interface RowRange {
+  end: number;
+  start: number;
+}
+
+interface ReadRaceRowsParams {
+  featureNames: ReadonlyArray<string>;
+  file: AsyncBuffer;
+  race: RunningStyleRaceParams;
+}
+
+interface ReadRangesParams {
+  columns: string[];
+  file: AsyncBuffer;
+  rangeIndex: number;
+  ranges: ReadonlyArray<RowRange>;
+}
+
+const RACE_IDENTITY_COLUMNS = [
+  "source",
+  "kaisai_nen",
+  "kaisai_tsukihi",
+  "keibajo_code",
+  "race_bango",
+] satisfies string[];
+
+const ROW_COLUMNS = [
+  ...RACE_IDENTITY_COLUMNS,
+  "ketto_toroku_bango",
+  "umaban",
+  "category",
+  "bamei",
+  "kyori",
+  "track_code",
+  "grade_code",
+  "shusso_tosu",
+  "kyoso_joken_code",
+  "nar_subclass",
+] satisfies string[];
+
+export const toRunningStyleParquetNumberOrNull = (value: unknown): number | null => {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "bigint") return Number(value);
@@ -80,7 +120,7 @@ const toFeatureRow = (
   const keibajoCode = normalizedCode(raw.keibajo_code);
   const raceBango = normalizedCode(raw.race_bango);
   const kettoTorokuBango = String(raw.ketto_toroku_bango);
-  const umaban = toNumberOrNull(raw.umaban);
+  const umaban = toRunningStyleParquetNumberOrNull(raw.umaban);
   if (kaisaiNen.length !== 4 || kaisaiTsukihi.length !== 4 || kettoTorokuBango.length === 0)
     return null;
   if (umaban === null) return null;
@@ -88,7 +128,7 @@ const toFeatureRow = (
   const perHorseFeatures: Record<string, number | null> = {};
   for (const name of featureNames) {
     if (!Object.hasOwn(raw, name)) return null;
-    perHorseFeatures[name] = toNumberOrNull(raw[name]);
+    perHorseFeatures[name] = toRunningStyleParquetNumberOrNull(raw[name]);
   }
   const peerInputs = {} as RaceHorseFeatureRow["peerInputs"];
   Object.entries(PEER_INPUT_FEATURES).forEach(([featureName, peerName]) => {
@@ -101,7 +141,7 @@ const toFeatureRow = (
     kaisaiTsukihi,
     keibajoCode,
     kettoTorokuBango,
-    kyori: toNumberOrNull(raw.kyori),
+    kyori: toRunningStyleParquetNumberOrNull(raw.kyori),
     kyosoJokenCode: toStringOrNull(raw.kyoso_joken_code),
     gradeCode: toStringOrNull(raw.grade_code),
     narSubClass: toStringOrNull(raw.nar_subclass),
@@ -109,33 +149,88 @@ const toFeatureRow = (
     perHorseFeatures,
     raceBango,
     raceKey: `${source}:${kaisaiNen}${kaisaiTsukihi}:${keibajoCode}:${raceBango}`,
-    shussoTosu: toNumberOrNull(raw.shusso_tosu),
+    shussoTosu: toRunningStyleParquetNumberOrNull(raw.shusso_tosu),
     source,
     trackCode: toStringOrNull(raw.track_code),
     umaban,
   };
 };
 
-const decodeDayBase = async (
-  bytes: ArrayBuffer,
-  featureNames: ReadonlyArray<string>,
-): Promise<ReadonlyMap<string, ReadonlyArray<RaceHorseFeatureRow>>> => {
-  const mutable = new Map<string, RaceHorseFeatureRow[]>();
-  const decoded = await parquetReadObjects({ file: bytes });
-  for (const raw of decoded) {
-    const row = toFeatureRow(raw, featureNames);
-    if (row === null) continue;
-    const existing = mutable.get(row.raceKey);
-    if (existing === undefined) mutable.set(row.raceKey, [row]);
-    else existing.push(row);
-  }
-  return mutable;
+const matchesRace = (raw: Record<string, unknown>, race: RunningStyleRaceParams): boolean =>
+  raw.source === race.source &&
+  String(raw.kaisai_nen) === race.kaisaiNen &&
+  String(raw.kaisai_tsukihi).padStart(4, "0") === race.kaisaiTsukihi &&
+  normalizedCode(raw.keibajo_code) === race.keibajoCode.padStart(2, "0") &&
+  normalizedCode(raw.race_bango) === race.raceBango.padStart(2, "0");
+
+const contiguousRanges = (indices: ReadonlyArray<number>): RowRange[] =>
+  indices.reduce<RowRange[]>((ranges, index) => {
+    const last = ranges.at(-1);
+    if (last !== undefined && last.end === index) {
+      last.end = index + 1;
+      return ranges;
+    }
+    ranges.push({ end: index + 1, start: index });
+    return ranges;
+  }, []);
+
+const readRanges = async (params: ReadRangesParams): Promise<Record<string, unknown>[]> => {
+  const range = params.ranges[params.rangeIndex];
+  if (range === undefined) return [];
+  const rows = await parquetReadObjects({
+    columns: params.columns,
+    file: params.file,
+    rowEnd: range.end,
+    rowStart: range.start,
+    useOffsetIndex: true,
+  });
+  const remaining = await readRanges({ ...params, rangeIndex: params.rangeIndex + 1 });
+  return rows.concat(remaining);
 };
+
+const readRaceRows = async (
+  params: ReadRaceRowsParams,
+): Promise<ReadonlyArray<RaceHorseFeatureRow>> => {
+  const identities = await parquetReadObjects({
+    columns: RACE_IDENTITY_COLUMNS,
+    file: params.file,
+  });
+  const indices = identities.flatMap((raw, index) =>
+    matchesRace(raw, params.race) ? [index] : [],
+  );
+  if (indices.length === 0) return [];
+  const columns = [...new Set([...ROW_COLUMNS, ...params.featureNames])];
+  const decoded = await readRanges({
+    columns,
+    file: params.file,
+    rangeIndex: 0,
+    ranges: contiguousRanges(indices),
+  });
+  return decoded.flatMap((raw) => {
+    const row = toFeatureRow(raw, params.featureNames);
+    return row === null ? [] : [row];
+  });
+};
+
+const r2AsyncBuffer = (bucket: R2Bucket, key: string, object: R2Object): AsyncBuffer => ({
+  byteLength: object.size,
+  slice: async (start, end) => {
+    const rangeEnd = end === undefined ? object.size : end;
+    const ranged = await bucket.get(key, {
+      onlyIf: { etagMatches: object.etag },
+      range: { length: rangeEnd - start, offset: start },
+    });
+    if (ranged === null || !("arrayBuffer" in ranged)) {
+      throw new Error(`R2 object changed while reading: ${key}`);
+    }
+    return ranged.arrayBuffer();
+  },
+});
 
 const rememberDayBase = (key: string, value: CachedDayBase): void => {
   dayBaseCache.delete(key);
   dayBaseCache.set(key, value);
-  if (dayBaseCache.size <= MAX_CACHED_DAY_BASES) return;
+  if (dayBaseCache.size <= MAX_CACHED_RACES) return;
   const oldest = dayBaseCache.keys().next().value;
   if (typeof oldest === "string") dayBaseCache.delete(oldest);
 };
@@ -152,21 +247,21 @@ export const loadRunningStyleFeaturesFromFinishPositionDayBase = async (params: 
     buildFinishPositionDayBaseKey(params.race),
   ];
   for (const key of keys) {
-    const cacheKey = `${key}\u0000${params.featureNames.join("\u0000")}`;
+    const cacheKey = `${key}\u0000${raceKey}\u0000${params.featureNames.join("\u0000")}`;
     const head = await params.bucket.head(key);
     if (head === null || !hasFreshnessMetadata(head)) continue;
     const cached = dayBaseCache.get(cacheKey);
     if (cached !== undefined && cached.etag === head.etag) {
-      const rows = cached.rowsByRace.get(raceKey);
-      if (rows !== undefined && rows.length > 0) return rows;
+      if (cached.rows.length > 0) return cached.rows;
       continue;
     }
-    const object = await params.bucket.get(key);
-    if (object === null || !hasFreshnessMetadata(object)) continue;
-    const rowsByRace = await decodeDayBase(await object.arrayBuffer(), params.featureNames);
-    rememberDayBase(cacheKey, { etag: object.etag, rowsByRace });
-    const rows = rowsByRace.get(raceKey);
-    if (rows !== undefined && rows.length > 0) return rows;
+    const rows = await readRaceRows({
+      featureNames: params.featureNames,
+      file: r2AsyncBuffer(params.bucket, key, head),
+      race: params.race,
+    });
+    rememberDayBase(cacheKey, { etag: head.etag, rows });
+    if (rows.length > 0) return rows;
   }
   return null;
 };

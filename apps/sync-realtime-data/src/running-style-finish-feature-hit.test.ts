@@ -11,6 +11,7 @@ import {
   buildRunningStyleFoundationKey,
   clearFinishPositionDayBaseCache,
   loadRunningStyleFeaturesFromFinishPositionDayBase,
+  toRunningStyleParquetNumberOrNull,
 } from "./running-style-finish-feature-hit";
 
 const RACE: RunningStyleRaceParams = {
@@ -89,11 +90,18 @@ const rawRow = (overrides: Record<string, unknown> = {}): Record<string, unknown
 });
 
 const bucketWith = (bytes: ArrayBuffer, etag = "etag-1") => {
-  const head = vi.fn(async () => ({ customMetadata: metadata, etag }));
-  const get = vi.fn(async () => ({
-    arrayBuffer: vi.fn(async () => bytes),
+  const head = vi.fn(async () => ({ customMetadata: metadata, etag, size: bytes.byteLength }));
+  const get = vi.fn(async (_key: string, options: R2GetOptions) => ({
+    arrayBuffer: vi.fn(async () => {
+      const range = options.range;
+      if (range instanceof Headers || range === undefined || !("offset" in range)) return bytes;
+      const start = range.offset ?? 0;
+      const end = range.length === undefined ? bytes.byteLength : start + range.length;
+      return bytes.slice(start, end);
+    }),
     customMetadata: metadata,
     etag,
+    size: bytes.byteLength,
   }));
   return { bucket: { get, head } as unknown as R2Bucket, get, head };
 };
@@ -114,19 +122,43 @@ it("builds the RS-independent daily foundation key", () => {
   );
 });
 
+it("normalizes every Parquet scalar representation without changing numeric values", () => {
+  expect(toRunningStyleParquetNumberOrNull(null)).toBe(null);
+  expect(toRunningStyleParquetNumberOrNull(undefined)).toBe(null);
+  expect(toRunningStyleParquetNumberOrNull("")).toBe(null);
+  expect(toRunningStyleParquetNumberOrNull(1.25)).toBe(1.25);
+  expect(toRunningStyleParquetNumberOrNull(Number.POSITIVE_INFINITY)).toBe(null);
+  expect(toRunningStyleParquetNumberOrNull(BigInt(2))).toBe(2);
+  expect(toRunningStyleParquetNumberOrNull(true)).toBe(1);
+  expect(toRunningStyleParquetNumberOrNull(false)).toBe(0);
+  expect(toRunningStyleParquetNumberOrNull("3.5")).toBe(3.5);
+  expect(toRunningStyleParquetNumberOrNull("invalid")).toBe(null);
+  expect(toRunningStyleParquetNumberOrNull({ value: 1 })).toBe(null);
+});
+
 it("prefers the daily foundation and falls back to the final day-base", async () => {
   const bytes = await parquetBytes([rawRow()]);
   const foundationKey = buildRunningStyleFoundationKey(RACE);
   const dayBaseKey = buildFinishPositionDayBaseKey(RACE);
   const head = vi.fn(async (key: string) =>
-    key === foundationKey ? null : { customMetadata: metadata, etag: "final-etag" },
+    key === foundationKey
+      ? null
+      : { customMetadata: metadata, etag: "final-etag", size: bytes.byteLength },
   );
-  const get = vi.fn(async (key: string) =>
+  const get = vi.fn(async (key: string, options: R2GetOptions) =>
     key === dayBaseKey
       ? {
-          arrayBuffer: vi.fn(async () => bytes),
+          arrayBuffer: vi.fn(async () => {
+            const range = options.range;
+            if (range instanceof Headers || range === undefined || !("offset" in range))
+              return bytes;
+            const start = range.offset ?? 0;
+            const end = range.length === undefined ? bytes.byteLength : start + range.length;
+            return bytes.slice(start, end);
+          }),
           customMetadata: metadata,
           etag: "final-etag",
+          size: bytes.byteLength,
         }
       : null,
   );
@@ -139,7 +171,7 @@ it("prefers the daily foundation and falls back to the final day-base", async ()
 
   expect(rows).toHaveLength(1);
   expect(head.mock.calls.map(([key]) => key)).toStrictEqual([foundationKey, dayBaseKey]);
-  expect(get).toHaveBeenCalledWith(dayBaseKey);
+  expect(get.mock.calls[0]?.[0]).toBe("feat-daybase/catalog-v1/jra/20260822/features.parquet");
 });
 
 it("returns a complete race slice and reuses the etag cache", async () => {
@@ -153,6 +185,7 @@ it("returns a complete race slice and reuses the etag cache", async () => {
     featureNames: ["f1"],
     race: RACE,
   });
+  get.mockClear();
   const second = await loadRunningStyleFeaturesFromFinishPositionDayBase({
     bucket,
     featureNames: ["f1"],
@@ -193,7 +226,58 @@ it("returns a complete race slice and reuses the etag cache", async () => {
   ]);
   expect(second).toStrictEqual(first);
   expect(head).toHaveBeenCalledTimes(2);
-  expect(get).toHaveBeenCalledTimes(1);
+  expect(get).toHaveBeenCalledTimes(0);
+});
+
+it("reads non-contiguous rows for only the requested race in file order", async () => {
+  const bytes = await parquetBytes([
+    rawRow({ ketto_toroku_bango: "2023100001", umaban: 1 }),
+    rawRow({ keibajo_code: "05", ketto_toroku_bango: "2023100002", race_bango: "01" }),
+    rawRow({ ketto_toroku_bango: "2023100003", umaban: 3 }),
+  ]);
+  const { bucket } = bucketWith(bytes);
+
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+
+  expect(rows?.map((row) => row.kettoTorokuBango)).toStrictEqual(["2023100001", "2023100003"]);
+  expect(rows?.map((row) => row.umaban)).toStrictEqual([1, 3]);
+});
+
+it("evicts old race slices after the bounded cache reaches two entries", async () => {
+  const bytes = await parquetBytes([
+    rawRow({ ketto_toroku_bango: "2023100001", race_bango: "03" }),
+    rawRow({ ketto_toroku_bango: "2023100002", race_bango: "04" }),
+    rawRow({ ketto_toroku_bango: "2023100003", race_bango: "05" }),
+  ]);
+  const { bucket, get } = bucketWith(bytes);
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: { ...RACE, raceBango: "04" },
+  });
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: { ...RACE, raceBango: "05" },
+  });
+  get.mockClear();
+
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+
+  expect(get.mock.calls.length).toBeGreaterThan(0);
 });
 
 it("misses when the binding, object, watermark, race, or requested feature is absent", async () => {
@@ -229,6 +313,15 @@ it("misses when the binding, object, watermark, race, or requested feature is ab
       race: RACE,
     }),
   ).resolves.toBeNull();
+  wrongRace.get.mockClear();
+  await expect(
+    loadRunningStyleFeaturesFromFinishPositionDayBase({
+      bucket: wrongRace.bucket,
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toBeNull();
+  expect(wrongRace.get).toHaveBeenCalledTimes(0);
   clearFinishPositionDayBaseCache();
   const missingFeature = bucketWith(await parquetBytes([rawRow()], false));
   await expect(
@@ -240,7 +333,7 @@ it("misses when the binding, object, watermark, race, or requested feature is ab
   ).resolves.toBeNull();
 });
 
-it("misses on an invalid decoded row and on a vanished or unwatermarked body", async () => {
+it("misses invalid rows and rejects a vanished or inconsistent ranged body", async () => {
   const invalid = bucketWith(
     await parquetBytes([rawRow({ kaisai_nen: "26", source: "other", umaban: 0 })]),
   );
@@ -254,7 +347,7 @@ it("misses on an invalid decoded row and on a vanished or unwatermarked body", a
 
   const vanished = {
     get: vi.fn(async () => null),
-    head: vi.fn(async () => ({ customMetadata: metadata, etag: "x" })),
+    head: vi.fn(async () => ({ customMetadata: metadata, etag: "x", size: 100 })),
   } as unknown as R2Bucket;
   await expect(
     loadRunningStyleFeaturesFromFinishPositionDayBase({
@@ -262,18 +355,18 @@ it("misses on an invalid decoded row and on a vanished or unwatermarked body", a
       featureNames: ["f1"],
       race: RACE,
     }),
-  ).resolves.toBeNull();
+  ).rejects.toThrow("R2 object changed while reading");
 
   const bytes = await parquetBytes([rawRow()]);
-  const unwatermarked = {
-    get: vi.fn(async () => ({ arrayBuffer: vi.fn(async () => bytes), etag: "x" })),
-    head: vi.fn(async () => ({ customMetadata: metadata, etag: "x" })),
+  const inconsistent = {
+    get: vi.fn(async () => ({ etag: "x" })),
+    head: vi.fn(async () => ({ customMetadata: metadata, etag: "x", size: bytes.byteLength })),
   } as unknown as R2Bucket;
   await expect(
     loadRunningStyleFeaturesFromFinishPositionDayBase({
-      bucket: unwatermarked,
+      bucket: inconsistent,
       featureNames: ["f1"],
       race: RACE,
     }),
-  ).resolves.toBeNull();
+  ).rejects.toThrow("R2 object changed while reading");
 });

@@ -64,6 +64,8 @@ const rows = (): RaceHorseFeatureRow[] =>
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  const { loadRunningStyleFeatureParquet } = await import("./running-style-feature-parquet");
+  vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValue(new Error("R2 cache missing"));
   const { buildRunningStyleFeaturesForRaceFromPostgres } =
     await import("./running-style-feature-sql");
   vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockRejectedValue(
@@ -136,23 +138,26 @@ it("falls back to Catalog when the finish-position day-base read fails", async (
   );
 });
 
-it("ignores a stale processed object and refreshes it from Catalog", async () => {
+it("returns a coverage-complete per-race cache before day-base, Catalog, or PostgreSQL", async () => {
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
     await import("./running-style-feature-parquet");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
   const env = makeEnv("1");
-  const staleRows: RaceHorseFeatureRow[] = JSON.parse(
-    '[{"raceKey":"jra:20260513:08:01","umaban":9}]',
+  const cachedRows: RaceHorseFeatureRow[] = JSON.parse(
+    '[{"raceKey":"jra:20260513:08:01","umaban":1},{"raceKey":"jra:20260513:08:01","umaban":9}]',
   );
-  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(staleRows);
-  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(rows());
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(cachedRows);
   vi.mocked(validateFeatureCoverage).mockReturnValue({
     missingCells: 0,
     missingFeatureNames: [],
   });
-  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
   const result = await loadOrBuildRunningStyleFeatureParquet({
     env,
     featureNames: ["f1"],
@@ -160,10 +165,64 @@ it("ignores a stale processed object and refreshes it from Catalog", async () =>
   });
   expect(result).toStrictEqual({
     featuresR2Key: "features.parquet",
-    rebuilt: true,
-    rows: rows(),
+    rebuilt: false,
+    rows: cachedRows,
   });
-  expect(loadRunningStyleFeatureParquet).not.toHaveBeenCalled();
+  expect(loadRunningStyleFeatureParquet).toHaveBeenCalledWith(
+    env.RUNNING_STYLE_MODELS,
+    "features.parquet",
+    ["f1"],
+  );
+  expect(loadRunningStyleFeaturesFromFinishPositionDayBase).not.toHaveBeenCalled();
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(getFinishPositionPool).not.toHaveBeenCalled();
+  expect(buildRunningStyleFeaturesForRaceFromPostgres).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
+it("rebuilds when the processed cache cannot be decoded", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet } =
+    await import("./running-style-feature-parquet");
+  const env = makeEnv("1");
+  vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValue(new Error("invalid cache parquet"));
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(
+    new Error("Catalog unavailable"),
+  );
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env,
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("Catalog unavailable");
+  expect(loadRunningStyleFeatureParquet).toHaveBeenCalledWith(
+    env.RUNNING_STYLE_MODELS,
+    "features.parquet",
+    ["f1"],
+  );
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
+it("rebuilds from Catalog when cached rows miss a requested model feature", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const env = makeEnv("1");
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage)
+    .mockReturnValueOnce({ missingCells: 1, missingFeatureNames: ["f1"] })
+    .mockReturnValueOnce({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(rows());
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({ env, featureNames: ["f1"], race: RACE }),
+  ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: true, rows: rows() });
   expect(fetchRunningStyleFeaturesFromCatalog).toHaveBeenCalledWith(env.PC_KEIBA_R2_CATALOG, RACE, [
     "f1",
   ]);
@@ -175,38 +234,13 @@ it("ignores a stale processed object and refreshes it from Catalog", async () =>
   );
 });
 
-it("does not fall back to a stale processed object when Catalog fails", async () => {
-  const { loadOrBuildRunningStyleFeatureParquet } =
-    await import("./running-style-feature-materialize");
-  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
-  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet } =
-    await import("./running-style-feature-parquet");
-  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
-  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(
-    new Error("Catalog unavailable"),
-  );
-  await expect(
-    loadOrBuildRunningStyleFeatureParquet({
-      env: makeEnv("1"),
-      featureNames: ["f1"],
-      race: RACE,
-    }),
-  ).rejects.toThrow("Catalog unavailable");
-  expect(loadRunningStyleFeatureParquet).not.toHaveBeenCalled();
-  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
-});
-
-it("falls back to R2 parquet when Catalog is unavailable and coverage is complete", async () => {
+it("returns a valid R2 parquet without calling an unavailable Catalog", async () => {
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
     await import("./running-style-feature-parquet");
-  const catalogError = new Error(
-    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
-  );
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(new Error("must not run"));
   vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
   vi.mocked(validateFeatureCoverage).mockReturnValue({
     missingCells: 0,
@@ -223,9 +257,7 @@ it("falls back to R2 parquet when Catalog is unavailable and coverage is complet
     rows: rows(),
   });
   expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
-  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
-    "Running-style features catalog unavailable, using R2 parquet fallback features.parquet: PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
-  );
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
 });
 
 it("rebuilds and writes the current Parquet from PostgreSQL when Catalog is unavailable", async () => {

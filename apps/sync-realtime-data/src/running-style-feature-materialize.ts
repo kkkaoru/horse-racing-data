@@ -153,28 +153,20 @@ const tryLoadCachedRunningStyleFeatureParquet = async (
 export const loadOrBuildRunningStyleFeatureParquet = async (
   params: LoadOrBuildRunningStyleFeatureParquetParams,
 ): Promise<LoadOrBuildRunningStyleFeatureParquetResult> => {
+  const cached = await tryLoadCachedRunningStyleFeatureParquet(params);
+  if (cached !== null) return cached;
   // Memory mitigation (2026-06-09): the previous implementation re-fetched the
   // freshly-uploaded Parquet from R2 here, which doubled peak ArrayBuffer +
   // Buffer + decoded-row residency on the rebuild path inside the 128 MiB
   // isolate. The internal builder now hands the in-memory rows back so the
   // round-trip is skipped — the file in R2 is identical to the rows we just
   // assembled, so the second load was pure overhead.
-  try {
-    const built = await buildAndPutRunningStyleFeatureParquetInternal({
-      env: params.env,
-      featureNames: params.featureNames,
-      race: params.race,
-    });
-    return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows: built.rows };
-  } catch (error) {
-    if (!isCatalogUnavailableError(error)) throw error;
-    const cached = await tryLoadCachedRunningStyleFeatureParquet(params);
-    if (cached === null) throw error;
-    console.error(
-      `Running-style features catalog unavailable, using R2 parquet fallback ${cached.featuresR2Key}: ${formatError(error)}`,
-    );
-    return cached;
-  }
+  const built = await buildAndPutRunningStyleFeatureParquetInternal({
+    env: params.env,
+    featureNames: params.featureNames,
+    race: params.race,
+  });
+  return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows: built.rows };
 };
 
 export const materializeRunningStyleFeatureParquetForRace = async (
