@@ -131,8 +131,9 @@ const RACE_BANGO_PATTERN = /^\d{2}$/u;
 // LIMIT is intentionally omitted: the where-clause covers a single venue-day
 // (max ~12 races x 18 horses = ~216 rows). The four filter columns
 // (source, kaisai_nen, kaisai_tsukihi, keibajo_code) should be backed by an
-// index on `realtime_race_sources` — verify migrations include one, and add
-// one if not (cold-start /races fan-out is a hot read path).
+// index on `realtime_race_sources`. The target_races CTE deliberately applies
+// that venue-day scope before touching the large snapshot tables; otherwise
+// each latest-row CTE scans every historical race on every alarm pull.
 //
 // 2026-06-02 (race 43/09 hotfix): base table switched from
 // `race_result_snapshots` to `race_entry_snapshots` so partial-result NAR
@@ -144,44 +145,60 @@ const RACE_BANGO_PATTERN = /^\d{2}$/u;
 // surface with fetchedAt=null and the merge precedence would never accept
 // the row.
 const SNAPSHOT_SELECT_SQL = `
-  with latest_entry as (
-    select race_key, horse_number, horse_name, jockey_name, fetched_at
+  with target_races as materialized (
+    select source, race_key, kaisai_nen, kaisai_tsukihi, keibajo_code,
+           race_bango, race_name, race_start_at_jst,
+           result_expected_horse_count, result_saved_horse_count, result_complete_at
+    from realtime_race_sources
+    where source = ?
+      and kaisai_nen = ?
+      and kaisai_tsukihi = ?
+      and keibajo_code = ?
+  ),
+  latest_entry as (
+    select e1.race_key, e1.horse_number, e1.horse_name, e1.jockey_name, e1.fetched_at
     from race_entry_snapshots e1
-    where fetched_at = (
+    where e1.race_key in (select race_key from target_races)
+      and e1.fetched_at = (
       select max(fetched_at) from race_entry_snapshots e2
       where e2.race_key = e1.race_key and e2.horse_number = e1.horse_number
     )
   ),
   latest_result as (
-    select race_key, horse_number, finish_position, time
+    select r1.race_key, r1.horse_number, r1.finish_position, r1.time
     from race_result_snapshots r1
-    where fetched_at = (
+    where r1.race_key in (select race_key from target_races)
+      and r1.fetched_at = (
       select max(fetched_at) from race_result_snapshots r2
       where r2.race_key = r1.race_key and r2.horse_number = r1.horse_number
     )
   ),
   latest_weight as (
-    select race_key, horse_number, weight, change_sign, change_amount
+    select w1.race_key, w1.horse_number, w1.weight, w1.change_sign, w1.change_amount
     from horse_weight_snapshots w1
-    where fetched_at = (
+    where w1.race_key in (select race_key from target_races)
+      and w1.fetched_at = (
       select max(fetched_at) from horse_weight_snapshots w2
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
   ),
   latest_result_fetch_at as (
-    select race_key, max(fetched_at) as fetched_at
-    from race_result_snapshots
-    group by race_key
+    select r.race_key, max(r.fetched_at) as fetched_at
+    from race_result_snapshots r
+    where r.race_key in (select race_key from target_races)
+    group by r.race_key
   ),
   latest_entry_fetch_at as (
-    select race_key, max(fetched_at) as fetched_at
-    from race_entry_snapshots
-    group by race_key
+    select e.race_key, max(e.fetched_at) as fetched_at
+    from race_entry_snapshots e
+    where e.race_key in (select race_key from target_races)
+    group by e.race_key
   ),
   latest_weight_fetch_at as (
-    select race_key, max(fetched_at) as fetched_at
-    from horse_weight_snapshots
-    group by race_key
+    select w.race_key, max(w.fetched_at) as fetched_at
+    from horse_weight_snapshots w
+    where w.race_key in (select race_key from target_races)
+    group by w.race_key
   )
   select
     s.source as source,
@@ -209,16 +226,12 @@ const SNAPSHOT_SELECT_SQL = `
     s.result_saved_horse_count as savedHorseCount,
     s.result_complete_at as resultCompleteAt
   from latest_entry e
-  join realtime_race_sources s on s.race_key = e.race_key
+  join target_races s on s.race_key = e.race_key
   left join latest_result r on r.race_key = e.race_key and r.horse_number = e.horse_number
   left join latest_weight w on w.race_key = e.race_key and w.horse_number = e.horse_number
   left join latest_result_fetch_at rf on rf.race_key = e.race_key
   left join latest_entry_fetch_at ef on ef.race_key = e.race_key
   left join latest_weight_fetch_at wf on wf.race_key = e.race_key
-  where s.source = ?
-    and s.kaisai_nen = ?
-    and s.kaisai_tsukihi = ?
-    and s.keibajo_code = ?
   order by s.race_bango asc, cast(nullif(e.horse_number, '') as integer) asc
 `;
 

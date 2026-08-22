@@ -1618,9 +1618,9 @@ it("self-pull binds D1 SELECT placeholders in (source, kaisaiNen, kaisaiTsukihi,
   const runningStyleBind = vi.fn(() => ({
     all: vi.fn(async (): Promise<FakeD1AllResult> => ({ results: [] })),
   }));
-  const prepare: FakeD1PrepareFn = (sql: string) => ({
+  const prepare: Mock<FakeD1PrepareFn> = vi.fn((sql: string) => ({
     bind: sql.includes("from race_running_styles") ? runningStyleBind : snapshotBind,
-  });
+  }));
   const env = buildFakeEnv(buildFakeD1Database(prepare));
   const handle = buildFakeState(new Map());
   const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
@@ -1631,6 +1631,10 @@ it("self-pull binds D1 SELECT placeholders in (source, kaisaiNen, kaisaiTsukihi,
   );
   expect(snapshotBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
   expect(runningStyleBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
+  const snapshotSql = prepare.mock.calls[0]?.[0];
+  expect(snapshotSql).toMatch(/with target_races as materialized/u);
+  expect(snapshotSql).toMatch(/e1\.race_key in \(select race_key from target_races\)/u);
+  expect(snapshotSql).not.toMatch(/join realtime_race_sources s/u);
 });
 
 // 2026-06-02 race 43/09 hotfix: simulate the partial-result NAR case where
