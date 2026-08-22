@@ -10,6 +10,7 @@ import {
   parsePremiumPaddockBulletins,
   parsePremiumStableComments,
   parseNetkeibaTrainingWorkouts,
+  mergeNetkeibaTrainingWorkouts,
   parsePremiumTrainingReviews,
   sourceRaceIdCandidates,
 } from "./premium-race";
@@ -88,6 +89,67 @@ it("parseNetkeibaTrainingWorkouts inherits horse and mark across multiple detail
     lapTime1f: "120",
     timeGokei4f: "0540",
     trainingDate: "20260102",
+    workoutIndex: 2,
+  });
+});
+
+it("mergeNetkeibaTrainingWorkouts deduplicates overlapping final and intermediate pages", () => {
+  const finalPage: ReturnType<typeof parseNetkeibaTrainingWorkouts> = [
+    {
+      commentText: null,
+      course: "札幌ダート",
+      courseDirection: null,
+      evaluationGrade: "A",
+      evaluationText: "最終",
+      horseName: "テストホース",
+      horseNumber: "3",
+      lapTime10f: null,
+      lapTime1f: "132",
+      lapTime2f: null,
+      lapTime3f: null,
+      lapTime4f: null,
+      lapTime5f: null,
+      lapTime6f: null,
+      lapTime7f: null,
+      lapTime8f: null,
+      lapTime9f: null,
+      riderName: null,
+      timeGokei10f: null,
+      timeGokei2f: null,
+      timeGokei3f: null,
+      timeGokei4f: "0531",
+      timeGokei5f: null,
+      timeGokei6f: null,
+      timeGokei7f: null,
+      timeGokei8f: null,
+      timeGokei9f: null,
+      tracenKubun: null,
+      trainingDate: "20260822",
+      trainingTime: "",
+      trainingType: "ウッド",
+      workoutIndex: 1,
+    },
+  ];
+  const intermediatePage = [
+    finalPage[0]!,
+    {
+      ...finalPage[0]!,
+      evaluationText: "中間",
+      timeGokei4f: "0540",
+      trainingDate: "20260820",
+      workoutIndex: 1,
+    },
+  ];
+  const merged = mergeNetkeibaTrainingWorkouts([finalPage, intermediatePage]);
+  expect(merged).toHaveLength(2);
+  expect(merged[0]).toMatchObject({
+    horseNumber: "3",
+    trainingDate: "20260820",
+    workoutIndex: 1,
+  });
+  expect(merged[1]).toMatchObject({
+    horseNumber: "3",
+    trainingDate: "20260822",
     workoutIndex: 2,
   });
 });

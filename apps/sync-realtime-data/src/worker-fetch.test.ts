@@ -395,7 +395,7 @@ it("fetch POST /api/internal/netkeiba-training-workouts returns 503 without prem
 it("fetch POST /api/internal/netkeiba-training-workouts returns an empty array for public HTML", async () => {
   const { default: worker } = await import("./worker");
   const premiumRace = await import("./premium-race");
-  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValueOnce("<html>public page</html>");
+  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValue("<html>public page</html>");
   const response = await worker.fetch(
     new Request("https://x.test/api/internal/netkeiba-training-workouts", {
       body: JSON.stringify({ raceDate: "20260822", sourceRaceId: "202601020101" }),
@@ -411,12 +411,16 @@ it("fetch POST /api/internal/netkeiba-training-workouts returns an empty array f
     expect.objectContaining({ origin: "https://race.netkeiba.com" }),
     "https://race.netkeiba.com/race/oikiri.html?race_id=202601020101",
   );
+  expect(premiumRace.fetchPremiumHtml).toHaveBeenCalledWith(
+    expect.objectContaining({ origin: "https://race.netkeiba.com" }),
+    "https://race.netkeiba.com/race/oikiri.html?race_id=202601020101&type=1",
+  );
 });
 
 it("fetch POST /api/internal/netkeiba-training-workouts parses authenticated workout rows", async () => {
   const { default: worker } = await import("./worker");
   const premiumRace = await import("./premium-race");
-  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValueOnce(`
+  vi.mocked(premiumRace.fetchPremiumHtml).mockResolvedValue(`
     <div class="Icon_Account">signed in</div>
     <tr class="OikiriDataHead1 HorseList">
       <td class="Umaban">3</td><td class="Horse_Name">テストホース</td>
@@ -450,6 +454,39 @@ it("fetch POST /api/internal/netkeiba-training-workouts parses authenticated wor
     expect.objectContaining({ cookie: null, proxyUrl: null }),
     "https://premium.example/custom/202601020101",
   );
+  expect(premiumRace.fetchPremiumHtml).toHaveBeenCalledWith(
+    expect.objectContaining({ cookie: null, proxyUrl: null }),
+    "https://premium.example/custom/202601020101?type=1",
+  );
+});
+
+it("fetch POST /api/internal/netkeiba-training-workouts keeps final workouts when the intermediate page fails", async () => {
+  const { default: worker } = await import("./worker");
+  const premiumRace = await import("./premium-race");
+  vi.mocked(premiumRace.fetchPremiumHtml)
+    .mockResolvedValueOnce(`
+      <tr class="OikiriDataHead1 HorseList">
+        <td class="Umaban">3</td><td class="Horse_Name">テストホース</td>
+        <td class="Date">8/22</td><td class="Time4F">53.1</td><td class="Lap1F">13.2</td>
+      </tr>
+    `)
+    .mockRejectedValueOnce(new Error("type=1 unavailable"));
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/netkeiba-training-workouts", {
+      body: JSON.stringify({ raceDate: "20260823", sourceRaceId: "202601020311" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://race.netkeiba.com" }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const payload = (await response.json()) as { workouts: Array<Record<string, unknown>> };
+  expect(payload.workouts).toHaveLength(1);
+  expect(payload.workouts[0]).toMatchObject({
+    horseNumber: "3",
+    trainingDate: "20260822",
+  });
 });
 
 it("fetch POST /api/internal/netkeiba-training-workouts returns 502 on upstream failure", async () => {

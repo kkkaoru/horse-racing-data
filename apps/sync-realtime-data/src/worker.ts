@@ -61,6 +61,7 @@ import {
   parsePremiumStateMessage,
   parsePremiumTrainingReviews,
   parseNetkeibaTrainingWorkouts,
+  mergeNetkeibaTrainingWorkouts,
   summarizePremiumStableCommentHtml,
   type PremiumPaddockBulletin,
 } from "./premium-race";
@@ -5165,6 +5166,14 @@ const isTrendSource = (value: string | null): value is "jra" | "nar" =>
 
 const NETKEIBA_TRAINING_WORKOUTS_PATH_TEMPLATE = "/race/oikiri.html?race_id={sourceRaceId}";
 const NETKEIBA_SOURCE_RACE_ID_PATTERN = /^\d{12}$/u;
+const NETKEIBA_INTERMEDIATE_WORKOUT_TYPE = "1";
+
+const withNetkeibaIntermediateWorkoutType = (url: string): string => {
+  const parsed = new URL(url);
+  if (parsed.searchParams.get("type") === NETKEIBA_INTERMEDIATE_WORKOUT_TYPE) return url;
+  parsed.searchParams.set("type", NETKEIBA_INTERMEDIATE_WORKOUT_TYPE);
+  return parsed.toString();
+};
 
 interface NetkeibaTrainingWorkoutsRequestBody {
   raceDate: string;
@@ -5200,7 +5209,22 @@ const fetchNetkeibaTrainingWorkouts = async (
       config.origin,
     ).toString();
     const html = await fetchPremiumHtml(config, workUrl);
-    return json({ workouts: parseNetkeibaTrainingWorkouts(html, body.raceDate) });
+    const finalWorkouts = parseNetkeibaTrainingWorkouts(html, body.raceDate);
+    const intermediateUrl = withNetkeibaIntermediateWorkoutType(workUrl);
+    if (intermediateUrl === workUrl) {
+      return json({ workouts: finalWorkouts });
+    }
+    try {
+      const intermediateHtml = await fetchPremiumHtml(config, intermediateUrl);
+      return json({
+        workouts: mergeNetkeibaTrainingWorkouts([
+          finalWorkouts,
+          parseNetkeibaTrainingWorkouts(intermediateHtml, body.raceDate),
+        ]),
+      });
+    } catch {
+      return json({ workouts: finalWorkouts });
+    }
   } catch {
     return json({ error: "premium_fetch_failed" }, { status: 502 });
   }

@@ -892,6 +892,46 @@ export const parseNetkeibaTrainingWorkouts = (
   return workouts;
 };
 
+const compareNetkeibaTrainingWorkouts = (
+  left: PremiumTrainingWorkout,
+  right: PremiumTrainingWorkout,
+): number => {
+  if (left.horseNumber !== right.horseNumber) {
+    return left.horseNumber.localeCompare(right.horseNumber);
+  }
+  if (left.trainingDate !== right.trainingDate) {
+    return left.trainingDate.localeCompare(right.trainingDate);
+  }
+  return left.workoutIndex - right.workoutIndex;
+};
+
+const netkeibaTrainingWorkoutSignature = (workout: PremiumTrainingWorkout): string =>
+  JSON.stringify({
+    course: workout.course,
+    horseNumber: workout.horseNumber,
+    lapTime1f: workout.lapTime1f,
+    timeGokei4f: workout.timeGokei4f,
+    trainingDate: workout.trainingDate,
+    trainingTime: workout.trainingTime,
+    trainingType: workout.trainingType,
+  });
+
+export const mergeNetkeibaTrainingWorkouts = (
+  groups: ReadonlyArray<ReadonlyArray<PremiumTrainingWorkout>>,
+): PremiumTrainingWorkout[] => {
+  const unique = new Map<string, PremiumTrainingWorkout>();
+  groups.flat().map((workout) => {
+    const key = netkeibaTrainingWorkoutSignature(workout);
+    if (!unique.has(key)) unique.set(key, workout);
+  });
+  const counts = new Map<string, number>();
+  return [...unique.values()].toSorted(compareNetkeibaTrainingWorkouts).map((workout) => {
+    const workoutIndex = (counts.get(workout.horseNumber) ?? 0) + 1;
+    counts.set(workout.horseNumber, workoutIndex);
+    return { ...workout, workoutIndex };
+  });
+};
+
 export const parsePremiumStableComments = (
   html: string,
   env: {
