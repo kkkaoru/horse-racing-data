@@ -505,6 +505,7 @@ const claimContainerSlotOrRetry = async (
   params: ClaimContainerSlotOrRetryParams,
 ): Promise<boolean> => {
   const claim = await claimContainerSlot({
+    ...(params.kind === FOCUSED_FULL_SLOT_KIND ? { allowSameOwner: true } : {}),
     category: params.category,
     doName: params.doName,
     env: params.env,

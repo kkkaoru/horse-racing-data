@@ -3013,6 +3013,7 @@ test("retries a focused-full without starting a container when the slot is cappe
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   expect(claimContainerSlotMock).toHaveBeenCalledWith(
     expect.objectContaining({
+      allowSameOwner: true,
       doName: "predict-jra-1",
       kind: "focused-full",
     }),
@@ -3021,6 +3022,61 @@ test("retries a focused-full without starting a container when the slot is cappe
     "[predict-queue] container slot capped doName=predict-jra-1 kind=focused-full category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 -- will retry without starting a container",
   );
   warnSpy.mockRestore();
+});
+
+test("resumed focused-full redelivery reclaims its same-work slot without yielding priority", async () => {
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: true, state: "resumed" });
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    category: "jra",
+    racesPredicted: 0,
+    status: "accepted",
+    type: "result",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        raceStartAtJst: "2026-06-28T10:10:00+09:00",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(claimContainerSlotMock).toHaveBeenCalledWith({
+    allowSameOwner: true,
+    category: "jra",
+    doName: "predict-jra-1",
+    env: expect.any(Object),
+    kind: "focused-full",
+    staleAfterMs: 1_200_000,
+    workKey: "focused-full:20260628:jra:02:01",
+  });
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+});
+
+test("rescore slot claims never receive focused-full same-owner permission", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.not.objectContaining({ allowSameOwner: true }),
+  );
 });
 
 test("keeps the focused-full slot after the container accepts a detached pipeline", async () => {
