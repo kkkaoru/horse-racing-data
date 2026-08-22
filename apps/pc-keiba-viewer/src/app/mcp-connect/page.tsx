@@ -6,8 +6,14 @@ import Link from "next/link";
 import chatgptAllow from "../../../public/mcp-connect/chatgpt-allow.jpg";
 import chatgptCreateApp from "../../../public/mcp-connect/chatgpt-create-app.jpg";
 import chatgptDeveloperMode from "../../../public/mcp-connect/chatgpt-developer-mode.jpg";
+import { CHATGPT_APP_DESCRIPTION } from "../../lib/mcp-chatgpt-app";
 import { mcpResourceUrl, originFromForwardedHeaders } from "../../lib/mcp-oauth-origin";
+import { McpCopyRow } from "./mcp-copy-row";
+import { McpExternalLink } from "./mcp-external-link";
 import { McpUrlCopy } from "./mcp-url-copy";
+
+const CHATGPT_HOME_HREF: string = "https://chatgpt.com";
+const CHATGPT_CREATE_APP_HREF: string = "https://chatgpt.com/plugins";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +49,17 @@ export default async function McpConnectPage() {
           ChatGPT で <strong>カスタム MCP アプリ</strong> として上記 URL を追加します。公式には MCP
           アプリの追加は web only です。iPhone / Android の ChatGPT アプリから新規追加はできません。
         </p>
+        <div className="mcp-connect-link-row">
+          <McpExternalLink href={CHATGPT_HOME_HREF} label="ChatGPT を開く（別タブ）" />
+          <McpExternalLink
+            href={CHATGPT_CREATE_APP_HREF}
+            label="アプリ作成ページを開く（別タブ）"
+          />
+        </div>
         <ol>
           <li>
-            有料プランで <a href="https://chatgpt.com">chatgpt.com</a> を開きます。
+            有料プランで ChatGPT をブラウザで開きます。
+            <McpExternalLink href={CHATGPT_HOME_HREF} label="ChatGPT を開く（別タブ）" />
           </li>
           <li>
             <strong>Settings → Security and login</strong>（または Apps → Advanced）で
@@ -63,17 +77,23 @@ export default async function McpConnectPage() {
         </figure>
         <ol start={3}>
           <li>
-            <a href="https://chatgpt.com/plugins">chatgpt.com/plugins</a> の <strong>+</strong>{" "}
-            からアプリを作成します。
+            アプリ作成ページの <strong>+</strong> からアプリを作成します。
+            <McpExternalLink
+              href={CHATGPT_CREATE_APP_HREF}
+              label="アプリ作成ページを開く（別タブ）"
+            />
           </li>
           <li>
-            MCP server URL に次の URL をそのまま貼り、認証は <strong>OAuth</strong> にします。
+            「アプリを作成」で次を貼り、認証は <strong>OAuth</strong> にします。
+            <p className="mcp-connect-field-label">説明</p>
+            <McpCopyRow value={CHATGPT_APP_DESCRIPTION} />
+            <p className="mcp-connect-field-label">MCPサーバーURL</p>
             <McpUrlCopy mcpUrl={mcpUrl} />
           </li>
         </ol>
         <figure className="mcp-connect-figure">
           <Image alt="ChatGPT の Create app に MCP URL を貼る手順の見本" src={chatgptCreateApp} />
-          <figcaption>Create app に MCP URL を貼り、OAuth を選びます</figcaption>
+          <figcaption>Create app に説明と MCP URL を貼り、OAuth を選びます</figcaption>
         </figure>
         <ol start={5}>
           <li>

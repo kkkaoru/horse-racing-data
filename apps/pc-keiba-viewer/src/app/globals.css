@@ -2364,12 +2364,31 @@ fieldset.running-style-tabs {
   font-weight: var(--number-800-12);
   min-height: var(--space-38px-35);
   padding: var(--space-8px-28) var(--space-12px-9);
+  text-decoration: none;
+}
+
+.mcp-connect-link-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.mcp-connect-field-label {
+  font-weight: var(--number-800-12);
+  margin: var(--space-8px-28) var(--number-0-2) var(--space-6px-33);
 }
 
 .mcp-connect-card ol {
   display: grid;
   gap: var(--space-10px-27);
   padding-left: var(--space-20px-52);
+}
+
+.mcp-connect-card li {
+  display: grid;
+  gap: var(--space-8px-28);
+  justify-items: start;
 }
 
 .mcp-connect-figure {
