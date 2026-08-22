@@ -1,8 +1,8 @@
-// Run via bun (CLI scripts/push-neon-sync.ts).
-// Warms the pc-keiba-viewer KV cache for the next JST day after the
-// post-sync analytics indexes step. This covers the case where the
-// scheduled 21:00 JST viewer cron has already fired before the operator
-// pushes today's data, leaving tomorrow's races un-warmed.
+// Run via bun (CLI scripts/push-neon-sync.ts) after replica:push:r2-catalog
+// and replica:push:neon. POSTs viewer cache-warm so Cloudflare Queues fill
+// KV + Cache API for tomorrow JST (results, similar, heatmap, condition).
+// Catalog-only is too early: getRacesByDate still reads Neon. This also
+// covers the case where the 21:00 JST viewer cron fired before the push.
 
 export type CacheWarmEndpoint = "race-detail-sections" | "race-detail-ssr" | "race-trends";
 

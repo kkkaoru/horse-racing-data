@@ -1977,6 +1977,8 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
     dependencyEdges,
   );
   await syncAnalyticsIndexes(env);
+  // Catalog Iceberg is already published by replica:push:r2-catalog.
+  // Enqueue tomorrow JST section/heatmap cache only after Neon listing exists.
   await warmViewerCaches(env);
   reportSkippedTables(skippedTables);
 }
