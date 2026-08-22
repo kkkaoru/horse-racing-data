@@ -172,9 +172,11 @@ const selectCompletedRacesNeedingRunningStyleMirror = (
     const state = states.get(raceKey);
     if (state === undefined || !isRunningStyleStateCompleted(state)) return;
     const expectedHorseCount = state.expectedHorseCount ?? 0;
+    const existingHorseCount = predictionCounts.get(raceKey) ?? 0;
+    if (existingHorseCount >= expectedHorseCount) return;
     needed.push({
       ...toRunningStylePendingRace(row, expectedHorseCount),
-      existingHorseCount: predictionCounts.get(raceKey) ?? 0,
+      existingHorseCount,
     });
   });
   return needed;

@@ -536,6 +536,62 @@ it("planRunningStylePredictionsForDate requeues completed races when Neon mirror
   expect(send).toHaveBeenCalledTimes(1);
 });
 
+it("planRunningStylePredictionsForDate does not requeue a completed race with all expected rows", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRaceRunningStyleCounts, listRunningStyleInferenceStates } =
+    await import("./running-style-d1");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValueOnce(
+    new Map([["jra:20260512:08:01", 16]]),
+  );
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        "jra:20260512:08:01",
+        {
+          attemptedAt: "2026-05-12T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
+          completedAt: "2026-05-12T11:05:00.000Z",
+          expectedHorseCount: 16,
+          featuresR2Key: "features.parquet",
+          modelVersion: "v7",
+          raceKey: "jra:20260512:08:01",
+          status: "completed",
+          writtenHorseCount: 16,
+        },
+      ],
+    ]),
+  );
+  const send = vi.fn(queueSendOk);
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      RUNNING_STYLE_JOBS: {
+        metrics: vi.fn(queueMetricsOk),
+        send,
+        sendBatch: vi.fn(queueSendOk),
+      },
+    }),
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.completed).toBe(1);
+  expect(summary.enqueued).toBe(0);
+  expect(send).not.toHaveBeenCalled();
+});
+
 it("planRunningStylePredictionsForDate uses Catalog counts when only some races are completed", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
