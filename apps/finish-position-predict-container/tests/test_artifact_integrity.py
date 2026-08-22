@@ -1451,6 +1451,8 @@ def test_dockerfile_stages_only_selected_models_and_verifies_runtime_tree() -> N
     assert "COPY apps/finish-position-predict-container/models /models" not in dockerfile
     assert "--artifact-root /models" in lines[verify_run_index]
     assert "--system finish-position" in lines[verify_run_index]
+    assert '"xgboost-cpu==3.2.0"' in dockerfile
+    assert '"xgboost>=3.2.0"' not in dockerfile
 
 
 def test_deploy_script_blocks_wrangler_when_verification_fails(tmp_path: Path) -> None:

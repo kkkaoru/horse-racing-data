@@ -43,7 +43,7 @@ RUN uv pip install --system --no-cache \
     "pandas>=2.2.0" \
     "psycopg[binary]>=3.2.0" \
     "pyarrow>=17.0.0" \
-    "xgboost>=3.2.0"
+    "xgboost-cpu==3.2.0"
 
 # Pre-install the DuckDB source extensions into the image so every per-race
 # layer subprocess's runtime extension load hits a warm local cache. Production
