@@ -6409,6 +6409,139 @@ fieldset.stats-section-toggle-wrap {
   min-width: var(--space-1120px-179);
 }
 
+.condition-analysis-chart {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin: var(--number-0-2);
+  min-width: var(--number-0-2);
+  position: relative;
+  width: var(--space-100pct-12);
+}
+
+.condition-analysis-chart-note,
+.condition-analysis-chart-summary {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  line-height: var(--number-1-5-25);
+  margin: var(--number-0-2);
+}
+
+.condition-analysis-chart-frame {
+  position: relative;
+}
+
+.condition-analysis-chart-tooltip {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--ink);
+  font-size: var(--space-15px-1);
+  line-height: var(--number-1-5-25);
+  max-width: var(--space-240px-77);
+  padding: var(--space-8px-28) var(--space-12px-9);
+  pointer-events: none;
+  position: absolute;
+  z-index: var(--number-20-3);
+}
+
+.condition-analysis-chart-tooltip-title {
+  font-weight: var(--number-700-14);
+  line-height: var(--number-1-5-25);
+  margin: var(--number-0-2) var(--number-0-2) var(--space-6px-33);
+}
+
+.condition-analysis-chart-tooltip p {
+  line-height: var(--number-1-5-25);
+  margin: var(--number-0-2);
+}
+
+.condition-analysis-chart-tooltip-meta {
+  color: var(--muted);
+}
+
+.condition-analysis-chart-svg {
+  height: auto;
+  max-width: var(--space-100pct-12);
+  overflow: visible;
+  width: var(--space-100pct-12);
+}
+
+.condition-analysis-chart-svg .domain {
+  fill: none;
+  stroke: var(--muted);
+}
+
+.condition-analysis-chart-svg .tick line {
+  stroke: var(--line);
+}
+
+.condition-analysis-chart-svg .tick text {
+  fill: var(--muted);
+  font-size: var(--space-12px-9);
+}
+
+.condition-analysis-chart-grid {
+  fill: none;
+  stroke: var(--line);
+}
+
+.condition-analysis-chart-box {
+  fill: var(--accent);
+  fill-opacity: var(--number-0-55-48);
+  stroke: var(--accent-strong);
+  stroke-width: var(--space-1px-7);
+}
+
+.condition-analysis-chart-whisker,
+.condition-analysis-chart-median {
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: var(--space-2px-25);
+}
+
+.condition-analysis-chart-range {
+  fill: none;
+  stroke: var(--color-hex-92400e-47);
+  stroke-width: var(--space-2px-25);
+}
+
+.condition-analysis-chart-average {
+  fill: var(--color-hex-ea580c-77);
+}
+
+.condition-analysis-payout-bee {
+  fill: var(--color-hex-075985-106);
+}
+
+.condition-analysis-payout-bee-outlier {
+  fill: var(--danger);
+}
+
+.condition-analysis-finish-bee-win {
+  fill: var(--accent-strong);
+}
+
+.condition-analysis-finish-bee-place {
+  fill: var(--accent);
+}
+
+.condition-analysis-finish-bee-show {
+  fill: var(--color-hex-075985-106);
+}
+
+.condition-analysis-finish-bee-out {
+  fill: var(--muted);
+}
+
+.condition-analysis-finish-bee-outlier {
+  fill: var(--danger);
+}
+
+.condition-analysis-chart-axis {
+  fill: var(--muted);
+  font-size: var(--space-12px-9);
+}
+
 .finish-prediction-table {
   min-width: var(--space-1332px-180);
 }
@@ -9594,8 +9727,23 @@ fieldset.stats-section-toggle-wrap {
   padding-top: var(--space-18px-31);
 }
 
+.win-rate-heatmap-section,
 .win-rate-heatmap-section.lazy-detail-section {
   content-visibility: visible;
+}
+
+.win-rate-heatmap-section > .section-heading.compact {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--space-8px-28);
+}
+
+.win-rate-heatmap-bloodline-note {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  line-height: var(--number-1-5-25);
+  margin: var(--number-0-2);
+  max-width: var(--space-100pct-12);
 }
 
 .win-rate-heatmap-wrap {
@@ -10185,4 +10333,99 @@ fieldset.race-results-chart-view-toggle {
 .race-results-correlation-gap-badge[data-tone="even"] {
   background: var(--surface-muted);
   color: var(--muted);
+}
+
+/* Training workout course-invariant 切れ味 scatter (調教追い切り) */
+.training-chart {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin: var(--number-0-2);
+  min-width: var(--number-0-2);
+  width: var(--space-100pct-12);
+}
+
+.training-chart-note {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  line-height: var(--number-1-5-25);
+  margin: var(--number-0-2);
+}
+
+.training-chart-frame {
+  min-width: var(--number-0-2);
+  position: relative;
+}
+
+.training-chart-svg {
+  height: auto;
+  max-width: var(--space-100pct-12);
+  overflow: visible;
+  width: var(--space-100pct-12);
+}
+
+.training-chart-axis {
+  fill: var(--muted);
+  font-size: var(--space-12px-9);
+}
+
+.training-chart-even {
+  stroke: var(--muted);
+}
+
+.training-chart-even-label {
+  fill: var(--muted);
+  font-size: var(--space-12px-9);
+}
+
+.training-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-12px-9);
+  list-style: none;
+  margin: var(--number-0-2);
+  padding: var(--number-0-2);
+}
+
+.training-chart-legend li {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: var(--space-15px-1);
+  gap: var(--space-6px-33);
+}
+
+.training-chart-swatch {
+  border-radius: var(--space-6px-33);
+  display: inline-block;
+  height: var(--space-12px-9);
+  width: var(--space-12px-9);
+}
+
+.training-chart-point {
+  cursor: pointer;
+}
+
+.training-chart-umaban {
+  pointer-events: none;
+}
+
+.training-chart-tooltip {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--ink);
+  display: grid;
+  font-size: var(--space-15px-1);
+  gap: var(--space-2px-25);
+  line-height: var(--number-1-5-25);
+  max-width: var(--space-240px-77);
+  padding: var(--space-8px-28) var(--space-12px-9);
+  pointer-events: none;
+  position: absolute;
+  z-index: var(--number-20-3);
+}
+
+.training-chart-tooltip-line {
+  display: block;
+  line-height: var(--number-1-5-25);
 }

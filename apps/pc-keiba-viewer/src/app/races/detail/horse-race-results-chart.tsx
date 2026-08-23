@@ -22,6 +22,7 @@ import {
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
+  uniqueSortedDateValues,
 } from "../../../lib/horse-race-results-chart-data";
 import type {
   HorseRaceChartMetric,
@@ -310,6 +311,16 @@ const buildSeriesListsByMetric = ({
   futan: buildHorseRaceChartSeriesList({ metric: "futan", results, runners }),
 });
 
+const uniqueTimeTicksForSeriesList = (
+  seriesList: HorseRaceChartSeries[],
+  hiddenHorses: ReadonlySet<string>,
+): number[] =>
+  uniqueSortedDateValues(
+    seriesList
+      .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
+      .flatMap((series) => series.points.map((point) => point.dateValue)),
+  );
+
 // Apply the realtime change sign to the (already decoded) change amount so the
 // delta carries its direction: a "-" sign negates the amount, anything else
 // keeps it positive. Null when no change amount is available.
@@ -524,10 +535,12 @@ const OverviewPanels = ({
             <LineChart syncId={OVERVIEW_SYNC_ID} syncMethod={CHART_SYNC_METHOD}>
               <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
               <XAxis
+                allowDuplicatedCategory={false}
                 dataKey="dateValue"
                 domain={TIME_AXIS_DOMAIN}
                 scale="time"
                 tickFormatter={formatHorseRaceChartDate}
+                ticks={uniqueTimeTicksForSeriesList(seriesListsByMetric[metric], hiddenHorses)}
                 type="number"
               />
               <YAxis

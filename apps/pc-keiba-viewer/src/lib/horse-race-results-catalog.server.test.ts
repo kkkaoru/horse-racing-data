@@ -141,10 +141,7 @@ it("returns Catalog horse race result rows from the service binding", async () =
       zogenSa: "4",
     },
   ]);
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/horse-race-results?date=20260808&keibajoCode=05&raceBango=11&source=jra&sourceScope=all",
   );
 });
@@ -264,4 +261,12 @@ it("propagates Catalog fetch failures", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error("catalog timeout"));
   safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
   await expect(fetchHorseRaceResultsFromCatalog(query)).rejects.toThrow("catalog timeout");
+});
+
+it("returns null when Catalog fetch cannot parse the Request URL", async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockRejectedValue(new TypeError("Failed to parse URL from [object Request]"));
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+  await expect(fetchHorseRaceResultsFromCatalog(query)).resolves.toBeNull();
 });

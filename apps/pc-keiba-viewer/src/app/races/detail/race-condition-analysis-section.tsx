@@ -1,8 +1,16 @@
 "use client";
 
-import Link from "next/link";
-import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
+// This file runs with bun.
 
+import Link from "next/link";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+
+import {
+  buildFinishHorsePoints,
+  buildPayoutDistributionView,
+  DEFAULT_CONDITION_FINISH_CHART,
+  DEFAULT_CONDITION_PAYOUT_CHART,
+} from "../../../lib/condition-analysis-charts";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type {
   FinishPositionStatsRow,
@@ -10,7 +18,14 @@ import type {
   RaceTimeStats,
 } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import {
+  loadConditionFinishChartForCurrentUser,
+  loadConditionPayoutChartForCurrentUser,
+  persistConditionFinishChartForCurrentUser,
+  persistConditionPayoutChartForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
 import { FrameNumberBadge } from "./frame-number-badge";
+import { FinishPopularityChart, PayoutTrendChart } from "./race-condition-analysis-charts";
 import { formatRaceTimeDecimalTenths, formatRaceTimeTenths } from "./race-time-stats-metrics";
 
 interface RaceConditionAnalysisSectionProps {
@@ -20,7 +35,18 @@ interface RaceConditionAnalysisSectionProps {
   raceTimeStats: RaceTimeStats;
 }
 
+interface AnalysisViewToggleProps {
+  chartChecked: boolean;
+  legend: string;
+  name: string;
+  onShowChart: (showChart: boolean) => void;
+}
+
 const TARGET_RACE_PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
+const VIEW_CHART: string = "chart";
+const VIEW_TEXT: string = "text";
+const PAYOUT_VIEW_RADIO_NAME: string = "condition-payout-view";
+const FINISH_VIEW_RADIO_NAME: string = "condition-finish-view";
 
 const formatDetailDate = (date: string): string =>
   date.length === 8 ? formatDate(date.slice(0, 4), date.slice(4, 8)) : "-";
@@ -46,6 +72,40 @@ const parseTenths = (value: string): number | null => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
+const AnalysisViewToggle = ({
+  chartChecked,
+  legend,
+  name,
+  onShowChart,
+}: AnalysisViewToggleProps) => (
+  <fieldset aria-label={legend} className="win-rate-heatmap-view-toggle">
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={chartChecked}
+        name={name}
+        type="radio"
+        value={VIEW_CHART}
+        onChange={() => {
+          onShowChart(true);
+        }}
+      />
+      グラフ
+    </label>
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={!chartChecked}
+        name={name}
+        type="radio"
+        value={VIEW_TEXT}
+        onChange={() => {
+          onShowChart(false);
+        }}
+      />
+      テキスト
+    </label>
+  </fieldset>
+);
+
 const buildRaceHref = (date: string, keibajoCode: string, raceNumber: string): string => {
   const year = date.slice(0, 4);
   const month = date.slice(4, 6);
@@ -63,10 +123,45 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
   const [expandedFinishKey, setExpandedFinishKey] = useState<number | null>(null);
   const [targetRacePage, setTargetRacePage] = useState(1);
   const [targetRacePageSize, setTargetRacePageSize] = useState(5);
+  const [showPayoutChart, setShowPayoutChart] = useState(DEFAULT_CONDITION_PAYOUT_CHART);
+  const [showFinishChart, setShowFinishChart] = useState(DEFAULT_CONDITION_FINISH_CHART);
+  const hasEditedPayoutChart = useRef(false);
+  const hasEditedFinishChart = useRef(false);
 
   useEffect(() => {
     setTargetRacePage(1);
   }, [raceTimeStats.targetRaces, targetRacePageSize]);
+
+  useEffect(() => {
+    const loadState = { cancelled: false };
+    void loadConditionPayoutChartForCurrentUser()
+      .then((stored) => {
+        if (loadState.cancelled || hasEditedPayoutChart.current) {
+          return undefined;
+        }
+        setShowPayoutChart(stored);
+        return undefined;
+      })
+      .catch(() => undefined);
+    void loadConditionFinishChartForCurrentUser()
+      .then((stored) => {
+        if (loadState.cancelled || hasEditedFinishChart.current) {
+          return undefined;
+        }
+        setShowFinishChart(stored);
+        return undefined;
+      })
+      .catch(() => undefined);
+    return () => {
+      loadState.cancelled = true;
+    };
+  }, []);
+
+  const payoutDistribution = useMemo(() => buildPayoutDistributionView(payoutStats), [payoutStats]);
+  const finishHorsePoints = useMemo(
+    () => buildFinishHorsePoints(finishPositionStats),
+    [finishPositionStats],
+  );
 
   const targetRaceTotalPages = Math.max(
     1,
@@ -188,198 +283,226 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
 
         <section className="stats-category-section">
           <div className="section-heading compact">
-            <h3>払い戻し傾向</h3>
+            <h3>着順別 人気・オッズ</h3>
           </div>
-          <div className="stats-table-wrap">
-            <table className="stats-table analysis-table">
-              <thead>
-                <tr>
-                  <th>馬券</th>
-                  <th>最小</th>
-                  <th>最大</th>
-                  <th>平均</th>
-                  <th>中央値</th>
-                  <th>件数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {payoutStats.map((row) => {
-                  const isExpanded = expandedPayoutKey === row.betType;
+          <AnalysisViewToggle
+            chartChecked={showFinishChart}
+            legend="着順別人気オッズの表示"
+            name={FINISH_VIEW_RADIO_NAME}
+            onShowChart={(nextShowChart) => {
+              hasEditedFinishChart.current = true;
+              setShowFinishChart(nextShowChart);
+              void persistConditionFinishChartForCurrentUser(nextShowChart).catch(() => undefined);
+            }}
+          />
+          {showFinishChart ? <FinishPopularityChart points={finishHorsePoints} /> : null}
+          {showFinishChart ? null : (
+            <div className="stats-table-wrap">
+              <table className="stats-table analysis-table">
+                <thead>
+                  <tr>
+                    <th>着順</th>
+                    <th>人気 平均</th>
+                    <th>人気 中央値</th>
+                    <th>オッズ 平均</th>
+                    <th>オッズ 中央値</th>
+                    <th>件数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {finishPositionStats.map((row) => {
+                    const isExpanded = expandedFinishKey === row.finishPosition;
 
-                  return (
-                    <Fragment key={row.betType}>
-                      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
-                        <td className="stats-name-cell">
-                          {row.details.length > 0 ? (
-                            <button
-                              aria-expanded={isExpanded}
-                              className="stats-detail-toggle"
-                              type="button"
-                              onClick={() => {
-                                setExpandedPayoutKey((current) =>
-                                  current === row.betType ? null : row.betType,
-                                );
-                              }}
-                            >
-                              {row.betType}
-                            </button>
-                          ) : (
-                            row.betType
-                          )}
-                        </td>
-                        <td>{formatYen(row.minPayout)}</td>
-                        <td>{formatYen(row.maxPayout)}</td>
-                        <td>{formatYen(row.averagePayout)}</td>
-                        <td>{formatYen(row.medianPayout)}</td>
-                        <td>{row.count.toLocaleString("ja-JP")}</td>
-                      </tr>
-                      {isExpanded ? (
-                        <tr className="stats-detail-row">
-                          <td aria-label="払戻分析の詳細" colSpan={6}>
-                            <div className="stats-detail-panel">
-                              <table className="stats-detail-table analysis-payout-detail-table">
-                                <thead>
-                                  <tr>
-                                    <th>日付</th>
-                                    <th>競馬場</th>
-                                    <th>R</th>
-                                    <th>レース名</th>
-                                    <th>払戻</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {row.details.map((detail) => (
-                                    <tr
-                                      key={`${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.payout}`}
-                                    >
-                                      <td>{formatDetailDate(detail.date)}</td>
-                                      <td>{formatKeibajo(detail.keibajoCode)}</td>
-                                      <td>{formatRaceNumber(detail.raceNumber)}</td>
-                                      <td className="stats-detail-race-name">
-                                        {detail.raceName || "-"}
-                                      </td>
-                                      <td>{formatYen(detail.payout)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                    return (
+                      <Fragment key={row.finishPosition}>
+                        <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+                          <td className="stats-name-cell">
+                            {row.details.length > 0 ? (
+                              <button
+                                aria-expanded={isExpanded}
+                                className="stats-detail-toggle"
+                                type="button"
+                                onClick={() => {
+                                  setExpandedFinishKey((current) =>
+                                    current === row.finishPosition ? null : row.finishPosition,
+                                  );
+                                }}
+                              >
+                                {row.finishPosition}着
+                              </button>
+                            ) : (
+                              `${row.finishPosition}着`
+                            )}
                           </td>
+                          <td>{formatNumber(row.averagePopularity)}</td>
+                          <td>{formatNumber(row.medianPopularity)}</td>
+                          <td>{formatNumber(row.averageOdds)}</td>
+                          <td>{formatNumber(row.medianOdds)}</td>
+                          <td>{row.count.toLocaleString("ja-JP")}</td>
                         </tr>
-                      ) : null}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {isExpanded ? (
+                          <tr className="stats-detail-row">
+                            <td aria-label="オッズ分析の詳細" colSpan={6}>
+                              <div className="stats-detail-panel">
+                                <table className="stats-detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th>日付</th>
+                                      <th>競馬場</th>
+                                      <th>R</th>
+                                      <th>レース名</th>
+                                      <th>馬名</th>
+                                      <th>騎手</th>
+                                      <th>枠</th>
+                                      <th>馬番</th>
+                                      <th>着順</th>
+                                      <th>レースタイム</th>
+                                      <th>人気</th>
+                                      <th>単勝</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {row.details.map((detail) => (
+                                      <tr
+                                        key={`${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.frameNumber}-${detail.horseNumber}-${detail.rank}`}
+                                      >
+                                        <td>{formatDetailDate(detail.date)}</td>
+                                        <td>{formatKeibajo(detail.keibajoCode)}</td>
+                                        <td>{formatRaceNumber(detail.raceNumber)}</td>
+                                        <td className="stats-detail-race-name">
+                                          {detail.raceName || "-"}
+                                        </td>
+                                        <td className="stats-detail-horse-name">
+                                          {detail.horseName || "-"}
+                                        </td>
+                                        <td>{detail.jockeyName || "-"}</td>
+                                        <td>
+                                          <FrameNumberBadge value={detail.frameNumber} />
+                                        </td>
+                                        <td>{detail.horseNumber || "-"}</td>
+                                        <td>{parseRank(detail.rank)}</td>
+                                        <td>
+                                          {formatRaceTimeTenths(parseTenths(detail.raceTime))}
+                                        </td>
+                                        <td>{parseRank(detail.popularity)}</td>
+                                        <td>{parseOdds(detail.winOdds)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <section className="stats-category-section">
           <div className="section-heading compact">
-            <h3>着順別 人気・オッズ</h3>
+            <h3>払い戻し傾向</h3>
           </div>
-          <div className="stats-table-wrap">
-            <table className="stats-table analysis-table">
-              <thead>
-                <tr>
-                  <th>着順</th>
-                  <th>人気 平均</th>
-                  <th>人気 中央値</th>
-                  <th>オッズ 平均</th>
-                  <th>オッズ 中央値</th>
-                  <th>件数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {finishPositionStats.map((row) => {
-                  const isExpanded = expandedFinishKey === row.finishPosition;
+          <AnalysisViewToggle
+            chartChecked={showPayoutChart}
+            legend="払い戻し傾向の表示"
+            name={PAYOUT_VIEW_RADIO_NAME}
+            onShowChart={(nextShowChart) => {
+              hasEditedPayoutChart.current = true;
+              setShowPayoutChart(nextShowChart);
+              void persistConditionPayoutChartForCurrentUser(nextShowChart).catch(() => undefined);
+            }}
+          />
+          {showPayoutChart ? <PayoutTrendChart view={payoutDistribution} /> : null}
+          {showPayoutChart ? null : (
+            <div className="stats-table-wrap">
+              <table className="stats-table analysis-table">
+                <thead>
+                  <tr>
+                    <th>馬券</th>
+                    <th>最小</th>
+                    <th>最大</th>
+                    <th>平均</th>
+                    <th>中央値</th>
+                    <th>件数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payoutStats.map((row) => {
+                    const isExpanded = expandedPayoutKey === row.betType;
 
-                  return (
-                    <Fragment key={row.finishPosition}>
-                      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
-                        <td className="stats-name-cell">
-                          {row.details.length > 0 ? (
-                            <button
-                              aria-expanded={isExpanded}
-                              className="stats-detail-toggle"
-                              type="button"
-                              onClick={() => {
-                                setExpandedFinishKey((current) =>
-                                  current === row.finishPosition ? null : row.finishPosition,
-                                );
-                              }}
-                            >
-                              {row.finishPosition}着
-                            </button>
-                          ) : (
-                            `${row.finishPosition}着`
-                          )}
-                        </td>
-                        <td>{formatNumber(row.averagePopularity)}</td>
-                        <td>{formatNumber(row.medianPopularity)}</td>
-                        <td>{formatNumber(row.averageOdds)}</td>
-                        <td>{formatNumber(row.medianOdds)}</td>
-                        <td>{row.count.toLocaleString("ja-JP")}</td>
-                      </tr>
-                      {isExpanded ? (
-                        <tr className="stats-detail-row">
-                          <td aria-label="オッズ分析の詳細" colSpan={6}>
-                            <div className="stats-detail-panel">
-                              <table className="stats-detail-table">
-                                <thead>
-                                  <tr>
-                                    <th>日付</th>
-                                    <th>競馬場</th>
-                                    <th>R</th>
-                                    <th>レース名</th>
-                                    <th>馬名</th>
-                                    <th>騎手</th>
-                                    <th>枠</th>
-                                    <th>馬番</th>
-                                    <th>着順</th>
-                                    <th>レースタイム</th>
-                                    <th>人気</th>
-                                    <th>単勝</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {row.details.map((detail) => (
-                                    <tr
-                                      key={`${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.frameNumber}-${detail.horseNumber}-${detail.rank}`}
-                                    >
-                                      <td>{formatDetailDate(detail.date)}</td>
-                                      <td>{formatKeibajo(detail.keibajoCode)}</td>
-                                      <td>{formatRaceNumber(detail.raceNumber)}</td>
-                                      <td className="stats-detail-race-name">
-                                        {detail.raceName || "-"}
-                                      </td>
-                                      <td className="stats-detail-horse-name">
-                                        {detail.horseName || "-"}
-                                      </td>
-                                      <td>{detail.jockeyName || "-"}</td>
-                                      <td>
-                                        <FrameNumberBadge value={detail.frameNumber} />
-                                      </td>
-                                      <td>{detail.horseNumber || "-"}</td>
-                                      <td>{parseRank(detail.rank)}</td>
-                                      <td>{formatRaceTimeTenths(parseTenths(detail.raceTime))}</td>
-                                      <td>{parseRank(detail.popularity)}</td>
-                                      <td>{parseOdds(detail.winOdds)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                    return (
+                      <Fragment key={row.betType}>
+                        <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+                          <td className="stats-name-cell">
+                            {row.details.length > 0 ? (
+                              <button
+                                aria-expanded={isExpanded}
+                                className="stats-detail-toggle"
+                                type="button"
+                                onClick={() => {
+                                  setExpandedPayoutKey((current) =>
+                                    current === row.betType ? null : row.betType,
+                                  );
+                                }}
+                              >
+                                {row.betType}
+                              </button>
+                            ) : (
+                              row.betType
+                            )}
                           </td>
+                          <td>{formatYen(row.minPayout)}</td>
+                          <td>{formatYen(row.maxPayout)}</td>
+                          <td>{formatYen(row.averagePayout)}</td>
+                          <td>{formatYen(row.medianPayout)}</td>
+                          <td>{row.count.toLocaleString("ja-JP")}</td>
                         </tr>
-                      ) : null}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {isExpanded ? (
+                          <tr className="stats-detail-row">
+                            <td aria-label="払戻分析の詳細" colSpan={6}>
+                              <div className="stats-detail-panel">
+                                <table className="stats-detail-table analysis-payout-detail-table">
+                                  <thead>
+                                    <tr>
+                                      <th>日付</th>
+                                      <th>競馬場</th>
+                                      <th>R</th>
+                                      <th>レース名</th>
+                                      <th>払戻</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {row.details.map((detail) => (
+                                      <tr
+                                        key={`${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.payout}`}
+                                      >
+                                        <td>{formatDetailDate(detail.date)}</td>
+                                        <td>{formatKeibajo(detail.keibajoCode)}</td>
+                                        <td>{formatRaceNumber(detail.raceNumber)}</td>
+                                        <td className="stats-detail-race-name">
+                                          {detail.raceName || "-"}
+                                        </td>
+                                        <td>{formatYen(detail.payout)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </div>
     </>

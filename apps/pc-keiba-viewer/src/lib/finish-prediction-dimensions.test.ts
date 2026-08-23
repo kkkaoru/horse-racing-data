@@ -135,6 +135,26 @@ it("forces grade OFF when gradeCode is empty for NAR", () => {
   expect(flags.grade).toBe(false);
 });
 
+it("forces grade OFF when gradeCode is a space-padded empty JRA value", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: {},
+    source: "jra",
+    gradeCode: " ",
+    isBanEi: false,
+  });
+  expect(flags.grade).toBe(false);
+});
+
+it("forces grade OFF when gradeCode is JRA 特別 E", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: {},
+    source: "jra",
+    gradeCode: "E",
+    isBanEi: false,
+  });
+  expect(flags.grade).toBe(false);
+});
+
 it("keeps raceName ON when gradeCode is A", () => {
   const flags = getFinishPredictionDimensionFlags({
     query: {},

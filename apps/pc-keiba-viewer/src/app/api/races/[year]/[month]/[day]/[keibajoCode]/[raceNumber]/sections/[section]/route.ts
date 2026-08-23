@@ -71,6 +71,7 @@ const FINISH_PREDICTION_BROWSER_CACHE_CONTROL = "private, no-cache, max-age=0, m
 
 const HTTP_STATUS_NO_CONTENT = 204;
 const HTTP_STATUS_METHOD_NOT_ALLOWED = 405;
+const HEATMAP_SECTION_UNAVAILABLE = "unavailable";
 
 const isValidSection = (section: string): section is DetailSection =>
   SECTIONS.some((candidate) => candidate === section);
@@ -244,6 +245,30 @@ const computeAndStoreSection = async (
 const getExecutionContext = async (): Promise<PcKeibaExecutionContext | null> =>
   safeGetCloudflareExecutionContext();
 
+const hasHeatmapCatalogRateRows = (payload: {
+  bloodlineRows: unknown[];
+  similarRows: unknown[];
+}): boolean => payload.bloodlineRows.length > 0 || payload.similarRows.length > 0;
+
+const hasHeatmapFrameStats = (payload: { frameStats: { count?: unknown }[] }): boolean =>
+  payload.frameStats.some((row) => typeof row.count === "number" && row.count > 0);
+
+const isHeatmapCacheReady = (payload: {
+  bloodlineRows: unknown[];
+  frameStats: { count?: unknown }[];
+  similarRows: unknown[];
+}): boolean => hasHeatmapCatalogRateRows(payload) && hasHeatmapFrameStats(payload);
+
+const loadHeatmapSectionPayload = async (
+  params: Parameters<typeof getDetailSectionPayload>[1],
+): Promise<unknown> => {
+  try {
+    return await getDetailSectionPayload("win-rate-heatmap", params);
+  } catch {
+    return HEATMAP_SECTION_UNAVAILABLE;
+  }
+};
+
 export async function GET(request: Request, { params }: DetailSectionRouteProps) {
   const { day, keibajoCode, month, raceNumber, section, year } = await params;
   if (!isValidSection(section) || !isValidParams(year, month, day, keibajoCode, raceNumber)) {
@@ -261,8 +286,9 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       raceNumber,
       year,
     });
+    const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
     const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey);
-    if (cachedHeatmap) {
+    if (cachedHeatmap && !isQueueWarm && isHeatmapCacheReady(cachedHeatmap)) {
       return NextResponse.json(cachedHeatmap, {
         headers: {
           "Cache-Control": "private, max-age=0, no-store",
@@ -274,7 +300,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     if (!raceSource) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    const heatmapPayload = await getDetailSectionPayload(section, {
+    const heatmapPayload = await loadHeatmapSectionPayload({
       day,
       keibajoCode,
       month,
@@ -283,10 +309,41 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       raceSource,
       year,
     });
+    if (heatmapPayload === HEATMAP_SECTION_UNAVAILABLE) {
+      return NextResponse.json(
+        { error: "section_unavailable", section: "win-rate-heatmap" },
+        {
+          headers: {
+            "Cache-Control": "private, max-age=0, no-store",
+            "Retry-After": "30",
+          },
+          status: 503,
+        },
+      );
+    }
     if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
+    if (!isHeatmapCacheReady(heatmapPayload)) {
+      if (isQueueWarm) {
+        return NextResponse.json(
+          { error: "heatmap_catalog_unavailable" },
+          {
+            headers: {
+              "Cache-Control": "private, max-age=0, no-store",
+              "Retry-After": "30",
+            },
+            status: 503,
+          },
+        );
+      }
+      return NextResponse.json(heatmapPayload, {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "X-Win-Rate-Heatmap-Cache": "MISS",
+        },
+      });
+    }
     const storeHeatmap = putWinRateHeatmapCache({
       cacheKey: heatmapCacheKey,
       payload: heatmapPayload,

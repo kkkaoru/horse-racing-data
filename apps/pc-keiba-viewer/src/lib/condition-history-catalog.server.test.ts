@@ -48,7 +48,22 @@ const catalogPayload = {
       averageOdds: 3.2,
       averagePopularity: 2.5,
       count: 4,
-      details: [{ date: "20260101" }],
+      details: [
+        {
+          date: "20260726",
+          frameNumber: "08",
+          horseName: "サンタンジェロ",
+          horseNumber: "08",
+          jockeyName: "横山武史",
+          keibajoCode: "07",
+          popularity: "04",
+          raceName: "一般競走",
+          raceNumber: "01",
+          raceTime: "1207",
+          rank: "01",
+          winOdds: "0080",
+        },
+      ],
       finishPosition: 1,
       medianOdds: 3,
       medianPopularity: 2,
@@ -167,7 +182,7 @@ it("appends class, age, condition-key, and race-title flags on the condition-his
   );
 });
 
-it("maps Catalog condition history aggregates onto viewer stats with empty details", async () => {
+it("maps Catalog condition history aggregates onto viewer stats including finish details", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(catalogPayload));
   safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
 
@@ -189,7 +204,22 @@ it("maps Catalog condition history aggregates onto viewer stats with empty detai
         averageOdds: 3.2,
         averagePopularity: 2.5,
         count: 4,
-        details: [],
+        details: [
+          {
+            date: "20260726",
+            frameNumber: "08",
+            horseName: "サンタンジェロ",
+            horseNumber: "08",
+            jockeyName: "横山武史",
+            keibajoCode: "07",
+            popularity: "04",
+            raceName: "一般競走",
+            raceNumber: "01",
+            raceTime: "1207",
+            rank: "01",
+            winOdds: "0080",
+          },
+        ],
         finishPosition: 1,
         medianOdds: 3,
         medianPopularity: 2,
@@ -271,10 +301,7 @@ it("maps Catalog condition history aggregates onto viewer stats with empty detai
       },
     ],
   });
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/condition-history-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0",
   );
 });

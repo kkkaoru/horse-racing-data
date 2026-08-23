@@ -736,6 +736,11 @@ export const buildHorseRaceChartSeriesList = (
   }));
 };
 
+const compareAscendingNumbers = (left: number, right: number): number => left - right;
+
+export const uniqueSortedDateValues = (dateValues: readonly number[]): number[] =>
+  [...new Set(dateValues)].toSorted(compareAscendingNumbers);
+
 export const formatHorseRaceChartDate = (dateValue: number): string => {
   const date = new Date(dateValue);
   const month = String(date.getUTCMonth() + 1).padStart(DATE_PART_LENGTH, DATE_PAD_CHAR);

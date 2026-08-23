@@ -85,7 +85,7 @@ export const fetchRaceTrainingsFromCatalog = async (
   if (!catalog) return null;
 
   try {
-    const response = await catalog.fetch(new Request(buildRaceTrainingCatalogUrl(query)));
+    const response = await catalog.fetch(buildRaceTrainingCatalogUrl(query).href);
     if (!response.ok) return null;
     const payload: unknown = await response.json();
     if (!isRecord(payload) || !Array.isArray(payload.rows)) return null;

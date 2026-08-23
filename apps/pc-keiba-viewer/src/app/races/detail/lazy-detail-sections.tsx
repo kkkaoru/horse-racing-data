@@ -27,6 +27,7 @@ import type {
   Training,
   WeightClassStatsRow,
 } from "../../../lib/race-types";
+import { WIN_RATE_HEATMAP_BLOODLINE_NOTE } from "../../../lib/win-rate-heatmap";
 import { AbilityTestTable } from "./ability-test-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
@@ -248,6 +249,13 @@ const SECTION_TITLES: Record<DetailSection, string> = {
 const RESULTS_CHART_SECTION_TITLE = "競走成績グラフ";
 const WIN_RATE_HEATMAP_SECTION_TITLE = "勝率ヒートマップ";
 
+const WinRateHeatmapHeading = () => (
+  <div className="section-heading compact">
+    <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
+    <p className="win-rate-heatmap-bloodline-note">{WIN_RATE_HEATMAP_BLOODLINE_NOTE}</p>
+  </div>
+);
+
 const GENERIC_STATS_QUERY_KEYS = new Set([
   "statsAge",
   "statsClass",
@@ -448,13 +456,30 @@ const isSectionPayload = (payload: unknown, section: DetailSection): payload is 
   isObjectPayload(payload) && payload.type === section;
 
 const MAX_SECTION_PAYLOAD_PROMISES = 64;
-const sectionPayloadPromises = new Map<string, Promise<SectionPayload>>();
+export const FINISH_PREDICTION_SECTION_PROMISE_TTL_MS = 30_000;
+
+interface SectionPayloadPromiseEntry {
+  expiresAt: number;
+  promise: Promise<SectionPayload>;
+}
+
+const sectionPayloadPromises = new Map<string, SectionPayloadPromiseEntry>();
+
+const getSectionPayloadPromiseTtlMs = (section: DetailSection): number =>
+  section === "finish-prediction"
+    ? FINISH_PREDICTION_SECTION_PROMISE_TTL_MS
+    : Number.POSITIVE_INFINITY;
 
 const rememberSectionPayloadPromise = (
+  section: DetailSection,
   url: string,
   promise: Promise<SectionPayload>,
 ): Promise<SectionPayload> => {
-  sectionPayloadPromises.set(url, promise);
+  const entry: SectionPayloadPromiseEntry = {
+    expiresAt: Date.now() + getSectionPayloadPromiseTtlMs(section),
+    promise,
+  };
+  sectionPayloadPromises.set(url, entry);
   if (sectionPayloadPromises.size > MAX_SECTION_PAYLOAD_PROMISES) {
     const oldestUrl = sectionPayloadPromises.keys().next().value;
     if (oldestUrl) {
@@ -462,14 +487,25 @@ const rememberSectionPayloadPromise = (
     }
   }
   void promise.catch(() => {
-    sectionPayloadPromises.delete(url);
+    if (sectionPayloadPromises.get(url) === entry) {
+      sectionPayloadPromises.delete(url);
+    }
   });
   return promise;
 };
 
+const getCachedSectionPayloadPromise = (url: string): Promise<SectionPayload> | null => {
+  const entry = sectionPayloadPromises.get(url);
+  if (entry === undefined) return null;
+  if (entry.expiresAt > Date.now()) return entry.promise;
+  sectionPayloadPromises.delete(url);
+  return null;
+};
+
 const fetchSectionPayload = (section: DetailSection, url: string): Promise<SectionPayload> =>
-  sectionPayloadPromises.get(url) ??
+  getCachedSectionPayloadPromise(url) ??
   rememberSectionPayloadPromise(
+    section,
     url,
     fetchWithRetry(url).then(async (response) => {
       if (!response.ok) {
@@ -670,10 +706,11 @@ function LazyWinRateHeatmapSection(
   const state = props.heatmapState;
   if (state.status === "loading" && state.payload === null) {
     return (
-      <section className="stats-category-section win-rate-heatmap-section" aria-busy="true">
-        <div className="section-heading compact">
-          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
-        </div>
+      <section
+        className="stats-category-section win-rate-heatmap-section lazy-detail-section"
+        aria-busy="true"
+      >
+        <WinRateHeatmapHeading />
         <div className="detail-section-skeleton">
           <span />
           <span />
@@ -685,10 +722,8 @@ function LazyWinRateHeatmapSection(
   }
   if (state.status === "error") {
     return (
-      <section className="stats-category-section win-rate-heatmap-section">
-        <div className="section-heading compact">
-          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
-        </div>
+      <section className="stats-category-section win-rate-heatmap-section lazy-detail-section">
+        <WinRateHeatmapHeading />
         <p className="empty-state">データを取得できませんでした: {state.error}</p>
       </section>
     );
@@ -696,10 +731,8 @@ function LazyWinRateHeatmapSection(
   const payload = state.payload;
   if (!payload || payload.type !== "win-rate-heatmap") {
     return (
-      <section className="stats-category-section win-rate-heatmap-section">
-        <div className="section-heading compact">
-          <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
-        </div>
+      <section className="stats-category-section win-rate-heatmap-section lazy-detail-section">
+        <WinRateHeatmapHeading />
         <p className="empty-state">データを取得できませんでした: Invalid section payload</p>
       </section>
     );
@@ -707,11 +740,9 @@ function LazyWinRateHeatmapSection(
   return (
     <section
       aria-busy={state.status === "loading"}
-      className="stats-category-section win-rate-heatmap-section"
+      className="stats-category-section win-rate-heatmap-section lazy-detail-section"
     >
-      <div className="section-heading compact">
-        <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
-      </div>
+      <WinRateHeatmapHeading />
       <WinRateHeatmapSection
         bloodlineRows={payload.bloodlineRows}
         carriedWeightClassStats={payload.carriedWeightClassStats}
@@ -1015,10 +1046,15 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const heatmapState = useSectionPayload("win-rate-heatmap", props, searchParams);
   const state = useSectionPayload("condition", props, searchParams);
-  if (state.status === "loading" && state.payload === null) {
-    return <SectionSkeleton title={SECTION_TITLES.condition} />;
-  }
   const heatmap = <LazyWinRateHeatmapSection {...props} heatmapState={heatmapState} />;
+  if (state.status === "loading" && state.payload === null) {
+    return (
+      <>
+        <SectionSkeleton title={SECTION_TITLES.condition} />
+        {heatmap}
+      </>
+    );
+  }
   if (state.status === "error") {
     return (
       <>

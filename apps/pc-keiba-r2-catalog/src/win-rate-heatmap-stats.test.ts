@@ -4,6 +4,7 @@ import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
   buildWinRateHeatmapBloodlineQuery,
   buildWinRateHeatmapSimilarQuery,
+  isBanEiKeibajo,
   normaliseBloodlineRow,
   normaliseSimilarRow,
   normaliseWinRateHeatmapStatsPayload,
@@ -77,6 +78,14 @@ it("builds aggregate-only JRA bloodline SQL with heatmap default similar-section
   expect(sql).not.toMatch("nvd_se");
 });
 
+it("treats historic Ban-ei venues as the same circuit", () => {
+  expect(isBanEiKeibajo("81")).toBe(true);
+  expect(isBanEiKeibajo("82")).toBe(true);
+  expect(isBanEiKeibajo("83")).toBe(true);
+  expect(isBanEiKeibajo("84")).toBe(true);
+  expect(isBanEiKeibajo("05")).toBe(false);
+});
+
 it("builds NAR similar SQL and omits optional similar-section filters when they are off", () => {
   const sql = buildWinRateHeatmapSimilarQuery(config, {
     date: "20260715",
@@ -98,7 +107,8 @@ it("builds NAR similar SQL and omits optional similar-section filters when they 
   expect(sql).toMatch("kishumei_ryakusho");
   expect(sql).toMatch("chokyoshimei_ryakusho");
   expect(sql).toMatch("concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '20210715'");
-  expect(sql).toMatch("AND ra.keibajo_code = '83'");
+  expect(sql).toMatch("AND ra.keibajo_code IN ('81', '82', '83', '84')");
+  expect(sql).not.toMatch("AND ra.keibajo_code = '83'");
   expect(sql).not.toMatch("cr.kyori_int IS NOT NULL");
   expect(sql).not.toMatch("THEN '芝'");
   expect(sql).not.toMatch("THEN '左'");
@@ -151,6 +161,22 @@ it("filters similar history by current-race grade and track when those flags are
   expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
   expect(sql).toMatch("btrim(coalesce(ra.track_code, '')) = btrim(coalesce(cr.track_code, ''))");
   expect(sql).not.toMatch("THEN '芝'");
+});
+
+it("lets includeGrade skip matching when the current grade is not listed-or-higher", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeGrade: true,
+    includeSurface: false,
+    includeTurn: false,
+  });
+  expect(sql).toMatch(
+    "btrim(coalesce(cr.grade_code, '')) NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')",
+  );
+  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
+  expect(sql).not.toMatch(
+    "btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))\n    AND btrim(coalesce(cr.grade_code, '')) <> ''",
+  );
 });
 
 it("omits grade and exact track-code matching when those flags are off", () => {

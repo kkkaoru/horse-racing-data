@@ -242,7 +242,11 @@ vi.mock("./finish-position-bucket-section", () => ({
 }));
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import { LazyDetailSections } from "./lazy-detail-sections";
+import {
+  FINISH_PREDICTION_SECTION_PROMISE_TTL_MS,
+  LazyDetailSections,
+  LazyFinishPredictionSection,
+} from "./lazy-detail-sections";
 
 const installMatchMediaMockTimeScore = (initialMatches: boolean): MockMediaQueryListController => {
   const listeners = new Set<(event: MockMediaQueryEvent) => void>();
@@ -309,6 +313,11 @@ test("LazyDetailSections renders the results chart section directly below the re
   expect(conditionHeading.compareDocumentPosition(targetRaceHeading)).toStrictEqual(4);
   expect(targetRaceHeading.compareDocumentPosition(heatmapStub)).toStrictEqual(4);
   expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
+  expect(
+    screen.getByText(
+      "血統の勝率・連対率・複勝率は、父系（父・父父・父父父・父母父）と母父系（母父・母父父・母母父）それぞれで同名の種牡馬の成績を合算しています。チェックを外すと父系と母父系も合算します。",
+    ),
+  ).toBeTruthy();
   expect(heatmapStub.getAttribute("data-horse-results")).toStrictEqual("0");
   expect(heatmapStub.getAttribute("data-frame-stats")).toStrictEqual("1");
   expect(chartStub.getAttribute("data-runners-passed")).toStrictEqual("present");
@@ -330,6 +339,60 @@ test("LazyDetailSections renders the results chart section directly below the re
     );
   expect(resultsFetchCalls.length).toBe(1);
   expect(resultsFetchCalls[0]?.[0]).toStrictEqual("/api/races/2027/06/11/05/01/sections/results");
+});
+
+test("LazyFinishPredictionSection refetches after its short promise-cache TTL", async () => {
+  let nowMs = Date.parse("2026-08-23T01:00:00.000Z");
+  vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+  const finishUrl = "/api/races/2026/08/23/01/01/sections/finish-prediction";
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url === finishUrl) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bucket: {},
+            evaluation: {},
+            inputs: { modelPredictionFeatures: [] },
+            type: "finish-prediction",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  const props = {
+    day: "23",
+    keibajoCode: "01",
+    month: "08",
+    raceNumber: "01",
+    realtimeApiBaseUrl: "https://realtime.example",
+    source: "jra" as const,
+    year: "2026",
+  };
+
+  render(<LazyFinishPredictionSection {...props} />);
+  await screen.findByTestId("finish-position-prediction-stub");
+  cleanup();
+
+  render(<LazyFinishPredictionSection {...props} />);
+  await screen.findByTestId("finish-position-prediction-stub");
+  expect(vi.mocked(fetchWithRetry).mock.calls.filter(([url]) => url === finishUrl)).toHaveLength(1);
+  cleanup();
+
+  nowMs += FINISH_PREDICTION_SECTION_PROMISE_TTL_MS + 1;
+  render(<LazyFinishPredictionSection {...props} />);
+  await waitFor(() => {
+    expect(vi.mocked(fetchWithRetry).mock.calls.filter(([url]) => url === finishUrl)).toHaveLength(
+      2,
+    );
+  });
 });
 
 test("LazyDetailSections renders a chart section error when the results fetch fails", async () => {
@@ -680,5 +743,76 @@ test("LazyDetailSections still shows the heatmap when the condition section fetc
     expect(screen.getByTestId("win-rate-heatmap-stub").textContent).toStrictEqual("heatmap");
   });
   expect(screen.getByRole("heading", { name: "同条件レース分析" })).toBeDefined();
+  expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
+});
+
+test("LazyDetailSections shows the heatmap while the condition section is still loading", async () => {
+  installMatchMediaMockTimeScore(false);
+  const pendingCondition = new Promise<Response>(() => undefined);
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url === "/api/races/2026/08/23/04/01/sections/condition") {
+      return pendingCondition;
+    }
+    if (url === "/api/races/2026/08/23/04/01/sections/win-rate-heatmap") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            bloodlineRows: [],
+            carriedWeightClassStats: [],
+            frameStats: [],
+            horseResults: [],
+            runners: [{ umaban: "01" }],
+            similarRows: [],
+            type: "win-rate-heatmap",
+            weightClassStats: [],
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url === "/api/races/2026/08/23/04/01/sections/results") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            classConditionName: null,
+            currentDistance: null,
+            currentKeibajoCode: "04",
+            currentRaceDate: "20260823",
+            currentTrackCode: null,
+            defaultIncludeClass: false,
+            results: [],
+            runners: [],
+            source: "jra",
+            sourceScope: "all",
+            type: "results",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="23"
+        keibajoCode="04"
+        month="08"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2026"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("win-rate-heatmap-stub").textContent).toStrictEqual("heatmap");
+  });
   expect(screen.getByRole("heading", { name: "勝率ヒートマップ" }).tagName).toBe("H3");
 });

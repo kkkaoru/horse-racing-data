@@ -22,12 +22,15 @@ import type {
 } from "../../../lib/race-types";
 import {
   loadHeatmapShowStartsForCurrentUser,
+  loadHeatmapSplitBloodlineLinesForCurrentUser,
   persistHeatmapShowStartsForCurrentUser,
+  persistHeatmapSplitBloodlineLinesForCurrentUser,
 } from "../../../lib/user-preferences-indexeddb";
 import {
   buildWinRateHeatmapColorScaleGradient,
   buildWinRateHeatmapDisplay,
   DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
+  DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   formatWinRateHeatmapColorScaleAriaLabel,
   formatWinRateHeatmapColorScaleCaption,
@@ -314,10 +317,14 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
 }: WinRateHeatmapSectionProps) {
   const [openTooltipKey, setOpenTooltipKey] = useState<string | null>(null);
   const [showStarts, setShowStarts] = useState(DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS);
+  const [splitBloodlineLines, setSplitBloodlineLines] = useState(
+    DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES,
+  );
   const [viewMode, setViewMode] = useState<WinRateHeatmapViewMode>(
     DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   );
   const hasEditedShowStarts = useRef(false);
+  const hasEditedSplitBloodlineLines = useRef(false);
   useEffect(() => {
     const loadState = { cancelled: false };
     void loadHeatmapShowStartsForCurrentUser()
@@ -326,6 +333,15 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
           return undefined;
         }
         setShowStarts(stored);
+        return undefined;
+      })
+      .catch(() => undefined);
+    void loadHeatmapSplitBloodlineLinesForCurrentUser()
+      .then((stored) => {
+        if (loadState.cancelled || hasEditedSplitBloodlineLines.current) {
+          return undefined;
+        }
+        setSplitBloodlineLines(stored);
         return undefined;
       })
       .catch(() => undefined);
@@ -388,6 +404,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     runners,
     showStarts,
     similarRows,
+    splitBloodlineLines,
     viewMode,
     weightClassStats,
   });
@@ -425,6 +442,21 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
             }}
           />
           レース数
+        </label>
+        <label className="running-style-bucket-toggle-label">
+          <input
+            checked={splitBloodlineLines}
+            type="checkbox"
+            onChange={() => {
+              const nextSplitBloodlineLines = !splitBloodlineLines;
+              hasEditedSplitBloodlineLines.current = true;
+              setSplitBloodlineLines(nextSplitBloodlineLines);
+              void persistHeatmapSplitBloodlineLinesForCurrentUser(nextSplitBloodlineLines).catch(
+                () => undefined,
+              );
+            }}
+          />
+          父系と母父系を分ける
         </label>
       </fieldset>
       <WinRateHeatmapColorScale metrics={display.visibleRateMetrics} scales={display.colorScales} />

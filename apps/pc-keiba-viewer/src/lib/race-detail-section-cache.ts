@@ -23,7 +23,15 @@ const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v5";
 // Bumped v10->v11 on 2026-08-23 because Catalog condition history now filters
 // by cell-matching class, age, condition-key, race-title, and ungraded-OP
 // empty-grade. Cached mixed-class payloads must not survive.
-const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v11";
+// Bumped v11->v12 on 2026-08-23 because includeGrade now matches empty grades
+// for 2歳未勝利/新馬. Cached empty 枠 payloads must not survive.
+// Bumped v12->v13 on 2026-08-23 because includeGrade now applies only to
+// listed-or-higher codes. Cached 特別 (E) zero-history payloads must not survive.
+// Bumped v13->v14 on 2026-08-23 because Catalog finish-position stats now
+// include horse-level details. Cached empty-details payloads must not survive.
+// Bumped v14->v15 because the viewer parser now keeps those details instead of
+// dropping them. Cached empty-details v14 payloads must not survive.
+const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v15";
 // Bumped v7->v9 on 2026-08-23 because similar/bloodline/time-score now prefer
 // R2 Catalog rows with empty details. Cached Neon jsonb payloads must not
 // survive. v8 remains the overseas history version.

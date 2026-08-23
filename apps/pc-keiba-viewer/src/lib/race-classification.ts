@@ -79,6 +79,18 @@ const GRADE_LABELS: Record<string, string> = {
   L: "リステッド",
 };
 
+export const LISTED_OR_HIGHER_GRADE_CODES: ReadonlySet<string> = new Set([
+  "A",
+  "B",
+  "C",
+  "D",
+  "F",
+  "G",
+  "H",
+  "L",
+  "S",
+]);
+
 const NAR_GRADE_LABELS: Record<string, string> = {
   A: "Jpn1",
   B: "Jpn2",
@@ -91,6 +103,9 @@ const NAR_GRADE_LABELS: Record<string, string> = {
   S: "地区限定重賞",
   T: "準重賞",
 };
+
+export const isListedOrHigherGradeCode = (value: string | null | undefined): boolean =>
+  LISTED_OR_HIGHER_GRADE_CODES.has(clean(value));
 
 export const getGradeLabel = (
   value: string | null | undefined,

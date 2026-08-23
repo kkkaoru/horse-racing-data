@@ -10,6 +10,7 @@ import {
   getRaceTagText,
   getRaceTags,
   getWeightLabel,
+  isListedOrHigherGradeCode,
 } from "./race-classification";
 
 type RaceTagInput = Parameters<typeof getRaceTags>[0];
@@ -93,6 +94,18 @@ describe("race classification", () => {
     expect(getGradeLabel("Z")).toBe("グレード Z");
     expect(getGradeLabel(null)).toBe("-");
     expect(getGradeLabel(" ", "nar")).toBe("普通");
+  });
+
+  it("treats only listed-or-higher JV grade codes as grade-eligible", () => {
+    expect(isListedOrHigherGradeCode("A")).toBe(true);
+    expect(isListedOrHigherGradeCode("C")).toBe(true);
+    expect(isListedOrHigherGradeCode("L")).toBe(true);
+    expect(isListedOrHigherGradeCode("S")).toBe(true);
+    expect(isListedOrHigherGradeCode(" E ")).toBe(false);
+    expect(isListedOrHigherGradeCode(" ")).toBe(false);
+    expect(isListedOrHigherGradeCode("")).toBe(false);
+    expect(isListedOrHigherGradeCode(null)).toBe(false);
+    expect(isListedOrHigherGradeCode(undefined)).toBe(false);
   });
 
   it("keeps non-handicap weight labels out of tags", () => {

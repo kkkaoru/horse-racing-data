@@ -30,6 +30,7 @@ import {
   getHorseRaceChartMetricValue,
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
+  uniqueSortedDateValues,
 } from "../../../lib/horse-race-results-chart-data";
 import type { HorseRaceResult } from "../../../lib/race-types";
 import { getFrameColor } from "./frame-number-badge";
@@ -746,11 +747,13 @@ const PaddockChartCanvas = ({
     <ComposedChart data={rows} margin={CHART_MARGIN}>
       <CartesianGrid stroke={GRID_STROKE} strokeDasharray={GRID_DASH} />
       <XAxis
+        allowDuplicatedCategory={false}
         dataKey="dateValue"
         domain={TIME_AXIS_DOMAIN}
         scale="time"
         tick={AXIS_TICK}
         tickFormatter={formatHorseRaceChartDate}
+        ticks={uniqueSortedDateValues(rows.map((row) => row.dateValue))}
         type="number"
       />
       {isRankAxisVisible(hiddenMetrics) ? (

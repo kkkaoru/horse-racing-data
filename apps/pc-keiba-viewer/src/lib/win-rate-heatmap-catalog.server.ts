@@ -57,7 +57,12 @@ interface CatalogSimilarRow {
   wins: number;
 }
 
+interface CatalogFetcher {
+  fetch: (input: string) => Promise<Response>;
+}
+
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
+const CATALOG_NOT_FOUND_STATUS = 404;
 const HORSE_NUMBER_JOINER: string = ", ";
 const MAX_WIN_RATE = 100;
 const RATE_DECIMAL_FACTOR = 10;
@@ -276,6 +281,20 @@ export const buildWinRateHeatmapCatalogUrl = (query: WinRateHeatmapCatalogQuery)
   return url;
 };
 
+const fetchCatalogHeatmapResponse = async (
+  catalog: CatalogFetcher,
+  url: string,
+): Promise<Response | null> => {
+  try {
+    return await catalog.fetch(url);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 export const fetchWinRateHeatmapStatsFromCatalog = async (
   query: WinRateHeatmapCatalogQuery,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
@@ -283,7 +302,13 @@ export const fetchWinRateHeatmapStatsFromCatalog = async (
   const catalog = env?.R2_CATALOG;
   if (!catalog) return null;
 
-  const response = await catalog.fetch(new Request(buildWinRateHeatmapCatalogUrl(query)));
+  const response = await fetchCatalogHeatmapResponse(
+    catalog,
+    buildWinRateHeatmapCatalogUrl(query).href,
+  );
+  if (response === null || response.status === CATALOG_NOT_FOUND_STATUS) {
+    return null;
+  }
   if (!response.ok) {
     throw new Error(`R2 Catalog heatmap stats failed: ${String(response.status)}`);
   }

@@ -8,6 +8,7 @@ import type {
   FrameStatsRow,
   RaceTimeStats,
   RaceTimeTargetRace,
+  StatsDetail,
   WeightClassStatsRow,
 } from "./race-types";
 
@@ -63,6 +64,8 @@ const requiredString = (value: unknown): string | null => {
   }
   return null;
 };
+
+const stringOrEmpty = (value: unknown): string => requiredString(value) ?? "";
 
 const requiredNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -174,6 +177,40 @@ const parseFrameStatsRow = (value: unknown): FrameStatsRow | null => {
   };
 };
 
+const parseFinishPositionDetail = (value: unknown): StatsDetail | null => {
+  if (!isRecord(value)) return null;
+  const date = requiredString(value.date);
+  const horseName = requiredString(value.horseName);
+  const horseNumber = requiredString(value.horseNumber);
+  const jockeyName = requiredString(value.jockeyName);
+  const keibajoCode = requiredString(value.keibajoCode);
+  const raceNumber = requiredString(value.raceNumber);
+  if (
+    date === null ||
+    horseName === null ||
+    horseNumber === null ||
+    jockeyName === null ||
+    keibajoCode === null ||
+    raceNumber === null
+  ) {
+    return null;
+  }
+  return {
+    date,
+    frameNumber: stringOrEmpty(value.frameNumber),
+    horseName,
+    horseNumber,
+    jockeyName,
+    keibajoCode,
+    popularity: stringOrEmpty(value.popularity),
+    raceName: stringOrEmpty(value.raceName),
+    raceNumber,
+    raceTime: stringOrEmpty(value.raceTime),
+    rank: stringOrEmpty(value.rank),
+    winOdds: stringOrEmpty(value.winOdds),
+  };
+};
+
 const parseFinishPositionStatsRow = (value: unknown): FinishPositionStatsRow | null => {
   if (!isRecord(value)) return null;
   if (value.details !== undefined && !Array.isArray(value.details)) return null;
@@ -193,11 +230,18 @@ const parseFinishPositionStatsRow = (value: unknown): FinishPositionStatsRow | n
   ) {
     return null;
   }
+  const details =
+    value.details === undefined
+      ? []
+      : value.details.flatMap((detail) => {
+          const parsed = parseFinishPositionDetail(detail);
+          return parsed === null ? [] : [parsed];
+        });
   return {
     averageOdds,
     averagePopularity,
     count,
-    details: [],
+    details,
     finishPosition,
     medianOdds,
     medianPopularity,
@@ -386,7 +430,7 @@ export const fetchConditionHistoryStatsFromCatalog = async (
   const catalog = env?.R2_CATALOG;
   if (!catalog) return null;
 
-  const response = await catalog.fetch(new Request(buildConditionHistoryCatalogUrl(query)));
+  const response = await catalog.fetch(buildConditionHistoryCatalogUrl(query).href);
   if (!response.ok) {
     throw new Error(`R2 Catalog condition history stats failed: ${String(response.status)}`);
   }

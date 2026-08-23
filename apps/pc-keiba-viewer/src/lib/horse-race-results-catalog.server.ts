@@ -14,6 +14,10 @@ export interface HorseRaceResultsCatalogQuery {
   year: string;
 }
 
+interface CatalogFetcher {
+  fetch: (input: string) => Promise<Response>;
+}
+
 const CATALOG_ORIGIN: string = "https://pc-keiba-r2-catalog.internal";
 const PARSE_FAILED: unique symbol = Symbol("parse-failed");
 
@@ -207,6 +211,20 @@ export const buildHorseRaceResultsCatalogUrl = (query: HorseRaceResultsCatalogQu
   return url;
 };
 
+const fetchCatalogResultsResponse = async (
+  catalog: CatalogFetcher,
+  url: string,
+): Promise<Response | null> => {
+  try {
+    return await catalog.fetch(url);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 export const fetchHorseRaceResultsFromCatalog = async (
   query: HorseRaceResultsCatalogQuery,
 ): Promise<HorseRaceResult[] | null> => {
@@ -214,7 +232,13 @@ export const fetchHorseRaceResultsFromCatalog = async (
   const catalog = env?.R2_CATALOG;
   if (!catalog) return null;
 
-  const response = await catalog.fetch(new Request(buildHorseRaceResultsCatalogUrl(query)));
+  const response = await fetchCatalogResultsResponse(
+    catalog,
+    buildHorseRaceResultsCatalogUrl(query).href,
+  );
+  if (response === null) {
+    return null;
+  }
   if (!response.ok) {
     throw new Error(`R2 Catalog horse race results failed: ${String(response.status)}`);
   }

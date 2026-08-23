@@ -8,8 +8,8 @@ import {
   buildConditionWeightClassStatsQuery,
   normaliseTargetRaceRow,
   isBanEiKeibajo,
+  aggregateFinishPositionStats,
   normaliseConditionHistoryStatsPayload,
-  normaliseFinishPositionRow,
   normaliseRaceTimeStats,
   normaliseWeightClassRow,
 } from "./condition-history-stats";
@@ -79,7 +79,7 @@ it("builds body and carried weight class SQL with Ban'ei venue excluded", () => 
   expect(carried).not.toMatch("jsonb_agg");
 });
 
-it("builds finish-position and race-time aggregate SQL without detail arrays", () => {
+it("builds finish-position horse-level SQL and race-time aggregate SQL without jsonb_agg", () => {
   const finish = buildConditionFinishPositionStatsQuery(config, {
     ...jraFilters,
     includeDistance: false,
@@ -92,8 +92,11 @@ it("builds finish-position and race-time aggregate SQL without detail arrays", (
   const time = buildConditionRaceTimeStatsQuery(config, jraFilters);
   expect(finish).toMatch("IN (1, 2, 3, 4, 5)");
   expect(finish).toMatch("FROM pc_keiba.nvd_se se");
+  expect(finish).toMatch("AS bamei");
+  expect(finish).toMatch("AS win_odds");
   expect(finish).not.toMatch("THEN '芝'");
   expect(finish).not.toMatch("jsonb_agg");
+  expect(finish).not.toMatch("GROUP BY finish_position");
   expect(time).toMatch("AS race_count");
   expect(time).toMatch("AS INT) = 1");
   expect(time).toMatch("approx_percentile_cont(race_time, 0.5)");
@@ -107,6 +110,17 @@ it("builds winner target-race list SQL without jsonb_agg", () => {
   expect(sql).toMatch("LIMIT 500");
   expect(sql).toMatch("FROM pc_keiba.jvd_se se");
   expect(sql).not.toMatch("jsonb_agg");
+});
+
+it("skips includeGrade matching for unlisted current grades in condition history", () => {
+  const sql = buildConditionFinishPositionStatsQuery(config, {
+    ...jraFilters,
+    includeGrade: true,
+  });
+  expect(sql).toMatch(
+    "btrim(coalesce(cr.grade_code, '')) NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')",
+  );
+  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
 });
 
 it("applies class, age, condition-key, race-title, and ungraded-open filters to condition history", () => {
@@ -236,25 +250,84 @@ it("maps weight-class rates from counts including a zero-start class", () => {
   });
 });
 
-it("maps finish-position aggregates and always clears details", () => {
+it("aggregates horse-level finish rows into counted stats with details", () => {
   expect(
-    normaliseFinishPositionRow({
-      average_odds: "12.34",
-      average_popularity: 3.16,
-      count: "4",
-      finish_position: 1n,
-      median_odds: "",
-      median_popularity: null,
-    }),
-  ).toStrictEqual({
-    averageOdds: 12.3,
-    averagePopularity: 3.2,
-    count: 4,
-    details: [],
-    finishPosition: 1,
-    medianOdds: null,
-    medianPopularity: null,
-  });
+    aggregateFinishPositionStats([
+      {
+        bamei: "先行馬",
+        finish_position: 1,
+        jockey_name: "武豊",
+        kakutei_chakujun: "01",
+        keibajo_code: "07",
+        odds: 4.1,
+        popularity: "02",
+        popularity_number: 2,
+        race_bango: "01",
+        race_name: "一般競走",
+        soha_time: "1207",
+        target_race_date: "20260726",
+        umaban: "08",
+        wakuban: "08",
+        win_odds: "41",
+      },
+      {
+        bamei: "後続馬",
+        finish_position: 1,
+        jockey_name: "ルメール",
+        kakutei_chakujun: "01",
+        keibajo_code: "07",
+        odds: 8.7,
+        popularity: "04",
+        popularity_number: 4,
+        race_bango: "02",
+        race_name: "一般競走",
+        soha_time: "1211",
+        target_race_date: "20250823",
+        umaban: "03",
+        wakuban: "03",
+        win_odds: "87",
+      },
+    ]),
+  ).toStrictEqual([
+    {
+      averageOdds: 6.4,
+      averagePopularity: 3,
+      count: 2,
+      details: [
+        {
+          date: "20260726",
+          frameNumber: "08",
+          horseName: "先行馬",
+          horseNumber: "08",
+          jockeyName: "武豊",
+          keibajoCode: "07",
+          popularity: "02",
+          raceName: "一般競走",
+          raceNumber: "01",
+          raceTime: "1207",
+          rank: "01",
+          winOdds: "41",
+        },
+        {
+          date: "20250823",
+          frameNumber: "03",
+          horseName: "後続馬",
+          horseNumber: "03",
+          jockeyName: "ルメール",
+          keibajoCode: "07",
+          popularity: "04",
+          raceName: "一般競走",
+          raceNumber: "02",
+          raceTime: "1211",
+          rank: "01",
+          winOdds: "87",
+        },
+      ],
+      finishPosition: 1,
+      medianOdds: 6.4,
+      medianPopularity: 3,
+    },
+  ]);
 });
 
 it("maps race-time scalars and returns zeros when the query is empty", () => {
@@ -311,12 +384,21 @@ it("normalises the combined payload and min-max frame scores", () => {
       ],
       finishRows: [
         {
-          average_odds: 2,
-          average_popularity: 1,
-          count: 1,
+          bamei: "テスト",
           finish_position: 1,
-          median_odds: 2,
-          median_popularity: 1,
+          jockey_name: "武豊",
+          kakutei_chakujun: "01",
+          keibajo_code: "05",
+          odds: 2,
+          popularity: "01",
+          popularity_number: 1,
+          race_bango: "08",
+          race_name: "一般競走",
+          soha_time: "1330",
+          target_race_date: "20260715",
+          umaban: "01",
+          wakuban: "01",
+          win_odds: "20",
         },
       ],
       frameRows: [
@@ -375,7 +457,22 @@ it("normalises the combined payload and min-max frame scores", () => {
         averageOdds: 2,
         averagePopularity: 1,
         count: 1,
-        details: [],
+        details: [
+          {
+            date: "20260715",
+            frameNumber: "01",
+            horseName: "テスト",
+            horseNumber: "01",
+            jockeyName: "武豊",
+            keibajoCode: "05",
+            popularity: "01",
+            raceName: "一般競走",
+            raceNumber: "08",
+            raceTime: "1330",
+            rank: "01",
+            winOdds: "20",
+          },
+        ],
         finishPosition: 1,
         medianOdds: 2,
         medianPopularity: 1,
@@ -566,12 +663,7 @@ it("rejects incomplete aggregate rows", () => {
       win_count: 0,
     }),
   ).toThrow("R2 SQL row is missing class_key");
-  expect(() =>
-    normaliseFinishPositionRow({
-      count: 1.5,
-      finish_position: 1,
-    }),
-  ).toThrow("R2 SQL row is missing count");
+  expect(aggregateFinishPositionStats([{ finish_position: 0 }])).toStrictEqual([]);
   expect(() =>
     normaliseRaceTimeStats(
       {

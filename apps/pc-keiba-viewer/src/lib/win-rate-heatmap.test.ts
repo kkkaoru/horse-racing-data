@@ -2872,6 +2872,27 @@ it("hides the carried-weight column for overseas venues and when no runner has a
       keibajoCode: "05",
       runners: [runnerOne],
     }),
+  ).toBe(false);
+});
+
+it("hides the carried-weight column when every scheduled runner has the same 斤量", () => {
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [runnerOne, { ...runnerTwo, futanJuryo: "570" }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [runnerOne, runnerTwo],
+    }),
+  ).toBe(true);
+  expect(
+    shouldShowWinRateHeatmapCarriedWeightColumn({
+      keibajoCode: "05",
+      runners: [runnerOne, { ...runnerTwo, futanJuryo: null }],
+    }),
   ).toBe(true);
 });
 
@@ -3319,7 +3340,7 @@ it("projects heatmap display labels with the same formatters the table uses", ()
   );
   expect(display.empty).toBe(false);
   expect(display.viewMode).toBe("winRate");
-  expect(display.showCarriedWeight).toBe(true);
+  expect(display.showCarriedWeight).toBe(false);
   expect(display.rows[0]?.horseNumber).toBe("1");
   expect(jockeySwatch?.valueLabel).toBe("20.0");
   expect(jockeySwatch?.startsLabel).toBe("(80)");
@@ -3458,4 +3479,227 @@ it("marks a zero start count on the graph even when the rate is not zero", () =>
   expect(jockeySwatch?.graphStartsLabel).toBe("(0)");
   expect(jockeySwatch?.isZeroValue).toBe(false);
   expect(jockeySwatch?.isZeroGraphStarts).toBe(true);
+});
+
+it("pools the same stallion across paternal-line columns while keeping damsire separate", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 10,
+        name: "ロードカナロア",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 4,
+        showRate: 40,
+        starts: 10,
+        winCount: 2,
+        winRate: 20,
+      },
+      {
+        category: "sireSire",
+        currentHorseNumbers: "2",
+        details: [],
+        horseCount: 20,
+        name: "ロードカナロア",
+        quinellaCount: 5,
+        quinellaRate: 25,
+        showCount: 8,
+        showRate: 40,
+        starts: 20,
+        winCount: 1,
+        winRate: 5,
+      },
+      {
+        category: "damSire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 40,
+        name: "ロードカナロア",
+        quinellaCount: 24,
+        quinellaRate: 60,
+        showCount: 28,
+        showRate: 70,
+        starts: 40,
+        winCount: 20,
+        winRate: 50,
+      },
+    ],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne, runnerTwo],
+    similarRows: [],
+    splitBloodlineLines: true,
+  });
+
+  expect(rows[0]?.cells.sire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 8,
+    quinellaRate: 26.7,
+    showCount: 12,
+    showRate: 40,
+    starts: 30,
+    winCount: 3,
+    winRate: 10,
+  });
+  expect(rows[1]?.cells.sireSire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 8,
+    quinellaRate: 26.7,
+    showCount: 12,
+    showRate: 40,
+    starts: 30,
+    winCount: 3,
+    winRate: 10,
+  });
+  expect(rows[0]?.cells.damSire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 24,
+    quinellaRate: 60,
+    showCount: 28,
+    showRate: 70,
+    starts: 40,
+    winCount: 20,
+    winRate: 50,
+  });
+});
+
+it("pools paternal and damsire lines together when split mode is off", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 10,
+        name: "ロードカナロア",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 4,
+        showRate: 40,
+        starts: 10,
+        winCount: 2,
+        winRate: 20,
+      },
+      {
+        category: "sireSire",
+        currentHorseNumbers: "2",
+        details: [],
+        horseCount: 20,
+        name: "ロードカナロア",
+        quinellaCount: 5,
+        quinellaRate: 25,
+        showCount: 8,
+        showRate: 40,
+        starts: 20,
+        winCount: 1,
+        winRate: 5,
+      },
+      {
+        category: "damSire",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 40,
+        name: "ロードカナロア",
+        quinellaCount: 24,
+        quinellaRate: 60,
+        showCount: 28,
+        showRate: 70,
+        starts: 40,
+        winCount: 20,
+        winRate: 50,
+      },
+    ],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne, runnerTwo],
+    similarRows: [],
+    splitBloodlineLines: false,
+  });
+
+  expect(rows[0]?.cells.sire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 32,
+    quinellaRate: 45.7,
+    showCount: 40,
+    showRate: 57.1,
+    starts: 70,
+    winCount: 23,
+    winRate: 32.9,
+  });
+  expect(rows[1]?.cells.sireSire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 32,
+    quinellaRate: 45.7,
+    showCount: 40,
+    showRate: 57.1,
+    starts: 70,
+    winCount: 23,
+    winRate: 32.9,
+  });
+  expect(rows[0]?.cells.damSire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 32,
+    quinellaRate: 45.7,
+    showCount: 40,
+    showRate: 57.1,
+    starts: 70,
+    winCount: 23,
+    winRate: 32.9,
+  });
+});
+
+it("does not double-count the same category and stallion copied onto two horses", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [
+      {
+        category: "sire",
+        currentHorseNumbers: "1, 2",
+        details: [],
+        horseCount: 10,
+        name: "ロードカナロア",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 4,
+        showRate: 40,
+        starts: 10,
+        winCount: 2,
+        winRate: 20,
+      },
+    ],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne, runnerTwo],
+    similarRows: [],
+    splitBloodlineLines: true,
+  });
+
+  expect(rows[0]?.cells.sire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 3,
+    quinellaRate: 30,
+    showCount: 4,
+    showRate: 40,
+    starts: 10,
+    winCount: 2,
+    winRate: 20,
+  });
+  expect(rows[1]?.cells.sire).toStrictEqual({
+    name: "ロードカナロア",
+    quinellaCount: 3,
+    quinellaRate: 30,
+    showCount: 4,
+    showRate: 40,
+    starts: 10,
+    winCount: 2,
+    winRate: 20,
+  });
 });

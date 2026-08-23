@@ -1,27 +1,42 @@
 "use client";
 
-import { useMemo, useState } from "react";
+// This file runs with bun.
+
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cleanText, formatDate } from "../../../lib/format";
 import type { Training } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import {
+  DEFAULT_SHOW_ALL_TRAINING_WORKOUTS,
+  DEFAULT_SHOW_TRAINING_CHART,
+  formatTrainingPlaceSummary,
+  parseTrainingSeconds,
+  TRAINING_FURLONG_COLUMNS,
+  type TrainingFurlongKey,
+} from "../../../lib/training-charts";
 import { formatTracen, formatTrainingTime, formatWoodCourse } from "../../../lib/training-format";
+import {
+  loadTrainingChartForCurrentUser,
+  loadTrainingScatterAllWorkoutsForCurrentUser,
+  persistTrainingChartForCurrentUser,
+  persistTrainingScatterAllWorkoutsForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
+import { TrainingTimesChart } from "./training-charts";
 
 interface TrainingTableProps {
   sourceLabel: string;
   trainings: Training[];
 }
 
+interface TrainingViewToggleProps {
+  showChart: boolean;
+  onShowChart: (showChart: boolean) => void;
+}
+
 type SortDirection = "asc" | "desc";
-type SortKey =
-  | "umaban"
-  | "timeGokei6f"
-  | "timeGokei5f"
-  | "timeGokei4f"
-  | "timeGokei3f"
-  | "timeGokei2f"
-  | "lapTime1f";
+type SortKey = "umaban" | TrainingFurlongKey;
 
 interface SortState {
   direction: SortDirection;
@@ -29,6 +44,7 @@ interface SortState {
 }
 
 const ALL_FILTER = "all";
+const TRAINING_VIEW_RADIO_NAME: string = "training-view";
 
 const SORT_LABELS: Record<SortKey, string> = {
   umaban: "馬番号",
@@ -45,30 +61,12 @@ const PREMIUM_REVIEW_LABELS = {
   text: process.env.NEXT_PUBLIC_PREMIUM_RACE_WORK_LABEL_TEXT ?? "評価",
 };
 
-const FURLONG_COLUMNS = [
-  { key: "timeGokei6f", label: "6F" },
-  { key: "timeGokei5f", label: "5F" },
-  { key: "timeGokei4f", label: "4F" },
-  { key: "timeGokei3f", label: "3F" },
-  { key: "timeGokei2f", label: "2F" },
-  { key: "lapTime1f", label: "1F" },
-] as const satisfies readonly { key: SortKey; label: string }[];
-
-const DEFAULT_VISIBLE_FURLONG_KEYS: SortKey[] = [
+const DEFAULT_VISIBLE_FURLONG_KEYS: TrainingFurlongKey[] = [
   "timeGokei4f",
   "timeGokei3f",
   "timeGokei2f",
   "lapTime1f",
 ];
-
-const parseTime = (value: string | null | undefined): number | null => {
-  const formatted = formatTrainingTime(value);
-  if (formatted === "-") {
-    return null;
-  }
-  const parsed = Number(formatted);
-  return Number.isFinite(parsed) ? parsed : null;
-};
 
 const compareNullableNumber = (
   left: number | null,
@@ -92,7 +90,7 @@ const getSortValue = (training: Training, key: SortKey): number | null => {
     const parsed = Number(cleanText(training.umaban, ""));
     return Number.isFinite(parsed) ? parsed : null;
   }
-  return parseTime(training[key]);
+  return parseTrainingSeconds(training[key]);
 };
 
 const getTrainingDateTimeValue = (training: Training): number | null => {
@@ -178,14 +176,34 @@ const compareByBestGradeThenOneF = (left: Training, right: Training): number => 
 const getTrainingCourseLabel = (training: Training): string =>
   formatWoodCourse(training.course, training.babamawari);
 
-const getTrainingPlaceSummary = (training: Training): string => {
-  const values = [
-    formatTracen(training.tracenKubun),
-    cleanText(training.trainingType, "-"),
-    getTrainingCourseLabel(training),
-  ].filter((value) => value && value !== "-");
-  return values.length > 0 ? values.join(" / ") : "-";
-};
+const TrainingViewToggle = ({ onShowChart, showChart }: TrainingViewToggleProps) => (
+  <fieldset aria-label="調教追い切りの表示" className="win-rate-heatmap-view-toggle">
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={showChart}
+        name={TRAINING_VIEW_RADIO_NAME}
+        type="radio"
+        value="chart"
+        onChange={() => {
+          onShowChart(true);
+        }}
+      />
+      グラフ
+    </label>
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={!showChart}
+        name={TRAINING_VIEW_RADIO_NAME}
+        type="radio"
+        value="text"
+        onChange={() => {
+          onShowChart(false);
+        }}
+      />
+      テキスト
+    </label>
+  </fieldset>
+);
 
 const getUniqueOptions = (values: string[]): string[] =>
   [...new Set(values)]
@@ -199,9 +217,13 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
   const [courseFilter, setCourseFilter] = useState(ALL_FILTER);
   const [fastestOnly, setFastestOnly] = useState(true);
   const [gradeOnly, setGradeOnly] = useState(true);
-  const [visibleFurlongKeys, setVisibleFurlongKeys] = useState<SortKey[]>(
+  const [visibleFurlongKeys, setVisibleFurlongKeys] = useState<TrainingFurlongKey[]>(
     DEFAULT_VISIBLE_FURLONG_KEYS,
   );
+  const [showChart, setShowChart] = useState(DEFAULT_SHOW_TRAINING_CHART);
+  const [showAllWorkouts, setShowAllWorkouts] = useState(DEFAULT_SHOW_ALL_TRAINING_WORKOUTS);
+  const hasEditedView = useRef(false);
+  const hasEditedScatter = useRef(false);
   const hasPremiumReviews = trainings.some(
     (training) =>
       cleanText(training.premiumEvaluationText, "") ||
@@ -220,17 +242,25 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
     [trainings],
   );
 
+  const chartTrainings = useMemo(
+    () =>
+      trainings.filter((training) => {
+        if (typeFilter !== ALL_FILTER && training.trainingType !== typeFilter) {
+          return false;
+        }
+        if (tracenFilter !== ALL_FILTER && formatTracen(training.tracenKubun) !== tracenFilter) {
+          return false;
+        }
+        if (courseFilter !== ALL_FILTER && getTrainingCourseLabel(training) !== courseFilter) {
+          return false;
+        }
+        return true;
+      }),
+    [courseFilter, tracenFilter, trainings, typeFilter],
+  );
+
   const filteredTrainings = useMemo(() => {
-    const matchedTrainings = trainings.filter((training) => {
-      if (typeFilter !== ALL_FILTER && training.trainingType !== typeFilter) {
-        return false;
-      }
-      if (tracenFilter !== ALL_FILTER && formatTracen(training.tracenKubun) !== tracenFilter) {
-        return false;
-      }
-      if (courseFilter !== ALL_FILTER && getTrainingCourseLabel(training) !== courseFilter) {
-        return false;
-      }
+    const matchedTrainings = chartTrainings.filter((training) => {
       if (hasPremiumGrades && gradeOnly && !cleanText(training.premiumEvaluationGrade, "")) {
         return false;
       }
@@ -261,7 +291,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
         }, new Map<string, Training>())
         .values(),
     ];
-  }, [courseFilter, fastestOnly, gradeOnly, hasPremiumGrades, tracenFilter, trainings, typeFilter]);
+  }, [chartTrainings, fastestOnly, gradeOnly, hasPremiumGrades]);
 
   const sortedTrainings = useMemo(
     () =>
@@ -279,11 +309,35 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
     [filteredTrainings, sort],
   );
   const visibleFurlongColumns = useMemo(
-    () => FURLONG_COLUMNS.filter((column) => visibleFurlongKeys.includes(column.key)),
+    () => TRAINING_FURLONG_COLUMNS.filter((column) => visibleFurlongKeys.includes(column.key)),
     [visibleFurlongKeys],
   );
 
-  const toggleFurlongColumn = (key: SortKey) => {
+  useEffect(() => {
+    const loadState = { cancelled: false };
+    void Promise.all([
+      loadTrainingChartForCurrentUser(),
+      loadTrainingScatterAllWorkoutsForCurrentUser(),
+    ])
+      .then(([storedShowChart, storedShowAllWorkouts]) => {
+        if (loadState.cancelled) {
+          return undefined;
+        }
+        if (!hasEditedView.current) {
+          setShowChart(storedShowChart);
+        }
+        if (!hasEditedScatter.current) {
+          setShowAllWorkouts(storedShowAllWorkouts);
+        }
+        return undefined;
+      })
+      .catch(() => undefined);
+    return () => {
+      loadState.cancelled = true;
+    };
+  }, []);
+
+  const toggleFurlongColumn = (key: TrainingFurlongKey) => {
     setVisibleFurlongKeys((current) => {
       if (current.includes(key)) {
         if (current.length === 1) {
@@ -295,10 +349,24 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
         );
         return next;
       }
-      return FURLONG_COLUMNS.map((column) => column.key).filter(
+      return TRAINING_FURLONG_COLUMNS.map((column) => column.key).filter(
         (item) => item === key || current.includes(item),
       );
     });
+  };
+
+  const changeShowChart = (nextShowChart: boolean) => {
+    hasEditedView.current = true;
+    setShowChart(nextShowChart);
+    void persistTrainingChartForCurrentUser(nextShowChart).catch(() => undefined);
+  };
+
+  const changeShowAllWorkouts = (nextShowAllWorkouts: boolean) => {
+    hasEditedScatter.current = true;
+    setShowAllWorkouts(nextShowAllWorkouts);
+    void persistTrainingScatterAllWorkoutsForCurrentUser(nextShowAllWorkouts).catch(
+      () => undefined,
+    );
   };
 
   const changeSort = (key: SortKey) => {
@@ -419,7 +487,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
           <fieldset className="training-furlong-fieldset">
             <legend>表示ハロン</legend>
             <span className="training-furlong-control">
-              {FURLONG_COLUMNS.map((column) => (
+              {TRAINING_FURLONG_COLUMNS.map((column) => (
                 <label className="training-furlong-option" key={column.key}>
                   <input
                     aria-label={`${column.label}を表示`}
@@ -439,71 +507,80 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
           </span>
         </section>
       </MobileFilterDisclosure>
-      <div className="training-table-wrap">
-        <table className="training-table">
-          <colgroup>
-            <col className="training-col-runner-number" />
-            <col className="training-col-horse" />
-            <col className="training-col-jockey" />
-            <col className="training-col-rider" />
-            <col className="training-col-trainer" />
-            <col className="training-col-date" />
-            <col className="training-col-place-summary" />
-            {visibleFurlongColumns.map((column) => (
-              <col className="training-col-time" key={column.key} />
-            ))}
-            {hasPremiumReviews ? <col className="training-col-review" /> : null}
-            {hasPremiumReviews ? <col className="training-col-review" /> : null}
-          </colgroup>
-          <thead>
-            <tr>
-              <th>{renderSortButton("umaban")}</th>
-              <th>馬名</th>
-              <th>騎手名</th>
-              <th>騎乗</th>
-              <th>調教師名</th>
-              <th>日付</th>
-              <th>場所 / 種別 / コース</th>
+      <TrainingViewToggle showChart={showChart} onShowChart={changeShowChart} />
+      {showChart ? (
+        <TrainingTimesChart
+          showAllWorkouts={showAllWorkouts}
+          trainings={chartTrainings}
+          onShowAllWorkouts={changeShowAllWorkouts}
+        />
+      ) : (
+        <div className="training-table-wrap">
+          <table className="training-table">
+            <colgroup>
+              <col className="training-col-runner-number" />
+              <col className="training-col-horse" />
+              <col className="training-col-jockey" />
+              <col className="training-col-rider" />
+              <col className="training-col-trainer" />
+              <col className="training-col-date" />
+              <col className="training-col-place-summary" />
               {visibleFurlongColumns.map((column) => (
-                <th key={column.key}>{renderSortButton(column.key)}</th>
+                <col className="training-col-time" key={column.key} />
               ))}
-              {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.text}</th> : null}
-              {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.grade}</th> : null}
-            </tr>
-          </thead>
-          <tbody>
-            {sortedTrainings.map((training) => (
-              <tr
-                key={`${training.umaban}-${training.trainingType}-${training.chokyoNengappi}-${training.chokyoJikoku}-${training.premiumWorkoutIndex ?? "jra"}`}
-              >
-                <td>{formatRunnerNumber(training.umaban)}</td>
-                <td className="training-horse-cell">{cleanText(training.bamei)}</td>
-                <td>{cleanText(training.currentJockeyName, "-")}</td>
-                <td>{cleanText(training.trainingRiderName, "-")}</td>
-                <td>{cleanText(training.trainerName, "-")}</td>
-                <td className="training-date-cell">
-                  {training.chokyoNengappi
-                    ? formatDate(
-                        training.chokyoNengappi.slice(0, 4),
-                        training.chokyoNengappi.slice(4),
-                      )
-                    : "-"}
-                </td>
-                <td className="training-course-cell">{getTrainingPlaceSummary(training)}</td>
+              {hasPremiumReviews ? <col className="training-col-review" /> : null}
+              {hasPremiumReviews ? <col className="training-col-review" /> : null}
+            </colgroup>
+            <thead>
+              <tr>
+                <th>{renderSortButton("umaban")}</th>
+                <th>馬名</th>
+                <th>騎手名</th>
+                <th>騎乗</th>
+                <th>調教師名</th>
+                <th>日付</th>
+                <th>場所 / 種別 / コース</th>
                 {visibleFurlongColumns.map((column) => (
-                  <td key={column.key}>{formatTrainingTime(training[column.key])}</td>
+                  <th key={column.key}>{renderSortButton(column.key)}</th>
                 ))}
-                {hasPremiumReviews ? (
-                  <td>{cleanText(training.premiumEvaluationText, "-")}</td>
-                ) : null}
-                {hasPremiumReviews ? (
-                  <td>{cleanText(training.premiumEvaluationGrade, "-")}</td>
-                ) : null}
+                {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.text}</th> : null}
+                {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.grade}</th> : null}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {sortedTrainings.map((training) => (
+                <tr
+                  key={`${training.umaban}-${training.trainingType}-${training.chokyoNengappi}-${training.chokyoJikoku}-${training.premiumWorkoutIndex ?? "jra"}`}
+                >
+                  <td>{formatRunnerNumber(training.umaban)}</td>
+                  <td className="training-horse-cell">{cleanText(training.bamei)}</td>
+                  <td>{cleanText(training.currentJockeyName, "-")}</td>
+                  <td>{cleanText(training.trainingRiderName, "-")}</td>
+                  <td>{cleanText(training.trainerName, "-")}</td>
+                  <td className="training-date-cell">
+                    {training.chokyoNengappi
+                      ? formatDate(
+                          training.chokyoNengappi.slice(0, 4),
+                          training.chokyoNengappi.slice(4),
+                        )
+                      : "-"}
+                  </td>
+                  <td className="training-course-cell">{formatTrainingPlaceSummary(training)}</td>
+                  {visibleFurlongColumns.map((column) => (
+                    <td key={column.key}>{formatTrainingTime(training[column.key])}</td>
+                  ))}
+                  {hasPremiumReviews ? (
+                    <td>{cleanText(training.premiumEvaluationText, "-")}</td>
+                  ) : null}
+                  {hasPremiumReviews ? (
+                    <td>{cleanText(training.premiumEvaluationGrade, "-")}</td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }

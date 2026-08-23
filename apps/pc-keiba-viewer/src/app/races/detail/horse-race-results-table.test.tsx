@@ -3,7 +3,18 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
+import {
+  loadResultsChartForCurrentUser,
+  persistResultsChartForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
+
+vi.mock("../../../lib/user-preferences-indexeddb", () => ({
+  loadResultsChartForCurrentUser: vi.fn<() => Promise<boolean>>(async () => false),
+  persistResultsChartForCurrentUser: vi.fn<(showChart: boolean) => Promise<void>>(
+    async () => undefined,
+  ),
+}));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/races/2026/03/22/05/01",
@@ -92,11 +103,23 @@ const runner = (overrides: Partial<Runner>): Runner => ({
   ...overrides,
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.mocked(loadResultsChartForCurrentUser).mockReset();
+  vi.mocked(persistResultsChartForCurrentUser).mockReset();
+  vi.mocked(loadResultsChartForCurrentUser).mockResolvedValue(false);
+  vi.mocked(persistResultsChartForCurrentUser).mockResolvedValue(undefined);
+});
+
+const renderResultsTable = (ui: React.ReactElement) => {
+  const view = render(ui);
+  fireEvent.click(screen.getByRole("radio", { name: "テキスト" }));
+  return view;
+};
 
 describe("horse race results table", () => {
   it("shows only fifth-place or better results by default while matching rows remain", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -127,7 +150,7 @@ describe("horse race results table", () => {
   });
 
   it("disables the finish rank filter when it alone removes all rows", async () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -155,7 +178,7 @@ describe("horse race results table", () => {
   });
 
   it("relaxes the default finish rank filter so every runner with history is visible", async () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -189,7 +212,7 @@ describe("horse race results table", () => {
   });
 
   it("relaxes default nar filters so every non-debut runner with history is visible", async () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName="C2"
         currentDistance="900"
@@ -228,7 +251,7 @@ describe("horse race results table", () => {
   });
 
   it("uses the supplemental horse name for a debut runner", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1600"
@@ -249,7 +272,7 @@ describe("horse race results table", () => {
   });
 
   it("defaults recent months to 7", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -269,7 +292,7 @@ describe("horse race results table", () => {
   });
 
   it("keeps a manually entered finish rank limit even when it filters out rows", async () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -306,7 +329,7 @@ describe("horse race results table", () => {
   });
 
   it("steps the recent months input by two", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -326,7 +349,7 @@ describe("horse race results table", () => {
   });
 
   it("renders the clearer filter labels", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -347,7 +370,7 @@ describe("horse race results table", () => {
   });
 
   it("excludes rows without a finish from the main table but keeps them in the detail table", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -389,7 +412,7 @@ describe("horse race results table", () => {
   });
 
   it("orders same-distance clocks first, then other trips by pace", () => {
-    const { container } = render(
+    const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -446,7 +469,7 @@ describe("horse race results table", () => {
   });
 
   it("prefers the longer trip when two races are equally far from the current distance", () => {
-    const { container } = render(
+    const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -492,8 +515,310 @@ describe("horse race results table", () => {
     expect(raceNameCells).toStrictEqual(["長い1900", "ペースの良い1700"]);
   });
 
+  it("prefers the current surface over a faster clock on a different surface", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            kaisaiTsukihi: "0101",
+            kyori: "1800",
+            kyosomeiHondai: "速い芝1800",
+            raceBango: "05",
+            sohaTime: "1100",
+            trackCode: "17",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            kaisaiTsukihi: "0201",
+            kyori: "1800",
+            kyosomeiHondai: "遅いダート1800",
+            raceBango: "06",
+            sohaTime: "1200",
+            trackCode: "24",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["遅いダート1800", "速い芝1800"]);
+  });
+
+  it("keeps a turf clock visible on a dirt card unless the user changes filters", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            kyori: "1800",
+            kyosomeiHondai: "芝の成績",
+            raceBango: "05",
+            sohaTime: "1100",
+            trackCode: "17",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            kyori: "1800",
+            kyosomeiHondai: "ダートの成績",
+            raceBango: "06",
+            sohaTime: "1200",
+            trackCode: "24",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["ダートの成績", "芝の成績"]);
+  });
+
+  it("prefers the current venue over a faster clock at another course", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            keibajoCode: "44",
+            kyori: "1800",
+            kyosomeiHondai: "速い大井",
+            raceBango: "05",
+            sohaTime: "1100",
+            trackCode: "23",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            keibajoCode: "05",
+            kyori: "1800",
+            kyosomeiHondai: "遅い東京",
+            raceBango: "06",
+            sohaTime: "1200",
+            trackCode: "24",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["遅い東京", "速い大井"]);
+    expect(screen.getByLabelText("出走予定と同じ競馬場")).toHaveProperty("checked", false);
+
+    fireEvent.click(screen.getByLabelText("出走予定と同じ競馬場"));
+
+    const filteredRaceNameCells = [
+      ...container.querySelectorAll("tbody tr td.race-results-name-cell"),
+    ].map((cell) => cell.textContent);
+
+    expect(filteredRaceNameCells).toStrictEqual(["遅い東京"]);
+  });
+
+  it("keeps a JRA Tokyo clock visible on a NAR card and only prefers the current venue", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="44"
+        currentRaceDate="20260322"
+        currentTrackCode="23"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            keibajoCode: "05",
+            kyori: "1800",
+            kyosomeiHondai: "東京中央",
+            raceBango: "05",
+            sohaTime: "1100",
+            trackCode: "24",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            keibajoCode: "44",
+            kyori: "1800",
+            kyosomeiHondai: "大井地方",
+            raceBango: "06",
+            sohaTime: "1200",
+            trackCode: "23",
+          }),
+        ]}
+        runners={[]}
+        source="nar"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["大井地方", "東京中央"]);
+  });
+
+  it("prefers the exact current track code among same-surface same-venue races", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            keibajoCode: "05",
+            kyori: "1800",
+            kyosomeiHondai: "速い左ダート",
+            raceBango: "05",
+            sohaTime: "1100",
+            trackCode: "23",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            keibajoCode: "05",
+            kyori: "1800",
+            kyosomeiHondai: "遅い右ダート",
+            raceBango: "06",
+            sohaTime: "1200",
+            trackCode: "24",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["遅い右ダート", "速い左ダート"]);
+  });
+
+  it("keeps a valid race date ahead of an invalid date when clocks match", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            kaisaiNen: "xxxx",
+            kaisaiTsukihi: "0322",
+            kyori: "1800",
+            kyosomeiHondai: "日付不正",
+            raceBango: "05",
+            sohaTime: "1123",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0101",
+            kyori: "1800",
+            kyosomeiHondai: "日付あり",
+            raceBango: "06",
+            sohaTime: "1123",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("表示期間（直近◯ヶ月）"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["日付あり", "日付不正"]);
+  });
+
   it("keeps the initial row order after returning to race-time ascending", () => {
-    const { container } = render(
+    const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -557,7 +882,7 @@ describe("horse race results table", () => {
   });
 
   it("sorts ban-ei clocks by decoded minutes instead of the packed numeric string", () => {
-    const { container } = render(
+    const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="200"
@@ -606,7 +931,7 @@ describe("horse race results table", () => {
   });
 
   it("hides last 3F sort and values for ban-ei race detail pages", () => {
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="200"
@@ -650,7 +975,7 @@ describe("horse race results table", () => {
       raceCount: 12,
       targetRaces: [],
     };
-    render(
+    renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
         currentDistance="1800"
@@ -671,5 +996,52 @@ describe("horse race results table", () => {
     expect(screen.getByText("最速レースタイム")).toBeDefined();
     expect(screen.getByText("1:12.5")).toBeDefined();
     expect(screen.getByText("最速上がり3F")).toBeDefined();
+  });
+
+  it("shows the race-time chart by default", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[result({})]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+    const filters = screen.getByLabelText("race result filters");
+    const toggle = screen.getByRole("group", { name: "競走成績の表示" });
+    const chart = screen.getByRole("figure", { name: "競走成績タイム散布図" });
+    expect(filters.compareDocumentPosition(toggle)).toStrictEqual(4);
+    expect(toggle.compareDocumentPosition(chart)).toStrictEqual(4);
+    expect(screen.getByRole("radio", { name: "グラフ" })).toHaveProperty("checked", true);
+    expect(screen.queryByRole("columnheader", { name: "馬名" })).toBeNull();
+  });
+
+  it("hides the chart and persists graph-off when テキスト is selected", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[result({ bamei: "テキスト馬" })]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "テキスト" }));
+    expect(screen.queryByRole("figure", { name: "競走成績タイム散布図" })).toBeNull();
+    expect(screen.getByText("テキスト馬")).toBeDefined();
+    expect(vi.mocked(persistResultsChartForCurrentUser).mock.calls).toStrictEqual([[false]]);
   });
 });

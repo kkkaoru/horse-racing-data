@@ -219,11 +219,26 @@ export interface ConditionWeightClassStatsRow {
   winRate: number;
 }
 
+export interface ConditionFinishPositionDetail {
+  date: string;
+  frameNumber: string;
+  horseName: string;
+  horseNumber: string;
+  jockeyName: string;
+  keibajoCode: string;
+  popularity: string;
+  raceName: string;
+  raceNumber: string;
+  raceTime: string;
+  rank: string;
+  winOdds: string;
+}
+
 export interface ConditionFinishPositionStatsRow {
   averageOdds: number | null;
   averagePopularity: number | null;
   count: number;
-  details: [];
+  details: ConditionFinishPositionDetail[];
   finishPosition: number;
   medianOdds: number | null;
   medianPopularity: number | null;

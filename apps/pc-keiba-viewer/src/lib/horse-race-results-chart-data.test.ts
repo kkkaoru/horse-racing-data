@@ -13,6 +13,7 @@ import {
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
   type HorseRaceChartRunner,
+  uniqueSortedDateValues,
 } from "./horse-race-results-chart-data";
 import type { HorseRaceResult } from "./race-types";
 
@@ -2083,5 +2084,15 @@ describe("horse race results chart data", () => {
         3,
       ),
     ).toStrictEqual([]);
+  });
+
+  it("returns an empty unique date list when no date values are given", () => {
+    expect(uniqueSortedDateValues([])).toStrictEqual([]);
+  });
+
+  it("deduplicates and sorts shared race timestamps for axis ticks", () => {
+    expect(
+      uniqueSortedDateValues([1775779200000, 1774137600000, 1774137600000, 1736640000000]),
+    ).toStrictEqual([1736640000000, 1774137600000, 1775779200000]);
   });
 });

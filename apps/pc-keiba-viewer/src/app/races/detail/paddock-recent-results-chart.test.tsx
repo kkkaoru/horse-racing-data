@@ -55,7 +55,9 @@ interface ReferenceLineStubProps {
 }
 
 interface XAxisStubProps {
+  allowDuplicatedCategory?: boolean;
   scale?: string;
+  ticks?: number[];
 }
 
 interface CartesianGridStubProps {
@@ -154,7 +156,14 @@ vi.mock("recharts", () => ({
           })}
     </div>
   ),
-  XAxis: ({ scale }: XAxisStubProps) => <div data-scale={scale} data-testid="x-axis-stub" />,
+  XAxis: ({ allowDuplicatedCategory, scale, ticks }: XAxisStubProps) => (
+    <div
+      data-allow-duplicated-category={String(allowDuplicatedCategory)}
+      data-scale={scale}
+      data-testid="x-axis-stub"
+      data-ticks={(ticks ?? []).join(",")}
+    />
+  ),
   YAxis: ({ label, reversed, tickCount, width, yAxisId }: YAxisStubProps) => (
     <div
       data-label={label}
@@ -391,6 +400,24 @@ test("renders a dashed cartesian grid behind the chart", () => {
 test("uses a time scale on the X axis", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(screen.getByTestId("x-axis-stub").getAttribute("data-scale")).toStrictEqual("time");
+});
+
+test("passes unique same-day ticks to the paddock X axis", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({}),
+        chartResult({ kakuteiChakujun: "02", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0410", kakuteiChakujun: "03", raceBango: "03" }),
+      ]}
+    />,
+  );
+  expect(screen.getByTestId("x-axis-stub").getAttribute("data-ticks")).toStrictEqual(
+    "1774137600000,1775779200000",
+  );
+  expect(
+    screen.getByTestId("x-axis-stub").getAttribute("data-allow-duplicated-category"),
+  ).toStrictEqual("false");
 });
 
 test("renders a zero reference line on the delta axis", () => {

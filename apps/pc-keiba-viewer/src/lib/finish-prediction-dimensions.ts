@@ -3,6 +3,7 @@ import {
   FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS,
   type V7LineageCategory,
 } from "../scripts/finish-position-features/v7-lineage-model-versions";
+import { isListedOrHigherGradeCode } from "./race-classification";
 import type { RaceListItem } from "./race-types";
 import { isBanEiKeibajoCode } from "./runner-format";
 
@@ -207,8 +208,7 @@ const readFlag = (query: Record<string, string | string[] | undefined>, name: st
   return value !== "0";
 };
 
-const isGradeEligible = (gradeCode: string | null): boolean =>
-  gradeCode !== null && gradeCode !== "";
+const isGradeEligible = (gradeCode: string | null): boolean => isListedOrHigherGradeCode(gradeCode);
 
 const isRaceNameEligible = (gradeCode: string | null): boolean =>
   gradeCode !== null && RACE_NAME_GRADE_CODES.has(gradeCode);

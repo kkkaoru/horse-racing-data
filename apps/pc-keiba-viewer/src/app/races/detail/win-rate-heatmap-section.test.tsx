@@ -17,7 +17,9 @@ import type {
 } from "../../../lib/race-types";
 import {
   loadHeatmapShowStartsForCurrentUser,
+  loadHeatmapSplitBloodlineLinesForCurrentUser,
   persistHeatmapShowStartsForCurrentUser,
+  persistHeatmapSplitBloodlineLinesForCurrentUser,
 } from "../../../lib/user-preferences-indexeddb";
 import { useRealtimeRacePayload } from "./realtime-client";
 import { WinRateHeatmapSection } from "./win-rate-heatmap-section";
@@ -36,9 +38,13 @@ vi.mock("./realtime-client", () => ({
 
 vi.mock("../../../lib/user-preferences-indexeddb", () => ({
   loadHeatmapShowStartsForCurrentUser: vi.fn<() => Promise<boolean>>(async () => false),
+  loadHeatmapSplitBloodlineLinesForCurrentUser: vi.fn<() => Promise<boolean>>(async () => true),
   persistHeatmapShowStartsForCurrentUser: vi.fn<(showStarts: boolean) => Promise<void>>(
     async () => undefined,
   ),
+  persistHeatmapSplitBloodlineLinesForCurrentUser: vi.fn<
+    (splitBloodlineLines: boolean) => Promise<void>
+  >(async () => undefined),
 }));
 
 interface MockMediaQueryEvent {
@@ -91,9 +97,13 @@ afterEach(() => {
   vi.mocked(useHorseWeightStream).mockReturnValue(null);
   vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
   vi.mocked(loadHeatmapShowStartsForCurrentUser).mockReset();
+  vi.mocked(loadHeatmapSplitBloodlineLinesForCurrentUser).mockReset();
   vi.mocked(persistHeatmapShowStartsForCurrentUser).mockReset();
+  vi.mocked(persistHeatmapSplitBloodlineLinesForCurrentUser).mockReset();
   vi.mocked(loadHeatmapShowStartsForCurrentUser).mockResolvedValue(false);
+  vi.mocked(loadHeatmapSplitBloodlineLinesForCurrentUser).mockResolvedValue(true);
   vi.mocked(persistHeatmapShowStartsForCurrentUser).mockResolvedValue(undefined);
+  vi.mocked(persistHeatmapSplitBloodlineLinesForCurrentUser).mockResolvedValue(undefined);
 });
 
 const heatmapRealtimeRequest = {
@@ -387,7 +397,7 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.getByText("番")).toBeDefined();
   expect(screen.getByText("枠")).toBeDefined();
   expect(screen.queryByText("馬体重")).toBeNull();
-  expect(screen.getByText("斤量")).toBeDefined();
+  expect(screen.queryByText("斤量")).toBeNull();
   expect(screen.getByText("馬")).toBeDefined();
   expect(screen.getByText("騎手枠別")).toBeDefined();
   expect(screen.getByText("騎手")).toBeDefined();
@@ -400,7 +410,7 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.getByText("母父父")).toBeDefined();
   expect(screen.getByText("母母父")).toBeDefined();
   expect(screen.getByText("40%以上")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(13);
+  expect(screen.getAllByText("勝").length).toBe(12);
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("20.0")).toBeDefined();
@@ -413,6 +423,10 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   );
   expect(screen.getByRole("checkbox", { name: "レース数" })).toBeDefined();
   expect(screen.getByRole("checkbox", { name: "レース数" })).toHaveProperty("checked", false);
+  expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+    "checked",
+    true,
+  );
   expect(document.querySelector(".win-rate-heatmap-swatch-starts")).toBeNull();
   expect(
     [...document.querySelectorAll(".win-rate-heatmap-tooltip-starts")].map(
@@ -501,7 +515,7 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
     "checked",
     false,
   );
-  expect(screen.getAllByText("連").length).toBe(13);
+  expect(screen.getAllByText("連").length).toBe(12);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("30.0")).toBeDefined();
@@ -539,7 +553,7 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
     "checked",
     false,
   );
-  expect(screen.getAllByText("複").length).toBe(13);
+  expect(screen.getAllByText("複").length).toBe(12);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.getByText("45.0")).toBeDefined();
@@ -573,9 +587,9 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(13);
-  expect(screen.getAllByText("連").length).toBe(13);
-  expect(screen.getAllByText("複").length).toBe(13);
+  expect(screen.getAllByText("勝").length).toBe(12);
+  expect(screen.getAllByText("連").length).toBe(12);
+  expect(screen.getAllByText("複").length).toBe(12);
   expect(screen.getByText("15.0")).toBeDefined();
   expect(screen.getAllByText("30.0").length).toBe(2);
   expect(screen.getByText("45.0")).toBeDefined();
@@ -787,7 +801,7 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
   expect(
     document.querySelector(".win-rate-heatmap-tooltip .frame-number-badge.frame-1"),
   ).toBeDefined();
-  expect(screen.getAllByRole("tooltip").length).toBe(13);
+  expect(screen.getAllByRole("tooltip").length).toBe(12);
 });
 
 it("does not pin a heatmap tooltip on click in desktop view", () => {
@@ -1273,6 +1287,124 @@ it("fades zero rates and zero start counts on combined heatmap cells", () => {
   expect(document.querySelector(".win-rate-heatmap-swatch-starts")?.textContent).toBe("(40)");
 });
 
+it("restores the bloodline split checkbox from the current user preference", async () => {
+  vi.mocked(loadHeatmapSplitBloodlineLinesForCurrentUser).mockResolvedValue(false);
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  await waitFor(() => {
+    expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+      "checked",
+      false,
+    );
+  });
+});
+
+it("keeps the bloodline split checkbox on when preference load fails", async () => {
+  vi.mocked(loadHeatmapSplitBloodlineLinesForCurrentUser).mockRejectedValue(
+    new Error("idb unavailable"),
+  );
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+    "checked",
+    true,
+  );
+});
+
+it("keeps a bloodline split toggle made before preference load finishes", async () => {
+  const load: { resolve: (value: boolean) => void } = {
+    resolve: (_value: boolean) => undefined,
+  };
+  vi.mocked(loadHeatmapSplitBloodlineLinesForCurrentUser).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        load.resolve = resolve;
+      }),
+  );
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "父系と母父系を分ける" }));
+  expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+    "checked",
+    false,
+  );
+  load.resolve(true);
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+    "checked",
+    false,
+  );
+});
+
+it("keeps the bloodline split checkbox off after a persist failure", async () => {
+  vi.mocked(persistHeatmapSplitBloodlineLinesForCurrentUser).mockRejectedValue(
+    new Error("idb write failed"),
+  );
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "父系と母父系を分ける" }));
+  await act(async () => undefined);
+  expect(screen.getByRole("checkbox", { name: "父系と母父系を分ける" })).toHaveProperty(
+    "checked",
+    false,
+  );
+});
+
+it("shows the 斤量 column when scheduled runners carry different weights", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[
+        runner,
+        { ...runner, futanJuryo: "550", kettoTorokuBango: "2020100002", umaban: "02" },
+      ]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("斤量")).toBeDefined();
+});
+
 it("hides the 斤量 column for ばんえい races", () => {
   render(
     <WinRateHeatmapSection
@@ -1335,11 +1467,10 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     />,
   );
   expect(screen.getByText("馬体重")).toBeDefined();
-  expect(screen.getByText("斤量")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(14);
-  expect(screen.getAllByText("100.0").length).toBe(3);
+  expect(screen.queryByText("斤量")).toBeNull();
+  expect(screen.getAllByText("勝").length).toBe(13);
+  expect(screen.getAllByText("100.0").length).toBe(2);
   expect(screen.getByText("480-499kg")).toBeDefined();
-  expect(screen.getByText("55.5kg以上57kg以下")).toBeDefined();
   const headings = [...document.querySelectorAll("thead tr:first-child th")].map(
     (heading) => heading.textContent,
   );
@@ -1347,7 +1478,6 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     "番",
     "枠",
     "馬体重",
-    "斤量",
     "馬",
     "騎手枠別",
     "騎手",

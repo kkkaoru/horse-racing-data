@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import {
@@ -12,7 +12,9 @@ import {
   formatRaceNumber,
   formatTrack,
   formatWeather,
+  getTrackSurfaceLabel,
 } from "../../../lib/format";
+import { DEFAULT_SHOW_RESULTS_CHART } from "../../../lib/horse-race-time-charts";
 import { getRaceTags } from "../../../lib/race-classification";
 import {
   buildRacePacePredictionRowsFromResults,
@@ -29,7 +31,12 @@ import {
   formatSexAge,
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
+import {
+  loadResultsChartForCurrentUser,
+  persistResultsChartForCurrentUser,
+} from "../../../lib/user-preferences-indexeddb";
 import { FrameNumberBadge } from "./frame-number-badge";
+import { HorseRaceTimeChart } from "./horse-race-time-charts";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 import { RaceTimeStatsMetrics } from "./race-time-stats-metrics";
 
@@ -37,9 +44,10 @@ type ResultLimit = "all" | "1" | "3" | "5" | "10";
 type SortDirection = "asc" | "desc";
 type SortKey = "date" | "kohan3f" | "sohaTime";
 
-const DEFAULT_RECENT_MONTHS = 7;
-const RECENT_MONTHS_RELAX_STEP = 2;
-const RECENT_MONTHS_STEP = 2;
+interface ResultsViewToggleProps {
+  showChart: boolean;
+  onShowChart: (showChart: boolean) => void;
+}
 
 interface HorseRaceResultsTableProps {
   classConditionName: string | null;
@@ -57,14 +65,52 @@ interface HorseRaceResultsTableProps {
 
 interface ComparableRaceTimeContext {
   baseDistance: number;
+  currentKeibajoCode: string;
+  currentTrackCode: string | null;
   direction: SortDirection;
 }
+
+const DEFAULT_RECENT_MONTHS = 7;
+const RECENT_MONTHS_RELAX_STEP = 2;
+const RECENT_MONTHS_STEP = 2;
+const RESULTS_VIEW_RADIO_NAME: string = "results-view";
 
 const SORT_LABELS: Record<SortKey, string> = {
   date: "日付",
   kohan3f: "上がり3F",
   sohaTime: "レースタイム",
 };
+
+const COMPARABLE_SURFACE_LABELS = ["芝", "ダート", "サンド", "障害"] satisfies readonly string[];
+
+const ResultsViewToggle = ({ onShowChart, showChart }: ResultsViewToggleProps) => (
+  <fieldset aria-label="競走成績の表示" className="win-rate-heatmap-view-toggle">
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={showChart}
+        name={RESULTS_VIEW_RADIO_NAME}
+        type="radio"
+        value="chart"
+        onChange={() => {
+          onShowChart(true);
+        }}
+      />
+      グラフ
+    </label>
+    <label className="running-style-bucket-toggle-label">
+      <input
+        checked={!showChart}
+        name={RESULTS_VIEW_RADIO_NAME}
+        type="radio"
+        value="text"
+        onChange={() => {
+          onShowChart(false);
+        }}
+      />
+      テキスト
+    </label>
+  </fieldset>
+);
 
 const isResultLimit = (value: string): value is ResultLimit =>
   value === "all" || value === "1" || value === "3" || value === "5" || value === "10";
@@ -105,6 +151,16 @@ const compareNullable = (
   }
   return direction === "asc" ? left - right : right - left;
 };
+
+const compareMatchFlag = (leftMatched: boolean, rightMatched: boolean): number => {
+  if (leftMatched === rightMatched) {
+    return 0;
+  }
+  return leftMatched ? -1 : 1;
+};
+
+const isComparableSurfaceLabel = (label: string): boolean =>
+  COMPARABLE_SURFACE_LABELS.some((surface) => surface === label);
 
 const formatRaceName = (result: HorseRaceResult): string => {
   const names = [
@@ -223,18 +279,23 @@ const isClassMatched = (result: HorseRaceResult, classFilter: string): boolean =
   return resultClass === classFilter;
 };
 
+const getRaceDateValue = (result: HorseRaceResult): number | null => {
+  const raw = `${result.kaisaiNen}${result.kaisaiTsukihi}`;
+  if (!/^\d{8}$/.test(raw)) {
+    return null;
+  }
+  return Number(raw);
+};
+
 const getSortValue = (result: HorseRaceResult, key: SortKey): number | null => {
   if (key === "date") {
-    return Number(`${result.kaisaiNen}${result.kaisaiTsukihi}`);
+    return getRaceDateValue(result);
   }
   if (key === "kohan3f") {
     return parseNumber(result.kohan3f);
   }
   return parseSohaTimeTenths(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode));
 };
-
-const getRaceDateValue = (result: HorseRaceResult): number | null =>
-  Number(`${result.kaisaiNen}${result.kaisaiTsukihi}`);
 
 const getDistanceValue = (result: HorseRaceResult): number | null => parseNumber(result.kyori);
 
@@ -345,16 +406,30 @@ const compareEqualDistanceTimes = (
 };
 
 // Comparison-oriented race-time order for 競走成績:
-// 1. Same distance as the current race first (apples-to-apples clocks).
-// 2. Then closer distances.
-// 3. Then the longer distance when the gap to the current race is equal.
-// 4. Then faster/slower time (decoded tenths; ban-ei packed times included).
+// 1. Same surface as the current race (turf / dirt / sand / jumps clocks).
+//    Surface is a sort key only unless the user turns on a filter.
+// 2. Same distance as the current race first (apples-to-apples clocks).
+// 3. Then closer distances.
+// 4. Then the longer distance when the gap to the current race is equal.
+// 5. Then the current venue, then the exact track code (turn / inner-outer).
+//    Venue is a sort key only unless the user enables the same-venue filter.
+// 6. Then faster/slower time (decoded tenths; ban-ei packed times included).
 //    Different-distance rows use pace (time / distance) so a shorter trip is
 //    not automatically "faster".
-// 5. Then newer date, then horse number.
+// 7. Then newer date, then horse number.
 const createComparableRaceTimeComparator =
-  ({ baseDistance, direction }: ComparableRaceTimeContext) =>
+  ({ baseDistance, currentKeibajoCode, currentTrackCode, direction }: ComparableRaceTimeContext) =>
   (left: HorseRaceResult, right: HorseRaceResult): number => {
+    const currentSurface = getTrackSurfaceLabel(currentTrackCode);
+    if (isComparableSurfaceLabel(currentSurface)) {
+      const surfaceCompared = compareMatchFlag(
+        getTrackSurfaceLabel(left.trackCode) === currentSurface,
+        getTrackSurfaceLabel(right.trackCode) === currentSurface,
+      );
+      if (surfaceCompared !== 0) {
+        return surfaceCompared;
+      }
+    }
     const leftDistance = getDistanceValue(left);
     const rightDistance = getDistanceValue(right);
     const hasBase = Number.isFinite(baseDistance) && baseDistance > 0;
@@ -375,6 +450,26 @@ const createComparableRaceTimeComparator =
       const longerCompared = compareNullable(leftDistance, rightDistance, "desc");
       if (longerCompared !== 0) {
         return longerCompared;
+      }
+    }
+    const currentKeibajo = cleanText(currentKeibajoCode, "");
+    if (currentKeibajo.length > 0) {
+      const keibajoCompared = compareMatchFlag(
+        cleanText(left.keibajoCode, "") === currentKeibajo,
+        cleanText(right.keibajoCode, "") === currentKeibajo,
+      );
+      if (keibajoCompared !== 0) {
+        return keibajoCompared;
+      }
+    }
+    const currentTrack = cleanText(currentTrackCode, "");
+    if (currentTrack.length > 0) {
+      const trackCompared = compareMatchFlag(
+        cleanText(left.trackCode, "") === currentTrack,
+        cleanText(right.trackCode, "") === currentTrack,
+      );
+      if (trackCompared !== 0) {
+        return trackCompared;
       }
     }
     if (leftDistance !== null && leftDistance === rightDistance) {
@@ -436,6 +531,8 @@ export function HorseRaceResultsTable({
     direction: "asc",
     key: "sohaTime",
   });
+  const [showChart, setShowChart] = useState(DEFAULT_SHOW_RESULTS_CHART);
+  const hasEditedView = useRef(false);
   const sourceScopeChecked = sourceScope === source;
   const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
   const updateSourceScope = (checked: boolean) => {
@@ -582,12 +679,16 @@ export function HorseRaceResultsTable({
 
     const compareByComparableRaceTimeAsc = createComparableRaceTimeComparator({
       baseDistance,
+      currentKeibajoCode,
+      currentTrackCode,
       direction: "asc",
     });
     const compareBySelectedSort =
       sort.key === "sohaTime"
         ? createComparableRaceTimeComparator({
             baseDistance,
+            currentKeibajoCode,
+            currentTrackCode,
             direction: sort.direction,
           })
         : (left: HorseRaceResult, right: HorseRaceResult): number => {
@@ -797,7 +898,9 @@ export function HorseRaceResultsTable({
   }, [
     baseDistance,
     classFilter,
+    currentKeibajoCode,
     currentRaceDate,
+    currentTrackCode,
     distanceMinTouched,
     distanceMax,
     distanceMin,
@@ -887,6 +990,28 @@ export function HorseRaceResultsTable({
       setSameJockeyOnly(visibleResultsState.relaxedSameJockeyOnly);
     }
   }, [visibleResultsState.relaxedSameJockeyOnly]);
+
+  useEffect(() => {
+    const loadState = { cancelled: false };
+    void loadResultsChartForCurrentUser()
+      .then((stored) => {
+        if (loadState.cancelled || hasEditedView.current) {
+          return undefined;
+        }
+        setShowChart(stored);
+        return undefined;
+      })
+      .catch(() => undefined);
+    return () => {
+      loadState.cancelled = true;
+    };
+  }, []);
+
+  const changeShowChart = (nextShowChart: boolean) => {
+    hasEditedView.current = true;
+    setShowChart(nextShowChart);
+    void persistResultsChartForCurrentUser(nextShowChart).catch(() => undefined);
+  };
 
   const raceResultsByRunnerNumber = useMemo(() => {
     const groupedResults = new Map<string, HorseRaceResult[]>();
@@ -1219,9 +1344,19 @@ export function HorseRaceResultsTable({
           </div>
         </section>
       ) : null}
+      <ResultsViewToggle showChart={showChart} onShowChart={changeShowChart} />
       {visibleResults.length === 0 ? (
         <p className="empty-state">条件に一致する競走成績はありません。</p>
-      ) : (
+      ) : null}
+      {visibleResults.length > 0 && showChart ? (
+        <HorseRaceTimeChart
+          currentDistance={currentDistance}
+          keibajoCode={currentKeibajoCode}
+          results={visibleResults}
+          stats={raceTimeStats}
+        />
+      ) : null}
+      {visibleResults.length > 0 && !showChart ? (
         <div className="race-results-table-wrap">
           <table className="race-results-table">
             <colgroup>
@@ -1394,7 +1529,7 @@ export function HorseRaceResultsTable({
             </tbody>
           </table>
         </div>
-      )}
+      ) : null}
     </>
   );
 }

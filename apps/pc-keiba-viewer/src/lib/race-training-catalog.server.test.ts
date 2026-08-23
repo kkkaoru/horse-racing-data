@@ -79,10 +79,9 @@ it("returns Catalog training rows from the service binding", async () => {
 
   await expect(fetchRaceTrainingsFromCatalog(query)).resolves.toStrictEqual([catalogTraining]);
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(buildRaceTrainingCatalogUrl(query).toString());
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/race-trainings?date=20260803&keibajoCode=05&raceBango=01",
+  );
 });
 
 it("returns null when the Catalog binding is unavailable", async () => {

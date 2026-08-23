@@ -1,6 +1,7 @@
 // Run with bun (bunx vitest).
 
 import type {
+  ConditionFinishPositionDetail,
   ConditionFinishPositionStatsRow,
   ConditionFrameStatsRow,
   ConditionHistoryStatsPayload,
@@ -16,6 +17,7 @@ import {
   currentTables,
   finishPositionSql,
   historyTables,
+  isBanEiKeibajo,
   similarRaceFilterSql,
   tableName,
   unionHistorySql,
@@ -23,14 +25,16 @@ import {
   type CatalogTableSet,
 } from "./win-rate-heatmap-stats";
 
+export { isBanEiKeibajo };
+
 type WeightClassKind = "body" | "carried";
 
 const RATE_SCALE: number = 10;
 const SCORE_SCALE: number = 100;
-const BAN_EI_KEIBAJO_CODES: ReadonlyArray<string> = ["81", "82", "83", "84"];
 const EMPTY_DETAILS: [] = [];
 const EMPTY_CORRELATION_ROWS: [] = [];
 const TARGET_RACE_LIMIT: number = 500;
+const FINISH_DETAIL_LIMIT: number = 100;
 
 const BODY_WEIGHT_CLASS_SQL: string = `CASE
     WHEN body_weight < 400 THEN 'le399'
@@ -52,9 +56,6 @@ const CARRIED_WEIGHT_CLASS_SQL: string = `CASE
     WHEN carried_weight <= 57 THEN '55.5-57'
     ELSE '57.5-59'
   END`;
-
-export const isBanEiKeibajo = (keibajoCode: string): boolean =>
-  BAN_EI_KEIBAJO_CODES.some((code) => code === keibajoCode);
 
 const roundTo = (value: number, scale: number): number => Math.round(value * scale) / scale;
 
@@ -89,6 +90,12 @@ const requiredString = (value: unknown, field: string): string => {
     return String(value);
   }
   throw new Error(`R2 SQL row is missing ${field}`);
+};
+
+const textOrEmpty = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  return "";
 };
 
 const roundedOrNull = (value: unknown, scale: number): number | null => {
@@ -247,7 +254,19 @@ matched_history AS (
         extraWhere: `AND ${finishPositionSql("se")} IN (1, 2, 3, 4, 5)`,
         filters: checked,
         selectList: `${finishPositionSql("se")} AS finish_position,
-    ${integerSelect("se.tansho_ninkijun", "00")} AS popularity,
+    concat(ra.kaisai_nen, ra.kaisai_tsukihi) AS target_race_date,
+    ${paddedCodeSql("ra.keibajo_code")} AS keibajo_code,
+    ${paddedCodeSql("ra.race_bango")} AS race_bango,
+    coalesce(nullif(btrim(coalesce(ra.kyosomei_hondai, '')), ''), '') AS race_name,
+    ${paddedCodeSql("se.wakuban")} AS wakuban,
+    ${paddedCodeSql("se.umaban")} AS umaban,
+    ${trimmedNameSql("se.bamei")} AS bamei,
+    ${trimmedNameSql("se.kishumei_ryakusho")} AS jockey_name,
+    coalesce(nullif(btrim(coalesce(se.kakutei_chakujun, '')), ''), '') AS kakutei_chakujun,
+    coalesce(nullif(btrim(coalesce(se.soha_time, '')), ''), '') AS soha_time,
+    coalesce(nullif(btrim(coalesce(se.tansho_ninkijun, '')), ''), '') AS popularity,
+    coalesce(nullif(btrim(coalesce(se.tansho_odds, '')), ''), '') AS win_odds,
+    ${integerSelect("se.tansho_ninkijun", "00")} AS popularity_number,
     ${doubleSelect("se.tansho_odds")} / 10.0 AS odds`,
         tables,
       }),
@@ -256,14 +275,22 @@ matched_history AS (
 )
 SELECT
   finish_position,
-  count(*) AS count,
-  avg(CASE WHEN popularity > 0 THEN popularity END) AS average_popularity,
-  approx_percentile_cont(CASE WHEN popularity > 0 THEN popularity END, 0.5) AS median_popularity,
-  avg(CASE WHEN odds > 0 THEN odds END) AS average_odds,
-  approx_percentile_cont(CASE WHEN odds > 0 THEN odds END, 0.5) AS median_odds
+  target_race_date,
+  keibajo_code,
+  race_bango,
+  race_name,
+  wakuban,
+  umaban,
+  bamei,
+  jockey_name,
+  kakutei_chakujun,
+  soha_time,
+  popularity,
+  win_odds,
+  popularity_number,
+  odds
 FROM matched_history
-GROUP BY finish_position
-ORDER BY finish_position`;
+ORDER BY finish_position ASC, target_race_date DESC, race_bango ASC, umaban ASC`;
 };
 
 export const buildConditionRaceTimeStatsQuery = (
@@ -404,17 +431,119 @@ export const normaliseWeightClassRow = (
   };
 };
 
-export const normaliseFinishPositionRow = (
+const compareFinishDetailOrder = (
+  left: ConditionFinishPositionDetail,
+  right: ConditionFinishPositionDetail,
+): number => {
+  if (left.date !== right.date) return left.date < right.date ? 1 : -1;
+  if (left.raceNumber !== right.raceNumber) return left.raceNumber < right.raceNumber ? -1 : 1;
+  if (left.horseNumber === right.horseNumber) return 0;
+  return left.horseNumber < right.horseNumber ? -1 : 1;
+};
+
+const compareFinishPosition = (left: number, right: number): number => left - right;
+
+const averageOf = (values: readonly number[]): number | null => {
+  if (values.length === 0) return null;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return roundTo(total / values.length, RATE_SCALE);
+};
+
+const medianOf = (values: readonly number[]): number | null => {
+  if (values.length === 0) return null;
+  const sorted = [...values].toSorted((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    const value = sorted[mid];
+    return value === undefined ? null : roundTo(value, RATE_SCALE);
+  }
+  const low = sorted[mid - 1];
+  const high = sorted[mid];
+  if (low === undefined || high === undefined) return null;
+  return roundTo((low + high) / 2, RATE_SCALE);
+};
+
+const parseFinishHorseRow = (
   raw: Record<string, unknown>,
-): ConditionFinishPositionStatsRow => ({
-  averageOdds: roundedOrNull(raw.average_odds, RATE_SCALE),
-  averagePopularity: roundedOrNull(raw.average_popularity, RATE_SCALE),
-  count: requiredInteger(raw.count, "count"),
-  details: EMPTY_DETAILS,
-  finishPosition: requiredInteger(raw.finish_position, "finish_position"),
-  medianOdds: roundedOrNull(raw.median_odds, RATE_SCALE),
-  medianPopularity: roundedOrNull(raw.median_popularity, RATE_SCALE),
-});
+): {
+  detail: ConditionFinishPositionDetail;
+  finishPosition: number;
+  odds: number | null;
+  popularity: number | null;
+} | null => {
+  const finishPosition = optionalNumber(raw.finish_position);
+  if (finishPosition === null || !Number.isInteger(finishPosition) || finishPosition <= 0) {
+    return null;
+  }
+  const popularityNumber = optionalNumber(raw.popularity_number);
+  const odds = optionalNumber(raw.odds);
+  return {
+    detail: {
+      date: requiredString(raw.target_race_date, "target_race_date"),
+      frameNumber: textOrEmpty(raw.wakuban),
+      horseName: requiredString(raw.bamei, "bamei"),
+      horseNumber: requiredString(raw.umaban, "umaban"),
+      jockeyName: requiredString(raw.jockey_name, "jockey_name"),
+      keibajoCode: requiredString(raw.keibajo_code, "keibajo_code"),
+      popularity: textOrEmpty(raw.popularity),
+      raceName: textOrEmpty(raw.race_name),
+      raceNumber: requiredString(raw.race_bango, "race_bango"),
+      raceTime: textOrEmpty(raw.soha_time),
+      rank: textOrEmpty(raw.kakutei_chakujun),
+      winOdds: textOrEmpty(raw.win_odds),
+    },
+    finishPosition,
+    odds: odds !== null && odds > 0 ? odds : null,
+    popularity: popularityNumber !== null && popularityNumber > 0 ? popularityNumber : null,
+  };
+};
+
+const finishStatsFromHorses = (
+  horses: ReadonlyArray<NonNullable<ReturnType<typeof parseFinishHorseRow>>>,
+): ConditionFinishPositionStatsRow[] => {
+  const grouped = horses.reduce<
+    Map<number, Array<NonNullable<ReturnType<typeof parseFinishHorseRow>>>>
+  >((groups, horse) => {
+    const existing = groups.get(horse.finishPosition);
+    if (existing === undefined) {
+      return groups.set(horse.finishPosition, [horse]);
+    }
+    return groups.set(horse.finishPosition, [...existing, horse]);
+  }, new Map());
+  return [...grouped.keys()].toSorted(compareFinishPosition).flatMap((finishPosition) => {
+    const group = grouped.get(finishPosition);
+    if (group === undefined) return [];
+    const details = group
+      .map((horse) => horse.detail)
+      .toSorted(compareFinishDetailOrder)
+      .slice(0, FINISH_DETAIL_LIMIT);
+    return [
+      {
+        averageOdds: averageOf(group.flatMap((horse) => (horse.odds === null ? [] : [horse.odds]))),
+        averagePopularity: averageOf(
+          group.flatMap((horse) => (horse.popularity === null ? [] : [horse.popularity])),
+        ),
+        count: group.length,
+        details,
+        finishPosition,
+        medianOdds: medianOf(group.flatMap((horse) => (horse.odds === null ? [] : [horse.odds]))),
+        medianPopularity: medianOf(
+          group.flatMap((horse) => (horse.popularity === null ? [] : [horse.popularity])),
+        ),
+      },
+    ];
+  });
+};
+
+export const aggregateFinishPositionStats = (
+  rawRows: ReadonlyArray<Record<string, unknown>>,
+): ConditionFinishPositionStatsRow[] =>
+  finishStatsFromHorses(
+    rawRows.flatMap((raw) => {
+      const parsed = parseFinishHorseRow(raw);
+      return parsed === null ? [] : [parsed];
+    }),
+  );
 
 const normaliseFrameRow = (raw: Record<string, unknown>): Omit<ConditionFrameStatsRow, "score"> => {
   const count = requiredInteger(raw.count, "count");
@@ -451,12 +580,6 @@ export const emptyRaceTimeStats = (): ConditionRaceTimeStats => ({
   raceCount: 0,
   targetRaces: [],
 });
-
-const textOrEmpty = (value: unknown): string => {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "bigint") return String(value);
-  return "";
-};
 
 export const normaliseTargetRaceRow = (raw: Record<string, unknown>): ConditionTargetRace => ({
   date: requiredString(raw.target_race_date, "target_race_date"),
@@ -501,7 +624,7 @@ export const normaliseConditionHistoryStatsPayload = (input: {
   weightRows: ReadonlyArray<Record<string, unknown>>;
 }): ConditionHistoryStatsPayload => ({
   carriedWeightClassStats: input.carriedRows.map(normaliseWeightClassRow),
-  finishPositionStats: input.finishRows.map(normaliseFinishPositionRow),
+  finishPositionStats: aggregateFinishPositionStats(input.finishRows),
   frameStats: scoredFrameRows(input.frameRows.map(normaliseFrameRow)),
   raceTimeStats: normaliseRaceTimeStats(
     input.raceTimeRows[0],

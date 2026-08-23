@@ -76,8 +76,19 @@ export interface BuildWinRateHeatmapRowsInput {
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
   carriedWeightClassStats?: readonly WeightClassStatsRow[];
+  splitBloodlineLines?: boolean;
   weightClassStats?: readonly WeightClassStatsRow[];
 }
+
+interface BloodlinePooledCounts {
+  quinellaCount: number;
+  showCount: number;
+  starts: number;
+  winCount: number;
+}
+
+type WinRateHeatmapBloodlineCategory = BloodlineStatsRow["category"];
+type WinRateHeatmapBloodlineLineage = "combined" | "damSireLine" | "sireLine";
 
 export interface ShouldShowWinRateHeatmapWeightColumnInput {
   keibajoCode: string;
@@ -184,6 +195,19 @@ export const WIN_RATE_HEATMAP_COLUMNS: readonly WinRateHeatmapColumn[] = [
   { key: "damDamSire", label: "母母父" },
 ];
 
+const SIRE_LINE_BLOODLINE_CATEGORIES = [
+  "sire",
+  "sireSire",
+  "sireSireSire",
+  "sireDamSire",
+] satisfies readonly WinRateHeatmapBloodlineCategory[];
+
+const DAM_SIRE_LINE_BLOODLINE_CATEGORIES = [
+  "damSire",
+  "damSireSire",
+  "damDamSire",
+] satisfies readonly WinRateHeatmapBloodlineCategory[];
+
 const WIN_RATE_HEATMAP_WIN_RATE_METRIC: WinRateHeatmapRateMetric = {
   countKey: "winCount",
   hue: 8,
@@ -223,6 +247,9 @@ export const WIN_RATE_HEATMAP_VIEW_MODES: readonly WinRateHeatmapViewModeOption[
 
 export const DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE: WinRateHeatmapViewMode = "winRate";
 export const DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS: boolean = false;
+export const DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES: boolean = true;
+export const WIN_RATE_HEATMAP_BLOODLINE_NOTE =
+  "血統の勝率・連対率・複勝率は、父系（父・父父・父父父・父母父）と母父系（母父・母父父・母母父）それぞれで同名の種牡馬の成績を合算しています。チェックを外すと父系と母父系も合算します。";
 
 const WIN_RATE_HEATMAP_VIEW_MODE_METRICS: Record<
   WinRateHeatmapViewMode,
@@ -355,6 +382,79 @@ const parseFinishPosition = (value: string | null): number | null => {
 const toRate = (count: number, starts: number): number =>
   Math.round((count * MAX_WIN_RATE * RATE_DECIMAL_FACTOR) / starts) / RATE_DECIMAL_FACTOR;
 
+const isSireLineBloodlineCategory = (category: WinRateHeatmapBloodlineCategory): boolean =>
+  SIRE_LINE_BLOODLINE_CATEGORIES.some((lineCategory) => lineCategory === category);
+
+const isDamSireLineBloodlineCategory = (category: WinRateHeatmapBloodlineCategory): boolean =>
+  DAM_SIRE_LINE_BLOODLINE_CATEGORIES.some((lineCategory) => lineCategory === category);
+
+const bloodlineLineageForCategory = (
+  category: WinRateHeatmapBloodlineCategory,
+): Exclude<WinRateHeatmapBloodlineLineage, "combined"> =>
+  isSireLineBloodlineCategory(category) ? "sireLine" : "damSireLine";
+
+const uniqueBloodlineStatsByCategoryName = (
+  rows: BloodlineStatsRow[],
+): ReadonlyMap<string, BloodlineStatsRow> =>
+  rows.reduce((index, row) => {
+    index.set(`${row.category}\0${row.name}`, row);
+    return index;
+  }, new Map<string, BloodlineStatsRow>());
+
+const emptyBloodlinePooledCounts = (): BloodlinePooledCounts => ({
+  quinellaCount: 0,
+  showCount: 0,
+  starts: 0,
+  winCount: 0,
+});
+
+const addBloodlinePooledCounts = (
+  left: BloodlinePooledCounts,
+  right: BloodlinePooledCounts,
+): BloodlinePooledCounts => ({
+  quinellaCount: left.quinellaCount + right.quinellaCount,
+  showCount: left.showCount + right.showCount,
+  starts: left.starts + right.starts,
+  winCount: left.winCount + right.winCount,
+});
+
+const countsFromBloodlineRow = (row: BloodlineStatsRow): BloodlinePooledCounts => ({
+  quinellaCount: row.quinellaCount,
+  showCount: row.showCount,
+  starts: row.starts,
+  winCount: row.winCount,
+});
+
+const rowMatchesBloodlinePool = (
+  row: BloodlineStatsRow,
+  name: string,
+  lineage: WinRateHeatmapBloodlineLineage,
+): boolean => {
+  if (row.name !== name) {
+    return false;
+  }
+  if (lineage === "combined") {
+    return true;
+  }
+  if (lineage === "sireLine") {
+    return isSireLineBloodlineCategory(row.category);
+  }
+  return isDamSireLineBloodlineCategory(row.category);
+};
+
+const poolBloodlineCounts = (
+  uniqueRows: ReadonlyMap<string, BloodlineStatsRow>,
+  name: string,
+  lineage: WinRateHeatmapBloodlineLineage,
+): BloodlinePooledCounts =>
+  [...uniqueRows.values()].reduce(
+    (pooled, row) =>
+      rowMatchesBloodlinePool(row, name, lineage)
+        ? addBloodlinePooledCounts(pooled, countsFromBloodlineRow(row))
+        : pooled,
+    emptyBloodlinePooledCounts(),
+  );
+
 const toHeatmapNumber = (value: number | null | undefined): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
@@ -390,6 +490,30 @@ const toHeatmapCell = (
     winCount: toHeatmapNumber(row.winCount),
     winRate: toHeatmapNumber(row.winRate),
   };
+};
+
+const toPooledBloodlineHeatmapCell = (
+  row: BloodlineStatsRow | undefined,
+  uniqueRows: ReadonlyMap<string, BloodlineStatsRow>,
+  splitBloodlineLines: boolean,
+): WinRateHeatmapCell => {
+  if (row === undefined) {
+    return EMPTY_WIN_RATE_HEATMAP_CELL;
+  }
+  const lineage: WinRateHeatmapBloodlineLineage = splitBloodlineLines
+    ? bloodlineLineageForCategory(row.category)
+    : "combined";
+  const pooled = poolBloodlineCounts(uniqueRows, row.name, lineage);
+  if (pooled.starts <= 0) {
+    return toHeatmapCell(row);
+  }
+  return buildRateCell({
+    name: row.name,
+    quinellaCount: pooled.quinellaCount,
+    showCount: pooled.showCount,
+    starts: pooled.starts,
+    winCount: pooled.winCount,
+  });
 };
 
 const toFrameHeatmapCell = (
@@ -625,6 +749,11 @@ export const buildWinRateHeatmapRows = (
 ): WinRateHeatmapRow[] => {
   const similarByHorse = indexRowsByHorse(input.similarRows);
   const bloodlineByHorse = indexRowsByHorse(input.bloodlineRows);
+  const uniqueBloodlineRows = uniqueBloodlineStatsByCategoryName(input.bloodlineRows);
+  const splitBloodlineLines =
+    input.splitBloodlineLines === undefined
+      ? DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES
+      : input.splitBloodlineLines;
   const horseResultsByNumber = indexHorseResultsByNumber(input.horseResults);
   const frameStatsByNumber = indexFrameStatsByNumber(input.frameStats);
   const weightClassRates = resolveWeightClassRates(input.horseResults, input.weightClassStats);
@@ -652,17 +781,45 @@ export const buildWinRateHeatmapRows = (
             currentCarriedWeightKg,
             carriedWeightClassRates,
           ),
-          damDamSire: toHeatmapCell(bloodline?.get("damDamSire")),
-          damSire: toHeatmapCell(bloodline?.get("damSire")),
-          damSireSire: toHeatmapCell(bloodline?.get("damSireSire")),
+          damDamSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("damDamSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
+          damSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("damSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
+          damSireSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("damSireSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
           frame: toFrameHeatmapCell(frameStatsByNumber.get(frameNumber), frameNumber),
           horse: buildHorseRateCell(horseName, horseResultsByNumber.get(horseNumber) ?? []),
           jockey: toHeatmapCell(similar?.get("jockey")),
           jockeyFrame: toHeatmapCell(similar?.get("jockeyFrame")),
-          sire: toHeatmapCell(bloodline?.get("sire")),
-          sireDamSire: toHeatmapCell(bloodline?.get("sireDamSire")),
-          sireSire: toHeatmapCell(bloodline?.get("sireSire")),
-          sireSireSire: toHeatmapCell(bloodline?.get("sireSireSire")),
+          sire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("sire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
+          sireDamSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("sireDamSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
+          sireSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("sireSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
+          sireSireSire: toPooledBloodlineHeatmapCell(
+            bloodline?.get("sireSireSire"),
+            uniqueBloodlineRows,
+            splitBloodlineLines,
+          ),
           trainer: toHeatmapCell(similar?.get("trainer")),
           weight: toWeightHeatmapCell(currentWeightKg, weightClassRates),
         },
@@ -698,7 +855,14 @@ export const shouldShowWinRateHeatmapCarriedWeightColumn = (
   if (isOverseasKeibajoCode(input.keibajoCode) || isBanEiKeibajoCode(input.keibajoCode)) {
     return false;
   }
-  return input.runners.some((runner) => parseCarriedWeightKg(runner.futanJuryo) !== null);
+  const weights = input.runners.map((runner) => parseCarriedWeightKg(runner.futanJuryo));
+  if (weights.length === 0) {
+    return false;
+  }
+  if (weights.some((weight) => weight === null)) {
+    return weights.some((weight) => weight !== null);
+  }
+  return new Set(weights).size > 1;
 };
 
 export const getWinRateHeatmapColorScale = (

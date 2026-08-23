@@ -1,5 +1,7 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 
+import { isListedOrHigherGradeCode } from "./race-classification";
+
 export type RunningStyleClass = "nige" | "senkou" | "sashi" | "oikomi";
 
 export type RunningStyleBucketEvaluationPeriod = "all" | "oos-only";
@@ -180,8 +182,7 @@ const readFlag = (query: Record<string, string | string[] | undefined>, name: st
   return value !== "0";
 };
 
-const isGradeEligible = (gradeCode: string | null): boolean =>
-  gradeCode !== null && gradeCode !== "";
+const isGradeEligible = (gradeCode: string | null): boolean => isListedOrHigherGradeCode(gradeCode);
 
 const isRaceNameEligible = (gradeCode: string | null): boolean =>
   gradeCode !== null && RACE_NAME_GRADE_CODES.has(gradeCode);

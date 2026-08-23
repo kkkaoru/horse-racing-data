@@ -82,6 +82,8 @@ interface CellClassCacheFlags {
 const CACHE_ORIGIN = "https://pc-keiba-r2-catalog-cache.internal";
 const CACHE_VERSION = "v2";
 const UNGRADED_OPEN_CACHE_TOKEN = "1";
+const EMPTY_GRADE_MATCH_CACHE_TOKEN = "2";
+const FINISH_DETAILS_CACHE_TOKEN = "1";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -89,6 +91,7 @@ const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): v
 
 const appendCellClassCacheParams = (url: URL, descriptor: CellClassCacheFlags): void => {
   url.searchParams.set("ungradedOp", UNGRADED_OPEN_CACHE_TOKEN);
+  url.searchParams.set("emptyGradeMatch", EMPTY_GRADE_MATCH_CACHE_TOKEN);
   appendTrueFlag(url, "includeGrade", descriptor.includeGrade);
   appendTrueFlag(url, "includeTrackCode", descriptor.includeTrackCode);
   appendTrueFlag(url, "includeAge", descriptor.includeAge);
@@ -140,6 +143,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("includeSurface", descriptor.includeSurface ? "1" : "0");
     url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
     url.searchParams.set("targetRaces", "1");
+    url.searchParams.set("finishDetails", FINISH_DETAILS_CACHE_TOKEN);
     appendCellClassCacheParams(url, descriptor);
   }
   return new Request(url);

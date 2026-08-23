@@ -23,7 +23,10 @@ import {
   getWeightClassStats,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
-import { fetchConditionHistoryStatsFromCatalog } from "../../../lib/condition-history-catalog.server";
+import {
+  fetchConditionHistoryStatsFromCatalog,
+  type ConditionHistoryCatalogStats,
+} from "../../../lib/condition-history-catalog.server";
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
 import {
   type FinishPredictionEvaluationMetrics,
@@ -63,6 +66,7 @@ import {
   getRaceSymbolLabel,
   getRaceTags,
   getWeightLabel,
+  isListedOrHigherGradeCode,
 } from "../../../lib/race-classification";
 import { buildDetailSectionCacheKey } from "../../../lib/race-detail-section-cache";
 import { getCachedDetailSectionResponse } from "../../../lib/race-detail-section-cache.server";
@@ -205,8 +209,6 @@ interface CachedTimeScorePayload {
   correlationRows: RaceTimeStats["correlationRows"];
   rows: TimeScoreRow[];
 }
-
-const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
 
 const RUNNING_STYLE_KEIBAJO_ONLY_FLAGS: RunningStyleDimensionFlags = {
   condition: false,
@@ -747,8 +749,7 @@ const getClassConditionLabel = (race: RaceDetail): string | null => {
   return label === "-" ? null : label;
 };
 
-const isListedOrHigher = (race: RaceDetail): boolean =>
-  LISTED_OR_HIGHER_GRADE_CODES.has(cleanText(race.gradeCode, ""));
+const isListedOrHigher = (race: RaceDetail): boolean => isListedOrHigherGradeCode(race.gradeCode);
 
 const getStatsClassConditionLabel = (race: RaceDetail): string | null => {
   if (race.source === "jra" && isListedOrHigher(race)) {
@@ -809,6 +810,11 @@ const hasCompleteConditionAnalysisRows = (stats: ConditionAnalysisStats): boolea
     frameRows.some((row) => row.count > 0)
   );
 };
+
+const catalogHasCompleteConditionHistory = (catalog: ConditionHistoryCatalogStats): boolean =>
+  catalog.raceTimeStats.raceCount > 0 &&
+  catalog.finishPositionStats.some((row) => row.count > 0) &&
+  catalog.frameStats.some((row) => row.count > 0);
 
 const relaxAllConditionAnalysisSettings = <T extends SimilarRaceStatsSettings>(settings: T): T => {
   if (settings.cellMatching) {
@@ -1497,11 +1503,12 @@ const buildWinRateHeatmapCatalogQuery = (
   source: RaceSource,
   includeOwner: boolean,
 ): WinRateHeatmapCatalogQuery => {
+  const banEiHeatmap = isBanEiKeibajoCode(params.keibajoCode);
   const query: WinRateHeatmapCatalogQuery = {
     day: params.day,
-    includeAge: settings.includeAge,
+    includeAge: banEiHeatmap ? false : settings.includeAge,
     includeClass: settings.includeClass,
-    includeConditionKey: settings.includeConditionKey,
+    includeConditionKey: banEiHeatmap ? false : settings.includeConditionKey,
     includeDistance: settings.includeDistance,
     includeGrade: settings.includeGrade,
     includeRaceTitle: settings.includeRaceTitle,
@@ -1719,7 +1726,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       context.conditionAnalysisSettings,
       race.source,
     );
-    if (catalogCondition !== null) {
+    if (catalogCondition !== null && catalogHasCompleteConditionHistory(catalogCondition)) {
       const [raceTimeStats, payoutStats] = await Promise.all([
         catalogCondition.raceTimeStats.targetRaces.length > 0
           ? Promise.resolve(catalogCondition.raceTimeStats)
@@ -2288,14 +2295,33 @@ const loadHeatmapSectionSource = async (
     section,
     year: params.year,
   });
-  const cached = await getCachedDetailSectionResponse(cacheKey);
-  if (cached === null) {
-    return loadDetailSectionPayload(section, params);
-  }
   try {
-    return await cached.json();
+    const cached = await getCachedDetailSectionResponse(cacheKey);
+    if (cached === null) {
+      return await loadDetailSectionPayload(section, params);
+    }
+    try {
+      return await cached.json();
+    } catch {
+      return await loadDetailSectionPayload(section, params);
+    }
   } catch {
-    return loadDetailSectionPayload(section, params);
+    return null;
+  }
+};
+
+const loadHeatmapCatalogStats = async (
+  params: DetailSectionParams,
+  settings: SimilarRaceStatsSettings,
+  source: RaceSource,
+): Promise<WinRateHeatmapCatalogStats | null> => {
+  try {
+    return await fetchWinRateHeatmapStatsFromCatalog({
+      ...buildWinRateHeatmapCatalogQuery(params, settings, source, false),
+      includeJockeyFrame: true,
+    });
+  } catch {
+    return null;
   }
 };
 
@@ -2311,15 +2337,7 @@ export const getDetailSectionPayload = async (
     return null;
   }
   const [catalogStats, resultsPayload, conditionPayload] = await Promise.all([
-    fetchWinRateHeatmapStatsFromCatalog({
-      ...buildWinRateHeatmapCatalogQuery(
-        params,
-        context.conditionAnalysisSettings,
-        context.race.source,
-        false,
-      ),
-      includeJockeyFrame: true,
-    }),
+    loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race.source),
     loadHeatmapSectionSource("results", params),
     loadHeatmapSectionSource("condition", params),
   ]);

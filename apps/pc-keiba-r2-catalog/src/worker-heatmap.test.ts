@@ -203,7 +203,7 @@ it("keeps includeOwner=0 on the default similar SQL and cache key", async () => 
     years: 10,
   });
   expect(cacheRequestFor(descriptor).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
   );
 });
 
@@ -232,7 +232,7 @@ it("keeps includeJockeyFrame=0 on the default similar SQL and cache key", async 
     years: 10,
   });
   expect(cacheRequestFor(descriptor).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
   );
 });
 
@@ -261,7 +261,7 @@ it("splits the heatmap cache key and similar SQL when includeJockeyFrame=1", asy
     years: 10,
   });
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1&ungradedOp=1",
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
 });
@@ -294,7 +294,7 @@ it("splits the heatmap cache key and similar SQL when includeClass=1", async () 
     years: 10,
   });
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&includeAge=1&includeClass=1",
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2&includeAge=1&includeClass=1",
   );
   expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
 });
@@ -323,7 +323,7 @@ it("splits the heatmap cache key and similar SQL when includeOwner=1", async () 
     years: 10,
   });
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&ungradedOp=1",
+    "catalog:v2:v2/win-rate-heatmap-stats?date=20260822&keibajoCode=07&raceBango=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(harness.kvEntries.has(kvKeyFor(descriptor))).toBe(true);
 });

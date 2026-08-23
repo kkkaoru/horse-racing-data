@@ -167,10 +167,9 @@ it("maps Catalog aggregate rows onto heatmap stats without details", async () =>
       },
     ],
   });
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(buildWinRateHeatmapCatalogUrl(query).toString());
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0",
+  );
 });
 
 it("maps zero-start Catalog rows to zero rates", async () => {
@@ -348,10 +347,7 @@ it("maps jockeyFrame similar rows when includeJockeyFrame is enabled", async () 
       },
     ],
   });
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeJockeyFrame=1",
   );
 });
@@ -397,10 +393,7 @@ it("maps owner similar rows when includeOwner is enabled", async () => {
       },
     ],
   });
-  const request = fetchMock.mock.calls[0]?.[0];
-  expect(request).toBeInstanceOf(Request);
-  if (!(request instanceof Request)) throw new Error("Catalog Request expected");
-  expect(request.url).toBe(
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/win-rate-heatmap-stats?year=2026&month=08&day=08&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=0&includeOwner=1",
   );
 });
@@ -618,6 +611,22 @@ it("sorts mixed numeric horse numbers and drops blank tokens while grouping", ()
 
 it("returns null when the Catalog binding is unavailable", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue(null);
+  await expect(fetchWinRateHeatmapStatsFromCatalog(query)).resolves.toBeNull();
+});
+
+it("returns null when Catalog has no heatmap snapshot for the race", async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(new Response("not found", { status: 404 }));
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+  await expect(fetchWinRateHeatmapStatsFromCatalog(query)).resolves.toBeNull();
+});
+
+it("returns null when Catalog fetch cannot parse the Request URL", async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockRejectedValue(new TypeError("Failed to parse URL from [object Request]"));
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
   await expect(fetchWinRateHeatmapStatsFromCatalog(query)).resolves.toBeNull();
 });
 

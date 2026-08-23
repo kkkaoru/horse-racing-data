@@ -42,6 +42,11 @@ interface LineStubProps {
   strokeWidth?: number;
 }
 
+interface XAxisStubProps {
+  allowDuplicatedCategory?: boolean;
+  ticks?: number[];
+}
+
 interface YAxisStubProps {
   reversed?: boolean;
 }
@@ -114,7 +119,13 @@ vi.mock("recharts", () => ({
           })}
     </div>
   ),
-  XAxis: () => <div data-testid="x-axis-stub" />,
+  XAxis: ({ allowDuplicatedCategory, ticks }: XAxisStubProps) => (
+    <div
+      data-allow-duplicated-category={String(allowDuplicatedCategory)}
+      data-testid="x-axis-stub"
+      data-ticks={(ticks ?? []).join(",")}
+    />
+  ),
   YAxis: ({ reversed }: YAxisStubProps) => (
     <div data-testid="y-axis-stub">{reversed === true ? "reversed" : "normal"}</div>
   ),
@@ -293,6 +304,74 @@ test("renders the view toggle, bulk buttons and horse chips in the overview mode
     "全馬非表示",
     "1 アルファ",
     "2 ベータ",
+  ]);
+});
+
+test("passes unique shared-date ticks to every overview X axis", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({}),
+        chartResult({
+          bamei: "ベータ",
+          currentUmaban: "02",
+          kakuteiChakujun: "02",
+          kettoTorokuBango: "2022100002",
+          umaban: "02",
+        }),
+        chartResult({ kaisaiTsukihi: "0410" }),
+      ]}
+    />,
+  );
+  expect(
+    screen.getAllByTestId("x-axis-stub").map((axis) => axis.getAttribute("data-ticks")),
+  ).toStrictEqual([
+    "1774137600000,1775779200000",
+    "1774137600000,1775779200000",
+    "1774137600000,1775779200000",
+    "1774137600000,1775779200000",
+    "1774137600000,1775779200000",
+  ]);
+  expect(
+    screen
+      .getAllByTestId("x-axis-stub")
+      .map((axis) => axis.getAttribute("data-allow-duplicated-category")),
+  ).toStrictEqual(["false", "false", "false", "false", "false"]);
+});
+
+test("passes empty overview time ticks when every horse is hidden", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "全馬非表示" }));
+  expect(
+    screen.getAllByTestId("x-axis-stub").map((axis) => axis.getAttribute("data-ticks")),
+  ).toStrictEqual(["", "", "", "", ""]);
+});
+
+test("omits hidden horses from overview time ticks", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({}),
+        chartResult({
+          bamei: "ベータ",
+          currentUmaban: "02",
+          kakuteiChakujun: "02",
+          kaisaiTsukihi: "0410",
+          kettoTorokuBango: "2022100002",
+          umaban: "02",
+        }),
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "2 ベータ" }));
+  expect(
+    screen.getAllByTestId("x-axis-stub").map((axis) => axis.getAttribute("data-ticks")),
+  ).toStrictEqual([
+    "1774137600000",
+    "1774137600000",
+    "1774137600000",
+    "1774137600000",
+    "1774137600000",
   ]);
 });
 

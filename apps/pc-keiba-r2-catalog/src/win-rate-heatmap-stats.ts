@@ -39,7 +39,9 @@ const MIN_STATS_YEARS: number = 1;
 const MAX_STATS_YEARS: number = 50;
 const UNKNOWN_NAME: string = "不明";
 const RACE_TITLE_GRADE_CODES = "('A', 'F')";
+const LISTED_OR_HIGHER_GRADE_CODES = "('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')";
 const UNGRADED_OPEN_JOKEN_CODE = "999";
+export const BAN_EI_KEIBAJO_CODES: ReadonlyArray<string> = ["81", "82", "83", "84"];
 const CELL_CONDITION_LABEL_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["005", "1勝クラス"],
   ["010", "2勝クラス"],
@@ -207,6 +209,19 @@ export const includeOwnerEnabled = (filters: WinRateHeatmapStatsFilters): boolea
 export const includeJockeyFrameEnabled = (filters: WinRateHeatmapStatsFilters): boolean =>
   filters.includeJockeyFrame === true;
 
+export const isBanEiKeibajo = (keibajoCode: string): boolean =>
+  BAN_EI_KEIBAJO_CODES.some((code) => code === keibajoCode);
+
+const venueFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
+  if (!filters.includeVenue) {
+    return "";
+  }
+  if (isBanEiKeibajo(filters.keibajoCode)) {
+    return `AND ra.keibajo_code IN (${sqlStringList(BAN_EI_KEIBAJO_CODES)})`;
+  }
+  return `AND ra.keibajo_code = '${filters.keibajoCode}'`;
+};
+
 const sqlStringList = (codes: ReadonlyArray<string>): string =>
   codes.map((code) => `'${code}'`).join(", ");
 
@@ -277,7 +292,7 @@ const ungradedOpenFilterSql = (): string => `AND (
     )`;
 
 export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
-  const venueSql = filters.includeVenue ? `AND ra.keibajo_code = '${filters.keibajoCode}'` : "";
+  const venueSql = venueFilterSql(filters);
   const distanceSql = filters.includeDistance
     ? `AND try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT) = cr.kyori_int
     AND cr.kyori_int IS NOT NULL`
@@ -305,10 +320,15 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
       ? `AND ${codeColumnSql("ra", "track_code")} = ${codeColumnSql("cr", "track_code")}
     AND ${codeColumnSql("cr", "track_code")} <> ''`
       : "";
+  // Listed-or-higher grades (G1-G3 / Jpn / listed) match exactly.
+  // Empty (2歳未勝利/新馬) and 特別 (E) are not stable class keys: requiring
+  // equality dropped 特別 history (E vs space) and is a no-op for maidens.
   const gradeSql =
     filters.includeGrade === true
-      ? `AND ${codeColumnSql("ra", "grade_code")} = ${codeColumnSql("cr", "grade_code")}
-    AND ${codeColumnSql("cr", "grade_code")} <> ''`
+      ? `AND (
+      ${codeColumnSql("cr", "grade_code")} NOT IN ${LISTED_OR_HIGHER_GRADE_CODES}
+      OR ${codeColumnSql("ra", "grade_code")} = ${codeColumnSql("cr", "grade_code")}
+    )`
       : "";
   const ageSql =
     filters.includeAge === true
