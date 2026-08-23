@@ -42,12 +42,17 @@ from predict_lib.serve import (
     FOCUSED_FULL_SLOT_CLAIMED,
     FOCUSED_FULL_SLOT_IN_FLIGHT_SELF,
     PREWARM_EMPTY_STATUS,
+    RESCORE_ATTESTATION_FUTURE_SKEW_MS,
+    RESCORE_ATTESTATION_MAX_ENTRIES,
+    RESCORE_ATTESTATION_TTL_MS,
     CacheMissError,
+    CacheValidationError,
     FocusedFullSlotState,
     PredictCategoryFn,
     PredictParams,
     PrewarmParams,
     R2Config,
+    RescoreCacheAttestation,
     SleepFn,
     TimeFn,
     activate_scoped_rescore_cache_miss_fallback,
@@ -56,12 +61,14 @@ from predict_lib.serve import (
     build_focused_full_status_response_body,
     build_prewarm_cache_key,
     build_prewarm_result_line,
+    build_prewarm_status_response_body,
     build_progress_line,
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     build_r2_running_style_foundation_key,
     build_result_line,
+    get_prewarm_run_state,
     has_single_race_scope,
     is_focused_full_request,
     is_scoped_rescore_cache_miss_fallback,
@@ -214,6 +221,101 @@ def test_parse_predict_params_force_flag_default_false() -> None:
     result = parse_predict_params("category=jra&runDate=20260619")
     assert isinstance(result, PredictParams)
     assert result.force is False
+
+
+def _attested_query(**overrides: str) -> str:
+    values = {
+        "category": "jra",
+        "runDate": "20260823",
+        "mode": "rescore",
+        "keibajoCode": "07",
+        "raceBango": "03",
+        "entrySetHash": "a" * 64,
+        "entryCount": "16",
+        "featureCacheEtag": "etag-123",
+        "featureCacheVersion": "",
+        "attestationIssuedAtMs": "2000000",
+    }
+    values.update(overrides)
+    return "&".join(f"{key}={value}" for key, value in values.items())
+
+
+def test_parse_predict_params_accepts_complete_rescore_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(serve_module.time, "time_ns", lambda: 2_000_000 * 1_000_000)
+
+    result = parse_predict_params(_attested_query())
+
+    assert isinstance(result, PredictParams)
+    assert result.rescore_cache_attestation == RescoreCacheAttestation(
+        entry_set_hash="a" * 64,
+        entry_count=16,
+        feature_cache_etag="etag-123",
+        feature_cache_version="",
+        issued_at_ms=2_000_000,
+    )
+
+
+def test_parse_predict_params_attestation_absent_preserves_canary_compatibility() -> None:
+    result = parse_predict_params("category=jra&runDate=20260823&mode=rescore")
+    assert isinstance(result, PredictParams)
+    assert result.rescore_cache_attestation is None
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (
+            "category=jra&runDate=20260823&mode=rescore&keibajoCode=07&raceBango=03"
+            "&entrySetHash=" + "a" * 64,
+            "must include all",
+        ),
+        (_attested_query(mode="full"), "requires mode=rescore"),
+        (_attested_query(keibajoCode=""), "requires an exact race scope"),
+        (_attested_query(entrySetHash="A" * 64), "invalid entrySetHash"),
+        (_attested_query(entryCount="bad"), "invalid entryCount"),
+        (_attested_query(entryCount="0"), "invalid entryCount"),
+        (
+            _attested_query(entryCount=str(RESCORE_ATTESTATION_MAX_ENTRIES + 1)),
+            "invalid entryCount",
+        ),
+        (_attested_query(featureCacheEtag=""), "invalid featureCacheEtag"),
+        (_attested_query(featureCacheVersion="%20"), "invalid featureCacheVersion"),
+        (_attested_query(attestationIssuedAtMs="bad"), "invalid attestationIssuedAtMs"),
+        (_attested_query(attestationIssuedAtMs="-1"), "invalid attestationIssuedAtMs"),
+    ],
+)
+def test_parse_predict_params_rejects_invalid_attestation(
+    query: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(serve_module.time, "time_ns", lambda: 2_000_000 * 1_000_000)
+    result = parse_predict_params(query)
+    assert isinstance(result, str)
+    assert expected in result
+
+
+@pytest.mark.parametrize(
+    ("issued_at_ms", "expected"),
+    [
+        (
+            2_000_000 + RESCORE_ATTESTATION_FUTURE_SKEW_MS + 1,
+            "too far in the future",
+        ),
+        (2_000_000 - RESCORE_ATTESTATION_TTL_MS - 1, "expired"),
+    ],
+)
+def test_parse_predict_params_rejects_attestation_outside_time_window(
+    issued_at_ms: int,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(serve_module.time, "time_ns", lambda: 2_000_000 * 1_000_000)
+    result = parse_predict_params(_attested_query(attestationIssuedAtMs=str(issued_at_ms)))
+    assert isinstance(result, str)
+    assert expected in result
 
 
 def test_iter_predict_chunks_sets_debug_env_during_predict() -> None:
@@ -1348,6 +1450,44 @@ def test_iter_predict_chunks_rescore_non_cache_miss_propagates_as_error() -> Non
     assert "RuntimeError" in last["error"]
 
 
+def test_iter_predict_chunks_attestation_failure_does_not_call_full_fn() -> None:
+    full_calls: list[str] = []
+
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        del run_date, days_ahead, keibajo_code, race_bango, card_max_race_bango
+        full_calls.append(category)
+        return 1
+
+    def _rejected_rescore(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        del category, run_date, days_ahead, keibajo_code, race_bango, card_max_race_bango
+        raise CacheValidationError("rescore cache attestation rejected: identity-mismatch")
+
+    params = PredictParams("jra", "20260823", 0, mode="rescore", keibajo_code="07", race_bango="03")
+    chunks = list(
+        iter_predict_chunks(params, _full_fn, rescore_fn=_rejected_rescore, sleep_fn=_noop_sleep)
+    )
+    parsed = [json.loads(chunk.decode()) for chunk in chunks]
+
+    assert full_calls == []
+    assert all(line.get("stage") != "rescore-fallback-to-full" for line in parsed)
+    assert parsed[-1]["status"] == "error"
+    assert "CacheValidationError" in parsed[-1]["error"]
+
+
 def test_iter_predict_chunks_scoped_rescore_cache_miss_sets_fallback_flag() -> None:
     """Scoped CacheMiss fallback must mark the predict_fn call as scoped recovery."""
     seen: list[bool] = []
@@ -2349,7 +2489,9 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
     assert invoked.wait(timeout=2.0), "predict_fn was never invoked"
 
 
-def test_focused_full_status_records_running_progress_and_success() -> None:
+def test_focused_full_status_records_running_progress_and_success(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     started = threading.Event()
     release = threading.Event()
 
@@ -2392,9 +2534,30 @@ def test_focused_full_status_records_running_progress_and_success() -> None:
     assert terminal["status"] == "success"
     assert terminal["finishedAtMs"] is not None
     assert terminal["error"] is None
+    lifecycle = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if '"raceKey":"jra:20260619:05:11"' in line
+    ]
+    assert [row["status"] for row in lifecycle] == ["accepted", "success"]
+    assert lifecycle[0] == {
+        "event": "focused-full-lifecycle",
+        "raceKey": "jra:20260619:05:11",
+        "category": "jra",
+        "runDate": "20260619",
+        "venue": "05",
+        "race": "11",
+        "status": "accepted",
+        "elapsedMs": 0,
+        "error": None,
+    }
+    assert lifecycle[1]["elapsedMs"] >= 0
+    assert lifecycle[1]["error"] is None
 
 
-def test_focused_full_status_records_masked_error() -> None:
+def test_focused_full_status_records_masked_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     failed = threading.Event()
 
     def _predict(
@@ -2419,6 +2582,16 @@ def test_focused_full_status_records_masked_error() -> None:
     assert terminal["status"] == "error"
     assert terminal["error"] == "RuntimeError: postgresql://[REDACTED]@host/db failed"
     assert terminal["finishedAtMs"] is not None
+    captured = capsys.readouterr().err
+    assert "user:secret" not in captured
+    lifecycle = [
+        json.loads(line)
+        for line in captured.splitlines()
+        if '"raceKey":"jra:20260619:05:12"' in line
+    ]
+    assert [row["status"] for row in lifecycle] == ["accepted", "error"]
+    assert lifecycle[1]["error"] == terminal["error"]
+    assert lifecycle[1]["elapsedMs"] >= 0
 
 
 def test_iter_predict_chunks_debug_on_focused_full_holds_and_emits_racechain() -> None:
@@ -2792,8 +2965,13 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
     assert last_a["status"] == FOCUSED_FULL_ACCEPTED_STATUS
     assert last_a["racesPredicted"] == 0
 
-    chunks_c = list(iter_predict_chunks(params_c, _predict_c, sleep_fn=_noop_sleep))
-    last_c = json.loads(chunks_c[-1].decode())
+    retry_deadline = time.monotonic() + 2.0
+    last_c: dict[str, object] = {"status": FOCUSED_FULL_BUSY_STATUS}
+    while last_c["status"] == FOCUSED_FULL_BUSY_STATUS and time.monotonic() < retry_deadline:
+        chunks_c = list(iter_predict_chunks(params_c, _predict_c, sleep_fn=_noop_sleep))
+        last_c = json.loads(chunks_c[-1].decode())
+        if last_c["status"] == FOCUSED_FULL_BUSY_STATUS:
+            short_sleep.wait(timeout=0.001)
     assert last_c["status"] == FOCUSED_FULL_ACCEPTED_STATUS
     assert last_c["racesPredicted"] == 0
     assert c_called.wait(timeout=2.0), "race C was never able to claim the slot"
@@ -2900,8 +3078,13 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     assert last_a["status"] == FOCUSED_FULL_ACCEPTED_STATUS
     assert last_a["racesPredicted"] == 0
 
-    chunks_d = list(iter_predict_chunks(params_d, _predict_d, sleep_fn=_noop_sleep))
-    last_d = json.loads(chunks_d[-1].decode())
+    retry_deadline = time.monotonic() + 2.0
+    last_d: dict[str, object] = {"status": FOCUSED_FULL_BUSY_STATUS}
+    while last_d["status"] == FOCUSED_FULL_BUSY_STATUS and time.monotonic() < retry_deadline:
+        chunks_d = list(iter_predict_chunks(params_d, _predict_d, sleep_fn=_noop_sleep))
+        last_d = json.loads(chunks_d[-1].decode())
+        if last_d["status"] == FOCUSED_FULL_BUSY_STATUS:
+            short_sleep.wait(timeout=0.001)
     assert last_d["status"] == FOCUSED_FULL_ACCEPTED_STATUS
     assert last_d["racesPredicted"] == 0
     assert d_called.wait(timeout=2.0), "race D was never able to claim the slot"
@@ -3513,6 +3696,18 @@ def test_build_prewarm_result_line_without_daybase_watermark() -> None:
     assert "daybaseWatermark" not in parsed
 
 
+def test_build_prewarm_result_line_includes_generation() -> None:
+    line = build_prewarm_result_line("jra", "20260712", status="accepted", generation=3)
+
+    assert json.loads(line.decode()) == {
+        "type": "result",
+        "category": "jra",
+        "runDate": "20260712",
+        "status": "accepted",
+        "generation": 3,
+    }
+
+
 def test_build_prewarm_result_line_empty_status() -> None:
     line = build_prewarm_result_line("jra", "20260712", status=PREWARM_EMPTY_STATUS)
     parsed = json.loads(line.decode())
@@ -3956,6 +4151,46 @@ def test_iter_prewarm_chunks_existing_object_skips_build() -> None:
     assert built == []
 
 
+def test_existing_fresh_object_replaces_old_error_status_with_success() -> None:
+    def _launch_failure(fn: Callable[[], None]) -> None:
+        raise RuntimeError("thread unavailable")
+
+    def _existing(category: str, run_date: str) -> str | None:
+        return "feat-daybase/catalog-v1/jra/20260907/features.parquet"
+
+    params = PrewarmParams(category="jra", run_date="20260907", days_ahead=0)
+    failed = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_launch_failure,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    fresh = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert json.loads(failed[-1].decode())["status"] == "error"
+    assert json.loads(failed[-1].decode())["generation"] == 1
+    assert json.loads(fresh[-1].decode()) == {
+        "type": "result",
+        "category": "jra",
+        "runDate": "20260907",
+        "status": "success",
+        "parquetKey": "feat-daybase/catalog-v1/jra/20260907/features.parquet",
+        "generation": 2,
+    }
+    assert json.loads(build_prewarm_status_response_body(params).decode())["status"] == "success"
+    assert json.loads(build_prewarm_status_response_body(params).decode())["generation"] == 2
+
+
 def test_iter_prewarm_chunks_background_returns_accepted_with_key() -> None:
     launched: list[bool] = []
 
@@ -4009,6 +4244,209 @@ def test_iter_prewarm_chunks_in_flight_second_call_is_accepted() -> None:
         )
     finally:
         _release_prewarm_slot("nar:20260712")
+
+
+def test_background_prewarm_invalidates_only_new_generation() -> None:
+    invalidated: list[tuple[str, str]] = []
+    launched: list[Callable[[], None]] = []
+
+    def _invalidate(category: str, run_date: str) -> None:
+        invalidated.append((category, run_date))
+
+    def _background(fn: Callable[[], None]) -> None:
+        launched.append(fn)
+
+    params = PrewarmParams(category="ban-ei", run_date="20260901", days_ahead=0)
+    try:
+        first = list(
+            iter_prewarm_chunks(
+                params,
+                _mock_build_ok,
+                parquet_payload_fn=_mock_payload,
+                background_fn=_background,
+                invalidate_fn=_invalidate,
+                sleep_fn=_noop_sleep,
+            )
+        )
+        duplicate = list(
+            iter_prewarm_chunks(
+                params,
+                _mock_build_ok,
+                parquet_payload_fn=_mock_payload,
+                background_fn=_background,
+                invalidate_fn=_invalidate,
+                sleep_fn=_noop_sleep,
+            )
+        )
+
+        assert invalidated == [("ban-ei", "20260901")]
+        assert len(launched) == 1
+        assert json.loads(first[-1].decode())["generation"] == 1
+        assert json.loads(duplicate[-1].decode())["generation"] == 1
+    finally:
+        _release_prewarm_slot("ban-ei:20260901")
+
+
+def test_background_prewarm_new_completed_flight_increments_generation() -> None:
+    invalidated: list[tuple[str, str]] = []
+
+    def _invalidate(category: str, run_date: str) -> None:
+        invalidated.append((category, run_date))
+
+    def _background(fn: Callable[[], None]) -> None:
+        fn()
+
+    params = PrewarmParams(category="nar", run_date="20260903", days_ahead=0)
+    first = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            invalidate_fn=_invalidate,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    second = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            invalidate_fn=_invalidate,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert json.loads(first[-1].decode())["generation"] == 1
+    assert json.loads(second[-1].decode())["generation"] == 2
+    assert invalidated == [("nar", "20260903"), ("nar", "20260903")]
+
+
+def test_background_prewarm_invalidation_failure_releases_flight() -> None:
+    def _invalidate(category: str, run_date: str) -> None:
+        raise RuntimeError("store unavailable")
+
+    def _background(fn: Callable[[], None]) -> None:
+        raise AssertionError("build must not launch after invalidation failure")
+
+    params = PrewarmParams(category="jra", run_date="20260904", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            invalidate_fn=_invalidate,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert json.loads(chunks[-1].decode()) == {
+        "type": "result",
+        "category": "jra",
+        "runDate": "20260904",
+        "status": "error",
+        "error": "RuntimeError: store unavailable",
+        "parquetKey": "feat-daybase/catalog-v1/jra/20260904/features.parquet",
+        "generation": 1,
+    }
+    state = get_prewarm_run_state("jra", "20260904")
+    assert state is not None
+    assert state.status == "error"
+
+
+def test_background_prewarm_launch_failure_releases_flight() -> None:
+    def _background(fn: Callable[[], None]) -> None:
+        raise RuntimeError("thread unavailable")
+
+    params = PrewarmParams(category="ban-ei", run_date="20260905", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert json.loads(chunks[-1].decode())["status"] == "error"
+    assert json.loads(chunks[-1].decode())["error"] == "RuntimeError: thread unavailable"
+    state = get_prewarm_run_state("ban-ei", "20260905")
+    assert state is not None
+    assert state.status == "error"
+
+
+def test_prewarm_status_tracks_generation_without_debug() -> None:
+    launched: list[Callable[[], None]] = []
+
+    def _background(fn: Callable[[], None]) -> None:
+        launched.append(fn)
+
+    params = PrewarmParams(category="jra", run_date="20260902", days_ahead=0)
+    accepted = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert json.loads(accepted[-1].decode())["generation"] == 1
+    state = get_prewarm_run_state("jra", "20260902")
+    assert state is not None
+    running = json.loads(build_prewarm_status_response_body(params).decode())
+    assert running["flightKey"] == "jra:20260902"
+    assert running["generation"] == 1
+    assert running["status"] == "running"
+    assert running["startedAtMs"] == state.started_at_ms
+    assert running["finishedAtMs"] is None
+    assert running["error"] is None
+
+    launched[0]()
+    finished = json.loads(build_prewarm_status_response_body(params).decode())
+    assert finished["flightKey"] == "jra:20260902"
+    assert finished["generation"] == 1
+    assert finished["status"] == "success"
+    assert isinstance(finished["finishedAtMs"], int)
+    assert finished["error"] is None
+
+
+def test_prewarm_lifecycle_logs_without_debug(capsys: pytest.CaptureFixture[str]) -> None:
+    def _background(fn: Callable[[], None]) -> None:
+        fn()
+
+    params = PrewarmParams(category="jra", run_date="20260906", days_ahead=0)
+    list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    assert capsys.readouterr().err == (
+        "[prewarm-status] category=jra runDate=20260906 generation=1 status=running\n"
+        "[prewarm-status] category=jra runDate=20260906 generation=1 status=success\n"
+    )
+
+
+def test_prewarm_status_missing_generation() -> None:
+    params = PrewarmParams(category="nar", run_date="20991231", days_ahead=0)
+
+    assert json.loads(build_prewarm_status_response_body(params).decode()) == {
+        "flightKey": "nar:20991231",
+        "generation": 0,
+        "status": "missing",
+        "startedAtMs": None,
+        "finishedAtMs": None,
+        "error": None,
+    }
 
 
 def test_iter_prewarm_chunks_background_runs_commit() -> None:

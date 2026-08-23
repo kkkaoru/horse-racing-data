@@ -14,7 +14,9 @@ MODULE_PATH = SCRIPTS_DIR / "add-baba-pedigree-affinity-features.py"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-_spec = importlib.util.spec_from_file_location("add_baba_pedigree_affinity_features", MODULE_PATH)
+_spec = importlib.util.spec_from_file_location(
+    "add_baba_pedigree_affinity_features", MODULE_PATH
+)
 assert _spec is not None
 assert _spec.loader is not None
 subject = importlib.util.module_from_spec(_spec)
@@ -54,12 +56,16 @@ def test_append_features_sql_contains_baba_columns() -> None:
     assert "sire_horse_baba_combined_score" in sql
 
 
-def test_append_features_sql_joins_pedigree_and_baba() -> None:
+def test_append_features_sql_uses_scoped_live_current_baba() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "left join horse_pedigree" in sql
     assert "left join horse_baba_cumul" in sql
     assert "left join sire_baba_cumul" in sql
     assert "left join damsire_baba_cumul" in sql
+    assert "left join race_baba rb" in sql
+    assert "rb.baba_cond as current_baba_condition" in sql
+    assert "jvd_ra" not in sql
+    assert "nvd_ra" not in sql
 
 
 def test_append_features_sql_uses_asof_join_for_baba_cumul_tables() -> None:
@@ -122,19 +128,14 @@ def test_stage_damsire_baba_cumul_window_is_inclusive_of_current_row() -> None:
     assert "1 preceding" not in body
 
 
-def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
-    tmp_path: Path,
-) -> None:
-    """End-to-end regression for the serve-time defect.
+def test_carried_baba_condition_matches_legacy_ra_for_all_categories_and_edge_cases() -> (
+    None
+):
+    """The carried columns must be byte-for-byte equivalent to the old RA join.
 
-    horse_a ran 3 COMPLETED races in baba_cond=1 (good going): a win on
-    2024-01-01, a loss on 2024-01-08, a win on 2024-01-15. sire_a (horse_a's
-    sire) is used so sire_baba_win_rate resolves too. The TARGET race
-    (2024-01-22, also baba_cond=1) is genuinely upcoming: it is not, and never
-    was, in pg.jvd_ra / pg.race_entry_corner_features. The old exact-date join
-    could never resolve this target; the ASOF fix must resolve it against
-    horse_a's/sire_a's latest actual prior race in the same baba_cond
-    (2024-01-15).
+    The fixture covers JRA turf/dirt, NAR, Ban-ei (NAR source + venue 83),
+    mixed/invalid/NULL condition codes, and a scratched row represented by a
+    NULL finish. The latter remains excluded by the unchanged history filter.
     """
     con = duckdb.connect(":memory:")
     con.execute("create schema pg")
@@ -143,10 +144,192 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         create table pg.jvd_ra as
         select * from (
           values
-            ('2024','0101','06','11','1','0'),
-            ('2024','0108','06','12','1','0'),
-            ('2024','0115','06','13','1','0'),
-            ('2024','0122','06','14','1','0')
+            ('2024','0101','06','01','10','1','0'),
+            ('2024','0102','06','02','23','0','2'),
+            ('2024','0103','06','03','10','3','4'),
+            ('2024','0104','06','04','23','x','4'),
+            ('2024','0105','06','05','23',null,'3'),
+            ('2024','0106','06','06','10','0','0')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               track_code, babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_ra as
+        select * from (
+          values
+            ('2024','0107','83','07','21',null,'4'),
+            ('2024','0108','30','08','11','2',null),
+            ('2024','0109','30','09','11','1','0'),
+            ('2024','0110','30','10','21',null,null)
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               track_code, babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20240101','2024','0101','06','01','jra_turf',1,'10','1','0'),
+            ('jra','20240102','2024','0102','06','02','jra_dirt',2,'23','0','2'),
+            ('jra','20240103','2024','0103','06','03','jra_both',3,'10','3','4'),
+            ('jra','20240104','2024','0104','06','04','jra_invalid',4,'23','x','4'),
+            ('jra','20240105','2024','0105','06','05','jra_null_turf',5,'23',null,'3'),
+            ('jra','20240106','2024','0106','06','06','jra_zero',6,'10','0','0'),
+            ('nar','20240107','2024','0107','83','07','banei',1,'21',null,'4'),
+            ('nar','20240108','2024','0108','30','08','nar',2,'11','2',null),
+            ('nar','20240109','2024','0109','30','09','scratched',null,'11','1','0'),
+            ('nar','20240110','2024','0110','30','10','nar_null',3,'21',null,null)
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, finish_position, track_code,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create temp table legacy_race_baba as
+        select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango,
+               coalesce(
+                 try_cast(nullif(babajotai_code_shiba, '0') as int),
+                 try_cast(nullif(babajotai_code_dirt, '0') as int)
+               ) as baba_cond
+        from pg.jvd_ra
+        where kaisai_nen >= substring('20000101', 1, 4)
+        union all
+        select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango,
+               coalesce(
+                 try_cast(nullif(babajotai_code_shiba, '0') as int),
+                 try_cast(nullif(babajotai_code_dirt, '0') as int)
+               ) as baba_cond
+        from pg.nvd_ra
+        where kaisai_nen >= substring('20000101', 1, 4)
+        """
+    )
+    legacy_rows = con.execute(
+        """
+        select rec.source, rec.race_date, rec.keibajo_code,
+               rec.ketto_toroku_bango, rec.finish_position, rb.baba_cond
+        from pg.race_entry_corner_features rec
+        left join legacy_race_baba rb
+          on rb.source = rec.source
+          and rb.kaisai_nen = rec.kaisai_nen
+          and rb.kaisai_tsukihi = rec.kaisai_tsukihi
+          and rb.keibajo_code = rec.keibajo_code
+          and rb.race_bango = rec.race_bango
+        where rec.race_date >= '20000101'
+          and rec.finish_position is not null
+          and rec.ketto_toroku_bango is not null
+          and rb.baba_cond is not null
+        order by rec.source, rec.race_date, rec.ketto_toroku_bango
+        """
+    ).fetchall()
+
+    subject.stage_race_history_with_baba(con, "20000101")
+    carried_rows = con.execute(
+        """
+        select source, race_date, keibajo_code, ketto_toroku_bango,
+               finish_position, baba_cond
+        from race_history
+        order by source, race_date, ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert carried_rows == legacy_rows
+    assert carried_rows == [
+        ("jra", "20240101", "06", "jra_turf", 1, 1),
+        ("jra", "20240102", "06", "jra_dirt", 2, 2),
+        ("jra", "20240103", "06", "jra_both", 3, 3),
+        ("jra", "20240104", "06", "jra_invalid", 4, 4),
+        ("jra", "20240105", "06", "jra_null_turf", 5, 3),
+        ("nar", "20240107", "83", "banei", 1, 4),
+        ("nar", "20240108", "30", "nar", 2, 2),
+    ]
+
+
+def test_current_baba_live_lookup_is_scoped_to_input_races_for_jra_nar_and_banei() -> (
+    None
+):
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create temp table base_input as
+        select * from (
+          values
+            ('jra','2024','0201','05','01'),
+            ('jra','1999','0201','05','04'),
+            ('nar','2024','0201','30','02'),
+            ('nar','2024','0201','83','03')
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select * from (
+          values
+            ('2024','0201','05','01','1','0'),
+            ('1999','0201','05','04','3','0'),
+            ('2024','0201','05','12','0','4')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_ra as
+        select * from (
+          values
+            ('2024','0201','30','02','0','2'),
+            ('2024','0201','83','03',null,'4'),
+            ('2024','0201','30','11','3','0')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+
+    subject.stage_current_race_baba(con, "20000101")
+    rows = con.execute(
+        """
+        select source, keibajo_code, race_bango, baba_cond
+        from race_baba
+        order by source, keibajo_code, race_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert rows == [
+        ("jra", "05", "01", 1),
+        ("nar", "30", "02", 2),
+        ("nar", "83", "03", 4),
+    ]
+
+
+def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
+    tmp_path: Path,
+) -> None:
+    """End-to-end regression for the serve-time defect.
+
+    horse_a ran 3 COMPLETED races in baba_cond=1 (good going): a win on
+    2024-01-01, a loss on 2024-01-08, a win on 2024-01-15. sire_a (horse_a's
+    sire) is used so sire_baba_win_rate resolves too. The TARGET race
+    (2024-01-22, also baba_cond=1) is genuinely upcoming and absent from
+    pg.race_entry_corner_features. Its input parquet already carries the RA
+    baba columns. The ASOF lookup must resolve it against horse_a's/sire_a's
+    latest actual prior race in the same baba_cond (2024-01-15).
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select * from (
+          values ('2024','0122','06','14','1','0')
         ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                babajotai_code_shiba, babajotai_code_dirt)
         """
@@ -167,11 +350,12 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         create table pg.race_entry_corner_features as
         select * from (
           values
-            ('jra','20240101','2024','0101','06','11','horse_a',1),
-            ('jra','20240108','2024','0108','06','12','horse_a',2),
-            ('jra','20240115','2024','0115','06','13','horse_a',1)
+            ('jra','20240101','2024','0101','06','11','horse_a',1,'1','0'),
+            ('jra','20240108','2024','0108','06','12','horse_a',2,'1','0'),
+            ('jra','20240115','2024','0115','06','13','horse_a',1,'1','0')
         ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
-               race_bango, ketto_toroku_bango, finish_position)
+               race_bango, ketto_toroku_bango, finish_position,
+               babajotai_code_shiba, babajotai_code_dirt)
         """
     )
     con.execute(
@@ -182,12 +366,6 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         """
     )
 
-    subject.stage_race_baba(con, "20000101")
-    subject.stage_race_history_with_baba(con, "20000101")
-    subject.stage_horse_baba_cumul(con)
-    subject.stage_sire_baba_cumul(con)
-    subject.stage_damsire_baba_cumul(con)
-
     input_dir = tmp_path / "input"
     input_dir.mkdir()
     seed_con = duckdb.connect(":memory:")
@@ -195,9 +373,11 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         """
         create or replace temp table seed as
         select * from (
-          values ('jra', '2024', '0122', '06', '14', 'horse_a', '20240122', 2024)
+          values ('jra', '2024', '0122', '06', '14', 'horse_a', '20240122',
+                  2024, '2', '0')
         ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-               ketto_toroku_bango, race_date, race_year)
+               ketto_toroku_bango, race_date, race_year,
+               babajotai_code_shiba, babajotai_code_dirt)
         """
     )
     seed_con.execute(
@@ -206,6 +386,13 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
     )
     seed_con.close()
     input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_base_input(con, input_glob)
+    subject.stage_current_race_baba(con, "20000101")
+    subject.stage_race_history_with_baba(con, "20000101")
+    subject.stage_horse_baba_cumul(con)
+    subject.stage_sire_baba_cumul(con)
+    subject.stage_damsire_baba_cumul(con)
 
     sql = subject.append_features_sql(input_glob)
     row = con.execute(
@@ -219,8 +406,9 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
     con.close()
 
     assert row is not None
-    # The target race itself resolves baba_cond=1 (good going) via jvd_ra's own
-    # identity-keyed join (not date-based, so this was already correct).
+    # The input deliberately carries stale baba_cond=2. The scoped live RA
+    # lookup resolves the updated baba_cond=1 without scanning unrelated RA
+    # rows, preserving the pre-day-base-split freshness contract.
     assert row[0] == 1
     # 3 career starts in baba_cond=1, 2 wins (0101, 0115) -> win_rate = 2/3.
     assert row[1] == 3
@@ -279,6 +467,14 @@ def test_stage_race_history_focused_filters_to_target_pedigree_context() -> None
     conn = FakeConn()
     subject.stage_race_history_with_baba(conn, "20100101", focused_target=True)
     joined = "\n".join(conn.sql)
-    assert "rec.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)" in joined
+    assert (
+        "rec.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)"
+        in joined
+    )
     assert "join target_pedigree_ids t" in joined
     assert "rec.finish_position is not null" in joined
+    assert "rec.babajotai_code_shiba" in joined
+    assert "rec.babajotai_code_dirt" in joined
+    assert "race_baba" not in joined
+    assert "jvd_ra" not in joined
+    assert "nvd_ra" not in joined

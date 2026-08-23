@@ -14,7 +14,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
+from predict_lib.r2_client import (
+    R2ObjectIdentity,
+    r2_get_bytes,
+    r2_get_parquet,
+    r2_head_identity,
+    r2_head_watermark,
+)
 from predict_lib.serve import R2Config
 
 _R2 = R2Config(
@@ -38,8 +44,8 @@ class _FakeResponse:
     def __exit__(self, *exc_info: object) -> None:
         return None
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size < 0 else self._body[:size]
 
 
 def test_r2_get_parquet_success_writes_bytes_and_returns_true(
@@ -179,6 +185,32 @@ def test_r2_get_parquet_silent_without_debug(
     assert captured.err == ""
 
 
+def test_r2_get_bytes_is_bounded_and_handles_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(b"12345"),
+    )
+    assert r2_get_bytes(_R2, "small", 5) == b"12345"
+    assert r2_get_bytes(_R2, "oversized", 4) is None
+    assert r2_get_bytes(_R2, "invalid-limit", 0) is None
+
+    def missing(req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", email.message.Message(), None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", missing)
+    assert r2_get_bytes(_R2, "missing", 4) is None
+
+
+def test_r2_get_bytes_propagates_non_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failed(req: urllib.request.Request, timeout: float = 0) -> _FakeResponse:
+        raise urllib.error.HTTPError(req.full_url, 500, "failed", email.message.Message(), None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", failed)
+    with pytest.raises(urllib.error.HTTPError):
+        r2_get_bytes(_R2, "failed", 4)
+
+
 def test_r2_get_parquet_logs_success_when_debug_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -226,6 +258,38 @@ _FULL_WATERMARK_HEADERS = {
     "x-amz-meta-rs-predicted-at-max": "2026-07-18T09:00:00",
     "x-amz-meta-rs-row-count": "12",
 }
+
+
+def test_r2_head_identity_normalizes_etag_and_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeHeadResponse(
+            {"etag": 'W/"abc123"', "x-amz-version-id": "version-1"}
+        ),
+    )
+    assert r2_head_identity(_R2, "source") == R2ObjectIdentity("abc123", "version-1")
+
+
+@pytest.mark.parametrize("headers", [{}, {"etag": '""'}])
+def test_r2_head_identity_rejects_missing_etag(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeHeadResponse(headers)
+    )
+    assert r2_head_identity(_R2, "source") is None
+
+
+def test_r2_head_identity_returns_none_on_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timeout")),
+    )
+    assert r2_head_identity(_R2, "source") is None
 
 
 def test_r2_head_watermark_success_returns_four_tuple(
@@ -307,7 +371,7 @@ def test_r2_head_watermark_logs_failure_when_debug_enabled(
 
     assert result is None
     assert (
-        "[r2-client] head watermark failed key=some/key error=TimeoutError('connect timed out')"
+        "[r2-client] head failed key=some/key error=TimeoutError('connect timed out')"
         in capsys.readouterr().err
     )
 

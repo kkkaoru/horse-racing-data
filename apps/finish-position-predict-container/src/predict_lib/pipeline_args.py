@@ -121,9 +121,7 @@ HISTORY_FROM_DATE: Final[str] = "20100101"
 # Baked course-numerical lookup parquet. Mirrors the
 # COPY apps/pc-keiba-viewer/finish-position/lookups/course-numerical-features.parquet
 # in the Dockerfile so the path is identical inside the image.
-COURSE_LOOKUP_PATH: Final[Path] = Path(
-    "/app/lookups/course-numerical-features.parquet"
-)
+COURSE_LOOKUP_PATH: Final[Path] = Path("/app/lookups/course-numerical-features.parquet")
 
 # Per-category full layer chain (script basename order). Mirrors the per-category
 # Pipeline sections of
@@ -195,10 +193,6 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 # day-base build time:
 #   * MARKET_SIGNAL_SCRIPT / NEAR_MISS_SCRIPT — read odds/near-miss signals
 #     that are still moving right up to post time.
-#   * BABA_PEDIGREE_SCRIPT — reads ``current_baba_condition`` off the base
-#     build's own babajotai_code_shiba/dirt columns for THIS race (see the
-#     ``build_day_base`` docstring for why freezing those 7 base-build columns
-#     at day-base time is still correct).
 #   * RELATIONSHIP_SCRIPT — race-grain interaction features keyed on the
 #     target race's own field composition.
 #   * JRA_JOCKEY_PEDIGREE_CELL_SCRIPT — SAME-DAY-CUMULATIVE by design: it sums
@@ -207,6 +201,12 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 #     FOREVER — never move it to DAY_CHAIN even if every other layer above it
 #     turns out to be day-stable, because its value literally changes race by
 #     race within the same day as earlier races post their jockey results.
+# ``BABA_PEDIGREE_SCRIPT`` is DAY-STABLE even though its affinity values vary
+# by race: it selects each row's ``current_baba_condition`` from the day-base's
+# deliberately frozen baba columns, while every historical aggregate is joined
+# with a strict prior-date predicate. Running it once over the whole card thus
+# produces the same per-race rows without repeating its history scan.
+#
 # Every other LAYER_CHAIN script is DAY-STABLE and belongs in DAY_CHAIN.
 DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
     "jra": (
@@ -216,6 +216,7 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         WORKOUT_SCRIPT,
         LINEAGE_SCRIPT,
         HEAD_TO_HEAD_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         COURSE_NUMERICAL_SCRIPT,
@@ -227,6 +228,7 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         RACE_INTERNAL_SCRIPT,
         LINEAGE_SCRIPT,
         HEAD_TO_HEAD_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         SIMILAR_RACE_SCRIPT,
@@ -246,13 +248,11 @@ RACE_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
     "jra": (
         MARKET_SIGNAL_SCRIPT,
         NEAR_MISS_SCRIPT,
-        BABA_PEDIGREE_SCRIPT,
         RELATIONSHIP_SCRIPT,
         JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     ),
     "nar": (
         NEAR_MISS_SCRIPT,
-        BABA_PEDIGREE_SCRIPT,
         RELATIONSHIP_SCRIPT,
     ),
     "ban-ei": (BABA_PEDIGREE_SCRIPT,),

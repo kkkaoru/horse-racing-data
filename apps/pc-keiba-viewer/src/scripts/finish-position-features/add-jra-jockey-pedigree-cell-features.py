@@ -38,7 +38,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="add_jra_jockey_pedigree_cell_features")
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--pg-url", type=str, default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL))
+    parser.add_argument(
+        "--pg-url", type=str, default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL)
+    )
     parser.add_argument(
         "--from-date",
         type=str,
@@ -175,34 +177,115 @@ def stage_jockey_features(
     input_glob: str,
     focused_target: bool = False,
 ) -> None:
-    target_cte = ""
-    focus_filter = ""
     if focused_target:
         stage_jockey_target_rows(con, input_glob, from_year)
         focus_filter = _jockey_focus_filter(con, focused_target=True)
-        target_cte = """
-        ,
-        target_base as (
-          select *
-          from jra_jockey_cell_target_rows t
-          where not exists (
-            select 1
-            from history_base h
-            where h.kaisai_nen = t.kaisai_nen
-              and h.kaisai_tsukihi = t.kaisai_tsukihi
-              and h.keibajo_code = t.keibajo_code
-              and h.race_bango = t.race_bango
-              and h.ketto_toroku_bango = t.ketto_toroku_bango
-          )
-        ),
-        base as (
-          select * from history_base
-          union all
-          select * from target_base
+        con.execute(
+            f"""
+            create or replace temp table jra_jockey_cell_features as
+            with history as (
+              select
+                (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
+                  || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+                se.kishu_code,
+                se.kaisai_nichime,
+                se.keibajo_code,
+                ra.kyoso_joken_code,
+                case
+                  when cast(ra.kyori as int) < 1400 then 0
+                  when cast(ra.kyori as int) < 1800 then 1
+                  when cast(ra.kyori as int) < 2200 then 2
+                  else 3 end as kyori_band,
+                case when try_cast(se.kakutei_chakujun as int) = 1 then 1.0 else 0.0 end
+                  as is_win,
+                case when try_cast(se.kakutei_chakujun as int) <= 3 then 1.0 else 0.0 end
+                  as is_top3
+              from pg.jvd_se se
+              join pg.jvd_ra ra
+                on se.kaisai_nen = ra.kaisai_nen
+               and se.kaisai_tsukihi = ra.kaisai_tsukihi
+               and se.keibajo_code = ra.keibajo_code
+               and se.race_bango = ra.race_bango
+              where se.keibajo_code in {JRA}
+                and cast(se.kaisai_nen as int) >= {from_year}
+                and try_cast(se.kakutei_chakujun as int) is not null
+                and se.kishu_code is not null and se.kishu_code <> ''
+                {focus_filter}
+            ),
+            priors as (
+              select
+                t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+                t.ketto_toroku_bango,
+                sum(h.is_win) as jo_w,
+                count(h.is_win) as jo_n,
+                sum(h.is_win) filter (
+                  where h.keibajo_code = t.keibajo_code
+                    and h.kaisai_nichime = t.kaisai_nichime
+                ) as jvn_w,
+                sum(h.is_top3) filter (
+                  where h.keibajo_code = t.keibajo_code
+                    and h.kaisai_nichime = t.kaisai_nichime
+                ) as jvn_t3,
+                nullif(count(h.is_win) filter (
+                  where h.keibajo_code = t.keibajo_code
+                    and h.kaisai_nichime = t.kaisai_nichime
+                ), 0) as jvn_n,
+                sum(h.is_win) filter (
+                  where h.kaisai_nichime = t.kaisai_nichime
+                ) as jn_w,
+                nullif(count(h.is_win) filter (
+                  where h.kaisai_nichime = t.kaisai_nichime
+                ), 0) as jn_n,
+                sum(h.is_win) filter (
+                  where h.keibajo_code = t.keibajo_code
+                    and h.kyoso_joken_code = t.kyoso_joken_code
+                    and h.kyori_band = t.kyori_band
+                    and h.kaisai_nichime = t.kaisai_nichime
+                ) as jf_w,
+                nullif(count(h.is_win) filter (
+                  where h.keibajo_code = t.keibajo_code
+                    and h.kyoso_joken_code = t.kyoso_joken_code
+                    and h.kyori_band = t.kyori_band
+                    and h.kaisai_nichime = t.kaisai_nichime
+                ), 0) as jf_n
+              from jra_jockey_cell_target_rows t
+              left join history h
+                on h.kishu_code = t.kishu_code and h.race_seq < t.race_seq
+              group by all
+            ),
+            features as (
+              select *,
+                (jvn_w + {JOCKEY_K_CELL} * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jvn_n + {JOCKEY_K_CELL}) as jk_venue_nichime_win_eb,
+                (jvn_t3 + {JOCKEY_K_CELL}*3 * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jvn_n + {JOCKEY_K_CELL}) as jk_venue_nichime_top3_eb,
+                (jn_w + {JOCKEY_K_CELL} * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jn_n + {JOCKEY_K_CELL}) as jk_nichime_win_eb,
+                (jf_w + {JOCKEY_K_FULL} * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jf_n + {JOCKEY_K_FULL}) as jk_fullcell_win_eb,
+                ((jvn_w + {JOCKEY_K_CELL} * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jvn_n + {JOCKEY_K_CELL}))
+                  - (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end) as jk_venue_nichime_edge,
+                ((jf_w + {JOCKEY_K_FULL} * (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end)) / (jf_n + {JOCKEY_K_FULL}))
+                  - (case when jo_n>0 then jo_w/jo_n else {BASE_WIN_RATE} end) as jk_fullcell_edge,
+                ln(1 + jvn_n) as jk_venue_nichime_logn
+              from priors
+            )
+            select *,
+              case when jk_venue_nichime_win_eb is null then null else (
+                rank() over (partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango order by jk_venue_nichime_win_eb)
+                + (count(*) over (partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, jk_venue_nichime_win_eb) - 1) / 2.0
+              ) end as jk_venue_nichime_win_rank_in_race,
+              case when jk_venue_nichime_edge is null then null else (
+                rank() over (partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango order by jk_venue_nichime_edge)
+                + (count(*) over (partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, jk_venue_nichime_edge) - 1) / 2.0
+              ) end as jk_venue_nichime_edge_rank_in_race
+            from features
+            """
         )
-        """
-    else:
-        target_cte = """
+        con.execute(
+            "create index jra_jockey_cell_features_idx on jra_jockey_cell_features "
+            "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+        )
+        return
+    target_cte = ""
+    focus_filter = ""
+    target_cte = """
         ,
         base as (
           select * from history_base
@@ -697,7 +780,9 @@ def append_features_sql(input_glob: str) -> str:
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

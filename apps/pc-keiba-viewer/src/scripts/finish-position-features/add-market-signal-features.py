@@ -5,8 +5,10 @@ existing v2 finish-position feature parquet directory, producing v3.
 
 This is a post-processor that:
   - reads the v2 parquet (already includes race-internal rank/diff features)
-  - joins with PG `race_entry_corner_features` to pull raw tansho_odds,
-    tansho_ninkijun (not present in v2) for historical rows
+  - in bulk/offline mode, joins with PG `race_entry_corner_features` to pull
+    canonical historical tansho_odds / tansho_ninkijun
+  - in focused production mode, uses the already race-scoped input parquet
+    directly and does not attach or scan the external Catalog
   - for upcoming rows absent from race_entry_corner_features (which lags behind
     real-time), falls back to tansho_odds / tansho_ninkijun already present in
     the input parquet (populated via the COALESCE(realtime→jvd_se/nvd_se) path
@@ -82,34 +84,27 @@ def stage_raw_odds(
     to_date: str,
     focused_target: bool = False,
 ) -> None:
-    """Stage raw odds from PG race_entry_corner_features (historical rows only).
+    """Stage canonical historical odds, or an empty table in focused mode.
 
-    This table lags behind real-time and will miss upcoming race rows.  Those
-    gaps are filled by stage_parquet_odds() + merge_odds_tables().
+    The focused production input is already scoped to one race and carries the
+    freshest realtime→JVD/NVD-coalesced odds. Re-querying the all-history
+    Catalog view cannot improve those values and used to add roughly 100
+    seconds to every prediction, so focused mode deliberately avoids it.
     """
-    focused_filter = (
-        f"""
-        and exists (
-          select 1
-          from target_odds_scope p
-          where p.source = rec.source
-            and p.kaisai_nen = rec.kaisai_nen
-            and p.kaisai_tsukihi = rec.kaisai_tsukihi
-            and p.keibajo_code = rec.keibajo_code
-            and p.race_bango = rec.race_bango
-            and p.ketto_toroku_bango = rec.ketto_toroku_bango
+    if focused_target:
+        con.execute(
+            """
+            create or replace temp table raw_odds as
+            select * from parquet_odds where false
+            """
         )
-        """
-        if focused_target
-        else ""
-    )
+        return
     con.execute(
         f"""
         create or replace temp table raw_odds as
         select {PG_RAW_ODDS_COLUMNS}
         from pg.race_entry_corner_features rec
         where rec.race_date between '{from_date}' and '{to_date}'
-          {focused_filter}
         """
     )
 
@@ -117,24 +112,12 @@ def stage_raw_odds(
 def stage_parquet_odds(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
     """Stage tansho_odds / tansho_ninkijun from the input parquet.
 
-    target_odds_scope keeps every input horse-row for focused PG filtering,
-    including rows where parquet odds are NULL but PG odds are available.
-
     The base-build parquet already contains these columns via the
     COALESCE(realtime→jvd_se/nvd_se) path in finish_position_features_duckdb.py,
     so upcoming race rows that are absent from race_entry_corner_features still
     carry valid odds data here.  NULL input-parquet rows are excluded so the
     COALESCE in merge_odds_tables() prefers explicit values.
     """
-    con.execute(
-        f"""
-        create or replace temp table target_odds_scope as
-        select distinct
-          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          ketto_toroku_bango
-        from read_parquet('{input_glob}', hive_partitioning=true)
-        """
-    )
     con.execute(
         f"""
         create or replace temp table parquet_odds as
@@ -239,8 +222,9 @@ def main() -> None:
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
-    install_and_attach_pg(con, args.pg_url)
     stage_parquet_odds(con, input_glob)
+    if args.target_race is None:
+        install_and_attach_pg(con, args.pg_url)
     stage_raw_odds(con, args.from_date, args.to_date, args.target_race is not None)
     merge_odds_tables(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

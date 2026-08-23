@@ -69,6 +69,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -179,6 +180,19 @@ extending the run merely because a Queue message was redelivered.
 FOCUSED_FULL_STATE_MAX_ENTRIES: Final[int] = 256
 FOCUSED_FULL_ERROR_MAX_LENGTH: Final[int] = 2000
 
+RESCORE_ATTESTATION_TTL_MS: Final[int] = 2 * 60 * 1000
+"""Maximum age of Worker-observed cache evidence accepted by the Container."""
+
+RESCORE_ATTESTATION_FUTURE_SKEW_MS: Final[int] = 30 * 1000
+"""Small clock-skew allowance for the Worker's attestation timestamp."""
+
+RESCORE_ATTESTATION_MAX_ENTRIES: Final[int] = 32
+"""Maximum entrants in one race cache attestation."""
+
+_SHA256_HEX_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
+_R2_IDENTITY_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[!-~]{1,256}")
+_R2_VERSION_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[!-~]{0,256}")
+
 
 def pipeline_total_timeout_seconds() -> float:
     """Return the configured positive end-to-end timeout."""
@@ -219,6 +233,89 @@ def _first_qs(params: dict[str, list[str]], key: str) -> str | None:
     return values[0]
 
 
+@dataclass(frozen=True, slots=True)
+class RescoreCacheAttestation:
+    """Short-lived Worker evidence for one exact per-race feature object."""
+
+    entry_set_hash: str
+    entry_count: int
+    feature_cache_etag: str
+    feature_cache_version: str
+    issued_at_ms: int
+
+
+_RESCORE_ATTESTATION_QUERY_KEYS: Final[tuple[str, ...]] = (
+    "entrySetHash",
+    "entryCount",
+    "featureCacheEtag",
+    "featureCacheVersion",
+    "attestationIssuedAtMs",
+)
+
+
+def _parse_rescore_cache_attestation(
+    qs: dict[str, list[str]],
+    *,
+    mode: PredictMode,
+    keibajo_code: str | None,
+    race_bango: str | None,
+) -> RescoreCacheAttestation | str | None:
+    present = tuple(key for key in _RESCORE_ATTESTATION_QUERY_KEYS if key in qs)
+    if not present:
+        return None
+    if len(present) != len(_RESCORE_ATTESTATION_QUERY_KEYS):
+        return "rescore cache attestation must include all required parameters"
+    if mode != "rescore":
+        return "rescore cache attestation requires mode=rescore"
+    if keibajo_code is None or race_bango is None:
+        return "rescore cache attestation requires an exact race scope"
+
+    entry_set_hash = _first_qs(qs, "entrySetHash")
+    if entry_set_hash is None or _SHA256_HEX_PATTERN.fullmatch(entry_set_hash) is None:
+        return "invalid entrySetHash: must be 64 lowercase hexadecimal characters"
+
+    raw_entry_count = _first_qs(qs, "entryCount")
+    try:
+        entry_count = int(raw_entry_count) if raw_entry_count is not None else 0
+    except ValueError:
+        return "invalid entryCount: must be a positive integer"
+    if not 1 <= entry_count <= RESCORE_ATTESTATION_MAX_ENTRIES:
+        return f"invalid entryCount: must be between 1 and {RESCORE_ATTESTATION_MAX_ENTRIES}"
+
+    feature_cache_etag = _first_qs(qs, "featureCacheEtag")
+    if (
+        feature_cache_etag is None
+        or _R2_IDENTITY_TOKEN_PATTERN.fullmatch(feature_cache_etag) is None
+    ):
+        return "invalid featureCacheEtag"
+    feature_cache_version = _first_qs(qs, "featureCacheVersion")
+    if (
+        feature_cache_version is None
+        or _R2_VERSION_TOKEN_PATTERN.fullmatch(feature_cache_version) is None
+    ):
+        return "invalid featureCacheVersion"
+
+    raw_issued_at_ms = _first_qs(qs, "attestationIssuedAtMs")
+    try:
+        issued_at_ms = int(raw_issued_at_ms) if raw_issued_at_ms is not None else -1
+    except ValueError:
+        return "invalid attestationIssuedAtMs: must be a non-negative integer"
+    if issued_at_ms < 0:
+        return "invalid attestationIssuedAtMs: must be a non-negative integer"
+    now_ms = time.time_ns() // 1_000_000
+    if issued_at_ms > now_ms + RESCORE_ATTESTATION_FUTURE_SKEW_MS:
+        return "rescore cache attestation timestamp is too far in the future"
+    if now_ms - issued_at_ms > RESCORE_ATTESTATION_TTL_MS:
+        return "rescore cache attestation expired"
+    return RescoreCacheAttestation(
+        entry_set_hash=entry_set_hash,
+        entry_count=entry_count,
+        feature_cache_etag=feature_cache_etag,
+        feature_cache_version=feature_cache_version,
+        issued_at_ms=issued_at_ms,
+    )
+
+
 @final
 class PredictParams:
     """Parsed + validated query parameters for ``GET /predict``.
@@ -245,6 +342,7 @@ class PredictParams:
         "keibajo_code",
         "mode",
         "race_bango",
+        "rescore_cache_attestation",
         "run_date",
     )
 
@@ -259,6 +357,7 @@ class PredictParams:
         debug_logs: bool = False,
         card_max_race_bango: int | None = None,
         force: bool = False,
+        rescore_cache_attestation: RescoreCacheAttestation | None = None,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -268,6 +367,7 @@ class PredictParams:
         self.race_bango: str | None = race_bango
         self.debug_logs: bool = debug_logs
         self.card_max_race_bango: int | None = card_max_race_bango
+        self.rescore_cache_attestation = rescore_cache_attestation
         # Operator bypass for _focused_full_is_complete's row-count-only
         # completion check (Defect H, apps/pc-keiba-viewer/docs/probes/
         # jra-serving-audit-jun-jul-2026-07-17.md): forwarded from the Worker's
@@ -352,6 +452,15 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
     force = _parse_debug_flag(_first_qs(qs, "force"))
 
+    attestation = _parse_rescore_cache_attestation(
+        qs,
+        mode=mode,
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+    if isinstance(attestation, str):
+        return attestation
+
     raw_card_max_race_bango = _first_qs(qs, "cardMaxRaceBango")
     if raw_card_max_race_bango is None:
         card_max_race_bango: int | None = None
@@ -373,6 +482,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         debug_logs=debug_logs,
         card_max_race_bango=card_max_race_bango,
         force=force,
+        rescore_cache_attestation=attestation,
     )
 
 
@@ -657,6 +767,7 @@ def build_prewarm_result_line(
     parquet_base64: str | None = None,
     parquet_key: str | None = None,
     daybase_watermark: Mapping[str, str | int] | None = None,
+    generation: int | None = None,
 ) -> bytes:
     """Return a single UTF-8 NDJSON result line for ``GET /prewarm-day-base``.
 
@@ -693,6 +804,8 @@ def build_prewarm_result_line(
         payload["parquetKey"] = parquet_key
     if daybase_watermark is not None:
         payload["daybaseWatermark"] = dict(daybase_watermark)
+    if generation is not None:
+        payload["generation"] = generation
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
 
 
@@ -852,6 +965,15 @@ class CacheMissError(Exception):
 
         if not cached_parquet_exists(category, run_date):
             raise CacheMissError(f"no cache for {category}/{run_date}")
+    """
+
+
+class CacheValidationError(Exception):
+    """Retryable per-race cache validation failure that must not trigger full rebuild.
+
+    A Worker attestation is fail-closed evidence. Once present, an identity,
+    freshness, or entrant mismatch is an operational retry/repair condition,
+    never permission to run the raw Catalog fallback with unverified inputs.
     """
 
 
@@ -1393,6 +1515,32 @@ def build_focused_full_status_response_body(params: PredictParams) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode() + b"\n"
 
 
+def _log_focused_full_lifecycle(
+    *,
+    params: PredictParams,
+    race_key: str,
+    status: Literal["accepted", "success", "error"],
+    elapsed_ms: int,
+    error: str | None = None,
+) -> None:
+    """Emit one bounded, credential-safe operational lifecycle record."""
+    safe_error = (
+        mask_error_message(error)[:FOCUSED_FULL_ERROR_MAX_LENGTH] if error is not None else None
+    )
+    payload = {
+        "event": "focused-full-lifecycle",
+        "raceKey": race_key,
+        "category": params.category,
+        "runDate": params.run_date,
+        "venue": params.keibajo_code,
+        "race": params.race_bango,
+        "status": status,
+        "elapsedMs": max(0, elapsed_ms),
+        "error": safe_error,
+    }
+    print(json.dumps(payload, separators=(",", ":")), file=sys.stderr, flush=True)
+
+
 def _run_detached_focused_full(fn: Callable[[], int]) -> None:
     """Run *fn* in a background thread independent of the HTTP response."""
 
@@ -1744,7 +1892,9 @@ def iter_predict_chunks(
             if focused_full_timeout_seconds is None
             else focused_full_timeout_seconds
         )
-        _FOCUSED_FULL_STATES.start(focused_race_key, _wall_time_ms(), timeout_seconds)
+        focused_run_state = _FOCUSED_FULL_STATES.start(
+            focused_race_key, _wall_time_ms(), timeout_seconds
+        )
 
         unguarded_first_call = first_call
 
@@ -1763,28 +1913,51 @@ def iter_predict_chunks(
             try:
                 result = unguarded_first_call()
                 _populate_cache_best_effort()
+                finished_at_ms = _wall_time_ms()
                 _FOCUSED_FULL_STATES.finish(
                     focused_race_key,
                     "success",
-                    _wall_time_ms(),
+                    finished_at_ms,
                     None,
                 )
+                if not params.debug_logs:
+                    _log_focused_full_lifecycle(
+                        params=params,
+                        race_key=focused_race_key,
+                        status="success",
+                        elapsed_ms=finished_at_ms - focused_run_state.started_at_ms,
+                    )
                 return result
             except BaseException as focused_error:
                 safe_error = mask_error_message(f"{type(focused_error).__name__}: {focused_error}")[
                     :FOCUSED_FULL_ERROR_MAX_LENGTH
                 ]
+                finished_at_ms = _wall_time_ms()
                 _FOCUSED_FULL_STATES.finish(
                     focused_race_key,
                     "error",
-                    _wall_time_ms(),
+                    finished_at_ms,
                     safe_error,
                 )
+                if not params.debug_logs:
+                    _log_focused_full_lifecycle(
+                        params=params,
+                        race_key=focused_race_key,
+                        status="error",
+                        elapsed_ms=finished_at_ms - focused_run_state.started_at_ms,
+                        error=safe_error,
+                    )
                 raise
             finally:
                 release_fn(focused_race_key)
 
         if not params.debug_logs:
+            _log_focused_full_lifecycle(
+                params=params,
+                race_key=focused_race_key,
+                status="accepted",
+                elapsed_ms=0,
+            )
             _run_detached_focused_full(_call_focused_and_release)
             yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
             return
@@ -1970,13 +2143,137 @@ Must raise on failure."""
 PrewarmBackgroundFn = Callable[[Callable[[], None]], None]
 """Run the day-base build+upload off the HTTP request thread."""
 
+PrewarmInvalidateFn = Callable[[str, str], None]
+"""Invalidate a previous pickup payload for ``(category, run_date)``."""
+
+PrewarmRunStatus = Literal["running", "success", "empty", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class PrewarmRunState:
+    """Externally observable lifecycle of one prewarm generation."""
+
+    flight_key: str
+    generation: int
+    status: PrewarmRunStatus
+    started_at_ms: int
+    finished_at_ms: int | None = None
+    error: str | None = None
+
+
+class PrewarmStatusPayload(TypedDict):
+    flightKey: str
+    generation: int
+    status: Literal["missing", "running", "success", "empty", "error"]
+    startedAtMs: int | None
+    finishedAtMs: int | None
+    error: str | None
+
+
+@final
+class _PrewarmStateRegistry:
+    """Thread-safe latest-generation registry keyed by category and date."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._states: dict[str, PrewarmRunState] = {}
+
+    def start(self, flight_key: str, now_ms: int) -> PrewarmRunState:
+        with self._lock:
+            previous = self._states.get(flight_key)
+            generation = 1 if previous is None else previous.generation + 1
+            state = PrewarmRunState(
+                flight_key=flight_key,
+                generation=generation,
+                status="running",
+                started_at_ms=now_ms,
+            )
+            self._states[flight_key] = state
+            return state
+
+    def finish(
+        self,
+        flight_key: str,
+        generation: int,
+        status: Literal["success", "empty", "error"],
+        now_ms: int,
+        error: str | None,
+    ) -> PrewarmRunState | None:
+        with self._lock:
+            current = self._states.get(flight_key)
+            if current is None or current.generation != generation or current.status != "running":
+                return current
+            state = PrewarmRunState(
+                flight_key=current.flight_key,
+                generation=current.generation,
+                status=status,
+                started_at_ms=current.started_at_ms,
+                finished_at_ms=now_ms,
+                error=error,
+            )
+            self._states[flight_key] = state
+            return state
+
+    def get(self, flight_key: str) -> PrewarmRunState | None:
+        with self._lock:
+            return self._states.get(flight_key)
+
+
 _PREWARM_LOCK: Final[threading.Lock] = threading.Lock()
 _PREWARM_IN_FLIGHT: Final[list[str]] = []
 _DETACHED_PREWARM_THREADS: Final[list[threading.Thread]] = []
+_PREWARM_STATES: Final[_PrewarmStateRegistry] = _PrewarmStateRegistry()
 
 
 def _prewarm_flight_key(category: str, run_date: str) -> str:
     return f"{category}:{run_date}"
+
+
+def get_prewarm_run_state(category: str, run_date: str) -> PrewarmRunState | None:
+    """Return the latest prewarm generation for ``category`` and ``run_date``."""
+    return _PREWARM_STATES.get(_prewarm_flight_key(category, run_date))
+
+
+def build_prewarm_status_response_body(params: PrewarmParams) -> bytes:
+    """Serialize prewarm status independently from optional debug logging."""
+    flight_key = _prewarm_flight_key(params.category, params.run_date)
+    state = _PREWARM_STATES.get(flight_key)
+    if state is None:
+        payload: PrewarmStatusPayload = {
+            "flightKey": flight_key,
+            "generation": 0,
+            "status": "missing",
+            "startedAtMs": None,
+            "finishedAtMs": None,
+            "error": None,
+        }
+    else:
+        payload = {
+            "flightKey": state.flight_key,
+            "generation": state.generation,
+            "status": state.status,
+            "startedAtMs": state.started_at_ms,
+            "finishedAtMs": state.finished_at_ms,
+            "error": state.error,
+        }
+    return json.dumps(payload, separators=(",", ":")).encode() + b"\n"
+
+
+def _log_prewarm_lifecycle(
+    *,
+    params: PrewarmParams,
+    generation: int,
+    status: PrewarmRunStatus,
+    error: str | None = None,
+) -> None:
+    """Emit one credential-safe operational lifecycle line even with debug off."""
+    suffix = f" error={mask_error_message(error)}" if error is not None else ""
+    print(
+        f"[prewarm-status] category={params.category} runDate={params.run_date} "
+        f"generation={generation} status={status}{suffix}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _claim_prewarm_slot(flight_key: str) -> bool:
@@ -2102,11 +2399,14 @@ def _run_detached_prewarm_build(
     parquet_payload_fn: PrewarmParquetPayloadFn | None,
     commit_fn: PrewarmCommitFn | None,
     flight_key: str,
+    generation: int,
 ) -> None:
     try:
         with debug_logs_scope(params.debug_logs):
             day_base_dir = build_fn(params.category, params.run_date, params.days_ahead)
         if day_base_dir is None:
+            _PREWARM_STATES.finish(flight_key, generation, "empty", _wall_time_ms(), None)
+            _log_prewarm_lifecycle(params=params, generation=generation, status="empty")
             debug_log(
                 f"[prewarm] detached empty category={params.category} runDate={params.run_date}"
             )
@@ -2118,10 +2418,34 @@ def _run_detached_prewarm_build(
             commit_fn=commit_fn,
         )
         parsed = json.loads(result_line.decode())
+        result_status: Literal["success", "error"] = (
+            "success" if parsed.get("status") == "success" else "error"
+        )
+        result_error = parsed.get("error")
+        safe_error = str(result_error)[:FOCUSED_FULL_ERROR_MAX_LENGTH] if result_error else None
+        _PREWARM_STATES.finish(flight_key, generation, result_status, _wall_time_ms(), safe_error)
+        _log_prewarm_lifecycle(
+            params=params,
+            generation=generation,
+            status=result_status,
+            error=safe_error,
+        )
         debug_log(
             f"[prewarm] detached {parsed.get('status')} category={params.category} "
             f"runDate={params.run_date} parquetKey={parsed.get('parquetKey', '-')}"
         )
+    except BaseException as prewarm_error:
+        safe_error = mask_error_message(f"{type(prewarm_error).__name__}: {prewarm_error}")[
+            :FOCUSED_FULL_ERROR_MAX_LENGTH
+        ]
+        _PREWARM_STATES.finish(flight_key, generation, "error", _wall_time_ms(), safe_error)
+        _log_prewarm_lifecycle(
+            params=params,
+            generation=generation,
+            status="error",
+            error=safe_error,
+        )
+        raise
     finally:
         _release_prewarm_slot(flight_key)
 
@@ -2134,6 +2458,7 @@ def iter_prewarm_chunks(
     existing_object_fn: PrewarmExistingObjectFn | None = None,
     commit_fn: PrewarmCommitFn | None = None,
     background_fn: PrewarmBackgroundFn | None = None,
+    invalidate_fn: PrewarmInvalidateFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -2186,11 +2511,28 @@ def iter_prewarm_chunks(
 
     existing_key = _lookup_existing_prewarm_key(params, existing_object_fn)
     if existing_key is not None:
+        flight_key = _prewarm_flight_key(params.category, params.run_date)
+        current_state = _PREWARM_STATES.get(flight_key)
+        if current_state is None or current_state.status != "running":
+            current_state = _PREWARM_STATES.start(flight_key, _wall_time_ms())
+        _PREWARM_STATES.finish(
+            flight_key,
+            current_state.generation,
+            "success",
+            _wall_time_ms(),
+            None,
+        )
+        _log_prewarm_lifecycle(
+            params=params,
+            generation=current_state.generation,
+            status="success",
+        )
         yield build_prewarm_result_line(
             params.category,
             params.run_date,
             status="success",
             parquet_key=existing_key,
+            generation=current_state.generation,
         )
         return
 
@@ -2198,13 +2540,44 @@ def iter_prewarm_chunks(
         flight_key = _prewarm_flight_key(params.category, params.run_date)
         expected_key = build_r2_day_base_key(params.category, params.run_date)
         if not _claim_prewarm_slot(flight_key):
+            existing_state = _PREWARM_STATES.get(flight_key)
             yield build_prewarm_result_line(
                 params.category,
                 params.run_date,
                 status=PREWARM_ACCEPTED_STATUS,
                 parquet_key=expected_key,
+                generation=existing_state.generation if existing_state is not None else None,
             )
             return
+
+        state = _PREWARM_STATES.start(flight_key, _wall_time_ms())
+        try:
+            if invalidate_fn is not None:
+                invalidate_fn(params.category, params.run_date)
+        except BaseException as invalidate_error:
+            safe_error = mask_error_message(
+                f"{type(invalidate_error).__name__}: {invalidate_error}"
+            )[:FOCUSED_FULL_ERROR_MAX_LENGTH]
+            _PREWARM_STATES.finish(
+                flight_key, state.generation, "error", _wall_time_ms(), safe_error
+            )
+            _log_prewarm_lifecycle(
+                params=params,
+                generation=state.generation,
+                status="error",
+                error=safe_error,
+            )
+            _release_prewarm_slot(flight_key)
+            yield build_prewarm_result_line(
+                params.category,
+                params.run_date,
+                status="error",
+                error=safe_error,
+                parquet_key=expected_key,
+                generation=state.generation,
+            )
+            return
+        _log_prewarm_lifecycle(params=params, generation=state.generation, status="running")
 
         def _detached() -> None:
             _run_detached_prewarm_build(
@@ -2213,14 +2586,40 @@ def iter_prewarm_chunks(
                 parquet_payload_fn=parquet_payload_fn,
                 commit_fn=commit_fn,
                 flight_key=flight_key,
+                generation=state.generation,
             )
 
-        background_fn(_detached)
+        try:
+            background_fn(_detached)
+        except BaseException as launch_error:
+            safe_error = mask_error_message(f"{type(launch_error).__name__}: {launch_error}")[
+                :FOCUSED_FULL_ERROR_MAX_LENGTH
+            ]
+            _PREWARM_STATES.finish(
+                flight_key, state.generation, "error", _wall_time_ms(), safe_error
+            )
+            _log_prewarm_lifecycle(
+                params=params,
+                generation=state.generation,
+                status="error",
+                error=safe_error,
+            )
+            _release_prewarm_slot(flight_key)
+            yield build_prewarm_result_line(
+                params.category,
+                params.run_date,
+                status="error",
+                error=safe_error,
+                parquet_key=expected_key,
+                generation=state.generation,
+            )
+            return
         yield build_prewarm_result_line(
             params.category,
             params.run_date,
             status=PREWARM_ACCEPTED_STATUS,
             parquet_key=expected_key,
+            generation=state.generation,
         )
         return
 

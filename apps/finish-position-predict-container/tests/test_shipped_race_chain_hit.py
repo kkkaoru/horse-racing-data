@@ -318,7 +318,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
         races: Mapping[str, Sequence[Mapping[str, object]]],
         category: Category,
         models_dir: Path,
-        feature_names: Sequence[str],
+        feature_names: Sequence[str] | None = None,
         card_max_race_bango: int | None = None,
     ) -> list[list[list[object]]]:
         if "ban-ei:2026:0816:83:02" in races:

@@ -117,7 +117,7 @@ def test_stage_raw_odds_queries_race_entry_corner_features() -> None:
     assert "tansho_ninkijun" in body
 
 
-def test_stage_raw_odds_focused_filters_to_target_odds_scope() -> None:
+def test_stage_raw_odds_focused_uses_parquet_schema_without_catalog_scan() -> None:
     captured: list[str] = []
 
     class FakeConn:
@@ -126,9 +126,8 @@ def test_stage_raw_odds_focused_filters_to_target_odds_scope() -> None:
 
     subject.stage_raw_odds(FakeConn(), "20230101", "20231231", focused_target=True)
     body = " ".join(captured)
-    assert "from target_odds_scope p" in body
-    assert "p.ketto_toroku_bango = rec.ketto_toroku_bango" in body
-    assert "rec.race_date between '20230101' and '20231231'" in body
+    assert "select * from parquet_odds where false" in body
+    assert "race_entry_corner_features" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +145,7 @@ def test_stage_parquet_odds_creates_parquet_odds_table() -> None:
     subject.stage_parquet_odds(FakeConn(), "/tmp/in/race_year=*/*.parquet")
     body = " ".join(captured)
     assert "parquet_odds" in body
-    assert "target_odds_scope" in body
+    assert "target_odds_scope" not in body
     assert "read_parquet('/tmp/in/race_year=*/*.parquet'" in body
     assert "tansho_odds" in body
     assert "tansho_ninkijun" in body
@@ -191,19 +190,11 @@ def test_stage_parquet_odds_end_to_end_reads_parquet_values(tmp_path: Path) -> N
         order by ketto_toroku_bango
         """
     ).fetchall()
-    scope_rows = con.execute(
-        """
-        select ketto_toroku_bango
-        from target_odds_scope
-        order by ketto_toroku_bango
-        """
-    ).fetchall()
     con.close()
     # horse_c has NULL tansho_odds so it must be excluded
     assert len(rows) == 2
     assert rows[0] == ("horse_a", 12.5, 3)
     assert rows[1] == ("horse_b", 5.0, 1)
-    assert scope_rows == [("horse_a",), ("horse_b",), ("horse_c",)]
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +922,43 @@ def test_main_upcoming_race_produces_non_null_market_signals(
     out = next(r for r in rows if r[0] == "horse_out")
     assert fav[4] == 1
     assert out[4] == 3
+
+
+def test_main_focused_race_does_not_attach_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    _seed_upcoming_parquet(input_dir)
+
+    def _unexpected_attach(
+        _con: duckdb.DuckDBPyConnection, _pg_url: str
+    ) -> None:
+        raise AssertionError("focused market layer must not attach the Catalog")
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _unexpected_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_market_signal_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--target-race",
+            "05:11",
+        ],
+    )
+    subject.main()
+
+    verify_con = duckdb.connect(":memory:")
+    row = verify_con.execute(
+        f"select count(*), count(inverse_odds_implied_prob) "
+        f"from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')"
+    ).fetchone()
+    verify_con.close()
+    assert row == (3, 3)
 
 
 def test_main_historical_race_produces_non_null_market_signals(

@@ -14,12 +14,13 @@ the small helpers.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import http.server
 import json
 import sys
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
@@ -37,20 +38,24 @@ import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
 from predict_lib.cell_router import CellRouter, build_base_model_r2_key
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
+from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
     METADATA_FILE_NAME,
     NAR_ETOP2_MODEL_VERSION,
     Architecture,
     Category,
 )
-from predict_lib.rescore import RaceScope
+from predict_lib.r2_client import R2ObjectIdentity
+from predict_lib.rescore import RaceFreshSnapshot, RaceScope
 from predict_lib.scorer import BoosterLike
 from predict_lib.serve import (
+    CacheValidationError,
     ParquetPayloadFn,
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
     R2Config,
+    RescoreCacheAttestation,
     activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_race_key,
     iter_predict_chunks,
@@ -59,6 +64,7 @@ from predict_lib.serve import (
 from predict_lib.stage1_routing import Stage1CategoryConfig
 from predict_upcoming import (
     VariantModel,
+    clear_model_bundle_cache,
     execute,
     extract_race_class_code,
     flush_predictions,
@@ -66,6 +72,14 @@ from predict_upcoming import (
     score_one_race_nar_etop2,
     score_races,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_model_bundle_cache() -> Iterator[None]:
+    clear_model_bundle_cache()
+    yield
+    clear_model_bundle_cache()
+
 
 _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
@@ -77,6 +91,7 @@ _PREWARM_PARQUET_PAYLOAD_ATTR = "_prewarm_parquet_payload"
 _MAKE_PREWARM_EXISTING_OBJECT_FN_ATTR = "_make_prewarm_existing_object_fn"
 _MAKE_PREWARM_COMMIT_FN_ATTR = "_make_prewarm_commit_fn"
 _ENSURE_CACHED_PARQUET_ATTR = "_ensure_cached_parquet"
+_FETCH_FRESH_SNAPSHOTS_ATTR = "_fetch_fresh_snapshots"
 _load_model_metadata = cast(
     Callable[[Path, Category], Sequence[str]],
     getattr(predict_upcoming, _LOAD_MODEL_METADATA_ATTR),
@@ -99,7 +114,7 @@ _make_prewarm_fn = cast(
 )
 _make_rescore_fn = cast(
     Callable[
-        [str, Path, str, R2Config | None, RaceScope],
+        [str, Path, str, R2Config | None, RaceScope, RescoreCacheAttestation | None],
         tuple[PredictCategoryFn, PerRaceParquetPayloadFn],
     ],
     getattr(predict_upcoming, _MAKE_RESCORE_FN_ATTR),
@@ -123,9 +138,16 @@ _ensure_cached_parquet = cast(
     Callable[[Path, str, str, R2Config | None], None],
     getattr(predict_upcoming, _ENSURE_CACHED_PARQUET_ATTR),
 )
+_fetch_fresh_snapshots = cast(
+    Callable[
+        [str, str, list[tuple[str, str]]],
+        dict[tuple[str, str], RaceFreshSnapshot],
+    ],
+    getattr(predict_upcoming, _FETCH_FRESH_SNAPSHOTS_ATTR),
+)
 _FETCH_WATERMARKED_PER_RACE_CACHE_ATTR = "_fetch_watermarked_per_race_cache"
 _fetch_watermarked_per_race_cache = cast(
-    Callable[[Path, str, str, RaceScope, R2Config, str], bool],
+    Callable[[Path, str, str, RaceScope, R2Config, str, RescoreCacheAttestation | None], bool],
     getattr(predict_upcoming, _FETCH_WATERMARKED_PER_RACE_CACHE_ATTR),
 )
 _VARIANT_BOOSTER_FEATURE_ORDER_MATCHES_ATTR = "_variant_booster_feature_order_matches"
@@ -490,9 +512,10 @@ def _fake_rescore(
 
 def _fake_rescore_factory(
     scope: RaceScope,
+    attestation: RescoreCacheAttestation | None,
 ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
     """Dummy rescore_factory that ignores the scope and returns a fixed fn + payload fn."""
-    del scope
+    del scope, attestation
 
     def _per_race() -> list[dict[str, str]] | None:
         return None
@@ -553,7 +576,7 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     )
     factory = handler_cls.rescore_factory
     assert factory is not None
-    rescore, per_race = factory(RaceScope())
+    rescore, per_race = factory(RaceScope(), None)
     result = rescore("jra", "20260618", 1, None, None, None)
     assert result == 99
     assert per_race() is None
@@ -1064,6 +1087,33 @@ def test_prewarm_day_base_cache_route_found_false_when_store_not_wired() -> None
         _stop_threading_server(httpd, thread)
 
 
+def test_prewarm_day_base_status_route_is_available_without_debug() -> None:
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(port, "/prewarm-day-base-status?category=nar&runDate=20991230")
+        assert status == 200
+        assert json.loads(body.decode()) == {
+            "flightKey": "nar:20991230",
+            "generation": 0,
+            "status": "missing",
+            "startedAtMs": None,
+            "finishedAtMs": None,
+            "error": None,
+        }
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_prewarm_day_base_status_route_rejects_invalid_query() -> None:
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(port, "/prewarm-day-base-status?runDate=20991230")
+        assert status == 400
+        assert body == b"missing required parameter: category"
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
 # ---------------------------------------------------------------------------
 # make_handler_class — /prewarm-day-base wiring
 # ---------------------------------------------------------------------------
@@ -1423,6 +1473,7 @@ def test_catalog_rescore_whole_category_scope_forces_full_fallback_without_readi
         "r2-catalog://pc-keiba",
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(),
+        None,
     )
 
     def full_predict(
@@ -1477,6 +1528,7 @@ def test_catalog_rescore_per_race_scope_falls_back_when_watermarked_cache_unavai
         "r2-catalog://pc-keiba",
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(keibajo_code="05", race_bango="11"),
+        None,
     )
 
     def full_predict(
@@ -1538,6 +1590,7 @@ def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
         "r2-catalog://pc-keiba",
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(keibajo_code="05", race_bango="11"),
+        None,
     )
 
     def full_predict(*args: object) -> int:
@@ -1560,6 +1613,126 @@ def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
     assert parsed[-1]["status"] == "success"
 
 
+def test_catalog_rescore_attestation_without_r2_is_retryable_not_cache_miss(
+    tmp_path: Path,
+) -> None:
+    attestation = _rescore_attestation(entry_hash="a" * 64, entry_count=1)
+    rescore_fn, _payload = _make_rescore_fn(
+        "postgresql://neon-output/db",
+        tmp_path,
+        "r2-catalog://pc-keiba",
+        None,
+        RaceScope(keibajo_code="07", race_bango="03"),
+        attestation,
+    )
+
+    with pytest.raises(CacheValidationError, match="r2-configuration-unavailable"):
+        rescore_fn("jra", "20260823", 0, "07", "03", 12)
+
+
+def test_fetch_fresh_snapshots_fetches_one_race_odds_and_weight_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import realtime_odds_fetcher
+
+    started = threading.Barrier(2)
+
+    def fake_odds(
+        fetcher: object,
+        source: str,
+        run_date: str,
+        keibajo_code: str,
+        race_bango: str,
+    ) -> list[tuple[str, str, int, float, int]]:
+        del fetcher, source, run_date
+        started.wait(timeout=1)
+        return [(keibajo_code, race_bango, 1, 3.4, 2)]
+
+    def fake_weight(
+        fetcher: object,
+        source: str,
+        run_date: str,
+        keibajo_code: str,
+        race_bango: str,
+    ) -> dict[int, int]:
+        del fetcher, source, run_date, keibajo_code, race_bango
+        started.wait(timeout=1)
+        return {1: 480}
+
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_odds_for_race", fake_odds)
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_weight_for_race", fake_weight)
+
+    result = _fetch_fresh_snapshots("jra", "20260823", [("01", "03")])
+
+    assert result == {
+        ("01", "03"): RaceFreshSnapshot(
+            odds_by_umaban={1: OddsSnapshot(tansho_odds=3.4, tansho_ninkijun=2)},
+            bataiju_by_umaban={1: 480.0},
+        )
+    }
+
+
+def test_fetch_fresh_snapshots_bounds_multi_race_outgoing_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import realtime_odds_fetcher
+
+    lock = threading.Lock()
+    four_started = threading.Event()
+    active = 0
+    peak = 0
+
+    def wait_for_bound() -> None:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 4:
+                four_started.set()
+        if not four_started.wait(timeout=1):
+            raise TimeoutError("four snapshot requests did not start")
+        with lock:
+            active -= 1
+
+    def fake_odds(
+        fetcher: object,
+        source: str,
+        run_date: str,
+        keibajo_code: str,
+        race_bango: str,
+    ) -> list[tuple[str, str, int, float, int]]:
+        del fetcher, source, run_date
+        wait_for_bound()
+        return [(keibajo_code, race_bango, 1, 2.5, 1)]
+
+    def fake_weight(
+        fetcher: object,
+        source: str,
+        run_date: str,
+        keibajo_code: str,
+        race_bango: str,
+    ) -> dict[int, int]:
+        del fetcher, source, run_date, keibajo_code, race_bango
+        wait_for_bound()
+        return {1: 500}
+
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_odds_for_race", fake_odds)
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_weight_for_race", fake_weight)
+
+    result = _fetch_fresh_snapshots(
+        "jra",
+        "20260823",
+        [("01", "01"), ("01", "02"), ("01", "03")],
+    )
+
+    assert peak == 4
+    assert result[("01", "01")].bataiju_by_umaban == {1: 500.0}
+    assert result[("01", "02")].odds_by_umaban == {
+        1: OddsSnapshot(tansho_odds=2.5, tansho_ninkijun=1)
+    }
+    assert result[("01", "03")].bataiju_by_umaban == {1: 500.0}
+
+
 # ---------------------------------------------------------------------------
 # _fetch_watermarked_per_race_cache -- direct unit tests
 # ---------------------------------------------------------------------------
@@ -1578,7 +1751,13 @@ def test_fetch_watermarked_per_race_cache_false_without_race_scope(
     r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
 
     result = _fetch_watermarked_per_race_cache(
-        final_dir, "jra", "20260712", RaceScope(keibajo_code="05"), r2, "r2-catalog://pc-keiba"
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05"),
+        r2,
+        "r2-catalog://pc-keiba",
+        None,
     )
 
     assert result is False
@@ -1599,6 +1778,7 @@ def test_fetch_watermarked_per_race_cache_false_on_r2_miss(
         RaceScope(keibajo_code="05", race_bango="11"),
         r2,
         "r2-catalog://pc-keiba",
+        None,
     )
 
     assert result is False
@@ -1625,6 +1805,7 @@ def test_fetch_watermarked_per_race_cache_requests_the_per_race_key(
         RaceScope(keibajo_code="05", race_bango="11"),
         r2,
         "r2-catalog://pc-keiba",
+        None,
     )
 
     assert captured == ["feat-cache/catalog-v1/jra/20260712/05/11/features.parquet"]
@@ -1652,6 +1833,7 @@ def test_fetch_watermarked_per_race_cache_false_when_watermark_rejects(
         RaceScope(keibajo_code="05", race_bango="11"),
         r2,
         "r2-catalog://pc-keiba",
+        None,
     )
 
     assert result is False
@@ -1683,6 +1865,7 @@ def test_fetch_watermarked_per_race_cache_false_when_watermark_check_raises(
         RaceScope(keibajo_code="05", race_bango="11"),
         r2,
         "r2-catalog://pc-keiba",
+        None,
     )
 
     assert result is False
@@ -1725,6 +1908,7 @@ def test_fetch_watermarked_per_race_cache_true_populates_final_dir_when_watermar
         RaceScope(keibajo_code="05", race_bango="11"),
         r2,
         "r2-catalog://pc-keiba",
+        None,
     )
 
     assert result is True
@@ -1741,6 +1925,189 @@ def test_fetch_watermarked_per_race_cache_true_populates_final_dir_when_watermar
     ]
     candidate_dir = final_dir.parent / "feat-jra-v7-final-per-race-candidate"
     assert not candidate_dir.exists()
+
+
+def _rescore_attestation(
+    *,
+    entry_hash: str,
+    entry_count: int = 2,
+    etag: str = "etag-1",
+    version: str = "version-1",
+    issued_at_ms: int | None = None,
+) -> RescoreCacheAttestation:
+    return RescoreCacheAttestation(
+        entry_set_hash=entry_hash,
+        entry_count=entry_count,
+        feature_cache_etag=etag,
+        feature_cache_version=version,
+        issued_at_ms=(
+            predict_upcoming.time.time_ns() // 1_000_000 if issued_at_ms is None else issued_at_ms
+        ),
+    )
+
+
+def test_fetch_per_race_cache_accepts_exact_attestation_without_catalog_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import pandas as pd
+
+    tokens = ["H1:1", "H2:2"]
+    expected_hash = hashlib.sha256("\n".join(tokens).encode()).hexdigest()
+    # Workers R2 supplies upload-unique ``version-1`` in the attestation, but
+    # S3 HeadObject exposes no x-amz-version-id. Exact ETag is the shared
+    # cross-surface identity and must still accept this normal production shape.
+    identity = R2ObjectIdentity(etag="etag-1", version="")
+    head_calls: list[str] = []
+
+    def fake_head(_r2: R2Config, key: str) -> R2ObjectIdentity:
+        head_calls.append(key)
+        return identity
+
+    def fake_get(_r2: R2Config, _key: str, dest: Path) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            [
+                {
+                    "race_id": "jra:2026:0823:07:03",
+                    "ketto_toroku_bango": "H2",
+                    "umaban": 2,
+                },
+                {
+                    "race_id": "jra:2026:0823:07:03",
+                    "ketto_toroku_bango": "H1",
+                    "umaban": 1,
+                },
+            ]
+        ).to_parquet(dest)
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "r2_head_identity", fake_head)
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_get)
+    monkeypatch.setattr(
+        pipeline_runner,
+        "day_base_covers_entry_list",
+        lambda *_a, **_k: pytest.fail("attested HIT must not query live Catalog"),
+    )
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260823",
+        RaceScope(keibajo_code="07", race_bango="03"),
+        r2,
+        "r2-catalog://pc-keiba",
+        _rescore_attestation(entry_hash=expected_hash),
+    )
+
+    assert result is True
+    assert len(head_calls) == 2
+    lifecycle = json.loads(capsys.readouterr().err.strip())
+    assert lifecycle == {
+        "event": "rescore-cache-attestation",
+        "category": "jra",
+        "runDate": "20260823",
+        "venue": "07",
+        "race": "03",
+        "status": "accepted",
+        "reason": "exact-entry-and-identity-match",
+    }
+
+
+@pytest.mark.parametrize(
+    ("head_identities", "entry_hash", "reason"),
+    [
+        (
+            [None],
+            hashlib.sha256(b"H1:1\nH2:2").hexdigest(),
+            "feature-identity-mismatch",
+        ),
+        (
+            [R2ObjectIdentity(etag="wrong-etag", version="")],
+            hashlib.sha256(b"H1:1\nH2:2").hexdigest(),
+            "feature-identity-mismatch",
+        ),
+        (
+            [R2ObjectIdentity(etag="etag-1", version="version-1")],
+            "0" * 64,
+            "entry-set-mismatch",
+        ),
+        (
+            [
+                R2ObjectIdentity(etag="etag-1", version="version-1"),
+                R2ObjectIdentity(etag="etag-2", version="version-1"),
+            ],
+            hashlib.sha256(b"H1:1\nH2:2").hexdigest(),
+            "feature-identity-changed",
+        ),
+    ],
+)
+def test_fetch_per_race_cache_attestation_mismatch_is_retryable_without_fallback(
+    head_identities: list[R2ObjectIdentity | None],
+    entry_hash: str,
+    reason: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import pandas as pd
+
+    identities = iter(head_identities)
+    monkeypatch.setattr(predict_upcoming, "r2_head_identity", lambda *_a: next(identities))
+
+    def fake_get(_r2: R2Config, _key: str, dest: Path) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            [
+                {"race_id": "jra:2026:0823:07:03", "ketto_toroku_bango": "H1", "umaban": 1},
+                {"race_id": "jra:2026:0823:07:03", "ketto_toroku_bango": "H2", "umaban": 2},
+            ]
+        ).to_parquet(dest)
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_get)
+    final_dir = tmp_path / "final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    with pytest.raises(CacheValidationError, match=reason):
+        _fetch_watermarked_per_race_cache(
+            final_dir,
+            "jra",
+            "20260823",
+            RaceScope(keibajo_code="07", race_bango="03"),
+            r2,
+            "r2-catalog://pc-keiba",
+            _rescore_attestation(entry_hash=entry_hash),
+        )
+
+    assert not final_dir.exists()
+    lifecycle = json.loads(capsys.readouterr().err.strip())
+    assert lifecycle["status"] == "rejected"
+    assert lifecycle["reason"] == reason
+
+
+def test_fetch_per_race_cache_attestation_expiring_while_waiting_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now_ms = 2_000_000
+    monkeypatch.setattr(predict_upcoming.time, "time_ns", lambda: now_ms * 1_000_000)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    attestation = _rescore_attestation(
+        entry_hash="a" * 64,
+        issued_at_ms=now_ms - predict_upcoming.RESCORE_ATTESTATION_TTL_MS - 1,
+    )
+
+    with pytest.raises(CacheValidationError, match="expired-during-container-wait"):
+        _fetch_watermarked_per_race_cache(
+            tmp_path / "final",
+            "jra",
+            "20260823",
+            RaceScope(keibajo_code="07", race_bango="03"),
+            r2,
+            "r2-catalog://pc-keiba",
+            attestation,
+        )
 
 
 def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) -> None:
@@ -2191,6 +2558,156 @@ def test_variant_model_holds_booster_and_feature_contract() -> None:
     assert list(vm.feature_names) == ["a", "b"]
     assert vm.architecture == "catboost"
     assert vm.model_version == "cell-v1"
+
+
+def test_score_races_reuses_complete_model_bundle(tmp_path: Path) -> None:
+    variant_version = "jra-cb-v10-prior-corner274-2013"
+    stage1_version = "jra-cb-stage1-marketfree235-2013"
+    _write_variant_metadata(tmp_path, "jra", variant_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", stage1_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "prior": _FakeVariantSpec(variant_version, 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="sim")
+    stage1_config = Stage1CategoryConfig(
+        enabled=True,
+        model_version=stage1_version,
+        feature_count=1,
+        architecture="catboost",
+        stddev_threshold=0.4,
+        enable_stddev_safety_net=True,
+    )
+    fallback = _ScoreByUmaban([3.0, -3.0])
+    companion = _ScoreByUmaban([1.0, 2.0])
+    races = {
+        "jra:20260620:0620:05:01": [
+            {
+                "feat": 0.1,
+                "keibajo_code": "05",
+                "ketto_toroku_bango": "H1",
+                "kyoso_joken_code": "701",
+                "tansho_ninkijun": 1,
+                "umaban": 1,
+            },
+            {
+                "feat": 0.2,
+                "keibajo_code": "05",
+                "ketto_toroku_bango": "H2",
+                "kyoso_joken_code": "701",
+                "tansho_ninkijun": 2,
+                "umaban": 2,
+            },
+        ]
+    }
+
+    with (
+        patch("predict_upcoming.JRA_ETOP2_ENABLED", True),
+        patch("predict_upcoming._load_model_metadata", return_value=["feat"]) as metadata_load,
+        patch("predict_upcoming._load_booster", return_value=fallback) as fallback_load,
+        patch("predict_upcoming._load_booster_by_arch", return_value=companion) as routed_load,
+        patch("predict_upcoming._load_xgb_etop2_booster", return_value=companion) as etop2_load,
+        patch("predict_upcoming.load_cell_router", return_value=router) as router_load,
+        patch(
+            "predict_upcoming.load_stage1_routing", return_value={"jra": stage1_config}
+        ) as stage1_routing_load,
+    ):
+        first = score_races(races, "jra", tmp_path)
+        second = score_races(races, "jra", tmp_path)
+
+    assert first == second
+    assert metadata_load.call_count == 1
+    assert fallback_load.call_count == 1
+    assert routed_load.call_count == 2
+    assert etop2_load.call_count == 1
+    assert router_load.call_count == 1
+    assert stage1_routing_load.call_count == 1
+
+
+def test_model_bundle_cache_separates_model_paths(tmp_path: Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    races = {"ban-ei:20260620:0620:83:01": _banei_entries()}
+
+    with (
+        patch("predict_upcoming._load_booster", return_value=fallback) as fallback_load,
+        patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        score_races(races, "ban-ei", first_dir, ["feat"])
+        score_races(races, "ban-ei", second_dir, ["feat"])
+
+    assert fallback_load.call_count == 2
+
+
+def test_model_bundle_cache_reloads_changed_artifact(tmp_path: Path) -> None:
+    marker = tmp_path / "artifact.bin"
+    marker.write_bytes(b"v1")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    races = {"ban-ei:20260620:0620:83:01": _banei_entries()}
+
+    with (
+        patch("predict_upcoming._load_booster", return_value=fallback) as fallback_load,
+        patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        score_races(races, "ban-ei", tmp_path, ["feat"])
+        marker.write_bytes(b"version-two")
+        score_races(races, "ban-ei", tmp_path, ["feat"])
+
+    assert fallback_load.call_count == 2
+
+
+def test_model_bundle_cache_serializes_concurrent_first_load(tmp_path: Path) -> None:
+    load_started = threading.Event()
+    release_load = threading.Event()
+    second_started = threading.Event()
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    races = {"ban-ei:20260620:0620:83:01": _banei_entries()}
+    results: list[list[list[list[object]]]] = []
+    errors: list[Exception] = []
+
+    def _blocking_load(models_dir: Path, category: Category) -> BoosterLike:
+        del models_dir, category
+        load_started.set()
+        if not release_load.wait(timeout=2):
+            raise RuntimeError("model-load test timed out")
+        return fallback
+
+    def _run_score(started: threading.Event | None = None) -> None:
+        if started is not None:
+            started.set()
+        try:
+            results.append(score_races(races, "ban-ei", tmp_path, ["feat"]))
+        except Exception as error:
+            errors.append(error)
+
+    with (
+        patch("predict_upcoming._load_booster", side_effect=_blocking_load) as fallback_load,
+        patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        first_thread = threading.Thread(target=_run_score)
+        second_thread = threading.Thread(target=_run_score, args=(second_started,))
+        first_thread.start()
+        assert load_started.wait(timeout=1)
+        second_thread.start()
+        assert second_started.wait(timeout=1)
+        release_load.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert len(results) == 2
+    assert fallback_load.call_count == 1
 
 
 def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) -> None:
@@ -3843,7 +4360,10 @@ def test_main_logs_serve_mode_before_binding(
             "predict_upcoming._make_predict_fn",
             return_value=(empty_fn, empty_payload, empty_payload, lambda params: None),
         ),
-        patch("predict_upcoming._make_rescore_factory", return_value=lambda scope: None),
+        patch(
+            "predict_upcoming._make_rescore_factory",
+            return_value=lambda scope, attestation: None,
+        ),
         patch(
             "predict_upcoming._make_focused_full_completion_fn", return_value=lambda params: False
         ),

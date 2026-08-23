@@ -22,8 +22,10 @@ import hashlib
 import hmac
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from .debug_log import debug_log
 from .serve import R2Config
@@ -34,6 +36,30 @@ _SIGNING_REGION: str = "auto"
 _REQUEST_TIMEOUT_SECONDS: float = 30.0
 _GET_METHOD: str = "GET"
 _HEAD_METHOD: str = "HEAD"
+
+
+@dataclass(frozen=True)
+class R2ObjectIdentity:
+    """Stable identity fields exposed by R2's S3-compatible HEAD response."""
+
+    etag: str
+    version: str
+
+
+R2ObjectWatermark = tuple[str, int, str, int]
+
+
+@dataclass(frozen=True)
+class R2ObjectHead:
+    """Identity and freshness metadata observed by one atomic HEAD request."""
+
+    identity: R2ObjectIdentity | None
+    watermark: R2ObjectWatermark | None
+
+
+class _HeaderLookup(Protocol):
+    def get(self, name: str, default: str | None = None) -> str | None: ...
+
 
 # Metadata key names as PUT by the Worker (container-ndjson-proxy.ts) --
 # surfaced back on GET/HEAD as ``x-amz-meta-{key}`` response headers per the
@@ -142,29 +168,35 @@ def r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
     return True
 
 
-def r2_head_watermark(r2: R2Config, object_key: str) -> tuple[str, int, str, int] | None:
-    """Return the day-base watermark from an R2 object's custom metadata via
-    a signed HEAD request (no body download), or ``None`` on ANY ambiguity --
-    missing object, network/auth failure, or a present object whose custom
-    metadata is missing/malformed (e.g. written by a container image from
-    before this metadata existed). Fail-closed, matching every other
-    watermark helper in this codebase
-    (``pipeline_runner._compute_source_watermark`` /
-    ``_compute_rs_watermark``) -- the caller must never trust an R2 day-base
-    it cannot positively verify as fresh.
-
-    Args:
-        r2:         R2 credentials and bucket name.
-        object_key: R2 object key (the day-base parquet's own key, per
-                    ``pipeline_runner.build_r2_day_base_key``).
-    """
-    req = _build_signed_request(r2=r2, object_key=object_key, method=_HEAD_METHOD)
+def r2_get_bytes(r2: R2Config, object_key: str, max_bytes: int) -> bytes | None:
+    """Return a bounded R2 body, or ``None`` when missing/oversized."""
+    if max_bytes <= 0:
+        return None
+    req = _build_signed_get_request(r2, object_key)
     try:
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
-            headers = resp.headers
-    except (TimeoutError, OSError, urllib.error.URLError) as exc:
-        debug_log(f"[r2-client] head watermark failed key={object_key} error={exc!r}")
+            data = resp.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return data if len(data) <= max_bytes else None
+
+
+def _identity_from_headers(headers: _HeaderLookup) -> R2ObjectIdentity | None:
+    """Parse an R2 identity from an email/http header mapping."""
+    etag_raw = headers.get("etag")
+    version = headers.get("x-amz-version-id") or ""
+    if etag_raw is None:
         return None
+    etag = etag_raw.strip().removeprefix("W/").strip('"')
+    if not etag:
+        return None
+    return R2ObjectIdentity(etag=etag, version=version)
+
+
+def _watermark_from_headers(headers: _HeaderLookup) -> R2ObjectWatermark | None:
+    """Parse custom day-base freshness metadata, failing closed."""
     max_updated = headers.get(_WATERMARK_META_MAX_UPDATED)
     row_count_raw = headers.get(_WATERMARK_META_ROW_COUNT)
     rs_predicted_at_max = headers.get(_WATERMARK_META_RS_PREDICTED_AT_MAX)
@@ -182,3 +214,44 @@ def r2_head_watermark(r2: R2Config, object_key: str) -> tuple[str, int, str, int
     except ValueError:
         return None
     return (max_updated, row_count, rs_predicted_at_max, rs_row_count)
+
+
+def r2_head_object(r2: R2Config, object_key: str) -> R2ObjectHead | None:
+    """Read identity and freshness metadata with one signed HEAD request."""
+    req = _build_signed_request(r2=r2, object_key=object_key, method=_HEAD_METHOD)
+    try:
+        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+            headers = resp.headers
+    except (TimeoutError, OSError, urllib.error.URLError) as exc:
+        debug_log(f"[r2-client] head failed key={object_key} error={exc!r}")
+        return None
+    return R2ObjectHead(
+        identity=_identity_from_headers(headers),
+        watermark=_watermark_from_headers(headers),
+    )
+
+
+def r2_head_identity(r2: R2Config, object_key: str) -> R2ObjectIdentity | None:
+    """Return the source object's ETag/version, failing closed on ambiguity."""
+    result = r2_head_object(r2, object_key)
+    return None if result is None else result.identity
+
+
+def r2_head_watermark(r2: R2Config, object_key: str) -> R2ObjectWatermark | None:
+    """Return the day-base watermark from an R2 object's custom metadata via
+    a signed HEAD request (no body download), or ``None`` on ANY ambiguity --
+    missing object, network/auth failure, or a present object whose custom
+    metadata is missing/malformed (e.g. written by a container image from
+    before this metadata existed). Fail-closed, matching every other
+    watermark helper in this codebase
+    (``pipeline_runner._compute_source_watermark`` /
+    ``_compute_rs_watermark``) -- the caller must never trust an R2 day-base
+    it cannot positively verify as fresh.
+
+    Args:
+        r2:         R2 credentials and bucket name.
+        object_key: R2 object key (the day-base parquet's own key, per
+                    ``pipeline_runner.build_r2_day_base_key``).
+    """
+    result = r2_head_object(r2, object_key)
+    return None if result is None else result.watermark

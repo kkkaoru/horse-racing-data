@@ -42,8 +42,10 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -58,15 +60,33 @@ from predict_lib.container_role import (
     predict_container_role,
 )
 from predict_lib.debug_log import debug_log, debug_logs_enabled, record_debug_progress
+from predict_lib.foundation_cache import (
+    FOUNDATION_MANIFEST_MAX_BYTES,
+    FOUNDATION_RACE_MAX_BYTES,
+    FoundationFeatureField,
+    build_foundation_manifest_key,
+    build_foundation_race_key,
+    build_foundation_source_key,
+    validate_foundation_objects,
+)
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
+    BABA_PEDIGREE_SCRIPT,
+    RELATIONSHIP_SCRIPT,
     build_base_argv,
     build_layer_argv,
     day_chain_for,
     layer_chain_for,
     race_chain_for,
 )
-from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
+from predict_lib.production_feature_usage import relationship_layer_is_provably_unused
+from predict_lib.r2_client import (
+    R2ObjectIdentity,
+    r2_get_bytes,
+    r2_get_parquet,
+    r2_head_object,
+    r2_head_watermark,
+)
 from predict_lib.rescore import RaceScope, race_matches_scope
 from predict_lib.serve import R2Config, build_r2_day_base_key, pipeline_total_timeout_seconds
 
@@ -95,6 +115,18 @@ _WATERMARK_R2_MISMATCH_REASON: Final[str] = "r2-watermark-mismatch"
 HIVE_PARQUET_GLOB: Final[str] = "race_year=*/*.parquet"
 HIVE_PARTITION_PREFIX: Final[str] = "race_year="
 HIVE_PARQUET_FILENAME: Final[str] = "features.parquet"
+_BABA_DAY_BASE_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra", "nar"})
+_BABA_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "horse_baba_career_starts",
+        "horse_baba_win_rate",
+        "sire_baba_career_starts",
+        "sire_baba_win_rate",
+        "damsire_baba_career_starts",
+        "damsire_baba_win_rate",
+        "sire_horse_baba_combined_score",
+    }
+)
 _YMD_YEAR_LENGTH: Final[int] = 4
 # jvd_se / nvd_se 取消・除外. Feature builder drops these; coverage must too.
 _IJO_KUBUN_SCRATCH: Final[str] = "1"
@@ -274,15 +306,19 @@ def record_layer_timing_row(
     elapsed_seconds: float,
     cumulative_elapsed_seconds: float,
 ) -> bool:
-    """Write one layer-timing row. Return True only after a successful commit.
+    """Write one debug layer-timing row. Return True after a successful commit.
 
     See the module-level comment above ``DEBUG_LAYER_TIMING_TABLE`` for why
     this exists. Never raises: a timing-table failure must not stop scoring.
-    A False return is a visible write failure, not a successful no-op.
+    Debug-disabled production requests return False before importing psycopg or
+    opening a Neon connection. A False return is therefore either an intentional
+    disabled no-op or a visible debug-write failure.
     2026-08-16: 48h of zero rows was a silent swallow on a read-only
     pooler session. Force ``SET TRANSACTION READ WRITE`` and refuse when
     ``SHOW transaction_read_only`` is not ``off``.
     """
+    if not debug_logs_enabled():
+        return False
     keibajo_code: str | None = None
     race_bango: str | None = None
     if target_race is not None and ":" in target_race:
@@ -1732,6 +1768,8 @@ def day_base_covers_entry_list(
     target_date: str,
     target_race: str,
     database_url: str,
+    *,
+    expected_entry_tokens: frozenset[str] | None = None,
 ) -> bool:
     """True when every CURRENT entrant of ``target_race`` appears in the day-base.
 
@@ -1759,17 +1797,19 @@ def day_base_covers_entry_list(
         if not _is_ymd_target_date(target_date):
             return False
         keibajo_code, race_bango = target_race.split(":", 1)
-        se_table = "jvd_se" if category == "jra" else "nvd_se"
-        year = target_date[:4]
-        # Interpolate the Iceberg date partition the same way
-        # ``_compute_source_watermark_outcome`` does. Bound ``?`` dates miss
-        # catalog rows, which made this check return False and fall through to
-        # full LAYER_CHAIN even when the day-base HIT. Scratch/exclude codes
-        # match ``finish_position_features_duckdb`` upcoming-entrant SQL so a
-        # 取消/除外 horse still in ``nvd_se`` cannot fail coverage.
-        source_rows = _query_source_rows(
-            database_url,
-            f"""
+        current_horses: set[str] | None = None
+        if expected_entry_tokens is None:
+            se_table = "jvd_se" if category == "jra" else "nvd_se"
+            year = target_date[:4]
+            # Interpolate the Iceberg date partition the same way
+            # ``_compute_source_watermark_outcome`` does. Bound ``?`` dates miss
+            # catalog rows, which made this check return False and fall through to
+            # full LAYER_CHAIN even when the day-base HIT. Scratch/exclude codes
+            # match ``finish_position_features_duckdb`` upcoming-entrant SQL so a
+            # 取消/除外 horse still in ``nvd_se`` cannot fail coverage.
+            source_rows = _query_source_rows(
+                database_url,
+                f"""
             select distinct ketto_toroku_bango
             from pg.{se_table}
             where kaisai_nen between '{year}' and '{year}'
@@ -1779,16 +1819,21 @@ def day_base_covers_entry_list(
               and coalesce(trim(ijo_kubun_code), '{_IJO_KUBUN_NORMAL_FALLBACK}')
                   not in ('{_IJO_KUBUN_SCRATCH}', '{_IJO_KUBUN_EXCLUDE}')
             """,
-            (keibajo_code, race_bango),
-        )
-        current_horses = {str(row[0]).strip() for row in source_rows if row[0]}
-        if not current_horses:
+                (keibajo_code, race_bango),
+            )
+            current_horses = {str(row[0]).strip() for row in source_rows if row[0]}
+            if not current_horses:
+                return False
+        elif not expected_entry_tokens:
             return False
         glob_path = str(day_base_dir / "**" / "*.parquet")
+        selected_columns = (
+            "ketto_toroku_bango" if expected_entry_tokens is None else "ketto_toroku_bango, umaban"
+        )
         con = duckdb.connect(":memory:")
         try:
             rows = con.execute(
-                "SELECT DISTINCT ketto_toroku_bango FROM "
+                f"SELECT DISTINCT {selected_columns} FROM "
                 "read_parquet(?, hive_partitioning = false) "
                 "WHERE split_part(race_id, ':', ?) = ? AND split_part(race_id, ':', ?) = ?",
                 [
@@ -1802,7 +1847,14 @@ def day_base_covers_entry_list(
         finally:
             con.close()
         day_base_horses = {str(row[0]).strip() for row in rows if row[0]}
-        return current_horses.issubset(day_base_horses)
+        if expected_entry_tokens is None:
+            return current_horses is not None and current_horses.issubset(day_base_horses)
+        day_base_tokens = {
+            f"{str(row[0]).strip()}:{int(str(row[1]).strip())}"
+            for row in rows
+            if row[0] is not None and row[1] is not None
+        }
+        return frozenset(day_base_tokens) == expected_entry_tokens
     except Exception as exc:
         debug_log(f"[day-base] entry-list drift check failed target_race={target_race} error={exc}")
         return False
@@ -1846,7 +1898,7 @@ def build_pipeline_from_day_base(
     del days_ahead, realtime_odds_path, venue_weather_dir
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     _reset_category_work_dirs(category, final_dir)
-    chain = race_chain_for(category)
+    chain = _race_chain_for_day_base(category, day_base_dir)
     run_id = f"{category}:{target_date}:{target_race}:racechain:{uuid.uuid4().hex[:8]}"
     run_start = perf_counter()
     current = day_base_dir
@@ -1919,6 +1971,299 @@ def build_pipeline_from_day_base(
     return True
 
 
+def _day_base_has_baba_features(day_base_dir: Path) -> bool:
+    """Return whether a day-base carries the complete baba feature contract."""
+    import duckdb
+
+    glob_path = str(day_base_dir / HIVE_PARQUET_GLOB)
+    connection = duckdb.connect(":memory:")
+    try:
+        cursor = connection.execute(
+            "SELECT * FROM read_parquet(?, hive_partitioning = false) LIMIT 0",
+            [glob_path],
+        )
+        columns = {description[0] for description in cursor.description}
+        return _BABA_DAY_BASE_COLUMNS.issubset(columns)
+    except duckdb.Error as exc:
+        debug_log(f"[day-base] baba contract inspection failed path={day_base_dir} error={exc}")
+        return False
+    finally:
+        connection.close()
+
+
+def _race_chain_for_day_base(category: Category, day_base_dir: Path) -> Sequence[str]:
+    """Keep legacy day-base objects compatible after baba moves to DAY_CHAIN.
+
+    Catalog-v1 objects produced by an older image have no baba columns. For
+    JRA/NAR only, restore that one layer at its original full-chain position;
+    freshly prewarmed objects skip it. Ban-ei still owns baba in RACE_CHAIN and
+    needs no compatibility inspection.
+    """
+    chain = tuple(race_chain_for(category))
+    models_dir = Path(os.environ.get("MODELS_DIR", "/models"))
+    if RELATIONSHIP_SCRIPT in chain and relationship_layer_is_provably_unused(
+        category, artifact_root=models_dir
+    ):
+        chain = tuple(script for script in chain if script != RELATIONSHIP_SCRIPT)
+        _log_pipeline_progress(
+            f"step=racechain-layer status=skipped category={category} "
+            f"script={RELATIONSHIP_SCRIPT} reason=unused-by-selected-models"
+        )
+    if category not in _BABA_DAY_BASE_CATEGORIES:
+        return chain
+    if _day_base_has_baba_features(day_base_dir):
+        return chain
+    selected = set(chain)
+    selected.add(BABA_PEDIGREE_SCRIPT)
+    compatibility_chain = tuple(
+        script for script in layer_chain_for(category) if script in selected
+    )
+    _log_pipeline_progress(
+        f"step=daybase-compat category={category} reason=baba-columns-missing "
+        f"fallback_script={BABA_PEDIGREE_SCRIPT}"
+    )
+    return compatibility_chain
+
+
+@dataclass(frozen=True, slots=True)
+class FoundationReadinessSnapshot:
+    """Immutable evidence used for one foundation HIT and its coverage gate."""
+
+    expected_entries: frozenset[str]
+    live_watermark: DayBaseWatermark
+    source_identity: R2ObjectIdentity
+
+
+def _catalog_foundation_readiness(
+    category: Category,
+    target_date: str,
+    target_race: str,
+    database_url: str,
+) -> tuple[frozenset[str], tuple[str, int]] | None:
+    """Read the day's source watermark and exact race entrants in one query."""
+    try:
+        if not _is_ymd_target_date(target_date):
+            return None
+        keibajo_code, race_bango = target_race.split(":", 1)
+        if not (keibajo_code.isdigit() and race_bango.isdigit()):
+            return None
+        se_table, keibajo_filter = _se_table_and_filter(category)
+        year = target_date[:4]
+        rows = _query_source_rows(
+            database_url,
+            f"""
+            with day_rows as materialized (
+              select data_sakusei_nengappi, ketto_toroku_bango, umaban,
+                     keibajo_code, race_bango, ijo_kubun_code
+              from pg.{se_table}
+              where kaisai_nen between '{year}' and '{year}'
+                and (kaisai_nen || kaisai_tsukihi)
+                    between '{target_date}' and '{target_date}'
+                and {keibajo_filter}
+            ), source_summary as (
+              select max(data_sakusei_nengappi) as max_updated, count(*) as row_count
+              from day_rows
+            ), target_entries as (
+              select distinct ketto_toroku_bango, umaban
+              from day_rows
+              where keibajo_code = ? and race_bango = ?
+                and ketto_toroku_bango is not null and umaban is not null
+                and coalesce(trim(ijo_kubun_code), '{_IJO_KUBUN_NORMAL_FALLBACK}')
+                    not in ('{_IJO_KUBUN_SCRATCH}', '{_IJO_KUBUN_EXCLUDE}')
+            )
+            select source_summary.max_updated, source_summary.row_count,
+                   target_entries.ketto_toroku_bango, target_entries.umaban
+            from source_summary
+            left join target_entries on true
+            """,
+            (keibajo_code, race_bango),
+        )
+        if not rows or not rows[0][1]:
+            return None
+        max_updated, row_count = rows[0][0], rows[0][1]
+        count_value = row_count if isinstance(row_count, int) else int(str(row_count))
+        max_token = _ABSENT_WATERMARK_TOKEN
+        if max_updated is not None and str(max_updated).strip():
+            max_token = str(max_updated).strip()
+        tokens: set[str] = set()
+        for row in rows:
+            ketto, umaban = row[2], row[3]
+            if ketto is None or umaban is None:
+                continue
+            ketto_text = str(ketto).strip()
+            umaban_text = str(umaban).strip()
+            if not ketto_text or not umaban_text.isascii() or not umaban_text.isdigit():
+                return None
+            number = int(umaban_text)
+            if number <= 0:
+                return None
+            token = f"{ketto_text}:{number}"
+            if token in tokens:
+                return None
+            tokens.add(token)
+        if not tokens:
+            return None
+        return frozenset(tokens), (max_token, count_value)
+    except Exception as exc:
+        debug_log(
+            f"[foundation] readiness query failed category={category} "
+            f"target_race={target_race} error={exc}"
+        )
+        return None
+
+
+def _foundation_readiness_snapshot(
+    *,
+    category: Category,
+    target_date: str,
+    target_race: str,
+    database_url: str,
+    r2_config: R2Config | None,
+) -> FoundationReadinessSnapshot | None:
+    """Capture Catalog, RS and source-object evidence once, failing closed."""
+    if r2_config is None or not is_catalog_source_url(database_url):
+        return None
+    catalog = _catalog_foundation_readiness(category, target_date, target_race, database_url)
+    if catalog is None:
+        return None
+    running_style = _compute_rs_watermark(category, target_date, r2_config)
+    live_watermark = _combine_watermarks(catalog[1], running_style)
+    if live_watermark is None:
+        return None
+    source_key = build_foundation_source_key(category, target_date)
+    source_head = r2_head_object(r2_config, source_key)
+    if (
+        source_head is None
+        or source_head.watermark != live_watermark
+        or source_head.identity is None
+    ):
+        return None
+    return FoundationReadinessSnapshot(
+        expected_entries=catalog[0],
+        live_watermark=live_watermark,
+        source_identity=source_head.identity,
+    )
+
+
+def _foundation_arrow_type(field: FoundationFeatureField) -> object:
+    """Map the Worker's Parquet schema contract back to a PyArrow type."""
+    import pyarrow as pa
+
+    physical = field.physical_type
+    converted = field.converted_type
+    if converted == "UTF8":
+        return pa.string()
+    if converted == "DATE":
+        return pa.date32()
+    if converted == "TIMESTAMP_MILLIS":
+        return pa.timestamp("ms")
+    if converted == "TIMESTAMP_MICROS":
+        return pa.timestamp("us")
+    if converted == "DECIMAL":
+        precision = field.precision
+        scale = field.scale
+        if not isinstance(precision, int) or not isinstance(scale, int):
+            raise ValueError("decimal schema is incomplete")
+        return pa.decimal128(precision, scale)
+    types = {
+        "BOOLEAN": pa.bool_(),
+        "BYTE_ARRAY": pa.binary(),
+        "DOUBLE": pa.float64(),
+        "FLOAT": pa.float32(),
+        "INT32": pa.int32(),
+        "INT64": pa.int64(),
+        "INT96": pa.timestamp("ns"),
+    }
+    if physical == "FIXED_LEN_BYTE_ARRAY":
+        type_length = field.type_length
+        if not isinstance(type_length, int) or type_length <= 0:
+            raise ValueError("fixed binary schema is incomplete")
+        return pa.binary(type_length)
+    if physical not in types:
+        raise ValueError(f"unsupported physical type: {physical}")
+    return types[physical]
+
+
+def _materialize_r2_race_foundation(
+    *,
+    category: Category,
+    target_date: str,
+    target_race: str,
+    database_url: str,
+    r2_config: R2Config | None,
+    readiness: FoundationReadinessSnapshot | None = None,
+) -> Path | None:
+    """Restore an exact-race typed foundation, returning ``None`` on any gap."""
+    if r2_config is None or not is_catalog_source_url(database_url):
+        return None
+    snapshot = readiness or _foundation_readiness_snapshot(
+        category=category,
+        target_date=target_date,
+        target_race=target_race,
+        database_url=database_url,
+        r2_config=r2_config,
+    )
+    if snapshot is None:
+        return None
+    venue_code, race_number = target_race.split(":", 1)
+    manifest_key = build_foundation_manifest_key(category, target_date)
+    race_key = build_foundation_race_key(category, target_date, venue_code, race_number)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="foundation-r2") as executor:
+        manifest_future = executor.submit(
+            r2_get_bytes, r2_config, manifest_key, FOUNDATION_MANIFEST_MAX_BYTES
+        )
+        race_future = executor.submit(r2_get_bytes, r2_config, race_key, FOUNDATION_RACE_MAX_BYTES)
+        manifest_bytes = manifest_future.result()
+        race_bytes = race_future.result()
+    if manifest_bytes is None or race_bytes is None:
+        return None
+    result = validate_foundation_objects(
+        category=category,
+        target_date=target_date,
+        target_race=target_race,
+        manifest_bytes=manifest_bytes,
+        race_bytes=race_bytes,
+        source_identity=snapshot.source_identity,
+        expected_entries=snapshot.expected_entries,
+    )
+    if result.rows is None or result.schema is None:
+        debug_log(
+            f"[foundation] MISS category={category} target_date={target_date} "
+            f"target_race={target_race} reason={result.reason}"
+        )
+        return None
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        safe_race = f"{venue_code.zfill(2)}-{race_number.zfill(2)}"
+        foundation_dir = WORK_DIR / f"foundation-{category}-{target_date}-{safe_race}"
+        final_dir = foundation_dir / "final"
+        shutil.rmtree(foundation_dir, ignore_errors=True)
+        dest = r2_day_base_dest_path(final_dir, target_date)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        schema = pa.schema(
+            [pa.field(field.name, _foundation_arrow_type(field)) for field in result.schema]
+        )
+        table = pa.Table.from_pylist(list(result.rows), schema=schema)
+        pq.write_table(table, dest)
+        if not has_parquet_output(final_dir):
+            return None
+        _log_day_base_hit(
+            category=category,
+            target_date=target_date,
+            source="r2-race-foundation",
+            reason="contract-match",
+        )
+        return final_dir
+    except Exception as exc:
+        debug_log(
+            f"[foundation] materialize failed category={category} target_race={target_race} "
+            f"error={exc}"
+        )
+        return None
+
+
 def build_upcoming_feature_rows_split(
     category: Category,
     target_date: str,
@@ -1953,7 +2298,26 @@ def build_upcoming_feature_rows_split(
     """
     role = predict_container_role()
     try:
-        day_base_dir = ensure_day_base(category, target_date, days_ahead, database_url, r2_config)
+        foundation_readiness = _foundation_readiness_snapshot(
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            database_url=database_url,
+            r2_config=r2_config,
+        )
+        day_base_dir = _materialize_r2_race_foundation(
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            database_url=database_url,
+            r2_config=r2_config,
+            readiness=foundation_readiness,
+        )
+        foundation_hit = day_base_dir is not None
+        if day_base_dir is None:
+            day_base_dir = ensure_day_base(
+                category, target_date, days_ahead, database_url, r2_config
+            )
         if day_base_dir is None:
             if role is PredictContainerRole.RACE_CHAIN:
                 raise DayBaseRequiredError(
@@ -1968,9 +2332,25 @@ def build_upcoming_feature_rows_split(
             )
         if day_base_dir is None:
             return None
-        if not day_base_covers_entry_list(
-            day_base_dir, category, target_date, target_race, database_url
-        ):
+        expected_entry_tokens = (
+            foundation_readiness.expected_entries
+            if foundation_hit and foundation_readiness is not None
+            else None
+        )
+        if expected_entry_tokens is None:
+            covers_entry_list = day_base_covers_entry_list(
+                day_base_dir, category, target_date, target_race, database_url
+            )
+        else:
+            covers_entry_list = day_base_covers_entry_list(
+                day_base_dir,
+                category,
+                target_date,
+                target_race,
+                database_url,
+                expected_entry_tokens=expected_entry_tokens,
+            )
+        if not covers_entry_list:
             if role is PredictContainerRole.RACE_CHAIN:
                 raise DayBaseRequiredError(
                     f"entry-list drift category={category} target_date={target_date} "
@@ -2006,8 +2386,17 @@ def build_upcoming_feature_rows_split(
             f"target_race={target_race} error={exc}"
         )
         if role is PredictContainerRole.RACE_CHAIN:
+            safe_error = mask_pg_url(str(exc)) or "<empty>"
+            frames = traceback.extract_tb(exc.__traceback__)
+            origin = frames[-1] if frames else None
+            origin_text = (
+                f"{Path(origin.filename).name}:{origin.lineno}:{origin.name}"
+                if origin is not None
+                else "unknown"
+            )
             raise DayBaseRequiredError(
                 f"race-chain error category={category} target_date={target_date} "
-                f"target_race={target_race}: {type(exc).__name__}"
+                f"target_race={target_race}: {type(exc).__name__}: {safe_error} "
+                f"origin={origin_text}"
             ) from exc
         return None

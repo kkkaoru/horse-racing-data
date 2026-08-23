@@ -77,29 +77,43 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
-def stage_target_entities(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
-    """Stage horses, jockeys, sires and damsires for the scoped input parquet."""
-    con.execute(
-        f"""
-        create or replace temp table target_entities as
-        with target_base as (
-          select distinct
-            b.source,
-            b.kaisai_nen,
-            b.kaisai_tsukihi,
-            b.keibajo_code,
-            b.race_bango,
-            b.ketto_toroku_bango
-          from read_parquet('{input_glob}', hive_partitioning=true) b
-          where b.ketto_toroku_bango is not null
-        )
-        select distinct
-          b.source,
-          b.ketto_toroku_bango,
-          nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
-          hp.sire_id,
-          hp.damsire_id
-        from target_base b
+def stage_target_entities(
+    con: duckdb.DuckDBPyConnection,
+    input_glob: str,
+    raw_catalog: bool = False,
+) -> None:
+    """Stage the scoped target context and its history-filter entities.
+
+    ``target_current`` is the single focused current-row Catalog lookup. Both
+    ``target_entities`` (history pushdown) and ``target_context`` (current race
+    feature context) are derived from it so the latter does not repeat the
+    same external join.
+    """
+    jockey_select = (
+        "coalesce(nullif(trim(jra_se.kishumei_ryakusho), ''), "
+        "nullif(trim(nar_se.kishumei_ryakusho), ''))"
+        if raw_catalog
+        else "nullif(trim(rec.kishumei_ryakusho), '')"
+    )
+    current_join = (
+        """
+        left join pg.jvd_se jra_se
+          on b.source = 'jra'
+          and jra_se.kaisai_nen = b.kaisai_nen
+          and jra_se.kaisai_tsukihi = b.kaisai_tsukihi
+          and jra_se.keibajo_code = b.keibajo_code
+          and jra_se.race_bango = b.race_bango
+          and jra_se.ketto_toroku_bango = b.ketto_toroku_bango
+        left join pg.nvd_se nar_se
+          on b.source = 'nar'
+          and nar_se.kaisai_nen = b.kaisai_nen
+          and nar_se.kaisai_tsukihi = b.kaisai_tsukihi
+          and nar_se.keibajo_code = b.keibajo_code
+          and nar_se.race_bango = b.race_bango
+          and nar_se.ketto_toroku_bango = b.ketto_toroku_bango
+        """
+        if raw_catalog
+        else """
         left join pg.race_entry_corner_features rec
           on rec.source = b.source
           and rec.kaisai_nen = b.kaisai_nen
@@ -107,8 +121,52 @@ def stage_target_entities(con: duckdb.DuckDBPyConnection, input_glob: str) -> No
           and rec.keibajo_code = b.keibajo_code
           and rec.race_bango = b.race_bango
           and rec.ketto_toroku_bango = b.ketto_toroku_bango
+        """
+    )
+    con.execute(
+        f"""
+        create or replace temp table target_current as
+        with target_base as (
+          select distinct
+            b.source,
+            b.race_date,
+            b.kaisai_nen,
+            b.kaisai_tsukihi,
+            b.keibajo_code,
+            b.race_bango,
+            b.ketto_toroku_bango,
+            b.kyori,
+            b.track_code,
+            b.grade_code
+          from read_parquet('{input_glob}', hive_partitioning=true) b
+          where b.ketto_toroku_bango is not null
+        )
+        select distinct
+          b.source,
+          b.race_date,
+          b.kaisai_nen,
+          b.kaisai_tsukihi,
+          b.keibajo_code,
+          b.race_bango,
+          b.ketto_toroku_bango,
+          b.kyori,
+          b.track_code,
+          b.grade_code,
+          {jockey_select} as kishumei_ryakusho,
+          hp.sire_id,
+          hp.damsire_id
+        from target_base b
+        {current_join}
         left join horse_pedigree hp
           on hp.ketto_toroku_bango = b.ketto_toroku_bango
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table target_entities as
+        select distinct source, ketto_toroku_bango, kishumei_ryakusho,
+                        sire_id, damsire_id
+        from target_current
         """
     )
     con.execute(
@@ -125,6 +183,7 @@ def race_history_focus_filter_sql(focused_target: bool) -> str:
     if not focused_target:
         return ""
     return """
+          and rec.source in (select distinct source from target_entities)
           and (
             exists (
               select 1 from target_entities te
@@ -153,9 +212,19 @@ def race_history_focus_filter_sql(focused_target: bool) -> str:
 
 
 def stage_race_history(
-    con: duckdb.DuckDBPyConnection, from_date: str, focused_target: bool = False
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    focused_target: bool = False,
+    raw_catalog: bool = False,
 ) -> None:
     """過去レースの finish_position / time_sa / tansho_odds / ninkijun / kishumei を staging。"""
+    if focused_target and raw_catalog:
+        source_rows = con.execute(
+            "select distinct source from target_entities order by source"
+        ).fetchall()
+        target_sources = frozenset(str(row[0]) for row in source_rows)
+        con.execute(raw_catalog_race_history_sql(from_date, target_sources))
+        return
     target_filter = race_history_focus_filter_sql(focused_target)
     con.execute(
         f"""
@@ -179,10 +248,108 @@ def stage_race_history(
           rec.grade_code
         from pg.race_entry_corner_features rec
         where rec.race_date >= '{from_date}'
+          and rec.kaisai_nen >= substring('{from_date}', 1, 4)
           and rec.finish_position is not null
           {target_filter}
         """
     )
+
+
+def raw_catalog_race_history_sql(
+    from_date: str,
+    target_sources: frozenset[str] = frozenset({"jra", "nar"}),
+) -> str:
+    """Build focused history directly from raw R2 Catalog SE/RA tables.
+
+    The compatibility view computes a union and field-size aggregation across
+    the entire archive before outer predicates can reliably prune it. This
+    query puts source, year, target-date, settlement and target-entity
+    predicates inside each Iceberg branch.
+
+    Focused history is always strictly older than ``target_current``. The
+    odds, popularity and field-size columns are only consumed by the exact
+    current-race metadata join in ``append_features_sql``, so they cannot match
+    any row staged here. Emit typed NULLs instead of running the old correlated
+    field-size count against SE once per historical row.
+    """
+
+    def branch(source: str, se_table: str, ra_table: str) -> str:
+        return f"""
+          select
+            '{source}' as source,
+            se.kaisai_nen || se.kaisai_tsukihi as race_date,
+            se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+            se.ketto_toroku_bango,
+            se.kishumei_ryakusho,
+            try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+              as finish_position,
+            try_cast(nullif(trim(se.time_sa), '0000') as double) / 10 as time_sa,
+            cast(null as double) as tansho_odds,
+            cast(null as integer) as tansho_ninkijun,
+            cast(null as integer) as shusso_tosu,
+            try_cast(nullif(trim(ra.kyori), '') as integer) as kyori,
+            ra.track_code,
+            ra.grade_code
+          from pg.{se_table} se
+          inner join pg.{ra_table} ra
+            using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+          where se.kaisai_nen >= substring('{from_date}', 1, 4)
+            and se.kaisai_nen || se.kaisai_tsukihi >= '{from_date}'
+            and se.kaisai_nen || se.kaisai_tsukihi
+                < (select max(race_date) from target_current)
+            and try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+                is not null
+            and try_cast(nullif(trim(se.umaban), '') as integer) is not null
+            and try_cast(nullif(trim(ra.kyori), '') as integer) is not null
+            and exists (
+              select 1 from target_entities te where te.source = '{source}'
+            )
+            and (
+              exists (
+                select 1 from target_entities te
+                where te.source = '{source}'
+                  and te.ketto_toroku_bango = se.ketto_toroku_bango
+              )
+              or exists (
+                select 1 from target_entities te
+                where te.source = '{source}'
+                  and te.kishumei_ryakusho is not null
+                  and te.kishumei_ryakusho = nullif(trim(se.kishumei_ryakusho), '')
+              )
+              or exists (
+                select 1
+                from horse_pedigree hp
+                join target_entities te
+                  on te.source = '{source}'
+                  and (
+                    (te.sire_id is not null and te.sire_id = hp.sire_id)
+                    or (te.damsire_id is not null and te.damsire_id = hp.damsire_id)
+                  )
+                where hp.ketto_toroku_bango = se.ketto_toroku_bango
+              )
+            )
+        """
+
+    selected_branches = (
+        [branch("jra", "jvd_se", "jvd_ra")] if "jra" in target_sources else []
+    )
+    if "nar" in target_sources:
+        selected_branches.append(branch("nar", "nvd_se", "nvd_ra"))
+    if not selected_branches:
+        selected_branches = [
+            branch("jra", "jvd_se", "jvd_ra"),
+            branch("nar", "nvd_se", "nvd_ra"),
+        ]
+    focused_raw_sql = "\n          union all\n".join(selected_branches)
+    return f"""
+        create or replace temp table race_history as
+        with focused_raw as (
+          {focused_raw_sql}
+        )
+        select rec.*
+        from focused_raw rec
+        where rec.finish_position is not null
+        """
 
 
 def stage_horse_near_miss(con: duckdb.DuckDBPyConnection) -> None:
@@ -242,7 +409,7 @@ def stage_horse_near_miss(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def stage_target_context(
-    con: duckdb.DuckDBPyConnection, input_glob: str, focused_target: bool
+    con: duckdb.DuckDBPyConnection, _input_glob: str, focused_target: bool
 ) -> None:
     """Stage the target race's OWN key/context (curr), independent of settlement.
 
@@ -255,43 +422,27 @@ def stage_target_context(
     instead of an honest zero-support value.
 
     target_context resolves curr independently of settlement:
-      - focused (serve): the base parquet's own rows already carry
+      - focused (serve): ``stage_target_entities`` already materialized the
+        base parquet's own rows plus the exact current-row Catalog lookup as
+        ``target_current``. Reuse that table directly. The base rows carry
         kaisai_nen/kaisai_tsukihi/keibajo_code/race_bango/kyori/track_code
         (result-independent, always populated -- see
         finish_position_features_duckdb.py::base_features_select_sql), but
-        NOT the assigned jockey. The exact target-row jockey (and pedigree
-        ids) are resolved via a narrow point lookup against
-        pg.race_entry_corner_features scoped to the exact target race keys
-        already present in the input parquet -- the same small-cardinality,
-        unfiltered-by-settlement pattern stage_target_entities already relies
-        on against the SAME table. This is not a second *historical* scan:
-        cardinality is bounded by the number of target rows, not a date-range
-        scan, and it mirrors precedent already shipped in this file.
+        NOT the assigned jockey. ``target_current`` resolved that jockey and
+        the pedigree ids once, without a settlement filter.
       - offline (bulk/non-focused): race_history IS the exact current row set
         (already staged by stage_race_history, finished-only by construction)
         -- reused directly, no new PostgreSQL query.
     """
     if focused_target:
         con.execute(
-            f"""
+            """
             create or replace temp table target_context as
-            select distinct
-              b.source, b.race_date, b.kaisai_nen, b.kaisai_tsukihi,
-              b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
-              b.kyori, b.track_code, b.grade_code,
-              nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
-              hp.sire_id, hp.damsire_id
-            from read_parquet('{input_glob}', hive_partitioning=true) b
-            left join pg.race_entry_corner_features rec
-              on rec.source = b.source
-              and rec.kaisai_nen = b.kaisai_nen
-              and rec.kaisai_tsukihi = b.kaisai_tsukihi
-              and rec.keibajo_code = b.keibajo_code
-              and rec.race_bango = b.race_bango
-              and rec.ketto_toroku_bango = b.ketto_toroku_bango
-            left join horse_pedigree hp
-              on hp.ketto_toroku_bango = b.ketto_toroku_bango
-            where b.ketto_toroku_bango is not null
+            select source, race_date, kaisai_nen, kaisai_tsukihi,
+                   keibajo_code, race_bango, ketto_toroku_bango,
+                   kyori, track_code, grade_code, kishumei_ryakusho,
+                   sire_id, damsire_id
+            from target_current
             """
         )
     else:
@@ -916,9 +1067,11 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_horse_pedigree(con)
-    if args.target_race is not None:
-        stage_target_entities(con, input_glob)
-    stage_race_history(con, args.from_date, args.target_race is not None)
+    focused_target = args.target_race is not None
+    raw_catalog = focused_target and args.pg_url.startswith("r2-catalog://")
+    if focused_target:
+        stage_target_entities(con, input_glob, raw_catalog)
+    stage_race_history(con, args.from_date, focused_target, raw_catalog)
     stage_horse_near_miss(con)
     stage_target_context(con, input_glob, args.target_race is not None)
     stage_horse_context(con)

@@ -80,13 +80,16 @@ def _seed_base_parquet(parquet_dir: Path) -> str:
         select * from (
           values
             ('nar', '2025', '0415', '54', '11', 'horse_a', '20250415', 2025,
-              'JOCKEY_A'::varchar, 1::integer, 12::integer, 3.0::double),
+              'JOCKEY_A'::varchar, 1::integer, 12::integer, 3.0::double,
+              1200::integer, '1'::varchar, 'C'::varchar),
             ('nar', '2025', '0415', '54', '11', 'horse_b', '20250415', 2025,
-              'JOCKEY_B'::varchar, 2::integer, 12::integer, 6.0::double)
+              'JOCKEY_B'::varchar, 2::integer, 12::integer, 6.0::double,
+              1200::integer, '1'::varchar, 'C'::varchar)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, race_date, race_year,
-          kishumei_ryakusho, tansho_ninkijun, shusso_tosu, tansho_odds
+          kishumei_ryakusho, tansho_ninkijun, shusso_tosu, tansho_odds,
+          kyori, track_code, grade_code
         )
         """
     )
@@ -107,12 +110,12 @@ def _seed_base_parquet_without_jockey(parquet_dir: Path) -> str:
         select * from (
           values
             ('nar', '2025', '0415', '35', '01', 'horse_a', '20250415', 2025,
-              1200::integer, '1'::varchar),
+              1200::integer, '1'::varchar, 'C'::varchar),
             ('nar', '2025', '0415', '35', '01', 'horse_b', '20250415', 2025,
-              1200::integer, '1'::varchar)
+              1200::integer, '1'::varchar, 'C'::varchar)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          ketto_toroku_bango, race_date, race_year, kyori, track_code
+          ketto_toroku_bango, race_date, race_year, kyori, track_code, grade_code
         )
         """
     )
@@ -487,6 +490,7 @@ def test_race_history_focus_filter_sql_unfocused_is_empty() -> None:
 def test_race_history_focus_filter_sql_uses_target_entities_and_pedigree() -> None:
     sql = subject.race_history_focus_filter_sql(True)
     assert "target_entities" in sql
+    assert "rec.source in (select distinct source from target_entities)" in sql
     assert "rec.ketto_toroku_bango" in sql
     assert "rec.kishumei_ryakusho" in sql
     assert "horse_pedigree" in sql
@@ -500,7 +504,152 @@ def test_stage_race_history_focused_appends_entity_filter() -> None:
     body = " ".join(conn.statements)
     assert "from pg.race_entry_corner_features rec" in body
     assert "rec.race_date >= '20240101'" in body
+    assert "rec.kaisai_nen >= substring('20240101', 1, 4)" in body
+    assert "rec.source in (select distinct source from target_entities)" in body
     assert "target_entities" in body
+
+
+def test_raw_catalog_race_history_sql_pushes_filters_into_source_branches() -> None:
+    sql = subject.raw_catalog_race_history_sql("20100101")
+    assert "from pg.jvd_se se" in sql
+    assert "from pg.nvd_se se" in sql
+    assert sql.count("se.kaisai_nen >= substring('20100101', 1, 4)") == 2
+    assert sql.count("< (select max(race_date) from target_current)") == 2
+    assert sql.count("te.ketto_toroku_bango = se.ketto_toroku_bango") == 2
+    assert sql.count("nullif(trim(se.kishumei_ryakusho), '')") == 2
+    assert sql.count("hp.ketto_toroku_bango = se.ketto_toroku_bango") == 2
+    assert "from pg.race_entry_corner_features" not in sql
+    assert "count_se" not in sql
+    assert sql.count("cast(null as integer) as shusso_tosu") == 2
+
+
+def test_raw_catalog_race_history_sql_only_reads_target_source_branch() -> None:
+    jra_sql = subject.raw_catalog_race_history_sql("20100101", frozenset({"jra"}))
+    nar_sql = subject.raw_catalog_race_history_sql("20100101", frozenset({"nar"}))
+
+    assert "from pg.jvd_se se" in jra_sql
+    assert "from pg.nvd_se se" not in jra_sql
+    assert "from pg.nvd_se se" in nar_sql
+    assert "from pg.jvd_se se" not in nar_sql
+
+
+def test_raw_catalog_race_history_sql_empty_source_scope_is_fail_safe() -> None:
+    sql = subject.raw_catalog_race_history_sql("20100101", frozenset())
+
+    assert "from pg.jvd_se se" in sql
+    assert "from pg.nvd_se se" in sql
+
+
+def test_stage_race_history_raw_catalog_filters_entities_and_future_rows() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se as
+        select * from (
+          values
+            ('2024','0101','06','01','target','01','01','0010','0030','J0'),
+            ('2024','0102','06','02','jockey_horse','02','02','0020','0040','J1'),
+            ('2024','0103','06','03','sire_child','03','02','0030','0050','J2'),
+            ('2024','0104','06','04','irrelevant','04','01','0040','0060','J3'),
+            ('2024','0201','06','05','target','01','00','0000','0000','J1'),
+            ('2024','0202','06','06','target','01','01','0010','0030','J1')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, umaban, kakutei_chakujun,
+               time_sa, tansho_odds, kishumei_ryakusho)
+        """
+    )
+    con.execute("alter table pg.jvd_se add column tansho_ninkijun varchar default '01'")
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               '04'::varchar as shusso_tosu, '1600'::varchar as kyori,
+               '1'::varchar as track_code, 'A'::varchar as grade_code
+        from pg.jvd_se
+        """
+    )
+    con.execute("create table pg.nvd_se as select * from pg.jvd_se where false")
+    con.execute("create table pg.nvd_ra as select * from pg.jvd_ra where false")
+    con.execute(
+        """
+        create temp table target_current as
+        select '20240201'::varchar as race_date
+        """
+    )
+    con.execute(
+        """
+        create temp table target_entities as
+        select 'jra'::varchar as source, 'target'::varchar as ketto_toroku_bango,
+               'J1'::varchar as kishumei_ryakusho, 'sire_x'::varchar as sire_id,
+               cast(null as varchar) as damsire_id
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (
+          values
+            ('target', 'sire_x', null),
+            ('jockey_horse', 'sire_y', null),
+            ('sire_child', 'sire_x', null),
+            ('irrelevant', 'sire_z', null)
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+
+    subject.stage_race_history(con, "20100101", True, True)
+    rows = con.execute(
+        "select ketto_toroku_bango from race_history order by race_date"
+    ).fetchall()
+    con.close()
+
+    assert rows == [("target",), ("jockey_horse",), ("sire_child",)]
+
+
+def test_stage_target_entities_raw_catalog_reads_jockey_from_se(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_base_parquet_without_jockey(tmp_path / "input")
+    _seed_pg_race_entry_corner_features(con)
+    con.execute(
+        """
+        create table pg.jvd_se(
+          kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
+          race_bango varchar, ketto_toroku_bango varchar,
+          kishumei_ryakusho varchar
+        )
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from (
+          values
+            ('2025','0415','35','01','horse_a',' RAW_JOCKEY_A '),
+            ('2025','0415','35','01','horse_b','RAW_JOCKEY_B')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho)
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (
+          values ('horse_a', 'sire_a', 'dam_a'), ('horse_b', 'sire_b', 'dam_b')
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+
+    subject.stage_target_entities(con, input_glob, True)
+    rows = con.execute(
+        "select ketto_toroku_bango, kishumei_ryakusho "
+        "from target_entities order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+
+    assert rows == [("horse_a", "RAW_JOCKEY_A"), ("horse_b", "RAW_JOCKEY_B")]
 
 
 def test_stage_target_entities_extracts_input_horse_jockey_and_pedigree(
@@ -595,7 +744,7 @@ def test_stage_target_context_offline_reuses_race_history_no_new_pg_scan() -> No
     assert "read_parquet" not in body
 
 
-def test_stage_target_context_focused_uses_scoped_point_lookup_not_historical_scan() -> None:
+def test_stage_target_context_focused_reuses_materialized_current_rows() -> None:
     sql_calls: list[str] = []
 
     class RecordingConn:
@@ -604,14 +753,17 @@ def test_stage_target_context_focused_uses_scoped_point_lookup_not_historical_sc
 
     subject.stage_target_context(RecordingConn(), "dummy.parquet", True)
     body = " ".join(sql_calls)
-    assert "from read_parquet" in body
-    assert "left join pg.race_entry_corner_features rec" in body
-    assert "rec.ketto_toroku_bango = b.ketto_toroku_bango" in body
-    # A narrow point lookup keyed on the exact target race(s) already present
-    # in the input parquet -- not a second *historical* scan (no date-range
-    # filter, no finish_position filter, unlike stage_race_history).
-    assert "race_date >=" not in body
-    assert "finish_position is not null" not in body
+    assert "from target_current" in body
+    assert "read_parquet" not in body
+    assert "pg." not in body
+
+
+def test_focused_target_staging_uses_one_current_catalog_lookup() -> None:
+    conn = FakeConn()
+    subject.stage_target_entities(conn, "dummy.parquet")
+    subject.stage_target_context(conn, "dummy.parquet", True)
+    body = " ".join(conn.statements)
+    assert body.count("pg.race_entry_corner_features") == 1
 
 
 def test_main_calls_stage_race_history_and_stage_target_context_each_once() -> None:
@@ -702,6 +854,7 @@ def test_stage_target_context_focused_resolves_jockey_for_unsettled_target_row(
     seed_con.close()
     input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
 
+    subject.stage_target_entities(con, input_glob)
     subject.stage_target_context(con, input_glob, True)
     row = con.execute(
         "select kyori, track_code, kishumei_ryakusho, sire_id, damsire_id from target_context"
@@ -752,6 +905,7 @@ def test_stage_target_context_focused_blank_jockey_resolves_to_null(
     seed_con.close()
     input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
 
+    subject.stage_target_entities(con, input_glob)
     subject.stage_target_context(con, input_glob, True)
     row = con.execute("select kishumei_ryakusho from target_context").fetchone()
     con.close()

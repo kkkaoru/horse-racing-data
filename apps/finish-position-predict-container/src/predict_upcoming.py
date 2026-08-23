@@ -52,9 +52,11 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast, final, get_args, override
+from types import MappingProxyType
+from typing import Final, cast, final, get_args, override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -66,6 +68,10 @@ from predict_lib.audit import (
 )
 from predict_lib.booster_pool import PoolBooster
 from predict_lib.cell_router import (
+    CONFIG_FILE_NAME as CELL_ROUTING_CONFIG_FILE_NAME,
+)
+from predict_lib.cell_router import (
+    CellRouter,
     build_base_model_r2_key,
     card_max_race_bango_for_race_id,
     derive_card_max_race_bango_by_card,
@@ -86,6 +92,7 @@ from predict_lib.model_meta import (
     JRA_ETOP2_XGB_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
+    MODEL_META_JSON_PATH,
     NAR_ETOP2_MODEL_VERSION,
     NAR_TRANSFORMER_BLEND_ENABLED,
     NAR_TRANSFORMER_BLEND_WEIGHT,
@@ -105,7 +112,12 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
-from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
+from predict_lib.r2_client import (
+    R2ObjectIdentity,
+    r2_get_parquet,
+    r2_head_identity,
+    r2_head_watermark,
+)
 from predict_lib.rescore import (
     RaceFreshSnapshot,
     RaceScope,
@@ -115,7 +127,10 @@ from predict_lib.rescore import (
 )
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
+    RESCORE_ATTESTATION_FUTURE_SKEW_MS,
+    RESCORE_ATTESTATION_TTL_MS,
     CacheMissError,
+    CacheValidationError,
     FocusedFullCachePopulateFn,
     FocusedFullCompletionFn,
     ParquetPayloadFn,
@@ -128,10 +143,12 @@ from predict_lib.serve import (
     PrewarmExistingObjectFn,
     PrewarmParquetPayloadFn,
     R2Config,
+    RescoreCacheAttestation,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
     build_focused_full_status_response_body,
     build_prewarm_cache_key,
+    build_prewarm_status_response_body,
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
@@ -148,6 +165,7 @@ from predict_lib.serve import (
     run_prewarm_in_background,
 )
 from predict_lib.stage1_routing import (
+    STAGE1_ROUTING_PATH,
     Stage1CategoryConfig,
     extract_predicted_scores,
     load_stage1_routing,
@@ -182,6 +200,8 @@ Kept short (vs. the retrying ``connect_postgres_with_retry`` used for the
 prediction UPSERT) because a completion-check failure is swallowed and
 treated as "not complete" -- a slow/unreachable Neon must never delay
 launching a genuine prediction pipeline."""
+FRESH_SNAPSHOT_MAX_WORKERS: Final[int] = 4
+"""Maximum simultaneous odds/weight HTTP requests during rescore."""
 # Required source URL for the DuckDB feature-build subprocess. Production uses
 # ``r2-catalog://pc-keiba`` and never falls back to Neon or local PostgreSQL.
 # Prediction UPSERT and audit writes continue to use ``NEON_DATABASE_URL``.
@@ -632,11 +652,196 @@ class VariantModel:
     model_version: str
 
 
+@dataclass(frozen=True)
+class ModelBundle:
+    """Immutable category scoring runtime shared within one Container process."""
+
+    cell_router: CellRouter
+    fallback_booster: BoosterLike
+    feature_names: tuple[str, ...]
+    nar_transformer: TransformerScorer | None
+    stage1_config: Stage1CategoryConfig | None
+    stage1_model: VariantModel | None
+    variant_pool: Mapping[str, VariantModel]
+    xgb_etop2_booster: BoosterLike | None
+
+
+@dataclass(frozen=True)
+class ModelBundleCacheKey:
+    """Identity of every file boundary that can change a loaded model bundle."""
+
+    artifact_signature: tuple[tuple[str, int, int, int], ...]
+    category: Category
+    feature_names_override: tuple[str, ...] | None
+    models_dir: str
+
+
+_MODEL_BUNDLE_CACHE: dict[ModelBundleCacheKey, ModelBundle] = {}
+_MODEL_BUNDLE_CACHE_LOCK: threading.Lock = threading.Lock()
+_MODEL_ROUTING_PATHS: tuple[Path, ...] = (
+    Path(__file__).parent / "predict_lib" / CELL_ROUTING_CONFIG_FILE_NAME,
+    MODEL_META_JSON_PATH,
+    STAGE1_ROUTING_PATH,
+)
+
+
+def _artifact_file_stamp(path: Path, label: str) -> tuple[str, int, int, int]:
+    """Return a cheap immutable identity stamp, including a missing-file state."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (label, -1, -1, -1)
+    return (label, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _model_artifact_signature(models_dir: Path) -> tuple[tuple[str, int, int, int], ...]:
+    """Stamp selected model bytes and routing declarations without reading them."""
+    resolved = models_dir.resolve()
+    model_stamps = tuple(
+        _artifact_file_stamp(path, path.relative_to(resolved).as_posix())
+        for path in sorted(resolved.rglob("*"))
+        if path.is_file()
+    )
+    routing_stamps = tuple(
+        _artifact_file_stamp(path, f"routing:{path.resolve()}") for path in _MODEL_ROUTING_PATHS
+    )
+    return model_stamps + routing_stamps
+
+
+def _model_bundle_cache_key(
+    models_dir: Path,
+    category: Category,
+    feature_names_override: Sequence[str] | None,
+) -> ModelBundleCacheKey:
+    resolved = models_dir.resolve()
+    return ModelBundleCacheKey(
+        artifact_signature=_model_artifact_signature(resolved),
+        category=category,
+        feature_names_override=(
+            tuple(feature_names_override) if feature_names_override is not None else None
+        ),
+        models_dir=str(resolved),
+    )
+
+
+def _load_model_bundle(
+    models_dir: Path,
+    category: Category,
+    feature_names_override: Sequence[str] | None,
+) -> ModelBundle:
+    """Load and validate every scoring artifact exactly once for a cache key."""
+    feature_names = tuple(
+        feature_names_override
+        if feature_names_override is not None
+        else _load_model_metadata(models_dir, category)
+    )
+    fallback_booster = _load_booster(models_dir, category)
+    cell_router = load_cell_router()
+    variant_pool: dict[str, VariantModel] = {}
+    if cell_router.has_routing(category):
+        routing_config = cell_router.routing_for(category)
+        for variant_name, variant_spec in routing_config.variants.items():
+            if variant_name == routing_config.default_variant:
+                continue
+            architecture = _as_architecture(variant_spec.architecture)
+            model_path = models_dir / build_base_model_r2_key(
+                category, variant_spec.model_version, MODEL_FILE_NAME
+            )
+            booster = _load_booster_by_arch(model_path, architecture)
+            metadata_path = models_dir / build_base_model_r2_key(
+                category, variant_spec.model_version, METADATA_FILE_NAME
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            variant_feature_names = tuple(str(name) for name in metadata["feature_names"])
+            assert_production_model_version_allowed(
+                variant_spec.model_version,
+                context=f"cell-routing variant={variant_name} category={category}",
+            )
+            assert_no_within_race_leak_columns(
+                variant_feature_names,
+                context=f"cell-routing variant={variant_name} category={category}",
+            )
+            assert_feature_count(variant_feature_names, variant_spec.feature_count)
+            _validate_variant_feature_contract(
+                variant_name,
+                variant_spec.model_version,
+                variant_feature_names,
+                variant_spec.feature_names,
+                variant_spec.feature_set_hash,
+            )
+            if not _variant_booster_feature_order_matches(
+                booster, architecture, variant_feature_names
+            ):
+                debug_log(
+                    f"[cell-routing] variant={variant_name} category={category} "
+                    f"version={variant_spec.model_version} feature-order-mismatch: "
+                    "booster's own trained column order disagrees with "
+                    "metadata.json -> not loaded, races fall back to category default"
+                )
+                continue
+            variant_pool[variant_name] = VariantModel(
+                booster=booster,
+                feature_names=variant_feature_names,
+                architecture=architecture,
+                model_version=variant_spec.model_version,
+            )
+            debug_log(
+                f"[cell-routing] loaded variant={variant_name} category={category} "
+                f"version={variant_spec.model_version} features={variant_spec.feature_count}"
+            )
+    xgb_etop2_booster = (
+        _load_xgb_etop2_booster(models_dir) if JRA_ETOP2_ENABLED and category == "jra" else None
+    )
+    nar_transformer = (
+        _load_nar_transformer(models_dir, feature_names)
+        if NAR_TRANSFORMER_BLEND_ENABLED and category == "nar"
+        else None
+    )
+    stage1_config = load_stage1_routing().get(category)
+    stage1_model = (
+        _load_stage1_model(models_dir, category, stage1_config)
+        if stage1_config is not None and stage1_config.enabled
+        else None
+    )
+    return ModelBundle(
+        cell_router=cell_router,
+        fallback_booster=fallback_booster,
+        feature_names=feature_names,
+        nar_transformer=nar_transformer,
+        stage1_config=stage1_config,
+        stage1_model=stage1_model,
+        variant_pool=MappingProxyType(variant_pool),
+        xgb_etop2_booster=xgb_etop2_booster,
+    )
+
+
+def _get_model_bundle(
+    models_dir: Path,
+    category: Category,
+    feature_names_override: Sequence[str] | None = None,
+) -> ModelBundle:
+    """Return a thread-safe process-local model bundle for this artifact identity."""
+    key = _model_bundle_cache_key(models_dir, category, feature_names_override)
+    with _MODEL_BUNDLE_CACHE_LOCK:
+        cached = _MODEL_BUNDLE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        loaded = _load_model_bundle(models_dir, category, feature_names_override)
+        _MODEL_BUNDLE_CACHE[key] = loaded
+        return loaded
+
+
+def clear_model_bundle_cache() -> None:
+    """Clear process-local bundles for deterministic tests and controlled reloads."""
+    with _MODEL_BUNDLE_CACHE_LOCK:
+        _MODEL_BUNDLE_CACHE.clear()
+
+
 def score_races(
     races: Mapping[str, Sequence[Mapping[str, object]]],
     category: Category,
     models_dir: Path,
-    feature_names: Sequence[str],
+    feature_names: Sequence[str] | None = None,
     card_max_race_bango: int | None = None,
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
@@ -673,68 +878,15 @@ def score_races(
       trivially compute itself as the only, hence "final", race). This
       explicit value always wins over batch derivation when supplied.
     """
-    fallback_booster = _load_booster(models_dir, category)
-    cell_router = load_cell_router()
-    variant_pool: dict[str, VariantModel] = {}
-    if cell_router.has_routing(category):
-        routing_config = cell_router.routing_for(category)
-        for vname, vspec in routing_config.variants.items():
-            if vname == routing_config.default_variant:
-                continue  # the default variant is served by fallback_booster
-            arch = _as_architecture(vspec.architecture)
-            model_path = models_dir / build_base_model_r2_key(
-                category, vspec.model_version, MODEL_FILE_NAME
-            )
-            booster = _load_booster_by_arch(model_path, arch)
-            meta_path = models_dir / build_base_model_r2_key(
-                category, vspec.model_version, METADATA_FILE_NAME
-            )
-            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-            fnames = list(metadata["feature_names"])
-            assert_production_model_version_allowed(
-                vspec.model_version,
-                context=f"cell-routing variant={vname} category={category}",
-            )
-            assert_no_within_race_leak_columns(
-                fnames,
-                context=f"cell-routing variant={vname} category={category}",
-            )
-            assert_feature_count(fnames, vspec.feature_count)
-            _validate_variant_feature_contract(
-                vname,
-                vspec.model_version,
-                fnames,
-                vspec.feature_names,
-                vspec.feature_set_hash,
-            )
-            if not _variant_booster_feature_order_matches(booster, arch, fnames):
-                debug_log(
-                    f"[cell-routing] variant={vname} category={category} "
-                    f"version={vspec.model_version} feature-order-mismatch: "
-                    "booster's own trained column order disagrees with "
-                    "metadata.json -> not loaded, races fall back to category default"
-                )
-                continue
-            variant_pool[vname] = VariantModel(
-                booster=booster,
-                feature_names=fnames,
-                architecture=arch,
-                model_version=vspec.model_version,
-            )
-            debug_log(
-                f"[cell-routing] loaded variant={vname} category={category} "
-                f"version={vspec.model_version} features={vspec.feature_count}"
-            )
-    xgb_etop2_booster: BoosterLike | None = None
-    if JRA_ETOP2_ENABLED and category == "jra":
-        xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
-    nar_transformer: TransformerScorer | None = None
-    if NAR_TRANSFORMER_BLEND_ENABLED and category == "nar":
-        nar_transformer = _load_nar_transformer(models_dir, feature_names)
-    stage1_config = load_stage1_routing().get(category)
-    stage1_model: VariantModel | None = None
-    if stage1_config is not None and stage1_config.enabled:
-        stage1_model = _load_stage1_model(models_dir, category, stage1_config)
+    bundle = _get_model_bundle(models_dir, category, feature_names)
+    fallback_booster = bundle.fallback_booster
+    cell_router = bundle.cell_router
+    resolved_feature_names = bundle.feature_names
+    variant_pool = bundle.variant_pool
+    xgb_etop2_booster = bundle.xgb_etop2_booster
+    nar_transformer = bundle.nar_transformer
+    stage1_config = bundle.stage1_config
+    stage1_model = bundle.stage1_model
     # See this function's docstring: an explicit caller-supplied value always
     # wins; batch self-derivation only ever runs (and is only ever correct)
     # when none was supplied, i.e. this is a whole-category request whose
@@ -747,7 +899,7 @@ def score_races(
     scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
         effective_booster = fallback_booster
-        effective_feature_names = feature_names
+        effective_feature_names = resolved_feature_names
         effective_architecture = architecture_for(category)
         cell_variant_model: VariantModel | None = None
         if variant_pool:
@@ -997,9 +1149,12 @@ def _score_and_flush_races(
     is forwarded to :func:`score_races` untouched -- see that function's
     docstring for the whole-category-vs-single-race sourcing split.
     """
-    feature_names = _load_model_metadata(models_dir, category)
     scored = score_races(
-        races, category, models_dir, feature_names, card_max_race_bango=card_max_race_bango
+        races,
+        category,
+        models_dir,
+        None,
+        card_max_race_bango=card_max_race_bango,
     )
     return _flush_scored(database_url, category, scored)
 
@@ -1827,6 +1982,101 @@ def _ensure_cached_parquet(
         raise CacheMissError(f"R2 cache miss: {object_key} not found in bucket {r2.bucket}")
 
 
+def _log_rescore_attestation_lifecycle(
+    category: str,
+    run_date: str,
+    scope: RaceScope,
+    status: str,
+    reason: str,
+) -> None:
+    """Emit one bounded, credential-free attestation decision with debug disabled."""
+    payload = {
+        "event": "rescore-cache-attestation",
+        "category": category,
+        "runDate": run_date,
+        "venue": scope.keibajo_code,
+        "race": scope.race_bango,
+        "status": status,
+        "reason": reason,
+    }
+    print(json.dumps(payload, separators=(",", ":")), file=sys.stderr, flush=True)
+
+
+def _rescore_attestation_error(
+    category: str,
+    run_date: str,
+    scope: RaceScope,
+    reason: str,
+) -> CacheValidationError:
+    _log_rescore_attestation_lifecycle(category, run_date, scope, "rejected", reason)
+    return CacheValidationError(f"rescore cache attestation rejected: {reason}")
+
+
+def _attested_identity_matches(
+    identity: R2ObjectIdentity | None,
+    attestation: RescoreCacheAttestation,
+) -> bool:
+    """Compare the ETag identity shared by Workers R2 and S3 HEAD.
+
+    Workers ``R2Object.version`` is upload-unique, while R2's S3 HeadObject
+    does not expose it as ``x-amz-version-id``. The required version query
+    parameter remains parsed for rolling protocol compatibility, but ETag is
+    the cross-surface strong identity. HEAD before and after GET closes the
+    object-replacement race, while the candidate entrant hash independently
+    binds content to the Worker evidence.
+    """
+    return identity is not None and identity.etag == attestation.feature_cache_etag
+
+
+def _candidate_entry_attestation(candidate_dir: Path, target_race: str) -> tuple[str, int]:
+    """Return the exact canonical entrant hash/count for one candidate parquet.
+
+    An empty hash/count is the fail-closed malformed/mixed-race sentinel. I/O
+    failures still raise so the caller can distinguish unavailable validation
+    from a candidate that positively disagrees with the Worker evidence.
+    """
+    import duckdb
+
+    from predict_lib.race_id import parse_race_id
+
+    expected_venue, expected_race = (part.zfill(2) for part in target_race.split(":", 1))
+    glob_path = str(candidate_dir / "**" / "*.parquet")
+    connection = duckdb.connect(":memory:")
+    try:
+        rows = connection.execute(
+            "SELECT race_id, ketto_toroku_bango, umaban "
+            "FROM read_parquet(?, hive_partitioning = false)",
+            [glob_path],
+        ).fetchall()
+    finally:
+        connection.close()
+    tokens: list[str] = []
+    for race_id, ketto, umaban in rows:
+        try:
+            parts = parse_race_id(str(race_id))
+        except ValueError:
+            return "", 0
+        if (
+            parts.keibajo_code.zfill(2) != expected_venue
+            or parts.race_bango.zfill(2) != expected_race
+        ):
+            return "", 0
+        ketto_text = str(ketto).strip() if ketto is not None else ""
+        umaban_text = str(umaban).strip() if umaban is not None else ""
+        if (
+            not ketto_text
+            or not umaban_text.isascii()
+            or not umaban_text.isdigit()
+            or int(umaban_text) <= 0
+        ):
+            return "", 0
+        tokens.append(f"{ketto_text}:{int(umaban_text)}")
+    if not tokens or len(tokens) != len(set(tokens)):
+        return "", 0
+    canonical = "\n".join(sorted(tokens))
+    return hashlib.sha256(canonical.encode()).hexdigest(), len(tokens)
+
+
 def _fetch_watermarked_per_race_cache(
     final_dir: Path,
     category_str: str,
@@ -1834,6 +2084,7 @@ def _fetch_watermarked_per_race_cache(
     scope: RaceScope,
     r2: R2Config,
     source_url: str,
+    attestation: RescoreCacheAttestation | None = None,
 ) -> bool:
     """Fetch + watermark-validate a per-race R2 feature cache into ``final_dir``.
 
@@ -1880,6 +2131,10 @@ def _fetch_watermarked_per_race_cache(
     Never raises.
     """
     if scope.keibajo_code is None or scope.race_bango is None:
+        if attestation is not None:
+            raise _rescore_attestation_error(
+                category_str, run_date, scope, "exact-race-scope-required"
+            )
         return False
     object_key = build_r2_per_race_feat_cache_key(
         category_str, run_date, scope.keibajo_code, scope.race_bango
@@ -1888,27 +2143,72 @@ def _fetch_watermarked_per_race_cache(
     candidate_path = candidate_dir / "features.parquet"
     try:
         shutil.rmtree(candidate_dir, ignore_errors=True)
+        if attestation is not None:
+            now_ms = time.time_ns() // 1_000_000
+            if (
+                attestation.issued_at_ms > now_ms + RESCORE_ATTESTATION_FUTURE_SKEW_MS
+                or now_ms - attestation.issued_at_ms > RESCORE_ATTESTATION_TTL_MS
+            ):
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "expired-during-container-wait"
+                )
+            before_identity = r2_head_identity(r2, object_key)
+            if not _attested_identity_matches(before_identity, attestation):
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "feature-identity-mismatch"
+                )
         if not r2_get_parquet(r2, object_key, candidate_path):
+            if attestation is not None:
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "feature-object-missing"
+                )
             return False
-        from pipeline_runner import day_base_covers_entry_list  # bundled in image
         from predict_lib.model_meta import resolve_category
 
         target_race = f"{scope.keibajo_code}:{scope.race_bango}"
         category = resolve_category(category_str)
-        if not day_base_covers_entry_list(
-            candidate_dir, category, run_date, target_race, source_url
-        ):
-            debug_log(
-                f"[predict-serve] rescore per-race cache watermark rejected "
-                f"key={object_key} target_race={target_race}"
+        if attestation is not None:
+            candidate_hash, candidate_count = _candidate_entry_attestation(
+                candidate_dir, target_race
             )
-            return False
+            if (
+                candidate_hash != attestation.entry_set_hash
+                or candidate_count != attestation.entry_count
+            ):
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "entry-set-mismatch"
+                )
+            after_identity = r2_head_identity(r2, object_key)
+            if not _attested_identity_matches(after_identity, attestation):
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "feature-identity-changed"
+                )
+            _log_rescore_attestation_lifecycle(
+                category_str, run_date, scope, "accepted", "exact-entry-and-identity-match"
+            )
+        else:
+            from pipeline_runner import day_base_covers_entry_list  # bundled in image
+
+            if not day_base_covers_entry_list(
+                candidate_dir, category, run_date, target_race, source_url
+            ):
+                debug_log(
+                    f"[predict-serve] rescore per-race cache watermark rejected "
+                    f"key={object_key} target_race={target_race}"
+                )
+                return False
         shutil.rmtree(final_dir, ignore_errors=True)
         final_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(candidate_path, final_dir / "features.parquet")
         debug_log(f"[predict-serve] rescore per-race cache watermark accepted key={object_key}")
         return True
+    except CacheValidationError:
+        raise
     except BaseException as exc:
+        if attestation is not None:
+            raise _rescore_attestation_error(
+                category_str, run_date, scope, "validation-unavailable"
+            ) from exc
         debug_log(f"[predict-serve] rescore per-race cache fetch failed key={object_key}: {exc}")
         return False
     finally:
@@ -1981,22 +2281,48 @@ def _fetch_fresh_snapshots(
 
     fetcher = HttpRealtimeOddsFetcher()
     source = source_for_category(category_str)
-    snapshots: dict[tuple[str, str], RaceFreshSnapshot] = {}
-    for keibajo_code, race_bango in race_keys:
-        odds_rows = fetch_odds_for_race(fetcher, source, run_date, keibajo_code, race_bango)
-        weight_map = fetch_weight_for_race(fetcher, source, run_date, keibajo_code, race_bango)
-        odds_by_umaban = {
-            row[2]: OddsSnapshot(tansho_odds=row[3], tansho_ninkijun=row[4]) for row in odds_rows
-        }
-        bataiju_by_umaban = {umaban: float(kg) for umaban, kg in weight_map.items()}
-        snapshots[(keibajo_code, race_bango)] = RaceFreshSnapshot(
-            odds_by_umaban=odds_by_umaban,
-            bataiju_by_umaban=bataiju_by_umaban,
-        )
+    odds_futures: dict[tuple[str, str], Future[list[tuple[str, str, int, float, int]]]] = {}
+    weight_futures: dict[tuple[str, str], Future[dict[int, int]]] = {}
+    with ThreadPoolExecutor(max_workers=FRESH_SNAPSHOT_MAX_WORKERS) as executor:
+        for keibajo_code, race_bango in race_keys:
+            race_key = (keibajo_code, race_bango)
+            odds_futures[race_key] = executor.submit(
+                fetch_odds_for_race,
+                fetcher,
+                source,
+                run_date,
+                keibajo_code,
+                race_bango,
+            )
+            weight_futures[race_key] = executor.submit(
+                fetch_weight_for_race,
+                fetcher,
+                source,
+                run_date,
+                keibajo_code,
+                race_bango,
+            )
+
+        snapshots: dict[tuple[str, str], RaceFreshSnapshot] = {}
+        for race_key in race_keys:
+            odds_rows = odds_futures[race_key].result()
+            weight_map = weight_futures[race_key].result()
+            odds_by_umaban = {
+                row[2]: OddsSnapshot(tansho_odds=row[3], tansho_ninkijun=row[4])
+                for row in odds_rows
+            }
+            bataiju_by_umaban = {umaban: float(kg) for umaban, kg in weight_map.items()}
+            snapshots[race_key] = RaceFreshSnapshot(
+                odds_by_umaban=odds_by_umaban,
+                bataiju_by_umaban=bataiju_by_umaban,
+            )
     return snapshots
 
 
-RescoreFactory = Callable[[RaceScope], tuple[PredictCategoryFn, PerRaceParquetPayloadFn]]
+RescoreFactory = Callable[
+    [RaceScope, RescoreCacheAttestation | None],
+    tuple[PredictCategoryFn, PerRaceParquetPayloadFn],
+]
 """Builds a scope-bound rescore ``PredictCategoryFn`` + per-race payload fn for a request."""
 
 
@@ -2006,6 +2332,7 @@ def _make_rescore_fn(
     source_url: str,
     r2: R2Config | None,
     scope: RaceScope,
+    attestation: RescoreCacheAttestation | None = None,
 ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
     """Build the rescore-path ``rescore_fn`` + per-race parquet payload fn.
 
@@ -2069,15 +2396,29 @@ def _make_rescore_fn(
 
         category = resolve_category(category_str)
         final_dir = WORK_DIR / f"feat-{category}-v7-final"
+        if attestation is not None and not catalog_source:
+            raise _rescore_attestation_error(
+                category_str, run_date, scope, "catalog-source-required"
+            )
         if catalog_source:
             # Whole-category rescore (no single-race scope) has no per-race
             # object to watermark-check against -- unchanged, still fails
             # closed immediately. A single-race scope gets one real attempt
             # at the watermark-validated cache before falling back.
             fetched = False
+            if attestation is not None and r2 is None:
+                raise _rescore_attestation_error(
+                    category_str, run_date, scope, "r2-configuration-unavailable"
+                )
             if scope.keibajo_code is not None and scope.race_bango is not None and r2 is not None:
                 fetched = _fetch_watermarked_per_race_cache(
-                    final_dir, category_str, run_date, scope, r2, source_url
+                    final_dir,
+                    category_str,
+                    run_date,
+                    scope,
+                    r2,
+                    source_url,
+                    attestation,
                 )
             if not fetched:
                 raise CacheMissError(
@@ -2130,8 +2471,10 @@ def _make_rescore_factory(
     binding serves every per-race rescore request.
     """
 
-    def _factory(scope: RaceScope) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
-        return _make_rescore_fn(database_url, models_dir, source_url, r2, scope)
+    def _factory(
+        scope: RaceScope, attestation: RescoreCacheAttestation | None
+    ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
+        return _make_rescore_fn(database_url, models_dir, source_url, r2, scope, attestation)
 
     return _factory
 
@@ -2373,7 +2716,9 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             rescore_fn: PredictCategoryFn | None = None
             rescore_per_race_fn: PerRaceParquetPayloadFn | None = None
             if self.rescore_factory is not None:
-                rescore_fn, rescore_per_race_fn = self.rescore_factory(_scope_from_params(result))
+                rescore_fn, rescore_per_race_fn = self.rescore_factory(
+                    _scope_from_params(result), result.rescore_cache_attestation
+                )
             effective_per_race_fn: PerRaceParquetPayloadFn | None = (
                 rescore_per_race_fn
                 if result.mode == "rescore" and rescore_per_race_fn is not None
@@ -2473,6 +2818,24 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if path == "/prewarm-day-base-status":
+            status_params = parse_prewarm_params(query)
+            if isinstance(status_params, str):
+                error_body = status_params.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+            body = build_prewarm_status_response_body(status_params)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/prewarm-day-base":
             prewarm_result = parse_prewarm_params(query)
             if isinstance(prewarm_result, str):
@@ -2500,6 +2863,12 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/x-ndjson")
             self.end_headers()
 
+            cache_store = self.focused_full_cache_store
+
+            def _invalidate_previous_payload(category: str, run_date: str) -> None:
+                if cache_store is not None:
+                    cache_store.pop(build_prewarm_cache_key(category, run_date))
+
             for chunk in iter_prewarm_chunks(
                 prewarm_result,
                 self.prewarm_fn,
@@ -2507,6 +2876,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 existing_object_fn=self.prewarm_existing_object_fn,
                 commit_fn=self.prewarm_commit_fn,
                 background_fn=self.prewarm_background_fn,
+                invalidate_fn=_invalidate_previous_payload,
             ):
                 size_line = f"{len(chunk):X}\r\n".encode()
                 try:

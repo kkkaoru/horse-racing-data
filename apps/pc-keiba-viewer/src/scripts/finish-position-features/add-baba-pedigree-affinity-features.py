@@ -18,6 +18,7 @@ Features added (per horse × race):
 
 Data leakage 防止: race_date strictly less than current race_date のみを集計。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,9 +27,7 @@ import shutil
 from pathlib import Path
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
-
 from _resource_defaults import add_resource_args, apply_to_connection
 from pedigree_staging import stage_horse_pedigree
 
@@ -64,35 +63,12 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
-def stage_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
-    """race-level baba_condition を jvd_ra / nvd_ra から取得 (single int 1-4)。"""
-    con.execute(
-        f"""
-        create or replace temp table race_baba as
-        select
-          'jra' as source,
-          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          coalesce(
-            try_cast(nullif(babajotai_code_shiba, '0') as int),
-            try_cast(nullif(babajotai_code_dirt, '0') as int)
-          ) as baba_cond
-        from pg.jvd_ra
-        where kaisai_nen >= substring('{from_date}', 1, 4)
-        union all
-        select
-          'nar' as source,
-          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          coalesce(
-            try_cast(nullif(babajotai_code_shiba, '0') as int),
-            try_cast(nullif(babajotai_code_dirt, '0') as int)
-          ) as baba_cond
-        from pg.nvd_ra
-        where kaisai_nen >= substring('{from_date}', 1, 4)
-        """
-    )
-    con.execute(
-        f"create index race_baba_idx on race_baba ({RACE_PARTITION})"
-    )
+def baba_condition_sql(alias: str) -> str:
+    """Return the legacy race_baba expression over already-carried RA columns."""
+    return f"""coalesce(
+            try_cast(nullif({alias}.babajotai_code_shiba, '0') as int),
+            try_cast(nullif({alias}.babajotai_code_dirt, '0') as int)
+          )"""
 
 
 def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -107,6 +83,53 @@ def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
         """
     )
     con.execute("create index base_input_horse_idx on base_input (ketto_toroku_bango)")
+
+
+def stage_current_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+    """Read live RA baba only for races present in the input parquet.
+
+    Historical baba is already carried by ``race_entry_corner_features``, but
+    current baba must remain a live RA lookup: a day-base input can predate a
+    same-day going change. Restricting the lookup to the distinct input race
+    keys removes the old all-years materialisation without freezing that live
+    value at day-base time.
+    """
+    con.execute(
+        f"""
+        create or replace temp table race_baba as
+        with target_races as (
+          select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+                          race_bango
+          from base_input
+        )
+        select
+          'jra' as source,
+          ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
+          {baba_condition_sql("ra")} as baba_cond
+        from pg.jvd_ra ra
+        inner join target_races target
+          on target.source = 'jra'
+          and target.kaisai_nen = ra.kaisai_nen
+          and target.kaisai_tsukihi = ra.kaisai_tsukihi
+          and target.keibajo_code = ra.keibajo_code
+          and target.race_bango = ra.race_bango
+        where ra.kaisai_nen >= substring('{from_date}', 1, 4)
+        union all
+        select
+          'nar' as source,
+          ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
+          {baba_condition_sql("ra")} as baba_cond
+        from pg.nvd_ra ra
+        inner join target_races target
+          on target.source = 'nar'
+          and target.kaisai_nen = ra.kaisai_nen
+          and target.kaisai_tsukihi = ra.kaisai_tsukihi
+          and target.keibajo_code = ra.keibajo_code
+          and target.race_bango = ra.race_bango
+        where ra.kaisai_nen >= substring('{from_date}', 1, 4)
+        """
+    )
+    con.execute(f"create index race_baba_idx on race_baba ({RACE_PARTITION})")
 
 
 def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
@@ -129,8 +152,12 @@ def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
         where sire_id is not null or damsire_id is not null
         """
     )
-    con.execute("create index target_pedigree_sire_idx on target_pedigree_ids (sire_id)")
-    con.execute("create index target_pedigree_damsire_idx on target_pedigree_ids (damsire_id)")
+    con.execute(
+        "create index target_pedigree_sire_idx on target_pedigree_ids (sire_id)"
+    )
+    con.execute(
+        "create index target_pedigree_damsire_idx on target_pedigree_ids (damsire_id)"
+    )
 
 
 def focused_history_filter_sql(focused_target: bool) -> str:
@@ -156,8 +183,9 @@ def stage_race_history_with_baba(
     from_date: str,
     focused_target: bool = False,
 ) -> None:
-    """horse の過去レース成績 + baba_condition を join。"""
+    """horse history + baba from the existing corner-feature projection."""
     target_filter = focused_history_filter_sql(focused_target)
+    baba_condition = baba_condition_sql("rec")
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -170,18 +198,12 @@ def stage_race_history_with_baba(
           rec.race_bango,
           rec.ketto_toroku_bango,
           rec.finish_position,
-          rb.baba_cond
+          {baba_condition} as baba_cond
         from pg.race_entry_corner_features rec
-        left join race_baba rb
-          on rb.source = rec.source
-          and rb.kaisai_nen = rec.kaisai_nen
-          and rb.kaisai_tsukihi = rec.kaisai_tsukihi
-          and rb.keibajo_code = rec.keibajo_code
-          and rb.race_bango = rec.race_bango
         where rec.race_date >= '{from_date}'
           and rec.finish_position is not null
           and rec.ketto_toroku_bango is not null
-          and rb.baba_cond is not null
+          and {baba_condition} is not null
           {target_filter}
         """
     )
@@ -383,7 +405,9 @@ def append_features_sql(input_glob: str) -> str:
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -401,10 +425,10 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_race_baba(con, args.from_date)
     stage_horse_pedigree(con)
+    stage_base_input(con, input_glob)
+    stage_current_race_baba(con, args.from_date)
     if args.target_race is not None:
-        stage_base_input(con, input_glob)
         stage_target_pedigree_context(con)
     stage_race_history_with_baba(con, args.from_date, args.target_race is not None)
     stage_horse_baba_cumul(con)

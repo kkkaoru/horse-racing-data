@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.model_meta import CATEGORIES, Category
 from predict_lib.pipeline_args import (
+    BABA_PEDIGREE_SCRIPT,
     COURSE_LOOKUP_PATH,
     DAY_BASE_SPLIT_ENABLED_ENV,
     DAY_CHAIN,
@@ -1277,11 +1278,23 @@ def test_jra_day_stable_lineage_stays_on_whole_day_base() -> None:
     assert LINEAGE_SCRIPT not in race_chain_for("jra")
 
 
+def test_baba_pedigree_runs_once_per_day_for_flat_racing_categories() -> None:
+    assert BABA_PEDIGREE_SCRIPT in day_chain_for("jra")
+    assert BABA_PEDIGREE_SCRIPT not in race_chain_for("jra")
+    assert BABA_PEDIGREE_SCRIPT in day_chain_for("nar")
+    assert BABA_PEDIGREE_SCRIPT not in race_chain_for("nar")
+
+
+def test_baba_pedigree_remains_per_race_for_banei() -> None:
+    assert BABA_PEDIGREE_SCRIPT not in day_chain_for("ban-ei")
+    assert BABA_PEDIGREE_SCRIPT in race_chain_for("ban-ei")
+
+
 def test_race_chain_counts_match_architecture_spec() -> None:
-    assert len(day_chain_for("jra")) == 12
-    assert len(race_chain_for("jra")) == 5
-    assert len(day_chain_for("nar")) == 7
-    assert len(race_chain_for("nar")) == 3
+    assert len(day_chain_for("jra")) == 13
+    assert len(race_chain_for("jra")) == 4
+    assert len(day_chain_for("nar")) == 8
+    assert len(race_chain_for("nar")) == 2
     assert len(day_chain_for("ban-ei")) == 6
     assert len(race_chain_for("ban-ei")) == 1
 
