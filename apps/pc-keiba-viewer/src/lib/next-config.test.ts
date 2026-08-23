@@ -7,6 +7,7 @@ import {
   getCloudflareDevConfigPath,
   getCloudflareDevContextOptions,
   parseAllowedDevOrigins,
+  resolveAllowedDevOrigins,
   shouldEnableCloudflareRemoteBindings,
 } from "./next-config";
 
@@ -20,6 +21,33 @@ it("parseAllowedDevOrigins trims comma-separated origins and drops blanks", () =
 it("parseAllowedDevOrigins returns an empty array when the env is missing", () => {
   const origins = parseAllowedDevOrigins(undefined);
   expect(origins).toStrictEqual([]);
+});
+
+it("resolveAllowedDevOrigins always includes https 443 hosts used by local next", () => {
+  expect(resolveAllowedDevOrigins(undefined)).toStrictEqual([
+    "localhost",
+    "127.0.0.1",
+    "192.168.1.219",
+    "localhost:3000",
+    "127.0.0.1:3000",
+    "localhost:443",
+    "127.0.0.1:443",
+    "192.168.1.219:443",
+  ]);
+});
+
+it("resolveAllowedDevOrigins appends extra env origins without duplicating defaults", () => {
+  expect(resolveAllowedDevOrigins("localhost,example.test")).toStrictEqual([
+    "localhost",
+    "127.0.0.1",
+    "192.168.1.219",
+    "localhost:3000",
+    "127.0.0.1:3000",
+    "localhost:443",
+    "127.0.0.1:443",
+    "192.168.1.219:443",
+    "example.test",
+  ]);
 });
 
 it("shouldEnableCloudflareRemoteBindings only enables remote bindings with explicit opt-in", () => {

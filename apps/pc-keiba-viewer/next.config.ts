@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
-import { getCloudflareDevContextOptions, parseAllowedDevOrigins } from "./src/lib/next-config";
+import { getCloudflareDevContextOptions, resolveAllowedDevOrigins } from "./src/lib/next-config";
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: parseAllowedDevOrigins(process.env.PC_KEIBA_ALLOWED_DEV_ORIGINS),
+  allowedDevOrigins: resolveAllowedDevOrigins(process.env.PC_KEIBA_ALLOWED_DEV_ORIGINS),
   serverExternalPackages: ["pg", "pg-cloudflare"],
 };
 
