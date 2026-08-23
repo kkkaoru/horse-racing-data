@@ -285,11 +285,8 @@
     "packages/pc-keiba-viewer-plugin": {
       "name": "pc-keiba-viewer-plugin",
       "devDependencies": {
-        "@vitest/coverage-v8": "catalog:",
         "oxfmt": "catalog:",
         "oxlint": "catalog:",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
       },
     },
     "packages/xgboost-json-tree": {
