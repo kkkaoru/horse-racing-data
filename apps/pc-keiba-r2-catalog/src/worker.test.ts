@@ -72,6 +72,7 @@ const createHarness = (rows: unknown[] = []) => {
     ADMIN_TOKEN: "admin-secret",
     CACHE_TTL_SECONDS: "15",
     CATALOG_KV: kv,
+    FINISH_POSITION_ATTESTATION_TOKEN: "attestation-secret",
     KV_TTL_SECONDS: "120",
     R2_SQL_ACCOUNT_ID: "account",
     R2_SQL_BUCKET_NAME: "pc-keiba-r2-catalog",
@@ -184,6 +185,149 @@ it("queries fixed race-feature SQL and returns DailyRaceEntryRow objects", async
   const requestBody = String(harness.fetchCalls[0]?.init?.body);
   expect(requestBody).toMatch("keibajo_code = '05'");
   expect(requestBody).toMatch("race_bango = '01'");
+});
+
+it("requires the attestation Bearer token before querying fresh race entries", async () => {
+  const harness = createHarness([{ ketto_toroku_bango: "2023100001", umaban: 1 }]);
+  const missing = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  const wrong = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer wrong" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(missing.status).toBe(401);
+  await expect(missing.json()).resolves.toStrictEqual({ error: "unauthorized" });
+  expect(wrong.status).toBe(401);
+  await expect(wrong.json()).resolves.toStrictEqual({ error: "unauthorized" });
+  expect(harness.fetchCalls).toHaveLength(0);
+  expect(harness.cacheCalls.matches).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(0);
+});
+
+it("queries fresh race entries directly with an echoed exact scope and no cache access", async () => {
+  const harness = createHarness([
+    { ketto_toroku_bango: "2023100002", umaban: "2" },
+    { ketto_toroku_bango: "2023100001", umaban: 1 },
+  ]);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=7&raceBango=9",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(response.headers.get("X-Catalog-Cache")).toBeNull();
+  await expect(response.json()).resolves.toStrictEqual({
+    date: "20260823",
+    entries: [
+      { kettoTorokuBango: "2023100001", umaban: 1 },
+      { kettoTorokuBango: "2023100002", umaban: 2 },
+    ],
+    keibajoCode: "07",
+    raceBango: "09",
+    source: "jra",
+  });
+  expect(harness.fetchCalls).toHaveLength(1);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("FROM pc_keiba.jvd_se");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code = '07'");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("race_bango = '09'");
+  expect(harness.cacheCalls.matches).toHaveLength(0);
+  expect(harness.cacheCalls.puts).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(0);
+  expect(harness.kvCalls.puts).toHaveLength(0);
+});
+
+it("does not coalesce concurrent fresh entrant requests", async () => {
+  const harness = createHarness([{ ketto_toroku_bango: "2023100001", umaban: 1 }]);
+  const request = (): Request =>
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    );
+  const [first, second] = await Promise.all([
+    handleRequest(request(), harness.env, harness.dependencies),
+    handleRequest(request(), harness.env, harness.dependencies),
+  ]);
+  expect(first.status).toBe(200);
+  expect(second.status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(2);
+  expect(harness.cacheCalls.matches).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(0);
+});
+
+it("requires every fresh entrant scope and rejects an invalid source", async () => {
+  const harness = createHarness([{ ketto_toroku_bango: "2023100001", umaban: 1 }]);
+  const missingRace = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  const invalidSource = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=all&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(missingRace.status).toBe(400);
+  await expect(missingRace.json()).resolves.toStrictEqual({ error: "raceBango is required" });
+  expect(invalidSource.status).toBe(400);
+  await expect(invalidSource.json()).resolves.toStrictEqual({
+    error: "source must be jra, nar, or ban-ei",
+  });
+  expect(harness.fetchCalls).toHaveLength(0);
+});
+
+it("fails closed when fresh entrant rows are empty or duplicated", async () => {
+  const emptyHarness = createHarness();
+  const duplicateHarness = createHarness([
+    { ketto_toroku_bango: "2023100001", umaban: 1 },
+    { ketto_toroku_bango: "2023100001", umaban: 1 },
+  ]);
+  const empty = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    emptyHarness.env,
+    emptyHarness.dependencies,
+  );
+  const duplicate = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    duplicateHarness.env,
+    duplicateHarness.dependencies,
+  );
+  expect(empty.status).toBe(502);
+  await expect(empty.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "fresh race entries are empty",
+    error: "fresh_race_entries_unavailable",
+  });
+  expect(duplicate.status).toBe(502);
+  await expect(duplicate.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "fresh race entries contain duplicates",
+    error: "fresh_race_entries_unavailable",
+  });
 });
 
 it("queries and caches race trainings with the Training-compatible envelope", async () => {

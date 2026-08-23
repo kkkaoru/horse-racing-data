@@ -19,9 +19,11 @@ import {
 import { coalesce } from "./inflight";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
 import {
+  buildFreshRaceEntriesQuery,
   buildRaceFeaturesQuery,
   buildRaceKeysQuery,
   executeR2Sql,
+  normaliseFreshRaceEntries,
   R2SqlQueryError,
 } from "./r2-sql";
 import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
@@ -49,6 +51,7 @@ import {
 import type {
   CatalogSource,
   Env,
+  FreshRaceEntryFilters,
   HorseRaceResultsFilters,
   HorseRaceResultsSourceScope,
   KvStore,
@@ -75,6 +78,10 @@ const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // includeOrderBy docstring for why this happens and only for large-enough
 // source data volumes.
 const R2_SQL_EXPRESSION_TOO_DEEP_CODE = 40018;
+const FRESH_RACE_ENTRIES_PATH: string = "/v1/internal/fresh-race-entries";
+const AUTHORIZATION_HEADER: string = "Authorization";
+const BEARER_PREFIX: string = "Bearer ";
+const SHA_256_ALGORITHM: string = "SHA-256";
 
 // Operator-facing description of a failed upstream call. `code` is the
 // Cloudflare R2 SQL error code when one was returned, null otherwise.
@@ -158,6 +165,46 @@ const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
   keibajoCode: requireCode(url, "keibajoCode"),
   raceBango: requireCode(url, "raceBango"),
 });
+
+const parseFreshRaceEntryFilters = (url: URL): FreshRaceEntryFilters => ({
+  date: requireDate(url),
+  keibajoCode: requireCode(url, "keibajoCode"),
+  raceBango: requireCode(url, "raceBango"),
+  source: parseRunningStyleSource(url),
+});
+
+const parseBearerToken = (request: Request): string | null => {
+  const authorization = request.headers.get(AUTHORIZATION_HEADER);
+  return authorization?.startsWith(BEARER_PREFIX) === true
+    ? authorization.slice(BEARER_PREFIX.length)
+    : null;
+};
+
+const digestSecret = (value: string): Promise<ArrayBuffer> =>
+  crypto.subtle.digest(SHA_256_ALGORITHM, new TextEncoder().encode(value));
+
+const timingSafeEqualDigests = (left: ArrayBuffer, right: ArrayBuffer): boolean => {
+  // Both inputs are fixed-width SHA-256 digests, so this reduction compares
+  // every byte without leaking either secret's original length.
+  const rightBytes = new Uint8Array(right);
+  const mismatch = new Uint8Array(left).reduce(
+    (difference, byte, index) => difference | (byte ^ (rightBytes[index] ?? 0)),
+    0,
+  );
+  return mismatch === 0;
+};
+
+const isFreshRaceEntriesAuthorized = async (request: Request, env: Env): Promise<boolean> => {
+  const expected = env.FINISH_POSITION_ATTESTATION_TOKEN;
+  const provided = parseBearerToken(request);
+  if (expected === undefined || expected.length === 0 || provided === null || provided.length === 0)
+    return false;
+  const [providedDigest, expectedDigest] = await Promise.all([
+    digestSecret(provided),
+    digestSecret(expected),
+  ]);
+  return timingSafeEqualDigests(providedDigest, expectedDigest);
+};
 
 const compactUtcDate = (timestamp: number): string =>
   new Date(timestamp).toISOString().slice(0, 10).replaceAll("-", "");
@@ -415,6 +462,25 @@ const handleRaceFeatures = (
   );
 };
 
+const handleFreshRaceEntries = async (
+  request: Request,
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  if (!(await isFreshRaceEntriesAuthorized(request, env))) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+  const filters = parseFreshRaceEntryFilters(url);
+  const rows = await executeR2Sql(
+    env,
+    buildFreshRaceEntriesQuery(env, filters),
+    dependencies.fetchImpl,
+  );
+  const entries = normaliseFreshRaceEntries(rows);
+  return jsonResponse({ ...filters, entries });
+};
+
 const handleRaceTrainings = (
   url: URL,
   env: Env,
@@ -644,6 +710,9 @@ export const handleRequest = async (
     if (request.method === "GET" && url.pathname === "/v1/race-features") {
       return await handleRaceFeatures(url, env, dependencies);
     }
+    if (request.method === "GET" && url.pathname === FRESH_RACE_ENTRIES_PATH) {
+      return await handleFreshRaceEntries(request, url, env, dependencies);
+    }
     if (request.method === "GET" && url.pathname === "/v1/race-trainings") {
       return await handleRaceTrainings(url, env, dependencies);
     }
@@ -690,7 +759,14 @@ export const handleRequest = async (
       }),
     );
     return jsonResponse(
-      { code: failure.code, detail: failure.detail, error: "r2_sql_unavailable" },
+      {
+        code: failure.code,
+        detail: failure.detail,
+        error:
+          url.pathname === FRESH_RACE_ENTRIES_PATH
+            ? "fresh_race_entries_unavailable"
+            : "r2_sql_unavailable",
+      },
       502,
     );
   }

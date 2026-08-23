@@ -83,6 +83,7 @@ export interface Env extends R2SqlCatalogConfig {
   ADMIN_TOKEN?: string;
   CACHE_TTL_SECONDS?: string;
   CATALOG_KV: KvStore;
+  FINISH_POSITION_ATTESTATION_TOKEN?: string;
   KV_TTL_SECONDS?: string;
 }
 
@@ -96,6 +97,18 @@ export interface RaceFeatureFilters {
   keibajoCode?: string;
   raceBango?: string;
   source: SourceScope;
+}
+
+export interface FreshRaceEntryFilters {
+  date: string;
+  keibajoCode: string;
+  raceBango: string;
+  source: RunningStyleSourceScope;
+}
+
+export interface FreshRaceEntry {
+  kettoTorokuBango: string;
+  umaban: number;
 }
 
 // raceBango is optional so one query can cover every race at a venue on a

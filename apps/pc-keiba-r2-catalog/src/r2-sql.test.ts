@@ -1,9 +1,11 @@
 import { expect, it, vi } from "vitest";
 
 import {
+  buildFreshRaceEntriesQuery,
   buildRaceFeaturesQuery,
   buildRaceKeysQuery,
   executeR2Sql,
+  normaliseFreshRaceEntries,
   R2SqlQueryError,
 } from "./r2-sql";
 import type { Env, Fetcher } from "./types";
@@ -100,6 +102,83 @@ it("builds all-source features from all four raw tables with pruning on every sc
   expect(sql).not.toMatch("features_archive");
 });
 
+it("builds a partition-pruned exact JRA fresh entrant query with active horses only", () => {
+  const sql = buildFreshRaceEntriesQuery(env(), {
+    date: "20260823",
+    keibajoCode: "07",
+    raceBango: "09",
+    source: "jra",
+  });
+  expect(sql).toMatch("FROM pc_keiba.jvd_se");
+  expect(sql).not.toMatch("nvd_se");
+  expect(sql).toMatch("kaisai_nen = '2026'");
+  expect(sql).toMatch("kaisai_tsukihi = '0823'");
+  expect(sql).toMatch("keibajo_code = '07'");
+  expect(sql).toMatch("race_bango = '09'");
+  expect(sql).toMatch("coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')");
+  expect(sql).toMatch("ORDER BY umaban, ketto_toroku_bango");
+  expect(sql).not.toMatch("DISTINCT");
+});
+
+it("keeps NAR and ban-ei fresh entrant source scopes disjoint", () => {
+  const narSql = buildFreshRaceEntriesQuery(env(), {
+    date: "20260823",
+    keibajoCode: "30",
+    raceBango: "11",
+    source: "nar",
+  });
+  const banEiSql = buildFreshRaceEntriesQuery(env(), {
+    date: "20260823",
+    keibajoCode: "83",
+    raceBango: "01",
+    source: "ban-ei",
+  });
+  expect(narSql).toMatch("FROM pc_keiba.nvd_se");
+  expect(narSql).toMatch("keibajo_code <> '83'");
+  expect(banEiSql).toMatch("FROM pc_keiba.nvd_se");
+  expect(banEiSql).toMatch("keibajo_code = '83'");
+});
+
+it("normalises and sorts an exact fresh entrant set", () => {
+  expect(
+    normaliseFreshRaceEntries([
+      { ketto_toroku_bango: " 2023100002 ", umaban: "2" },
+      { ketto_toroku_bango: "2023100001", umaban: 1 },
+    ]),
+  ).toStrictEqual([
+    { kettoTorokuBango: "2023100001", umaban: 1 },
+    { kettoTorokuBango: "2023100002", umaban: 2 },
+  ]);
+});
+
+it("fails closed for empty, invalid, or duplicate fresh entrants", () => {
+  expect(() => normaliseFreshRaceEntries([])).toThrow("fresh race entries are empty");
+  expect(() => normaliseFreshRaceEntries([{ ketto_toroku_bango: "horse", umaban: 1 }])).toThrow(
+    "fresh race entries contain an invalid ketto_toroku_bango",
+  );
+  expect(() =>
+    normaliseFreshRaceEntries([{ ketto_toroku_bango: "2023100001", umaban: 0 }]),
+  ).toThrow("fresh race entries contain an invalid umaban");
+  expect(() =>
+    normaliseFreshRaceEntries([{ ketto_toroku_bango: "2023100001", umaban: null }]),
+  ).toThrow("fresh race entries contain an invalid umaban");
+  expect(() => normaliseFreshRaceEntries([{ ketto_toroku_bango: null, umaban: 1 }])).toThrow(
+    "fresh race entries contain an invalid ketto_toroku_bango",
+  );
+  expect(() =>
+    normaliseFreshRaceEntries([
+      { ketto_toroku_bango: "2023100001", umaban: 1 },
+      { ketto_toroku_bango: "2023100001", umaban: 2 },
+    ]),
+  ).toThrow("fresh race entries contain duplicates");
+  expect(() =>
+    normaliseFreshRaceEntries([
+      { ketto_toroku_bango: "2023100001", umaban: 1 },
+      { ketto_toroku_bango: "2023100002", umaban: 1 },
+    ]),
+  ).toThrow("fresh race entries contain duplicates");
+});
+
 it("rejects unsafe namespace, date, and race filters", () => {
   expect(() =>
     buildRaceKeysQuery({ ...env(), R2_SQL_NAMESPACE: "pc_keiba;drop" }, "20260715"),
@@ -119,6 +198,14 @@ it("rejects unsafe namespace, date, and race filters", () => {
       source: "jra",
     }),
   ).toThrow("raceBango must contain two digits");
+  expect(() =>
+    buildFreshRaceEntriesQuery(env(), {
+      date: "20260715",
+      keibajoCode: "5",
+      raceBango: "01",
+      source: "jra",
+    }),
+  ).toThrow("keibajoCode must contain two digits");
 });
 
 it("keeps DailyRaceEntryRow normalization in fixed raw-table SQL", () => {

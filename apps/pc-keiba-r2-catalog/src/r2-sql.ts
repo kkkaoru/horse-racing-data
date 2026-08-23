@@ -1,8 +1,18 @@
-import type { Fetcher, R2SqlCatalogConfig, RaceFeatureFilters, SourceScope } from "./types";
+import type {
+  Fetcher,
+  FreshRaceEntry,
+  FreshRaceEntryFilters,
+  R2SqlCatalogConfig,
+  RaceFeatureFilters,
+  SourceScope,
+} from "./types";
 
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{2}$/u;
+const KETTO_TOROKU_BANGO_PATTERN = /^\d{10}$/u;
+const MIN_UMABAN: number = 1;
+const MAX_UMABAN: number = 18;
 
 const RUNNER_COLUMNS = `
     kaisai_nen,
@@ -96,6 +106,11 @@ const requireOptionalCode = (value: string | undefined, label: string): string |
   return value;
 };
 
+const requireCode = (value: string, label: string): string => {
+  if (!CODE_PATTERN.test(value)) throw new Error(`${label} must contain two digits`);
+  return value;
+};
+
 const namespaceName = (env: R2SqlCatalogConfig): string =>
   requireIdentifier(env.R2_SQL_NAMESPACE, "R2_SQL_NAMESPACE");
 
@@ -114,6 +129,12 @@ const sourceConfigs = (source: SourceScope): RawSourceConfig[] => {
   if (source === "nar" || source === "ban-ei") return [NAR_CONFIG];
   return [JRA_CONFIG, NAR_CONFIG];
 };
+
+const freshSourceConfig = (source: FreshRaceEntryFilters["source"]): RawSourceConfig =>
+  source === "jra" ? JRA_CONFIG : NAR_CONFIG;
+
+const freshVenuePredicate = (source: FreshRaceEntryFilters["source"]): string | null =>
+  source === "nar" ? "keibajo_code <> '83'" : source === "ban-ei" ? "keibajo_code = '83'" : null;
 
 const rawPredicates = (filters: RaceFeatureFilters, config: RawSourceConfig): string[] => {
   const { kaisaiNen, kaisaiTsukihi } = splitDate(filters.date);
@@ -324,6 +345,33 @@ ${sources.map((source) => source.select).join("\nUNION ALL\n")}
 ORDER BY source, keibajo_code, race_bango, umaban`;
 };
 
+export const buildFreshRaceEntriesQuery = (
+  env: R2SqlCatalogConfig,
+  filters: FreshRaceEntryFilters,
+): string => {
+  const { kaisaiNen, kaisaiTsukihi } = splitDate(filters.date);
+  const keibajoCode = requireCode(filters.keibajoCode, "keibajoCode");
+  const raceBango = requireCode(filters.raceBango, "raceBango");
+  const config = freshSourceConfig(filters.source);
+  const venuePredicate = freshVenuePredicate(filters.source);
+  const predicates = [
+    `kaisai_nen = '${kaisaiNen}'`,
+    `kaisai_tsukihi = '${kaisaiTsukihi}'`,
+    ...(venuePredicate === null ? [] : [venuePredicate]),
+    `keibajo_code = '${keibajoCode}'`,
+    `race_bango = '${raceBango}'`,
+    "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
+    "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) IS NOT NULL",
+    "coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')",
+  ];
+  return `SELECT
+  btrim(ketto_toroku_bango) AS ketto_toroku_bango,
+  try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) AS umaban
+FROM ${rawTableName(env, config.runnerTable)}
+WHERE ${predicates.join(" AND ")}
+ORDER BY umaban, ketto_toroku_bango`;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -396,6 +444,44 @@ const parseRows = (payload: unknown): Record<string, unknown>[] => {
     throw new Error("R2 SQL response has invalid rows");
   }
   return rows;
+};
+
+const normaliseFreshUmaban = (value: unknown): number => {
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(parsed) || parsed < MIN_UMABAN || parsed > MAX_UMABAN) {
+    throw new Error("fresh race entries contain an invalid umaban");
+  }
+  return parsed;
+};
+
+const normaliseFreshKetto = (value: unknown): string => {
+  const ketto = typeof value === "string" ? value.trim() : "";
+  if (!KETTO_TOROKU_BANGO_PATTERN.test(ketto)) {
+    throw new Error("fresh race entries contain an invalid ketto_toroku_bango");
+  }
+  return ketto;
+};
+
+const compareFreshRaceEntries = (left: FreshRaceEntry, right: FreshRaceEntry): number =>
+  left.umaban - right.umaban;
+
+export const normaliseFreshRaceEntries = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): FreshRaceEntry[] => {
+  if (rows.length === 0) throw new Error("fresh race entries are empty");
+  const entries = rows.map(
+    (row): FreshRaceEntry => ({
+      kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
+      umaban: normaliseFreshUmaban(row.umaban),
+    }),
+  );
+  const kettoCount = new Set(entries.map((entry) => entry.kettoTorokuBango)).size;
+  const umabanCount = new Set(entries.map((entry) => entry.umaban)).size;
+  if (kettoCount !== entries.length || umabanCount !== entries.length) {
+    throw new Error("fresh race entries contain duplicates");
+  }
+  return [...entries].sort(compareFreshRaceEntries);
 };
 
 export const executeR2Sql = async (
