@@ -60,8 +60,15 @@ const buildTarget = (
 
 const readinessReason = (row: RunningStyleReadinessRow | undefined): string | null => {
   if (row === undefined) return "state-missing";
-  const entrantCount = Number(row.entrant_count ?? 0);
+  const mirroredEntrantCount = Number(row.entrant_count ?? 0);
   const expectedCount = Number(row.expected_horse_count ?? 0);
+  // Running-style inference reads its rows from the R2 Catalog. The realtime
+  // snapshot/daily-entry mirrors can legitimately still be empty when that
+  // Catalog-backed inference has already completed. In that case the
+  // inference state's expected count is the authoritative entrant count used
+  // for feature filtering and completion; requiring a second mirror made all
+  // ready races fail closed as entrants-missing.
+  const entrantCount = mirroredEntrantCount > 0 ? mirroredEntrantCount : expectedCount;
   const writtenCount = Number(row.written_horse_count ?? 0);
   const predictionCount = Number(row.prediction_count ?? 0);
   if (entrantCount <= 0) return "entrants-missing";
@@ -123,7 +130,10 @@ const buildReadinessSql = (targetCount: number): string => {
         on active.running_key = target.running_key
       left join race_running_styles styles
         on styles.race_key = target.running_key
-       and styles.horse_number = active.horse_number
+       and (
+         active.horse_number is null
+         or styles.horse_number = active.horse_number
+       )
      group by target.running_key, state.status, state.features_r2_key,
               state.expected_horse_count, state.written_horse_count`;
 };

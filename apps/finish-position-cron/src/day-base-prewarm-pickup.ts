@@ -5,6 +5,9 @@
 // prewarm cannot SigV4 PUT; this is the only working write path.
 
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
+import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
+import { getDayBaseCandidateReadiness } from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark, PredictResultLine } from "./ndjson-stream";
 import { listDayBasePickupDoNames } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
@@ -32,11 +35,6 @@ interface PrewarmCacheResponseBody {
   watermarkError?: string | null;
 }
 
-interface BuildDayBaseObjectKeyParams {
-  category: PredictCategory;
-  runYmd: string;
-}
-
 interface ToResultLineParams {
   category: PredictCategory;
   daybaseWatermark: DaybaseWatermark;
@@ -48,9 +46,6 @@ const PREWARM_CACHE_PATH: string = "/prewarm-day-base-cache";
 const PREDICT_HOST: string = "http://do";
 const RESULT_LINE_TYPE: ResultLineType = "result";
 const PLACEHOLDER_RACES_PREDICTED: number = 0;
-const R2_DAY_BASE_PREFIX: string = "feat-daybase";
-const R2_DAY_BASE_GENERATION: string = "catalog-v1";
-const R2_DAY_BASE_FILE: string = "features.parquet";
 const WATERMARK_META_MAX_UPDATED: string = "max-data-sakusei-nengappi";
 const WATERMARK_META_ROW_COUNT: string = "row-count";
 const WATERMARK_META_RS_PREDICTED_AT_MAX: string = "rs-predicted-at-max";
@@ -109,8 +104,7 @@ const hasDayBaseWatermarkMetadata = (value: R2Object): boolean => {
   );
 };
 
-export const buildDayBaseObjectKey = (params: BuildDayBaseObjectKeyParams): string =>
-  `${R2_DAY_BASE_PREFIX}/${R2_DAY_BASE_GENERATION}/${params.category}/${params.runYmd}/${R2_DAY_BASE_FILE}`;
+export { buildDayBaseObjectKey } from "./day-base-object-key";
 
 export const headDayBaseObject = async (
   params: HeadDayBaseObjectParams,
@@ -165,6 +159,18 @@ const pickUpPrewarmDayBaseFromDo = async (
     );
     return false;
   }
+  const readiness = await getDayBaseCandidateReadiness({
+    category,
+    env,
+    runYmd,
+    watermark: body.daybaseWatermark,
+  });
+  if (!readiness.ready) {
+    console.warn(
+      `[day-base-prewarm-pickup] rejected stale candidate category=${category} runYmd=${runYmd} reason=${readiness.reason}`,
+    );
+    return false;
+  }
   await proxyResultParquetsToR2(
     toResultLine({
       category,
@@ -175,6 +181,7 @@ const pickUpPrewarmDayBaseFromDo = async (
     env,
     debug === true,
   );
+  await materializeDayBasePerRaceCache({ category, env, runYmd });
   return true;
 };
 

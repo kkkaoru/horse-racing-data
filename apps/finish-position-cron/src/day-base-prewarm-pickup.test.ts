@@ -3,12 +3,31 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
 
-const { proxyResultParquetsToRMock } = vi.hoisted(() => ({
+const {
+  getDayBaseCandidateReadinessMock,
+  materializeDayBasePerRaceCacheMock,
+  proxyResultParquetsToRMock,
+} = vi.hoisted(() => ({
+  getDayBaseCandidateReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  materializeDayBasePerRaceCacheMock: vi.fn(
+    async (): Promise<{ reason: string; status: "fallback" }> => ({
+      reason: "test-fallback",
+      status: "fallback",
+    }),
+  ),
   proxyResultParquetsToRMock: vi.fn(async () => undefined),
 }));
 
 vi.mock("./container-ndjson-proxy", () => ({
   proxyResultParquetsToR2: proxyResultParquetsToRMock,
+}));
+
+vi.mock("./day-base-race-materializer", () => ({
+  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+}));
+
+vi.mock("./focused-full-day-base-readiness", () => ({
+  getDayBaseCandidateReadiness: getDayBaseCandidateReadinessMock,
 }));
 
 import {
@@ -43,7 +62,10 @@ beforeEach(() => {
   getMock.mockClear();
   idFromNameMock.mockClear();
   headMock.mockClear();
+  materializeDayBasePerRaceCacheMock.mockClear();
   proxyResultParquetsToRMock.mockClear();
+  getDayBaseCandidateReadinessMock.mockReset();
+  getDayBaseCandidateReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
 });
 
 test("buildDayBaseObjectKey is the catalog-v1 day-base path", () => {
@@ -315,6 +337,75 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
     env,
     true,
   );
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env,
+    runYmd: "20260816",
+  });
+});
+
+test("pickUpPrewarmDayBase rejects a stale candidate before canonical R2 PUT", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-daybase/catalog-v1/jra/20260823/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260823090000",
+        rowCount: 26,
+        rsPredictedAtMax: "2026-08-23T00:05:00Z",
+        rsRowCount: 26,
+      },
+    }),
+  );
+  getDayBaseCandidateReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "source-row-count-26-of-392",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const ok = await pickUpPrewarmDayBase({
+    category: "jra",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260823",
+  });
+
+  expect(ok).toBe(false);
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm-pickup] rejected stale candidate category=jra runYmd=20260823 reason=source-row-count-26-of-392",
+  );
+  warnSpy.mockRestore();
+});
+
+test("pickUpPrewarmDayBase cannot report success when canonical R2 PUT rejects", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-daybase/catalog-v1/jra/20260823/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260823090000",
+        rowCount: 392,
+        rsPredictedAtMax: "2026-08-23T00:05:00Z",
+        rsRowCount: 392,
+      },
+    }),
+  );
+  proxyResultParquetsToRMock.mockRejectedValueOnce(new Error("canonical put failed"));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const ok = await pickUpPrewarmDayBase({
+    category: "jra",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260823",
+  });
+
+  expect(ok).toBe(false);
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("canonical put failed"));
+  warnSpy.mockRestore();
 });
 
 test("pickUpPrewarmDayBase PUTs Ban-ei watermark with none RS token", async () => {

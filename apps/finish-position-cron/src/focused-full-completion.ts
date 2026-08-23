@@ -10,6 +10,7 @@ interface CompletionParams {
   runYmd: string;
   keibajoCode: string;
   raceBango: string;
+  notBefore?: string;
 }
 
 interface CatalogEntry {
@@ -178,7 +179,7 @@ interface CountMatchParams {
   modelVersion: string;
   kettoTorokuBangos: readonly string[];
   expectedCount: number;
-  runYmd: string;
+  notBefore: string;
 }
 
 const buildRunDateStartUtc = (runYmd: string): string | null => {
@@ -192,10 +193,14 @@ const buildRunDateStartUtc = (runYmd: string): string | null => {
   return jstDate.toISOString().slice(0, 19);
 };
 
+const resolveCompletionNotBefore = (runYmd: string, notBefore?: string): string | null => {
+  if (notBefore === undefined) return buildRunDateStartUtc(runYmd);
+  const parsed = new Date(notBefore);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 19);
+};
+
 const countMatchesModelVersion = async (params: CountMatchParams): Promise<boolean> => {
   const sql = neon(params.env.NEON_DATABASE_URL);
-  const runDateStartUtc = buildRunDateStartUtc(params.runYmd);
-  if (runDateStartUtc === null) return false;
   const result: unknown = await sql.query(
     `select count(distinct ketto_toroku_bango)::int as actual_rows
        from race_finish_position_model_predictions
@@ -215,7 +220,7 @@ const countMatchesModelVersion = async (params: CountMatchParams): Promise<boole
       params.raceBango,
       params.modelVersion,
       params.kettoTorokuBangos,
-      runDateStartUtc,
+      params.notBefore,
     ],
   );
   if (!Array.isArray(result) || !isRecord(result[0])) return false;
@@ -225,6 +230,8 @@ const countMatchesModelVersion = async (params: CountMatchParams): Promise<boole
 export const isFocusedFullPredictionComplete = async (
   params: CompletionParams,
 ): Promise<boolean> => {
+  const notBefore = resolveCompletionNotBefore(params.runYmd, params.notBefore);
+  if (notBefore === null) return false;
   const entries = await fetchExpectedEntries(params);
   if (entries.length === 0) return false;
   const modelVersion = expectedModelVersion({
@@ -241,7 +248,7 @@ export const isFocusedFullPredictionComplete = async (
     keibajoCode: params.keibajoCode.padStart(2, "0"),
     kettoTorokuBangos: entries.map((entry) => entry.kettoTorokuBango),
     raceBango: params.raceBango.padStart(2, "0"),
-    runYmd: params.runYmd,
+    notBefore,
     source: sourceForCategory(params.category),
   };
   if (await countMatchesModelVersion({ ...shared, modelVersion })) return true;

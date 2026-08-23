@@ -16,10 +16,18 @@ const { checkContainerSlotStopMock, clearContainerSlotMock, completeFocusedFullR
     };
   });
 
+const { isOldDateRunYmdMock } = vi.hoisted(() => ({
+  isOldDateRunYmdMock: vi.fn(() => false),
+}));
+
 vi.mock("./do-state", () => ({
   checkContainerSlotStop: checkContainerSlotStopMock,
   clearContainerSlot: clearContainerSlotMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
+}));
+
+vi.mock("./old-date-guard", () => ({
+  isOldDateRunYmd: isOldDateRunYmdMock,
 }));
 
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
@@ -92,6 +100,8 @@ beforeEach(() => {
   completeFocusedFullRaceMock.mockResolvedValue(undefined);
   clearContainerSlotMock.mockClear();
   clearContainerSlotMock.mockResolvedValue(undefined);
+  isOldDateRunYmdMock.mockReset();
+  isOldDateRunYmdMock.mockReturnValue(false);
 });
 
 test("DLQ_QUEUE_NAME matches the dead-letter queue name in wrangler.jsonc", () => {
@@ -258,7 +268,7 @@ test("queues terminal container cleanup for an exhausted focused-full message", 
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
-test("queues terminal container cleanup for an exhausted rescore message", async () => {
+test("queues terminal shard cleanup for an exhausted rescore message", async () => {
   await handleDlqQueue(
     makeBatch([
       makeMessage({
@@ -269,12 +279,12 @@ test("queues terminal container cleanup for an exhausted rescore message", async
         raceBango: "08",
       }),
     ]),
-    makeEnv(),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
   );
 
   expect(controlSendMock).toHaveBeenCalledWith(
     expect.objectContaining({
-      name: "predict-nar",
+      name: "predict-nar-0",
       type: "container-stop",
       workKey: "rescore:20260712:nar:35:08",
     }),
@@ -543,6 +553,118 @@ test("processes every message in the batch independently", async () => {
   expect(ackMock).toHaveBeenCalledTimes(2);
 });
 
+test("does not redrive an old non-force prediction from the DLQ", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await handleDlqQueue(
+    makeBatch([makeMessage({ keibajoCode: "02", mode: "full", raceBango: "01", skipDedup: true })]),
+    makeEnv(),
+  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "container-stop",
+      workKey: "focused-full:20260712:jra:02:01",
+    }),
+  );
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "02",
+    "01",
+    "dlq-msg-1",
+    0,
+    0,
+    ...nullFailureBindTail,
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+});
+
+test("keeps the explicit historical force path redrivable from the DLQ", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await handleDlqQueue(makeBatch([makeMessage({ force: true })]), makeEnv());
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ force: true, dlqRedriveCount: 1 }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  warnSpy.mockRestore();
+});
+
+test("cleans repair and legacy container ownership for old non-force day-base DLQ work", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleDlqQueue(
+    {
+      messages: [
+        {
+          ack: ackMock,
+          body: {
+            attempt: 4,
+            category: "nar",
+            runYmd: "20260823",
+            type: "day-base-pickup",
+          },
+          retry: retryMock,
+        },
+      ],
+    } as never,
+    makeEnv(),
+  );
+  expect(runMock).toHaveBeenCalledTimes(1);
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-nar",
+      role: "legacy",
+      type: "container-stop",
+      workKey: "day-base:20260823:nar",
+    }),
+  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
+});
+
+test("acks expired day-base DLQ work after logging best-effort cleanup failures", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  runMock.mockRejectedValueOnce(new Error("D1 unavailable"));
+  controlSendMock.mockRejectedValueOnce(new Error("control queue unavailable"));
+  sendMock.mockRejectedValueOnce(new Error("cleanup queue unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleDlqQueue(
+    {
+      messages: [
+        {
+          ack: ackMock,
+          body: {
+            category: "jra",
+            daysAhead: 0,
+            requestedAt: "2026-08-23T00:00:00.000Z",
+            runYmd: "20260823",
+            type: "day-base-prewarm",
+          },
+          retry: retryMock,
+        },
+      ],
+    } as never,
+    makeEnv(),
+  );
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining("old day-base repair cleanup failed"),
+    "Error: D1 unavailable",
+  );
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining("old day-base container cleanup failed"),
+    "Error: cleanup queue unavailable",
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
 test("acks exhausted container control and day-base prewarm messages with an error log", async () => {
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const messages = [
@@ -603,5 +725,74 @@ test("retries an exhausted container stop when the direct DLQ attempt fails", as
 
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+  consoleError.mockRestore();
+});
+
+test("acks cleanup-only DLQ work after handing off the exact stop", async () => {
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const message = {
+    ack: ackMock,
+    body: {
+      attempt: 5,
+      name: "predict-jra-2",
+      role: "legacy",
+      type: "container-cleanup",
+      workKey: "rescore:20260823:jra:04:08",
+    },
+    retry: retryMock,
+  };
+
+  await handleDlqQueue(
+    { messages: [message], queue: DLQ_QUEUE_NAME } as unknown as MessageBatch<
+      import("./types").ContainerCleanupMessage
+    >,
+    makeEnv(),
+  );
+
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-jra-2",
+      role: "legacy",
+      type: "container-stop",
+      workKey: "rescore:20260823:jra:04:08",
+    }),
+  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(runMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  consoleError.mockRestore();
+  consoleLog.mockRestore();
+});
+
+test("bounded-retries cleanup-only DLQ work without prediction redrive", async () => {
+  controlSendMock.mockRejectedValue(new Error("control queue unavailable"));
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await handleDlqQueue(
+    {
+      messages: [
+        {
+          ack: ackMock,
+          body: {
+            attempt: 5,
+            name: "predict-jra-2",
+            role: "legacy",
+            type: "container-cleanup",
+            workKey: "rescore:20260823:jra:04:08",
+          },
+          retry: retryMock,
+        },
+      ],
+      queue: DLQ_QUEUE_NAME,
+    } as unknown as MessageBatch<import("./types").ContainerCleanupMessage>,
+    makeEnv(),
+  );
+
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(runMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledTimes(1);
   consoleError.mockRestore();
 });

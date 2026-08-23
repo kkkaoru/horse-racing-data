@@ -3,8 +3,8 @@
 import { expect, test } from "vitest";
 import { isOldDateRunYmd, OLD_DATE_THRESHOLD_DAYS, parseRunYmdToUtcDate } from "./old-date-guard";
 
-test("OLD_DATE_THRESHOLD_DAYS is 2", () => {
-  expect(OLD_DATE_THRESHOLD_DAYS).toBe(2);
+test("OLD_DATE_THRESHOLD_DAYS is 0", () => {
+  expect(OLD_DATE_THRESHOLD_DAYS).toBe(0);
 });
 
 test("parseRunYmdToUtcDate parses a valid 8-digit runYmd to UTC midnight of that day", () => {
@@ -39,12 +39,12 @@ test("parseRunYmdToUtcDate accepts a leap-day date in a leap year", () => {
   expect(parseRunYmdToUtcDate("20240229")).toStrictEqual(new Date(Date.UTC(2024, 1, 29)));
 });
 
-test("isOldDateRunYmd allows a runYmd exactly at the T-2 boundary", () => {
+test("isOldDateRunYmd skips yesterday so stale retries cannot starve today's card", () => {
   const now = new Date(Date.UTC(2026, 6, 12));
-  expect(isOldDateRunYmd("20260710", now)).toBe(false);
+  expect(isOldDateRunYmd("20260711", now)).toBe(true);
 });
 
-test("isOldDateRunYmd skips a runYmd at T-3, one day past the boundary", () => {
+test("isOldDateRunYmd skips older historical dates", () => {
   const now = new Date(Date.UTC(2026, 6, 12));
   expect(isOldDateRunYmd("20260709", now)).toBe(true);
 });
@@ -77,10 +77,10 @@ test("isOldDateRunYmd treats an empty runYmd as not old", () => {
 test("isOldDateRunYmd applies the JST offset instead of naive UTC calendar math", () => {
   // 2026-07-11T16:30:00Z is JST 2026-07-12 01:30 -- the JST calendar day
   // (07-12) differs from the UTC calendar day (07-11). A runYmd of
-  // 20260709 is T-3 relative to the JST day (07-12), so it must be
-  // skipped -- but under naive (non-JST) UTC date math it would only be
-  // T-2 relative to the UTC day (07-11) and would be allowed. This proves
+  // 20260711 is yesterday relative to the JST day (07-12), so it must be
+  // skipped -- but under naive (non-JST) UTC date math it matches the UTC
+  // day (07-11) and would be allowed. This proves
   // the JST offset is actually applied, not naive UTC date math.
   const now = new Date("2026-07-11T16:30:00.000Z");
-  expect(isOldDateRunYmd("20260709", now)).toBe(true);
+  expect(isOldDateRunYmd("20260711", now)).toBe(true);
 });

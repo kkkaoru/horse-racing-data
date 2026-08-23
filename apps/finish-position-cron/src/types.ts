@@ -37,6 +37,10 @@ export interface Env {
   // Set via `wrangler secret put PC_KEIBA_VIEWER_INTERNAL_TOKEN`. Optional so
   // existing callers/tests need not set it -- bust is skipped when unset.
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
+  // Production prediction cache busts use this direct Worker-to-Worker route
+  // so Cloudflare Access on the public viewer hostname cannot reject them.
+  // Optional to preserve the public-origin fallback in local/test runtimes.
+  PC_KEIBA_VIEWER?: { fetch: typeof fetch };
   // Optional viewer origin override for prediction-cache-bust. Unset/blank
   // falls back to https://pc-keiba-viewer.kkk4oru.com.
   PC_KEIBA_VIEWER_ORIGIN?: string;
@@ -48,6 +52,9 @@ export interface Env {
   // falls back to 0 (no backward window, matching the pre-lookback behavior).
   CORNER_FEATURES_LOOKBACK_DAYS?: string;
   PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
+  // Bearer credential for the catalog's fresh race-entry attestation endpoint.
+  // Rescore retries fail closed before Container dispatch when this is absent.
+  FINISH_POSITION_ATTESTATION_TOKEN?: string;
   // Read/source connection for the heavy DuckDB feature build. Production sets
   // r2-catalog://pc-keiba; an unset value is forwarded empty and the container
   // fails closed instead of falling back to Neon.
@@ -79,6 +86,10 @@ export interface Env {
   // sync-realtime-data. "1" enables the internal rescore endpoint; any other
   // value accepts the request as a no-op so full generation can drain first.
   RESCORE_ENABLED?: string;
+  // "1" attempts JRA horse-weight rescore inside the Worker from the final
+  // per-race feature cache. Any miss or scoring/write failure falls back to
+  // the existing Container path, making this an instant config rollback.
+  JRA_WORKER_RESCORE_ENABLED?: string;
   // Feature flag forwarded into the container env: unset enables the NAR
   // clean Set-Transformer x ensemble score-z blend (iter40); "0", "false", or
   // "off" rolls the container back to the pure iter12 clean188 base. Set via
@@ -111,6 +122,10 @@ export interface Env {
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
   PREDICT_QUEUE: Queue<PredictQueueBody>;
+  // Dedicated low-latency lane for the one post-weight rescore pass. Optional
+  // during rolling deploys; the internal weight endpoint falls back to the
+  // primary queue until this binding is present.
+  WEIGHT_RESCORE_QUEUE?: Queue<PredictQueueMessage>;
   CONTAINER_CONTROL_QUEUE?: Queue<ContainerControlMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;
@@ -193,6 +208,9 @@ export interface DayBasePickupMessage {
   // prediction pass. Scheduled prewarms leave this false/absent and only warm
   // the artifact; the pickup fans out after it proves the fresh object landed.
   generatePredictionsAfterHit?: boolean;
+  // Set only by an authenticated admin historical prewarm. Automatic work
+  // never sets this and is discarded after its JST race day.
+  force?: boolean;
 }
 
 export interface DayBasePrewarmMessage {
@@ -202,6 +220,7 @@ export interface DayBasePrewarmMessage {
   daysAhead: number;
   requestedAt: string;
   generatePredictionsAfterHit?: boolean;
+  force?: boolean;
 }
 
 export interface ContainerControlMessage {
@@ -212,6 +231,14 @@ export interface ContainerControlMessage {
   // Missing means the legacy binding for already-queued control messages.
   role?: "legacy" | "race-chain";
   workKey?: string;
+}
+
+export interface ContainerCleanupMessage {
+  type: "container-cleanup";
+  attempt: number;
+  name: string;
+  role: "legacy" | "race-chain";
+  workKey: string;
 }
 
 export interface PredictQueueMessage {
@@ -238,6 +265,11 @@ export interface PredictQueueMessage {
   // coordinator instead of the legacy per-category claim. Absent/false keeps
   // the normal dedup path.
   skipDedup?: boolean;
+  // Set only after the lightweight race-chain Container reports
+  // DAY_BASE_REQUIRED. Queue retries cannot mutate a body, so the consumer
+  // sends one replacement carrying this durable fallback marker. Once set,
+  // routing must stay on the day-base-capable legacy binding.
+  forceLegacyContainer?: boolean;
   // Durable lifecycle ID for self-heal detection -> enqueue -> consume ->
   // prediction completion accounting. Absent on unrelated legacy messages.
   deliveryTrackingId?: string;
@@ -295,13 +327,18 @@ export interface PredictQueueMessage {
   // three bypasses dispatch to the Container as normal. Absent/false keeps
   // all three guards active.
   force?: boolean;
+  // Stable lower bound for a forced generation's completion check. Queue
+  // redeliveries must only accept rows written after this request, otherwise
+  // pre-existing same-day rows can stop the detached Container prematurely.
+  forceRequestedAt?: string;
 }
 
 export type PredictQueueBody =
   | PredictQueueMessage
   | DeliveryCanaryMessage
   | DayBasePickupMessage
-  | DayBasePrewarmMessage;
+  | DayBasePrewarmMessage
+  | ContainerCleanupMessage;
 
 export interface PredictRunState {
   status: "started" | "success" | "error";

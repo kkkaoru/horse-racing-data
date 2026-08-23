@@ -1,39 +1,7 @@
-// Run with bun. Worker-native JRA per-race rescore consumer body. Given a
-// per-race rescore message (mode="rescore" with keibajoCode + raceBango), it:
-//   (a) reads the Stage-1 R2 feature-cache parquet for the run date,
-//   (b) isolates the target race's rows by race_id,
-//   (c) fetches the freshest tansho odds + bataiju from the realtime workers,
-//   (d) recomputes the 5 late-binding feature columns per horse,
-//   (e) loads CB iter20 + XGB E-top2 + feature_names from R2,
-//   (f) scores the race with the E-top2 override (scoreJraRace), and
-//   (g) UPSERTs the ranked predictions into Neon.
-//
-// This replaces the container round-trip for JRA per-race rescores: no 21y Neon
-// scan, no DuckDB feature build — just cache get + realtime fetch + score + write.
-// Mirrors the Python predict_upcoming._score_one_race_etop2 + upsert_sql path.
-//
-// The Neon connection string is never logged (matching neon-warm.ts).
-//
-// STALE — DO NOT WIRE UP AS-IS (2026-07-11): this module has zero callers and
-// must stay that way until it is refreshed. It targets the CatBoost
-// iter20-jra-cb-2013-v8 + XGBoost xgb-jra-2013-v8 E-top2 override (writes
-// model_version="iter22-jra-etop2"), an architecture production retired on
-// 2026-06-26 in favour of the similarity-feature model jra-cb-v9-sim-2013 (see
-// predict_lib.model_meta.py: JRA_ETOP2_ENABLED = False, "sim_* CB model has
-// 263 features but the XGB override model expects 244"), which was itself
-// superseded on 2026-07-04 by the leak-free jra-cb-v9-sim-2013-clean. Neither
-// iter20-jra-cb-2013-v8 nor xgb-jra-2013-v8 nor iter22-jra-etop2 is in
-// predict_lib.model_meta.PRODUCTION_MODEL_VERSION_ALLOWLIST, and this module
-// has no equivalent allowlist / within-race-leak guard of its own. Current
-// production JRA per-race rescore instead routes through the existing
-// container held /predict mode=rescore path (see race-coordinator.ts +
-// queue-consumer.ts CONTAINER_PER_RACE_CATEGORIES), which shares
-// _score_and_flush_races / score_races with the full pass and so inherits the
-// current champion, cell routing, and allowlist automatically. Re-wiring this
-// module would require porting the current model + cell-routing variants here
-// first (rejected as a duplicate-implementation-drift risk — see the RS
-// flatbin categorical bug precedent) or, if ever revisited, a full model +
-// parity-fixture refresh plus a ported leak/allowlist guard.
+// Run with bun. Worker-native JRA per-race rescore. It refreshes only the live
+// odds/weight columns in the final per-race R2 cache, uses the same current
+// champion routing and CatBoost models as the Container, then performs the
+// prediction-table UPSERT. Callers retain a fail-closed Container fallback.
 
 import { neon } from "@neondatabase/serverless";
 
@@ -43,17 +11,21 @@ import {
   decodeCacheParquet,
   groupRowsByRace,
   refreshLateBindingColumns,
-  toJraRaceEntry,
 } from "./feature-cache";
-import { JRA_ETOP2_MODEL_VERSION, loadJraModels } from "./model-loader";
 import { fetchOddsForRace, fetchWeightForRace, sourceForCategory } from "./rescore-realtime";
-import { scoreJraRace, type JraRaceEntry, type JraScoredPrediction } from "./jra-scorer";
+import {
+  JRA_SHADOW_MODEL_SPECS,
+  loadSelectedJraShadowModel,
+  scoreJraRaceShadow,
+  selectJraShadowModel,
+  type JraShadowPrediction,
+  type JraShadowScoreResult,
+} from "./jra-shadow-scorer";
 import type { Env, PredictQueueMessage } from "../types";
 import type { FeatureEntry } from "./feature-projection";
 
 const JRA_CATEGORY = "jra";
 const RACE_ID_NEN_END = 4;
-const RACE_CLASS_FIELD = "kyoso_joken_code";
 // popularity_score needs runner_count > 1; a 0- or 1-entry odds map cannot give
 // a valid denominator, so it degrades to the category median (null runnerCount).
 const ODDS_MAP_RUNNER_FLOOR = 1;
@@ -75,8 +47,29 @@ const UPDATABLE_COLUMNS = [
   "predicted_top1_prob",
   "predicted_top3_prob",
   "predicted_finish_position",
+  "odds_score",
+  "tansho_odds",
+  "futan_juryo",
+  "weight_diff_from_avg",
+  "distance_band",
+  "field_size_band",
+  "season_band",
+  "class_code",
+  "surface",
 ];
 const INSERT_COLUMNS = [...PRIMARY_KEY_COLUMNS, ...UPDATABLE_COLUMNS];
+const TURF_TRACK_CODE_MIN = 10;
+const TURF_TRACK_CODE_MAX = 22;
+const DIRT_TRACK_CODE_MIN = 23;
+const DIRT_TRACK_CODE_MAX = 29;
+const OBSTACLE_TRACK_CODE_MIN = 51;
+const OBSTACLE_TRACK_CODE_MAX = 59;
+const SPRINT_DISTANCE_MAX = 1400;
+const MILE_DISTANCE_MAX = 1800;
+const INTERMEDIATE_DISTANCE_MAX = 2200;
+const LONG_DISTANCE_MAX = 2800;
+const SMALL_FIELD_MAX = 8;
+const MEDIUM_FIELD_MAX = 14;
 
 export type RescoreStatus = "ok" | "cache_miss" | "race_not_found";
 
@@ -91,7 +84,7 @@ export interface RescoreJraRaceResult {
   status: RescoreStatus;
   racesPredicted: number;
   predictionCount: number;
-  etop2Fired: boolean;
+  modelVersion: string | null;
 }
 
 interface RaceIdParts {
@@ -102,14 +95,20 @@ interface RaceIdParts {
   raceBango: string;
 }
 
+interface PredictionRowContext {
+  entries: ReadonlyArray<FeatureEntry>;
+  modelVersion: string;
+  parts: RaceIdParts;
+}
+
 const CACHE_MISS_RESULT: RescoreJraRaceResult = {
-  etop2Fired: false,
+  modelVersion: null,
   predictionCount: 0,
   racesPredicted: 0,
   status: "cache_miss",
 };
 const RACE_NOT_FOUND_RESULT: RescoreJraRaceResult = {
-  etop2Fired: false,
+  modelVersion: null,
   predictionCount: 0,
   racesPredicted: 0,
   status: "race_not_found",
@@ -144,10 +143,48 @@ const cellToString = (value: unknown): string | null => {
   return null;
 };
 
-const raceClassFrom = (rows: ReadonlyArray<FeatureEntry>): string | null => {
-  const first = rows[0];
-  if (first === undefined) return null;
-  return cellToString(first[RACE_CLASS_FIELD]);
+const cellToNumber = (value: unknown): number | null => {
+  const text = cellToString(value);
+  if (text === null) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const classifyDistanceBand = (value: unknown): string | null => {
+  const distance = cellToNumber(value);
+  if (distance === null) return null;
+  if (distance <= SPRINT_DISTANCE_MAX) return "sprint";
+  if (distance <= MILE_DISTANCE_MAX) return "mile";
+  if (distance <= INTERMEDIATE_DISTANCE_MAX) return "intermediate";
+  if (distance <= LONG_DISTANCE_MAX) return "long";
+  return "extended";
+};
+
+const classifyFieldSizeBand = (value: unknown): string | null => {
+  const fieldSize = cellToNumber(value);
+  if (fieldSize === null) return null;
+  if (fieldSize <= SMALL_FIELD_MAX) return "small";
+  if (fieldSize <= MEDIUM_FIELD_MAX) return "medium";
+  return "large";
+};
+
+const classifySeasonBand = (kaisaiTsukihi: string): string | null => {
+  const month = Number(kaisaiTsukihi.slice(0, 2));
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (month >= 3 && month <= 5) return "spring";
+  if (month >= 6 && month <= 8) return "summer";
+  if (month >= 9 && month <= 11) return "autumn";
+  return "winter";
+};
+
+const classifySurface = (value: unknown): string | null => {
+  const trackCode = cellToNumber(value);
+  if (trackCode === null) return null;
+  if (trackCode >= TURF_TRACK_CODE_MIN && trackCode <= TURF_TRACK_CODE_MAX) return "turf";
+  if (trackCode >= DIRT_TRACK_CODE_MIN && trackCode <= DIRT_TRACK_CODE_MAX) return "dirt";
+  if (trackCode >= OBSTACLE_TRACK_CODE_MIN && trackCode <= OBSTACLE_TRACK_CODE_MAX)
+    return "obstacle";
+  return null;
 };
 
 interface RefreshRowsInput {
@@ -171,21 +208,20 @@ interface RefreshRowInput {
   runnerCount: number | null;
 }
 
-const refreshRow = (input: RefreshRowInput): JraRaceEntry => {
-  const entry = toJraRaceEntry(input.row);
-  const odds = input.rowsInput.oddsMap.get(entry.umaban);
-  const refreshed = refreshLateBindingColumns({
+const refreshRow = (input: RefreshRowInput): FeatureEntry => {
+  const umaban = Number(cellToString(input.row.umaban));
+  const odds = input.rowsInput.oddsMap.get(umaban);
+  return refreshLateBindingColumns({
     category: JRA_CATEGORY,
-    currentBataiju: input.rowsInput.weightMap.get(entry.umaban) ?? null,
+    currentBataiju: input.rowsInput.weightMap.get(umaban) ?? null,
     row: input.row,
     runnerCount: input.runnerCount,
     tanshoNinkijun: odds?.tanshoNinkijun ?? null,
     tanshoOdds: odds?.tanshoOdds ?? null,
   });
-  return toJraRaceEntry(refreshed);
 };
 
-const buildEntries = (input: RefreshRowsInput): JraRaceEntry[] => {
+const buildEntries = (input: RefreshRowsInput): FeatureEntry[] => {
   const runnerCount = runnerCountFromOdds(input.oddsMap);
   return input.rows.map((row) => refreshRow({ row, rowsInput: input, runnerCount }));
 };
@@ -220,40 +256,60 @@ export const buildUpsertSql = (rowCount: number): string => {
 };
 
 const buildRowParams = (
-  prediction: JraScoredPrediction,
-  parts: RaceIdParts,
-): (string | number | null)[] => [
-  JRA_ETOP2_MODEL_VERSION,
-  parts.source,
-  parts.kaisaiNen,
-  parts.kaisaiTsukihi,
-  parts.keibajoCode,
-  parts.raceBango,
-  prediction.kettoTorokuBango,
-  prediction.umaban,
-  prediction.predictedScore,
-  prediction.predictedRank,
-  prediction.predictedTop1Prob,
-  prediction.predictedTop3Prob,
-  prediction.predictedFinishPosition,
-];
+  prediction: JraShadowPrediction,
+  context: PredictionRowContext,
+): (string | number | null)[] => {
+  const entry = context.entries.find(
+    (candidate) => cellToString(candidate.ketto_toroku_bango) === prediction.kettoTorokuBango,
+  );
+  const raceEntry = context.entries[0];
+  return [
+    context.modelVersion,
+    context.parts.source,
+    context.parts.kaisaiNen,
+    context.parts.kaisaiTsukihi,
+    context.parts.keibajoCode,
+    context.parts.raceBango,
+    prediction.kettoTorokuBango,
+    prediction.umaban,
+    prediction.predictedScore,
+    prediction.predictedRank,
+    null,
+    null,
+    null,
+    cellToNumber(entry?.odds_score),
+    cellToNumber(entry?.tansho_odds),
+    cellToNumber(entry?.futan_juryo),
+    cellToNumber(entry?.weight_diff_from_avg),
+    classifyDistanceBand(raceEntry?.kyori),
+    classifyFieldSizeBand(raceEntry?.shusso_tosu),
+    classifySeasonBand(context.parts.kaisaiTsukihi),
+    cellToString(raceEntry?.kyoso_joken_code),
+    classifySurface(raceEntry?.track_code),
+  ];
+};
 
 export const buildUpsertParams = (
-  predictions: ReadonlyArray<JraScoredPrediction>,
-  parts: RaceIdParts,
+  predictions: ReadonlyArray<JraShadowPrediction>,
+  context: PredictionRowContext,
 ): (string | number | null)[] =>
-  predictions.flatMap((prediction) => buildRowParams(prediction, parts));
+  predictions.flatMap((prediction) => buildRowParams(prediction, context));
 
 interface UpsertInput {
   env: Env;
-  predictions: ReadonlyArray<JraScoredPrediction>;
+  entries: ReadonlyArray<FeatureEntry>;
+  scored: JraShadowScoreResult;
   parts: RaceIdParts;
 }
 
 const upsertPredictions = async (input: UpsertInput): Promise<void> => {
   const sql = neon(input.env.NEON_DATABASE_URL);
-  const statement = buildUpsertSql(input.predictions.length);
-  const params = buildUpsertParams(input.predictions, input.parts);
+  const statement = buildUpsertSql(input.scored.predictions.length);
+  const params = buildUpsertParams(input.scored.predictions, {
+    entries: input.entries,
+    modelVersion: input.scored.modelVersion,
+    parts: input.parts,
+  });
   await sql.query(statement, params);
 };
 
@@ -311,23 +367,27 @@ interface ScoreAndWriteInput {
 }
 
 const scoreAndWrite = async (input: ScoreAndWriteInput): Promise<RescoreJraRaceResult> => {
-  const models = await loadJraModels(input.env.FEATURES_CACHE);
   const entries = buildEntries({
     oddsMap: input.oddsMap,
     rows: input.rows,
     weightMap: input.weightMap,
   });
-  const scored = scoreJraRace({
-    catboostModel: models.catboostModel,
-    entries,
-    featureNames: models.featureNames,
-    raceClass: raceClassFrom(input.rows),
-    xgboostModel: models.xgboostModel,
-  });
+  const selected = selectJraShadowModel(entries, { preservedOddsGateEnabled: true });
+  const loaded = await loadSelectedJraShadowModel(input.env.FEATURES_CACHE, selected);
+  const initialScore = scoreJraRaceShadow(entries, loaded);
+  const scored = initialScore.stage1RescoreRequired
+    ? scoreJraRaceShadow(
+        entries,
+        await loadSelectedJraShadowModel(
+          input.env.FEATURES_CACHE,
+          JRA_SHADOW_MODEL_SPECS.stage1_marketfree,
+        ),
+      )
+    : initialScore;
   const parts = splitRaceId(cellToString(input.rows[0]?.race_id) ?? "");
-  await upsertPredictions({ env: input.env, parts, predictions: scored.predictions });
+  await upsertPredictions({ entries, env: input.env, parts, scored });
   return {
-    etop2Fired: scored.etop2Fired,
+    modelVersion: scored.modelVersion,
     predictionCount: scored.predictions.length,
     racesPredicted: 1,
     status: "ok",
@@ -360,4 +420,11 @@ export const rescoreJraRace = async (input: RescoreJraRaceInput): Promise<Rescor
   return scoreAndWrite({ env: input.env, oddsMap, rows: target.rows, weightMap });
 };
 
-export { buildTargetRaceId, raceClassFrom, splitRaceId };
+export {
+  buildTargetRaceId,
+  classifyDistanceBand,
+  classifyFieldSizeBand,
+  classifySeasonBand,
+  classifySurface,
+  splitRaceId,
+};

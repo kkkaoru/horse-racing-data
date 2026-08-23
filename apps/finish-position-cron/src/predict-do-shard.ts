@@ -27,12 +27,10 @@ const RACE_SHARDED_DO_FLAG_VALUE = "1";
 // wrangler.jsonc defines exactly one `containers` entry for
 // FinishPositionPredictContainer with max_instances: 12, shared across every
 // category that uses this binding -- not per-category. jra/nar/ban-ei can
-// all race the same weekend, so if every category were simultaneously at
-// full shard count PLUS the 3 unsharded category DOs used by rescore and
-// day-base, unique DO names = 3*shardCount + 3. The software cap in
+// all race the same weekend, so the software cap in
 // container-slot-cap.ts (general 10 + Ban-ei reserved 2) is what keeps
 // starts at or under 12; shardCount 3 remains the default so focused-full
-// can still fan out per category without each rescore also opening a shard.
+// and per-race rescore can fan out without exceeding the bounded pool.
 const DEFAULT_RACE_SHARD_MAX_CONCURRENT = 3;
 const SHARD_KEY_SEPARATOR = ":";
 
@@ -49,10 +47,6 @@ interface ResolvePredictDoNameParams {
   env: Env;
   keibajoCode?: string;
   raceBango?: string;
-  // Per-race rescore must share the category DO (predict-{category}) even when
-  // RACE_SHARDED_DO is on. Sharding rescores is what packed 5+ JRA/NAR
-  // instances tonight: each hash bucket starts a dedicated container.
-  shareCategoryInstance?: boolean;
 }
 
 const hashString = (value: string): number =>
@@ -98,14 +92,9 @@ export const listDayBasePickupDoNames = (params: {
 }): readonly string[] => [`${PREDICT_DO_NAME_PREFIX}${params.category}`];
 
 export const resolvePredictDoName = (params: ResolvePredictDoNameParams): string => {
-  const { category, env, keibajoCode, raceBango, shareCategoryInstance } = params;
+  const { category, env, keibajoCode, raceBango } = params;
   const unshardedName = `${PREDICT_DO_NAME_PREFIX}${category}`;
-  if (
-    shareCategoryInstance === true ||
-    !isRaceShardingEnabled(env) ||
-    keibajoCode === undefined ||
-    raceBango === undefined
-  ) {
+  if (!isRaceShardingEnabled(env) || keibajoCode === undefined || raceBango === undefined) {
     return unshardedName;
   }
   const shardIndex = resolveShardIndex(keibajoCode, raceBango, resolveShardMaxConcurrent(env));

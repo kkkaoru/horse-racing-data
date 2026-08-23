@@ -148,18 +148,6 @@ test("shards ban-ei races independently of jra using the same category prefix sc
   ).toBe("predict-ban-ei-2");
 });
 
-test("shareCategoryInstance keeps a JRA rescore on the unsharded category DO when sharding is on", () => {
-  expect(
-    resolvePredictDoName({
-      category: "jra",
-      env: makeEnv({ RACE_SHARDED_DO: "1" }),
-      keibajoCode: "05",
-      raceBango: "02",
-      shareCategoryInstance: true,
-    }),
-  ).toBe("predict-jra");
-});
-
 test("listDayBasePickupDoNames is the unsharded category DO when sharding is off", () => {
   expect(listDayBasePickupDoNames({ category: "ban-ei", env: makeEnv() })).toStrictEqual([
     "predict-ban-ei",
@@ -172,38 +160,15 @@ test("listDayBasePickupDoNames only probes the day-base owner when race sharding
   ).toStrictEqual(["predict-ban-ei"]);
 });
 
-test("shareCategoryInstance keeps a NAR rescore on the unsharded category DO when sharding is on", () => {
-  expect(
-    resolvePredictDoName({
-      category: "nar",
-      env: makeEnv({ RACE_SHARDED_DO: "1" }),
-      keibajoCode: "44",
-      raceBango: "01",
-      shareCategoryInstance: true,
-    }),
-  ).toBe("predict-nar");
-});
-
-test("shareCategoryInstance keeps a Ban-ei rescore on the unsharded category DO when sharding is on", () => {
-  expect(
-    resolvePredictDoName({
-      category: "ban-ei",
-      env: makeEnv({ RACE_SHARDED_DO: "1" }),
-      keibajoCode: "83",
-      raceBango: "01",
-      shareCategoryInstance: true,
-    }),
-  ).toBe("predict-ban-ei");
-});
-
-test("focused-full without shareCategoryInstance still shards when RACE_SHARDED_DO is on", () => {
-  expect(
-    resolvePredictDoName({
-      category: "jra",
-      env: makeEnv({ RACE_SHARDED_DO: "1" }),
-      keibajoCode: "05",
-      raceBango: "02",
-      shareCategoryInstance: false,
-    }),
-  ).toBe("predict-jra-2");
+test("maps the three JRA venues onto distinct bounded shards", () => {
+  const env = makeEnv({ RACE_SHARDED_DO: "1" });
+  expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "01", raceBango: "01" })).toBe(
+    "predict-jra-0",
+  );
+  expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "04", raceBango: "01" })).toBe(
+    "predict-jra-2",
+  );
+  expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "07", raceBango: "01" })).toBe(
+    "predict-jra-1",
+  );
 });

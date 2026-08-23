@@ -63,17 +63,11 @@ const putParquetToR2 = async (
   env: R2ProxyEnv,
   debug: boolean,
 ): Promise<void> => {
-  try {
-    const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
-    await env.FEATURES_CACHE.put(entry.key, bytes.buffer, buildR2PutOptions(entry.customMetadata));
-    if (debug) {
-      console.log(
-        `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
-      );
-    }
-  } catch (err) {
-    console.error(
-      `[container-class] ${logLabel(entry.kind)} failed key=${entry.key}: ${String(err)}`,
+  const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
+  await env.FEATURES_CACHE.put(entry.key, bytes.buffer, buildR2PutOptions(entry.customMetadata));
+  if (debug) {
+    console.log(
+      `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
     );
   }
 };
@@ -120,12 +114,21 @@ const proxyResultLineParquetsToR2 = async (
   env: R2ProxyEnv,
   debug: boolean,
 ): Promise<void> => {
+  let parsed: { type?: unknown };
   try {
-    const parsed = JSON.parse(line) as { type?: unknown };
-    if (parsed.type !== RESULT_LINE_TYPE) return;
-    await proxyResultParquetsToR2(parsed as PredictResultLine, env, debug);
+    parsed = JSON.parse(line) as { type?: unknown };
   } catch {
     // Malformed JSON is left for parseNdjsonStream to surface to the queue consumer.
+    return;
+  }
+  if (parsed.type !== RESULT_LINE_TYPE) return;
+  try {
+    await proxyResultParquetsToR2(parsed as PredictResultLine, env, debug);
+  } catch (error) {
+    // Live NDJSON proxying is intentionally best effort so an R2 outage does
+    // not truncate the Container response. Explicit pickup callers invoke the
+    // strict export directly and therefore cannot report a false success.
+    console.error(`[container-class] live R2 proxy failed: ${String(error)}`);
   }
 };
 

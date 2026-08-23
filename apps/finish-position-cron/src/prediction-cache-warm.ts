@@ -3,9 +3,11 @@
 // After predictions land in Neon and pred:fp KV is written, the cron Worker
 // warms the viewer's finish-prediction section, race-detail SSR snapshot,
 // and race-detail page so colo Cache API + DETAIL_SECTION_CACHE_KV are hot.
-// Do not force __predictionRefresh on the generate path -- that recomputes
-// from Neon and often exceeds the warm timeout. Failures are logged and
-// never thrown so they can never block the predict ack path.
+// The normal path first busts the viewer's stale Cache API / finish-inputs
+// copies, then always warms with __predictionRefresh. Cache API deletion does
+// not make KV propagation synchronous, so a normal warm could otherwise read
+// an old static KV snapshot back into cache after a successful bust. Failures
+// are logged and never thrown so they can never block prediction.
 
 import { isOverseasKeibajoCode } from "./cron-decision";
 import { publishFinishPositionPredictionCache } from "./prediction-kv-writer";
@@ -69,6 +71,7 @@ interface WarmRaceParams {
   month: string;
   raceNumber: string;
   refresh?: boolean;
+  viewer?: Env["PC_KEIBA_VIEWER"];
   year: string;
 }
 
@@ -144,11 +147,18 @@ const buildRaceDetailPageUrl = (params: WarmRaceParams): string =>
 const buildRaceDetailSsrWarmUrl = (params: WarmRaceParams): string =>
   `${VIEWER_BASE_URL}${RACE_DETAIL_SSR_PATH}?date=${params.year}-${params.month}-${params.day}&keibajo=${params.keibajoCode}&race=${params.raceNumber}`;
 
-const fetchWithTimeout = async (url: string, init?: WarmFetchInit): Promise<boolean> => {
+const resolveViewerFetcher = (viewer: Env["PC_KEIBA_VIEWER"]): typeof fetch =>
+  viewer ? (input, init) => viewer.fetch(input, init) : fetch;
+
+const fetchWithTimeout = async (
+  url: string,
+  viewer: Env["PC_KEIBA_VIEWER"],
+  init?: WarmFetchInit,
+): Promise<boolean> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), WARM_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const response = await resolveViewerFetcher(viewer)(url, {
       ...(init === undefined ? {} : init),
       signal: controller.signal,
     });
@@ -163,20 +173,22 @@ const fetchWithTimeout = async (url: string, init?: WarmFetchInit): Promise<bool
 // Fire-and-forget warm of one race's viewer section. Returns true on a 2xx
 // response; any non-2xx, timeout, or network error returns false (never throws).
 export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promise<boolean> =>
-  fetchWithTimeout(buildSectionUrl(params));
+  fetchWithTimeout(buildSectionUrl(params), params.viewer);
 
 export const warmRaceDetailPage = async (params: WarmRaceParams): Promise<boolean> =>
-  fetchWithTimeout(buildRaceDetailPageUrl(params));
+  fetchWithTimeout(buildRaceDetailPageUrl(params), params.viewer);
 
 export const warmRaceDetailSsrSnapshot = async (params: WarmRaceParams): Promise<boolean> =>
-  fetchWithTimeout(buildRaceDetailSsrWarmUrl(params), {
+  fetchWithTimeout(buildRaceDetailSsrWarmUrl(params), params.viewer, {
     headers: { [CACHE_WARM_HEADER_NAME]: CACHE_WARM_HEADER_VALUE },
     method: HTTP_POST_METHOD,
   });
 
 export const warmViewerDisplayForRace = async (params: WarmRaceParams): Promise<boolean> => {
-  const sectionOk = await warmPredictionCacheForRace(params);
-  const ssrOk = await warmRaceDetailSsrSnapshot(params);
+  const [sectionOk, ssrOk] = await Promise.all([
+    warmPredictionCacheForRace(params),
+    warmRaceDetailSsrSnapshot(params),
+  ]);
   const pageOk = await warmRaceDetailPage(params);
   return sectionOk && ssrOk && pageOk;
 };
@@ -219,6 +231,7 @@ export const warmPredictionCacheForCategory = async (
         keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
         month,
         raceNumber: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+        viewer: params.env.PC_KEIBA_VIEWER,
         year,
       }),
     ),
@@ -231,7 +244,7 @@ export const populateViewerDisplayCache = async (
 ): Promise<boolean> => {
   if (params.runYmd.length !== YMD_LENGTH) return false;
   const published = await publishFinishPositionPredictionCache({
-    bustCacheApi: false,
+    bustCacheApi: true,
     category: params.category,
     env: params.env,
     keibajoCode: params.keibajoCode,
@@ -239,9 +252,16 @@ export const populateViewerDisplayCache = async (
     runYmd: params.runYmd,
   });
   if (published.status !== "written") return false;
-  return warmViewerDisplayForRace(
-    buildWarmRaceParamsFromYmd(params.runYmd, params.keibajoCode, params.raceBango),
+  const warmParams: WarmRaceParams = buildWarmRaceParamsFromYmd(
+    params.runYmd,
+    params.keibajoCode,
+    params.raceBango,
   );
+  return warmViewerDisplayForRace({
+    ...warmParams,
+    refresh: true,
+    viewer: params.env.PC_KEIBA_VIEWER,
+  });
 };
 
 export const retryPopulateViewerDisplayCache = async (

@@ -8,6 +8,7 @@ export type PredictionContainerRole = "legacy" | "race-chain";
 interface ResolveRaceContainerRouteParams {
   category: PredictCategory;
   env: Env;
+  forceLegacy?: boolean;
   focusedFull: boolean;
   runYmd: string;
 }
@@ -42,8 +43,12 @@ export const qualifyPredictionContainerDoName = (
 export const resolveRaceContainerRoute = async (
   params: ResolveRaceContainerRouteParams,
 ): Promise<PredictionContainerRoute> => {
-  const { category, env, focusedFull, runYmd } = params;
-  if (!focusedFull || env.RACE_CHAIN_CONTAINER_ENABLED !== RACE_CHAIN_ENABLED_VALUE)
+  const { category, env, forceLegacy, focusedFull, runYmd } = params;
+  if (
+    forceLegacy === true ||
+    !focusedFull ||
+    env.RACE_CHAIN_CONTAINER_ENABLED !== RACE_CHAIN_ENABLED_VALUE
+  )
     return legacyRoute(env);
   if (!enabledCategories(env).has(category)) return legacyRoute(env);
   if (env.FINISH_POSITION_RACE_CHAIN_CONTAINER === undefined) return legacyRoute(env);

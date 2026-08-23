@@ -2,7 +2,11 @@
 // For each message: dedup via DO coordinator (strong consistency), call the Container
 // DO stub's fetch, track state.
 
-import { consumeDayBasePickup, isDayBasePickupQueueMessage } from "./day-base-pickup";
+import {
+  cleanupDayBaseWork,
+  consumeDayBasePickup,
+  isDayBasePickupQueueMessage,
+} from "./day-base-pickup";
 import {
   consumeDeliveryCanary,
   isDeliveryCanaryQueueMessage,
@@ -10,11 +14,16 @@ import {
 } from "./delivery-canary";
 import { recordDeliveryConsumed, recordPredictionCompleted } from "./delivery-lifecycle";
 import {
+  CONTAINER_SLOT_CAPPED_STATE,
   CONTAINER_SLOT_RETRY_DELAY_SECONDS,
   CONTAINER_SLOT_STALE_MS,
   type ContainerSlotKind,
 } from "./container-slot-cap";
-import { enqueueContainerStopForRole } from "./container-control";
+import {
+  consumeContainerCleanup,
+  handOffContainerStopOrCleanup,
+  isContainerCleanupQueueMessage,
+} from "./container-cleanup";
 import { isDayBasePrewarmQueueMessage, prewarmCategoryWithOutcome } from "./day-base-prewarm";
 import {
   claimContainerSlot,
@@ -25,7 +34,10 @@ import {
   completeFocusedFullRace,
   completeRescoreRace,
   completeRun,
+  failFocusedFullRaceEnqueue,
   releaseContainerSlot,
+  reserveFocusedFullRaceEnqueue,
+  touchContainerSlot,
 } from "./do-state";
 import {
   isFocusedFullPredictionComplete,
@@ -33,6 +45,8 @@ import {
   isPerRaceRescoreReady,
 } from "./focused-full-completion";
 import { pickUpFocusedFullCache } from "./focused-full-cache-pickup";
+import { clearDayBaseRepairReservation, enqueueDayBaseRepairOnce } from "./day-base-repair";
+import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import {
   parseNdjsonStream,
   type PredictProgressLine,
@@ -63,18 +77,30 @@ import {
   type PredictionContainerRole,
 } from "./race-container-routing";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
+import { addRescoreAttestationToUrl, createRescoreAttestation } from "./rescore-attestation";
 import { getRunningStyleRaceReadiness } from "./running-style-readiness";
+import { rescoreJraRace } from "./scoring/rescore-consumer";
 import {
   buildRetryErrorBindParams,
   buildRetryErrorInsertSql,
   buildRetryErrorRecord,
 } from "./retry-errors";
-import type { Env, PredictQueueBody, PredictQueueMessage } from "./types";
+import type {
+  DayBasePickupMessage,
+  DayBasePrewarmMessage,
+  Env,
+  PredictCategory,
+  PredictQueueBody,
+  PredictQueueMessage,
+} from "./types";
 
 const PREDICT_PATH = "/predict";
+const FOCUSED_FULL_STATUS_PATH = "/focused-full-status";
 const PREDICT_HOST = "http://do";
 const RESCORE_MODE = "rescore";
 const RESULT_SUCCESS_STATUS = "success";
+const DAY_BASE_REQUIRED_ERROR_CODE = "DAY_BASE_REQUIRED:";
+const ENABLED_FLAG = "1";
 // Focused full returns "accepted" when the container either launched a detached
 // pipeline for this race or observed the same race already in flight. The queue
 // consumer polls Neon completion on delayed redeliveries instead of holding a
@@ -82,6 +108,7 @@ const RESULT_SUCCESS_STATUS = "success";
 const FOCUSED_FULL_ACCEPTED_STATUS = "accepted";
 const FOCUSED_FULL_BUSY_STATUS = "busy";
 const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
+const CONTAINER_SLOT_STOPPING_STATE = "stopping";
 // Status written to the focused-full DO claim (predict-run-coordinator.ts)
 // when a message is skipped for carrying an old runYmd (old-date-guard.ts).
 // Not a TERMINAL_STATUSES entry there, so it does not itself block a future
@@ -108,7 +135,7 @@ const LEGACY_BUSY_REQUEUE_COUNT_ZERO = 0;
 // CatBoost/XGBoost scoring + Neon UPSERT) has been observed taking 10-20+
 // minutes end-to-end (NAR ~13-17 min extrapolated from partial timing; JRA has
 // ~1.6x as many layers so plausibly up to ~25-27 min).
-// FOCUSED_FULL_RETRY_DELAY_SECONDS (2.5 min) x max_retries (100, set in
+// FOCUSED_FULL_RETRY_DELAY_SECONDS (30 sec) x max_retries (100, set in
 // wrangler.jsonc) gives a bounded retry budget with ample race-day headroom --
 // comfortably above the worst-case observed/extrapolated single-run duration,
 // while each individual delivery after launch is a cheap fast completion /
@@ -116,7 +143,7 @@ const LEGACY_BUSY_REQUEUE_COUNT_ZERO = 0;
 // that race already in flight for that category. SLEEP_AFTER in
 // container-class.ts is "20m" so a detached first-day day-base build
 // (10–15m) is not killed by "Activity expired".
-const FOCUSED_FULL_RETRY_DELAY_SECONDS = 150;
+const FOCUSED_FULL_RETRY_DELAY_SECONDS = 30;
 // Absolute no-progress deadline for a launched race. Queue redelivery alone
 // must not refresh it: receiving the same message is not evidence that the
 // detached Python pipeline is alive. Once this expires the Worker clears the
@@ -152,6 +179,58 @@ interface FocusedFullCachePickupParams {
   env: Env;
   message: FocusedFullSkipDedupMessage;
   role: PredictionContainerRole;
+}
+
+interface PastDayBaseWorkParams {
+  category: PredictCategory;
+  env: Env;
+  runYmd: string;
+}
+
+type FocusedFullPollStatus = "error" | "missing" | "running" | "success";
+
+interface FocusedFullStatusPayload {
+  error: string | null;
+  raceKey: string;
+  status: FocusedFullPollStatus;
+}
+
+interface RecoverFocusedFullStatusParams {
+  body: FocusedFullSkipDedupMessage;
+  doName: string;
+  env: Env;
+  error: string;
+  message: Message<PredictQueueMessage>;
+  role: PredictionContainerRole;
+  status: "error" | "missing";
+  workKey: string;
+}
+
+interface CompleteFocusedFullFromStatusParams {
+  body: FocusedFullSkipDedupMessage;
+  doName: string;
+  env: Env;
+  message: Message<PredictQueueMessage>;
+  role: PredictionContainerRole;
+  workKey: string;
+}
+
+interface FocusedFullStatusTarget {
+  doName: string;
+  fetchStatus: () => Promise<FocusedFullStatusPayload>;
+  role: PredictionContainerRole;
+  workKey: string;
+}
+
+interface FocusedFullStatusCheck extends FocusedFullStatusTarget {
+  status: FocusedFullStatusPayload;
+}
+
+interface EnqueueFocusedFullCacheRepairParams {
+  body: FocusedFullSkipDedupMessage;
+  check: FocusedFullStatusCheck;
+  env: Env;
+  message: Message<PredictQueueMessage>;
 }
 
 interface HandleFocusedFullStatusParams {
@@ -240,6 +319,11 @@ interface ReleaseContainerSlotBestEffortParams {
   workKey: string;
 }
 
+interface ContainerRequestLifecycle {
+  started: boolean;
+  terminal: boolean;
+}
+
 const buildPredictUrl = (params: PredictUrlParams): string => {
   const searchParams = new URLSearchParams({
     category: params.category,
@@ -280,20 +364,13 @@ const debugLog = (body: Pick<PredictQueueMessage, "debug">, message: string): vo
 const handOffTerminalContainerStop = async (
   params: TerminalContainerStopParams,
 ): Promise<boolean> => {
-  try {
-    return await enqueueContainerStopForRole({
-      env: params.env,
-      name: params.doName,
-      role: params.role,
-      workKey: params.workKey,
-    });
-  } catch (error) {
-    console.error(
-      `[container-control] enqueue stop failed name=${params.doName} role=${params.role}:`,
-      String(error),
-    );
-    return false;
-  }
+  await handOffContainerStopOrCleanup({
+    env: params.env,
+    name: params.doName,
+    role: params.role,
+    workKey: params.workKey,
+  });
+  return true;
 };
 
 export const buildFocusedFullWorkKey = (
@@ -335,21 +412,29 @@ export const isFocusedSkipDedupMessage = (
   message.raceBango !== undefined;
 
 const warmViewerDisplayAfterKvWrite = async (
+  env: Env,
   published: PredictionKvPublishResult,
   params: ViewerDisplayWarmTarget,
 ): Promise<void> => {
   if (published.status !== "written") return;
-  await warmViewerDisplayForRace(
-    buildWarmRaceParamsFromYmd(params.runYmd, params.keibajoCode, params.raceBango),
+  const warmParams: ReturnType<typeof buildWarmRaceParamsFromYmd> = buildWarmRaceParamsFromYmd(
+    params.runYmd,
+    params.keibajoCode,
+    params.raceBango,
   );
+  await warmViewerDisplayForRace({
+    ...warmParams,
+    refresh: true,
+    viewer: env.PC_KEIBA_VIEWER,
+  });
 };
 
 const populateViewerDisplayForFocusedRace = async (
   env: Env,
   message: FocusedFullSkipDedupMessage,
 ): Promise<void> => {
-  const published = await publishPredictionKvForFocusedRace(env, message, false);
-  await warmViewerDisplayAfterKvWrite(published, message);
+  const published = await publishPredictionKvForFocusedRace(env, message, true);
+  await warmViewerDisplayAfterKvWrite(env, published, message);
 };
 
 const publishPredictionKvForRace = async (
@@ -411,12 +496,169 @@ const pickUpAndConfirmFocusedFullCache = async (
   return present;
 };
 
+// `force` means "run once even if Neon already has rows", not "rerun on every
+// Queue delivery". Focused-full work intentionally returns `accepted` and is
+// redelivered while its detached Container thread finishes. Keeping force
+// active on those redeliveries bypasses both completion guards and starts the
+// same expensive pipeline again before the in-memory feat-cache payload can be
+// picked up. Cloudflare numbers the first delivery as attempt 1; tolerate an
+// absent attempts value for local/backward-compatible Message implementations.
+const isInitialForcedDelivery = (message: Message<PredictQueueMessage>): boolean =>
+  message.body.force === true && (message.attempts === undefined || message.attempts <= 1);
+
+const forcedCompletionNotBefore = (message: Message<PredictQueueMessage>): string | undefined => {
+  if (message.body.force !== true) return undefined;
+  if (message.body.forceRequestedAt !== undefined) return message.body.forceRequestedAt;
+  return message.timestamp instanceof Date ? message.timestamp.toISOString() : undefined;
+};
+
+const resolveFocusedFullStatusTarget = async (
+  body: FocusedFullSkipDedupMessage,
+  env: Env,
+): Promise<FocusedFullStatusTarget> => {
+  const route = await resolveRaceContainerRoute({
+    category: body.category,
+    env,
+    forceLegacy: body.forceLegacyContainer,
+    focusedFull: true,
+    runYmd: body.runYmd,
+  });
+  const doName = qualifyPredictionContainerDoName(
+    resolvePredictDoName({
+      category: body.category,
+      env,
+      keibajoCode: body.keibajoCode,
+      raceBango: body.raceBango,
+    }),
+    route.role,
+  );
+  const workKey = buildFocusedFullWorkKey(body);
+  const expectedRaceKey = `${body.category}:${body.runYmd}:${body.keibajoCode}:${body.raceBango}`;
+  const doId = route.namespace.idFromName(doName);
+  const stub = route.namespace.get(doId);
+  return {
+    doName,
+    fetchStatus: async () => {
+      const response = await stub.fetch(new Request(buildFocusedFullStatusUrl(body)));
+      if (!response.ok) throw new Error(`Focused-full status returned ${response.status}`);
+      return parseFocusedFullStatus(await response.json(), expectedRaceKey);
+    },
+    role: route.role,
+    workKey,
+  };
+};
+
+const enqueueFocusedFullCacheRepair = async (
+  params: EnqueueFocusedFullCacheRepairParams,
+): Promise<void> => {
+  const { body, check, env, message } = params;
+  const error =
+    check.status.status === "missing"
+      ? `Focused-full status missing after Container recreation: ${check.status.raceKey}`
+      : (check.status.error ?? `Focused-full detached pipeline failed: ${check.status.raceKey}`);
+  await persistRetryError(env, message, new Error(error));
+  await completeFocusedFullRace({
+    category: body.category,
+    env,
+    keibajoCode: body.keibajoCode,
+    raceBango: body.raceBango,
+    runYmd: body.runYmd,
+    status: "error",
+  });
+  await handOffTerminalContainerStop({
+    doName: check.doName,
+    env,
+    role: check.role,
+    workKey: check.workKey,
+  });
+
+  const reservationId = crypto.randomUUID();
+  const reservation = await reserveFocusedFullRaceEnqueue({
+    category: body.category,
+    env,
+    keibajoCode: body.keibajoCode,
+    raceBango: body.raceBango,
+    raceStartAtJst: body.raceStartAtJst,
+    reservationId,
+    runYmd: body.runYmd,
+    staleAfterMs: FOCUSED_FULL_IN_FLIGHT_STALE_MS,
+  });
+  if (reservation.proceed) {
+    try {
+      await env.PREDICT_QUEUE.send(
+        {
+          ...body,
+          force: true,
+          forceRequestedAt: new Date().toISOString(),
+        },
+        { delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS },
+      );
+    } catch (error) {
+      try {
+        await failFocusedFullRaceEnqueue({
+          category: body.category,
+          env,
+          keibajoCode: body.keibajoCode,
+          raceBango: body.raceBango,
+          reservationId,
+          runYmd: body.runYmd,
+        });
+      } catch (releaseError) {
+        console.error(
+          "[predict-queue] failed to release focused-full cache-repair reservation:",
+          String(releaseError),
+        );
+      }
+      throw error;
+    }
+  }
+  message.ack();
+  console.warn(
+    `[predict-queue] focused-full cache repair ${
+      reservation.proceed ? "enqueued" : "already-reserved"
+    } ${describePredictMessage(body)}`,
+  );
+};
+
+const recoverAlreadyCompleteFocusedFullCacheMiss = async (
+  message: Message<PredictQueueMessage>,
+  body: FocusedFullSkipDedupMessage,
+  env: Env,
+): Promise<void> => {
+  const target = await resolveFocusedFullStatusTarget(body, env);
+  try {
+    const check: FocusedFullStatusCheck = { ...target, status: await target.fetchStatus() };
+    if (check.status.status === "running") {
+      await touchContainerSlot({
+        doName: check.doName,
+        env,
+        staleAfterMs: FOCUSED_FULL_IN_FLIGHT_STALE_MS,
+        workKey: check.workKey,
+      });
+      retryFocusedFullAlreadyInFlight(message);
+      return;
+    }
+    if (check.status.status === "success") {
+      message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+      return;
+    }
+    await enqueueFocusedFullCacheRepair({ body, check, env, message });
+  } catch (error) {
+    await handOffTerminalContainerStop({ ...target, env });
+    console.warn(
+      `[predict-queue] focused-full cache recovery failed ${describePredictMessage(body)}:`,
+      String(error),
+    );
+    message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+  }
+};
+
 const ackIfFocusedFullAlreadyComplete = async (
   message: Message<PredictQueueMessage>,
   env: Env,
 ): Promise<boolean> => {
   if (!isFocusedSkipDedupMessage(message.body)) return false;
-  if (message.body.force === true) {
+  if (isInitialForcedDelivery(message)) {
     debugLog(
       message.body,
       `[predict-queue] focused-completion-check bypassed (force) ${describePredictMessage(message.body)}`,
@@ -433,6 +675,7 @@ const ackIfFocusedFullAlreadyComplete = async (
       category,
       env,
       keibajoCode,
+      notBefore: forcedCompletionNotBefore(message),
       raceBango,
       runYmd,
     });
@@ -475,7 +718,7 @@ const ackIfFocusedFullAlreadyComplete = async (
     if (
       !(await pickUpAndConfirmFocusedFullCache({ env, message: message.body, role: route.role }))
     ) {
-      message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+      await recoverAlreadyCompleteFocusedFullCacheMiss(message, message.body, env);
       return true;
     }
     await completeFocusedFullRace({
@@ -567,7 +810,11 @@ const claimContainerSlotOrRetry = async (
     } ${describePredictMessage(params.message.body)} -- will retry without starting a container`,
   );
   if (params.kind === FOCUSED_FULL_SLOT_KIND && isFocusedSkipDedupMessage(params.message.body)) {
-    await retryBusyFocusedFull(params.message, params.env);
+    await retryBusyFocusedFull(
+      params.message,
+      params.env,
+      claim.state === CONTAINER_SLOT_CAPPED_STATE || claim.state === CONTAINER_SLOT_STOPPING_STATE,
+    );
   } else if (params.kind === RESCORE_SLOT_KIND && isPerRaceRescore(params.message)) {
     retryDeferredRescore(params.message, "container-slot-unavailable");
   } else {
@@ -588,6 +835,167 @@ const retryFocusedFullAlreadyInFlight = (message: Message<PredictQueueMessage>):
   message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const parseFocusedFullStatus = (
+  value: unknown,
+  expectedRaceKey: string,
+): FocusedFullStatusPayload => {
+  if (!isRecord(value)) throw new Error("Focused-full status response is not an object");
+  const status = value.status;
+  const raceKey = value.raceKey;
+  const error = value.error;
+  if (status !== "error" && status !== "missing" && status !== "running" && status !== "success")
+    throw new Error("Focused-full status response has an invalid status");
+  if (raceKey !== expectedRaceKey)
+    throw new Error(`Focused-full status race key mismatch expected=${expectedRaceKey}`);
+  if (error !== null && typeof error !== "string")
+    throw new Error("Focused-full status response has an invalid error");
+  return { error, raceKey, status };
+};
+
+const buildFocusedFullStatusUrl = (message: FocusedFullSkipDedupMessage): string => {
+  const searchParams = new URLSearchParams({
+    category: message.category,
+    keibajoCode: message.keibajoCode,
+    raceBango: message.raceBango,
+    runDate: message.runYmd,
+  });
+  return `${PREDICT_HOST}${FOCUSED_FULL_STATUS_PATH}?${searchParams.toString()}`;
+};
+
+const recoverFocusedFullStatus = async (params: RecoverFocusedFullStatusParams): Promise<void> => {
+  await persistRetryError(params.env, params.message, new Error(params.error));
+  await completeFocusedFullRace({
+    category: params.body.category,
+    env: params.env,
+    keibajoCode: params.body.keibajoCode,
+    raceBango: params.body.raceBango,
+    runYmd: params.body.runYmd,
+    status: "error",
+  });
+  await handOffTerminalContainerStop({
+    doName: params.doName,
+    env: params.env,
+    role: params.role,
+    workKey: params.workKey,
+  });
+  if (
+    params.role === "race-chain" &&
+    params.status === "error" &&
+    params.error.includes(DAY_BASE_REQUIRED_ERROR_CODE)
+  ) {
+    try {
+      await params.env.PREDICT_QUEUE.send(
+        { ...params.body, forceLegacyContainer: true },
+        { delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS },
+      );
+    } catch (error) {
+      params.message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+      console.warn(
+        `[predict-queue] detached race-chain legacy fallback enqueue failed ${describePredictMessage(
+          params.message.body,
+        )}:`,
+        String(error),
+      );
+      return;
+    }
+    params.message.ack();
+    console.warn(
+      `[predict-queue] detached race-chain requested legacy fallback ${describePredictMessage(
+        params.message.body,
+      )} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
+    );
+    return;
+  }
+  params.message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+  console.warn(
+    `[predict-queue] focused-full status ${params.status}; cleanup handed off before retry ${describePredictMessage(
+      params.message.body,
+    )}; error=${params.error}`,
+  );
+};
+
+const completeFocusedFullFromStatus = async (
+  params: CompleteFocusedFullFromStatusParams,
+): Promise<void> => {
+  const { body, doName, env, message, role, workKey } = params;
+  if (!(await pickUpAndConfirmFocusedFullCache({ env, message: body, role }))) {
+    message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+    return;
+  }
+  await completeFocusedFullRace({
+    category: body.category,
+    env,
+    keibajoCode: body.keibajoCode,
+    raceBango: body.raceBango,
+    runYmd: body.runYmd,
+    status: "success",
+  });
+  await recordCompletedBestEffort(env, body);
+  await populateViewerDisplayForFocusedRace(env, body);
+  if (!(await handOffTerminalContainerStop({ doName, env, role, workKey }))) {
+    message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+    return;
+  }
+  message.ack();
+};
+
+const pollFocusedFullStatus = async (
+  message: Message<PredictQueueMessage>,
+  body: FocusedFullSkipDedupMessage,
+  env: Env,
+): Promise<void> => {
+  const target = await resolveFocusedFullStatusTarget(body, env);
+  try {
+    const { doName, role, workKey } = target;
+    const status = await target.fetchStatus();
+    if (status.status === "running") {
+      await touchContainerSlot({
+        doName,
+        env,
+        staleAfterMs: FOCUSED_FULL_IN_FLIGHT_STALE_MS,
+        workKey,
+      });
+      retryFocusedFullAlreadyInFlight(message);
+      return;
+    }
+    if (status.status === "success") {
+      await completeFocusedFullFromStatus({
+        body,
+        doName,
+        env,
+        message,
+        role,
+        workKey,
+      });
+      return;
+    }
+    const error =
+      status.status === "missing"
+        ? `Focused-full status missing after Container recreation: ${status.raceKey}`
+        : (status.error ?? `Focused-full detached pipeline failed: ${status.raceKey}`);
+    await recoverFocusedFullStatus({
+      body,
+      doName,
+      env,
+      error,
+      message,
+      role,
+      status: status.status,
+      workKey,
+    });
+  } catch (error) {
+    await handOffTerminalContainerStop({ ...target, env });
+    console.warn(
+      `[predict-queue] focused-full status query failed ${describePredictMessage(message.body)}:`,
+      String(error),
+    );
+    retryFocusedFullAlreadyInFlight(message);
+  }
+};
+
 const claimFocusedFullOrRetry = async (
   message: Message<PredictQueueMessage>,
   body: FocusedFullSkipDedupMessage,
@@ -598,7 +1006,7 @@ const claimFocusedFullOrRetry = async (
     category,
     doName: resolvePredictDoName({ category, env, keibajoCode, raceBango }),
     env,
-    force: body.force === true,
+    force: isInitialForcedDelivery(message),
     keibajoCode,
     raceStartAtJst: body.raceStartAtJst,
     raceBango,
@@ -612,6 +1020,10 @@ const claimFocusedFullOrRetry = async (
     } state=${claim.state ?? "-"} staleAfterMs=${FOCUSED_FULL_IN_FLIGHT_STALE_MS}`,
   );
   if (claim.proceed) {
+    if (claim.state === "resumed") {
+      await pollFocusedFullStatus(message, body, env);
+      return false;
+    }
     if (claim.state === "stale") {
       await clearContainerSlotBestEffort(
         env,
@@ -623,6 +1035,10 @@ const claimFocusedFullOrRetry = async (
   }
   if (claim.state === "queued") {
     await retryBusyFocusedFull(message, env, true);
+    return false;
+  }
+  if (claim.state === "started") {
+    await pollFocusedFullStatus(message, body, env);
     return false;
   }
   // A status probe is itself a Container request and starts an inactive
@@ -739,6 +1155,46 @@ const deferFocusedFullUntilRunningStyleReady = async (
   }
 };
 
+const deferFocusedFullUntilDayBaseReady = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+): Promise<boolean> => {
+  if (!isFocusedSkipDedupMessage(message.body)) return false;
+  const { category, runYmd } = message.body;
+  try {
+    const readiness = await getFocusedFullDayBaseReadiness({ category, env, runYmd });
+    if (readiness.ready) {
+      try {
+        await clearDayBaseRepairReservation({ category, env, runYmd });
+      } catch (error) {
+        console.error(
+          `[predict-queue] failed to clear day-base repair reservation category=${category} runYmd=${runYmd}:`,
+          String(error),
+        );
+      }
+      return false;
+    }
+    const repair = await enqueueDayBaseRepairOnce({ category, env, runYmd });
+    const delaySeconds = computeRetryDelaySeconds(message.attempts);
+    message.retry({ delaySeconds });
+    console.warn(
+      `[predict-queue] focused-full day-base deferred before claim ${describePredictMessage(
+        message.body,
+      )} reason=${readiness.reason} repair=${repair} attempts=${message.attempts} delaySeconds=${delaySeconds}`,
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[predict-queue] focused-full day-base readiness failed before claim ${describePredictMessage(
+        message.body,
+      )}:`,
+      String(error),
+    );
+    await retryAfterFailure(message, env, error);
+    return true;
+  }
+};
+
 // This focused-full message's race never started: the container's single
 // per-process pipeline slot for this category was busy with a DIFFERENT race.
 const retryBusyFocusedFull = async (
@@ -809,7 +1265,40 @@ const claimRescoreExecutionOrFinish = async (
       staleAfterMs: RESCORE_EXECUTION_STALE_MS,
     });
     if (claim.proceed) return true;
-    await releaseRescoreSlot(message, env, doName);
+    if (claim.state === "success") {
+      await handOffTerminalContainerStop({
+        doName,
+        env,
+        role: "legacy",
+        workKey: buildPredictWorkKey(message.body),
+      });
+      message.ack();
+      return false;
+    }
+    retryDeferredRescore(message, `execution-${claim.state ?? "claimed"}`);
+    return false;
+  } catch (error) {
+    await retryAfterFailure(message, env, error);
+    return false;
+  }
+};
+
+const claimWorkerRescoreExecutionOrFinish = async (
+  message: Message<PerRaceRescoreMessage>,
+  env: Env,
+): Promise<boolean> => {
+  const { category, keibajoCode, raceBango, runYmd } = message.body;
+  try {
+    const claim = await claimRescoreExecution({
+      category,
+      env,
+      executionId: message.id,
+      keibajoCode,
+      raceBango,
+      runYmd,
+      staleAfterMs: RESCORE_EXECUTION_STALE_MS,
+    });
+    if (claim.proceed) return true;
     if (claim.state === "success") {
       message.ack();
       return false;
@@ -817,30 +1306,35 @@ const claimRescoreExecutionOrFinish = async (
     retryDeferredRescore(message, `execution-${claim.state ?? "claimed"}`);
     return false;
   } catch (error) {
-    await releaseRescoreSlot(message, env, doName);
     await retryAfterFailure(message, env, error);
     return false;
   }
 };
 
-const completeRescoreExecutionBestEffort = async (
+const completeRescoreExecution = (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
   status: "error" | "success",
+): Promise<void> =>
+  completeRescoreRace({
+    category: message.body.category,
+    env,
+    executionId: message.id,
+    keibajoCode: message.body.keibajoCode,
+    raceBango: message.body.raceBango,
+    runYmd: message.body.runYmd,
+    status,
+  });
+
+const completeRescoreExecutionErrorBestEffort = async (
+  message: Message<PerRaceRescoreMessage>,
+  env: Env,
 ): Promise<void> => {
   try {
-    await completeRescoreRace({
-      category: message.body.category,
-      env,
-      executionId: message.id,
-      keibajoCode: message.body.keibajoCode,
-      raceBango: message.body.raceBango,
-      runYmd: message.body.runYmd,
-      status,
-    });
+    await completeRescoreExecution(message, env, "error");
   } catch (error) {
     console.error(
-      `[predict-queue] failed to complete rescore execution status=${status} ${describePredictMessage(
+      `[predict-queue] failed to complete rescore execution status=error ${describePredictMessage(
         message.body,
       )}:`,
       String(error),
@@ -932,6 +1426,36 @@ const handleFocusedFullStatus = async (params: HandleFocusedFullStatusParams): P
   return false;
 };
 
+const handOffDayBaseRequiredToLegacy = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+  role: PredictionContainerRole,
+  result: PredictResultLine,
+): Promise<boolean> => {
+  if (role !== "race-chain" || !isFocusedSkipDedupMessage(message.body)) return false;
+  if (result.status !== "error" || !result.error?.includes(DAY_BASE_REQUIRED_ERROR_CODE))
+    return false;
+  await completeFocusedFullRace({
+    category: message.body.category,
+    env,
+    keibajoCode: message.body.keibajoCode,
+    raceBango: message.body.raceBango,
+    runYmd: message.body.runYmd,
+    status: "error",
+  });
+  await env.PREDICT_QUEUE.send(
+    { ...message.body, forceLegacyContainer: true },
+    { delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS },
+  );
+  message.ack();
+  console.warn(
+    `[predict-queue] race-chain requested legacy fallback ${describePredictMessage(
+      message.body,
+    )} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
+  );
+  return true;
+};
+
 const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
   if (message.debug !== true) return;
   console.log(
@@ -951,9 +1475,9 @@ const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressL
 // result status:error, retry via the queue's DLQ machinery. After a
 // successful ack the viewer Cache API is warmed for the same race so the
 // event-driven horse-weight trigger surfaces fresh predictions on the race
-// detail page without waiting for cache TTL. Warm is fire-and-forget: failures
-// are swallowed inside the warm helper. KV write-through is awaited so the
-// queue isolate cannot exit before pred:fp settles; publish status is logged.
+// detail page without waiting for cache TTL. KV write-through and the semantic
+// success commit are awaited before terminal cleanup. Stop/warm failures after
+// that commit must not make Queue redelivery run scoring a second time.
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -961,13 +1485,14 @@ const processContainerPerRaceRescore = async (
   const { category, daysAhead, debug, keibajoCode, raceBango, runYmd } = message.body;
   const startedAt = Date.now();
   if (await deferRescoreUntilInitialPrediction(message, env)) return;
+  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictDoName = resolvePredictDoName({
     category,
     env,
     keibajoCode,
     raceBango,
-    shareCategoryInstance: true,
   });
+  if (!(await claimRescoreExecutionOrFinish(message, env, predictDoName))) return;
   if (
     !(await claimContainerSlotOrRetry({
       category,
@@ -978,11 +1503,10 @@ const processContainerPerRaceRescore = async (
       workKey: buildPredictWorkKey(message.body),
     }))
   ) {
+    await completeRescoreExecutionErrorBestEffort(message, env);
     return;
   }
-  if (!(await claimRescoreExecutionOrFinish(message, env, predictDoName))) return;
-  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
-  const predictUrl = buildPerRaceRescoreUrl({
+  const basePredictUrl = buildPerRaceRescoreUrl({
     cardMaxRaceBango,
     category,
     daysAhead,
@@ -993,39 +1517,124 @@ const processContainerPerRaceRescore = async (
   });
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(predictDoName);
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
-  const slotHold = { keep: false };
+  const lifecycle: ContainerRequestLifecycle = { started: false, terminal: false };
+  const cleanupHandedOff = { value: false };
   try {
-    debugLog(
-      message.body,
-      `[predict-queue] container-fetch start ${describePredictMessage(
-        message.body,
-      )} doName=${predictDoName} url=${predictUrl}`,
-    );
-    const response = await stub.fetch(new Request(predictUrl));
-    debugLog(
-      message.body,
-      `[predict-queue] container-fetch response ${describePredictMessage(
-        message.body,
-      )} doName=${predictDoName} status=${response.status} ok=${response.ok} durationMs=${
-        Date.now() - startedAt
-      }`,
-    );
-    if (!response.body) throw new Error("Empty response from predict DO");
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Container DO returned ${response.status}: ${text}`);
+    const [commitResult] = await Promise.allSettled([
+      (async () => {
+        const attestation = await createRescoreAttestation({
+          category,
+          env,
+          keibajoCode,
+          raceBango,
+          runYmd,
+        });
+        const predictUrl = addRescoreAttestationToUrl(basePredictUrl, attestation);
+        debugLog(
+          message.body,
+          `[predict-queue] container-fetch start ${describePredictMessage(
+            message.body,
+          )} doName=${predictDoName} url=${predictUrl}`,
+        );
+        lifecycle.started = true;
+        const response = await stub.fetch(new Request(predictUrl));
+        debugLog(
+          message.body,
+          `[predict-queue] container-fetch response ${describePredictMessage(
+            message.body,
+          )} doName=${predictDoName} status=${response.status} ok=${response.ok} durationMs=${
+            Date.now() - startedAt
+          }`,
+        );
+        if (!response.body) throw new Error("Empty response from predict DO");
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Container DO returned ${response.status}: ${text}`);
+        }
+        const result = await parseNdjsonStream(response.body, {
+          onProgress(line) {
+            logPredictProgress(message.body, line);
+          },
+        });
+        assertPredictResultSucceeded(result);
+        console.log(
+          `Rescore container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted} durationMs=${
+            Date.now() - startedAt
+          }`,
+        );
+        const published = await publishPredictionKvForRace(env, {
+          bustCacheApi: true,
+          category,
+          keibajoCode,
+          raceBango,
+          runYmd,
+        });
+        await completeRescoreExecution(message, env, "success");
+        return published;
+      })(),
+    ]);
+    lifecycle.terminal = true;
+    if (commitResult.status === "rejected") {
+      console.error(
+        `Container per-race rescore failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} durationMs=${
+          Date.now() - startedAt
+        }:`,
+        String(commitResult.reason),
+      );
+      await completeRescoreExecutionErrorBestEffort(message, env);
+      await retryAfterFailure(message, env, commitResult.reason);
+      return;
     }
-    const result = await parseNdjsonStream(response.body, {
-      onProgress(line) {
-        logPredictProgress(message.body, line);
-      },
+    await handOffTerminalContainerStop({
+      doName: predictDoName,
+      env,
+      role: "legacy",
+      workKey: buildPredictWorkKey(message.body),
     });
-    assertPredictResultSucceeded(result);
-    console.log(
-      `Rescore container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted} durationMs=${
-        Date.now() - startedAt
-      }`,
-    );
+    cleanupHandedOff.value = true;
+    try {
+      await warmViewerDisplayAfterKvWrite(env, commitResult.value, {
+        keibajoCode,
+        raceBango,
+        runYmd,
+      });
+    } catch (error) {
+      console.error(
+        `[predict-queue] committed rescore viewer warm failed ${describePredictMessage(
+          message.body,
+        )}:`,
+        String(error),
+      );
+    }
+    message.ack();
+  } finally {
+    if (lifecycle.started && lifecycle.terminal && !cleanupHandedOff.value) {
+      cleanupHandedOff.value = true;
+      await handOffTerminalContainerStop({
+        doName: predictDoName,
+        env,
+        role: "legacy",
+        workKey: buildPredictWorkKey(message.body),
+      });
+    } else if (!lifecycle.started) {
+      await releaseRescoreSlot(message, env, predictDoName);
+    }
+  }
+};
+
+const processWorkerJraPerRaceRescore = async (
+  message: Message<PerRaceRescoreMessage>,
+  env: Env,
+): Promise<void> => {
+  const { category, keibajoCode, raceBango, runYmd } = message.body;
+  const startedAt = Date.now();
+  if (await deferRescoreUntilInitialPrediction(message, env)) return;
+  if (!(await claimWorkerRescoreExecutionOrFinish(message, env))) return;
+  try {
+    const result = await rescoreJraRace({ env, fetchImpl: fetch, message: message.body });
+    if (result.status !== "ok") {
+      throw new Error(`Worker rescore unavailable: ${result.status}`);
+    }
     const published = await publishPredictionKvForRace(env, {
       bustCacheApi: true,
       category,
@@ -1033,39 +1642,28 @@ const processContainerPerRaceRescore = async (
       raceBango,
       runYmd,
     });
-    await warmViewerDisplayAfterKvWrite(published, { keibajoCode, raceBango, runYmd });
-    slotHold.keep = await handOffTerminalContainerStop({
-      doName: predictDoName,
-      env,
-      role: "legacy",
-      workKey: buildPredictWorkKey(message.body),
-    });
-    if (!slotHold.keep) {
-      await completeRescoreExecutionBestEffort(message, env, "error");
-      message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
-      slotHold.keep = true;
-      return;
+    await completeRescoreExecution(message, env, "success");
+    try {
+      await warmViewerDisplayAfterKvWrite(env, published, { keibajoCode, raceBango, runYmd });
+    } catch (error) {
+      console.error(
+        `[predict-queue] committed Worker rescore viewer warm failed ${describePredictMessage(
+          message.body,
+        )}:`,
+        String(error),
+      );
     }
-    await completeRescoreExecutionBestEffort(message, env, "success");
-    message.ack();
-  } catch (err) {
-    console.error(
-      `Container per-race rescore failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} durationMs=${
-        Date.now() - startedAt
-      }:`,
-      String(err),
+    console.log(
+      `Rescore Worker category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted} predictions=${result.predictionCount} model=${result.modelVersion} durationMs=${Date.now() - startedAt}`,
     );
-    await completeRescoreExecutionBestEffort(message, env, "error");
-    await retryAfterFailure(message, env, err);
-  } finally {
-    if (!slotHold.keep) {
-      await releaseContainerSlotBestEffort({
-        doName: predictDoName,
-        env,
-        kind: RESCORE_SLOT_KIND,
-        workKey: buildPredictWorkKey(message.body),
-      });
-    }
+    message.ack();
+  } catch (error) {
+    console.warn(
+      `Worker per-race rescore falling back to Container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} durationMs=${Date.now() - startedAt}:`,
+      String(error),
+    );
+    await completeRescoreExecutionErrorBestEffort(message, env);
+    await processContainerPerRaceRescore(message, env);
   }
 };
 
@@ -1076,6 +1674,8 @@ const processPerRaceRescore = (
   env: Env,
 ): Promise<void> => {
   const { category, runYmd } = message.body;
+  if (category === "jra" && env.JRA_WORKER_RESCORE_ENABLED === ENABLED_FLAG)
+    return processWorkerJraPerRaceRescore(message, env);
   if (CONTAINER_PER_RACE_CATEGORIES.has(category))
     return processContainerPerRaceRescore(message, env);
   console.warn(
@@ -1121,6 +1721,7 @@ const handleOldDateSkip = async (
         runYmd,
         status: OLD_DATE_SKIP_STATUS,
       });
+      await clearDayBaseRepairReservation({ category, env, runYmd });
     }
   } catch (err) {
     console.error(
@@ -1133,6 +1734,38 @@ const handleOldDateSkip = async (
     `Skipping old-dated predict message ${describePredictMessage(
       message.body,
     )} thresholdDays=${OLD_DATE_THRESHOLD_DAYS}`,
+  );
+};
+
+const cleanupPastDayBaseWork = async (params: PastDayBaseWorkParams): Promise<void> => {
+  await Promise.all([
+    clearDayBaseRepairReservation(params).catch((error) => {
+      console.error(
+        `[predict-queue] old day-base repair reservation cleanup failed category=${params.category} runYmd=${params.runYmd}:`,
+        String(error),
+      );
+    }),
+    cleanupDayBaseWork(params).catch((error) => {
+      console.error(
+        `[predict-queue] old day-base container cleanup failed category=${params.category} runYmd=${params.runYmd}:`,
+        String(error),
+      );
+    }),
+  ]);
+};
+
+const handlePastDayBaseSkip = async (
+  message: Message<DayBasePickupMessage | DayBasePrewarmMessage>,
+  env: Env,
+): Promise<void> => {
+  await cleanupPastDayBaseWork({
+    category: message.body.category,
+    env,
+    runYmd: message.body.runYmd,
+  });
+  message.ack();
+  console.warn(
+    `[predict-queue] skipping old day-base message type=${message.body.type} category=${message.body.category} runYmd=${message.body.runYmd}`,
   );
 };
 
@@ -1167,6 +1800,8 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const shouldCompleteCategoryRun = !isFocusedSkipDedup;
   const shouldWarmCategoryCache =
     skipDedup === true && shouldCompleteCategoryRun && mode !== RESCORE_MODE;
+  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
+  if (await deferFocusedFullUntilDayBaseReady(message, env)) return;
   if (await deferFocusedFullUntilRunningStyleReady(message, env)) return;
   if (await ackIfFocusedFullAlreadyComplete(message, env)) return;
   if (
@@ -1194,6 +1829,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const containerRoute = await resolveRaceContainerRoute({
     category,
     env,
+    forceLegacy: message.body.forceLegacyContainer,
     focusedFull: isFocusedSkipDedup,
     runYmd,
   });
@@ -1213,7 +1849,6 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   ) {
     return;
   }
-  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPredictUrl({
     cardMaxRaceBango,
     category,
@@ -1225,7 +1860,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     // Keep Worker-side debug logs, but always use the detached container path
     // for focused-full production work.
     debug: isFocusedSkipDedup ? false : message.body.debug,
-    force: message.body.force,
+    force: isInitialForcedDelivery(message),
     keibajoCode,
     mode,
     raceBango,
@@ -1234,6 +1869,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const doId = containerRoute.namespace.idFromName(predictDoName);
   const stub = containerRoute.namespace.get(doId);
   const slotHold = { keep: false };
+  const lifecycle: ContainerRequestLifecycle = { started: false, terminal: false };
   try {
     debugLog(
       message.body,
@@ -1241,6 +1877,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         message.body,
       )} doName=${predictDoName} url=${predictUrl}`,
     );
+    lifecycle.started = true;
     const response = await stub.fetch(new Request(predictUrl));
     debugLog(
       message.body,
@@ -1266,6 +1903,10 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         result.status ?? "-"
       } racesPredicted=${result.racesPredicted} durationMs=${Date.now() - startedAt}`,
     );
+    if (await handOffDayBaseRequiredToLegacy(message, env, containerRoute.role, result)) {
+      lifecycle.terminal = true;
+      return;
+    }
     if (
       isFocusedSkipDedup &&
       (await handleFocusedFullStatus({
@@ -1280,6 +1921,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     ) {
       return;
     }
+    lifecycle.terminal = true;
     assertPredictResultSucceeded(result);
     if (shouldCompleteCategoryRun) {
       await completeRun({
@@ -1314,18 +1956,14 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     await recordCompletedBestEffort(env, message.body);
     if (isFocusedSkipDedup) {
       await populateViewerDisplayForFocusedRace(env, message.body);
-      slotHold.keep = await handOffTerminalContainerStop({
-        doName: predictDoName,
-        env,
-        role: containerRoute.role,
-        workKey,
-      });
-      if (!slotHold.keep) {
-        message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
-        slotHold.keep = true;
-        return;
-      }
     }
+    slotHold.keep = true;
+    await handOffTerminalContainerStop({
+      doName: predictDoName,
+      env,
+      role: containerRoute.role,
+      workKey,
+    });
     message.ack();
     console.log(
       `[predict-queue] ack ${describePredictMessage(message.body)} status=${
@@ -1351,6 +1989,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       });
     }
   } catch (err) {
+    lifecycle.terminal = lifecycle.started;
     console.error(
       `Predict failed for category=${category} runYmd=${runYmd}${raceScopeSuffix(
         keibajoCode,
@@ -1379,6 +2018,15 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     }
     await retryAfterFailure(message, env, err);
   } finally {
+    if (lifecycle.started && lifecycle.terminal && !slotHold.keep) {
+      slotHold.keep = true;
+      await handOffTerminalContainerStop({
+        doName: predictDoName,
+        env,
+        role: containerRoute.role,
+        workKey,
+      });
+    }
     if (!slotHold.keep) {
       await releaseContainerSlotBestEffort({
         doName: predictDoName,
@@ -1398,10 +2046,21 @@ export const handleQueue = async (
     if (isDeliveryCanaryQueueMessage(message)) {
       await consumeDeliveryCanary(env, message.body, new Date());
       message.ack();
+    } else if (isContainerCleanupQueueMessage(message)) {
+      await consumeContainerCleanup({ env, message: message.body });
+      message.ack();
     } else if (isDayBasePickupQueueMessage(message)) {
+      if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date())) {
+        await handlePastDayBaseSkip(message, env);
+        continue;
+      }
       await consumeDayBasePickup({ env, message: message.body });
       message.ack();
     } else if (isDayBasePrewarmQueueMessage(message)) {
+      if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date())) {
+        await handlePastDayBaseSkip(message, env);
+        continue;
+      }
       const outcome = await prewarmCategoryWithOutcome({
         category: message.body.category,
         daysAhead: message.body.daysAhead,
@@ -1409,6 +2068,7 @@ export const handleQueue = async (
         ...(message.body.generatePredictionsAfterHit === true
           ? { generatePredictionsAfterHit: true }
           : {}),
+        ...(message.body.force === true ? { force: true } : {}),
         runYmd: message.body.runYmd,
       });
       if (outcome === "landed" || outcome === "pickup-scheduled") message.ack();

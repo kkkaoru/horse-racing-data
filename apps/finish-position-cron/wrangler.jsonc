@@ -98,7 +98,7 @@
       "max_instances": 10,
     },
     {
-      // Default-off race-chain canary. The Worker routes only allowlisted,
+      // Race-chain route. The Worker routes only allowlisted,
       // focused-full work whose metadata-bearing day-base object is present;
       // day-base and all fallback work remain on standard-4 above.
       "class_name": "FinishPositionRaceChainContainer",
@@ -109,7 +109,11 @@
         "memory_mib": 6144,
         "disk_mb": 12000,
       },
-      "max_instances": 1,
+      // Matches the three race shards. The shared Worker slot coordinator
+      // remains the cross-role/account cap; keeping this below the shard count
+      // makes concurrent Queue deliveries fail at Container start instead of
+      // waiting on the existing bounded Queue retry path.
+      "max_instances": 3,
     },
   ],
   "durable_objects": {
@@ -294,6 +298,9 @@
     // only the weight-arrival path is activated. Rollback: flip back to "0"
     // (config-only, one deploy).
     "RESCORE_ENABLED": "1",
+    // Worker-native JRA weight rescore: final R2 cache + live late-binding
+    // columns + current champion model. Failures fall back to Container.
+    "JRA_WORKER_RESCORE_ENABLED": "1",
     // R2 bucket for the cached feature parquet GET in the container rescore path.
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
@@ -317,12 +324,16 @@
     // Kept off until the Python race-chain path has a fail-closed
     // no-inline-day-base-build switch. Worker-side R2 HEAD proves presence,
     // but cannot prove the live Catalog/running-style watermark still matches.
-    "RACE_CHAIN_CONTAINER_ENABLED": "0",
+    "RACE_CHAIN_CONTAINER_ENABLED": "1",
     "RACE_CHAIN_CONTAINER_CATEGORIES": "jra",
   },
   "queues": {
     "producers": [
       { "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" },
+      {
+        "binding": "WEIGHT_RESCORE_QUEUE",
+        "queue": "finish-position-weight-rescore-queue",
+      },
       {
         "binding": "CONTAINER_CONTROL_QUEUE",
         "queue": "finish-position-container-control-queue",
@@ -402,6 +413,18 @@
         "max_retries": 100,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
+      {
+        // Horse-weight events use a separate low-latency lane so a burst of
+        // day-base/full work cannot delay the one freshness rescore pass.
+        // Rescore DOs remain category-scoped and container-slot-cap.ts allows
+        // at most three, so dispatch width matches that authoritative cap.
+        "queue": "finish-position-weight-rescore-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 3,
+        "max_retries": 16,
+        "dead_letter_queue": "finish-position-predict-dlq",
+      },
       // Dead-letter consumer: messages land here only after exhausting
       // max_retries above. Historically this queue had NO consumer at all --
       // messages (including genuinely-dead focused-full pipelines) were
@@ -456,6 +479,10 @@
     },
   ],
   "services": [
+    {
+      "binding": "PC_KEIBA_VIEWER",
+      "service": "pc-keiba-viewer",
+    },
     {
       "binding": "PC_KEIBA_R2_CATALOG",
       "service": "pc-keiba-r2-catalog",

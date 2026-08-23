@@ -13,8 +13,10 @@ type DayBaseHeadResult = DayBaseHeadHit | null;
 
 const {
   claimContainerSlotMock,
+  controlSendMock,
   enumerateTodaysRacesMock,
   fanOutPredictionsAfterDayBaseHitMock,
+  getFocusedFullDayBaseReadinessMock,
   headDayBaseObjectMock,
   pickUpPrewarmDayBaseMock,
   releaseContainerSlotMock,
@@ -22,8 +24,10 @@ const {
   claimContainerSlotMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
+  controlSendMock: vi.fn(async () => undefined),
   enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
   fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
+  getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   headDayBaseObjectMock: vi.fn(async (): Promise<DayBaseHeadResult> => null),
   pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
   releaseContainerSlotMock: vi.fn(async () => undefined),
@@ -47,6 +51,9 @@ vi.mock("./day-base-prewarm-pickup", () => ({
 vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
 }));
+vi.mock("./focused-full-day-base-readiness", () => ({
+  getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
+}));
 
 import {
   enqueueDayBasePrewarm,
@@ -65,6 +72,9 @@ const containerDoIdFromNameMock = vi.fn((name: string) => ({ name }));
 const queueSendMock = vi.fn(async () => undefined);
 
 const makeEnv = (): Env => ({
+  CONTAINER_CONTROL_QUEUE: {
+    send: controlSendMock,
+  } as unknown as NonNullable<Env["CONTAINER_CONTROL_QUEUE"]>,
   FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {
@@ -94,6 +104,7 @@ test("validates day-base prewarm messages and queue wrappers", () => {
     type: "day-base-prewarm",
   };
   expect(isDayBasePrewarmMessage(valid)).toBe(true);
+  expect(isDayBasePrewarmMessage({ ...valid, force: true })).toBe(true);
   expect(isDayBasePrewarmQueueMessage({ body: valid } as Message<unknown>)).toBe(true);
   for (const invalid of [
     null,
@@ -106,6 +117,7 @@ test("validates day-base prewarm messages and queue wrappers", () => {
     { ...valid, daysAhead: Number.NaN },
     { ...valid, requestedAt: 1 },
     { ...valid, generatePredictionsAfterHit: "yes" },
+    { ...valid, force: "yes" },
   ]) {
     expect(isDayBasePrewarmMessage(invalid)).toBe(false);
   }
@@ -117,6 +129,7 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
     category: "ban-ei",
     daysAhead: 0,
     env,
+    force: true,
     generatePredictionsAfterHit: true,
     requestedAt: new Date("2026-08-22T00:00:00.000Z"),
     runYmd: "20260822",
@@ -124,6 +137,7 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
   expect(queueSendMock).toHaveBeenCalledWith({
     category: "ban-ei",
     daysAhead: 0,
+    force: true,
     generatePredictionsAfterHit: true,
     requestedAt: "2026-08-22T00:00:00.000Z",
     runYmd: "20260822",
@@ -134,6 +148,8 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
 beforeEach(() => {
   enumerateTodaysRacesMock.mockClear();
   fanOutPredictionsAfterDayBaseHitMock.mockClear();
+  getFocusedFullDayBaseReadinessMock.mockReset();
+  getFocusedFullDayBaseReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
@@ -142,6 +158,8 @@ beforeEach(() => {
   headDayBaseObjectMock.mockReset();
   pickUpPrewarmDayBaseMock.mockReset();
   claimContainerSlotMock.mockClear();
+  controlSendMock.mockReset();
+  controlSendMock.mockResolvedValue(undefined);
   releaseContainerSlotMock.mockReset();
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
@@ -451,7 +469,7 @@ test("prewarmCategory logs a warning when the container returns status error ins
   warnSpy.mockRestore();
 });
 
-test("prewarmCategory releases the day-base slot after a non-ok HTTP response", async () => {
+test("prewarmCategory stops the day-base container after a non-ok HTTP response", async () => {
   containerDoFetchMock.mockImplementation(() =>
     Promise.resolve(new Response("server error", { status: 500 })),
   );
@@ -463,12 +481,13 @@ test("prewarmCategory releases the day-base slot after a non-ok HTTP response", 
     runYmd: "20260628",
   });
   expect(landed).toBe(false);
-  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
-    doName: "predict-ban-ei",
-    env: expect.any(Object),
-    kind: "day-base",
-    workKey: "day-base:20260628:ban-ei",
-  });
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-ban-ei",
+      type: "container-stop",
+      workKey: "day-base:20260628:ban-ei",
+    }),
+  );
   warnSpy.mockRestore();
 });
 
@@ -777,6 +796,15 @@ test("prewarmCategory skips the container start when the slot is capped", async 
   });
   expect(landed).toBe(false);
   expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 1,
+      category: "jra",
+      runYmd: "20260628",
+      type: "day-base-pickup",
+    },
+    { delaySeconds: 180 },
+  );
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm] container slot capped doName=predict-jra kind=day-base category=jra runYmd=20260628 -- skipping start",
   );
@@ -800,7 +828,7 @@ test("prewarmCategory claims a Ban-ei reserved day-base slot before starting", a
   });
 });
 
-test("prewarmCategory releases the day-base slot after pickup lands the object", async () => {
+test("prewarmCategory stops the day-base container after pickup lands the object", async () => {
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 12 });
   containerDoFetchMock.mockImplementation(() =>
@@ -824,16 +852,17 @@ test("prewarmCategory releases the day-base slot after pickup lands the object",
     runYmd: "20260628",
   });
   expect(landed).toBe(true);
-  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
-    doName: "predict-jra",
-    env: expect.any(Object),
-    kind: "day-base",
-    workKey: "day-base:20260628:jra",
-  });
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-jra",
+      type: "container-stop",
+      workKey: "day-base:20260628:jra",
+    }),
+  );
   logSpy.mockRestore();
 });
 
-test("prewarmCategory releases the day-base slot when the container fetch throws", async () => {
+test("prewarmCategory stops the day-base container when the container fetch throws", async () => {
   containerDoFetchMock.mockImplementation(() => Promise.reject(new Error("boom")));
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const landed = await prewarmCategory({
@@ -843,12 +872,33 @@ test("prewarmCategory releases the day-base slot when the container fetch throws
     runYmd: "20260628",
   });
   expect(landed).toBe(false);
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-nar",
+      type: "container-stop",
+      workKey: "day-base:20260628:nar",
+    }),
+  );
+  errorSpy.mockRestore();
+});
+
+test("prewarmCategory releases only the slot when setup fails before Container start", async () => {
+  containerDoIdFromNameMock.mockImplementationOnce(() => {
+    throw new Error("DO setup failed");
+  });
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategory({ category: "nar", daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
+  ).resolves.toBe(false);
+
   expect(releaseContainerSlotMock).toHaveBeenCalledWith({
     doName: "predict-nar",
     env: expect.any(Object),
     kind: "day-base",
     workKey: "day-base:20260628:nar",
   });
+  expect(controlSendMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
 
@@ -881,11 +931,11 @@ test("prewarmCategory keeps the Ban-ei day-base slot while accepted pickup is pe
   warnSpy.mockRestore();
 });
 
-test("prewarmCategory still reports landed when slot release fails after pickup", async () => {
+test("prewarmCategory still reports landed when direct stop falls back to cleanup", async () => {
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
   pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 12 });
-  releaseContainerSlotMock.mockRejectedValueOnce(new Error("release failed"));
+  controlSendMock.mockRejectedValueOnce(new Error("control unavailable"));
   containerDoFetchMock.mockImplementation(() =>
     Promise.resolve(
       new Response(
@@ -909,15 +959,21 @@ test("prewarmCategory still reports landed when slot release fails after pickup"
   });
   expect(landed).toBe(true);
   expect(errorSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] failed to release container slot category=jra doName=predict-jra: Error: release failed",
+    "[container-cleanup] stop enqueue failed name=predict-jra role=legacy workKey=day-base:20260628:jra:",
+    "Error: control unavailable",
+  );
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ name: "predict-jra", type: "container-cleanup" }),
+    { delaySeconds: 30 },
   );
   logSpy.mockRestore();
   errorSpy.mockRestore();
 });
 
-test("prewarmCategory logs a release failure without throwing", async () => {
+test("prewarmCategory logs a cleanup handoff failure without throwing", async () => {
   containerDoFetchMock.mockImplementation(() => Promise.reject(new Error("boom")));
-  releaseContainerSlotMock.mockRejectedValueOnce(new Error("release failed"));
+  controlSendMock.mockRejectedValueOnce(new Error("control unavailable"));
+  queueSendMock.mockRejectedValueOnce(new Error("cleanup unavailable"));
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const landed = await prewarmCategory({
     category: "jra",
@@ -927,7 +983,44 @@ test("prewarmCategory logs a release failure without throwing", async () => {
   });
   expect(landed).toBe(false);
   expect(errorSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] failed to release container slot category=jra doName=predict-jra: Error: release failed",
+    "[day-base-prewarm] failed to hand off container cleanup category=jra doName=predict-jra: Error: cleanup unavailable",
   );
   errorSpy.mockRestore();
+});
+
+test("prewarmCategory fails closed when a landed build cannot schedule terminal cleanup", async () => {
+  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(false);
+  pickUpPrewarmDayBaseMock.mockResolvedValueOnce(true);
+  headDayBaseObjectMock.mockResolvedValueOnce({ size: 12 });
+  controlSendMock.mockRejectedValue(new Error("control unavailable"));
+  queueSendMock.mockRejectedValue(new Error("cleanup unavailable"));
+  containerDoFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        resultLineBody({
+          category: "jra",
+          parquetKey: "jra/20260628/day-base.parquet",
+          runDate: "20260628",
+          status: "success",
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategory({
+      category: "jra",
+      daysAhead: 2,
+      env: makeEnv(),
+      runYmd: "20260628",
+    }),
+  ).rejects.toThrow("cleanup unavailable");
+
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+  logSpy.mockRestore();
 });

@@ -177,6 +177,34 @@ const resolveRacePriorityMs = (raceStartAtJst: string | undefined, fallback: num
 const recordPriorityMs = (record: RunRecord | undefined): number =>
   record?.priorityMs ?? record?.timestamp ?? Number.MAX_SAFE_INTEGER;
 
+const PENDING_RESERVATION_STATUSES = new Set(["enqueued", "queued"]);
+
+const hasEarlierFreshReservation = async (params: {
+  category: string;
+  currentPriorityMs: number;
+  currentRaceKey: string;
+  doName: string;
+  now: number;
+  runYmd: string;
+  staleAfterMs: number;
+  storage: DurableObjectStorage;
+}): Promise<boolean> => {
+  const prefix = `${FOCUSED_FULL_KEY_PREFIX}:${params.runYmd}:${params.category}:`;
+  const records = await params.storage.list<RunRecord>({ prefix });
+  return [...records].some(([candidateKey, candidate]) => {
+    if (candidateKey === params.currentRaceKey) return false;
+    if (candidate.doName !== params.doName || candidate.reservationId === undefined) return false;
+    if (!PENDING_RESERVATION_STATUSES.has(candidate.status)) return false;
+    if (params.now - candidate.timestamp >= params.staleAfterMs) return false;
+    const candidatePriorityMs = recordPriorityMs(candidate);
+    return (
+      candidatePriorityMs < params.currentPriorityMs ||
+      (candidatePriorityMs === params.currentPriorityMs &&
+        candidateKey.localeCompare(params.currentRaceKey) < 0)
+    );
+  });
+};
+
 export class PredictRunCoordinator extends DurableObject<Env> {
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
@@ -290,6 +318,29 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           ? { activeRaceKey: raceKey, startedAt: existing.timestamp, waiters: [] }
           : undefined);
       if (lane === undefined) {
+        if (
+          await hasEarlierFreshReservation({
+            category: params.category,
+            currentPriorityMs: priorityMs,
+            currentRaceKey: raceKey,
+            doName,
+            now,
+            runYmd: params.runYmd,
+            staleAfterMs: params.staleAfterMs,
+            storage: this.ctx.storage,
+          })
+        ) {
+          await this.ctx.storage.put<RunRecord>(raceKey, {
+            doName,
+            priorityMs,
+            ...(existing?.reservationId === undefined
+              ? {}
+              : { reservationId: existing.reservationId }),
+            status: "queued",
+            timestamp: existing?.timestamp ?? now,
+          });
+          return { proceed: false, state: "queued" };
+        }
         await this.ctx.storage.put<RunRecord>(raceKey, {
           doName,
           priorityMs,
@@ -602,7 +653,9 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           CONTAINER_STOP_FENCES_KEY,
         )) ?? {};
       const existingFence = stopFences[params.doName];
-      if (!params.force && params.workKey === undefined) return false;
+      const existingLease = (record?.leases ?? []).find((lease) => lease.doName === params.doName);
+      if (!params.force && params.workKey === undefined && existingLease !== undefined)
+        return false;
       if (
         existingFence !== undefined &&
         params.workKey !== undefined &&
@@ -619,7 +672,6 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       if (!allowed) return false;
       const requestedAtMs = Date.parse(params.requestedAt);
       if (!params.force && !Number.isFinite(requestedAtMs)) return false;
-      const existingLease = (record?.leases ?? []).find((lease) => lease.doName === params.doName);
       if (!params.force && existingLease !== undefined && existingLease.timestamp > requestedAtMs) {
         return false;
       }

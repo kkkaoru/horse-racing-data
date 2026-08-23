@@ -86,12 +86,14 @@ test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high
       {
         modelVersion: "jra-cb-v9-sim-2013-clean",
         predictedRank: 1,
+        predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
         predictedScore: 0,
         umaban: "3",
       },
       {
         modelVersion: "jra-cb-v9-sim-2013-clean",
         predictedRank: 2,
+        predictionGeneratedAt: null,
         predictedScore: 3,
         umaban: "7",
       },
@@ -102,6 +104,7 @@ test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high
       horseNumber: "3",
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 0,
+      predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
       predictedScoreStddev: 2.1213203435596424,
       showProbability: null,
       winProbability: null,
@@ -111,6 +114,7 @@ test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high
       horseNumber: "7",
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 1,
+      predictionGeneratedAt: null,
       predictedScoreStddev: 2.1213203435596424,
       showProbability: null,
       winProbability: null,
@@ -120,16 +124,40 @@ test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high
 
 test("mapFinishPositionPredictionFeatures uses low confidence below the 1.3 stddev cut", () => {
   const mapped = mapFinishPositionPredictionFeatures([
-    { modelVersion: "v", predictedRank: 1, predictedScore: 1.0, umaban: "1" },
-    { modelVersion: "v", predictedRank: 2, predictedScore: 1.1, umaban: "2" },
+    {
+      modelVersion: "v",
+      predictedRank: 1,
+      predictionGeneratedAt: null,
+      predictedScore: 1.0,
+      umaban: "1",
+    },
+    {
+      modelVersion: "v",
+      predictedRank: 2,
+      predictionGeneratedAt: null,
+      predictedScore: 1.1,
+      umaban: "2",
+    },
   ]);
   expect(mapped[0]?.confidenceTier).toBe("low");
 });
 
 test("mapFinishPositionPredictionFeatures uses mid confidence between 1.3 and 1.5 stddev", () => {
   const mapped = mapFinishPositionPredictionFeatures([
-    { modelVersion: "v", predictedRank: 1, predictedScore: 0, umaban: "1" },
-    { modelVersion: "v", predictedRank: 2, predictedScore: 2, umaban: "2" },
+    {
+      modelVersion: "v",
+      predictedRank: 1,
+      predictionGeneratedAt: null,
+      predictedScore: 0,
+      umaban: "1",
+    },
+    {
+      modelVersion: "v",
+      predictedRank: 2,
+      predictionGeneratedAt: null,
+      predictedScore: 2,
+      umaban: "2",
+    },
   ]);
   expect(mapped[0]?.confidenceTier).toBe("mid");
 });
@@ -137,8 +165,20 @@ test("mapFinishPositionPredictionFeatures uses mid confidence between 1.3 and 1.
 test("mapFinishPositionPredictionFeatures leaves confidence null when fewer than two scores exist", () => {
   expect(
     mapFinishPositionPredictionFeatures([
-      { modelVersion: "v", predictedRank: 1, predictedScore: null, umaban: "1" },
-      { modelVersion: "v", predictedRank: 2, predictedScore: 1.4, umaban: "2" },
+      {
+        modelVersion: "v",
+        predictedRank: 1,
+        predictionGeneratedAt: null,
+        predictedScore: null,
+        umaban: "1",
+      },
+      {
+        modelVersion: "v",
+        predictedRank: 2,
+        predictionGeneratedAt: null,
+        predictedScore: 1.4,
+        umaban: "2",
+      },
     ]),
   ).toStrictEqual([
     {
@@ -146,6 +186,7 @@ test("mapFinishPositionPredictionFeatures leaves confidence null when fewer than
       horseNumber: "1",
       modelVersion: "v",
       predictedFinishNorm: 0,
+      predictionGeneratedAt: null,
       predictedScoreStddev: null,
       showProbability: null,
       winProbability: null,
@@ -155,6 +196,7 @@ test("mapFinishPositionPredictionFeatures leaves confidence null when fewer than
       horseNumber: "2",
       modelVersion: "v",
       predictedFinishNorm: 1,
+      predictionGeneratedAt: null,
       predictedScoreStddev: null,
       showProbability: null,
       winProbability: null,
@@ -237,12 +279,14 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
       model_version: "jra-cb-v9-sim-2013-clean",
       predicted_rank: 1,
       predicted_score: "0",
+      prediction_generated_at: "2026-08-22T01:15:00.000Z",
       umaban: 3,
     },
     {
       model_version: "jra-cb-v9-sim-2013-clean",
       predicted_rank: "2",
       predicted_score: 3,
+      prediction_generated_at: new Date("2026-08-22T01:15:00.000Z"),
       umaban: "7",
     },
     42,
@@ -278,6 +322,7 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
       horseNumber: "3",
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 0,
+      predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
       predictedScoreStddev: 2.1213203435596424,
       showProbability: null,
       winProbability: null,
@@ -287,6 +332,7 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
       horseNumber: "7",
       modelVersion: "jra-cb-v9-sim-2013-clean",
       predictedFinishNorm: 1,
+      predictionGeneratedAt: "2026-08-22T01:15:00.000Z",
       predictedScoreStddev: 2.1213203435596424,
       showProbability: null,
       winProbability: null,

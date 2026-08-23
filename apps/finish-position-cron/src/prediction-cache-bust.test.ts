@@ -48,6 +48,31 @@ test("triggerPredictionCacheBust posts JSON and internal token, returns ok on 20
   expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
 });
 
+test("triggerPredictionCacheBust prefers the viewer service binding", async () => {
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));
+  const outcome = await triggerPredictionCacheBust(
+    buildEnv({ PC_KEIBA_VIEWER: { fetch: serviceFetch } }),
+    {
+      keibajoCode: "83",
+      mmdd: "0823",
+      raceBango: "12",
+      source: "nar",
+      year: "2026",
+    },
+  );
+
+  expect(outcome).toStrictEqual({ attempts: 1, status: "ok" });
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(1);
+  expect(serviceFetch.mock.calls[0]?.[0]).toBe(
+    "https://example.test/api/internal/prediction-cache-bust",
+  );
+  expect(
+    new Headers(serviceFetch.mock.calls[0]?.[1]?.headers).get("x-pc-keiba-internal-token"),
+  ).toBe("secret-token");
+});
+
 test("triggerPredictionCacheBust does not retry on 4xx", async () => {
   const fetchSpy = vi
     .spyOn(globalThis, "fetch")

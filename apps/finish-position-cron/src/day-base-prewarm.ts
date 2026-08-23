@@ -24,10 +24,11 @@ import {
   buildDayBaseWorkKey,
   enqueueDayBasePickup,
 } from "./day-base-pickup";
-import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
-import { enqueueContainerStop } from "./container-control";
+import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
+import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { DayBasePrewarmMessage, Env, PredictCategory } from "./types";
@@ -58,6 +59,7 @@ interface PrewarmCategoryParams {
   env: Env;
   runYmd: string;
   generatePredictionsAfterHit?: boolean;
+  force?: boolean;
 }
 
 interface RunDayBasePrewarmParams {
@@ -86,7 +88,9 @@ interface ReleaseDayBaseSlotParams {
   category: PredictCategory;
   doName: string;
   env: Env;
+  landed: boolean;
   runYmd: string;
+  started: boolean;
 }
 
 // Deliberately stays category-scoped (never resolvePredictDoName) even when
@@ -119,7 +123,8 @@ export const isDayBasePrewarmMessage = (value: unknown): value is DayBasePrewarm
   Number.isFinite(value.daysAhead) &&
   typeof value.requestedAt === "string" &&
   (value.generatePredictionsAfterHit === undefined ||
-    typeof value.generatePredictionsAfterHit === "boolean");
+    typeof value.generatePredictionsAfterHit === "boolean") &&
+  (value.force === undefined || typeof value.force === "boolean");
 
 export const isDayBasePrewarmQueueMessage = (
   message: Message<unknown>,
@@ -130,6 +135,7 @@ export const enqueueDayBasePrewarm = async (params: EnqueueDayBasePrewarmParams)
     category: params.category,
     daysAhead: params.daysAhead,
     ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
+    ...(params.force === true ? { force: true } : {}),
     requestedAt: (params.requestedAt ?? new Date()).toISOString(),
     runYmd: params.runYmd,
     type: DAY_BASE_PREWARM_TYPE,
@@ -216,23 +222,32 @@ const landDayBaseFromPickup = async (
 ): Promise<boolean> => {
   const picked = await pickUpPrewarmDayBase(params);
   if (!picked) return false;
-  return (await headDayBaseObject(params)) !== null;
+  return (await getFocusedFullDayBaseReadiness(params)).ready;
 };
 
 const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): Promise<void> => {
   const workKey = buildDayBaseWorkKey(params.category, params.runYmd);
   try {
-    if (await enqueueContainerStop(params.env, params.doName, workKey)) return;
-    await releaseContainerSlot({
-      doName: params.doName,
+    if (!params.started) {
+      await releaseContainerSlot({
+        doName: params.doName,
+        env: params.env,
+        kind: DAY_BASE_SLOT_KIND,
+        workKey,
+      });
+      return;
+    }
+    await handOffContainerStopOrCleanup({
       env: params.env,
-      kind: DAY_BASE_SLOT_KIND,
+      name: params.doName,
+      role: "legacy",
       workKey,
     });
   } catch (releaseErr) {
     console.error(
-      `[day-base-prewarm] failed to release container slot category=${params.category} doName=${params.doName}: ${String(releaseErr)}`,
+      `[day-base-prewarm] failed to hand off container cleanup category=${params.category} doName=${params.doName}: ${String(releaseErr)}`,
     );
+    if (params.landed) throw releaseErr;
   }
 };
 
@@ -261,21 +276,22 @@ export const prewarmCategoryWithOutcome = async (
     console.warn(
       `[day-base-prewarm] container slot ${claim.state ?? "capped"} doName=${doName} kind=${DAY_BASE_SLOT_KIND} category=${category} runYmd=${runYmd} -- skipping start`,
     );
-    if (params.generatePredictionsAfterHit === true) {
-      await enqueueDayBasePickup({
-        attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
-        category,
-        env,
-        generatePredictionsAfterHit: true,
-        runYmd,
-      });
-    }
-    return params.generatePredictionsAfterHit === true ? "pickup-scheduled" : "failed";
+    await enqueueDayBasePickup({
+      attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
+      category,
+      env,
+      ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
+      ...(params.force === true ? { force: true } : {}),
+      runYmd,
+    });
+    return "pickup-scheduled";
   }
   let releaseSlot = true;
+  const lifecycle = { landed: false, started: false };
   try {
     const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
     const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+    lifecycle.started = true;
     const response = await stub.fetch(new Request(url));
     const result = await handlePrewarmResponse({ category, response, runYmd });
     // Only the container can declare an existing R2 object fresh because its
@@ -284,12 +300,14 @@ export const prewarmCategoryWithOutcome = async (
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
+      lifecycle.landed = true;
       return "landed";
     }
     if (await landDayBaseFromPickup({ category, env, runYmd })) {
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
+      lifecycle.landed = true;
       return "landed";
     }
     if (result?.status !== PREWARM_ACCEPTED_STATUS) return "failed";
@@ -298,6 +316,7 @@ export const prewarmCategoryWithOutcome = async (
       category,
       env,
       ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
+      ...(params.force === true ? { force: true } : {}),
       runYmd,
     });
     // The detached DAY_CHAIN still owns this capacity. Its delayed pickup
@@ -315,7 +334,14 @@ export const prewarmCategoryWithOutcome = async (
     return "failed";
   } finally {
     if (releaseSlot) {
-      await releaseDayBaseSlotBestEffort({ category, doName, env, runYmd });
+      await releaseDayBaseSlotBestEffort({
+        category,
+        doName,
+        env,
+        landed: lifecycle.landed,
+        runYmd,
+        started: lifecycle.started,
+      });
     }
   }
 };

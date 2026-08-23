@@ -56,6 +56,19 @@ test("keeps the production flag off path on the legacy binding without an R2 rea
   expect(headDayBaseObjectMock).not.toHaveBeenCalled();
 });
 
+test("keeps a DAY_BASE_REQUIRED replacement on legacy without another R2 read", async () => {
+  const route = await resolveRaceContainerRoute({
+    category: "jra",
+    env: makeEnv(),
+    forceLegacy: true,
+    focusedFull: true,
+    runYmd: "20260823",
+  });
+
+  expect(route).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
+  expect(headDayBaseObjectMock).not.toHaveBeenCalled();
+});
+
 test("keeps non-focused and non-allowlisted work on the legacy binding", async () => {
   const nonFocused = await resolveRaceContainerRoute({
     category: "jra",

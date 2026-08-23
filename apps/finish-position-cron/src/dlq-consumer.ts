@@ -9,8 +9,10 @@
 // re-enqueues it once, bounded by dlqRedriveCount on the message body so a
 // poison-pill message cannot bounce between the two queues forever.
 
-import { isDayBasePickupQueueMessage } from "./day-base-pickup";
+import { cleanupDayBaseWork, isDayBasePickupQueueMessage } from "./day-base-pickup";
 import { isDayBasePrewarmQueueMessage } from "./day-base-prewarm";
+import { clearDayBaseRepairReservation } from "./day-base-repair";
+import { consumeContainerCleanup, isContainerCleanupQueueMessage } from "./container-cleanup";
 import {
   consumeContainerStop,
   enqueueContainerStop,
@@ -25,6 +27,7 @@ import {
 } from "./dlq-events";
 import { completeFocusedFullRace } from "./do-state";
 import { resolvePredictDoName } from "./predict-do-shard";
+import { isOldDateRunYmd } from "./old-date-guard";
 import type { PredictFailureSnapshot } from "./predict-failure";
 import {
   buildFocusedFullWorkKey,
@@ -37,7 +40,13 @@ import {
   retryErrorLookupRowToSnapshot,
   type RetryErrorLookupRow,
 } from "./retry-errors";
-import type { ContainerControlMessage, Env, PredictQueueBody, PredictQueueMessage } from "./types";
+import type {
+  ContainerControlMessage,
+  Env,
+  PredictCategory,
+  PredictQueueBody,
+  PredictQueueMessage,
+} from "./types";
 
 export const DLQ_QUEUE_NAME = "finish-position-predict-dlq";
 const MAX_DLQ_REDRIVES = 1;
@@ -179,7 +188,6 @@ const enqueueTerminalContainerStop = async (env: Env, body: PredictQueueMessage)
       env,
       keibajoCode: body.keibajoCode,
       raceBango: body.raceBango,
-      shareCategoryInstance: body.mode === "rescore",
     }),
     workKey,
   );
@@ -196,7 +204,6 @@ const stopContainerBeforeRedrive = async (env: Env, body: PredictQueueMessage): 
       env,
       keibajoCode: body.keibajoCode,
       raceBango: body.raceBango,
-      shareCategoryInstance: body.mode === "rescore",
     }),
     requestedAt: new Date().toISOString(),
     type: "container-stop",
@@ -212,17 +219,44 @@ const redriveMessage = async (env: Env, body: PredictQueueMessage): Promise<void
   });
 };
 
+const cleanupExpiredDayBaseMessage = async (
+  env: Env,
+  body: { category: PredictCategory; force?: boolean; runYmd: string },
+): Promise<void> => {
+  if (body.force === true || !isOldDateRunYmd(body.runYmd, new Date())) return;
+  await Promise.all([
+    clearDayBaseRepairReservation({ category: body.category, env, runYmd: body.runYmd }).catch(
+      (error) => {
+        console.error(
+          `[predict-dlq] old day-base repair cleanup failed category=${body.category} runYmd=${body.runYmd}:`,
+          String(error),
+        );
+      },
+    ),
+    cleanupDayBaseWork({ category: body.category, env, runYmd: body.runYmd }).catch((error) => {
+      console.error(
+        `[predict-dlq] old day-base container cleanup failed category=${body.category} runYmd=${body.runYmd}:`,
+        String(error),
+      );
+    }),
+  ]);
+};
+
 const processDlqMessage = async (
   message: Message<PredictQueueMessage>,
   env: Env,
 ): Promise<void> => {
   const body = message.body;
   const redriveCount = body.dlqRedriveCount ?? DLQ_REDRIVE_COUNT_ZERO;
-  const shouldRedrive = redriveCount < MAX_DLQ_REDRIVES;
+  const expired = body.force !== true && isOldDateRunYmd(body.runYmd, new Date());
+  const shouldRedrive = !expired && redriveCount < MAX_DLQ_REDRIVES;
   try {
     await recordDlqEvent(env, message, redriveCount, shouldRedrive);
     await unstickFocusedFullClaim(env, body);
-    if (shouldRedrive) {
+    if (expired) {
+      await enqueueTerminalContainerStop(env, body);
+      console.warn(`[predict-dlq] old message not redriven ${describeDlqMessage(body)}`);
+    } else if (shouldRedrive) {
       await stopContainerBeforeRedrive(env, body);
       await redriveMessage(env, body);
       console.warn(
@@ -265,6 +299,22 @@ export const handleDlqQueue = async (
       }
       continue;
     }
+    if (isContainerCleanupQueueMessage(message)) {
+      console.error(
+        `[predict-dlq] container cleanup exhausted name=${message.body.name} role=${message.body.role} workKey=${message.body.workKey} attempt=${message.body.attempt}`,
+      );
+      try {
+        await consumeContainerCleanup({ env, message: message.body });
+        message.ack();
+      } catch (error) {
+        console.error(
+          `[predict-dlq] container cleanup retry failed name=${message.body.name} role=${message.body.role} workKey=${message.body.workKey}:`,
+          String(error),
+        );
+        message.retry();
+      }
+      continue;
+    }
     const predictMessage = message as Message<PredictQueueBody>;
     if (isDeliveryCanaryQueueMessage(predictMessage)) {
       console.error(`[predict-dlq] delivery canary reached DLQ id=${predictMessage.body.id}`);
@@ -273,11 +323,13 @@ export const handleDlqQueue = async (
       console.error(
         `[predict-dlq] day-base pickup reached DLQ category=${predictMessage.body.category} runYmd=${predictMessage.body.runYmd} attempt=${predictMessage.body.attempt}`,
       );
+      await cleanupExpiredDayBaseMessage(env, predictMessage.body);
       predictMessage.ack();
     } else if (isDayBasePrewarmQueueMessage(predictMessage)) {
       console.error(
         `[predict-dlq] day-base prewarm reached DLQ category=${predictMessage.body.category} runYmd=${predictMessage.body.runYmd}`,
       );
+      await cleanupExpiredDayBaseMessage(env, predictMessage.body);
       predictMessage.ack();
     } else if (isPredictQueueMessage(predictMessage)) {
       await processDlqMessage(predictMessage, env);

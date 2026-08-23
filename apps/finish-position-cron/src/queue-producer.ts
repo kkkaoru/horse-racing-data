@@ -3,7 +3,12 @@
 // required on every enqueue (see per-race-scope-guard.ts).
 
 import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
-import { failFocusedFullRaceEnqueue, reserveFocusedFullRaceEnqueue } from "./do-state";
+import {
+  completeFocusedFullRace,
+  failFocusedFullRaceEnqueue,
+  reserveFocusedFullRaceEnqueue,
+} from "./do-state";
+import { isPerRaceFeatureCachePresent } from "./focused-full-completion";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
@@ -35,12 +40,13 @@ interface EnqueueCategoryParams {
 
 const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> => {
   const { category, params } = input;
+  const now = new Date();
   const reservationId =
     params.mode === "full" && params.skipDedup === true && params.force !== true
       ? crypto.randomUUID()
       : undefined;
   if (reservationId !== undefined) {
-    const reservation = await reserveFocusedFullRaceEnqueue({
+    const reservationParams = {
       category,
       env: params.env,
       keibajoCode: params.keibajoCode,
@@ -49,7 +55,40 @@ const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> =
       reservationId,
       runYmd: params.runYmd,
       staleAfterMs: FOCUSED_FULL_ENQUEUE_RESERVATION_STALE_MS,
-    });
+    };
+    let reservation = await reserveFocusedFullRaceEnqueue(reservationParams);
+    // Deployments before cache-confirmed completion could leave a durable
+    // `success` coordinator record even though the detached Container payload
+    // was never copied to the exact per-race R2 key. Treating that record as a
+    // permanent duplicate prevents every later day-base fanout from repairing
+    // the race and makes weight rescore defer forever. Current in-flight states
+    // remain untouched; only the impossible current-contract state
+    // (success + exact cache miss) is reopened and reserved atomically again.
+    if (!reservation.proceed && reservation.state === "success") {
+      const cachePresent = await isPerRaceFeatureCachePresent({
+        category,
+        env: params.env,
+        keibajoCode: params.keibajoCode,
+        raceBango: params.raceBango,
+        runYmd: params.runYmd,
+      });
+      if (!cachePresent) {
+        await completeFocusedFullRace({
+          category,
+          env: params.env,
+          keibajoCode: params.keibajoCode,
+          raceBango: params.raceBango,
+          runYmd: params.runYmd,
+          status: "error",
+        });
+        reservation = await reserveFocusedFullRaceEnqueue(reservationParams);
+        if (reservation.proceed) {
+          console.warn(
+            `[predict-producer] reopened cacheless focused-full success category=${category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}`,
+          );
+        }
+      }
+    }
     if (!reservation.proceed) return false;
   }
   const message = {
@@ -64,10 +103,9 @@ const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> =
     runYmd: params.runYmd,
     ...(params.skipDedup ? { skipDedup: true } : {}),
     ...(params.debug ? { debug: true } : {}),
-    ...(params.force ? { force: true } : {}),
+    ...(params.force ? { force: true, forceRequestedAt: now.toISOString() } : {}),
     ...(params.deliveryTrackingId ? { deliveryTrackingId: params.deliveryTrackingId } : {}),
   } satisfies PredictQueueMessage;
-  const now = new Date();
   try {
     await recordDeliveryDetected(params.env, message, now);
     await params.env.PREDICT_QUEUE.send(message);

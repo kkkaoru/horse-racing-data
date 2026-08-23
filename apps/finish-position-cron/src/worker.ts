@@ -18,7 +18,8 @@ import {
   shouldRunWarmCron,
 } from "./cron-decision";
 import { enqueueDayBasePrewarm, runDayBasePrewarm } from "./day-base-prewarm";
-import { headDayBaseObject, pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   enqueueDeliveryCanary,
   listDeliveryCanaries,
@@ -33,6 +34,7 @@ import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import { getPredictionReadiness } from "./prediction-readiness";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
+import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
 import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
@@ -84,6 +86,7 @@ const ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH = "/api/admin/complete-focused-full-
 const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_PREWARM_DAY_BASE_PATH = "/api/admin/prewarm-day-base";
 const ADMIN_PICKUP_DAY_BASE_PATH = "/api/admin/pickup-day-base";
+const ADMIN_MATERIALIZE_DAY_BASE_PATH = "/api/admin/materialize-day-base-races";
 export const CONTAINER_CONTROL_QUEUE_NAME = "finish-position-container-control-queue";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
@@ -115,6 +118,7 @@ interface AdminCompleteFocusedFullRaceRequest extends InternalRescoreRaceRequest
 
 interface AdminPrewarmDayBaseRequest {
   category?: PredictCategory;
+  force?: boolean;
   generatePredictionsAfterHit?: boolean;
   runYmd: string;
 }
@@ -264,6 +268,9 @@ export const isAdminPrewarmDayBaseRequest = (method: string, pathname: string): 
 export const isAdminPickupDayBaseRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PICKUP_DAY_BASE_PATH;
 
+export const isAdminMaterializeDayBaseRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_MATERIALIZE_DAY_BASE_PATH;
+
 const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
   typeof value === "string" && VALID_CATEGORIES.has(value);
 
@@ -307,16 +314,19 @@ const parseAdminPrewarmDayBaseBody = (
   const runYmd = requestedRunYmd === undefined ? fallbackRunYmd : requestedRunYmd;
   if (!isValidRunYmd(runYmd)) return null;
   const category = body[CATEGORY_FIELD];
+  const force = body[FORCE_FIELD];
+  if (force !== undefined && typeof force !== "boolean") return null;
   const generatePredictionsAfterHit = body.generatePredictionsAfterHit;
   if (generatePredictionsAfterHit !== undefined && typeof generatePredictionsAfterHit !== "boolean")
     return null;
   const generationFlag =
     generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {};
+  const forceFlag = force === true ? { force: true } : {};
   if (category === undefined) {
-    return generatePredictionsAfterHit === true ? null : { runYmd };
+    return generatePredictionsAfterHit === true || force === true ? null : { runYmd };
   }
   if (!isValidRescoreCategory(category)) return null;
-  return { category, ...generationFlag, runYmd };
+  return { category, ...forceFlag, ...generationFlag, runYmd };
 };
 
 const parseAdminCompleteFocusedFullRaceBody = (
@@ -342,7 +352,9 @@ const sendRescoreRaceMessage = async (
   body: InternalRescoreRaceRequest,
 ): Promise<void> => {
   const runDate = buildRunDateFromYmd(body.runYmd);
-  await env.PREDICT_QUEUE.send({
+  const queue =
+    env.WEIGHT_RESCORE_QUEUE === undefined ? env.PREDICT_QUEUE : env.WEIGHT_RESCORE_QUEUE;
+  await queue.send({
     category: body.category,
     daysAhead: RESCORE_DAYS_AHEAD,
     ...(body.debug ? { debug: true } : {}),
@@ -413,6 +425,12 @@ const parseStopContainerNames = (body: Record<string, unknown>): string[] | null
   return parsed.length === names.length ? parsed : null;
 };
 
+const parseStopContainerOverrideActive = (body: Record<string, unknown>): boolean | null => {
+  const overrideActive = body.overrideActive;
+  if (overrideActive === undefined) return false;
+  return typeof overrideActive === "boolean" ? overrideActive : null;
+};
+
 const handleAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     console.warn("[predict-worker] admin-stop unauthorized");
@@ -424,8 +442,16 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
     console.warn("[predict-worker] admin-stop invalid names");
     return Response.json({ error: "invalid names", ok: false }, { status: HTTP_BAD_REQUEST });
   }
+  const overrideActive = parseStopContainerOverrideActive(body);
+  if (overrideActive === null) {
+    console.warn("[predict-worker] admin-stop invalid overrideActive");
+    return Response.json(
+      { error: "invalid overrideActive", ok: false },
+      { status: HTTP_BAD_REQUEST },
+    );
+  }
   console.warn(
-    `[predict-worker] admin-stop requested count=${names.length} names=${names.join(",")}`,
+    `[predict-worker] admin-stop requested count=${names.length} names=${names.join(",")} overrideActive=${overrideActive}`,
   );
   if (env.CONTAINER_CONTROL_QUEUE === undefined) {
     return Response.json(
@@ -438,7 +464,7 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
   await Promise.all(
     names.map((name) =>
       controlQueue.send({
-        force: true,
+        ...(overrideActive ? { force: true } : {}),
         name,
         requestedAt,
         type: "container-stop",
@@ -519,6 +545,7 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
           category: parsed.category,
           daysAhead,
           env,
+          ...(parsed.force === true ? { force: true } : {}),
           ...(parsed.generatePredictionsAfterHit === true
             ? { generatePredictionsAfterHit: true }
             : {}),
@@ -557,13 +584,29 @@ const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Res
   console.warn(
     `[predict-worker] admin-pickup-day-base start runYmd=${parsed.runYmd} category=${parsed.category}`,
   );
-  const pickedUp = await pickUpPrewarmDayBase({
+  const existingReadiness = await getFocusedFullDayBaseReadiness({
     category: parsed.category,
     env,
     runYmd: parsed.runYmd,
-  });
-  const landed =
-    (await headDayBaseObject({ category: parsed.category, env, runYmd: parsed.runYmd })) !== null;
+  }).catch(() => ({ ready: false, reason: "readiness-error" }));
+  const pickupFound = existingReadiness.ready
+    ? true
+    : await pickUpPrewarmDayBase({
+        category: parsed.category,
+        env,
+        runYmd: parsed.runYmd,
+      });
+  const readiness = existingReadiness.ready
+    ? existingReadiness
+    : pickupFound
+      ? await getFocusedFullDayBaseReadiness({
+          category: parsed.category,
+          env,
+          runYmd: parsed.runYmd,
+        })
+      : { ready: false, reason: "pickup-missing" };
+  const pickedUp = readiness.ready;
+  const landed = pickedUp;
   const racesEnqueued =
     landed && parsed.generatePredictionsAfterHit === true
       ? await fanOutPredictionsAfterDayBaseHit({
@@ -576,6 +619,7 @@ const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Res
     category: parsed.category,
     ok: landed,
     pickedUp,
+    readiness: readiness.reason,
     racesEnqueued,
     runYmd: parsed.runYmd,
   });
@@ -584,6 +628,36 @@ const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Res
 const guardedAdminPickupDayBase = async (request: Request, env: Env): Promise<Response> => {
   try {
     return await handleAdminPickupDayBase(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
+const handleAdminMaterializeDayBase = async (request: Request, env: Env): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const parsed = parseAdminPrewarmDayBaseBody(await parseBody(request), getRunYmdJst(new Date()));
+  if (parsed === null || parsed.category === undefined) {
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const result = await materializeDayBasePerRaceCache({
+    category: parsed.category,
+    env,
+    runYmd: parsed.runYmd,
+  });
+  const ok = result.status === "materialized";
+  return Response.json(
+    { category: parsed.category, ok, result, runYmd: parsed.runYmd },
+    {
+      status: ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE,
+    },
+  );
+};
+
+const guardedAdminMaterializeDayBase = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleAdminMaterializeDayBase(request, env);
   } catch (error) {
     return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
   }
@@ -667,6 +741,9 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   }
   if (isAdminPickupDayBaseRequest(request.method, url.pathname)) {
     return guardedAdminPickupDayBase(request, env);
+  }
+  if (isAdminMaterializeDayBaseRequest(request.method, url.pathname)) {
+    return guardedAdminMaterializeDayBase(request, env);
   }
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);

@@ -31,6 +31,8 @@ const {
   pickUpPrewarmDayBaseMock,
   headDayBaseObjectMock,
   fanOutPredictionsAfterDayBaseHitMock,
+  getFocusedFullDayBaseReadinessMock,
+  materializeDayBasePerRaceCacheMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -75,6 +77,25 @@ const {
   const pickUpPrewarmDayBase = vi.fn(async () => false);
   const headDayBaseObject = vi.fn(async (): Promise<unknown> => null);
   const fanOutPredictionsAfterDayBaseHit = vi.fn(async () => 0);
+  const getFocusedFullDayBaseReadiness = vi.fn(async () => ({ ready: true, reason: "ready" }));
+  const materializeDayBasePerRaceCache = vi.fn(
+    async (): Promise<
+      | {
+          featureHash: string;
+          manifestKey: string;
+          raceCount: number;
+          rowCount: number;
+          status: "materialized";
+        }
+      | { reason: string; status: "fallback" }
+    > => ({
+      featureHash: "feature-hash",
+      manifestKey: "manifest.json",
+      raceCount: 36,
+      rowCount: 466,
+      status: "materialized",
+    }),
+  );
   const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
   const runCoverageSelfHeal = vi.fn(async () => ({
     alreadyComplete: 0,
@@ -113,6 +134,8 @@ const {
     pickUpPrewarmDayBaseMock: pickUpPrewarmDayBase,
     headDayBaseObjectMock: headDayBaseObject,
     fanOutPredictionsAfterDayBaseHitMock: fanOutPredictionsAfterDayBaseHit,
+    getFocusedFullDayBaseReadinessMock: getFocusedFullDayBaseReadiness,
+    materializeDayBasePerRaceCacheMock: materializeDayBasePerRaceCache,
   };
 });
 
@@ -170,8 +193,16 @@ vi.mock("./day-base-prewarm-pickup", () => ({
   pickUpPrewarmDayBase: pickUpPrewarmDayBaseMock,
 }));
 
+vi.mock("./day-base-race-materializer", () => ({
+  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+}));
+
 vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
+}));
+
+vi.mock("./focused-full-day-base-readiness", () => ({
+  getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
 
 // shouldRunCornerFeaturesRefreshCron is a pure string comparison against the
@@ -231,6 +262,7 @@ const runMock = vi.fn(async () => ({ success: true }));
 const bindMock = vi.fn(() => ({ run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const predictQueueSendMock = vi.fn(async () => undefined);
+const weightRescoreQueueSendMock = vi.fn(async () => undefined);
 const controlQueueSendMock = vi.fn(async () => undefined);
 const containerDoFetchMock = vi.fn(async () => Response.json({ ok: true }));
 const containerDoGetMock = vi.fn(() => ({ fetch: containerDoFetchMock }));
@@ -259,6 +291,9 @@ const makeEnv = (): Env => ({
   REALTIME_DB: { prepare: realtimePrepareMock } as unknown as D1Database,
   RESCORE_ENABLED: "1",
   TRIGGER_TOKEN: "secret-token",
+  WEIGHT_RESCORE_QUEUE: {
+    send: weightRescoreQueueSendMock,
+  } as unknown as NonNullable<Env["WEIGHT_RESCORE_QUEUE"]>,
 });
 
 const makeEvent = (cron: string): ScheduledEvent =>
@@ -296,6 +331,12 @@ beforeEach(() => {
   pickUpPrewarmDayBaseMock.mockClear();
   headDayBaseObjectMock.mockClear();
   fanOutPredictionsAfterDayBaseHitMock.mockClear();
+  getFocusedFullDayBaseReadinessMock.mockReset();
+  getFocusedFullDayBaseReadinessMock.mockResolvedValue({
+    ready: false,
+    reason: "day-base-missing-or-invalid",
+  });
+  materializeDayBasePerRaceCacheMock.mockClear();
   refreshCornerFeaturesMock.mockClear();
   runCoverageSelfHealMock.mockClear();
   runRunningStyleKickMorningGapMock.mockClear();
@@ -304,6 +345,7 @@ beforeEach(() => {
   listDeliveryCanariesMock.mockClear();
   getPredictionReadinessMock.mockClear();
   predictQueueSendMock.mockClear();
+  weightRescoreQueueSendMock.mockClear();
   controlQueueSendMock.mockClear();
   enqueueDayBasePrewarmMock.mockClear();
   containerDoFetchMock.mockClear();
@@ -368,6 +410,61 @@ const adminPickupDayBaseRequest = (token: string | null, body: string): Request 
     method: "POST",
   });
 
+const adminMaterializeDayBaseRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/materialize-day-base-races", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+test("admin materialize route is authenticated, scoped, and returns the idempotent result", async () => {
+  expect(await handleFetch(adminMaterializeDayBaseRequest(null, "{}"), makeEnv())).toMatchObject({
+    status: 401,
+  });
+  expect(
+    await handleFetch(
+      adminMaterializeDayBaseRequest("secret-token", JSON.stringify({ runYmd: "20260823" })),
+      makeEnv(),
+    ),
+  ).toMatchObject({ status: 400 });
+
+  const env = makeEnv();
+  const response = await handleFetch(
+    adminMaterializeDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", runYmd: "20260823" }),
+    ),
+    env,
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    category: "jra",
+    ok: true,
+    result: { raceCount: 36, rowCount: 466, status: "materialized" },
+  });
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledWith({
+    category: "jra",
+    env,
+    runYmd: "20260823",
+  });
+});
+
+test("admin materialize route returns 503 on a fail-closed fallback", async () => {
+  materializeDayBasePerRaceCacheMock.mockResolvedValueOnce({
+    reason: "source-size-limit",
+    status: "fallback",
+  });
+  const response = await handleFetch(
+    adminMaterializeDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", runYmd: "20260823" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(503);
+  await expect(response.json()).resolves.toMatchObject({ ok: false });
+});
+
 test("admin pickup-day-base rejects unauthenticated and unscoped requests", async () => {
   const unauthorized = await handleFetch(adminPickupDayBaseRequest(null, "{}"), makeEnv());
   const unscoped = await handleFetch(
@@ -394,6 +491,7 @@ test("admin pickup-day-base reports a cache miss without touching container coor
     category: "jra",
     ok: false,
     pickedUp: false,
+    readiness: "pickup-missing",
     racesEnqueued: 0,
     runYmd: "20260817",
   });
@@ -402,11 +500,7 @@ test("admin pickup-day-base reports a cache miss without touching container coor
     env,
     runYmd: "20260817",
   });
-  expect(headDayBaseObjectMock).toHaveBeenCalledWith({
-    category: "jra",
-    env,
-    runYmd: "20260817",
-  });
+  expect(getFocusedFullDayBaseReadinessMock).toHaveBeenCalledTimes(1);
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
@@ -417,6 +511,9 @@ test("admin pickup-day-base reports a cache miss without touching container coor
 test("admin pickup-day-base verifies R2 before ordered prediction fanout", async () => {
   const env = makeEnv();
   pickUpPrewarmDayBaseMock.mockResolvedValue(true);
+  getFocusedFullDayBaseReadinessMock
+    .mockResolvedValueOnce({ ready: false, reason: "day-base-missing-or-invalid" })
+    .mockResolvedValueOnce({ ready: true, reason: "ready" });
   headDayBaseObjectMock.mockResolvedValue({ customMetadata: {} });
   fanOutPredictionsAfterDayBaseHitMock.mockResolvedValue(36);
   const response = await handleFetch(
@@ -435,6 +532,7 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
     category: "jra",
     ok: true,
     pickedUp: true,
+    readiness: "ready",
     racesEnqueued: 36,
     runYmd: "20260817",
   });
@@ -446,6 +544,58 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
+});
+
+test("admin pickup-day-base rejects a stale partial canonical object and blocks fanout", async () => {
+  const env = makeEnv();
+  pickUpPrewarmDayBaseMock.mockResolvedValue(true);
+  getFocusedFullDayBaseReadinessMock
+    .mockResolvedValueOnce({ ready: false, reason: "day-base-missing-or-invalid" })
+    .mockResolvedValueOnce({
+      ready: false,
+      reason: "source-row-count-26-of-392",
+    });
+  const response = await handleFetch(
+    adminPickupDayBaseRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        generatePredictionsAfterHit: true,
+        runYmd: "20260817",
+      }),
+    ),
+    env,
+  );
+
+  await expect(response.json()).resolves.toStrictEqual({
+    category: "jra",
+    ok: false,
+    pickedUp: false,
+    readiness: "source-row-count-26-of-392",
+    racesEnqueued: 0,
+    runYmd: "20260817",
+  });
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+});
+
+test("admin pickup-day-base uses an already-ready R2 generation without waking its Container", async () => {
+  const env = makeEnv();
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+
+  const response = await handleFetch(
+    adminPickupDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "ban-ei", runYmd: "20260817" }),
+    ),
+    env,
+  );
+
+  await expect(response.json()).resolves.toMatchObject({
+    ok: true,
+    pickedUp: true,
+    readiness: "ready",
+  });
+  expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base rejects unauthenticated requests", async () => {
@@ -538,6 +688,40 @@ test("admin prewarm-day-base forwards the feature-hit generation intent", async 
     generatePredictionsAfterHit: true,
     runYmd: "20260817",
   });
+});
+
+test("admin prewarm-day-base preserves an explicit category-scoped historical force", async () => {
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", force: true, runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(enqueueDayBasePrewarmMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    env: expect.any(Object),
+    force: true,
+    runYmd: "20260817",
+  });
+});
+
+test("admin prewarm-day-base rejects invalid and unscoped historical force", async () => {
+  const invalid = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", force: "yes", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  const unscoped = await handleFetch(
+    adminPrewarmDayBaseRequest("secret-token", JSON.stringify({ force: true, runYmd: "20260817" })),
+    makeEnv(),
+  );
+  expect(invalid.status).toBe(400);
+  expect(unscoped.status).toBe(400);
 });
 
 test("admin prewarm-day-base without category warms every scheduled category", async () => {
@@ -975,6 +1159,20 @@ test("queue default handler delegates to handleQueue for the primary queue", asy
   expect(handleDlqQueueMock).not.toHaveBeenCalled();
 });
 
+test("queue default handler delegates the dedicated weight-rescore queue to handleQueue", async () => {
+  const batch = {
+    messages: [],
+    queue: "finish-position-weight-rescore-queue",
+  } as unknown as MessageBatch<import("./types").PredictQueueMessage>;
+  await workerDefault.queue(batch, makeEnv());
+  expect(handleQueueMock).toHaveBeenCalledTimes(1);
+  expect(handleQueueMock).toHaveBeenCalledWith(
+    batch,
+    expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+  );
+  expect(handleDlqQueueMock).not.toHaveBeenCalled();
+});
+
 test("queue default handler routes the dead-letter queue name to handleDlqQueue", async () => {
   const batch = {
     messages: [],
@@ -1305,6 +1503,18 @@ test("admin stop containers endpoint rejects missing and empty names", async () 
   expect(containerDoFetchMock).not.toHaveBeenCalled();
 });
 
+test("admin stop containers endpoint rejects a non-boolean active override", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["predict-jra-0"], overrideActive: "true" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(controlQueueSendMock).not.toHaveBeenCalled();
+});
+
 test("admin stop containers endpoint returns 400 for malformed JSON", async () => {
   const response = await handleFetch(adminStopContainersRequest("secret-token", "{"), makeEnv());
   expect(response.status).toBe(400);
@@ -1334,8 +1544,30 @@ test("admin stop containers endpoint enqueues each requested container on the co
     2,
     expect.objectContaining({ name: "predict-nar-20260702-50-02", type: "container-stop" }),
   );
+  expect(controlQueueSendMock).toHaveBeenNthCalledWith(
+    1,
+    expect.not.objectContaining({ force: expect.anything() }),
+  );
+  expect(controlQueueSendMock).toHaveBeenNthCalledWith(
+    2,
+    expect.not.objectContaining({ force: expect.anything() }),
+  );
   expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
+});
+
+test("admin stop containers endpoint forces a stop only with an explicit active override", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["predict-jra-0"], overrideActive: true }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(controlQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ force: true, name: "predict-jra-0", type: "container-stop" }),
+  );
 });
 
 test("admin complete focused full race endpoint rejects unauthenticated requests", async () => {
@@ -1485,6 +1717,33 @@ test("admin run focused full race endpoint enqueues a focused full prediction", 
   expect(retryPopulateViewerDisplayCacheMock).not.toHaveBeenCalled();
 });
 
+test("admin run focused full race endpoint omits optional debug and force fields", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(enqueueMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    env: expect.any(Object),
+    keibajoCode: "10",
+    mode: "full",
+    raceBango: "07",
+    runDate: "2026-07-05",
+    runYmd: "20260705",
+    skipDedup: true,
+  });
+});
+
 test("internal rescore-race endpoint claims, enqueues a per-race rescore message, and returns 202", async () => {
   const response = await handleFetch(
     internalRescoreRaceRequest(
@@ -1508,8 +1767,8 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
       runYmd: "20260619",
     }),
   );
-  expect(predictQueueSendMock).toHaveBeenCalledTimes(1);
-  expect(predictQueueSendMock).toHaveBeenCalledWith({
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledTimes(1);
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledWith({
     category: "nar",
     daysAhead: 0,
     keibajoCode: "45",
@@ -1519,6 +1778,36 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
     runDateIso: "2026-06-19",
     runYmd: "20260619",
   });
+  expect(predictQueueSendMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint safely falls back to the primary queue during a rolling deploy", async () => {
+  const env = makeEnv();
+  delete env.WEIGHT_RESCORE_QUEUE;
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        runYmd: "20260620",
+      }),
+    ),
+    env,
+  );
+  expect(response.status).toBe(202);
+  expect(predictQueueSendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    keibajoCode: "05",
+    mode: "rescore",
+    raceBango: "11",
+    runDate: "2026-06-20",
+    runDateIso: "2026-06-20",
+    runYmd: "20260620",
+  });
+  expect(weightRescoreQueueSendMock).not.toHaveBeenCalled();
 });
 
 test("internal rescore-race endpoint forwards debug to per-race queue messages", async () => {
@@ -1536,7 +1825,7 @@ test("internal rescore-race endpoint forwards debug to per-race queue messages",
     makeEnv(),
   );
   expect(response.status).toBe(202);
-  expect(predictQueueSendMock).toHaveBeenCalledWith(
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledWith(
     expect.objectContaining({
       category: "nar",
       debug: true,
@@ -1743,7 +2032,7 @@ test("internal rescore-race endpoint trims whitespace from keibajoCode and raceB
   expect(claimRescoreRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ keibajoCode: "83", raceBango: "11" }),
   );
-  expect(predictQueueSendMock).toHaveBeenCalledWith(
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "ban-ei", keibajoCode: "83", raceBango: "11" }),
   );
 });

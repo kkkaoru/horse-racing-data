@@ -77,7 +77,9 @@ test("marks only a completed feature and prediction set covering every active en
   const sql = String(prepare.mock.calls[0]?.[0]);
   expect(sql).toMatch("latest_entries");
   expect(sql).toMatch("join daily_race_entries daily");
-  expect(sql).toMatch("styles.horse_number = active.horse_number");
+  expect(sql).toMatch(
+    "active.horse_number is null\n         or styles.horse_number = active.horse_number",
+  );
 });
 
 test("maps ban-ei to the NAR running-style and realtime source keys", async () => {
@@ -106,6 +108,46 @@ test("maps ban-ei to the NAR running-style and realtime source keys", async () =
     }),
   ).resolves.toStrictEqual([{ race: BAN_EI_RACE, reason: null }]);
   expect(bind).toHaveBeenCalledWith("nar:20260823:83:01", "nar:2026:0823:83:01");
+});
+
+test("uses the completed Catalog inference expected count when realtime entrant mirrors are empty", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        entrant_count: 0,
+        expected_horse_count: 12,
+        features_r2_key: "running-style/jra/20260823/01/01/features.parquet",
+        prediction_count: 12,
+        running_key: "jra:20260823:01:01",
+        status: "completed",
+        written_horse_count: 12,
+      },
+      {
+        entrant_count: 0,
+        expected_horse_count: 14,
+        features_r2_key: "running-style/jra/20260823/01/02/features.parquet",
+        prediction_count: 7,
+        running_key: "jra:20260823:01:02",
+        status: "completed",
+        written_horse_count: 14,
+      },
+    ],
+  }));
+  const db = {
+    prepare: vi.fn(() => ({ bind: vi.fn(() => ({ all })) })),
+  } as unknown as D1Database;
+
+  await expect(
+    getRunningStyleRaceReadiness({
+      category: "jra",
+      db,
+      races: [JRA_RACE, SECOND_JRA_RACE],
+      runYmd: "20260823",
+    }),
+  ).resolves.toStrictEqual([
+    { race: JRA_RACE, reason: null },
+    { race: SECOND_JRA_RACE, reason: "prediction-count-7-of-14" },
+  ]);
 });
 
 test("fails closed with explicit reasons for every incomplete prerequisite", async () => {
@@ -158,7 +200,7 @@ test("fails closed for state, feature, expected feature count, and written count
     getRunningStyleRaceReadiness({ category: "jra", db, races: [JRA_RACE], runYmd: "20260823" });
 
   await expect(run()).resolves.toStrictEqual([{ race: JRA_RACE, reason: "status-processing" }]);
-  statuses[0] = { ...base, entrant_count: null };
+  statuses[0] = { ...base, entrant_count: null, expected_horse_count: 0 };
   await expect(run()).resolves.toStrictEqual([{ race: JRA_RACE, reason: "entrants-missing" }]);
   statuses[0] = { ...base, status: null };
   await expect(run()).resolves.toStrictEqual([{ race: JRA_RACE, reason: "status-missing" }]);

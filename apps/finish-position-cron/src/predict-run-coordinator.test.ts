@@ -20,6 +20,10 @@ const storageMap = new Map<string, unknown>();
 const storageMock = {
   delete: vi.fn(async (key: string) => storageMap.delete(key)),
   get: vi.fn(async (key: string) => storageMap.get(key)),
+  list: vi.fn(
+    async ({ prefix }: { prefix?: string } = {}) =>
+      new Map([...storageMap].filter(([key]) => prefix === undefined || key.startsWith(prefix))),
+  ),
   put: vi.fn(async (key: string, value: unknown) => {
     storageMap.set(key, value);
   }),
@@ -39,6 +43,7 @@ beforeEach(() => {
   vi.useRealTimers();
   storageMap.clear();
   storageMock.get.mockClear();
+  storageMock.list.mockClear();
   storageMock.put.mockClear();
   storageMock.delete.mockClear();
   blockConcurrencyWhileMock.mockClear();
@@ -1300,14 +1305,15 @@ test("a delayed stop cannot fence a newer generation with the same work key", as
   vi.useRealTimers();
 });
 
-test("stop fencing fails closed for unowned, malformed, and conflicting requests", async () => {
+test("stop fencing permits an idle unowned stop and rejects malformed or conflicting requests", async () => {
   const coordinator = makeCoordinator();
   await expect(
     coordinator.checkContainerSlotStop({
       doName: "predict-jra-1",
       requestedAt: "2026-08-22T00:00:00.000Z",
     }),
-  ).resolves.toBe(false);
+  ).resolves.toBe(true);
+  await coordinator.clearContainerSlot({ doName: "predict-jra-1" });
   await expect(
     coordinator.checkContainerSlotStop({
       doName: "predict-jra-1",
@@ -1325,6 +1331,30 @@ test("stop fencing fails closed for unowned, malformed, and conflicting requests
       workKey: "work-1",
     }),
   ).resolves.toBe(false);
+});
+
+test("an unscoped administrative stop cannot fence an active lease by default", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: Date.now(),
+        workKey: "focused-full:20260823:jra:07:12",
+      },
+    ],
+  });
+
+  await expect(
+    makeCoordinator().checkContainerSlotStop({
+      doName: "predict-jra-1",
+      requestedAt: new Date().toISOString(),
+    }),
+  ).resolves.toBe(false);
+  expect(storageMap.has("container-stop-fences")).toBe(false);
 });
 
 test("a nonmatching clear preserves another stop fence", async () => {
@@ -1636,6 +1666,140 @@ test("claimFocusedFullRace promotes an enqueue reservation to started", async ()
     doName: "predict-jra-1",
     status: "started",
   });
+});
+
+test("claimFocusedFullRace keeps a later delivery queued behind an earlier fresh reservation", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    doName: "predict-jra-2",
+    priorityMs: 100,
+    reservationId: "reservation-early",
+    status: "enqueued",
+    timestamp: 9_500,
+  });
+  storageMap.set("focused-full:20260823:jra:04:10", {
+    doName: "predict-jra-2",
+    priorityMs: 200,
+    reservationId: "reservation-late",
+    status: "enqueued",
+    timestamp: 9_600,
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      keibajoCode: "04",
+      raceBango: "10",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "queued" });
+  expect(storageMap.get("focused-full:20260823:jra:04:10")).toStrictEqual({
+    doName: "predict-jra-2",
+    priorityMs: 200,
+    reservationId: "reservation-late",
+    status: "queued",
+    timestamp: 9_600,
+  });
+  expect(storageMap.has("focused-full-lane:predict-jra-2")).toBe(false);
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      keibajoCode: "04",
+      raceBango: "01",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  expect(storageMap.get("focused-full-lane:predict-jra-2")).toMatchObject({
+    activeRaceKey: "focused-full:20260823:jra:04:01",
+  });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace ignores an expired earlier reservation", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    doName: "predict-jra-2",
+    priorityMs: 100,
+    reservationId: "reservation-expired",
+    status: "enqueued",
+    timestamp: 8_999,
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      keibajoCode: "04",
+      raceBango: "10",
+      raceStartAtJst: "1970-01-01T00:00:00.200Z",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace ignores earlier reservations on another shard or in terminal state", async () => {
+  storageMap.set("focused-full:20260823:jra:01:01", {
+    doName: "predict-jra-0",
+    priorityMs: 100,
+    reservationId: "reservation-other-shard",
+    status: "enqueued",
+    timestamp: Date.now(),
+  });
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    doName: "predict-jra-2",
+    priorityMs: 100,
+    reservationId: "reservation-complete",
+    status: "success",
+    timestamp: Date.now(),
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      keibajoCode: "04",
+      raceBango: "10",
+      raceStartAtJst: "2026-08-23T15:00:00+09:00",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+});
+
+test("claimFocusedFullRace breaks equal post-time reservation ties by race key", async () => {
+  const priorityMs = Date.now() + 60_000;
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    doName: "predict-jra-2",
+    priorityMs,
+    reservationId: "reservation-lexically-first",
+    status: "enqueued",
+    timestamp: Date.now(),
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      keibajoCode: "07",
+      raceBango: "01",
+      raceStartAtJst: new Date(priorityMs).toISOString(),
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "queued" });
 });
 
 test("failFocusedFullRaceEnqueue marks only its matching unconsumed reservation error", async () => {

@@ -15,11 +15,11 @@ const RUN_YMD_LENGTH = 8;
 const MONTH_INDEX_OFFSET = 1;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// A runYmd is "old" once its JST calendar day falls this many whole days
-// (or more) before today's JST calendar day. Exactly T-2 is still allowed;
-// T-3 and older is skipped. Named constant so call sites never hardcode the
-// window.
-export const OLD_DATE_THRESHOLD_DAYS = 2;
+// Normal Queue traffic is useful only for today's or a future card. Allowing
+// yesterday's failed deliveries to retain their retry budget can starve the
+// current card after midnight. Explicit operator repairs remain available via
+// the message `force` flag, which bypasses this guard in queue-consumer.ts.
+export const OLD_DATE_THRESHOLD_DAYS = 0;
 
 interface YmdParts {
   day: number;
@@ -63,10 +63,9 @@ export const parseRunYmdToUtcDate = (runYmd: string): Date | null => {
   return isRealCalendarDate(parts, anchor) ? anchor : null;
 };
 
-// True when runYmd's JST calendar day is strictly earlier than (now's JST
-// calendar day) - OLD_DATE_THRESHOLD_DAYS days. A runYmd dated exactly T-2
-// is still allowed to run; T-3 and older is skipped. Future-dated runYmd is
-// never old. `now` is required (not defaulted) so callers inject
+// True when runYmd's JST calendar day is earlier than today's JST calendar
+// day. Future-dated runYmd is never old. Explicit `force` messages bypass this
+// guard at the consumer. `now` is required (not defaulted) so callers inject
 // `new Date()` explicitly and tests can inject a fixed date
 // deterministically.
 export const isOldDateRunYmd = (runYmd: string, now: Date): boolean => {

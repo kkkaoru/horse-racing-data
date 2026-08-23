@@ -354,6 +354,40 @@ test("returns true when prediction rows are fresh (generated on the target race 
   expect(queryCall?.[1]?.[7]).toBe("2026-07-31T15:00:00");
 });
 
+test("uses the forced request time instead of accepting older same-day rows", async () => {
+  setCatalogRows(buildCatalogRows(12));
+  queryMock.mockResolvedValue([{ actual_rows: 12 }]);
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "07",
+      notBefore: "2026-08-23T02:52:26.432Z",
+      raceBango: "12",
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock.mock.calls[0]?.[1]?.[7]).toBe("2026-08-23T02:52:26");
+});
+
+test("rejects an invalid explicit completion lower bound without querying", async () => {
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "07",
+      notBefore: "invalid-timestamp",
+      raceBango: "12",
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(false);
+
+  expect(catalogFetchMock).not.toHaveBeenCalled();
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
 test("returns false when prediction rows are stale (generated on a prior day)", async () => {
   setCatalogRows(buildCatalogRows(12));
   queryMock.mockResolvedValue([{ actual_rows: 0 }]);

@@ -3,6 +3,7 @@
 import { expect, test, vi } from "vitest";
 import {
   proxyParquetFromNdjson,
+  proxyResultParquetsToR2,
   type R2ProxyEnv,
   type RenewActivityTimeout,
   type WaitUntil,
@@ -458,7 +459,28 @@ test("proxyParquetFromNdjson does not block stream completion when R2 put fails"
   await expect(Promise.all(tasks)).resolves.toStrictEqual([undefined]);
   expect(put).toHaveBeenCalledTimes(1);
   expect(errorSpy).toHaveBeenCalledOnce();
+  expect(errorSpy).toHaveBeenCalledWith("[container-class] live R2 proxy failed: Error: r2 down");
   errorSpy.mockRestore();
+});
+
+test("proxyResultParquetsToR2 strictly rejects an R2 PUT failure for pickup callers", async () => {
+  const { env } = makeR2Mock(async () => {
+    throw new Error("canonical put failed");
+  });
+
+  await expect(
+    proxyResultParquetsToR2(
+      {
+        type: "result",
+        category: "jra",
+        racesPredicted: 0,
+        parquetBase64: "bWFpbg==",
+        parquetKey: "feat-daybase/catalog-v1/jra/20260823/features.parquet",
+      },
+      env,
+      false,
+    ),
+  ).rejects.toThrow("canonical put failed");
 });
 
 test("proxyParquetFromNdjson can run without waitUntil when no parquet fields are present", async () => {

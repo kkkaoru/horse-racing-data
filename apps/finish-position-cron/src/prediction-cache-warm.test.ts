@@ -6,7 +6,7 @@ import type { PredictionKvPublishResult } from "./prediction-kv-writer";
 const { publishFinishPositionPredictionCacheMock } = vi.hoisted(() => ({
   publishFinishPositionPredictionCacheMock: vi.fn(
     async (): Promise<PredictionKvPublishResult> => ({
-      busted: false,
+      busted: true,
       status: "written",
     }),
   ),
@@ -68,7 +68,7 @@ beforeEach(() => {
   fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
   allMock.mockResolvedValue({ results: [] });
   publishFinishPositionPredictionCacheMock.mockResolvedValue({
-    busted: false,
+    busted: true,
     status: "written",
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -105,6 +105,33 @@ test("warmPredictionCacheForRace appends refresh when requested", async () => {
   const fetchUrl = (fetchMock.mock.calls[0] as unknown as [string])[0];
   expect(fetchUrl).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction?__predictionRefresh=1",
+  );
+});
+
+test("warmViewerDisplayForRace prefers the viewer service binding", async () => {
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 200 }));
+  const result = await warmViewerDisplayForRace({
+    day: "23",
+    keibajoCode: "83",
+    month: "08",
+    raceNumber: "12",
+    refresh: true,
+    viewer: { fetch: serviceFetch },
+    year: "2026",
+  });
+
+  expect(result).toBe(true);
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(3);
+  expect(serviceFetch.mock.calls.map(([url]) => url)).toStrictEqual([
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/08/23/83/12/sections/finish-prediction?__predictionRefresh=1",
+    "https://pc-keiba-viewer.kkk4oru.com/api/cache-warm/race-detail-ssr?date=2026-08-23&keibajo=83&race=12",
+    "https://pc-keiba-viewer.kkk4oru.com/races/2026/08/23/83/12",
+  ]);
+  expect(serviceFetch.mock.calls[1]?.[1]?.method).toBe("POST");
+  expect(new Headers(serviceFetch.mock.calls[1]?.[1]?.headers).get("X-PC-Keiba-Cache-Warm")).toBe(
+    "scheduled",
   );
 });
 
@@ -210,16 +237,21 @@ test("warmRaceDetailSsrSnapshot returns false when fetch rejects", async () => {
   expect(result).toBe(false);
 });
 
-test("warmViewerDisplayForRace warms the section then the SSR snapshot then the detail page", async () => {
-  const result = await warmViewerDisplayForRace({
+test("warmViewerDisplayForRace warms the section and SSR concurrently before the detail page", async () => {
+  const sectionGate = Promise.withResolvers<Response>();
+  const ssrGate = Promise.withResolvers<Response>();
+  fetchMock
+    .mockReturnValueOnce(sectionGate.promise)
+    .mockReturnValueOnce(ssrGate.promise)
+    .mockResolvedValueOnce(new Response(null, { status: 200 }));
+  const running = warmViewerDisplayForRace({
     day: "19",
     keibajoCode: "05",
     month: "06",
     raceNumber: "11",
     year: "2026",
   });
-  expect(result).toBe(true);
-  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
   expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/06/19/05/11/sections/finish-prediction",
   );
@@ -230,6 +262,10 @@ test("warmViewerDisplayForRace warms the section then the SSR snapshot then the 
   expect((fetchMock.mock.calls[1] as unknown as [string, FetchInit])[1].headers).toStrictEqual({
     "X-PC-Keiba-Cache-Warm": "scheduled",
   });
+  sectionGate.resolve(new Response(null, { status: 200 }));
+  ssrGate.resolve(new Response(null, { status: 200 }));
+  expect(await running).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
   expect((fetchMock.mock.calls[2] as unknown as [string])[0]).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/races/2026/06/19/05/11",
   );
@@ -467,7 +503,7 @@ test("warmPredictionCacheForCategory counts only races that warmed successfully"
 
 test("populateViewerDisplayCache writes KV then warms section, SSR snapshot, and page", async () => {
   publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
-    busted: false,
+    busted: true,
     status: "written",
   });
   const ok = await populateViewerDisplayCache({
@@ -479,7 +515,7 @@ test("populateViewerDisplayCache writes KV then warms section, SSR snapshot, and
   });
   expect(ok).toBe(true);
   expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
-    bustCacheApi: false,
+    bustCacheApi: true,
     category: "nar",
     env: expect.any(Object),
     keibajoCode: "35",
@@ -488,13 +524,31 @@ test("populateViewerDisplayCache writes KV then warms section, SSR snapshot, and
   });
   expect(fetchMock).toHaveBeenCalledTimes(3);
   expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
-    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/08/17/35/02/sections/finish-prediction",
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/08/17/35/02/sections/finish-prediction?__predictionRefresh=1",
   );
   expect((fetchMock.mock.calls[1] as unknown as [string])[0]).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/api/cache-warm/race-detail-ssr?date=2026-08-17&keibajo=35&race=02",
   );
   expect((fetchMock.mock.calls[2] as unknown as [string])[0]).toBe(
     "https://pc-keiba-viewer.kkk4oru.com/races/2026/08/17/35/02",
+  );
+});
+
+test("populateViewerDisplayCache forces a prediction refresh when cache bust is unavailable", async () => {
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: false,
+    status: "written",
+  });
+  const ok = await populateViewerDisplayCache({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260817",
+  });
+  expect(ok).toBe(true);
+  expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/races/2026/08/17/05/11/sections/finish-prediction?__predictionRefresh=1",
   );
 });
 

@@ -31,6 +31,7 @@ export interface FinishPositionPredictionFeature {
   horseNumber: string;
   modelVersion: string;
   predictedFinishNorm: number | null;
+  predictionGeneratedAt: string | null;
   predictedScoreStddev: number | null;
   showProbability: null;
   winProbability: null;
@@ -39,6 +40,7 @@ export interface FinishPositionPredictionFeature {
 export interface FinishPositionPredictionRow {
   modelVersion: string;
   predictedRank: number;
+  predictionGeneratedAt: string | null;
   predictedScore: number | null;
   umaban: string;
 }
@@ -94,6 +96,14 @@ const toUmabanString = (value: unknown): string | null => {
   return null;
 };
 
+const toPredictionGeneratedAt = (value: unknown): string | null => {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value === "string" && value.length > 0) return value;
+  return null;
+};
+
 const resolveConfidenceTier = (stddev: number): FinishPositionConfidenceTier => {
   if (stddev < CONFIDENCE_LOW_MAX_STDDEV) return "low";
   if (stddev < CONFIDENCE_MID_MAX_STDDEV) return "mid";
@@ -124,6 +134,7 @@ export const mapFinishPositionPredictionFeatures = (
       horseNumber: row.umaban,
       modelVersion: row.modelVersion,
       predictedFinishNorm,
+      predictionGeneratedAt: row.predictionGeneratedAt,
       predictedScoreStddev: stddev,
       showProbability: null,
       winProbability: null,
@@ -139,12 +150,14 @@ const parsePredictionRow = (value: unknown): FinishPositionPredictionRow | null 
   return {
     modelVersion: value.model_version,
     predictedRank,
+    predictionGeneratedAt: toPredictionGeneratedAt(value.prediction_generated_at),
     predictedScore: toFiniteNumber(value.predicted_score),
     umaban,
   };
 };
 
-const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, predicted_score
+const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, predicted_score,
+              prediction_generated_at
        from race_finish_position_model_predictions
       where source = $1
         and kaisai_nen = $2

@@ -5,14 +5,22 @@ import type { Env } from "./types";
 import { enqueuePredict } from "./queue-producer";
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 
-const { failFocusedFullRaceEnqueueMock, reserveFocusedFullRaceEnqueueMock } = vi.hoisted(() => ({
+const {
+  completeFocusedFullRaceMock,
+  failFocusedFullRaceEnqueueMock,
+  featureHeadMock,
+  reserveFocusedFullRaceEnqueueMock,
+} = vi.hoisted(() => ({
+  completeFocusedFullRaceMock: vi.fn(async () => undefined),
   failFocusedFullRaceEnqueueMock: vi.fn(async () => undefined),
+  featureHeadMock: vi.fn(async (): Promise<R2Object | null> => null),
   reserveFocusedFullRaceEnqueueMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
 }));
 
 vi.mock("./do-state", () => ({
+  completeFocusedFullRace: completeFocusedFullRaceMock,
   failFocusedFullRaceEnqueue: failFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceEnqueue: reserveFocusedFullRaceEnqueueMock,
 }));
@@ -20,7 +28,7 @@ vi.mock("./do-state", () => ({
 const sendMock = vi.fn(async () => undefined);
 
 const makeEnv = (): Env => ({
-  FEATURES_CACHE: {} as unknown as R2Bucket,
+  FEATURES_CACHE: { head: featureHeadMock } as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
@@ -40,6 +48,9 @@ beforeEach(() => {
   sendMock.mockReset();
   sendMock.mockResolvedValue(undefined);
   failFocusedFullRaceEnqueueMock.mockClear();
+  completeFocusedFullRaceMock.mockClear();
+  featureHeadMock.mockReset();
+  featureHeadMock.mockResolvedValue(null);
   reserveFocusedFullRaceEnqueueMock.mockReset();
   reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: true });
 });
@@ -332,27 +343,34 @@ test("enqueuePredict attaches debug when debug is true", async () => {
 });
 
 test("enqueuePredict attaches force when force is true", async () => {
-  await enqueuePredict({
-    category: "jra",
-    daysAhead: 2,
-    env: makeEnv(),
-    force: true,
-    mode: "full",
-    runDate: "2026-06-03",
-    runYmd: "20260603",
-    ...basePerRace,
-  });
-  expect(sendMock).toHaveBeenCalledWith({
-    category: "jra",
-    daysAhead: 2,
-    force: true,
-    keibajoCode: "05",
-    mode: "full",
-    raceBango: "11",
-    runDate: "2026-06-03",
-    runDateIso: "2026-06-03",
-    runYmd: "20260603",
-  });
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-03T00:00:00.123Z"));
+  try {
+    await enqueuePredict({
+      category: "jra",
+      daysAhead: 2,
+      env: makeEnv(),
+      force: true,
+      mode: "full",
+      runDate: "2026-06-03",
+      runYmd: "20260603",
+      ...basePerRace,
+    });
+    expect(sendMock).toHaveBeenCalledWith({
+      category: "jra",
+      daysAhead: 2,
+      force: true,
+      forceRequestedAt: "2026-06-03T00:00:00.123Z",
+      keibajoCode: "05",
+      mode: "full",
+      raceBango: "11",
+      runDate: "2026-06-03",
+      runDateIso: "2026-06-03",
+      runYmd: "20260603",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("enqueuePredict omits force when force is false", async () => {
@@ -539,6 +557,67 @@ test("enqueuePredict suppresses a duplicate full enqueue reserved by another pro
   expect(categories).toStrictEqual([]);
   expect(sendMock).not.toHaveBeenCalled();
   expect(failFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict keeps a completed race suppressed when its exact feature cache exists", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValue({} as R2Object);
+
+  await expect(
+    enqueuePredict({
+      category: "ban-ei",
+      daysAhead: 2,
+      env: makeEnv(),
+      keibajoCode: "83",
+      mode: "full",
+      raceBango: "01",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual([]);
+
+  expect(featureHeadMock).toHaveBeenCalledWith(
+    "feat-cache/catalog-v1/ban-ei/20260824/83/01/features.parquet",
+  );
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict reopens only a cacheless completed race and reserves its repair", async () => {
+  reserveFocusedFullRaceEnqueueMock
+    .mockResolvedValueOnce({ proceed: false, state: "success" })
+    .mockResolvedValueOnce({ proceed: true });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    enqueuePredict({
+      category: "ban-ei",
+      daysAhead: 2,
+      env: makeEnv(),
+      keibajoCode: "83",
+      mode: "full",
+      raceBango: "01",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["ban-ei"]);
+
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env: expect.anything(),
+    keibajoCode: "83",
+    raceBango: "01",
+    runYmd: "20260824",
+    status: "error",
+  });
+  expect(reserveFocusedFullRaceEnqueueMock).toHaveBeenCalledTimes(2);
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-producer] reopened cacheless focused-full success category=ban-ei runYmd=20260824 keibajo=83 race=01",
+  );
+  warnSpy.mockRestore();
 });
 
 test("enqueuePredict releases its full enqueue reservation when Queue send fails", async () => {
