@@ -4,6 +4,7 @@ import {
   claimPremiumPaddockNotificationSend,
   claimResultFetch,
   claimTrackConditionFetch,
+  claimWeightFetch,
   completeResultFetch,
   completeTrackConditionFetch,
   computePremiumPaddockContentHash,
@@ -104,6 +105,45 @@ it("claimTrackConditionFetch returns false when changes = 0", async () => {
       lockUntil: "2026-05-12T13:00:00+09:00",
       now: "2026-05-12T12:00:00+09:00",
     }),
+  ).toBe(false);
+});
+
+it("claimWeightFetch atomically claims an unclaimed race", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const claimedAt = "2026-08-23T12:00:00+09:00";
+  const leaseExpiredBefore = "2026-08-23T11:58:30+09:00";
+
+  expect(await claimWeightFetch(db, "jra:2026:0823:01:01", claimedAt, leaseExpiredBefore)).toBe(
+    true,
+  );
+  expect(prepare).toHaveBeenCalledWith(expect.stringContaining("last_weight_fetch_at is null"));
+  expect(prepare).toHaveBeenCalledWith(
+    expect.stringContaining("last_weight_fetch_attempt_at <= ?"),
+  );
+  expect(bind).toHaveBeenCalledWith(
+    claimedAt,
+    claimedAt,
+    "jra:2026:0823:01:01",
+    leaseExpiredBefore,
+  );
+});
+
+it("claimWeightFetch rejects a race with an active lease", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await claimWeightFetch(
+      db,
+      "jra:2026:0823:01:01",
+      "2026-08-23T12:00:00+09:00",
+      "2026-08-23T11:58:30+09:00",
+    ),
   ).toBe(false);
 });
 

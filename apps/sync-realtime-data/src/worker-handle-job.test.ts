@@ -24,6 +24,7 @@ vi.mock("./storage", () => ({
   markOddsFetchQueued: vi.fn(async () => {}),
   claimOddsFetch: vi.fn(async () => false),
   claimResultFetch: vi.fn(async () => false),
+  claimWeightFetch: vi.fn(async () => true),
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
@@ -91,6 +92,11 @@ vi.mock("./win5-cron", () => ({
 vi.mock("./running-style-cron", () => ({
   RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  exportRunningStyleParquetsForDate: vi.fn(async () => ({
+    bytesWritten: 100,
+    fileCount: 1,
+    rowCount: 3,
+  })),
   planRunningStylePredictionsForDate: vi.fn(async () => ({
     alreadyQueued: 0,
     completed: 0,
@@ -326,9 +332,11 @@ it("handleJob plan-running-style-predictions logs error when plan + cacheRefresh
 
 it("handleJob delegates plan-running-style-predictions to planRunningStylePredictionsForDate", async () => {
   const { handleJob } = await import("./worker");
-  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { exportRunningStyleParquetsForDate, planRunningStylePredictionsForDate } =
+    await import("./running-style-cron");
   await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
   expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+  expect(exportRunningStyleParquetsForDate).toHaveBeenCalledWith(expect.anything(), "20260512");
 });
 
 it("handleJob materialize-running-style-features logs the materialize summary on success", async () => {
@@ -2856,12 +2864,12 @@ it("handleJob fetch-weights skips scraping when a weight snapshot already exists
 });
 
 // 2026-07-03 incident: the attempt timestamp must be written before the HTTP
-// fetch, so a thrown fetchRacePage call still leaves a backoff marker for
-// findStaleWeightFetchRaces -- this is what stops the watchdog re-selecting
-// the same failing race on every */2 tick.
-it("handleJob fetch-weights writes the attempt timestamp before rethrowing when fetchRacePage throws", async () => {
+// The atomic claim writes the attempt timestamp before the fetch, so a thrown
+// fetchRacePage call still leaves both a short lease and the watchdog backoff
+// marker.
+it("handleJob fetch-weights claims before rethrowing when fetchRacePage throws", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, updateLastFetch, logFetch } = await import("./storage");
+  const { claimWeightFetch, getRaceSource, logFetch } = await import("./storage");
   const { fetchRacePage } = await import("./keiba-go");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "22",
@@ -2894,11 +2902,11 @@ it("handleJob fetch-weights writes the attempt timestamp before rethrowing when 
   await expect(
     handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" }),
   ).rejects.toThrow("upstream 404");
-  expect(updateLastFetch).toHaveBeenCalledWith(
+  expect(claimWeightFetch).toHaveBeenCalledWith(
     expect.anything(),
     "nar:2026:0512:55:01",
-    "last_weight_fetch_attempt_at",
-    expect.any(String),
+    "2026-05-12T21:00:00+09:00",
+    "2026-05-12T20:59:15+09:00",
   );
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
@@ -2907,6 +2915,28 @@ it("handleJob fetch-weights writes the attempt timestamp before rethrowing when 
     "nar:2026:0512:55:01",
     "upstream 404",
     undefined,
+  );
+});
+
+it("handleJob fetch-weights skips scraping when another message holds the race lease", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimWeightFetch, getRaceSource, logFetch } = await import("./storage");
+  const { fetchRacePage } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    debaUrl: "https://x.test/race",
+    raceKey: "nar:2026:0512:55:01",
+  } as never);
+  vi.mocked(claimWeightFetch).mockResolvedValueOnce(false);
+
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
+
+  expect(fetchRacePage).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:lock-held",
+    "nar:2026:0512:55:01",
+    "leaseSeconds=45",
   );
 });
 

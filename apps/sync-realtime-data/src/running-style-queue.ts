@@ -321,6 +321,23 @@ const triggerFinishPositionDayWhenReady = async (
       env.REALTIME_DB,
       jobs.map((registeredJob) => registeredJob.raceKey),
     );
+    // Publish the currently available source-day rows after every completed
+    // race.  The finish-position day-base can safely consume this immutable
+    // snapshot for completed races while later races remain pending.  Waiting
+    // for every race here made one failed state suppress the by-day shard for
+    // the whole category, which in turn caused repeated standard-4 rebuilds
+    // with an absent running-style watermark.
+    const parquetExportResult = await exportRunningStylesToR2(env, job);
+    if (typeof parquetExportResult === "string") {
+      const reason = `R2 Parquet export failed: ${parquetExportResult}`;
+      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
+      return {
+        finishPositionTriggerError: reason,
+        finishPositionTriggerMode: "skipped",
+        parquetExportError: parquetExportResult,
+        parquetExportedRows: 0,
+      };
+    }
     const incompleteRace = jobs.find((registeredJob) => {
       const state = states.get(registeredJob.raceKey);
       return (
@@ -336,7 +353,7 @@ const triggerFinishPositionDayWhenReady = async (
       return {
         finishPositionTriggerError: reason,
         finishPositionTriggerMode: "skipped",
-        parquetExportedRows: 0,
+        parquetExportedRows: parquetExportResult,
       };
     }
 
@@ -345,17 +362,6 @@ const triggerFinishPositionDayWhenReady = async (
         total + (states.get(registeredJob.raceKey)?.expectedHorseCount ?? 0),
       0,
     );
-    const parquetExportResult = await exportRunningStylesToR2(env, job);
-    if (typeof parquetExportResult === "string") {
-      const reason = `R2 Parquet export failed: ${parquetExportResult}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
-      return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
-        parquetExportError: parquetExportResult,
-        parquetExportedRows: 0,
-      };
-    }
     if (parquetExportResult < expectedRows) {
       const reason = `R2 Parquet export row count ${parquetExportResult} is below expected source-day horse count ${expectedRows}`;
       console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);

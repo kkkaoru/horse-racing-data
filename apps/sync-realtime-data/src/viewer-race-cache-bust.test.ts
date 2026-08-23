@@ -68,6 +68,29 @@ test("triggerRaceCacheBust posts JSON and bearer auth, returns ok on 200", async
   expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
 });
 
+test("triggerRaceCacheBust prefers the viewer service binding over the Access-protected origin", async () => {
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));
+  const outcome = await triggerRaceCacheBust(
+    buildEnv({ PC_KEIBA_VIEWER: { fetch: serviceFetch } }),
+    {
+      keibajoCode: "04",
+      mmdd: "0823",
+      raceBango: "01",
+      source: "jra",
+      year: "2026",
+    },
+  );
+
+  expect(outcome).toStrictEqual({ attempts: 1, status: "ok" });
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(1);
+  expect(serviceFetch.mock.calls[0]?.[0]).toBe("https://example.test/api/internal/race-cache-bust");
+  expect(
+    new Headers(serviceFetch.mock.calls[0]?.[1]?.headers).get("x-pc-keiba-internal-token"),
+  ).toBe("secret-token");
+});
+
 test("triggerRaceCacheBust does not retry on 4xx", async () => {
   const fetchSpy = vi
     .spyOn(globalThis, "fetch")

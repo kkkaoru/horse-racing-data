@@ -77,6 +77,7 @@ import {
   claimPremiumPaddockNotificationSend,
   claimResultFetch,
   claimTrackConditionFetch,
+  claimWeightFetch,
   completeResultFetch,
   completeTrackConditionFetch,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
@@ -137,6 +138,7 @@ import {
 import {
   RUNNING_STYLE_INFERENCE_CRON,
   RUNNING_STYLE_PREWARM_CRON,
+  exportRunningStyleParquetsForDate,
   formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
   refreshViewerRunningStyleCachesForDate,
@@ -453,6 +455,10 @@ const WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES = 30;
 const WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES = 10;
 const WEIGHT_FETCH_EMPTY_RETRY_DELAY_SECONDS = 10 * 60;
 const WEIGHT_FETCH_EMPTY_RETRY_NEAR_RACE_DELAY_SECONDS = 5 * 60;
+// Longer than the 25s queue-handler timeout, but shorter than the Queue's 60s
+// retry delay. This blocks already-queued duplicates while ensuring the first
+// retry after a failed scrape can claim immediately.
+const WEIGHT_FETCH_LEASE_SECONDS = 45;
 const MILLISECONDS_PER_MINUTE = 60_000;
 // KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
 // empty result so the plan still has something to enqueue). 24h keeps the
@@ -575,8 +581,8 @@ const FORWARD_RESPONSE_BODY_MAX_LENGTH = 200;
 // 2026-06-13: bound the wall-time of the fire-and-forget features-worker POST.
 // Without this, a hung or Hyperdrive-timeout features worker keeps the queue
 // consumer slot (`max_concurrency: 3`) occupied long enough to starve other
-// plan-realtime-fetches jobs. 5s is plenty for the recompute-and-build-parquet
-// endpoint to ack — its actual work is queued internally.
+// plan-realtime-fetches jobs. 5s is plenty for the enqueue-recompute endpoint
+// to durably enqueue the build job and acknowledge it.
 const FORWARD_RACE_FEATURES_TIMEOUT_MS = 5000;
 const FORWARD_RACE_FEATURES_TIMEOUT_MESSAGE_PREFIX = "timeout";
 
@@ -831,7 +837,7 @@ export const forwardRaceForFeatures = async (
   const timeoutId = setTimeout(() => controller.abort(), FORWARD_RACE_FEATURES_TIMEOUT_MS);
   try {
     const response = await env.REALTIME_FEATURES.fetch(
-      `${FEATURES_WORKER_ORIGIN}/api/internal/recompute-and-build-parquet`,
+      `${FEATURES_WORKER_ORIGIN}/api/internal/enqueue-recompute`,
       {
         body: JSON.stringify(args),
         headers: {
@@ -3094,11 +3100,24 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
   if (!race) {
     throw new Error(`race source not found: ${raceKey}`);
   }
-  const fetchedAt = toJstIsoString();
-  // Recorded before the HTTP call so a 404 / timeout / thrown parser error
-  // still leaves a backoff marker -- this is what findStaleWeightFetchRaces
-  // gates on to stop re-selecting a race that just failed moments ago.
-  await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_attempt_at", fetchedAt);
+  const now = getNow(env);
+  const fetchedAt = toJstIsoString(now);
+  const claimed = await claimWeightFetch(
+    env.REALTIME_DB,
+    raceKey,
+    fetchedAt,
+    toJstIsoString(new Date(now.getTime() - WEIGHT_FETCH_LEASE_SECONDS * 1000)),
+  );
+  if (!claimed) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-weights",
+      SKIP_STATUS.lockHeld,
+      raceKey,
+      `leaseSeconds=${WEIGHT_FETCH_LEASE_SECONDS}`,
+    );
+    return false;
+  }
   const html = await fetchRacePage(race.debaUrl);
   const latestOdds = race.source === "jra" ? await fetchHotOddsPayload(env, raceKey) : null;
   const latestTanshoOdds = buildTanshoOddsRowsFromHotOdds(latestOdds);
@@ -4970,12 +4989,15 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
           error: formatError(error),
         }),
       );
+      const parquetExport = await exportRunningStyleParquetsForDate(env, job.date).catch(
+        (error: unknown) => ({ error: formatError(error) }),
+      );
       await logFetch(
         env.REALTIME_DB,
         job.type,
         "ok",
         null,
-        JSON.stringify({ cacheRefresh, plan: planSummary }),
+        JSON.stringify({ cacheRefresh, parquetExport, plan: planSummary }),
       );
       return;
     }

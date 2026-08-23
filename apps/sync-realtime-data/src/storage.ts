@@ -730,6 +730,30 @@ export const updateLastFetch = async (
     .run();
 };
 
+export const claimWeightFetch = async (
+  db: D1Database,
+  raceKey: string,
+  claimedAt: string,
+  leaseExpiredBefore: string,
+): Promise<boolean> => {
+  const result = await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set last_weight_fetch_attempt_at = ?, updated_at = ?
+        where race_key = ?
+          and last_weight_fetch_at is null
+          and (
+            last_weight_fetch_attempt_at is null
+            or last_weight_fetch_attempt_at <= ?
+          )
+      `,
+    )
+    .bind(claimedAt, claimedAt, raceKey, leaseExpiredBefore)
+    .run();
+  return result.meta.changes > 0;
+};
+
 export const markResultFetchQueued = async (
   db: D1Database,
   raceKeys: string[],

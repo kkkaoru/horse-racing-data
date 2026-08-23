@@ -67,9 +67,18 @@ type AttemptOutcome = AttemptErrorOutcome | AttemptOkOutcome;
 
 interface BustLoopArgs {
   body: RaceCacheBustBody;
+  fetcher: ViewerFetcher;
   token: string;
   url: string;
 }
+
+interface AttemptArgs {
+  fetcher: ViewerFetcher;
+  init: RequestInit;
+  url: string;
+}
+
+type ViewerFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 const RACE_KEY_PATTERN = /^(jra|nar):(\d{4})(\d{4}):(\d{2}):(\d{2})$/u;
 
@@ -106,9 +115,14 @@ const buildRequestInit = (token: string, body: RaceCacheBustBody): RequestInit =
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const performAttempt = async (url: string, init: RequestInit): Promise<AttemptOutcome> => {
+const resolveViewerFetcher = (env: Env): ViewerFetcher => {
+  const viewer = env.PC_KEIBA_VIEWER;
+  return viewer ? (input, init) => viewer.fetch(input, init) : fetch;
+};
+
+const performAttempt = async (args: AttemptArgs): Promise<AttemptOutcome> => {
   try {
-    const response = await fetch(url, init);
+    const response = await args.fetcher(args.url, args.init);
     if (response.ok) {
       return { retryable: false, status: "ok" };
     }
@@ -136,7 +150,11 @@ const reduceAttempts =
     if (index > 0) {
       await sleep(RETRY_DELAY_MS);
     }
-    const outcome = await performAttempt(args.url, buildRequestInit(args.token, args.body));
+    const outcome = await performAttempt({
+      fetcher: args.fetcher,
+      init: buildRequestInit(args.token, args.body),
+      url: args.url,
+    });
     return [...previous, outcome];
   };
 
@@ -155,7 +173,7 @@ export const triggerRaceCacheBust = async (
     return { message: "PC_KEIBA_VIEWER_INTERNAL_TOKEN not configured", status: "skipped" };
   }
   const url = `${resolveViewerOrigin(env)}${VIEWER_INTERNAL_BUST_PATH}`;
-  const attempts = await runWithRetry({ body, token, url });
+  const attempts = await runWithRetry({ body, fetcher: resolveViewerFetcher(env), token, url });
   const last = attempts[attempts.length - 1]!;
   if (last.status === "ok") {
     return { attempts: attempts.length, status: "ok" };

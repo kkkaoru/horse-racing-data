@@ -420,7 +420,7 @@ const mergeCacheRefresh = (
 
 const SOURCES_FOR_PARQUET_EXPORT: ReadonlyArray<"jra" | "nar"> = ["jra", "nar"];
 
-const exportParquetSafe = async (
+export const exportRunningStyleParquetsForDate = async (
   env: Env,
   date: string,
 ): Promise<RunningStyleParquetExportSummary> => {
@@ -496,7 +496,9 @@ const planAndRefreshForDate = async (
 ): Promise<RunningStyleCronAccumulator> => {
   const plan = await planRunningStyleForDateSafe(env, date, now);
   const cacheRefresh = await refreshViewerCacheSafe(env, date, ctx);
-  const parquetExport = isInferenceEnabled(env) ? await exportParquetSafe(env, date) : undefined;
+  const parquetExport = isInferenceEnabled(env)
+    ? await exportRunningStyleParquetsForDate(env, date)
+    : undefined;
   const planWithExport: RunningStylePlanSummary =
     parquetExport === undefined ? plan : { ...plan, parquetExport };
   return {

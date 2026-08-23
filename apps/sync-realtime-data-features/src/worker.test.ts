@@ -52,6 +52,7 @@ import {
 import {
   buildAndPersistRaceFeatures,
   computeNextPast14Cursor,
+  handleEnqueueRecomputeRequest,
   handleFetchRequest,
   handleGetFinishPositions,
   handleGetRunningStyles,
@@ -98,6 +99,7 @@ const buildEnv = (overrides: Partial<Env> = {}): Env =>
     FEATURES_KV: buildKv(),
     FEATURES_ARCHIVE: buildR2(),
     PC_KEIBA_VIEWER_INTERNAL_TOKEN: "secret",
+    REALTIME_FEATURES_JOBS: { send: vi.fn().mockResolvedValue(undefined) },
     ...overrides,
   }) as unknown as Env;
 
@@ -351,6 +353,107 @@ it("rejects unauthorized recompute request", async () => {
     new Request("https://x/api/internal/recompute-and-build-parquet", { method: "POST" }),
   );
   expect(response.status).toBe(401);
+});
+
+it("rejects an unauthorized enqueue-recompute request", async () => {
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined });
+  const response = await handleEnqueueRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("enqueues recompute work and responds before building features", async () => {
+  const env = buildEnv();
+  const response = await handleEnqueueRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", {
+      body: JSON.stringify({ raceKey: "nar:2026:0823:35:02" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toStrictEqual({
+    queued: true,
+    raceKey: "nar:2026:0823:35:02",
+  });
+  expect(env.REALTIME_FEATURES_JOBS.send).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0823",
+    keibajoCode: "35",
+    raceBango: "02",
+    raceKey: "nar:2026:0823:35:02",
+    source: "nar",
+    type: "build-race-features",
+  });
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:enqueue-lock:build-race-features:nar:2026:0823:35:02",
+    "1",
+    { expirationTtl: 60 },
+  );
+  expect(buildRaceFeatures).not.toHaveBeenCalled();
+});
+
+it("acknowledges a duplicate enqueue-recompute request without sending another job", async () => {
+  const env = buildEnv({
+    FEATURES_KV: buildKeyedKv({
+      "features:enqueue-lock:build-race-features:nar:2026:0823:35:02": "1",
+    }),
+  });
+  const response = await handleEnqueueRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", {
+      body: JSON.stringify({ raceKey: "nar:2026:0823:35:02" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toStrictEqual({
+    queued: false,
+    raceKey: "nar:2026:0823:35:02",
+    reason: "enqueue-locked",
+  });
+  expect(env.REALTIME_FEATURES_JOBS.send).not.toHaveBeenCalled();
+});
+
+it("returns 400 when enqueue-recompute receives a malformed race key", async () => {
+  const env = buildEnv();
+  const response = await handleEnqueueRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", {
+      body: JSON.stringify({ raceKey: "invalid" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect(env.REALTIME_FEATURES_JOBS.send).not.toHaveBeenCalled();
+});
+
+it("returns 500 when enqueue-recompute cannot durably send the queue job", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(env.REALTIME_FEATURES_JOBS.send).mockRejectedValue(new Error("queue unavailable"));
+  const response = await handleEnqueueRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", {
+      body: JSON.stringify({ raceKey: "nar:2026:0823:35:02" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "queue unavailable",
+    raceKey: "nar:2026:0823:35:02",
+  });
+  expect(env.FEATURES_KV.put).not.toHaveBeenCalled();
 });
 
 it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async () => {
@@ -1050,6 +1153,20 @@ it("routes POST /api/internal/recompute-and-build-parquet", async () => {
     }),
   );
   expect(response.status).toBe(200);
+});
+
+it("routes POST /api/internal/enqueue-recompute", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/enqueue-recompute", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(202);
+  expect(env.REALTIME_FEATURES_JOBS.send).toHaveBeenCalledTimes(1);
 });
 
 it("routes POST /api/internal/migration-state", async () => {

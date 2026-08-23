@@ -170,7 +170,9 @@
       // Event-driven per-race rescore trigger: after a fetch-weights job writes
       // weights to D1, this worker POSTs to finish-position-cron's
       // /api/internal/rescore-race so the race is re-scored with fresh weights
-      // immediately instead of waiting for the 5-min coordinator cron poll.
+      // immediately. The finish-position Worker retains the authoritative DO
+      // claim, then routes the message to its dedicated weight-rescore Queue;
+      // this binding must not enqueue directly around that idempotency gate.
       // Authorization uses TRIGGER_TOKEN (set as a secret via
       // `wrangler secret put TRIGGER_TOKEN --name sync-realtime-data` with the
       // same value as finish-position-cron's TRIGGER_TOKEN secret).

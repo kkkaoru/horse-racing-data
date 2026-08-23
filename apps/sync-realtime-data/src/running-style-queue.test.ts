@@ -513,7 +513,7 @@ it("captures same-day R2 export failures without falling back to Neon reads", as
   expect(summary?.finishPositionTriggerError).toBe("R2 Parquet export failed: R2 write failed");
 });
 
-it("waits for every authoritative source-day race before exporting or enqueueing", async () => {
+it("exports the available rows while waiting for every authoritative source-day race", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const {
     getRunningStyleInferenceState,
@@ -565,7 +565,8 @@ it("waits for every authoritative source-day race before exporting or enqueueing
   expect(summary?.finishPositionTriggerError).toBe(
     "running-style source-day is incomplete; waiting for jra:20260512:08:02",
   );
-  expect(exportRunningStyleParquetForDay).not.toHaveBeenCalled();
+  expect(summary?.parquetExportedRows).toBe(100);
+  expect(exportRunningStyleParquetForDay).toHaveBeenCalledTimes(1);
   expect(send).not.toHaveBeenCalled();
 });
 

@@ -56,6 +56,7 @@ vi.mock("./storage", () => ({
   markOddsFetchQueued: vi.fn(async () => {}),
   claimOddsFetch: vi.fn(async () => false),
   claimResultFetch: vi.fn(async () => false),
+  claimWeightFetch: vi.fn(async () => true),
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
@@ -1556,9 +1557,11 @@ it("forwardRaceForFeatures is a no-op when internal token is missing", async () 
   expect(featuresFetch).not.toHaveBeenCalled();
 });
 
-it("forwardRaceForFeatures posts to /api/internal/recompute-and-build-parquet when configured", async () => {
+it("forwardRaceForFeatures posts to /api/internal/enqueue-recompute when configured", async () => {
   const { forwardRaceForFeatures } = await import("./worker");
-  const featuresFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  const featuresFetch = vi.fn(
+    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })),
+  );
   await forwardRaceForFeatures(
     buildEnv({
       PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
@@ -1574,6 +1577,9 @@ it("forwardRaceForFeatures posts to /api/internal/recompute-and-build-parquet wh
     },
   );
   expect(featuresFetch).toHaveBeenCalledTimes(1);
+  expect(featuresFetch.mock.calls[0]?.[0]).toBe(
+    "https://sync-realtime-data-features.kkk4oru.com/api/internal/enqueue-recompute",
+  );
 });
 
 it("forwardRaceForFeatures logs the error when the features worker fetch rejects", async () => {
@@ -1836,7 +1842,7 @@ it("triggerFeaturesRebuildAfterResultLanded POSTs the rebuild URL, body and auth
   expect(featuresFetch).toHaveBeenCalledTimes(1);
   const call = featuresFetch.mock.calls[0]!;
   expect(call[0]).toBe(
-    "https://sync-realtime-data-features.kkk4oru.com/api/internal/recompute-and-build-parquet",
+    "https://sync-realtime-data-features.kkk4oru.com/api/internal/enqueue-recompute",
   );
   const init = call[1]!;
   expect(init.method).toBe("POST");

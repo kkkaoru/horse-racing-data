@@ -27,6 +27,7 @@ vi.mock("./storage", () => ({
   updateLastFetch: vi.fn(async () => {}),
   markResultFetchQueued: vi.fn(async () => {}),
   claimResultFetch: vi.fn(async () => false),
+  claimWeightFetch: vi.fn(async () => true),
   completeResultFetch: vi.fn(async () => {}),
   recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),

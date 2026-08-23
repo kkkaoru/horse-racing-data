@@ -185,6 +185,18 @@ const toRaceJobKeyFromBody = (body: RecomputeRequestBody): RaceJobKey | null => 
   return tryParseRaceKey(body.raceKey);
 };
 
+const toBuildJobMessage = (
+  raceJobKey: RaceJobKey,
+): Extract<Job, { type: "build-race-features" }> => ({
+  kaisaiNen: raceJobKey.kaisaiNen,
+  kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+  keibajoCode: raceJobKey.keibajoCode,
+  raceBango: raceJobKey.raceBango,
+  raceKey: raceJobKey.raceKey,
+  source: raceJobKey.source,
+  type: "build-race-features",
+});
+
 // Reads the per-race catalog endpoint via buildRaceFeatures, encodes Parquet bytes,
 // PUTs to R2, then mirrors the build into KV (state + latest features).
 // Legacy D1 daily_race_entries is NEVER touched (Phase 0 rule 3).
@@ -232,6 +244,46 @@ export const handleRecomputeRequest = async (env: Env, request: Request): Promis
     return jsonResponse(result);
   } catch (error) {
     console.error("[features] recompute failed", error);
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        raceKey: raceJobKey.raceKey,
+      },
+      { status: 500 },
+    );
+  }
+};
+
+export const handleEnqueueRecomputeRequest = async (
+  env: Env,
+  request: Request,
+): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as RecomputeRequestBody;
+  const raceJobKey = toRaceJobKeyFromBody(body);
+  if (!raceJobKey) {
+    return jsonResponse(
+      {
+        error: "raceKey must match {source}:{kaisaiNen}:{kaisaiTsukihi}:{keibajoCode}:{raceBango}",
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    const locked = await isEnqueueLocked(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+    if (locked) {
+      return jsonResponse(
+        { queued: false, raceKey: raceJobKey.raceKey, reason: "enqueue-locked" },
+        { status: 202 },
+      );
+    }
+    await env.REALTIME_FEATURES_JOBS.send(toBuildJobMessage(raceJobKey));
+    await acquireEnqueueLock(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+    return jsonResponse({ queued: true, raceKey: raceJobKey.raceKey }, { status: 202 });
+  } catch (error) {
+    console.error("[features] enqueue recompute failed", error);
     return jsonResponse(
       {
         error: error instanceof Error ? error.message : String(error),
@@ -381,6 +433,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   if (request.method === "POST" && url.pathname === "/api/internal/recompute-and-build-parquet") {
     return handleRecomputeRequest(env, request);
   }
+  if (request.method === "POST" && url.pathname === "/api/internal/enqueue-recompute") {
+    return handleEnqueueRecomputeRequest(env, request);
+  }
   if (request.method === "POST" && url.pathname === "/api/internal/predict-running-style") {
     return handlePredictRunningStyleRequest(env, request);
   }
@@ -428,18 +483,6 @@ interface Past14BuildCandidate {
   key: RaceJobKey;
   raceDateJst: string;
 }
-
-const toBuildJobMessage = (
-  raceJobKey: RaceJobKey,
-): Extract<Job, { type: "build-race-features" }> => ({
-  kaisaiNen: raceJobKey.kaisaiNen,
-  kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
-  keibajoCode: raceJobKey.keibajoCode,
-  raceBango: raceJobKey.raceBango,
-  raceKey: raceJobKey.raceKey,
-  source: raceJobKey.source,
-  type: "build-race-features",
-});
 
 // Shared lock-check + enqueue plumbing for both the today/tomorrow lane
 // (isBuildStateFresh) and the past14 lane (isPast14BuildStateFresh), which
