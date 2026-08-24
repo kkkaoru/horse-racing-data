@@ -32,13 +32,20 @@ from mlflow_tracking.logging_api import (
 )
 
 SHADOW_ROUTER_VERSION: Final[str] = "jra-dynamic-market-shadow-loop43-2026"
+SHADOW_ROUTER_VERSIONS: Final[tuple[str, ...]] = tuple(
+    f"jra-dynamic-market-shadow-loop{loop}-2026" for loop in range(1, 51)
+)
 SHADOW_TABLE: Final[str] = "finish_position_dynamic_market_shadow_predictions"
+COMPARISON_CONTRACT: Final[str] = "served-same-snapshot/v1"
 SHADOW_EVAL_KEY_TAG: Final[str] = "dynamic_market_shadow_eval_key"
 UPSET_MIN_WINNER_MARKET_RANK: Final[int] = 4
 METRICS_ARTIFACT: Final[str] = "dynamic_market_shadow_metrics.json"
 BOOTSTRAP_SAMPLES: Final[int] = 2_000
 BOOTSTRAP_SEED: Final[int] = 43
-MIN_PROMOTION_CLUSTER_DATES: Final[int] = 8
+MIN_PROMOTION_CLUSTER_DATES: Final[int] = 31
+HYPOTHESIS_COUNT: Final[int] = 50
+FAMILYWISE_ALPHA: Final[float] = 0.05
+BONFERRONI_LOWER_QUANTILE: Final[float] = FAMILYWISE_ALPHA / HYPOTHESIS_COUNT
 
 _RACE_ID = re.compile(
     r"^jra:(?P<year>[0-9]{4}):(?P<month_day>[0-9]{4}):"
@@ -46,10 +53,12 @@ _RACE_ID = re.compile(
 )
 _SHADOW_SQL: Final[str] = f"""
     SELECT race_id, router_version, baseline_top5, shadow_top5,
-           upset_probability, market_weight, active, generated_at
+           upset_probability, market_weight, active, served_model_version,
+           feature_snapshot_sha256, comparison_contract, generated_at
     FROM {SHADOW_TABLE}
     WHERE router_version = %s
       AND split_part(race_id, ':', 2) || split_part(race_id, ':', 3) = %s
+      AND comparison_contract = %s
 """
 _RESULT_SQL: Final[str] = """
     SELECT keibajo_code, race_bango, ketto_toroku_bango,
@@ -68,6 +77,9 @@ class ShadowPrediction:
     upset_probability: float
     market_weight: float
     active: bool
+    served_model_version: str
+    feature_snapshot_sha256: str
+    comparison_contract: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +112,8 @@ class DayEvaluation:
     missing_final_popularity: int
     metrics: dict[str, float]
     outcomes: tuple[ShadowOutcome, ...]
+    served_model_versions: tuple[str, ...]
+    feature_snapshot_sha256: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +161,7 @@ def fetch_shadow_predictions(
     conn: db.ConnectionLike, date_str: str, router_version: str = SHADOW_ROUTER_VERSION
 ) -> list[ShadowPrediction]:
     cursor = conn.cursor()
-    cursor.execute(_SHADOW_SQL, (router_version, date_str))
+    cursor.execute(_SHADOW_SQL, (router_version, date_str, COMPARISON_CONTRACT))
     predictions: list[ShadowPrediction] = []
     for row in cursor.fetchall():
         baseline_top5 = row[2]
@@ -158,6 +172,13 @@ def fetch_shadow_predictions(
             continue
         if not baseline_top5 or not shadow_top5:
             continue
+        served_model_version = str(row[7]).strip()
+        snapshot_sha256 = str(row[8]).strip().lower()
+        comparison_contract = str(row[9])
+        if not served_model_version or re.fullmatch(r"[0-9a-f]{64}", snapshot_sha256) is None:
+            continue
+        if comparison_contract != COMPARISON_CONTRACT:
+            continue
         predictions.append(
             ShadowPrediction(
                 race_id=str(row[0]),
@@ -167,6 +188,9 @@ def fetch_shadow_predictions(
                 upset_probability=float(cast("int | float | str", row[4])),
                 market_weight=float(cast("int | float | str", row[5])),
                 active=bool(row[6]),
+                served_model_version=served_model_version,
+                feature_snapshot_sha256=snapshot_sha256,
+                comparison_contract=comparison_contract,
             )
         )
     return predictions
@@ -255,6 +279,7 @@ def _cluster_bootstrap_metrics(
         ordered = sorted(values)
         metrics[f"{name}_ci95_low_pt"] = _percentile(ordered, 0.025)
         metrics[f"{name}_ci95_high_pt"] = _percentile(ordered, 0.975)
+        metrics[f"{name}_fwer95_low_pt"] = _percentile(ordered, BONFERRONI_LOWER_QUANTILE)
     return metrics
 
 
@@ -267,6 +292,10 @@ def evaluate_cumulative(
     bootstrap_seed: int = BOOTSTRAP_SEED,
 ) -> CumulativeEvaluation:
     """Pool finalized forward outcomes and estimate date-cluster uncertainty."""
+    router_versions = {evaluation.router_version for evaluation in day_evaluations}
+    if len(router_versions) > 1:
+        raise ValueError("cumulative evaluation cannot mix router versions")
+    router_version = next(iter(router_versions), SHADOW_ROUTER_VERSION)
     outcomes = [outcome for evaluation in day_evaluations for outcome in evaluation.outcomes]
     metrics: dict[str, float] = {}
     for segment in ("all", "favorite_driven", "upset"):
@@ -290,7 +319,7 @@ def evaluate_cumulative(
         for segment in ("all", "favorite_driven", "upset")
     )
     confidence_positive = cluster_dates >= MIN_PROMOTION_CLUSTER_DATES and all(
-        metrics.get(f"{segment}_delta_top1_3_mean_ci95_low_pt", 0.0) > 0.0
+        metrics.get(f"{segment}_delta_top1_3_mean_fwer95_low_pt", 0.0) > 0.0
         for segment in ("all", "favorite_driven", "upset")
     )
     metrics["promotion_point_gate"] = float(all_top5_nonnegative and segment_means_positive)
@@ -301,7 +330,7 @@ def evaluate_cumulative(
     return CumulativeEvaluation(
         date_from=date_from,
         date_to=date_to,
-        router_version=SHADOW_ROUTER_VERSION,
+        router_version=router_version,
         evaluated_races=len(outcomes),
         cluster_dates=cluster_dates,
         metrics=metrics,
@@ -313,6 +342,10 @@ def evaluate_day(
     predictions: Sequence[ShadowPrediction],
     results: Mapping[tuple[str, str, str], FinalizedHorse],
 ) -> DayEvaluation:
+    router_versions = {prediction.router_version for prediction in predictions}
+    if len(router_versions) != 1:
+        raise ValueError("day evaluation requires exactly one router version")
+    router_version = next(iter(router_versions))
     outcomes: list[ShadowOutcome] = []
     missing_final_result = 0
     missing_final_popularity = 0
@@ -360,15 +393,22 @@ def evaluate_day(
     metrics["missing_final_result"] = float(missing_final_result)
     metrics["missing_final_popularity"] = float(missing_final_popularity)
     metrics["active_races"] = float(sum(prediction.active for prediction in predictions))
+    metrics["same_snapshot_rows"] = float(len(predictions))
     return DayEvaluation(
         date=date_str,
-        router_version=SHADOW_ROUTER_VERSION,
+        router_version=router_version,
         shadow_rows=len(predictions),
         evaluated_races=len(outcomes),
         missing_final_result=missing_final_result,
         missing_final_popularity=missing_final_popularity,
         metrics=metrics,
         outcomes=tuple(outcomes),
+        served_model_versions=tuple(
+            sorted({prediction.served_model_version for prediction in predictions})
+        ),
+        feature_snapshot_sha256=tuple(
+            sorted({prediction.feature_snapshot_sha256 for prediction in predictions})
+        ),
     )
 
 
@@ -383,7 +423,7 @@ def _find_run(client: MlflowClient, experiment_id: str, key: str) -> str | None:
 
 def log_day_evaluation(client: MlflowClient, evaluation: DayEvaluation) -> str:
     experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW)
-    key = f"{evaluation.date}:{evaluation.router_version}"
+    key = f"{evaluation.date}:{evaluation.router_version}:{COMPARISON_CONTRACT}"
     run_id = _find_run(client, experiment_id, key)
     if run_id is None:
         run = client.create_run(
@@ -396,6 +436,8 @@ def log_day_evaluation(client: MlflowClient, evaluation: DayEvaluation) -> str:
                 "task": "finish-position",
                 "router_version": evaluation.router_version,
                 "evaluation_regime": "forward-shadow",
+                "comparison_contract": COMPARISON_CONTRACT,
+                "served_model_versions": ",".join(evaluation.served_model_versions),
             },
         )
         run_id = run.info.run_id
@@ -415,7 +457,10 @@ def log_day_evaluation(client: MlflowClient, evaluation: DayEvaluation) -> str:
 
 def log_cumulative_evaluation(client: MlflowClient, evaluation: CumulativeEvaluation) -> str:
     experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW)
-    key = f"cumulative:{evaluation.date_from}:{evaluation.date_to}:{evaluation.router_version}"
+    key = (
+        f"cumulative:{evaluation.date_from}:{evaluation.date_to}:"
+        f"{evaluation.router_version}:{COMPARISON_CONTRACT}"
+    )
     run_id = _find_run(client, experiment_id, key)
     if run_id is None:
         run = client.create_run(
@@ -429,6 +474,7 @@ def log_cumulative_evaluation(client: MlflowClient, evaluation: CumulativeEvalua
                 "task": "finish-position",
                 "router_version": evaluation.router_version,
                 "evaluation_regime": "forward-shadow-cumulative",
+                "comparison_contract": COMPARISON_CONTRACT,
             },
         )
         run_id = run.info.run_id
@@ -462,6 +508,7 @@ def evaluate_range(
     date_from: str,
     date_to: str,
     *,
+    router_version: str = SHADOW_ROUTER_VERSION,
     neon_factory: ConnectionFactory = db.connect_racing_neon,
     local_factory: ConnectionFactory = db.connect_local_replica,
 ) -> RangeSummary:
@@ -473,7 +520,7 @@ def evaluate_range(
         for date_str in _date_range(date_from, date_to):
             summary.dates_processed += 1
             try:
-                predictions = fetch_shadow_predictions(neon_conn, date_str)
+                predictions = fetch_shadow_predictions(neon_conn, date_str, router_version)
                 if not predictions:
                     summary.dates_without_shadow += 1
                     continue
@@ -503,9 +550,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Evaluate JRA dynamic-market shadow predictions")
     parser.add_argument("--date-from", required=True)
     parser.add_argument("--date-to", required=True)
+    parser.add_argument(
+        "--router-version",
+        choices=SHADOW_ROUTER_VERSIONS,
+        default=SHADOW_ROUTER_VERSION,
+    )
     args = parser.parse_args(argv)
     client = MlflowClient(tracking_uri=config.get_tracking_uri())
-    summary = evaluate_range(client, args.date_from, args.date_to)
+    summary = evaluate_range(
+        client,
+        args.date_from,
+        args.date_to,
+        router_version=args.router_version,
+    )
     print(
         f"dates processed: {summary.dates_processed}\n"
         f"dates logged: {summary.dates_logged}\n"

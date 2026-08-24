@@ -6,7 +6,8 @@
     "architecture": "catboost",
     "stddev_threshold": 0.4,
     "enable_stddev_safety_net": true,
-    "top1_swap_base_model_version": "jra-cb-stage1-marketfree235-2013"
+    "top1_swap_base_model_version": "jra-cb-stage1-marketfree235-2013",
+    "top1_swap_prior3_temperature_lt": 28.0
   },
   "nar": {
     "enabled": true,

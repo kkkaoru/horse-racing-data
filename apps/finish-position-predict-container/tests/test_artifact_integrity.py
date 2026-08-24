@@ -146,10 +146,10 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     assert len(selected) == 36
     assert report.status == "MATCH"
     assert len(report.warnings) == 4
-    assert report.warnings[0] == (
+    assert (
         "unselected manifest artifact: "
         "finish-position/nar/iter40-nar-settransformer-blend-v1/norm.json"
-    )
+    ) in report.warnings
 
 
 def test_selected_unmanifested_is_integrity_failure() -> None:

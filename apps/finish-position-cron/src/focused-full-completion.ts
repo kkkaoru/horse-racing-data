@@ -53,7 +53,7 @@ const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y";
 // this file's ONE commit around 2026-07-24 for the incident trail). ban-ei
 // has no stage1_routing.json entry, so it stays without a fallback here too.
 const STAGE1_MARKET_FREE_MODEL_VERSIONS: Partial<Record<PredictCategory, string>> = {
-  jra: "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
+  jra: "jra-cb-stage1-marketfree235-2013",
   nar: "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
 };
 

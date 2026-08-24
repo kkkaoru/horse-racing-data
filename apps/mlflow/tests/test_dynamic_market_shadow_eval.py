@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from mlflow import MlflowClient
@@ -13,6 +13,31 @@ from mlflow_tracking import dynamic_market_shadow_eval as shadow_eval
 
 DATE = "20260824"
 ROUTER = shadow_eval.SHADOW_ROUTER_VERSION
+SNAPSHOT_SHA256 = "a" * 64
+
+
+def _shadow_row(
+    race_id: str = "jra:2026:0824:06:01",
+    baseline: object = ("a",),
+    shadow: object = ("b",),
+    *,
+    router_version: str = ROUTER,
+    snapshot_sha256: str = SNAPSHOT_SHA256,
+    contract: str = shadow_eval.COMPARISON_CONTRACT,
+) -> tuple[object, ...]:
+    return (
+        race_id,
+        router_version,
+        baseline,
+        shadow,
+        0.6,
+        0.98,
+        True,
+        "served-model",
+        snapshot_sha256,
+        contract,
+        datetime(2026, 8, 24, tzinfo=UTC),
+    )
 
 
 class FakeCursor:
@@ -56,16 +81,24 @@ class FakeConnection:
 
 
 def _prediction(
-    race: str, baseline: str, shadow: str, *, active: bool = True
+    race: str,
+    baseline: str,
+    shadow: str,
+    *,
+    active: bool = True,
+    router_version: str = ROUTER,
 ) -> shadow_eval.ShadowPrediction:
     return shadow_eval.ShadowPrediction(
         race_id=f"jra:2026:0824:06:{race}",
-        router_version=ROUTER,
+        router_version=router_version,
         baseline_top1=baseline,
         shadow_top1=shadow,
         upset_probability=0.6,
         market_weight=0.98,
         active=active,
+        served_model_version="served-model",
+        feature_snapshot_sha256=SNAPSHOT_SHA256,
+        comparison_contract=shadow_eval.COMPARISON_CONTRACT,
     )
 
 
@@ -74,13 +107,14 @@ def _result(finish: int | None, popularity: int | None) -> shadow_eval.Finalized
 
 
 def test_fetch_shadow_predictions_validates_top5_arrays() -> None:
-    generated_at = datetime(2026, 8, 24, tzinfo=UTC)
     connection = FakeConnection(
         [
-            ("jra:2026:0824:06:01", ROUTER, ["a"], ["b"], 0.6, 0.98, True, generated_at),
-            ("bad", ROUTER, "a", ["b"], 0.4, 1.0, False, generated_at),
-            ("bad", ROUTER, ["a"], "b", 0.4, 1.0, False, generated_at),
-            ("bad", ROUTER, [], ["b"], 0.4, 1.0, False, generated_at),
+            _shadow_row(),
+            _shadow_row("bad", "a", ["b"]),
+            _shadow_row("bad", ["a"], "b"),
+            _shadow_row("bad", [], ["b"]),
+            _shadow_row("bad", snapshot_sha256="invalid"),
+            _shadow_row("bad", contract="legacy"),
         ]
     )
 
@@ -88,7 +122,21 @@ def test_fetch_shadow_predictions_validates_top5_arrays() -> None:
 
     assert len(predictions) == 1
     assert predictions[0].baseline_top1 == "a"
-    assert connection.queries[0][1] == (ROUTER, DATE)
+    assert predictions[0].served_model_version == "served-model"
+    assert predictions[0].feature_snapshot_sha256 == SNAPSHOT_SHA256
+    assert connection.queries[0][1] == (
+        ROUTER,
+        DATE,
+        shadow_eval.COMPARISON_CONTRACT,
+    )
+    assert "comparison_contract = %s" in connection.queries[0][0]
+
+
+def test_forward_sweep_exposes_exactly_50_router_versions() -> None:
+    assert len(shadow_eval.SHADOW_ROUTER_VERSIONS) == 50
+    assert shadow_eval.SHADOW_ROUTER_VERSIONS[0].endswith("loop1-2026")
+    assert shadow_eval.SHADOW_ROUTER_VERSIONS[42] == ROUTER
+    assert shadow_eval.SHADOW_ROUTER_VERSIONS[-1].endswith("loop50-2026")
 
 
 def test_fetch_finalized_results_parses_positive_values_only() -> None:
@@ -144,6 +192,9 @@ def test_evaluate_day_counts_missing_and_upset_segments() -> None:
         upset_probability=0.5,
         market_weight=1.0,
         active=False,
+        served_model_version="served-model",
+        feature_snapshot_sha256=SNAPSHOT_SHA256,
+        comparison_contract=shadow_eval.COMPARISON_CONTRACT,
     )
     predictions = [
         _prediction("01", "a", "b"),
@@ -171,6 +222,30 @@ def test_evaluate_day_counts_missing_and_upset_segments() -> None:
     assert "favorite_driven_races" not in evaluation.metrics
 
 
+def test_evaluate_day_preserves_router_version_and_rejects_mixed_versions() -> None:
+    loop_one = shadow_eval.SHADOW_ROUTER_VERSIONS[0]
+    results = {
+        ("06", "01", "a"): _result(2, 2),
+        ("06", "01", "b"): _result(1, 1),
+    }
+    evaluation = shadow_eval.evaluate_day(
+        DATE,
+        [_prediction("01", "a", "b", router_version=loop_one)],
+        results,
+    )
+    assert evaluation.router_version == loop_one
+
+    with pytest.raises(ValueError, match="exactly one router"):
+        shadow_eval.evaluate_day(
+            DATE,
+            [
+                _prediction("01", "a", "b"),
+                _prediction("02", "c", "d", router_version=loop_one),
+            ],
+            results,
+        )
+
+
 def test_log_day_evaluation_reuses_run(client: MlflowClient) -> None:
     evaluation = shadow_eval.evaluate_day(
         DATE,
@@ -192,28 +267,35 @@ def test_log_day_evaluation_reuses_run(client: MlflowClient) -> None:
     run = client.get_run(first)
     assert run.data.metrics["all_shadow_top1_pct"] == 100.0
     assert run.data.tags["evaluation_complete"] == "true"
+    assert run.data.tags["comparison_contract"] == shadow_eval.COMPARISON_CONTRACT
+    assert run.data.tags["served_model_versions"] == "served-model"
     assert client.download_artifacts(first, shadow_eval.METRICS_ARTIFACT)
 
 
 def _day_with_outcomes(
-    date_str: str, outcomes: tuple[shadow_eval.ShadowOutcome, ...]
+    date_str: str,
+    outcomes: tuple[shadow_eval.ShadowOutcome, ...],
+    *,
+    router_version: str = ROUTER,
 ) -> shadow_eval.DayEvaluation:
     return shadow_eval.DayEvaluation(
         date=date_str,
-        router_version=ROUTER,
+        router_version=router_version,
         shadow_rows=len(outcomes),
         evaluated_races=len(outcomes),
         missing_final_result=0,
         missing_final_popularity=0,
         metrics={},
         outcomes=outcomes,
+        served_model_versions=("served-model",),
+        feature_snapshot_sha256=(SNAPSHOT_SHA256,),
     )
 
 
-def test_cumulative_evaluation_bootstraps_dates_and_passes_strict_gate() -> None:
+def test_cumulative_evaluation_bootstraps_enough_dates_and_passes_strict_gate() -> None:
     days: list[shadow_eval.DayEvaluation] = []
-    for day_number in range(1, 9):
-        date_str = f"202609{day_number:02d}"
+    for offset in range(shadow_eval.MIN_PROMOTION_CLUSTER_DATES):
+        date_str = (datetime(2026, 9, 1) + timedelta(days=offset)).strftime("%Y%m%d")
         days.append(
             _day_with_outcomes(
                 date_str,
@@ -225,14 +307,15 @@ def test_cumulative_evaluation_bootstraps_dates_and_passes_strict_gate() -> None
         )
 
     evaluation = shadow_eval.evaluate_cumulative(
-        "20260901", "20260908", days, bootstrap_samples=30, bootstrap_seed=7
+        "20260901", "20261001", days, bootstrap_samples=30, bootstrap_seed=7
     )
 
-    assert evaluation.evaluated_races == 16
-    assert evaluation.cluster_dates == 8
+    assert evaluation.evaluated_races == 62
+    assert evaluation.cluster_dates == 31
     assert evaluation.metrics["all_delta_top1_3_mean_pt"] == 100.0
     assert evaluation.metrics["favorite_driven_delta_top1_ci95_low_pt"] == 100.0
     assert evaluation.metrics["upset_delta_top3_ci95_high_pt"] == 100.0
+    assert evaluation.metrics["upset_delta_top1_3_mean_fwer95_low_pt"] == 100.0
     assert evaluation.metrics["promotion_point_gate"] == 1.0
     assert evaluation.metrics["promotion_confidence_gate"] == 1.0
     assert evaluation.metrics["promotion_ready"] == 1.0
@@ -251,6 +334,20 @@ def test_cumulative_evaluation_with_one_date_omits_invalid_interval() -> None:
     assert evaluation.metrics["promotion_point_gate"] == 0.0
     assert evaluation.metrics["promotion_confidence_gate"] == 0.0
     assert evaluation.metrics["promotion_ready"] == 0.0
+
+
+def test_cumulative_evaluation_preserves_one_router_and_rejects_mixed_versions() -> None:
+    loop_one = shadow_eval.SHADOW_ROUTER_VERSIONS[0]
+    outcome = shadow_eval.ShadowOutcome(DATE, 2, 1, 1)
+    day = _day_with_outcomes(DATE, (outcome,), router_version=loop_one)
+    assert shadow_eval.evaluate_cumulative(DATE, DATE, [day]).router_version == loop_one
+
+    with pytest.raises(ValueError, match="cannot mix router"):
+        shadow_eval.evaluate_cumulative(
+            DATE,
+            DATE,
+            [day, _day_with_outcomes(DATE, (outcome,))],
+        )
 
 
 def test_cluster_bootstrap_omits_segment_interval_when_resamples_can_be_empty() -> None:
@@ -289,6 +386,7 @@ def test_log_cumulative_evaluation_reuses_run(client: MlflowClient) -> None:
     assert second == first
     run = client.get_run(first)
     assert run.data.tags["promotion_ready"] == "false"
+    assert run.data.tags["comparison_contract"] == shadow_eval.COMPARISON_CONTRACT
     assert run.data.metrics["evaluated_races"] == 0.0
 
 
@@ -312,17 +410,7 @@ def test_evaluate_range_isolates_error_and_closes(client: MlflowClient) -> None:
 
 
 def test_evaluate_range_logs_results(client: MlflowClient) -> None:
-    shadow_row = (
-        "jra:2026:0824:06:01",
-        ROUTER,
-        ["a"],
-        ["b"],
-        0.6,
-        0.98,
-        True,
-        datetime(2026, 8, 24, tzinfo=UTC),
-    )
-    neon = FakeConnection([shadow_row])
+    neon = FakeConnection([_shadow_row()])
     local = FakeConnection([("06", "01", "a", 2, 2), ("06", "01", "b", 1, 1)])
 
     summary = shadow_eval.evaluate_range(
@@ -339,20 +427,32 @@ def test_evaluate_range_logs_results(client: MlflowClient) -> None:
     assert summary.errors == []
 
 
+def test_evaluate_range_queries_and_logs_requested_hypothesis(client: MlflowClient) -> None:
+    loop_one = shadow_eval.SHADOW_ROUTER_VERSIONS[0]
+    neon = FakeConnection([_shadow_row(router_version=loop_one)])
+    local = FakeConnection([("06", "01", "a", 2, 2), ("06", "01", "b", 1, 1)])
+
+    summary = shadow_eval.evaluate_range(
+        client,
+        DATE,
+        DATE,
+        router_version=loop_one,
+        neon_factory=lambda: neon,
+        local_factory=lambda: local,
+    )
+
+    assert summary.dates_logged == 1
+    assert neon.queries[0][1] == (loop_one, DATE, shadow_eval.COMPARISON_CONTRACT)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW)
+    assert experiment is not None
+    runs = client.search_runs([experiment.experiment_id])
+    assert {run.data.tags.get("router_version") for run in runs} == {loop_one}
+
+
 def test_evaluate_range_isolates_cumulative_logging_failure(
     client: MlflowClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    shadow_row = (
-        "jra:2026:0824:06:01",
-        ROUTER,
-        ["a"],
-        ["b"],
-        0.6,
-        0.98,
-        True,
-        datetime(2026, 8, 24, tzinfo=UTC),
-    )
-    neon = FakeConnection([shadow_row])
+    neon = FakeConnection([_shadow_row()])
     local = FakeConnection([("06", "01", "a", 2, 2), ("06", "01", "b", 1, 1)])
     monkeypatch.setattr(
         shadow_eval,

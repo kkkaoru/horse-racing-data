@@ -82,14 +82,17 @@ from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, 
 from predict_lib.debug_log import debug_log, query_debug_enabled
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.dynamic_market_shadow import (
+    SHADOW_BATCH_SIZE,
     UPSET_FEATURE_NAMES,
     DynamicMarketShadowRecord,
     ProbabilityModel,
-    build_shadow_record,
+    build_shadow_batch_upsert_sql,
+    build_shadow_migration_sql,
+    build_shadow_records,
     build_shadow_table_ddl,
-    build_shadow_upsert_sql,
     classifier_version,
-    shadow_params,
+    served_baseline_from_rows,
+    shadow_batch_params,
     surface_expert_version,
 )
 from predict_lib.ensemble_routing import catboost_model_feature_names, member_feature_order_matches
@@ -184,6 +187,7 @@ from predict_lib.stage1_routing import (
     Stage1CategoryConfig,
     extract_predicted_scores,
     load_stage1_routing,
+    race_passes_top1_swap_weather_gate,
     resolve_stage1_gate,
 )
 from predict_lib.stage1_top1_swap import apply_top1_score_swap
@@ -757,8 +761,10 @@ def _load_shadow_metadata(path: Path, expected_version: str) -> tuple[str, ...]:
     if not isinstance(payload, dict) or payload.get("model_version") != expected_version:
         raise ValueError(f"dynamic-market shadow metadata identity mismatch: {path}")
     raw_names = payload.get("feature_names")
-    if not isinstance(raw_names, list) or not raw_names or not all(
-        isinstance(name, str) for name in raw_names
+    if (
+        not isinstance(raw_names, list)
+        or not raw_names
+        or not all(isinstance(name, str) for name in raw_names)
     ):
         raise ValueError(f"dynamic-market shadow feature_names invalid: {path}")
     feature_names = tuple(raw_names)
@@ -797,9 +803,7 @@ def _load_dynamic_market_shadow_models(
                     context=f"dynamic-market shadow expert={model_version}",
                 )
                 booster = _load_booster_by_arch(artifact_dir / MODEL_FILE_NAME, "catboost")
-                if not _variant_booster_feature_order_matches(
-                    booster, "catboost", expert_features
-                ):
+                if not _variant_booster_feature_order_matches(booster, "catboost", expert_features):
                     raise ValueError(
                         f"dynamic-market shadow booster feature order mismatch: {model_version}"
                     )
@@ -1078,7 +1082,13 @@ def score_races(
                         stage1_model.model_version,
                     )
                     if stage1_model.top1_swap_base is None
-                    else _score_one_race_stage1_top1_swap(stage1_model, race_id, category, entries)
+                    else _score_one_race_stage1_top1_swap(
+                        stage1_model,
+                        stage1_config,
+                        race_id,
+                        category,
+                        entries,
+                    )
                 )
         scored.append(rows)
     return scored
@@ -1086,6 +1096,7 @@ def score_races(
 
 def score_dynamic_market_shadow(
     races: Mapping[str, Sequence[Mapping[str, object]]],
+    scored: Sequence[Sequence[Sequence[object]]],
     category: Category,
     models_dir: Path,
 ) -> list[DynamicMarketShadowRecord]:
@@ -1095,16 +1106,18 @@ def score_dynamic_market_shadow(
     stage1_model = bundle.stage1_model
     if category != "jra" or shadow is None or stage1_model is None:
         return []
+    served_by_race = dict(zip(races, scored, strict=True))
     records: list[DynamicMarketShadowRecord] = []
     for race_id, entries in races.items():
         try:
+            served_baseline = served_baseline_from_rows(served_by_race[race_id])
+            if served_baseline is None:
+                continue
             representative = _representative_entry(entries)
             if representative is None:
                 continue
             raw_track_code = representative.get("track_code")
-            surface = classify_surface(
-                None if raw_track_code is None else str(raw_track_code)
-            )
+            surface = classify_surface(None if raw_track_code is None else str(raw_track_code))
             if surface is None:
                 continue
             market_version = surface_expert_version(surface, market_free=False)
@@ -1118,9 +1131,7 @@ def score_dynamic_market_shadow(
                 market_free_expert.feature_names,
             )
             if any(is_degenerate_feature_matrix(entries, names) for names in required_contracts):
-                debug_log(
-                    f"[dynamic-market-shadow] race={race_id} skipped: degenerate features"
-                )
+                debug_log(f"[dynamic-market-shadow] race={race_id} skipped: degenerate features")
                 continue
             champion_scores = score_matrix(
                 bundle.fallback_booster,
@@ -1140,7 +1151,7 @@ def score_dynamic_market_shadow(
                 market_free_expert.booster,
                 build_feature_matrix(entries, market_free_expert.feature_names, "catboost"),
             )
-            record = build_shadow_record(
+            race_records = build_shadow_records(
                 race_id=race_id,
                 entries=entries,
                 champion_scores=champion_scores,
@@ -1151,13 +1162,11 @@ def score_dynamic_market_shadow(
                 classifier_model_version=shadow.classifier_version,
                 market_expert_version=market_version,
                 market_free_expert_version=market_free_version,
+                served_baseline=served_baseline,
             )
-            if record is not None:
-                records.append(record)
+            records.extend(race_records)
         except BaseException as shadow_error:
-            debug_log(
-                f"[dynamic-market-shadow] race={race_id} failed closed: {shadow_error}"
-            )
+            debug_log(f"[dynamic-market-shadow] race={race_id} failed closed: {shadow_error}")
     return records
 
 
@@ -1192,6 +1201,7 @@ def _score_one_race_direct(
 
 def _score_one_race_stage1_top1_swap(
     companion: VariantModel,
+    config: Stage1CategoryConfig,
     race_id: str,
     category: Category,
     entries: Sequence[Mapping[str, object]],
@@ -1200,6 +1210,20 @@ def _score_one_race_stage1_top1_swap(
     base = companion.top1_swap_base
     if base is None:
         raise ValueError("Stage-1 top1 swap requires a base model")
+    if not race_passes_top1_swap_weather_gate(config, entries):
+        debug_log(
+            f"[stage1-top1-swap] race={race_id} category={category} "
+            f"weather gate closed -> {base.model_version}"
+        )
+        return _score_one_race_direct(
+            base.booster,
+            race_id,
+            category,
+            entries,
+            base.feature_names,
+            base.architecture,
+            base.model_version,
+        )
     if is_degenerate_feature_matrix(entries, base.feature_names) or is_degenerate_feature_matrix(
         entries, companion.feature_names
     ):
@@ -1366,11 +1390,18 @@ def _flush_dynamic_market_shadow(
     try:
         connection = _connect(database_url)
         connection = execute(connection, build_shadow_table_ddl(), [], database_url)
+        for migration_sql in build_shadow_migration_sql():
+            connection = execute(connection, migration_sql, [], database_url)
         written = 0
-        upsert_sql = build_shadow_upsert_sql()
-        for record in records:
-            connection = execute(connection, upsert_sql, shadow_params(record), database_url)
-            written += 1
+        for start in range(0, len(records), SHADOW_BATCH_SIZE):
+            batch = records[start : start + SHADOW_BATCH_SIZE]
+            connection = execute(
+                connection,
+                build_shadow_batch_upsert_sql(len(batch)),
+                shadow_batch_params(batch),
+                database_url,
+            )
+            written += len(batch)
         return written
     except BaseException as shadow_error:
         debug_log(f"[dynamic-market-shadow] persistence failed open: {shadow_error}")
@@ -1437,15 +1468,13 @@ def _score_and_flush_races(
     else:
         written = _flush_scored(database_url, category, scored)
     try:
-        shadow_records = score_dynamic_market_shadow(races, category, models_dir)
+        shadow_records = score_dynamic_market_shadow(races, scored, category, models_dir)
     except BaseException as shadow_error:
         debug_log(f"[dynamic-market-shadow] scoring failed open: {shadow_error}")
         shadow_records = []
     shadow_written = _flush_dynamic_market_shadow(database_url, shadow_records)
     if shadow_written:
-        debug_log(
-            f"[dynamic-market-shadow] category={category} records_written={shadow_written}"
-        )
+        debug_log(f"[dynamic-market-shadow] category={category} records_written={shadow_written}")
     return written
 
 

@@ -20,6 +20,7 @@ from predict_lib.stage1_routing import (
     load_stage1_routing,
     preserved_odds_gate_enabled,
     race_has_fresh_odds,
+    race_passes_top1_swap_weather_gate,
     resolve_stage1_gate,
 )
 from predict_lib.upsert_sql import INSERT_COLUMNS
@@ -62,6 +63,7 @@ def test_tracked_stage1_routing_loads_live_jra_config() -> None:
         stddev_threshold=0.4,
         enable_stddev_safety_net=True,
         top1_swap_base_model_version="jra-cb-stage1-marketfree235-2013",
+        top1_swap_prior3_temperature_lt=28.0,
     )
 
 
@@ -110,9 +112,31 @@ def test_load_stage1_routing_parses_optional_top1_swap_base(tmp_path: Path) -> N
 
     routing = load_stage1_routing(path)
 
-    assert routing["jra"].top1_swap_base_model_version == (
-        "jra-cb-stage1-marketfree235-2013"
-    )
+    assert routing["jra"].top1_swap_base_model_version == ("jra-cb-stage1-marketfree235-2013")
+
+
+def test_load_stage1_routing_parses_optional_top1_swap_weather_threshold(
+    tmp_path: Path,
+) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["top1_swap_prior3_temperature_lt"] = 28
+    path = _write(tmp_path, {"jra": config})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].top1_swap_prior3_temperature_lt == 28.0
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, "28"])
+def test_load_stage1_routing_rejects_invalid_top1_swap_weather_threshold(
+    tmp_path: Path, value: object
+) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["top1_swap_prior3_temperature_lt"] = value
+    path = _write(tmp_path, {"jra": config})
+
+    with pytest.raises(Stage1RoutingValidationError, match="top1_swap_prior3_temperature_lt"):
+        load_stage1_routing(path)
 
 
 def test_load_stage1_routing_rejects_empty_top1_swap_base(tmp_path: Path) -> None:
@@ -471,9 +495,10 @@ def test_preserved_odds_gate_rejects_singleton_board(
 ) -> None:
     monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
 
-    assert race_has_fresh_odds(
-        [{"popularity_score": 0.0, "tansho_ninkijun": 1, "tansho_odds": 2.0}]
-    ) is False
+    assert (
+        race_has_fresh_odds([{"popularity_score": 0.0, "tansho_ninkijun": 1, "tansho_odds": 2.0}])
+        is False
+    )
 
 
 def test_preserved_odds_gate_rejects_partial_board(
@@ -505,8 +530,7 @@ def test_preserved_odds_gate_rejects_market_free_median_for_fifteen_runners(
 ) -> None:
     monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
     entries = [
-        {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": 5.0}
-        for _ in range(15)
+        {"popularity_score": 0.5, "tansho_ninkijun": None, "tansho_odds": 5.0} for _ in range(15)
     ]
 
     assert race_has_fresh_odds(entries) is False
@@ -648,6 +672,60 @@ def test_is_score_spread_degraded_at_threshold_is_not_degraded() -> None:
 
 def test_is_score_spread_degraded_above_threshold() -> None:
     assert is_score_spread_degraded(1.2, 0.3) is False
+
+
+# ---------------------------------------------------------------------------
+# race_passes_top1_swap_weather_gate
+# ---------------------------------------------------------------------------
+
+_WEATHER_CONFIG = Stage1CategoryConfig(
+    enabled=True,
+    model_version="candidate",
+    feature_count=235,
+    architecture="catboost",
+    stddev_threshold=0.4,
+    enable_stddev_safety_net=True,
+    top1_swap_base_model_version="base",
+    top1_swap_prior3_temperature_lt=28.0,
+)
+
+
+def test_top1_swap_weather_gate_accepts_consistent_cool_window() -> None:
+    entries = [
+        {"venue_temperature_prior3": 27.9},
+        {"venue_temperature_prior3": "27.9"},
+    ]
+
+    assert race_passes_top1_swap_weather_gate(_WEATHER_CONFIG, entries) is True
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [],
+        [{"venue_temperature_prior3": 28.0}],
+        [{"venue_temperature_prior3": None}],
+        [{"venue_temperature_prior3": 27.0}, {"venue_temperature_prior3": 27.1}],
+    ],
+)
+def test_top1_swap_weather_gate_rejects_incomplete_hot_or_inconsistent_window(
+    entries: list[dict[str, object]],
+) -> None:
+    assert race_passes_top1_swap_weather_gate(_WEATHER_CONFIG, entries) is False
+
+
+def test_top1_swap_weather_gate_is_disabled_when_threshold_absent() -> None:
+    config = Stage1CategoryConfig(
+        enabled=True,
+        model_version="candidate",
+        feature_count=235,
+        architecture="catboost",
+        stddev_threshold=0.4,
+        enable_stddev_safety_net=True,
+        top1_swap_base_model_version="base",
+    )
+
+    assert race_passes_top1_swap_weather_gate(config, []) is True
 
 
 # ---------------------------------------------------------------------------

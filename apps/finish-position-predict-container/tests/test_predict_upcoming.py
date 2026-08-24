@@ -38,6 +38,7 @@ import pipeline_runner
 import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
 from predict_lib.cell_router import CellRouter, build_base_model_r2_key
+from predict_lib.dynamic_market_shadow import COMPARISON_CONTRACT
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
@@ -485,26 +486,44 @@ def _shadow_record() -> predict_upcoming.DynamicMarketShadowRecord:
         classifier_version="classifier",
         market_expert_version="market",
         market_free_expert_version="free",
+        comparison_contract=COMPARISON_CONTRACT,
+        served_model_version="served-model",
+        feature_snapshot_sha256="0" * 64,
     )
 
 
 def test_flush_dynamic_market_shadow_writes_ddl_and_record() -> None:
-    flush_shadow: Callable[..., int] = vars(predict_upcoming)[
-        "_flush_dynamic_market_shadow"
-    ]
+    flush_shadow: Callable[..., int] = vars(predict_upcoming)["_flush_dynamic_market_shadow"]
     connection = _StubConnection()
     with patch("predict_upcoming._connect", return_value=connection):
         written = flush_shadow(_DB_URL, [_shadow_record()])
 
     assert written == 1
-    assert connection.committed == 2
+    assert connection.committed == 5
+    assert connection.closed is True
+
+
+def test_flush_dynamic_market_shadow_batches_50_hypotheses_across_races() -> None:
+    flush_shadow: Callable[..., int] = vars(predict_upcoming)["_flush_dynamic_market_shadow"]
+    records = [
+        replace(
+            _shadow_record(),
+            race_id=f"jra:2026:0824:01:{index // 50 + 1:02d}",
+            router_version=f"router-{index}",
+        )
+        for index in range(501)
+    ]
+    connection = _StubConnection()
+    with patch("predict_upcoming._connect", return_value=connection):
+        written = flush_shadow(_DB_URL, records)
+
+    assert written == 501
+    assert connection.committed == 6
     assert connection.closed is True
 
 
 def test_flush_dynamic_market_shadow_is_empty_noop_and_failure_open() -> None:
-    flush_shadow: Callable[..., int] = vars(predict_upcoming)[
-        "_flush_dynamic_market_shadow"
-    ]
+    flush_shadow: Callable[..., int] = vars(predict_upcoming)["_flush_dynamic_market_shadow"]
     assert flush_shadow(_DB_URL, []) == 0
 
     connection = _StubConnection(raise_on_execute=RuntimeError("shadow database failed"))
@@ -2632,9 +2651,7 @@ class _NoRoutingRouter:
 
 @final
 class _ShadowClassifier:
-    def predict_proba(
-        self, matrix: Sequence[Sequence[float]]
-    ) -> Sequence[Sequence[float]]:
+    def predict_proba(self, matrix: Sequence[Sequence[float]]) -> Sequence[Sequence[float]]:
         assert len(matrix) == 1
         assert len(matrix[0]) == 14
         return [[0.0, 1.0]]
@@ -2692,12 +2709,29 @@ def test_score_dynamic_market_shadow_uses_fixed_experts_without_serving_mutation
     monkeypatch.setattr(predict_upcoming, "is_degenerate_feature_matrix", lambda *args: False)
 
     records = predict_upcoming.score_dynamic_market_shadow(
-        {"jra:2026:0824:01:01": entries}, "jra", Path("/models")
+        {"jra:2026:0824:01:01": entries},
+        [
+            [
+                ("served-cell", "jra", "2026", "0824", "01", "01", "H3", 0.0, 0.0, 1),
+                ("served-cell", "jra", "2026", "0824", "01", "01", "H1", 0.0, 0.0, 2),
+                ("served-cell", "jra", "2026", "0824", "01", "01", "H2", 0.0, 0.0, 3),
+            ]
+        ],
+        "jra",
+        Path("/models"),
     )
 
-    assert len(records) == 1
-    record = records[0]
-    assert record.baseline_top5 == ("H1", "H2", "H3")
+    assert len(records) == 50
+    assert len({record.router_version for record in records}) == 50
+    assert all(record.baseline_top5 == ("H3", "H1", "H2") for record in records)
+    assert all(record.served_model_version == "served-cell" for record in records)
+    record = next(
+        record
+        for record in records
+        if record.router_version == "jra-dynamic-market-shadow-loop43-2026"
+    )
+    assert record.baseline_top5 == ("H3", "H1", "H2")
+    assert record.served_model_version == "served-cell"
     assert record.shadow_top5 == ("H2", "H3", "H1")
     assert record.market_weight == pytest.approx(0.95)
     assert record.active is True
@@ -2708,7 +2742,7 @@ def test_score_dynamic_market_shadow_skips_absent_bundle_and_race_errors(
 ) -> None:
     absent = SimpleNamespace(dynamic_market_shadow=None, stage1_model=None)
     monkeypatch.setattr(predict_upcoming, "_get_model_bundle", lambda *args: absent)
-    assert predict_upcoming.score_dynamic_market_shadow({}, "jra", Path("/models")) == []
+    assert predict_upcoming.score_dynamic_market_shadow({}, [], "jra", Path("/models")) == []
 
     broken = SimpleNamespace(
         dynamic_market_shadow=SimpleNamespace(),
@@ -2718,6 +2752,7 @@ def test_score_dynamic_market_shadow_skips_absent_bundle_and_race_errors(
     assert (
         predict_upcoming.score_dynamic_market_shadow(
             {"jra:2026:0824:01:01": [{"track_code": "10"}]},
+            [[]],
             "jra",
             Path("/models"),
         )
@@ -3588,6 +3623,42 @@ def test_score_races_stage1_top1_swap_preserves_base_order_below_winner(
         ("H3", 1.0, 3),
     ]
     assert all(row[0] == companion_version for row in rows)
+
+
+def test_score_races_stage1_top1_swap_uses_base_when_prerace_weather_is_hot(
+    tmp_path: Path,
+) -> None:
+    companion_version = "jra-cb-stage1-marketfree235-iter500-top1swap-2013"
+    config = replace(
+        _STAGE1_TEST_CONFIG,
+        model_version=companion_version,
+        top1_swap_base_model_version=_STAGE1_TEST_CONFIG.model_version,
+        top1_swap_prior3_temperature_lt=28.0,
+    )
+    _write_variant_metadata(tmp_path, "jra", companion_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    entries = _jra_entries_with_ninkijun({1: None, 2: None, 3: None})
+    for entry in entries:
+        entry["venue_temperature_prior3"] = 28.0
+    champion = _ScoreByUmaban([9.0, 8.0, 7.0])
+    companion = _ScoreByUmaban([0.0, 3.0, 1.0])
+    base = _ScoreByUmaban([3.0, 2.0, 1.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": config}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=[companion, base]),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert [(row[6], row[8], row[9]) for row in rows] == [
+        ("H1", 3.0, 1),
+        ("H2", 2.0, 2),
+        ("H3", 1.0, 3),
+    ]
+    assert all(row[0] == _STAGE1_TEST_CONFIG.model_version for row in rows)
 
 
 def test_score_races_stage1_gate_keeps_champion_when_odds_fresh_and_spread_healthy(

@@ -585,9 +585,7 @@ test("recognizes a JRA race the stage1 market-free fallback gate routed away fro
 
   expect(queryMock).toHaveBeenCalledTimes(2);
   expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
-  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe(
-    "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
-  );
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-stage1-marketfree235-2013");
 });
 
 test("does not retry under a stage1 fallback model_version for ban-ei -- stage1_routing.json has no ban-ei entry", async () => {
@@ -767,6 +765,7 @@ test("expectedModelVersion resolves rule 3 (venue=02) to the model_version cell_
 interface Stage1CategoryConfig {
   enabled: boolean;
   model_version: string;
+  top1_swap_base_model_version?: string;
 }
 
 const readContainerStage1RoutingConfig = (): Partial<Record<string, Stage1CategoryConfig>> => {
@@ -804,6 +803,8 @@ test("STAGE1_MARKET_FREE_MODEL_VERSIONS covers every enabled category in the rea
       raceBango: "01",
       runYmd: "20260724",
     });
-    expect(queryMock.mock.calls.at(-1)?.[1]?.[5]).toBe(config?.model_version);
+    expect(queryMock.mock.calls.at(-1)?.[1]?.[5]).toBe(
+      config?.top1_swap_base_model_version ?? config?.model_version,
+    );
   }
 });

@@ -32,10 +32,11 @@
 #      idempotency docstring); this script's once-daily 22:30 JST
 #      invocation is a baseline floor, not the only expected invocation.
 #   1c. `dynamic_market_shadow_eval` over a trailing 90-day JRA window:
-#      joins immutable loop-43 baseline/shadow Top5 predictions to finalized
-#      JVD results and records cumulative Top1-Top5 overall and separately for
-#      favorite-driven/upset outcomes. Re-reading the window repairs late JVD
-#      results through one idempotent run per (date, router version).
+#      evaluates all 50 fixed router hypotheses against the exact served
+#      baseline and finalized JVD results, recording cumulative Top1-Top5
+#      overall and separately for favorite-driven/upset outcomes. Re-reading
+#      the window repairs late results through one idempotent run per
+#      (date, router version).
 #   2. `eval-champion-cells` for all three categories (default trailing
 #      90-day window as of today), re-scoring each category's CURRENT
 #      champion model at cell granularity against whatever genuinely-served
@@ -160,9 +161,16 @@ echo "--- cf_serving_recorder --date-from $YESTERDAY_JST --date-to $TODAY_JST --
 # arrive after the first same-day attempt. The per-(date, router-version) run
 # is updated idempotently, so this repairs late results without duplicate runs.
 SHADOW_DATE_FROM_JST="$(TZ=Asia/Tokyo date -v-90d +%Y%m%d)"
-echo "--- dynamic_market_shadow_eval --date-from $SHADOW_DATE_FROM_JST --date-to $TODAY_JST ---"
-"$UV_BIN" run python -m mlflow_tracking.dynamic_market_shadow_eval \
-  --date-from "$SHADOW_DATE_FROM_JST" --date-to "$TODAY_JST"
+SHADOW_LOOP=1
+while [ "$SHADOW_LOOP" -le 50 ]; do
+  SHADOW_ROUTER_VERSION="jra-dynamic-market-shadow-loop${SHADOW_LOOP}-2026"
+  echo "--- dynamic_market_shadow_eval --router-version $SHADOW_ROUTER_VERSION ---"
+  "$UV_BIN" run python -m mlflow_tracking.dynamic_market_shadow_eval \
+    --date-from "$SHADOW_DATE_FROM_JST" --date-to "$TODAY_JST" \
+    --router-version "$SHADOW_ROUTER_VERSION" \
+    || echo "WARNING: dynamic-market shadow evaluation failed for $SHADOW_ROUTER_VERSION"
+  SHADOW_LOOP=$((SHADOW_LOOP + 1))
+done
 
 echo "--- eval-champion-cells --category jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei

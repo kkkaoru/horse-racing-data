@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -17,6 +19,8 @@ from .subgroup import classify_distance_band, classify_surface
 
 SHADOW_ROUTER_VERSION: Final[str] = _versions.SHADOW_ROUTER_VERSION
 SHADOW_TABLE: Final[str] = "finish_position_dynamic_market_shadow_predictions"
+COMPARISON_CONTRACT: Final[str] = "served-same-snapshot/v1"
+SHADOW_BATCH_SIZE: Final[int] = 500
 UPSET_FEATURE_NAMES: Final[tuple[str, ...]] = (
     "field_size",
     "favorite_odds",
@@ -40,6 +44,48 @@ ACTIVE_SHADOW_CONFIG: Final[DynamicMarketRouterConfig] = DynamicMarketRouterConf
     gamma=0.50,
     high_upset_context_threshold=0.55,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicMarketShadowHypothesis:
+    loop: int
+    config: DynamicMarketRouterConfig
+
+    @property
+    def router_version(self) -> str:
+        return f"jra-dynamic-market-shadow-loop{self.loop}-2026"
+
+
+def shadow_hypotheses() -> tuple[DynamicMarketShadowHypothesis, ...]:
+    """Return the fixed 50-hypothesis forward sweep used by the research contract."""
+    hypotheses: list[DynamicMarketShadowHypothesis] = []
+    for minimum_market_weight in (0.60, 0.70, 0.80, 0.90, 0.95):
+        for activation_threshold in (0.35, 0.40, 0.45, 0.50, 0.55):
+            for gamma in (0.5, 2.0):
+                hypotheses.append(
+                    DynamicMarketShadowHypothesis(
+                        loop=len(hypotheses) + 1,
+                        config=DynamicMarketRouterConfig(
+                            enabled=True,
+                            minimum_market_weight=minimum_market_weight,
+                            activation_threshold=activation_threshold,
+                            gamma=gamma,
+                            high_upset_context_threshold=0.55,
+                        ),
+                    )
+                )
+    if len(hypotheses) != 50:
+        raise AssertionError(f"expected 50 shadow hypotheses, got {len(hypotheses)}")
+    return tuple(hypotheses)
+
+
+SHADOW_HYPOTHESES: Final[tuple[DynamicMarketShadowHypothesis, ...]] = shadow_hypotheses()
+ACTIVE_SHADOW_HYPOTHESIS: Final[DynamicMarketShadowHypothesis] = SHADOW_HYPOTHESES[42]
+if (
+    ACTIVE_SHADOW_HYPOTHESIS.router_version != SHADOW_ROUTER_VERSION
+    or ACTIVE_SHADOW_HYPOTHESIS.config != ACTIVE_SHADOW_CONFIG
+):
+    raise AssertionError("loop 43 runtime configuration differs from the forward sweep")
 
 
 def surface_expert_version(surface: str, *, market_free: bool) -> str:
@@ -85,6 +131,15 @@ class DynamicMarketShadowRecord:
     classifier_version: str
     market_expert_version: str
     market_free_expert_version: str
+    comparison_contract: str
+    served_model_version: str
+    feature_snapshot_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ServedBaseline:
+    model_version: str
+    top5: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +358,37 @@ def _top5_ids(entries: Sequence[Mapping[str, object]], scores: Sequence[float]) 
     return tuple(horse.ketto_toroku_bango for horse in rank_within_race(horses)[:5])
 
 
+def feature_snapshot_sha256(entries: Sequence[Mapping[str, object]]) -> str:
+    """Fingerprint the exact ordered feature rows shared by served and shadow scoring."""
+    payload = json.dumps(
+        entries,
+        default=str,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def served_baseline_from_rows(rows: Sequence[Sequence[object]]) -> ServedBaseline | None:
+    """Extract the actual persisted model and Top5 from prediction UPSERT rows."""
+    if not rows:
+        return None
+    if any(len(row) < 10 for row in rows):
+        raise ValueError("served prediction row is shorter than the rank contract")
+    model_versions = {str(row[0]) for row in rows}
+    if len(model_versions) != 1:
+        raise ValueError("served prediction rows contain multiple model versions")
+    ranked = sorted(rows, key=lambda row: int(str(row[9])))
+    ranks = [int(str(row[9])) for row in ranked]
+    if ranks != list(range(1, len(ranked) + 1)):
+        raise ValueError("served prediction ranks must be contiguous from one")
+    return ServedBaseline(
+        model_version=model_versions.pop(),
+        top5=tuple(str(row[6]) for row in ranked[:5]),
+    )
+
+
 def build_shadow_record(
     *,
     race_id: str,
@@ -315,11 +401,76 @@ def build_shadow_record(
     classifier_model_version: str,
     market_expert_version: str,
     market_free_expert_version: str,
+    served_baseline: ServedBaseline,
 ) -> DynamicMarketShadowRecord | None:
-    """Build one auditable shadow decision; incomplete market boards skip it."""
+    """Build the selected loop-43 record; incomplete market boards skip it."""
+    records = _build_shadow_records(
+        race_id=race_id,
+        entries=entries,
+        champion_scores=champion_scores,
+        market_free_scores=market_free_scores,
+        surface_market_scores=surface_market_scores,
+        surface_market_free_scores=surface_market_free_scores,
+        classifier=classifier,
+        classifier_model_version=classifier_model_version,
+        market_expert_version=market_expert_version,
+        market_free_expert_version=market_free_expert_version,
+        served_baseline=served_baseline,
+        hypotheses=(ACTIVE_SHADOW_HYPOTHESIS,),
+    )
+    return records[0] if records else None
+
+
+def build_shadow_records(
+    *,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    champion_scores: Sequence[float],
+    market_free_scores: Sequence[float],
+    surface_market_scores: Sequence[float],
+    surface_market_free_scores: Sequence[float],
+    classifier: ProbabilityModel,
+    classifier_model_version: str,
+    market_expert_version: str,
+    market_free_expert_version: str,
+    served_baseline: ServedBaseline,
+) -> tuple[DynamicMarketShadowRecord, ...]:
+    """Build all 50 forward hypotheses from one classifier and expert inference."""
+    return _build_shadow_records(
+        race_id=race_id,
+        entries=entries,
+        champion_scores=champion_scores,
+        market_free_scores=market_free_scores,
+        surface_market_scores=surface_market_scores,
+        surface_market_free_scores=surface_market_free_scores,
+        classifier=classifier,
+        classifier_model_version=classifier_model_version,
+        market_expert_version=market_expert_version,
+        market_free_expert_version=market_free_expert_version,
+        served_baseline=served_baseline,
+        hypotheses=SHADOW_HYPOTHESES,
+    )
+
+
+def _build_shadow_records(
+    *,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    champion_scores: Sequence[float],
+    market_free_scores: Sequence[float],
+    surface_market_scores: Sequence[float],
+    surface_market_free_scores: Sequence[float],
+    classifier: ProbabilityModel,
+    classifier_model_version: str,
+    market_expert_version: str,
+    market_free_expert_version: str,
+    served_baseline: ServedBaseline,
+    hypotheses: Sequence[DynamicMarketShadowHypothesis],
+) -> tuple[DynamicMarketShadowRecord, ...]:
+    """Build records while sharing the expensive upset-classifier inference."""
     features = build_upset_feature_vector(entries, champion_scores, market_free_scores)
     if features is None or not entries:
-        return None
+        return ()
     representative = entries[0]
     surface = classify_surface(
         None if representative.get("track_code") is None else str(representative["track_code"])
@@ -327,30 +478,39 @@ def build_shadow_record(
     raw_distance = _finite_float(representative.get("kyori"))
     distance_band = classify_distance_band(None if raw_distance is None else int(raw_distance))
     upset_probability = predict_upset_probability(classifier, features)
-    decision = route_dynamic_market_scores(
-        champion_scores=champion_scores,
-        surface_market_scores=surface_market_scores,
-        surface_market_free_scores=surface_market_free_scores,
-        upset_probability=upset_probability,
-        surface=surface,
-        distance_band=distance_band,
-        config=ACTIVE_SHADOW_CONFIG,
-    )
-    return DynamicMarketShadowRecord(
-        race_id=race_id,
-        router_version=SHADOW_ROUTER_VERSION,
-        upset_probability=upset_probability,
-        market_weight=decision.market_weight,
-        active=decision.active,
-        reason=decision.reason,
-        surface=surface,
-        distance_band=distance_band,
-        baseline_top5=_top5_ids(entries, champion_scores),
-        shadow_top5=_top5_ids(entries, decision.routed_scores),
-        classifier_version=classifier_model_version,
-        market_expert_version=market_expert_version,
-        market_free_expert_version=market_free_expert_version,
-    )
+    snapshot_sha256 = feature_snapshot_sha256(entries)
+    records: list[DynamicMarketShadowRecord] = []
+    for hypothesis in hypotheses:
+        decision = route_dynamic_market_scores(
+            champion_scores=champion_scores,
+            surface_market_scores=surface_market_scores,
+            surface_market_free_scores=surface_market_free_scores,
+            upset_probability=upset_probability,
+            surface=surface,
+            distance_band=distance_band,
+            config=hypothesis.config,
+        )
+        records.append(
+            DynamicMarketShadowRecord(
+                race_id=race_id,
+                router_version=hypothesis.router_version,
+                upset_probability=upset_probability,
+                market_weight=decision.market_weight,
+                active=decision.active,
+                reason=decision.reason,
+                surface=surface,
+                distance_band=distance_band,
+                baseline_top5=served_baseline.top5,
+                shadow_top5=_top5_ids(entries, decision.routed_scores),
+                classifier_version=classifier_model_version,
+                market_expert_version=market_expert_version,
+                market_free_expert_version=market_free_expert_version,
+                comparison_contract=COMPARISON_CONTRACT,
+                served_model_version=served_baseline.model_version,
+                feature_snapshot_sha256=snapshot_sha256,
+            )
+        )
+    return tuple(records)
 
 
 SHADOW_COLUMNS: Final[tuple[str, ...]] = (
@@ -367,6 +527,9 @@ SHADOW_COLUMNS: Final[tuple[str, ...]] = (
     "classifier_version",
     "market_expert_version",
     "market_free_expert_version",
+    "comparison_contract",
+    "served_model_version",
+    "feature_snapshot_sha256",
 )
 
 
@@ -386,20 +549,39 @@ create table if not exists {SHADOW_TABLE} (
   classifier_version text not null,
   market_expert_version text not null,
   market_free_expert_version text not null,
+  comparison_contract text not null,
+  served_model_version text not null,
+  feature_snapshot_sha256 text not null check (length(feature_snapshot_sha256) = 64),
   generated_at timestamptz not null default now(),
   primary key (race_id, router_version)
 )
 """.strip()
 
 
+def build_shadow_migration_sql() -> tuple[str, ...]:
+    """Add comparison-audit columns without fabricating values for legacy rows."""
+    return (
+        f"alter table {SHADOW_TABLE} add column if not exists comparison_contract text",
+        f"alter table {SHADOW_TABLE} add column if not exists served_model_version text",
+        f"alter table {SHADOW_TABLE} add column if not exists feature_snapshot_sha256 text",
+    )
+
+
 def build_shadow_upsert_sql() -> str:
+    return build_shadow_batch_upsert_sql(1)
+
+
+def build_shadow_batch_upsert_sql(record_count: int) -> str:
+    if record_count < 1:
+        raise ValueError("record_count must be positive")
     columns = ", ".join(SHADOW_COLUMNS)
-    placeholders = ", ".join("%s" for _ in SHADOW_COLUMNS)
+    row_placeholders = "(" + ", ".join("%s" for _ in SHADOW_COLUMNS) + ")"
+    placeholders = ", ".join(row_placeholders for _ in range(record_count))
     updates = ", ".join(
         f"{column} = excluded.{column}" for column in SHADOW_COLUMNS if column != "race_id"
     )
     return (
-        f"insert into {SHADOW_TABLE} ({columns}) values ({placeholders}) "
+        f"insert into {SHADOW_TABLE} ({columns}) values {placeholders} "
         f"on conflict (race_id, router_version) do update set {updates}, generated_at = now()"
     )
 
@@ -419,4 +601,11 @@ def shadow_params(record: DynamicMarketShadowRecord) -> list[object]:
         record.classifier_version,
         record.market_expert_version,
         record.market_free_expert_version,
+        record.comparison_contract,
+        record.served_model_version,
+        record.feature_snapshot_sha256,
     ]
+
+
+def shadow_batch_params(records: Sequence[DynamicMarketShadowRecord]) -> list[object]:
+    return [value for record in records for value in shadow_params(record)]

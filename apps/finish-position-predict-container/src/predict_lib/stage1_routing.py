@@ -121,8 +121,11 @@ _REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
         "enable_stddev_safety_net",
     }
 )
-_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset({"top1_swap_base_model_version"})
+_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
+    {"top1_swap_base_model_version", "top1_swap_prior3_temperature_lt"}
+)
 _ARCHITECTURES: Final[frozenset[str]] = frozenset(get_args(Architecture))
+PRIOR3_TEMPERATURE_FIELD: Final[str] = "venue_temperature_prior3"
 
 PREDICTED_SCORE_COLUMN_INDEX: Final[int] = INSERT_COLUMNS.index("predicted_score")
 """Index of ``predicted_score`` within one flattened ``build_prediction_rows``
@@ -146,6 +149,7 @@ class Stage1CategoryConfig:
     stddev_threshold: float
     enable_stddev_safety_net: bool
     top1_swap_base_model_version: str | None = None
+    top1_swap_prior3_temperature_lt: float | None = None
 
 
 @dataclass(frozen=True)
@@ -191,15 +195,24 @@ def _require_positive_number(payload: Mapping[str, object], key: str, context: s
     return float(value)
 
 
-def _optional_non_empty_string(
-    payload: Mapping[str, object], key: str, context: str
-) -> str | None:
+def _optional_non_empty_string(payload: Mapping[str, object], key: str, context: str) -> str | None:
     value = payload.get(key)
     if value is None:
         return None
     if not isinstance(value, str) or not value:
         raise Stage1RoutingValidationError(f"{context}.{key} must be null or a non-empty string")
     return value
+
+
+def _optional_positive_number(
+    payload: Mapping[str, object], key: str, context: str
+) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise Stage1RoutingValidationError(f"{context}.{key} must be null or a positive number")
+    return float(value)
 
 
 def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig:
@@ -228,7 +241,33 @@ def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig
         top1_swap_base_model_version=_optional_non_empty_string(
             payload, "top1_swap_base_model_version", context
         ),
+        top1_swap_prior3_temperature_lt=_optional_positive_number(
+            payload, "top1_swap_prior3_temperature_lt", context
+        ),
     )
+
+
+def race_passes_top1_swap_weather_gate(
+    config: Stage1CategoryConfig,
+    entries: Sequence[Mapping[str, object]],
+) -> bool:
+    """Require one complete, consistent pre-race temperature per race.
+
+    A missing or inconsistent Cloudflare window fails closed to the established
+    300-tree Stage-1 base. The threshold is exclusive, matching the validated
+    research rule (prior-three-hour mean temperature < 28°C).
+    """
+    threshold = config.top1_swap_prior3_temperature_lt
+    if threshold is None:
+        return True
+    temperatures = [coerce_optional_float(entry.get(PRIOR3_TEMPERATURE_FIELD)) for entry in entries]
+    if not temperatures or any(value is None for value in temperatures):
+        return False
+    values = [float(value) for value in temperatures if value is not None]
+    first = values[0]
+    if not all(math.isclose(value, first, rel_tol=0.0, abs_tol=1e-9) for value in values[1:]):
+        return False
+    return first < threshold
 
 
 def load_stage1_routing(
@@ -295,9 +334,7 @@ def _has_valid_full_board(entries: Sequence[Mapping[str, object]]) -> bool:
     if runner_count < 2:
         return False
 
-    canonical_ranks = [
-        coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD)) for entry in entries
-    ]
+    canonical_ranks = [coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD)) for entry in entries]
     if all(rank is not None and rank > 0 for rank in canonical_ranks):
         ranks = [int(rank) for rank in canonical_ranks if rank is not None]
     else:
@@ -333,8 +370,7 @@ def race_has_fresh_odds(entries: Sequence[Mapping[str, object]]) -> bool:
     if preserved_odds_gate_enabled():
         return _has_valid_full_board(entries)
     return any(
-        (rank := coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))) is not None
-        and rank > 0
+        (rank := coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))) is not None and rank > 0
         for entry in entries
     )
 
