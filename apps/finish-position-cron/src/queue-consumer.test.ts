@@ -1177,13 +1177,16 @@ test("defers focused-full display repair when viewer cache bust is unavailable",
     makeEnv(),
   );
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
-  expect(sendMock).toHaveBeenCalledWith({
-    category: "nar",
-    keibajoCode: "50",
-    raceBango: "12",
-    runYmd: "20260701",
-    type: "prediction-cache-repair",
-  });
+  expect(sendMock).toHaveBeenCalledWith(
+    {
+      category: "nar",
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260701",
+      type: "prediction-cache-repair",
+    },
+    { delaySeconds: 30 },
+  );
 });
 
 test("does not acknowledge Neon-complete focused full until its per-race R2 cache exists", async () => {
@@ -1709,13 +1712,16 @@ test("does not warm the viewer display when focused-full KV publish is empty", a
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
-  expect(sendMock).toHaveBeenCalledWith({
-    category: "nar",
-    keibajoCode: "50",
-    raceBango: "12",
-    runYmd: "20260701",
-    type: "prediction-cache-repair",
-  });
+  expect(sendMock).toHaveBeenCalledWith(
+    {
+      category: "nar",
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260701",
+      type: "prediction-cache-repair",
+    },
+    { delaySeconds: 30 },
+  );
 });
 
 test("does not warm the viewer display when focused-full KV publish returns error", async () => {
@@ -1742,6 +1748,7 @@ test("does not warm the viewer display when focused-full KV publish returns erro
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
   expect(sendMock).toHaveBeenCalledWith(
     expect.objectContaining({ type: "prediction-cache-repair" }),
+    { delaySeconds: 30 },
   );
 });
 
@@ -1859,6 +1866,7 @@ test("acks an out-of-window cache-only repair without retrying forever", async (
 });
 
 test("acks a cache-only repair when Viewer warming does not land", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   warmPredictionCacheForRaceMock.mockResolvedValue(false);
 
   await handleQueue(
@@ -1884,6 +1892,38 @@ test("acks a cache-only repair when Viewer warming does not land", async () => {
 
   expect(retryMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] prediction cache repair exhausted category=jra runYmd=20260824 keibajo=01 race=01 attempts=4",
+  );
+  warnSpy.mockRestore();
+});
+
+test("retries a cache-only repair while its bounded warm budget remains", async () => {
+  warmPredictionCacheForRaceMock.mockResolvedValue(false);
+
+  await handleQueue(
+    {
+      messages: [
+        {
+          ack: ackMock,
+          attempts: 1,
+          body: {
+            category: "jra",
+            keibajoCode: "01",
+            raceBango: "01",
+            runYmd: "20260824",
+            type: "prediction-cache-repair",
+          },
+          id: "cache-repair-5",
+          retry: retryMock,
+        },
+      ],
+    } as never,
+    makeEnv(),
+  );
+
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(ackMock).not.toHaveBeenCalled();
 });
 
 test("awaits viewer display warm after a successful focused-full KV write", async () => {
@@ -3184,6 +3224,41 @@ test("commits and acks an enabled Worker rescore when viewer warm fails", async 
   consoleSpy.mockRestore();
 });
 
+test("defers a cache-only repair after Worker rescore warm returns false", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  warmPredictionCacheForRaceMock.mockResolvedValue(false);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), JRA_WORKER_RESCORE_ENABLED: "1" },
+  );
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "prediction-cache-repair" }),
+    { delaySeconds: 30 },
+  );
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] viewer cache warm best-effort failed category=jra runYmd=20260619 keibajo=05 race=11: returned-false",
+  );
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] deferred prediction cache repair after warm miss category=jra runYmd=20260619 keibajo=05 race=11",
+  );
+  warnSpy.mockRestore();
+  consoleSpy.mockRestore();
+});
+
 test("retries a JRA container per-race rescore when the container fetch throws", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   stubFetchMock.mockRejectedValue(new Error("container down"));
@@ -3499,6 +3574,81 @@ test("retries a NAR per-race rescore when the container fetch throws", async () 
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("reconnects once with a fresh stub when the per-race rescore DO becomes inactive", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  stubFetchMock
+    .mockRejectedValueOnce(
+      new Error(
+        "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ type: "result", racesPredicted: 1, status: "success" }), {
+        status: 200,
+      }),
+    );
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "46",
+        mode: "rescore",
+        raceBango: "06",
+        runYmd: "20260824",
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(getMock).toHaveBeenCalledTimes(2);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  expect(stubFetchMock.mock.calls[1]?.[0]?.url).toBe(stubFetchMock.mock.calls[0]?.[0]?.url);
+  expect(warnSpy).toHaveBeenCalledWith(
+    expect.stringContaining("container DO became inactive; reconnecting once"),
+  );
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+  consoleSpy.mockRestore();
+});
+
+test("falls back to Queue retry when the fresh per-race rescore stub is also inactive", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(
+    new Error(
+      "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
+    ),
+  );
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "46",
+        mode: "rescore",
+        raceBango: "06",
+        runYmd: "20260824",
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(getMock).toHaveBeenCalledTimes(2);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
   errorSpy.mockRestore();
 });
 
@@ -6232,13 +6382,16 @@ test("defers viewer repair after focused-full success without downgrading predic
     makeEnv(),
   );
 
-  expect(sendMock).toHaveBeenCalledWith({
-    category: "jra",
-    keibajoCode: "02",
-    raceBango: "01",
-    runYmd: "20260628",
-    type: "prediction-cache-repair",
-  });
+  expect(sendMock).toHaveBeenCalledWith(
+    {
+      category: "jra",
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260628",
+      type: "prediction-cache-repair",
+    },
+    { delaySeconds: 30 },
+  );
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
@@ -6270,7 +6423,10 @@ test("acks focused-full success when viewer warm throws without downgrading pred
     makeEnv(),
   );
 
-  expect(sendMock).not.toHaveBeenCalled();
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "prediction-cache-repair" }),
+    { delaySeconds: 30 },
+  );
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );

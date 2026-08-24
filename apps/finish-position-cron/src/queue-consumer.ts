@@ -195,6 +195,9 @@ const RESCORE_EXECUTION_STALE_MS = 31 * 60 * 1000;
 const RESCORE_NEAR_POST_THRESHOLD_SECONDS = 5 * 60;
 const RESCORE_NEAR_POST_RETRY_MAX_SECONDS = 15;
 const MIN_RETRY_DELAY_SECONDS = 1;
+const PREDICTION_CACHE_REPAIR_MAX_ATTEMPTS = 4;
+const INACTIVE_CONTAINER_DO_ERROR_PREFIX =
+  "Connection closed: this Durable Object instance is no longer active.";
 const JRA_CATEGORY = "jra";
 const NAR_CATEGORY = "nar";
 const BAN_EI_CATEGORY = "ban-ei";
@@ -358,6 +361,10 @@ interface RescoreDisplayTarget extends ViewerPredictionCacheTarget {
 }
 
 type ViewerPredictionCacheRepairOutcome = "complete" | "outside-window" | "retry";
+
+interface PredictionCacheRepairEnqueueOptions {
+  delaySeconds: number;
+}
 
 const toViewerPredictionCacheTarget = (
   target: ViewerPredictionCacheTarget,
@@ -561,9 +568,9 @@ const warmViewerDisplayBestEffort = async (
   published: PredictionKvPublishResult,
   target: ViewerDisplayWarmTarget,
   category?: PredictCategory,
-): Promise<void> => {
+): Promise<boolean> => {
   try {
-    if (await warmViewerDisplayAfterKvWrite(env, published, target)) return;
+    if (await warmViewerDisplayAfterKvWrite(env, published, target)) return true;
     console.warn(
       `[predict-queue] viewer cache warm best-effort failed category=${category === undefined ? "-" : category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}: returned-false`,
     );
@@ -572,6 +579,7 @@ const warmViewerDisplayBestEffort = async (
       `[predict-queue] viewer cache warm best-effort failed category=${category === undefined ? "-" : category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}: ${String(error)}`,
     );
   }
+  return false;
 };
 
 const publishAndWarmRescoreDisplay = async (
@@ -596,7 +604,20 @@ const publishAndWarmRescoreDisplay = async (
     throw new Error(`Prediction KV publish did not write: ${published.status}`);
   }
   if (!published.busted) throw new Error("Prediction viewer cache bust failed");
-  await warmViewerDisplayBestEffort(env, published, target, target.category);
+  if (!(await warmViewerDisplayBestEffort(env, published, target, target.category))) {
+    try {
+      await enqueuePredictionCacheRepair(env, target, {
+        delaySeconds: PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS,
+      });
+      console.warn(
+        `[predict-queue] deferred prediction cache repair after warm miss category=${target.category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}`,
+      );
+    } catch (error) {
+      console.warn(
+        `[predict-queue] failed to defer prediction cache repair after warm miss category=${target.category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}: ${String(error)}`,
+      );
+    }
+  }
   return true;
 };
 
@@ -610,18 +631,25 @@ const repairViewerPredictionCache = async (
   });
   if (published.status === "skipped-outside-window") return "outside-window";
   if (published.status !== "written" || !published.busted) return "retry";
-  await warmViewerDisplayBestEffort(env, published, target, target.category);
-  return "complete";
+  return (await warmViewerDisplayBestEffort(env, published, target, target.category))
+    ? "complete"
+    : "retry";
 };
 
 const enqueuePredictionCacheRepair = async (
   env: Env,
   target: ViewerPredictionCacheTarget,
+  options?: PredictionCacheRepairEnqueueOptions,
 ): Promise<void> => {
-  await env.PREDICT_QUEUE.send({
+  const message = {
     ...target,
     type: "prediction-cache-repair",
-  } satisfies PredictionCacheRepairMessage);
+  } satisfies PredictionCacheRepairMessage;
+  if (options === undefined) {
+    await env.PREDICT_QUEUE.send(message);
+    return;
+  }
+  await env.PREDICT_QUEUE.send(message, options);
 };
 
 const repairViewerPredictionCacheOrDefer = async (
@@ -648,7 +676,9 @@ const ensureViewerPredictionCacheRepair = async (
   const outcome = await repairViewerPredictionCacheOrDefer(env, repairTarget);
   if (outcome !== "retry") return true;
   try {
-    await enqueuePredictionCacheRepair(env, repairTarget);
+    await enqueuePredictionCacheRepair(env, repairTarget, {
+      delaySeconds: PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS,
+    });
     return true;
   } catch (error) {
     console.error(
@@ -674,6 +704,13 @@ const consumePredictionCacheRepair = async (
     toViewerPredictionCacheTarget(message.body),
   );
   if (outcome === "retry") {
+    if ((message.attempts ?? 1) >= PREDICTION_CACHE_REPAIR_MAX_ATTEMPTS) {
+      console.warn(
+        `[predict-queue] prediction cache repair exhausted category=${message.body.category} runYmd=${message.body.runYmd} keibajo=${message.body.keibajoCode} race=${message.body.raceBango} attempts=${message.attempts ?? 1}`,
+      );
+      message.ack();
+      return;
+    }
     message.retry({ delaySeconds: PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS });
     return;
   }
@@ -1875,6 +1912,29 @@ const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressL
   );
 };
 
+const isInactiveContainerDoError = (error: unknown): boolean =>
+  error instanceof Error && error.message.startsWith(INACTIVE_CONTAINER_DO_ERROR_PREFIX);
+
+const fetchPerRaceRescoreWithReconnect = async (
+  env: Env,
+  doId: DurableObjectId,
+  predictUrl: string,
+  message: PerRaceRescoreMessage,
+  predictDoName: string,
+): Promise<Response> => {
+  try {
+    return await env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(new Request(predictUrl));
+  } catch (error) {
+    if (!isInactiveContainerDoError(error)) throw error;
+    console.warn(
+      `[predict-queue] container DO became inactive; reconnecting once ${describePredictMessage(
+        message,
+      )} doName=${predictDoName}`,
+    );
+    return env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(new Request(predictUrl));
+  }
+};
+
 // Container per-race rescore: held /predict on a per-race DO
 // runs the Python ensemble re-score for one race. No per-category run state is
 // touched (completeRun is not called) so concurrent full/per-category runs are
@@ -1960,7 +2020,6 @@ const processContainerPerRaceRescore = async (
     weightSnapshotHash,
   });
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(predictDoName);
-  const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   const lifecycle: ContainerRequestLifecycle = { started: false, terminal: false };
   const cleanupHandedOff = { value: false };
   const deadlineExpired = { value: false };
@@ -1992,7 +2051,13 @@ const processContainerPerRaceRescore = async (
           )} doName=${predictDoName} url=${predictUrl}`,
         );
         lifecycle.started = true;
-        const response = await stub.fetch(new Request(predictUrl));
+        const response = await fetchPerRaceRescoreWithReconnect(
+          env,
+          doId,
+          predictUrl,
+          message.body,
+          predictDoName,
+        );
         debugLog(
           message.body,
           `[predict-queue] container-fetch response ${describePredictMessage(
