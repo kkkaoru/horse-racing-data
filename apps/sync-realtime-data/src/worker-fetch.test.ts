@@ -1741,7 +1741,7 @@ it("forwardRaceForFeatures aborts the features worker fetch after the configured
       source: "jra",
     },
   );
-  await vi.advanceTimersByTimeAsync(5000);
+  await vi.advanceTimersByTimeAsync(15000);
   await pending;
   vi.useRealTimers();
   expect(logFetch).toHaveBeenCalledWith(
@@ -1749,7 +1749,7 @@ it("forwardRaceForFeatures aborts the features worker fetch after the configured
     "forward-race-for-features",
     "error",
     "jra:2026:0512:08:05",
-    "timeout after 5000ms",
+    "timeout after 15000ms",
   );
 });
 

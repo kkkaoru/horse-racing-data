@@ -655,9 +655,11 @@ const FORWARD_RESPONSE_BODY_MAX_LENGTH = 200;
 // 2026-06-13: bound the wall-time of the fire-and-forget features-worker POST.
 // Without this, a hung or Hyperdrive-timeout features worker keeps the queue
 // consumer slot (`max_concurrency: 3`) occupied long enough to starve other
-// plan-realtime-fetches jobs. 5s is plenty for the enqueue-recompute endpoint
-// to durably enqueue the build job and acknowledge it.
-const FORWARD_RACE_FEATURES_TIMEOUT_MS = 5000;
+// plan-realtime-fetches jobs. The enqueue-recompute endpoint must durably send
+// the build job before acknowledging; production observed a request reaching
+// the old 5s boundary, so keep the bound finite while allowing normal queue
+// latency headroom.
+const FORWARD_RACE_FEATURES_TIMEOUT_MS = 15000;
 const FORWARD_RACE_FEATURES_TIMEOUT_MESSAGE_PREFIX = "timeout";
 
 // Per-race D1 upsert retry tuning. The discover-urls job historically failed
