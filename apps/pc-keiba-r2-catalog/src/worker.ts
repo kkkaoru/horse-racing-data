@@ -19,10 +19,12 @@ import {
 import { coalesce } from "./inflight";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
 import {
+  buildBulkFreshRaceEntriesQuery,
   buildFreshRaceEntriesQuery,
   buildRaceFeaturesQuery,
   buildRaceKeysQuery,
   executeR2Sql,
+  normaliseBulkFreshRaceEntries,
   normaliseFreshRaceEntries,
   R2SqlQueryError,
 } from "./r2-sql";
@@ -49,6 +51,7 @@ import {
   normaliseWinRateHeatmapStatsPayload,
 } from "./win-rate-heatmap-stats";
 import type {
+  BulkFreshRaceEntryFilters,
   CatalogSource,
   Env,
   FreshRaceEntryFilters,
@@ -78,7 +81,18 @@ const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // includeOrderBy docstring for why this happens and only for large-enough
 // source data volumes.
 const R2_SQL_EXPRESSION_TOO_DEEP_CODE = 40018;
+// R2 SQL returns 70200 when a valid distributed query exhausts an internal
+// execution resource. A single target horse uses the same feature contract
+// with a much smaller final join, so only this code is eligible for the
+// bounded per-horse recovery below.
+const R2_SQL_EXECUTION_RESOURCE_CODE = 70200;
+const RUNNING_STYLE_UMABAN_BATCHES: ReadonlyArray<ReadonlyArray<number>> = [
+  [1, 2, 3, 4, 5, 6],
+  [7, 8, 9, 10, 11, 12],
+  [13, 14, 15, 16, 17, 18],
+];
 const FRESH_RACE_ENTRIES_PATH: string = "/v1/internal/fresh-race-entries";
+const BULK_FRESH_RACE_ENTRIES_PATH: string = "/v1/internal/fresh-race-entries-bulk";
 const AUTHORIZATION_HEADER: string = "Authorization";
 const BEARER_PREFIX: string = "Bearer ";
 const SHA_256_ALGORITHM: string = "SHA-256";
@@ -88,6 +102,16 @@ const SHA_256_ALGORITHM: string = "SHA-256";
 interface CatalogFailure {
   code: number | string | null;
   detail: string;
+}
+
+interface RunningStyleQueryParams {
+  dependencies: WorkerDependencies;
+  env: Env;
+  filters: RunningStyleFeatureFilters;
+}
+
+interface RunningStyleHorseBatchParams extends RunningStyleQueryParams {
+  umabans: ReadonlyArray<number>;
 }
 
 const jsonResponse = (value: unknown, status = 200): Response =>
@@ -170,6 +194,11 @@ const parseFreshRaceEntryFilters = (url: URL): FreshRaceEntryFilters => ({
   date: requireDate(url),
   keibajoCode: requireCode(url, "keibajoCode"),
   raceBango: requireCode(url, "raceBango"),
+  source: parseRunningStyleSource(url),
+});
+
+const parseBulkFreshRaceEntryFilters = (url: URL): BulkFreshRaceEntryFilters => ({
+  date: requireDate(url),
   source: parseRunningStyleSource(url),
 });
 
@@ -481,6 +510,25 @@ const handleFreshRaceEntries = async (
   return jsonResponse({ ...filters, entries });
 };
 
+const handleBulkFreshRaceEntries = async (
+  request: Request,
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  if (!(await isFreshRaceEntriesAuthorized(request, env))) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+  const filters = parseBulkFreshRaceEntryFilters(url);
+  const rows = await executeR2Sql(
+    env,
+    buildBulkFreshRaceEntriesQuery(env, filters),
+    dependencies.fetchImpl,
+  );
+  const entries = normaliseBulkFreshRaceEntries(rows, filters.source);
+  return jsonResponse({ ...filters, entries });
+};
+
 const handleRaceTrainings = (
   url: URL,
   env: Env,
@@ -583,6 +631,9 @@ const handleConditionHistoryStats = async (
 const isExpressionTooDeepError = (error: unknown): boolean =>
   error instanceof R2SqlQueryError && error.code === R2_SQL_EXPRESSION_TOO_DEEP_CODE;
 
+const isExecutionResourceError = (error: unknown): boolean =>
+  error instanceof R2SqlQueryError && error.code === R2_SQL_EXECUTION_RESOURCE_CODE;
+
 const failureCode = (error: unknown): number | string | null => {
   if (!(error instanceof R2SqlQueryError)) return null;
   return error.code ?? null;
@@ -614,30 +665,87 @@ const compareByRaceThenUmaban = (
   return (numberOrNull(left.umaban) ?? 0) - (numberOrNull(right.umaban) ?? 0);
 };
 
+const executeRunningStyleRaceQuery = async ({
+  dependencies,
+  env,
+  filters,
+}: RunningStyleQueryParams): Promise<Record<string, unknown>[]> => {
+  try {
+    return await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, true),
+      dependencies.fetchImpl,
+    );
+  } catch (error) {
+    if (!isExpressionTooDeepError(error)) throw error;
+    // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
+    // the plan-depth protocol limit for a data volume as large as JRA's --
+    // retry once without ORDER BY (still LIMIT) and sort the small result in
+    // this Worker instead.
+    const rows = await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, false),
+      dependencies.fetchImpl,
+    );
+    return [...rows].sort(compareByRaceThenUmaban);
+  }
+};
+
+const executeRunningStyleHorseBatch = ({
+  dependencies,
+  env,
+  filters,
+  umabans,
+}: RunningStyleHorseBatchParams): Promise<Record<string, unknown>[][]> =>
+  Promise.all(
+    umabans.map((umaban) =>
+      executeR2Sql(
+        env,
+        buildRunningStyleFeaturesQuery(env, { ...filters, umaban }, false),
+        dependencies.fetchImpl,
+      ),
+    ),
+  );
+
+const executeRunningStylePerHorse = ({
+  dependencies,
+  env,
+  filters,
+}: RunningStyleQueryParams): Promise<Record<string, unknown>[]> =>
+  RUNNING_STYLE_UMABAN_BATCHES.reduce<Promise<Record<string, unknown>[]>>(
+    async (rowsPromise, umabans) => {
+      const rows = await rowsPromise;
+      const batchRows = await executeRunningStyleHorseBatch({
+        dependencies,
+        env,
+        filters,
+        umabans,
+      });
+      return [...rows, ...batchRows.flat()];
+    },
+    Promise.resolve([]),
+  );
+
+const canSplitRunningStyleRace = (filters: RunningStyleFeatureFilters): boolean =>
+  filters.raceBango !== undefined && filters.umaban === undefined;
+
 const runningStyleBody = async (
   env: Env,
   dependencies: WorkerDependencies,
   filters: RunningStyleFeatureFilters,
 ): Promise<string> => {
   try {
-    const rows = await executeR2Sql(
-      env,
-      buildRunningStyleFeaturesQuery(env, filters, true),
-      dependencies.fetchImpl,
-    );
+    const rows = await executeRunningStyleRaceQuery({ dependencies, env, filters });
     return JSON.stringify(normaliseRunningStyleRows(rows));
   } catch (error) {
-    if (!isExpressionTooDeepError(error)) throw error;
-    // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
-    // the plan-depth protocol limit for a data volume as large as JRA's --
-    // retry once without ORDER BY (still LIMIT) and sort the small result
-    // here instead. Identical row set and values; only where the sort
-    // happens changes.
-    const rows = await executeR2Sql(
-      env,
-      buildRunningStyleFeaturesQuery(env, filters, false),
-      dependencies.fetchImpl,
-    );
+    if (!isExecutionResourceError(error) || !canSplitRunningStyleRace(filters)) throw error;
+    // The fixed 1..18 domain keeps subrequest count finite. Six concurrent
+    // queries stay within the Worker's outbound-connection budget, while
+    // sequential batches avoid turning one resource failure into an R2 SQL
+    // request burst. Promise.all is intentional: any horse failure rejects
+    // the whole response, so callers retry rather than persisting a partial
+    // field.
+    const rows = await executeRunningStylePerHorse({ dependencies, env, filters });
     return JSON.stringify(normaliseRunningStyleRows([...rows].sort(compareByRaceThenUmaban)));
   }
 };
@@ -713,6 +821,9 @@ export const handleRequest = async (
     if (request.method === "GET" && url.pathname === FRESH_RACE_ENTRIES_PATH) {
       return await handleFreshRaceEntries(request, url, env, dependencies);
     }
+    if (request.method === "GET" && url.pathname === BULK_FRESH_RACE_ENTRIES_PATH) {
+      return await handleBulkFreshRaceEntries(request, url, env, dependencies);
+    }
     if (request.method === "GET" && url.pathname === "/v1/race-trainings") {
       return await handleRaceTrainings(url, env, dependencies);
     }
@@ -763,7 +874,7 @@ export const handleRequest = async (
         code: failure.code,
         detail: failure.detail,
         error:
-          url.pathname === FRESH_RACE_ENTRIES_PATH
+          url.pathname === FRESH_RACE_ENTRIES_PATH || url.pathname === BULK_FRESH_RACE_ENTRIES_PATH
             ? "fresh_race_entries_unavailable"
             : "r2_sql_unavailable",
       },

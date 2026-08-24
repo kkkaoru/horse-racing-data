@@ -330,6 +330,177 @@ it("fails closed when fresh entrant rows are empty or duplicated", async () => {
   });
 });
 
+it("authenticates and routes one no-store bulk fresh entrant query", async () => {
+  const harness = createHarness([
+    {
+      keibajo_code: "35",
+      ketto_toroku_bango: "2023100001",
+      race_bango: "01",
+      source: "nar",
+      umaban: 1,
+    },
+  ]);
+  const unauthorized = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=nar",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=nar",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(unauthorized.status).toBe(401);
+  await expect(unauthorized.json()).resolves.toStrictEqual({ error: "unauthorized" });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  await expect(response.json()).resolves.toStrictEqual({
+    date: "20260824",
+    entries: [
+      {
+        keibajoCode: "35",
+        kettoTorokuBango: "2023100001",
+        raceBango: "01",
+        source: "nar",
+        umaban: 1,
+      },
+    ],
+    source: "nar",
+  });
+  expect(harness.fetchCalls).toHaveLength(1);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("FROM pc_keiba.nvd_se");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code <> '83'");
+  expect(harness.cacheCalls.matches).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(0);
+});
+
+it("keeps bulk JRA, NAR, and ban-ei route filters disjoint", async () => {
+  const jraHarness = createHarness([
+    {
+      keibajo_code: "01",
+      ketto_toroku_bango: "2023100001",
+      race_bango: "01",
+      source: "jra",
+      umaban: 1,
+    },
+  ]);
+  const narHarness = createHarness([
+    {
+      keibajo_code: "35",
+      ketto_toroku_bango: "2023100002",
+      race_bango: "01",
+      source: "nar",
+      umaban: 1,
+    },
+  ]);
+  const banEiHarness = createHarness([
+    {
+      keibajo_code: "83",
+      ketto_toroku_bango: "2023100003",
+      race_bango: "01",
+      source: "ban-ei",
+      umaban: 1,
+    },
+  ]);
+  const jra = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=jra",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    jraHarness.env,
+    jraHarness.dependencies,
+  );
+  const nar = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=nar",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    narHarness.env,
+    narHarness.dependencies,
+  );
+  const banEi = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=ban-ei",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    banEiHarness.env,
+    banEiHarness.dependencies,
+  );
+  expect(jra.status).toBe(200);
+  expect(nar.status).toBe(200);
+  expect(banEi.status).toBe(200);
+  expect(String(jraHarness.fetchCalls[0]?.init?.body)).toMatch("FROM pc_keiba.jvd_se");
+  expect(String(narHarness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code <> '83'");
+  expect(String(banEiHarness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code = '83'");
+});
+
+it("validates bulk scope and fails closed for empty or malformed rows", async () => {
+  const invalidHarness = createHarness([
+    {
+      keibajo_code: "83",
+      ketto_toroku_bango: "2023100001",
+      race_bango: "01",
+      source: "ban-ei",
+      umaban: 1,
+    },
+  ]);
+  const emptyHarness = createHarness();
+  const malformedHarness = createHarness([
+    {
+      keibajo_code: "83",
+      ketto_toroku_bango: "horse",
+      race_bango: "01",
+      source: "ban-ei",
+      umaban: 1,
+    },
+  ]);
+  const invalid = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=all",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    invalidHarness.env,
+    invalidHarness.dependencies,
+  );
+  const empty = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=ban-ei",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    emptyHarness.env,
+    emptyHarness.dependencies,
+  );
+  const malformed = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260824&source=ban-ei",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    ),
+    malformedHarness.env,
+    malformedHarness.dependencies,
+  );
+  expect(invalid.status).toBe(400);
+  await expect(invalid.json()).resolves.toStrictEqual({
+    error: "source must be jra, nar, or ban-ei",
+  });
+  expect(empty.status).toBe(502);
+  await expect(empty.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "fresh race entries are empty",
+    error: "fresh_race_entries_unavailable",
+  });
+  expect(malformed.status).toBe(502);
+  await expect(malformed.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "fresh race entries contain an invalid ketto_toroku_bango",
+    error: "fresh_race_entries_unavailable",
+  });
+});
+
 it("queries and caches race trainings with the Training-compatible envelope", async () => {
   const harness = createHarness([
     {
@@ -528,6 +699,147 @@ it("retries running-style features without ORDER BY and sorts by umaban when R2 
   await expect(response.json()).resolves.toMatchObject({
     rows: [{ umaban: 1 }, { umaban: 2 }, { umaban: 3 }],
   });
+});
+
+it("splits only R2 SQL 70200 race failures into bounded per-horse batches", async () => {
+  const harness = createHarness();
+  const fetchCalls: string[] = [];
+  const concurrency = { active: 0, maximum: 0 };
+  const fetchImpl: Fetcher = async (_input, init) => {
+    const body = String(init?.body);
+    fetchCalls.push(body);
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 70200, message: "execution resource exhausted" }], success: false },
+        { status: 500 },
+      );
+    }
+    concurrency.active += 1;
+    concurrency.maximum = Math.max(concurrency.maximum, concurrency.active);
+    await Promise.resolve();
+    concurrency.active -= 1;
+    const match = /AS INT\) = (\d+)/u.exec(body);
+    const umaban = Number(match?.[1]);
+    return Response.json({
+      result: {
+        rows: umaban <= 3 ? [{ ...featureRow(), race_bango: "1", umaban: String(umaban) }] : [],
+      },
+      success: true,
+    });
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    harness.env,
+    { cache: harness.dependencies.cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  expect(fetchCalls).toHaveLength(19);
+  expect(concurrency.maximum).toBe(6);
+  expect(fetchCalls.slice(1).join("\n")).not.toMatch("order by umaban");
+  await expect(response.json()).resolves.toMatchObject({
+    rows: [{ umaban: 1 }, { umaban: 2 }, { umaban: 3 }],
+  });
+});
+
+it("splits after the 40018 ORDER BY retry also returns R2 SQL 70200", async () => {
+  const harness = createHarness();
+  const fetchCalls: string[] = [];
+  const fetchImpl: Fetcher = async (_input, init) => {
+    const body = String(init?.body);
+    fetchCalls.push(body);
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+        { status: 400 },
+      );
+    }
+    if (fetchCalls.length === 2) {
+      return Response.json(
+        { errors: [{ code: 70200, message: "execution resource exhausted" }], success: false },
+        { status: 500 },
+      );
+    }
+    return Response.json({ result: { rows: [] }, success: true });
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    harness.env,
+    { cache: harness.dependencies.cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  expect(fetchCalls).toHaveLength(20);
+  expect(fetchCalls[0]).toMatch("order by umaban limit 18");
+  expect(fetchCalls[1]).not.toMatch("order by umaban");
+  await expect(response.json()).resolves.toStrictEqual({
+    featureNames: [],
+    generation: "raw-iceberg-v1",
+    rows: [],
+  });
+});
+
+it("returns a retryable error instead of partial rows when a split horse query fails", async () => {
+  const harness = createHarness();
+  const fetchCalls: string[] = [];
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const fetchImpl: Fetcher = async (_input, init) => {
+    const body = String(init?.body);
+    fetchCalls.push(body);
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 70200, message: "execution resource exhausted" }], success: false },
+        { status: 500 },
+      );
+    }
+    if (body.includes("AS INT) = 2")) {
+      return Response.json(
+        { errors: [{ code: 80001, message: "edge connection failure" }], success: false },
+        { status: 500 },
+      );
+    }
+    return Response.json({
+      result: { rows: [{ ...featureRow(), race_bango: "1", umaban: "1" }] },
+      success: true,
+    });
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    harness.env,
+    { cache: harness.dependencies.cache, fetchImpl },
+  );
+  expect(response.status).toBe(502);
+  expect(fetchCalls).toHaveLength(7);
+  await expect(response.json()).resolves.toStrictEqual({
+    code: 80001,
+    detail: "R2 SQL HTTP 500: 80001 edge connection failure",
+    error: "r2_sql_unavailable",
+  });
+  expect(consoleMock).toHaveBeenCalledOnce();
+});
+
+it("does not recursively split an already per-horse R2 SQL 70200 failure", async () => {
+  const harness = createHarness();
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  harness.fetchState.response = Response.json(
+    { errors: [{ code: 70200, message: "execution resource exhausted" }], success: false },
+    { status: 500 },
+  );
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1&umaban=7",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(502);
+  expect(harness.fetchCalls).toHaveLength(1);
+  await expect(response.json()).resolves.toMatchObject({ code: 70200 });
+  expect(consoleMock).toHaveBeenCalledOnce();
 });
 
 it("sorts a venue-level fallback by race_bango then umaban, tolerating absent sort keys", async () => {

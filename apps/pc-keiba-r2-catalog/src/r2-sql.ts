@@ -1,4 +1,6 @@
 import type {
+  BulkFreshRaceEntry,
+  BulkFreshRaceEntryFilters,
   Fetcher,
   FreshRaceEntry,
   FreshRaceEntryFilters,
@@ -135,6 +137,12 @@ const freshSourceConfig = (source: FreshRaceEntryFilters["source"]): RawSourceCo
 
 const freshVenuePredicate = (source: FreshRaceEntryFilters["source"]): string | null =>
   source === "nar" ? "keibajo_code <> '83'" : source === "ban-ei" ? "keibajo_code = '83'" : null;
+
+const freshActivePredicates = (): string[] => [
+  "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
+  "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) IS NOT NULL",
+  "coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')",
+];
 
 const rawPredicates = (filters: RaceFeatureFilters, config: RawSourceConfig): string[] => {
   const { kaisaiNen, kaisaiTsukihi } = splitDate(filters.date);
@@ -360,9 +368,7 @@ export const buildFreshRaceEntriesQuery = (
     ...(venuePredicate === null ? [] : [venuePredicate]),
     `keibajo_code = '${keibajoCode}'`,
     `race_bango = '${raceBango}'`,
-    "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
-    "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) IS NOT NULL",
-    "coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')",
+    ...freshActivePredicates(),
   ];
   return `SELECT
   btrim(ketto_toroku_bango) AS ketto_toroku_bango,
@@ -370,6 +376,30 @@ export const buildFreshRaceEntriesQuery = (
 FROM ${rawTableName(env, config.runnerTable)}
 WHERE ${predicates.join(" AND ")}
 ORDER BY umaban, ketto_toroku_bango`;
+};
+
+export const buildBulkFreshRaceEntriesQuery = (
+  env: R2SqlCatalogConfig,
+  filters: BulkFreshRaceEntryFilters,
+): string => {
+  const { kaisaiNen, kaisaiTsukihi } = splitDate(filters.date);
+  const config = freshSourceConfig(filters.source);
+  const venuePredicate = freshVenuePredicate(filters.source);
+  const predicates = [
+    `kaisai_nen = '${kaisaiNen}'`,
+    `kaisai_tsukihi = '${kaisaiTsukihi}'`,
+    ...(venuePredicate === null ? [] : [venuePredicate]),
+    ...freshActivePredicates(),
+  ];
+  return `SELECT
+  '${filters.source}' AS source,
+  lpad(btrim(keibajo_code), 2, '0') AS keibajo_code,
+  lpad(btrim(race_bango), 2, '0') AS race_bango,
+  btrim(ketto_toroku_bango) AS ketto_toroku_bango,
+  try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) AS umaban
+FROM ${rawTableName(env, config.runnerTable)}
+WHERE ${predicates.join(" AND ")}
+ORDER BY keibajo_code, race_bango, umaban, ketto_toroku_bango`;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -463,6 +493,20 @@ const normaliseFreshKetto = (value: unknown): string => {
   return ketto;
 };
 
+const normaliseFreshCode = (value: unknown, label: string): string => {
+  const code = typeof value === "string" ? value.trim() : "";
+  if (!CODE_PATTERN.test(code)) throw new Error(`fresh race entries contain an invalid ${label}`);
+  return code;
+};
+
+const normaliseFreshSource = (
+  value: unknown,
+  expected: BulkFreshRaceEntryFilters["source"],
+): BulkFreshRaceEntryFilters["source"] => {
+  if (value !== expected) throw new Error("fresh race entries contain an invalid source");
+  return expected;
+};
+
 const compareFreshRaceEntries = (left: FreshRaceEntry, right: FreshRaceEntry): number =>
   left.umaban - right.umaban;
 
@@ -482,6 +526,38 @@ export const normaliseFreshRaceEntries = (
     throw new Error("fresh race entries contain duplicates");
   }
   return [...entries].sort(compareFreshRaceEntries);
+};
+
+const compareBulkFreshRaceEntries = (left: BulkFreshRaceEntry, right: BulkFreshRaceEntry): number =>
+  left.keibajoCode.localeCompare(right.keibajoCode) ||
+  left.raceBango.localeCompare(right.raceBango) ||
+  left.umaban - right.umaban;
+
+const bulkRaceEntryKey = (entry: BulkFreshRaceEntry, value: string | number): string =>
+  `${entry.source}:${entry.keibajoCode}:${entry.raceBango}:${String(value)}`;
+
+export const normaliseBulkFreshRaceEntries = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+  expectedSource: BulkFreshRaceEntryFilters["source"],
+): BulkFreshRaceEntry[] => {
+  if (rows.length === 0) throw new Error("fresh race entries are empty");
+  const entries = rows.map(
+    (row): BulkFreshRaceEntry => ({
+      keibajoCode: normaliseFreshCode(row.keibajo_code, "keibajo_code"),
+      kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
+      raceBango: normaliseFreshCode(row.race_bango, "race_bango"),
+      source: normaliseFreshSource(row.source, expectedSource),
+      umaban: normaliseFreshUmaban(row.umaban),
+    }),
+  );
+  const kettoCount = new Set(
+    entries.map((entry) => bulkRaceEntryKey(entry, entry.kettoTorokuBango)),
+  ).size;
+  const umabanCount = new Set(entries.map((entry) => bulkRaceEntryKey(entry, entry.umaban))).size;
+  if (kettoCount !== entries.length || umabanCount !== entries.length) {
+    throw new Error("fresh race entries contain duplicates");
+  }
+  return [...entries].sort(compareBulkFreshRaceEntries);
 };
 
 export const executeR2Sql = async (

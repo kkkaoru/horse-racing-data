@@ -199,7 +199,7 @@ it("always excludes graded races from ungraded open current races", () => {
   expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = ''");
 });
 
-it("filters similar history by age, class, condition key, and race title when those flags are on", () => {
+it("compares condition keys as strings before combining the predicate with boolean filters", () => {
   const sql = buildWinRateHeatmapSimilarQuery(config, {
     ...jraFilters,
     includeAge: true,
@@ -220,7 +220,11 @@ it("filters similar history by age, class, condition key, and race title when th
   expect(sql).toMatch(
     "ELSE nullif(split_part(btrim(coalesce(ra.kyoso_joken_meisho, '')), ' ', 1), '')",
   );
-  expect(sql).toMatch("IS NOT DISTINCT FROM");
+  expect(sql).toMatch(
+    "END = CASE\n      WHEN btrim(coalesce(cr.kyoso_joken_code, '')) = '005' THEN '1勝クラス'",
+  );
+  expect(sql).toMatch("END IS NOT NULL\n    AND btrim(coalesce(cr.grade_code, '')) IN ('A', 'F')");
+  expect(sql).not.toMatch("IS NOT DISTINCT FROM");
   expect(sql).toMatch("btrim(coalesce(cr.grade_code, '')) IN ('A', 'F')");
   expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) IN ('A', 'F')");
   expect(sql).toMatch("cr.kyosomei_hondai");

@@ -342,7 +342,7 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
       : "";
   const conditionKeyFilterSql =
     filters.includeConditionKey === true
-      ? `AND ${conditionKeySql("ra")} IS NOT DISTINCT FROM ${conditionKeySql("cr")}
+      ? `AND ${conditionKeySql("ra")} = ${conditionKeySql("cr")}
     AND ${conditionKeySql("cr")} IS NOT NULL`
       : "";
   const raceTitleSql =

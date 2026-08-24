@@ -111,6 +111,17 @@ export interface FreshRaceEntry {
   umaban: number;
 }
 
+export interface BulkFreshRaceEntryFilters {
+  date: string;
+  source: RunningStyleSourceScope;
+}
+
+export interface BulkFreshRaceEntry extends FreshRaceEntry {
+  keibajoCode: string;
+  raceBango: string;
+  source: RunningStyleSourceScope;
+}
+
 // raceBango is optional so one query can cover every race at a venue on a
 // day. The 10-year history CTEs depend only on date + source (see
 // running-style-sql.ts::historyPredicates), so a venue-level build amortises
