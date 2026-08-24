@@ -882,12 +882,20 @@ const extractLegacyRaceResultRows = (html: string): string[] =>
     (row) => row[1]!,
   );
 
+// In the current RaceMarkTable layout a horse that did not finish has an
+// empty rank cell (`class="a"`) and the terminal status in the margin cell
+// (`class="l"`).  A normal margin such as ハナ must never be promoted to a
+// finish position, so keep the accepted fallback deliberately narrow.
+const CURRENT_RESULT_TERMINAL_STATUSES: ReadonlySet<string | undefined> = new Set(["中止"]);
+
 const extractCurrentRaceResultRows = (html: string): string[] =>
   Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
     .map((row) => row[0]!)
     .filter((row) => {
       const cells = extractClassedTableCells(row);
-      return Boolean(cells.a && cells.c && cells.d);
+      return Boolean(
+        cells.c && cells.d && (cells.a || CURRENT_RESULT_TERMINAL_STATUSES.has(cells.l)),
+      );
     });
 
 const RACE_RESULT_ROW_PARSERS: readonly ParserDefinition<RaceResultRows>[] = [
@@ -1026,7 +1034,10 @@ export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] 
     .map((row) => {
       const currentCells = row.layout === "current" ? extractClassedTableCells(row.row) : null;
       const legacyCells = row.layout === "legacy" ? extractTableCells(row.row) : null;
-      const finishPosition = currentCells ? currentCells.a : legacyCells?.[0];
+      const finishPosition = currentCells
+        ? currentCells.a ||
+          (CURRENT_RESULT_TERMINAL_STATUSES.has(currentCells.l) ? currentCells.l : null)
+        : legacyCells?.[0];
       const horseNumber = currentCells ? currentCells.c : legacyCells?.[2];
       const horseName = currentCells ? currentCells.d : legacyCells?.[3];
       const time = currentCells ? currentCells.k : legacyCells?.[11];

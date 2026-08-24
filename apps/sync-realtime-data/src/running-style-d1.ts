@@ -68,6 +68,11 @@ export interface RunningStylePendingRace extends RunningStyleInferenceRace {
   expectedHorseCount: number;
 }
 
+export interface RunningStyleEnqueueFailure {
+  error: unknown;
+  raceKey: string;
+}
+
 const D1_BATCH_SIZE = 50;
 
 const INSERT_SQL = `insert or replace into race_running_styles (
@@ -407,6 +412,29 @@ export const upsertRunningStylePendingStates = async (
         row.expectedHorseCount,
         nowIso,
       ),
+  );
+  for (const chunk of chunkArray(statements, D1_BATCH_SIZE)) {
+    await db.batch([...chunk]);
+  }
+};
+
+export const markRunningStyleInferenceEnqueueFailed = async (
+  db: D1Database,
+  failures: ReadonlyArray<RunningStyleEnqueueFailure>,
+  attemptedAt: string,
+): Promise<void> => {
+  if (failures.length === 0) return;
+  const statements = failures.map((failure) =>
+    db
+      .prepare(
+        `update running_style_inference_state
+            set status = 'failed',
+                error_message = ?
+          where race_key = ?
+            and status = 'pending'
+            and attempted_at = ?`,
+      )
+      .bind(formatError(failure.error), failure.raceKey, attemptedAt),
   );
   for (const chunk of chunkArray(statements, D1_BATCH_SIZE)) {
     await db.batch([...chunk]);

@@ -8,6 +8,10 @@ import {
   claimPremiumPaddockNotificationSend,
   listPremiumRaceDataFetchCandidatesByDate,
 } from "../src/storage";
+import {
+  claimRealtimePlanRecovery,
+  releaseRealtimePlanRecovery,
+} from "../src/realtime-plan-recovery-claim";
 
 const TEST_NOW = "2026-05-12T03:00:00.000Z";
 const TEST_DATE = "20260512";
@@ -169,6 +173,12 @@ beforeAll(async () => {
               export const buildRaceResultUrl = () => "";
               export const buildRaceKey = () => "";
               export const extractOddsLinks = () => [];
+              export class FetchStatusError extends Error {
+                constructor(url, status) {
+                  super(\`Failed to fetch \${url}: \${status}\`);
+                  this.status = status;
+                }
+              }
               export const fetchOdds = async () => null;
               export const fetchRaceLinksFromRaceList = async () => [];
               export const fetchRaceListPageHtml = async () => null;
@@ -228,12 +238,15 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0015_premium_paddock_notification_events.sql"));
   await applySqlFile(join(root, "migrations/0016_jra_realtime_source_race_dates.sql"));
   await applySqlFile(join(root, "migrations/0020_premium_data_top_horses.sql"));
+  await applySqlFile(join(root, "migrations/0035_realtime_plan_recovery_claims.sql"));
+  await applySqlFile(join(root, "migrations/0037_result_cache_bust_outbox.sql"));
   worker = (await mf.getWorker()) as unknown as typeof worker;
 });
 
 beforeEach(async () => {
   await db.exec(`
     delete from fetch_logs;
+    delete from realtime_plan_recovery_claims;
     delete from premium_paddock_notification_events;
     delete from premium_paddock_notification_state;
     delete from premium_paddock_fetch_state;
@@ -259,6 +272,55 @@ afterAll(async () => {
 });
 
 describe("worker scheduling with Miniflare", () => {
+  it("atomically owns one recovery claim, fences stale rollback, and recovers after TTL", async () => {
+    const first = await claimRealtimePlanRecovery({
+      claimedAt: "2026-08-24T09:30:00+09:00",
+      claimKey: "plan-realtime-fetches-recovery:20260824",
+      db,
+      expiresAt: "2026-08-24T09:35:00+09:00",
+      ownerToken: "owner-a",
+    });
+    const concurrent = await Promise.all([
+      claimRealtimePlanRecovery({
+        claimedAt: "2026-08-24T09:31:00+09:00",
+        claimKey: "plan-realtime-fetches-recovery:20260824",
+        db,
+        expiresAt: "2026-08-24T09:36:00+09:00",
+        ownerToken: "owner-b",
+      }),
+      claimRealtimePlanRecovery({
+        claimedAt: "2026-08-24T09:31:00+09:00",
+        claimKey: "plan-realtime-fetches-recovery:20260824",
+        db,
+        expiresAt: "2026-08-24T09:36:00+09:00",
+        ownerToken: "owner-c",
+      }),
+    ]);
+    const expiredOwner = await claimRealtimePlanRecovery({
+      claimedAt: "2026-08-24T09:35:00+09:00",
+      claimKey: "plan-realtime-fetches-recovery:20260824",
+      db,
+      expiresAt: "2026-08-24T09:40:00+09:00",
+      ownerToken: "owner-d",
+    });
+    const staleRelease = await releaseRealtimePlanRecovery({
+      claimKey: "plan-realtime-fetches-recovery:20260824",
+      db,
+      ownerToken: "owner-a",
+    });
+    const ownerRelease = await releaseRealtimePlanRecovery({
+      claimKey: "plan-realtime-fetches-recovery:20260824",
+      db,
+      ownerToken: "owner-d",
+    });
+
+    expect(first).toBe(true);
+    expect(concurrent).toStrictEqual([false, false]);
+    expect(expiredOwner).toBe(true);
+    expect(staleRelease).toBe(false);
+    expect(ownerRelease).toBe(true);
+  });
+
   it("processes scheduled planning inline", async () => {
     await expect(worker.scheduled({ cron: "* 1-12 * * *" })).resolves.toMatchObject({
       outcome: "ok",

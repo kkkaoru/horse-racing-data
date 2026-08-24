@@ -7,9 +7,9 @@
 // 2026-06-28 JRA result-fetch outage invisible for 7 hours.
 
 // Skip statuses use a `skip:` prefix so a single SQL `like 'skip:%'` query
-// surfaces every non-error early-exit path. The value itself describes the
-// specific reason so an operator can immediately tell why the queue handler
-// returned without doing work.
+// surfaces every non-error early-exit path. Pending statuses deliberately use
+// `pending:`: the provider has not published a usable snapshot yet, so this is
+// neither a skip nor an error and must not be counted as a retry/DLQ failure.
 export interface SkipStatuses {
   readonly authRequired: "skip:auth-required";
   readonly awaitingPublish: "skip:awaiting-publish";
@@ -23,8 +23,10 @@ export interface SkipStatuses {
   readonly rescoreDisabled: "skip:rescore-disabled";
   readonly rescoreNotClaimed: "skip:not-claimed";
   readonly weightsAlreadyStored: "skip:weights-already-stored";
-  readonly weightsEmpty: "skip:weights-empty";
-  readonly weightsSparse: "skip:weights-sparse";
+  /** The upstream has not published a usable weight snapshot yet. */
+  readonly weightsPending: "pending:weights-unavailable";
+  /** The upstream response is incomplete; it must be fetched again by the watchdog. */
+  readonly weightsIncomplete: "pending:weights-incomplete";
 }
 
 export const SKIP_STATUS: SkipStatuses = {
@@ -40,8 +42,8 @@ export const SKIP_STATUS: SkipStatuses = {
   rescoreDisabled: "skip:rescore-disabled",
   rescoreNotClaimed: "skip:not-claimed",
   weightsAlreadyStored: "skip:weights-already-stored",
-  weightsEmpty: "skip:weights-empty",
-  weightsSparse: "skip:weights-sparse",
+  weightsPending: "pending:weights-unavailable",
+  weightsIncomplete: "pending:weights-incomplete",
 };
 
 // Single summary row emitted by every plan-result-fetches tick so a missing

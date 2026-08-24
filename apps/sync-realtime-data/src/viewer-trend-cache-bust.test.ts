@@ -19,11 +19,34 @@ const buildEnv = (overrides: Partial<Env> = {}): Env =>
 test("buildTrendBustFromRaceContext builds source and targetYmd from the race context", () => {
   expect(
     buildTrendBustFromRaceContext({
+      keibajoCode: "55",
       kaisaiNen: "2026",
       kaisaiTsukihi: "0525",
+      raceBango: "07",
       source: "nar",
     }),
-  ).toStrictEqual({ source: "nar", targetYmd: "20260525" });
+  ).toStrictEqual({
+    keibajoCode: "55",
+    raceBango: "07",
+    source: "nar",
+    targetYmd: "20260525",
+  });
+});
+
+test("requestTrendCacheBust drains the response stream before accepting success", async () => {
+  const response = new Response("accepted", { status: 202 });
+  const pipeTo = vi.spyOn(response.body!, "pipeTo");
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+
+  expect(
+    await requestTrendCacheBust(buildEnv(), {
+      keibajoCode: "55",
+      raceBango: "07",
+      source: "nar",
+      targetYmd: "20260525",
+    }),
+  ).toStrictEqual({ attempts: 1, status: "ok" });
+  expect(pipeTo).toHaveBeenCalledTimes(1);
 });
 
 test("requestTrendCacheBust posts JSON and bearer auth, returns ok on 200", async () => {
@@ -45,29 +68,62 @@ test("requestTrendCacheBust posts JSON and bearer auth, returns ok on 200", asyn
   expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
 });
 
+test("requestTrendCacheBust prefers the viewer service binding with the full request contract", async () => {
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));
+  const outcome = await requestTrendCacheBust(
+    buildEnv({ PC_KEIBA_VIEWER: { fetch: serviceFetch } }),
+    {
+      source: "nar",
+      targetYmd: "20260823",
+    },
+  );
+
+  expect(outcome).toStrictEqual({ attempts: 1, status: "ok" });
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(1);
+  const call = serviceFetch.mock.calls[0];
+  expect(call?.[0]).toBe("https://example.test/api/internal/trend-cache-bust");
+  expect(call?.[1]?.method).toBe("POST");
+  expect(new Headers(call?.[1]?.headers).get("content-type")).toBe("application/json");
+  expect(new Headers(call?.[1]?.headers).get("x-pc-keiba-internal-token")).toBe("secret-token");
+  expect(call?.[1]?.body).toBe('{"source":"nar","targetYmd":"20260823"}');
+  expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
+});
+
 test("requestTrendCacheBust does not retry on 4xx", async () => {
-  const fetchSpy = vi
-    .spyOn(globalThis, "fetch")
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi
+    .fn<typeof fetch>()
     .mockResolvedValue(new Response("bad", { status: 400 }));
-  const outcome = await requestTrendCacheBust(buildEnv(), {
-    source: "nar",
-    targetYmd: "20260525",
-  });
+  const outcome = await requestTrendCacheBust(
+    buildEnv({ PC_KEIBA_VIEWER: { fetch: serviceFetch } }),
+    {
+      source: "nar",
+      targetYmd: "20260525",
+    },
+  );
   expect(outcome).toStrictEqual({ attempts: 1, message: "HTTP 400", status: "error" });
-  expect(fetchSpy).toHaveBeenCalledTimes(1);
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(1);
 });
 
 test("requestTrendCacheBust retries once on 5xx and reports final error", async () => {
-  const fetchSpy = vi
-    .spyOn(globalThis, "fetch")
+  const globalFetchSpy = vi.spyOn(globalThis, "fetch");
+  const serviceFetch = vi
+    .fn<typeof fetch>()
     .mockResolvedValueOnce(new Response("nope", { status: 502 }))
     .mockResolvedValueOnce(new Response("nope", { status: 503 }));
-  const outcome = await requestTrendCacheBust(buildEnv(), {
-    source: "nar",
-    targetYmd: "20260525",
-  });
+  const outcome = await requestTrendCacheBust(
+    buildEnv({ PC_KEIBA_VIEWER: { fetch: serviceFetch } }),
+    {
+      source: "nar",
+      targetYmd: "20260525",
+    },
+  );
   expect(outcome).toStrictEqual({ attempts: 2, message: "HTTP 503", status: "error" });
-  expect(fetchSpy).toHaveBeenCalledTimes(2);
+  expect(globalFetchSpy).not.toHaveBeenCalled();
+  expect(serviceFetch).toHaveBeenCalledTimes(2);
 });
 
 test("requestTrendCacheBust recovers on retry when first attempt is 5xx and second is 200", async () => {

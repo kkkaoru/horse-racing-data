@@ -142,6 +142,10 @@ export class HorseWeightDO {
     return instance;
   }
 
+  static getSubscriberCountForTest(instance: HorseWeightDO): number {
+    return instance.subscribers.size;
+  }
+
   // Test factory that mirrors the real constructor's hydration path against a
   // typed fake state so hydration via blockConcurrencyWhile and storage.get
   // can be exercised without forging a full DurableObjectState. Returns the
@@ -184,9 +188,14 @@ export class HorseWeightDO {
 
   private handleStream(): Response {
     const encoder = new TextEncoder();
+    const streamSubscribers: Set<Subscriber> = new Set();
     const stream = new ReadableStream<Uint8Array>({
-      start: (controller) => this.onSubscribe({ controller, encoder }),
-      cancel: () => this.onUnsubscribe(),
+      start: (controller) => {
+        const subscriber: Subscriber = { controller, encoder };
+        streamSubscribers.add(subscriber);
+        this.onSubscribe(subscriber);
+      },
+      cancel: () => streamSubscribers.forEach((subscriber) => this.onUnsubscribe(subscriber)),
     });
     return new Response(stream, { headers: SSE_HEADERS });
   }
@@ -201,9 +210,8 @@ export class HorseWeightDO {
     }
   }
 
-  private onUnsubscribe(): void {
-    // Best-effort cleanup; orphaned subscribers are also pruned on the next
-    // broadcast when the controller throws on enqueue.
+  private onUnsubscribe(subscriber: Subscriber): void {
+    this.subscribers.delete(subscriber);
   }
 
   private broadcast(snapshot: HorseWeightSnapshot): void {

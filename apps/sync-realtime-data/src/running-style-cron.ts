@@ -3,12 +3,13 @@
 // race_running_styles already has all runners, and queues per-race Worker
 // jobs for missing predictions.
 
-import { formatError } from "./format-error";
+import { formatError, formatErrorLogLine } from "./format-error";
 import { fetchRunningStyleFeatureCountsFromCatalog } from "./running-style-catalog-client";
 import {
   listRaceRunningStyleCounts,
   listRaceRunningStylesForRace,
   listRunningStyleInferenceStates,
+  markRunningStyleInferenceEnqueueFailed,
   upsertRunningStylePendingStates,
   type RunningStyleInferenceStateDetail,
   type RunningStylePendingRace,
@@ -19,6 +20,10 @@ import {
   type ExportRunningStyleParquetResult,
 } from "./running-style-parquet-export";
 import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
+import {
+  deriveRunningStyleCategory,
+  type RunningStyleCellCategory,
+} from "./running-style-cell-router";
 import {
   buildRunningStyleRaceKey,
   normalizeKeibajoCode,
@@ -37,6 +42,13 @@ const DATE_PAD_WIDTH = 2;
 const QUEUE_SEND_BATCH_SIZE = 100;
 const ACTIVE_STATE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(["pending", "processing"]);
+const FINISH_POSITION_DAY_BASE_URL =
+  "https://finish-position-cron.internal/api/admin/prewarm-day-base";
+const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
+const RUNNING_STYLE_FOUNDATION_FILE = "features.parquet";
+const FOUNDATION_NONE_WATERMARK = "none";
+const FOUNDATION_PREWARM_MARKER_PREFIX = "control:running-style-foundation-prewarm:v1";
+const FOUNDATION_PREWARM_MARKER_TTL_SECONDS = 15 * 60;
 // 2026-06-04 incident: before JST midnight rolled over, the cron derived
 // today=06-03 and so never retried the stalled 06-04 races. Sweeping the last
 // 6 hours of yesterday-JST keeps post-midnight races eligible for retry
@@ -82,6 +94,37 @@ interface SettledPlanSummaryInput {
   date: string;
   missingFeatures: number;
   scanned: number;
+}
+
+interface PredictionJobSendFailure {
+  error: unknown;
+  job: RunningStylePredictionJob;
+}
+
+interface PredictionJobSendResult {
+  failed: ReadonlyArray<PredictionJobSendFailure>;
+  sentCount: number;
+}
+
+interface RunningStyleFoundationGateResult {
+  errors: ReadonlyArray<string>;
+  readyCategories: ReadonlySet<RunningStyleCellCategory>;
+}
+
+interface RunningStyleFoundationInspection {
+  ready: boolean;
+}
+
+interface RunningStyleFoundationIdentity {
+  category: RunningStyleCellCategory;
+  date: string;
+  env: Env;
+}
+
+interface RunningStyleFoundationGateParams {
+  date: string;
+  env: Env;
+  races: ReadonlyArray<RunningStylePlanRace>;
 }
 
 const padDatePart = (value: number): string => String(value).padStart(DATE_PAD_WIDTH, "0");
@@ -141,6 +184,170 @@ const toRunningStyleRaceKey = (row: RegisteredRaceRow): string =>
     raceBango: row.race_bango,
     source: row.source,
   });
+
+const toRunningStyleCategory = (
+  race: Pick<RunningStylePendingRace, "keibajoCode" | "source">,
+): RunningStyleCellCategory => deriveRunningStyleCategory(race);
+
+export const buildRunningStyleFoundationKeyForCategory = (
+  category: RunningStyleCellCategory,
+  date: string,
+): string =>
+  `${RUNNING_STYLE_FOUNDATION_PREFIX}/${category}/${date}/${RUNNING_STYLE_FOUNDATION_FILE}`;
+
+const isNonNegativeIntegerMetadata = (value: string | undefined): boolean => {
+  if (value === undefined || value.trim().length === 0) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0;
+};
+
+export const isRunningStyleFoundationReady = (object: R2Object | null): boolean => {
+  if (object === null || object.size <= 0 || object.customMetadata === undefined) return false;
+  const metadata = object.customMetadata;
+  const maxSourceUpdated = metadata["max-data-sakusei-nengappi"];
+  const rowCount = metadata["row-count"];
+  return (
+    maxSourceUpdated !== undefined &&
+    maxSourceUpdated.trim().length > 0 &&
+    isNonNegativeIntegerMetadata(rowCount) &&
+    Number(rowCount) > 0 &&
+    metadata["rs-predicted-at-max"] === FOUNDATION_NONE_WATERMARK &&
+    metadata["rs-row-count"] === "0"
+  );
+};
+
+const inspectRunningStyleFoundation = async (
+  params: RunningStyleFoundationIdentity,
+): Promise<RunningStyleFoundationInspection> => {
+  if (params.env.FEATURES_ARCHIVE === undefined) return { ready: false };
+  const object = await params.env.FEATURES_ARCHIVE.head(
+    buildRunningStyleFoundationKeyForCategory(params.category, params.date),
+  );
+  const ready = isRunningStyleFoundationReady(object);
+  return { ready };
+};
+
+const buildRunningStyleFoundationPrewarmMarkerKey = (
+  category: RunningStyleCellCategory,
+  date: string,
+): string => `${FOUNDATION_PREWARM_MARKER_PREFIX}:${category}:${date}`;
+
+const hasRecentRunningStyleFoundationPrewarm = async (
+  params: RunningStyleFoundationIdentity,
+): Promise<boolean> => {
+  if (params.env.DETAIL_SECTION_CACHE_KV === undefined) return false;
+  try {
+    return (
+      (await params.env.DETAIL_SECTION_CACHE_KV.get(
+        buildRunningStyleFoundationPrewarmMarkerKey(params.category, params.date),
+      )) !== null
+    );
+  } catch (error) {
+    console.error(
+      formatErrorLogLine(
+        "Running-style foundation prewarm marker read failed",
+        { category: params.category, date: params.date },
+        error,
+      ),
+    );
+    return false;
+  }
+};
+
+const rememberRunningStyleFoundationPrewarm = async (
+  params: RunningStyleFoundationIdentity,
+): Promise<void> => {
+  if (params.env.DETAIL_SECTION_CACHE_KV === undefined) return;
+  await params.env.DETAIL_SECTION_CACHE_KV.put(
+    buildRunningStyleFoundationPrewarmMarkerKey(params.category, params.date),
+    new Date().toISOString(),
+    { expirationTtl: FOUNDATION_PREWARM_MARKER_TTL_SECONDS },
+  );
+};
+
+const triggerRunningStyleFoundationPrewarm = async (
+  params: RunningStyleFoundationIdentity,
+): Promise<string | null> => {
+  if (await hasRecentRunningStyleFoundationPrewarm(params)) return null;
+  if (params.env.FINISH_POSITION_CRON === undefined) return "missing FINISH_POSITION_CRON binding";
+  if (params.env.TRIGGER_TOKEN === undefined || params.env.TRIGGER_TOKEN.length === 0)
+    return "missing TRIGGER_TOKEN";
+  try {
+    const response = await params.env.FINISH_POSITION_CRON.fetch(
+      new Request(FINISH_POSITION_DAY_BASE_URL, {
+        body: JSON.stringify({
+          category: params.category,
+          // A final day-base can be fresh while this earlier foundation is
+          // absent. Force is required so that prewarm rebuilds the base and
+          // cannot short-circuit on that later-stage object.
+          force: true,
+          generatePredictionsAfterHit: true,
+          runYmd: params.date,
+        }),
+        headers: {
+          Authorization: `Bearer ${params.env.TRIGGER_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      }),
+    );
+    if (!response.ok) return `HTTP ${response.status}`;
+    await rememberRunningStyleFoundationPrewarm(params).catch((error: unknown) =>
+      console.error(
+        formatErrorLogLine(
+          "Running-style foundation prewarm marker write failed",
+          { category: params.category, date: params.date },
+          error,
+        ),
+      ),
+    );
+    return null;
+  } catch (error) {
+    return formatError(error);
+  }
+};
+
+const gateRunningStyleFoundations = async (
+  params: RunningStyleFoundationGateParams,
+): Promise<RunningStyleFoundationGateResult> => {
+  const categories = [...new Set(params.races.map(toRunningStyleCategory))];
+  const results = await Promise.all(
+    categories.map(async (category) => {
+      const inspection = await inspectRunningStyleFoundation({
+        category,
+        date: params.date,
+        env: params.env,
+      }).catch((error: unknown) => {
+        console.error(
+          formatErrorLogLine(
+            "Running-style foundation HEAD failed",
+            { category, date: params.date },
+            error,
+          ),
+        );
+        return { ready: false };
+      });
+      if (inspection.ready) return { category, error: null, ready: true };
+      const error = await triggerRunningStyleFoundationPrewarm({
+        category,
+        date: params.date,
+        env: params.env,
+      });
+      if (error !== null) {
+        console.error(
+          `Running-style foundation prewarm failed category=${category} date=${params.date}: ${error}`,
+        );
+      }
+      return { category, error, ready: false };
+    }),
+  );
+  return {
+    errors: results.flatMap(({ category, error }) =>
+      error === null ? [] : [`Foundation prewarm failed for ${category}:${params.date}: ${error}`],
+    ),
+    readyCategories: new Set(results.flatMap(({ category, ready }) => (ready ? [category] : []))),
+  };
+};
 
 const isRunningStyleStateCompleted = (
   state: RunningStyleInferenceStateDetail | undefined,
@@ -229,9 +436,7 @@ export const selectRacesNeedingRunningStyleInference = (
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
     const state = states.get(race.raceKey);
     const stateCompleted = isRunningStyleStateCompleted(state);
-    const predictionsMeetExpected =
-      expectedHorseCount > 0 && existingHorseCount >= expectedHorseCount;
-    if (stateCompleted || predictionsMeetExpected) {
+    if (stateCompleted) {
       completed += 1;
       return;
     }
@@ -263,18 +468,89 @@ const toPredictionJob = (
   type: "generate-running-style-predictions",
 });
 
+const sendPredictionJob = async (
+  queue: Queue,
+  job: RunningStylePredictionJob,
+): Promise<PredictionJobSendFailure | null> => {
+  try {
+    await queue.send(job);
+    return null;
+  } catch (error) {
+    return { error, job };
+  }
+};
+
+const sendPredictionJobChunk = async (
+  queue: Queue,
+  jobs: ReadonlyArray<RunningStylePredictionJob>,
+): Promise<PredictionJobSendResult> => {
+  if (jobs.length === 1) {
+    const failure = await sendPredictionJob(queue, jobs[0]!);
+    return failure === null ? { failed: [], sentCount: 1 } : { failed: [failure], sentCount: 0 };
+  }
+  try {
+    await queue.sendBatch(jobs.map((body) => ({ body })));
+    return { failed: [], sentCount: jobs.length };
+  } catch (error) {
+    console.error(
+      formatErrorLogLine(
+        "Running-style Queue sendBatch failed; retrying jobs individually",
+        { jobCount: String(jobs.length) },
+        error,
+      ),
+    );
+  }
+  const failed: PredictionJobSendFailure[] = [];
+  const sent: RunningStylePredictionJob[] = [];
+  for (const job of jobs) {
+    const failure = await sendPredictionJob(queue, job);
+    if (failure === null) {
+      sent.push(job);
+    } else {
+      failed.push(failure);
+    }
+  }
+  return { failed, sentCount: sent.length };
+};
+
 const sendPredictionJobs = async (
   queue: Queue,
   jobs: ReadonlyArray<RunningStylePredictionJob>,
-): Promise<void> => {
+): Promise<PredictionJobSendResult> => {
+  const failed: PredictionJobSendFailure[] = [];
+  const sent: RunningStylePredictionJob[] = [];
   for (let index = 0; index < jobs.length; index += QUEUE_SEND_BATCH_SIZE) {
     const chunk = jobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
-    if (chunk.length === 1) {
-      await queue.send(chunk[0]);
-      continue;
-    }
-    await queue.sendBatch(chunk.map((body) => ({ body })));
+    const result = await sendPredictionJobChunk(queue, chunk);
+    failed.push(...result.failed);
+    sent.push(...chunk.slice(0, result.sentCount));
   }
+  return { failed, sentCount: sent.length };
+};
+
+const formatPredictionJobSendFailures = (
+  failures: ReadonlyArray<PredictionJobSendFailure>,
+): string | undefined =>
+  failures.length === 0
+    ? undefined
+    : `Queue send failed for ${failures.map(({ job }) => job.raceKey).join(",")}: ${failures
+        .map(({ error }) => formatError(error))
+        .join("; ")}`;
+
+const restoreFailedPendingStates = async (
+  env: Env,
+  pendingRaces: ReadonlyArray<RunningStylePendingRace>,
+  failures: ReadonlyArray<PredictionJobSendFailure>,
+  attemptedAt: string,
+): Promise<void> => {
+  const pendingRaceKeys = new Set(pendingRaces.map(({ raceKey }) => raceKey));
+  await markRunningStyleInferenceEnqueueFailed(
+    env.REALTIME_DB,
+    failures
+      .filter(({ job }) => pendingRaceKeys.has(job.raceKey))
+      .map(({ error, job }) => ({ error, raceKey: job.raceKey })),
+    attemptedAt,
+  );
 };
 
 export const planRunningStylePredictionsForDate = async (
@@ -303,7 +579,7 @@ export const planRunningStylePredictionsForDate = async (
   );
   const predictedAt = now.toISOString();
   if (allRegisteredRacesCompleted(registeredRaces, states)) {
-    await sendPredictionJobs(
+    const sendResult = await sendPredictionJobs(
       env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
       mirrorNeeded.map((row) => toPredictionJob(row, predictedAt)),
     );
@@ -311,9 +587,10 @@ export const planRunningStylePredictionsForDate = async (
       alreadyQueued: 0,
       completed: registeredRaces.length - mirrorNeeded.length,
       date,
-      enqueued: mirrorNeeded.length,
+      enqueued: sendResult.sentCount,
       featureReady: 0,
       missingFeatures: 0,
+      planError: formatPredictionJobSendFailures(sendResult.failed),
       scanned: registeredRaces.length,
     };
   }
@@ -334,25 +611,38 @@ export const planRunningStylePredictionsForDate = async (
     states,
     now,
   );
+  const foundationGate = await gateRunningStyleFoundations({
+    date,
+    env,
+    races: selected.needed,
+  });
+  const foundationReadyRaces = selected.needed.filter((race) =>
+    foundationGate.readyCategories.has(toRunningStyleCategory(race)),
+  );
   // Never reset sync-failed rows to pending: their D1 predictions are
   // complete and the fast path in handleRunningStylePredictionJob retries
   // only the Neon mirror. Resetting would wipe written_horse_count and
   // force a full re-inference (and re-classify the race as never-run).
-  const pendingUpsertRaces = selected.needed.filter(
+  const pendingUpsertRaces = foundationReadyRaces.filter(
     (row) => states.get(row.raceKey)?.status !== "sync-failed",
   );
   await upsertRunningStylePendingStates(env.REALTIME_DB, pendingUpsertRaces, predictedAt);
-  await sendPredictionJobs(
+  const sendResult = await sendPredictionJobs(
     env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
-    [...selected.needed, ...mirrorNeeded].map((row) => toPredictionJob(row, predictedAt)),
+    [...foundationReadyRaces, ...mirrorNeeded].map((row) => toPredictionJob(row, predictedAt)),
   );
+  await restoreFailedPendingStates(env, pendingUpsertRaces, sendResult.failed, predictedAt);
+  const queueError = formatPredictionJobSendFailures(sendResult.failed);
   return {
     alreadyQueued: selected.alreadyQueued,
     completed: selected.completed - mirrorNeeded.length,
     date,
-    enqueued: selected.needed.length + mirrorNeeded.length,
+    enqueued: sendResult.sentCount,
     featureReady: selected.featureReady,
     missingFeatures: selected.missingFeatures,
+    planError:
+      [...foundationGate.errors, ...(queueError === undefined ? [] : [queueError])].join("; ") ||
+      undefined,
     scanned: registeredRaces.length,
   };
 };

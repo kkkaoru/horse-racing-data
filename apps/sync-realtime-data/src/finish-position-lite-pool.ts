@@ -12,6 +12,13 @@ import type { Env } from "./types";
 // running-style inference + retry storms. Hyperdrive fan-in caps upstream
 // PG connection usage, so 24 here is safe against Neon's plan max.
 const DEFAULT_POOL_SIZE = 24;
+// Keep connection acquisition below Hyperdrive's 15-second initial connection
+// limit, and bound both the client-side wait and the PostgreSQL statement. The
+// matching query/statement limits ensure an abandoned query cannot keep a
+// Queue invocation or a Neon connection occupied indefinitely.
+const DEFAULT_CONNECTION_TIMEOUT_MS = 15_000;
+const DEFAULT_QUERY_TIMEOUT_MS = 90_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 90_000;
 const SET_DEFAULT_TRANSACTION_READ_ONLY_SQL = "SET default_transaction_read_only TO off";
 let pool: Pool | null = null;
 let writePool: Pool | null = null;
@@ -50,8 +57,11 @@ const onWritePoolConnect = async (client: ClientBase): Promise<void> => {
 export const getFinishPositionPool = (env: Env): Pool => {
   if (pool !== null) return pool;
   pool = new Pool({
+    connectionTimeoutMillis: DEFAULT_CONNECTION_TIMEOUT_MS,
     connectionString: getConnectionString(env),
     max: DEFAULT_POOL_SIZE,
+    query_timeout: DEFAULT_QUERY_TIMEOUT_MS,
+    statement_timeout: DEFAULT_STATEMENT_TIMEOUT_MS,
   });
   return pool;
 };
@@ -59,9 +69,12 @@ export const getFinishPositionPool = (env: Env): Pool => {
 export const getFinishPositionWritePool = (env: Env): Pool => {
   if (writePool !== null) return writePool;
   writePool = new Pool({
+    connectionTimeoutMillis: DEFAULT_CONNECTION_TIMEOUT_MS,
     connectionString: getWriteConnectionString(env),
     max: DEFAULT_POOL_SIZE,
     onConnect: onWritePoolConnect,
+    query_timeout: DEFAULT_QUERY_TIMEOUT_MS,
+    statement_timeout: DEFAULT_STATEMENT_TIMEOUT_MS,
   });
   return writePool;
 };

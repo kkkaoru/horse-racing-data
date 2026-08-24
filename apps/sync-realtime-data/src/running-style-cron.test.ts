@@ -5,8 +5,10 @@ import {
   RUNNING_STYLE_INFERENCE_CRON,
   RUNNING_STYLE_PREWARM_CRON,
   addDaysToYYYYMMDDInJst,
+  buildRunningStyleFoundationKeyForCategory,
   formatYYYYMMDDInJst,
   formatTomorrowYYYYMMDDInJst,
+  isRunningStyleFoundationReady,
   resolveRunningStyleCronDates,
   runRunningStyleCronTick,
   selectRacesNeedingRunningStyleInference,
@@ -21,6 +23,9 @@ const RACE: RegisteredRaceRow = {
   race_bango: "12",
   source: "nar",
 };
+
+const buildFoundationObject = (metadata: Record<string, string>, size: number): R2Object =>
+  ({ customMetadata: metadata, size }) as unknown as R2Object;
 
 const buildCatalogBinding = (): Env["PC_KEIBA_R2_CATALOG"] => ({
   fetch: vi.fn(
@@ -45,6 +50,72 @@ test("RUNNING_STYLE_INFERENCE_CRON runs every 10 min during JST race hours", () 
 
 test("RUNNING_STYLE_PREWARM_CRON runs at 21:00 JST", () => {
   expect(RUNNING_STYLE_PREWARM_CRON).toBe("0 12 * * *");
+});
+
+test("buildRunningStyleFoundationKeyForCategory keeps ban-ei separate from NAR", () => {
+  expect(buildRunningStyleFoundationKeyForCategory("nar", "20260824")).toBe(
+    "feat-running-style-base/catalog-v1/nar/20260824/features.parquet",
+  );
+  expect(buildRunningStyleFoundationKeyForCategory("ban-ei", "20260824")).toBe(
+    "feat-running-style-base/catalog-v1/ban-ei/20260824/features.parquet",
+  );
+});
+
+test("isRunningStyleFoundationReady accepts only a nonempty RS-independent foundation contract", () => {
+  expect(
+    isRunningStyleFoundationReady(
+      buildFoundationObject(
+        {
+          "max-data-sakusei-nengappi": "20260824090000",
+          "row-count": "120",
+          "rs-predicted-at-max": "none",
+          "rs-row-count": "0",
+        },
+        1024,
+      ),
+    ),
+  ).toBe(true);
+  expect(isRunningStyleFoundationReady(null)).toBe(false);
+  expect(isRunningStyleFoundationReady(buildFoundationObject({}, 1024))).toBe(false);
+  expect(
+    isRunningStyleFoundationReady(
+      buildFoundationObject(
+        {
+          "max-data-sakusei-nengappi": "20260824090000",
+          "row-count": "0",
+          "rs-predicted-at-max": "none",
+          "rs-row-count": "0",
+        },
+        1024,
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    isRunningStyleFoundationReady(
+      buildFoundationObject(
+        {
+          "max-data-sakusei-nengappi": "20260824090000",
+          "row-count": "120",
+          "rs-predicted-at-max": "2026-08-24T00:00:00.000Z",
+          "rs-row-count": "120",
+        },
+        1024,
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    isRunningStyleFoundationReady(
+      buildFoundationObject(
+        {
+          "max-data-sakusei-nengappi": "20260824090000",
+          "row-count": "120",
+          "rs-predicted-at-max": "none",
+          "rs-row-count": "0",
+        },
+        0,
+      ),
+    ),
+  ).toBe(false);
 });
 
 test("formatYYYYMMDDInJst formats a UTC instant as JST date", () => {
@@ -88,7 +159,7 @@ test("selectRacesNeedingRunningStyleInference queues races with incomplete predi
   });
 });
 
-test("selectRacesNeedingRunningStyleInference treats active-only coverage as completed", () => {
+test("selectRacesNeedingRunningStyleInference requeues orphaned predictions to repair state", () => {
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],
     new Map([["nar:20260519:46:12", 14]]),
@@ -97,8 +168,8 @@ test("selectRacesNeedingRunningStyleInference treats active-only coverage as com
     new Map(),
   );
 
-  expect(selected.needed).toHaveLength(0);
-  expect(selected.completed).toBe(1);
+  expect(selected.needed).toHaveLength(1);
+  expect(selected.completed).toBe(0);
 });
 
 test("selectRacesNeedingRunningStyleInference skips active queued state", () => {
@@ -106,7 +177,7 @@ test("selectRacesNeedingRunningStyleInference skips active queued state", () => 
     [RACE],
     new Map([["nar:20260519:46:12", 14]]),
     new Map([["nar:20260519:46:12", 14]]),
-    new Map([["nar:20260519:46:12", 10]]),
+    new Map([["nar:20260519:46:12", 14]]),
     new Map([
       [
         "nar:20260519:46:12",
@@ -168,6 +239,35 @@ test("selectRacesNeedingRunningStyleInference treats stale active state as needi
     new Date("2026-05-19T01:00:00.000Z"),
   );
   expect(selected.needed).toHaveLength(1);
+});
+
+test("selectRacesNeedingRunningStyleInference repairs stale processing state even when rows exist", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([
+      [
+        "nar:20260519:46:12",
+        {
+          attemptedAt: "2026-05-19T00:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
+          completedAt: null,
+          expectedHorseCount: 14,
+          featuresR2Key: null,
+          modelVersion: null,
+          raceKey: "nar:20260519:46:12",
+          status: "processing",
+          writtenHorseCount: null,
+        },
+      ],
+    ]),
+    new Date("2026-05-19T01:00:00.000Z"),
+  );
+  expect(selected.needed).toHaveLength(1);
+  expect(selected.completed).toBe(0);
 });
 
 test("selectRacesNeedingRunningStyleInference treats state with attemptedAt=null as active and skips it", () => {

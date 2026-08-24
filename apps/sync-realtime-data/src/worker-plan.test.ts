@@ -1,6 +1,6 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Env, NarRaceSource } from "./types";
+import type { Env, Job, NarRaceSource } from "./types";
 
 const queueSendOk = async (): Promise<QueueSendResponse> => ({
   metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
@@ -32,10 +32,12 @@ vi.mock("./storage", () => ({
   markOddsFetchQueued: vi.fn(async () => {}),
   claimOddsFetch: vi.fn(async () => false),
   claimResultFetch: vi.fn(async () => false),
+  claimResultCacheBust: vi.fn(async () => null),
   claimWeightFetch: vi.fn(async () => true),
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
+  completeResultCacheBust: vi.fn(async () => {}),
   recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),
   incrementEmptyResultAttempts: vi.fn(async () => 0),
@@ -45,6 +47,8 @@ vi.mock("./storage", () => ({
   insertHorseWeightSnapshot: vi.fn(async () => {}),
   insertRaceEntrySnapshot: vi.fn(async () => 0),
   insertRaceResultSnapshot: vi.fn(async () => 0),
+  listPendingResultCacheBustRaceKeys: vi.fn(async () => []),
+  registerResultCacheBust: vi.fn(async () => {}),
   runD1Retention: vi.fn(async () => ({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 })),
   upsertPremiumRaceLink: vi.fn(async () => {}),
   getPremiumRaceLink: vi.fn(async () => null),
@@ -815,7 +819,7 @@ it("compareWeightCandidates sorts same tier by minutes ascending", async () => {
   expect(sorted[1]).toBe(farther);
 });
 
-it("planRealtimeFetches enqueues JRA weight jobs in tier+minutes priority order", async () => {
+it("planRealtimeFetches never enqueues JRA weight jobs because the watchdog owns scheduling", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1023,18 +1027,10 @@ it("planRealtimeFetches enqueues JRA weight jobs in tier+minutes priority order"
   const weightRaceKeys = batched
     .filter((m) => m.body.type === "fetch-weights")
     .map((m) => m.body.raceKey);
-  expect(weightRaceKeys).toStrictEqual([
-    "jra:2026:0530:05:05",
-    "jra:2026:0530:08:05",
-    "jra:2026:0530:05:11",
-    "jra:2026:0530:06:06",
-    "jra:2026:0530:09:12",
-    "jra:2026:0530:08:04",
-    "jra:2026:0530:05:01",
-  ]);
+  expect(weightRaceKeys).toStrictEqual([]);
 });
 
-it("planRealtimeFetches includes weight job at 35 minutes before post", async () => {
+it("planRealtimeFetches leaves a race 35 minutes before post to the weight watchdog", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1084,10 +1080,10 @@ it("planRealtimeFetches includes weight job at 35 minutes before post", async ()
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
-it("planRealtimeFetches includes weight job at 85 minutes before post (within 90-min lead)", async () => {
+it("planRealtimeFetches leaves a race 85 minutes before post to the weight watchdog", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1137,7 +1133,7 @@ it("planRealtimeFetches includes weight job at 85 minutes before post (within 90
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
 it("planRealtimeFetches excludes weight job when race is 185 minutes before post (beyond 180-min lead)", async () => {
@@ -1188,7 +1184,7 @@ it("planRealtimeFetches excludes weight job when race is 185 minutes before post
   expect(weightCount).toBe(0);
 });
 
-it("planRealtimeFetches includes weight job when race is 175 minutes before post (within 180-min lead)", async () => {
+it("planRealtimeFetches leaves a race 175 minutes before post to the weight watchdog", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1238,7 +1234,7 @@ it("planRealtimeFetches includes weight job when race is 175 minutes before post
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
 it("planRealtimeFetches excludes weight job when same-day lastWeightFetchAt is within 60min cooldown", async () => {
@@ -1289,7 +1285,7 @@ it("planRealtimeFetches excludes weight job when same-day lastWeightFetchAt is w
   expect(weightCount).toBe(0);
 });
 
-it("planRealtimeFetches includes weight job when same-day lastWeightFetchAt is older than 60min cooldown", async () => {
+it("planRealtimeFetches does not reschedule an old same-day weight fetch", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1339,7 +1335,7 @@ it("planRealtimeFetches includes weight job when same-day lastWeightFetchAt is o
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
 it("planRealtimeFetches excludes weight job when previous-day lastWeightFetchAt is within 24h cooldown", async () => {
@@ -1390,7 +1386,7 @@ it("planRealtimeFetches excludes weight job when previous-day lastWeightFetchAt 
   expect(weightCount).toBe(0);
 });
 
-it("planRealtimeFetches places NAR weight jobs after JRA weight jobs", async () => {
+it("planRealtimeFetches leaves both JRA and NAR weight jobs to the watchdog", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1463,10 +1459,10 @@ it("planRealtimeFetches places NAR weight jobs after JRA weight jobs", async () 
   const weightRaceKeys = batched
     .filter((m) => m.body.type === "fetch-weights")
     .map((m) => m.body.raceKey);
-  expect(weightRaceKeys).toStrictEqual(["jra:2026:0530:05:05", "nar:2026:0530:55:05"]);
+  expect(weightRaceKeys).toStrictEqual([]);
 });
 
-it("planRealtimeFetches still enqueues weight jobs on a non-three-minute tick (gate removed)", async () => {
+it("planRealtimeFetches does not enqueue weight jobs on a non-three-minute tick", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1516,7 +1512,7 @@ it("planRealtimeFetches still enqueues weight jobs on a non-three-minute tick (g
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:05"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
 it("planRealtimeFetches enqueues fetch-weights and fetch-results for races near start time", async () => {
@@ -1693,7 +1689,7 @@ it("getEmptyWeightRetryDelaySeconds returns null outside the active fetch window
   ).toBe(null);
 });
 
-it("planRealtimeFetches falls back to KV race list when Hyperdrive returns no rows", async () => {
+it("planRealtimeFetches does not use the legacy KV race list to enqueue weight jobs", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
@@ -1762,7 +1758,7 @@ it("planRealtimeFetches falls back to KV race list when Hyperdrive returns no ro
     ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
-  expect(allWeightKeys).toStrictEqual(["jra:2026:0606:05:01", "jra:2026:0606:05:02"]);
+  expect(allWeightKeys).toStrictEqual([]);
 });
 
 it("planRealtimeFetches KV fallback excludes race when within same-day cooldown", async () => {
@@ -1933,7 +1929,7 @@ it("planRealtimeFetches KV fallback excludes race when raceStartAtJst is unparse
   expect(weightCount).toBe(0);
 });
 
-it("planRealtimeFetches writes the KV race list when the live query returns rows", async () => {
+it("planRealtimeFetches does not maintain the legacy weight KV race list", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
@@ -1973,7 +1969,7 @@ it("planRealtimeFetches writes the KV race list when the live query returns rows
   });
   env.REALTIME_JOBS = { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) } as never;
   await planRealtimeFetches(env, "20260606");
-  expect(kvPut).toHaveBeenCalled();
+  expect(kvPut).not.toHaveBeenCalled();
 });
 
 it("planRealtimeFetches skips KV fallback when DETAIL_SECTION_CACHE_KV is absent", async () => {
@@ -2284,7 +2280,7 @@ it("extractJstDate returns the JST date slice for a UTC iso input", async () => 
   expect(extractJstDate("2026-06-06T03:00:00.000Z")).toBe("2026-06-06");
 });
 
-it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit values as JST iso strings", async () => {
+it("findStaleWeightFetchRaces binds post window and dynamic retry backoffs as JST strings", async () => {
   const { findStaleWeightFetchRaces } = await import("./worker");
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));
@@ -2292,11 +2288,13 @@ it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit val
   const db = { prepare } as unknown as D1Database;
   await findStaleWeightFetchRaces(db, new Date("2026-06-07T03:00:00.000Z"));
   expect(bind).toHaveBeenCalledWith(
-    "2026-06-07T11:30:00+09:00",
+    "2026-06-07T11:50:00+09:00",
     "2026-06-07T15:00:00+09:00",
+    "2026-06-07T13:30:00+09:00",
+    "2026-06-07T11:59:00+09:00",
+    "2026-06-07T12:30:00+09:00",
     "2026-06-07T11:55:00+09:00",
     "2026-06-07T11:45:00+09:00",
-    "2026-06-07T12:00:00+09:00",
     24,
   );
 });
@@ -2311,18 +2309,20 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
   // pre-fix UTC bounds lex-compared wrong against stored JST values.
   await findStaleWeightFetchRaces(db, new Date("2026-06-13T02:13:00.000Z"));
   expect(bind).toHaveBeenCalledWith(
-    "2026-06-13T10:43:00+09:00",
+    "2026-06-13T11:03:00+09:00",
     "2026-06-13T14:13:00+09:00",
+    "2026-06-13T12:43:00+09:00",
+    "2026-06-13T11:12:00+09:00",
+    "2026-06-13T11:43:00+09:00",
     "2026-06-13T11:08:00+09:00",
     "2026-06-13T10:58:00+09:00",
-    "2026-06-13T11:13:00+09:00",
     24,
   );
   // Watchdog SQL: race_start_at_jst > lookBack AND < lookAhead AND
-  // (last_weight_fetch_at IS NULL OR < stale). Confirm a real stored JST
+  // last_weight_fetch_at IS NULL. Confirm a real stored JST
   // race-start string the bug previously missed now lex-compares correctly.
   const storedRaceStartJst = "2026-06-13T11:30:00+09:00";
-  const storedLookBack = "2026-06-13T10:43:00+09:00";
+  const storedLookBack = "2026-06-13T11:03:00+09:00";
   const storedLookAhead = "2026-06-13T14:13:00+09:00";
   expect(storedRaceStartJst > storedLookBack).toBe(true);
   expect(storedRaceStartJst < storedLookAhead).toBe(true);
@@ -2354,12 +2354,14 @@ it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records
     {
       lastWeightFetchAt: null,
       lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
       raceKey: "jra:2026:0607:05:06",
       raceStartAtJst: "2026-06-07T12:55:00+09:00",
     },
     {
       lastWeightFetchAt: "2026-06-07T11:30:00+09:00",
       lastWeightFetchAttemptAt: "2026-06-07T11:30:00+09:00",
+      lastWeightFetchSoftMissAt: null,
       raceKey: "jra:2026:0607:05:11",
       raceStartAtJst: "2026-06-07T14:30:00+09:00",
     },
@@ -2372,9 +2374,9 @@ it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records
 // */2 watchdog tick. The SQL predicate that enforces this is opaque to a
 // mocked D1, so this asserts the exact query text carries the new
 // last_weight_fetch_attempt_at backoff clause in addition to the unchanged
-// last_weight_fetch_at success-only clause, and that the attempt-backoff
-// bound is bound ahead of the upcoming-JRA priority timestamp and row limit.
-it("findStaleWeightFetchRaces gates on attempts and prioritizes upcoming unsaved JRA races", async () => {
+// last_weight_fetch_at success-only clause, and that the deadline order is
+// source-neutral before the row limit is applied.
+it("findStaleWeightFetchRaces gates on attempts and prioritizes the earliest race across sources", async () => {
   const { findStaleWeightFetchRaces } = await import("./worker");
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));
@@ -2383,27 +2385,33 @@ it("findStaleWeightFetchRaces gates on attempts and prioritizes upcoming unsaved
   await findStaleWeightFetchRaces(db, new Date("2026-07-03T03:00:00.000Z"));
   expect(prepare.mock.calls[0]![0]).toBe(
     `
-        select race_key, race_start_at_jst, last_weight_fetch_at, last_weight_fetch_attempt_at
+        select race_key, race_start_at_jst, last_weight_fetch_at,
+          last_weight_fetch_attempt_at, last_weight_fetch_soft_miss_at
         from realtime_race_sources
         where race_start_at_jst > ?
-          and race_start_at_jst < ?
-          and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
-          and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
-        order by
-          case
-            when source = 'jra' and last_weight_fetch_at is null and race_start_at_jst >= ? then 0
-            else 1
-          end,
-          race_start_at_jst
+          and race_start_at_jst <= ?
+          and last_weight_fetch_at is null
+          and (
+            last_weight_fetch_attempt_at is null
+            or last_weight_fetch_attempt_at < case
+              when last_weight_fetch_soft_miss_at = last_weight_fetch_attempt_at
+                and race_start_at_jst <= ? then ?
+              when race_start_at_jst <= ? then ?
+              else ?
+            end
+          )
+        order by race_start_at_jst
         limit ?
       `,
   );
   expect(bind).toHaveBeenCalledWith(
-    "2026-07-03T11:30:00+09:00",
+    "2026-07-03T11:50:00+09:00",
     "2026-07-03T15:00:00+09:00",
+    "2026-07-03T13:30:00+09:00",
+    "2026-07-03T11:59:00+09:00",
+    "2026-07-03T12:30:00+09:00",
     "2026-07-03T11:55:00+09:00",
     "2026-07-03T11:45:00+09:00",
-    "2026-07-03T12:00:00+09:00",
     24,
   );
 });
@@ -2428,6 +2436,7 @@ it("runWeightWatchdog logs the no-stale path when there are no candidates", asyn
     null,
     "no stale weight races",
     undefined,
+    3600,
   );
   expect(send).not.toHaveBeenCalled();
   expect(sendBatch).not.toHaveBeenCalled();
@@ -2455,6 +2464,7 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
     null,
     "no stale weight races",
     kv,
+    3600,
   );
 });
 
@@ -2466,7 +2476,7 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
 // dependency fetchAndStoreWeights touches) must never be called from here.
 it("runWeightWatchdog enqueues fetch-weights jobs for stale JRA races without inline-fetching them", async () => {
   const { runWeightWatchdog } = await import("./worker");
-  const { getRaceSource, logFetch } = await import("./storage");
+  const { claimWeightFetch, getRaceSource, logFetch } = await import("./storage");
   const all = vi.fn(async () => ({
     results: [
       {
@@ -2501,15 +2511,33 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale JRA races without in
     undefined,
   );
   expect(sendBatch).toHaveBeenCalledWith([
-    { body: { raceKey: "jra:2026:0607:05:06", type: "fetch-weights" } },
-    { body: { raceKey: "jra:2026:0607:05:11", type: "fetch-weights" } },
+    {
+      body: {
+        raceKey: "jra:2026:0607:05:06",
+        type: "fetch-weights",
+        watchdogReservedAt: "2026-06-07T12:00:00+09:00",
+      },
+    },
+    {
+      body: {
+        raceKey: "jra:2026:0607:05:11",
+        type: "fetch-weights",
+        watchdogReservedAt: "2026-06-07T12:00:00+09:00",
+      },
+    },
   ]);
+  expect(claimWeightFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "jra:2026:0607:05:06",
+    "2026-06-07T12:00:00+09:00",
+    "2026-06-07T11:45:00+09:00",
+  );
   expect(getRaceSource).not.toHaveBeenCalled();
 });
 
 it("runWeightWatchdog enqueues fetch-weights jobs for stale NAR races without inline-fetching them", async () => {
   const { runWeightWatchdog } = await import("./worker");
-  const { getRaceSource, logFetch } = await import("./storage");
+  const { claimWeightFetch, getRaceSource, logFetch } = await import("./storage");
   const all = vi.fn(async () => ({
     results: [
       {
@@ -2537,8 +2565,225 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale NAR races without in
     '{"enqueued":1}',
     undefined,
   );
-  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0607:44:07", type: "fetch-weights" });
+  expect(send).toHaveBeenCalledWith({
+    raceKey: "nar:2026:0607:44:07",
+    type: "fetch-weights",
+    watchdogReservedAt: "2026-06-07T17:30:00+09:00",
+  });
+  expect(claimWeightFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0607:44:07",
+    "2026-06-07T17:30:00+09:00",
+    "2026-06-07T17:25:00+09:00",
+  );
   expect(getRaceSource).not.toHaveBeenCalled();
+});
+
+it("runWeightWatchdog uses the next cron cadence only after a completed soft miss within 90 minutes", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { claimWeightFetch } = await import("./storage");
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: "2026-08-24T14:01:01+09:00",
+        last_weight_fetch_soft_miss_at: "2026-08-24T14:01:01+09:00",
+        race_key: "nar:2026:0824:83:12",
+        race_start_at_jst: "2026-08-24T15:00:00+09:00",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+  } as unknown as Env;
+
+  await runWeightWatchdog(env, new Date("2026-08-24T05:03:00.000Z"));
+
+  expect(claimWeightFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0824:83:12",
+    "2026-08-24T14:03:00+09:00",
+    "2026-08-24T14:02:00+09:00",
+  );
+  expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("runWeightWatchdog atomically enqueues one job when duplicate reads return the same race", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { claimWeightFetch } = await import("./storage");
+  vi.mocked(claimWeightFetch).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  const candidate = {
+    last_weight_fetch_at: null,
+    last_weight_fetch_attempt_at: "2026-08-24T14:01:01+09:00",
+    last_weight_fetch_soft_miss_at: "2026-08-24T14:01:01+09:00",
+    race_key: "nar:2026:0824:83:12",
+    race_start_at_jst: "2026-08-24T15:00:00+09:00",
+  };
+  const all = vi.fn(async () => ({ results: [candidate, candidate] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+
+  await runWeightWatchdog(env, new Date("2026-08-24T05:03:00.000Z"));
+
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(sendBatch).not.toHaveBeenCalled();
+});
+
+it("runWeightWatchdog does not enqueue a race when its atomic reservation loses", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { claimWeightFetch, logFetch } = await import("./storage");
+  vi.mocked(claimWeightFetch).mockResolvedValueOnce(false);
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: null,
+        race_key: "nar:2026:0607:44:07",
+        race_start_at_jst: "2026-06-07T17:45:00+09:00",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  await runWeightWatchdog(env, new Date("2026-06-07T08:30:00.000Z"));
+  expect(send).not.toHaveBeenCalled();
+  expect(sendBatch).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog",
+    "ok",
+    null,
+    '{"enqueued":0}',
+    undefined,
+  );
+});
+
+it("runWeightWatchdog recovers a failed queue send on the next near-race backoff", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { claimWeightFetch, logFetch } = await import("./storage");
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: "2026-06-07T17:30:00+09:00",
+        race_key: "nar:2026:0607:44:07",
+        race_start_at_jst: "2026-06-07T17:45:00+09:00",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi
+    .fn<() => Promise<void>>()
+    .mockRejectedValueOnce(new Error("queue unavailable"))
+    .mockResolvedValueOnce();
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+
+  await runWeightWatchdog(env, new Date("2026-06-07T08:30:00.000Z"));
+  await runWeightWatchdog(env, new Date("2026-06-07T08:36:00.000Z"));
+
+  expect(send).toHaveBeenLastCalledWith({
+    raceKey: "nar:2026:0607:44:07",
+    type: "fetch-weights",
+    watchdogReservedAt: "2026-06-07T17:36:00+09:00",
+  });
+  expect(claimWeightFetch).toHaveBeenLastCalledWith(
+    expect.anything(),
+    "nar:2026:0607:44:07",
+    "2026-06-07T17:36:00+09:00",
+    "2026-06-07T17:31:00+09:00",
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog",
+    "error",
+    null,
+    "queue unavailable",
+    undefined,
+  );
+});
+
+it("runWeightWatchdog reserves and enqueues 57 races uniquely across three capped ticks", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { claimWeightFetch } = await import("./storage");
+  const firstRows = Array.from({ length: 24 }, (_, index) => ({
+    last_weight_fetch_at: null,
+    last_weight_fetch_attempt_at: null,
+    race_key: `nar:2026:0607:44:${String(index + 1).padStart(2, "0")}`,
+    race_start_at_jst: "2026-06-07T17:45:00+09:00",
+  }));
+  const secondRows = Array.from({ length: 24 }, (_, index) => ({
+    last_weight_fetch_at: null,
+    last_weight_fetch_attempt_at: null,
+    race_key: `nar:2026:0607:45:${String(index + 1).padStart(2, "0")}`,
+    race_start_at_jst: "2026-06-07T17:45:00+09:00",
+  }));
+  const thirdRows = Array.from({ length: 9 }, (_, index) => ({
+    last_weight_fetch_at: null,
+    last_weight_fetch_attempt_at: null,
+    race_key: `nar:2026:0607:46:${String(index + 1).padStart(2, "0")}`,
+    race_start_at_jst: "2026-06-07T17:45:00+09:00",
+  }));
+  const all = vi
+    .fn()
+    .mockResolvedValueOnce({ results: firstRows })
+    .mockResolvedValueOnce({ results: secondRows })
+    .mockResolvedValueOnce({ results: thirdRows });
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+
+  await runWeightWatchdog(env, new Date("2026-06-07T08:30:00.000Z"));
+  await runWeightWatchdog(env, new Date("2026-06-07T08:32:00.000Z"));
+  await runWeightWatchdog(env, new Date("2026-06-07T08:34:00.000Z"));
+
+  const batches = sendBatch.mock.calls as unknown as [Array<{ body: Job }>][];
+  const sentRaceKeys = batches.flatMap((call) =>
+    call[0].flatMap((message) =>
+      message.body.type === "fetch-weights" ? [message.body.raceKey] : [],
+    ),
+  );
+  expect(batches[0]![0]).toHaveLength(24);
+  expect(batches[1]![0]).toHaveLength(24);
+  expect(batches[2]![0]).toHaveLength(9);
+  expect(sentRaceKeys).toHaveLength(57);
+  expect(new Set(sentRaceKeys).size).toBe(57);
+  expect(claimWeightFetch).toHaveBeenCalledTimes(57);
+  expect(batches[0]![0][0]!.body).toStrictEqual({
+    raceKey: "nar:2026:0607:44:01",
+    type: "fetch-weights",
+    watchdogReservedAt: "2026-06-07T17:30:00+09:00",
+  });
+  expect(batches[2]![0][8]!.body).toStrictEqual({
+    raceKey: "nar:2026:0607:46:09",
+    type: "fetch-weights",
+    watchdogReservedAt: "2026-06-07T17:34:00+09:00",
+  });
 });
 
 it("runWeightWatchdog logs an error when the d1 query throws and does not enqueue jobs", async () => {
@@ -2576,7 +2821,10 @@ it("runWeightWatchdog logs an error when the d1 query throws and does not enqueu
 
 it("planResultFetchesOnly re-enqueues fetch-results when lastResultQueuedAt is older than the stale threshold", async () => {
   const { planResultFetchesOnly } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  const { claimResultFetch, getRaceSource, listSchedulableRaceSourcesByDate } =
+    await import("./storage");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(null);
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
     {
       babaCode: "08",
@@ -2658,7 +2906,7 @@ it("planResultFetchesOnly skips fetch-results when lastResultQueuedAt is fresh (
   expect(send).not.toHaveBeenCalled();
 });
 
-it("planResultFetchesOnly enqueues fetch-results for a finished race that has never been queued", async () => {
+it("planResultFetchesOnly handles a finished race inline without duplicate queue dispatch", async () => {
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
@@ -2697,7 +2945,7 @@ it("planResultFetchesOnly enqueues fetch-results for a finished race that has ne
   });
   const count = await planResultFetchesOnly(env, "20260607");
   expect(count).toBe(1);
-  expect(send).toHaveBeenCalledWith({ raceKey: "jra:2026:0607:09:03", type: "fetch-results" });
+  expect(send).not.toHaveBeenCalled();
 });
 
 it("planResultFetchesOnly attempts inline NAR result fetches so race trends are not blocked by queue backlog", async () => {
@@ -2739,7 +2987,7 @@ it("planResultFetchesOnly attempts inline NAR result fetches so race trends are 
   });
   const count = await planResultFetchesOnly(env, "20260607");
   expect(count).toBe(1);
-  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0607:44:12", type: "fetch-results" });
+  expect(send).not.toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-results",
@@ -2753,7 +3001,7 @@ it("planResultFetchesOnly attempts inline NAR result fetches so race trends are 
     "plan-result-fetches",
     "plan-result-fetches-summary",
     null,
-    '{"enqueued":1,"eligible":1,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
+    '{"enqueued":0,"eligible":1,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
     undefined,
   );
 });
@@ -2817,17 +3065,16 @@ it("planResultFetchesOnly attempts inline JRA result fetches with a low per-tick
       updatedAt: "2026-06-07T00:00:00+09:00",
     },
   ] as never);
+  const send = vi.fn(queueSendOk);
   const sendBatch = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send: vi.fn(queueSendOk), sendBatch },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch },
     REALTIME_TEST_NOW: "2026-06-07T03:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260607");
   expect(count).toBe(2);
-  expect(sendBatch).toHaveBeenCalledWith([
-    { body: { raceKey: "jra:2026:0607:09:03", type: "fetch-results" } },
-    { body: { raceKey: "jra:2026:0607:09:04", type: "fetch-results" } },
-  ]);
+  expect(send).toHaveBeenCalledWith({ raceKey: "jra:2026:0607:09:04", type: "fetch-results" });
+  expect(sendBatch).not.toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-results",
@@ -2849,7 +3096,7 @@ it("planResultFetchesOnly attempts inline JRA result fetches with a low per-tick
     "plan-result-fetches",
     "plan-result-fetches-summary",
     null,
-    '{"enqueued":2,"eligible":2,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
+    '{"enqueued":1,"eligible":2,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
     undefined,
   );
 });

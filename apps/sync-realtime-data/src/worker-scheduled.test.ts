@@ -2,6 +2,10 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env, Job } from "./types";
 
+const queueSendResponse = (): QueueSendResponse => ({
+  metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+});
+
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
   upsertNarRaceSource: vi.fn(async () => {}),
@@ -23,10 +27,12 @@ vi.mock("./storage", () => ({
   markOddsFetchQueued: vi.fn(async () => {}),
   claimOddsFetch: vi.fn(async () => false),
   claimResultFetch: vi.fn(async () => false),
+  claimResultCacheBust: vi.fn(async () => null),
   claimWeightFetch: vi.fn(async () => true),
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
+  completeResultCacheBust: vi.fn(async () => {}),
   recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),
   incrementEmptyResultAttempts: vi.fn(async () => 0),
@@ -36,6 +42,8 @@ vi.mock("./storage", () => ({
   insertHorseWeightSnapshot: vi.fn(async () => {}),
   insertRaceEntrySnapshot: vi.fn(async () => 0),
   insertRaceResultSnapshot: vi.fn(async () => 0),
+  listPendingResultCacheBustRaceKeys: vi.fn(async () => []),
+  registerResultCacheBust: vi.fn(async () => {}),
   runD1Retention: vi.fn(async () => ({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 })),
   upsertPremiumRaceLink: vi.fn(async () => {}),
   getPremiumRaceLink: vi.fn(async () => null),
@@ -165,12 +173,39 @@ vi.mock("./premium-race", async () => {
 const buildDb = (): D1Database => {
   const all = vi.fn(async () => ({ results: [] }));
   const first = vi.fn(async () => null);
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
   const bind = vi.fn(() => ({ all, first, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ all, bind, first, run }));
   const batch = vi.fn(async () => []);
   const exec = vi.fn(async () => ({}));
   return { batch, exec, prepare } as unknown as D1Database;
+};
+
+const buildAtomicRecoveryDb = (): D1Database => {
+  const state = { ownerToken: "", owned: false };
+  const prepare = vi.fn((sql: string) => ({
+    bind: vi.fn((...values: unknown[]) => ({
+      run: vi.fn(async () => {
+        if (sql.includes("insert into realtime_plan_recovery_claims")) {
+          if (state.owned) return { meta: { changes: 0 } };
+          state.owned = true;
+          state.ownerToken = String(values[1]);
+          return { meta: { changes: 1 } };
+        }
+        if (
+          sql.includes("delete from realtime_plan_recovery_claims") &&
+          state.ownerToken === String(values[1])
+        ) {
+          state.owned = false;
+          state.ownerToken = "";
+          return { meta: { changes: 1 } };
+        }
+        return { meta: { changes: 0 } };
+      }),
+    })),
+    first: vi.fn(async () => null),
+  }));
+  return { prepare } as unknown as D1Database;
 };
 
 const buildEnv = (overrides?: Partial<Env>): Env => {
@@ -471,8 +506,17 @@ it("scheduled triggers logWin5CronResult for the WIN5 cron", async () => {
   expect(logWin5CronResult).toHaveBeenCalledTimes(1);
 });
 
-it("scheduled triggers self-schedule planner during polling window", async () => {
+it("scheduled waits for the normal realtime planner and does not self-enqueue after success", async () => {
   const { default: worker } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const order: string[] = [];
+  vi.mocked(logFetch).mockImplementation(async (_db, jobType, status) => {
+    if (jobType === "plan-realtime-fetches" && status === "ok") {
+      order.push("normal-ok");
+    }
+  });
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never);
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -480,11 +524,134 @@ it("scheduled triggers self-schedule planner during polling window", async () =>
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    env,
     ctx,
   );
-  await flushWaits(waits);
-  expect(waits.length).toBeGreaterThanOrEqual(2);
+  expect(waits).toHaveLength(1);
+  await expect(waits[0]).resolves.toBeUndefined();
+  expect(order).toStrictEqual(["normal-ok"]);
+  expect(send).not.toHaveBeenCalled();
+  expect(logFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches-self",
+    "queued",
+    expect.anything(),
+    expect.anything(),
+  );
+});
+
+it("scheduled self-enqueues recovery after realtime planner failure and keeps waitUntil rejected", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  const plannerError = new Error("scheduled planner failed");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(plannerError);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never);
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "* 1-12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+  expect(waits).toHaveLength(1);
+  await expect(waits[0]).rejects.toBe(plannerError);
+  expect(send).toHaveBeenCalledWith(
+    { date: "20260512", selfSchedule: true, type: "plan-realtime-fetches" },
+    { delaySeconds: 60 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches-self",
+    "queued",
+    null,
+    "20260512",
+  );
+});
+
+it("scheduled uses a bounded jittered single recovery for Hyperdrive connection pressure", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  const plannerError = new Error("remaining connection slots are reserved");
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(plannerError);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:06:00.000Z" } as never);
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+  const { ctx, waits } = buildCtx();
+
+  await worker.scheduled(
+    {
+      cron: "6-59/15 0-14 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:06:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+
+  await expect(waits[0]).rejects.toBe(plannerError);
+  expect(send).toHaveBeenCalledWith(
+    { date: "20260512", selfSchedule: true, type: "plan-realtime-fetches" },
+    { delaySeconds: 180 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches-recovery",
+    "queued",
+    null,
+    '{"delaySeconds":180,"failureClass":"connection_pressure","stage":"scheduled.enqueue-single-recovery"}',
+    undefined,
+  );
+});
+
+it("scheduled keeps the planner rejection visible when self-recovery enqueue also fails", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  const plannerError = new Error("scheduled planner failed");
+  const recoveryError = new Error("self recovery queue failed");
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(plannerError);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never);
+  vi.spyOn(env.REALTIME_JOBS, "send").mockRejectedValueOnce(recoveryError);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "* 1-12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+  expect(waits).toHaveLength(1);
+  await expect(waits[0]).rejects.toBe(plannerError);
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Scheduled realtime planner self-recovery failed date=20260512 name=Error message=self recovery queue failed stack=${recoveryError.stack}`,
+  );
+});
+
+it("scheduled non-plan cron keeps its single waitUntil path without self-recovery", async () => {
+  const { default: worker } = await import("./worker");
+  const { logWin5CronResult } = await import("./win5-cron");
+  const env = buildEnv();
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "30 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+  expect(waits).toHaveLength(1);
+  await expect(waits[0]).resolves.toBeUndefined();
+  expect(logWin5CronResult).toHaveBeenCalledTimes(1);
+  expect(send).not.toHaveBeenCalled();
 });
 
 it("scheduled defaults scheduledAt to new Date() when controller.scheduledTime is not a number", async () => {
@@ -754,9 +921,83 @@ it("scheduled result-poll cron logs plan-result-fetches error when planner rejec
     "planner boom",
     undefined,
   );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-paddock",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
 });
 
-it("scheduled result-poll cron also logs plan-premium-paddock ok alongside plan-result-fetches", async () => {
+it("scheduled still runs paddock when the successful result-plan log rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  const resultLogError = new Error("result success log unavailable");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([] as never);
+  vi.mocked(logFetch).mockImplementation(async (_db, jobType, status) => {
+    if (jobType === "plan-result-fetches" && status === "ok") throw resultLogError;
+  });
+  const { ctx, waits } = buildCtx();
+
+  await worker.scheduled(
+    {
+      cron: "*/2 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+
+  await expect(waits[0]).resolves.toBeUndefined();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-paddock",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
+  expect(console.error).toHaveBeenCalledTimes(1);
+});
+
+it("scheduled still runs paddock when result planning and its error log both reject", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  const plannerError = new Error("result planner unavailable");
+  const resultLogError = new Error("result error log unavailable");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate)
+    .mockRejectedValueOnce(plannerError)
+    .mockResolvedValue([] as never);
+  vi.mocked(logFetch).mockImplementation(async (_db, jobType, status) => {
+    if (jobType === "plan-result-fetches" && status === "error") throw resultLogError;
+  });
+  const { ctx, waits } = buildCtx();
+
+  await worker.scheduled(
+    {
+      cron: "*/2 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+
+  await expect(waits[0]).resolves.toBeUndefined();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-paddock",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
+  expect(console.error).toHaveBeenCalledTimes(1);
+});
+
+it("scheduled result-poll cron runs premium paddock after result planning in one waitUntil", async () => {
   const { default: worker } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
@@ -774,6 +1015,7 @@ it("scheduled result-poll cron also logs plan-premium-paddock ok alongside plan-
     } as never),
     ctx,
   );
+  expect(waits).toHaveLength(1);
   await flushWaits(waits);
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
@@ -782,6 +1024,41 @@ it("scheduled result-poll cron also logs plan-premium-paddock ok alongside plan-
     null,
     "0 jobs queued",
   );
+  expect(
+    vi.mocked(listSchedulableRaceSourcesByDate).mock.calls.map((call) => call[1]),
+  ).toStrictEqual(["20260512", "20260511", "20260512", "20260513"]);
+});
+
+it("scheduled closes a premium-paddock outcome log failure without rejecting waitUntil", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  const paddockLogError = new Error("paddock success log unavailable");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([] as never);
+  vi.mocked(logFetch).mockImplementation(async (_db, jobType, status) => {
+    if (jobType === "plan-premium-paddock" && status === "ok") throw paddockLogError;
+  });
+  const { ctx, waits } = buildCtx();
+
+  await worker.scheduled(
+    {
+      cron: "*/2 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+
+  await expect(waits[0]).resolves.toBeUndefined();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
+  expect(console.error).toHaveBeenCalledTimes(1);
 });
 
 it("scheduled result-poll cron logs plan-premium-paddock error when paddock planner rejects", async () => {
@@ -873,9 +1150,243 @@ it("queue retries with standard delay when handleJob throws a non-overload error
   );
 });
 
+it("queue converts planner connection pressure into one delayed recovery and acks the original", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(
+    new Error("MaxClientsInSessionMode: too many connections"),
+  );
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:06:00.000Z" } as never);
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+  const message = {
+    ack,
+    body: { date: "20260512", type: "plan-realtime-fetches" } satisfies Job,
+    retry,
+  };
+
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    env,
+  );
+
+  expect(send).toHaveBeenCalledWith(
+    { date: "20260512", selfSchedule: true, type: "plan-realtime-fetches" },
+    { delaySeconds: 120 },
+  );
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(retry).not.toHaveBeenCalled();
+});
+
+it("queue acks a failed connection-pressure recovery without creating another retry", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(
+    new Error("connection pool exhausted"),
+  );
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:10:00.000Z" } as never);
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+  const message = {
+    ack,
+    body: {
+      date: "20260512",
+      selfSchedule: true,
+      type: "plan-realtime-fetches",
+    } satisfies Job,
+    retry,
+  };
+
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    env,
+  );
+
+  expect(send).not.toHaveBeenCalled();
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(retry).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches-recovery",
+    "exhausted",
+    null,
+    '{"failureClass":"connection_pressure","stage":"queue.single-recovery-exhausted"}',
+    undefined,
+  );
+});
+
+it("concurrent planner failures acquire one atomic recovery claim and send one recovery", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValue(
+    new Error("Timed out while creating a new server connection."),
+  );
+  const firstAck = vi.fn();
+  const firstRetry = vi.fn();
+  const secondAck = vi.fn();
+  const secondRetry = vi.fn();
+  const env = buildEnv({
+    REALTIME_DB: buildAtomicRecoveryDb(),
+    REALTIME_TEST_NOW: "2026-05-12T03:06:00.000Z",
+  });
+  const send = vi.spyOn(env.REALTIME_JOBS, "send");
+
+  await Promise.all([
+    worker.queue(
+      {
+        ackAll: () => {},
+        messages: [
+          {
+            ack: firstAck,
+            body: { date: "20260512", type: "plan-realtime-fetches" } satisfies Job,
+            retry: firstRetry,
+          },
+        ],
+        queue: "q",
+        retryAll: () => {},
+      } as never,
+      env,
+    ),
+    worker.queue(
+      {
+        ackAll: () => {},
+        messages: [
+          {
+            ack: secondAck,
+            body: { date: "20260512", type: "plan-realtime-fetches" } satisfies Job,
+            retry: secondRetry,
+          },
+        ],
+        queue: "q",
+        retryAll: () => {},
+      } as never,
+      env,
+    ),
+  ]);
+
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(firstAck).toHaveBeenCalledTimes(1);
+  expect(secondAck).toHaveBeenCalledTimes(1);
+  expect(firstRetry).not.toHaveBeenCalled();
+  expect(secondRetry).not.toHaveBeenCalled();
+});
+
+it("a failed recovery send rolls back its claim so the next delivery can acquire it", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValue(
+    new Error("Failed to acquire permit to connect to the database."),
+  );
+  const firstAck = vi.fn();
+  const firstRetry = vi.fn();
+  const secondAck = vi.fn();
+  const secondRetry = vi.fn();
+  const env = buildEnv({
+    REALTIME_DB: buildAtomicRecoveryDb(),
+    REALTIME_TEST_NOW: "2026-05-12T03:06:00.000Z",
+  });
+  const sendError = new Error("recovery queue unavailable");
+  const send = vi
+    .spyOn(env.REALTIME_JOBS, "send")
+    .mockRejectedValueOnce(sendError)
+    .mockResolvedValueOnce(queueSendResponse());
+
+  await worker.queue(
+    {
+      ackAll: () => {},
+      messages: [
+        {
+          ack: firstAck,
+          body: { date: "20260512", type: "plan-realtime-fetches" } satisfies Job,
+          retry: firstRetry,
+        },
+      ],
+      queue: "q",
+      retryAll: () => {},
+    } as never,
+    env,
+  );
+  await worker.queue(
+    {
+      ackAll: () => {},
+      messages: [
+        {
+          ack: secondAck,
+          body: { date: "20260512", type: "plan-realtime-fetches" } satisfies Job,
+          retry: secondRetry,
+        },
+      ],
+      queue: "q",
+      retryAll: () => {},
+    } as never,
+    env,
+  );
+
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(firstAck).toHaveBeenCalledTimes(1);
+  expect(secondAck).toHaveBeenCalledTimes(1);
+  expect(firstRetry).not.toHaveBeenCalled();
+  expect(secondRetry).not.toHaveBeenCalled();
+});
+
+it("queue persists the running-style start attempt before prediction and then acknowledges success", async () => {
+  const { default: worker } = await import("./worker");
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { logFetch } = await import("./storage");
+  const order: string[] = [];
+  vi.mocked(logFetch).mockImplementationOnce(async () => {
+    order.push("start");
+  });
+  vi.mocked(handleRunningStylePredictionJob).mockImplementationOnce(async () => {
+    order.push("prediction");
+    return null;
+  });
+  const ack = vi.fn(() => {
+    order.push("ack");
+  });
+  const retry = vi.fn();
+  const message = {
+    ack,
+    attempts: 3,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      predictedAt: "2026-05-12T11:00:00.000Z",
+      raceBango: "01",
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+      type: "generate-running-style-predictions",
+    } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(order).toStrictEqual(["start", "prediction", "ack"]);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "generate-running-style-predictions",
+    "started",
+    "jra:20260512:08:01",
+    "queue=running-style-predictions attempts=3",
+    undefined,
+  );
+  expect(retry).not.toHaveBeenCalled();
+});
+
 it("queue logs catalog 502 details and retries running-style prediction failures", async () => {
   const { default: worker } = await import("./worker");
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { logFetch } = await import("./storage");
   const catalogError = new Error(
     "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
   );
@@ -885,6 +1396,7 @@ it("queue logs catalog 502 details and retries running-style prediction failures
   const retry = vi.fn();
   const message = {
     ack,
+    attempts: 2,
     body: {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0512",
@@ -903,8 +1415,103 @@ it("queue logs catalog 502 details and retries running-style prediction failures
   );
   expect(ack).not.toHaveBeenCalled();
   expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+  expect(logFetch).toHaveBeenNthCalledWith(
+    1,
+    expect.anything(),
+    "generate-running-style-predictions",
+    "started",
+    "jra:20260512:08:01",
+    "queue=running-style-predictions attempts=2",
+    undefined,
+  );
+  expect(logFetch).toHaveBeenNthCalledWith(
+    2,
+    expect.anything(),
+    "generate-running-style-predictions",
+    "error",
+    "jra:20260512:08:01",
+    "queue=running-style-predictions attempts=2 error=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+    undefined,
+  );
   expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
-    `Queue job failed type=generate-running-style-predictions name=Error message=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable stack=${catalogError.stack}`,
+    `Queue job failed attempts=2 raceKey=jra:20260512:08:01 type=generate-running-style-predictions name=Error message=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable stack=${catalogError.stack}`,
+  );
+});
+
+it("queue continues running-style prediction when the awaited start log fails", async () => {
+  const { default: worker } = await import("./worker");
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { logFetch } = await import("./storage");
+  const logError = new Error("D1 start log unavailable");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.mocked(logFetch).mockRejectedValueOnce(logError);
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const message = {
+    ack,
+    attempts: 5,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      predictedAt: "2026-05-12T11:00:00.000Z",
+      raceBango: "01",
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+      type: "generate-running-style-predictions",
+    } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(handleRunningStylePredictionJob).toHaveBeenCalledTimes(1);
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(retry).not.toHaveBeenCalled();
+  expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe(
+    `Running-style queue start log failed attempts=5 raceKey=jra:20260512:08:01 name=Error message=D1 start log unavailable stack=${logError.stack}`,
+  );
+});
+
+it("queue retries the original running-style failure when the error log also fails", async () => {
+  const { default: worker } = await import("./worker");
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { logFetch } = await import("./storage");
+  const predictionError = new Error("prediction failed");
+  const logError = new Error("D1 error log unavailable");
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce(predictionError);
+  vi.mocked(logFetch).mockResolvedValueOnce(undefined).mockRejectedValueOnce(logError);
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const message = {
+    ack,
+    attempts: 6,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      predictedAt: "2026-05-12T11:00:00.000Z",
+      raceBango: "01",
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+      type: "generate-running-style-predictions",
+    } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(ack).not.toHaveBeenCalled();
+  expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+  expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe(
+    `Running-style queue error log failed attempts=6 raceKey=jra:20260512:08:01 name=Error message=D1 error log unavailable stack=${logError.stack}`,
+  );
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Queue job failed attempts=6 raceKey=jra:20260512:08:01 type=generate-running-style-predictions name=Error message=prediction failed stack=${predictionError.stack}`,
   );
 });
 
@@ -926,6 +1533,7 @@ it("queue falls back to implicit retry when delayed retry throws", async () => {
     .mockImplementationOnce(() => undefined);
   const message = {
     ack,
+    attempts: 4,
     body: {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0512",
@@ -947,21 +1555,21 @@ it("queue falls back to implicit retry when delayed retry throws", async () => {
   expect(retry.mock.calls[0]?.[0]).toStrictEqual({ delaySeconds: 60 });
   expect(retry.mock.calls[1]?.[0]).toBeUndefined();
   expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
-    `Queue job failed type=generate-running-style-predictions name=Error message=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable stack=${catalogError.stack}`,
+    `Queue job failed attempts=4 raceKey=jra:20260512:08:01 type=generate-running-style-predictions name=Error message=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable stack=${catalogError.stack}`,
   );
   expect(vi.mocked(console.error).mock.calls[1]?.[0]).toBe(
-    `Queue delayed retry failed type=generate-running-style-predictions name=Error message=retry delay not configured stack=${retryError.stack}`,
+    `Queue delayed retry failed attempts=4 raceKey=jra:20260512:08:01 type=generate-running-style-predictions name=Error message=retry delay not configured stack=${retryError.stack}`,
   );
 });
 
-it("scheduled triggers the weight watchdog for the every-minute cron", async () => {
+it("scheduled triggers the weight watchdog for the every-two-minute cron", async () => {
   const { default: worker } = await import("./worker");
   const { logFetch } = await import("./storage");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/2 * * * *",
-      scheduledTime: Date.parse("2026-06-07T03:00:00.000Z"),
+      cron: "1-59/2 * * * *",
+      scheduledTime: Date.parse("2026-06-07T03:01:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
     buildEnv(),
@@ -975,5 +1583,6 @@ it("scheduled triggers the weight watchdog for the every-minute cron", async () 
     null,
     "no stale weight races",
     undefined,
+    3600,
   );
 });

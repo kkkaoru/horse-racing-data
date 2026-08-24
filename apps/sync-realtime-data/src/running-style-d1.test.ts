@@ -410,3 +410,34 @@ it("markRunningStyleInferenceFailed stringifies non-Error values", async () => {
   await markRunningStyleInferenceFailed(db, "jra:20260512:08:01", "x");
   expect(bind.mock.calls[0]).toStrictEqual(["x", "jra:20260512:08:01"]);
 });
+
+it("markRunningStyleInferenceEnqueueFailed skips D1 when no sends failed", async () => {
+  const { markRunningStyleInferenceEnqueueFailed } = await import("./running-style-d1");
+  const batch = vi.fn(async () => []);
+  const prepare = vi.fn();
+  const db = { batch, prepare } as unknown as D1Database;
+  await markRunningStyleInferenceEnqueueFailed(db, [], "2026-08-23T17:42:34.492Z");
+  expect(prepare).not.toHaveBeenCalled();
+  expect(batch).not.toHaveBeenCalled();
+});
+
+it("markRunningStyleInferenceEnqueueFailed conditionally restores failed pending states", async () => {
+  const { markRunningStyleInferenceEnqueueFailed } = await import("./running-style-d1");
+  const bind = vi.fn(() => ({ marker: "statement" }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await markRunningStyleInferenceEnqueueFailed(
+    db,
+    [
+      { error: new Error("Unknown Internal Error (15000)"), raceKey: "nar:20260824:48:04" },
+      { error: "individual send failed", raceKey: "nar:20260824:48:05" },
+    ],
+    "2026-08-23T17:42:34.492Z",
+  );
+  expect(bind.mock.calls).toStrictEqual([
+    ["Unknown Internal Error (15000)", "nar:20260824:48:04", "2026-08-23T17:42:34.492Z"],
+    ["individual send failed", "nar:20260824:48:05", "2026-08-23T17:42:34.492Z"],
+  ]);
+  expect(batch).toHaveBeenCalledTimes(1);
+});

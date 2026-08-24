@@ -38,6 +38,7 @@ const D1_BATCH_SIZE = 100;
 // still see one row per distinct outcome.
 const LOG_DEDUPE_KV_PREFIX = "log-dedupe:";
 const LOG_DEDUPE_TTL_SECONDS = 60;
+const LOG_DEDUPE_MIN_TTL_SECONDS = 60;
 const LOG_DEDUPE_HASH_OFFSET = 2166136261;
 const LOG_DEDUPE_HASH_PRIME = 16777619;
 const LOG_DEDUPE_HASH_MASK = 0xffffffff;
@@ -128,6 +129,51 @@ interface RaceResultSnapshotRow {
   horse_name: string | null;
   horse_number: string;
   time: string | null;
+}
+
+interface ResultCacheBustClaimRow {
+  desired_is_complete: number;
+  desired_result_signature: string;
+  race_delivered_is_complete: number | null;
+  race_delivered_result_signature: string | null;
+  race_key: string;
+  trend_delivered_is_complete: number | null;
+  trend_delivered_result_signature: string | null;
+}
+
+interface ResultCacheBustRaceKeyRow {
+  race_key: string;
+}
+
+export interface ResultCacheBustClaim {
+  isComplete: boolean;
+  needsRaceBust: boolean;
+  needsTrendBust: boolean;
+  raceKey: string;
+  resultSignature: string;
+}
+
+interface RegisterResultCacheBustInput {
+  db: D1Database;
+  fetchedAt: string;
+  isComplete: boolean;
+  raceKey: string;
+  results: ReadonlyArray<Omit<RaceResult, "fetchedAt">>;
+}
+
+interface ClaimResultCacheBustInput {
+  db: D1Database;
+  leaseUntil: string;
+  now: string;
+  raceKey: string;
+}
+
+interface CompleteResultCacheBustInput {
+  claim: ResultCacheBustClaim;
+  db: D1Database;
+  now: string;
+  raceDelivered: boolean;
+  trendDelivered: boolean;
 }
 
 interface SameDayVenueJockeyWinRow {
@@ -721,7 +767,8 @@ export const updateLastFetch = async (
     | "last_odds_fetch_at"
     | "last_result_fetch_at"
     | "last_weight_fetch_at"
-    | "last_weight_fetch_attempt_at",
+    | "last_weight_fetch_attempt_at"
+    | "last_weight_fetch_soft_miss_at",
   fetchedAt: string,
 ): Promise<void> => {
   await db
@@ -740,7 +787,9 @@ export const claimWeightFetch = async (
     .prepare(
       `
         update realtime_race_sources
-        set last_weight_fetch_attempt_at = ?, updated_at = ?
+        set last_weight_fetch_attempt_at = ?,
+            last_weight_fetch_soft_miss_at = null,
+            updated_at = ?
         where race_key = ?
           and last_weight_fetch_at is null
           and (
@@ -750,6 +799,29 @@ export const claimWeightFetch = async (
       `,
     )
     .bind(claimedAt, claimedAt, raceKey, leaseExpiredBefore)
+    .run();
+  return result.meta.changes > 0;
+};
+
+export const claimReservedWeightFetch = async (
+  db: D1Database,
+  raceKey: string,
+  reservedAt: string,
+  claimedAt: string,
+): Promise<boolean> => {
+  const result = await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set last_weight_fetch_attempt_at = ?,
+            last_weight_fetch_soft_miss_at = null,
+            updated_at = ?
+        where race_key = ?
+          and last_weight_fetch_at is null
+          and last_weight_fetch_attempt_at = ?
+      `,
+    )
+    .bind(claimedAt, claimedAt, raceKey, reservedAt)
     .run();
   return result.meta.changes > 0;
 };
@@ -1031,6 +1103,136 @@ const resultSnapshotSignature = (horses: ReadonlyArray<Omit<RaceResult, "fetched
     ),
   );
 
+export const registerResultCacheBust = async (
+  input: RegisterResultCacheBustInput,
+): Promise<void> => {
+  const signature = resultSnapshotSignature(input.results);
+  await input.db
+    .prepare(
+      `
+        insert into result_cache_bust_outbox (
+          race_key, desired_result_signature, desired_is_complete, updated_at
+        ) values (?, ?, ?, ?)
+        on conflict(race_key) do update set
+          desired_result_signature = excluded.desired_result_signature,
+          desired_is_complete = excluded.desired_is_complete,
+          lease_until = null,
+          updated_at = excluded.updated_at
+        where desired_result_signature != excluded.desired_result_signature
+           or desired_is_complete != excluded.desired_is_complete
+      `,
+    )
+    .bind(input.raceKey, signature, input.isComplete ? 1 : 0, input.fetchedAt)
+    .run();
+};
+
+export const claimResultCacheBust = async (
+  input: ClaimResultCacheBustInput,
+): Promise<ResultCacheBustClaim | null> => {
+  const row = await input.db
+    .prepare(
+      `
+        update result_cache_bust_outbox
+        set lease_until = ?, updated_at = ?
+        where race_key = ?
+          and (lease_until is null or lease_until <= ?)
+          and (
+            trend_delivered_result_signature is null
+            or trend_delivered_result_signature != desired_result_signature
+            or trend_delivered_is_complete is null
+            or trend_delivered_is_complete != desired_is_complete
+            or race_delivered_result_signature is null
+            or race_delivered_result_signature != desired_result_signature
+            or race_delivered_is_complete is null
+            or race_delivered_is_complete != desired_is_complete
+          )
+        returning race_key, desired_result_signature, desired_is_complete,
+          trend_delivered_result_signature, trend_delivered_is_complete,
+          race_delivered_result_signature, race_delivered_is_complete
+      `,
+    )
+    .bind(input.leaseUntil, input.now, input.raceKey, input.now)
+    .first<ResultCacheBustClaimRow>();
+  return row
+    ? {
+        isComplete: row.desired_is_complete === 1,
+        needsRaceBust:
+          row.race_delivered_result_signature !== row.desired_result_signature ||
+          row.race_delivered_is_complete !== row.desired_is_complete,
+        needsTrendBust:
+          row.trend_delivered_result_signature !== row.desired_result_signature ||
+          row.trend_delivered_is_complete !== row.desired_is_complete,
+        raceKey: row.race_key,
+        resultSignature: row.desired_result_signature,
+      }
+    : null;
+};
+
+export const completeResultCacheBust = async (
+  input: CompleteResultCacheBustInput,
+): Promise<void> => {
+  await input.db
+    .prepare(
+      `
+        update result_cache_bust_outbox
+        set trend_delivered_result_signature = case when ? then ? else trend_delivered_result_signature end,
+            trend_delivered_is_complete = case when ? then ? else trend_delivered_is_complete end,
+            race_delivered_result_signature = case when ? then ? else race_delivered_result_signature end,
+            race_delivered_is_complete = case when ? then ? else race_delivered_is_complete end,
+            lease_until = null,
+            updated_at = ?
+        where race_key = ?
+          and desired_result_signature = ?
+          and desired_is_complete = ?
+      `,
+    )
+    .bind(
+      input.trendDelivered ? 1 : 0,
+      input.claim.resultSignature,
+      input.trendDelivered ? 1 : 0,
+      input.claim.isComplete ? 1 : 0,
+      input.raceDelivered ? 1 : 0,
+      input.claim.resultSignature,
+      input.raceDelivered ? 1 : 0,
+      input.claim.isComplete ? 1 : 0,
+      input.now,
+      input.claim.raceKey,
+      input.claim.resultSignature,
+      input.claim.isComplete ? 1 : 0,
+    )
+    .run();
+};
+
+export const listPendingResultCacheBustRaceKeys = async (
+  db: D1Database,
+  now: string,
+  limit: number,
+): Promise<string[]> => {
+  const rows = await db
+    .prepare(
+      `
+        select race_key
+        from result_cache_bust_outbox
+        where (lease_until is null or lease_until <= ?)
+          and (
+            trend_delivered_result_signature is null
+            or trend_delivered_result_signature != desired_result_signature
+            or trend_delivered_is_complete is null
+            or trend_delivered_is_complete != desired_is_complete
+            or race_delivered_result_signature is null
+            or race_delivered_result_signature != desired_result_signature
+            or race_delivered_is_complete is null
+            or race_delivered_is_complete != desired_is_complete
+          )
+        order by updated_at asc
+        limit ?
+      `,
+    )
+    .bind(now, limit)
+    .all<ResultCacheBustRaceKeyRow>();
+  return rows.results.map((row) => row.race_key);
+};
+
 export const insertHorseWeightSnapshot = async (
   db: D1Database,
   raceKey: string,
@@ -1186,18 +1388,29 @@ const buildLogDedupeKey = (
   return `${LOG_DEDUPE_KV_PREFIX}${jobType}:${status}:${raceToken}:${messageHash}`;
 };
 
+const resolveLogDedupeTtlSeconds = (dedupeTtlSeconds: number | undefined): number => {
+  if (dedupeTtlSeconds === undefined) return LOG_DEDUPE_TTL_SECONDS;
+  if (!Number.isSafeInteger(dedupeTtlSeconds) || dedupeTtlSeconds < LOG_DEDUPE_MIN_TTL_SECONDS) {
+    return LOG_DEDUPE_TTL_SECONDS;
+  }
+  return dedupeTtlSeconds;
+};
+
 const shouldSkipFetchLog = async (
   kv: KVNamespace | undefined,
   jobType: string,
   status: string,
   raceKey: string | null,
   message: string | null,
+  dedupeTtlSeconds: number | undefined,
 ): Promise<boolean> => {
   if (!kv) return false;
   const key = buildLogDedupeKey(jobType, status, raceKey, message);
   const seen = await kv.get(key).catch(() => null);
   if (seen) return true;
-  await kv.put(key, "1", { expirationTtl: LOG_DEDUPE_TTL_SECONDS }).catch(() => undefined);
+  await kv
+    .put(key, "1", { expirationTtl: resolveLogDedupeTtlSeconds(dedupeTtlSeconds) })
+    .catch(() => undefined);
   return false;
 };
 
@@ -1208,8 +1421,9 @@ export const logFetch = async (
   raceKey: string | null,
   message: string | null,
   kv?: KVNamespace,
+  dedupeTtlSeconds?: number,
 ): Promise<void> => {
-  if (await shouldSkipFetchLog(kv, jobType, status, raceKey, message)) return;
+  if (await shouldSkipFetchLog(kv, jobType, status, raceKey, message, dedupeTtlSeconds)) return;
   await db
     .prepare(
       "insert into fetch_logs (race_key, job_type, status, message, created_at) values (?, ?, ?, ?, ?)",

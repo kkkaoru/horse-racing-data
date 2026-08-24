@@ -178,11 +178,14 @@ it("returns 404 for an unknown path", async () => {
   expect(response.status).toBe(404);
 });
 
-it("broadcast skips dead subscribers and continues delivering to live ones", async () => {
+it("cancel removes a subscriber immediately and broadcasts only to live subscribers", async () => {
   const cache = HorseWeightDO.createForTest();
   const deadStream = await cache.fetch(new Request("https://horse-weight-do/stream"));
+  expect(HorseWeightDO.getSubscriberCountForTest(cache)).toBe(1);
   await deadStream.body!.cancel();
+  expect(HorseWeightDO.getSubscriberCountForTest(cache)).toBe(0);
   const liveStream = await cache.fetch(new Request("https://horse-weight-do/stream"));
+  expect(HorseWeightDO.getSubscriberCountForTest(cache)).toBe(1);
   await cache.fetch(
     new Request("https://horse-weight-do/weights", {
       body: JSON.stringify(SNAPSHOT),
@@ -193,6 +196,7 @@ it("broadcast skips dead subscribers and continues delivering to live ones", asy
   expect(body).toBe(
     'retry: 5000\n\nevent: weights\ndata: {"fetchedAt":"2026-05-30T14:14:00+09:00","horses":[{"changeAmount":10,"changeSign":"+","horseName":"TestHorse","horseNumber":"1","weight":538}]}\n\n',
   );
+  expect(HorseWeightDO.getSubscriberCountForTest(cache)).toBe(0);
 });
 
 it("writeHorseWeightSnapshotToStub issues a PUT against the stub", async () => {

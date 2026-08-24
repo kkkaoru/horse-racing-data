@@ -4,6 +4,7 @@ import {
   buildRaceResultUrl,
   buildRaceKey,
   extractOddsLinks,
+  FetchStatusError,
   fetchRaceLinksFromRaceList,
   fetchRaceListPageHtml,
   fetchRacePage,
@@ -42,6 +43,10 @@ import {
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
 import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
+  claimRealtimePlanRecovery,
+  releaseRealtimePlanRecovery,
+} from "./realtime-plan-recovery-claim";
+import {
   BAN_EI_KEIBAJO_CODE,
   buildPremiumUrl,
   buildPremiumRaceLinkFromRace,
@@ -63,7 +68,10 @@ import {
   parseNetkeibaTrainingWorkouts,
   mergeNetkeibaTrainingWorkouts,
   summarizePremiumStableCommentHtml,
+  type PremiumDataTopHorse,
   type PremiumPaddockBulletin,
+  type PremiumStableComment,
+  type PremiumTrainingReview,
 } from "./premium-race";
 import {
   clearCachedPremiumPaddock,
@@ -75,10 +83,13 @@ import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } fr
 import {
   buildRealtimePayload,
   claimPremiumPaddockNotificationSend,
+  claimResultCacheBust,
   claimResultFetch,
+  claimReservedWeightFetch,
   claimTrackConditionFetch,
   claimWeightFetch,
   completeResultFetch,
+  completeResultCacheBust,
   completeTrackConditionFetch,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
   countJraRaceSourcesByDate,
@@ -108,6 +119,7 @@ import {
   listJraVenueTrackConditionSchedulesByDate,
   listOddsSnapshotsForExport,
   listPremiumRaceDataFetchCandidatesByDate,
+  listPendingResultCacheBustRaceKeys,
   listRaceKeysByDateFromHyperdrive,
   listRaceSourceKeibajoCodesByDate,
   listRaceSourcesForSeed,
@@ -119,6 +131,7 @@ import {
   markTrackConditionQueued,
   recordPartialResultFetch,
   recordPremiumPaddockNotificationEvent,
+  registerResultCacheBust,
   replacePremiumRaceData,
   resetEmptyResultAttempts,
   runD1Retention,
@@ -133,6 +146,8 @@ import {
   upsertPremiumRaceLink,
   type HotOddsPayload,
   type LocalRaceRow,
+  type PremiumRacePayload,
+  type ResultCacheBustClaim,
   type SchedulableRaceSource,
 } from "./storage";
 import {
@@ -191,6 +206,7 @@ import type {
   RaceEntry,
   RaceResult,
   RealtimeRacePayload,
+  WeightSnapshotGeneration,
 } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
@@ -266,11 +282,43 @@ interface NeonWritePoolHealthUnconfiguredBody {
   status: "unconfigured";
 }
 
+interface RealtimePlanRecoveryOptions {
+  delaySeconds: number;
+  failureClass: "connection_pressure" | "other";
+  now: Date;
+  stage: "queue.enqueue-single-recovery" | "scheduled.enqueue-single-recovery";
+}
+
+interface LoggedPlannerStageInput {
+  env: Env;
+  jobType: "drain-result-cache-busts" | "plan-premium-paddock" | "plan-result-fetches";
+  plan: () => Promise<number>;
+}
+
+interface RunResultCacheBustsInput {
+  claim: ResultCacheBustClaim | null;
+  env: Env;
+  race: NarRaceSource;
+}
+
+interface ResultCacheBustOutcomes {
+  raceDelivered: boolean;
+  trendDelivered: boolean;
+}
+
+interface PremiumRaceDataSections {
+  dataTopHorses?: PremiumDataTopHorse[];
+  stableComments?: PremiumStableComment[];
+  trainingReviews?: PremiumTrainingReview[];
+}
+
 // True at most once per hour so the discover-urls fallback only fires off
-// the first result-poller tick of each JST hour. Without this guard the
+// the :02 result-poller tick of each JST hour. Without this guard the
 // cron would re-discover every 2 minutes, which is wasteful.
-const HOURLY_RECOVERY_MINUTE_THRESHOLD = 2;
+const HOURLY_DISCOVERY_RECOVERY_MINUTE = 2;
 const RESULT_FETCH_LOCK_MINUTES = 10;
+const RESULT_CACHE_BUST_LEASE_SECONDS = 90;
+const RESULT_CACHE_BUST_DRAIN_LIMIT = 12;
 // 2026-06-02: NAR keiba.go.jp upstream publishes results progressively — top-3
 // finishers first, then the remaining horses several minutes later. Without a
 // short retry lock the default RESULT_FETCH_LOCK_MINUTES would block re-fetch
@@ -382,6 +430,7 @@ const RESULT_FETCH_INLINE_NAR_MAX_PER_TICK = 4;
 export const RESULT_POLL_CRON = "*/2 0-13 * * *";
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
+const RUNNING_STYLE_QUEUE_LOG_MARKER = "queue=running-style-predictions";
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
 // Proxy session expiries auto-recover within minutes; keep the auth re-queue
 // gap short so a flaky session does not block a whole race-day window. Cap
@@ -415,6 +464,21 @@ const PLAN_REALTIME_CIRCUIT_BREAKER_TTL_SECONDS = 120;
 // on the same second across all batched plan-realtime jobs.
 const PLAN_REALTIME_OVERLOAD_RETRY_DELAY_BASE_SECONDS = 60;
 const PLAN_REALTIME_OVERLOAD_RETRY_DELAY_JITTER_SECONDS = 120;
+const CONNECTION_PRESSURE_MARKERS: readonly string[] = [
+  "cannot perform i/o on behalf of a different request",
+  "connection pool exhausted",
+  "connection terminated unexpectedly",
+  "failed to acquire connection",
+  "failed to acquire permit to connect to the database",
+  "maxclientsinsessionmode",
+  "remaining connection slots are reserved",
+  "timed out while creating a new server connection",
+  "too many connections",
+];
+const CONNECTION_PRESSURE_RECOVERY_DELAY_BASE_SECONDS = 120;
+const CONNECTION_PRESSURE_RECOVERY_DELAY_JITTER_SECONDS = 120;
+const REALTIME_PLAN_RECOVERY_CLAIM_TTL_SECONDS = 5 * 60;
+const REALTIME_PLAN_RECOVERY_CLAIM_KEY_PREFIX = "plan-realtime-fetches-recovery";
 const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
 const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
@@ -489,18 +553,28 @@ const RACE_KEY_PART_COUNT = 5;
 // the discovery step incomplete, so today's paddock pipeline still has
 // fresh links instead of running empty until the next 20:00 tick.
 const PREMIUM_RACE_DISCOVERY_HOURS_JST = [9, 20] satisfies readonly number[];
-// Weight watchdog: a dedicated every-minute cron path that bypasses the
+// Weight watchdog: the sole automatic scheduler for horse-weight jobs. It
+// bypasses the
 // heavier plan-realtime-fetches code path so a circuit-breaker open state
 // (D1 saturation) does not silently skip weight enqueueing for upcoming
 // races. The watchdog inspects realtime_race_sources directly and enqueues
-// fetch-weights jobs for races within the lookahead window whose last
-// weight fetch is null or older than the stale threshold.
-export const WEIGHT_WATCHDOG_CRON = "*/2 * * * *";
+// fetch-weights jobs only while no successful weight snapshot has been
+// recorded. The general planner and the fetch handler never self-enqueue
+// weight jobs, so each retry cadence has one owner.
+export const WEIGHT_WATCHDOG_CRON = "1-59/2 * * * *";
 const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
-const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
-const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;
-const WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES = 15;
+const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 10;
+const WEIGHT_WATCHDOG_FAR_ATTEMPT_BACKOFF_MINUTES = 15;
+const WEIGHT_WATCHDOG_NEAR_ATTEMPT_BACKOFF_MINUTES = 5;
+const WEIGHT_WATCHDOG_NEAR_RACE_THRESHOLD_MINUTES = 30;
+const WEIGHT_WATCHDOG_ADAPTIVE_RACE_THRESHOLD_MINUTES = 90;
+// Reservations are fenced by moving last_weight_fetch_attempt_at one second
+// past the cron timestamp. A one-minute eligibility cutoff therefore makes a
+// completed pending observation eligible on the next two-minute cron tick without
+// weakening the per-race atomic reservation.
+const WEIGHT_WATCHDOG_ADAPTIVE_ATTEMPT_BACKOFF_MINUTES = 1;
 const WEIGHT_WATCHDOG_MAX_PER_TICK = 24;
+const WEIGHT_WATCHDOG_HEARTBEAT_DEDUPE_TTL_SECONDS = 60 * 60;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -614,26 +688,6 @@ interface WeightFetchPriorityInput {
 
 interface WeightCandidate {
   race: SchedulableRaceSource;
-  minutes: number;
-}
-
-interface WeightCandidatePair {
-  race: SchedulableRaceSource;
-  minutes: number | null;
-}
-
-// Variants of the candidate types used by the KV fallback path. The KV
-// fallback re-reads races one-by-one with `getRaceSource`, which returns
-// the lighter `NarRaceSource` (no result-fetch / odds-queued state) — the
-// fallback only needs raceStartAtJst + lastWeightFetchAt to re-apply the
-// lead-time and cooldown gating that the live-query path already enforces.
-interface FallbackWeightCandidatePair {
-  race: NarRaceSource;
-  minutes: number | null;
-}
-
-interface FallbackWeightCandidate {
-  race: NarRaceSource;
   minutes: number;
 }
 
@@ -1215,11 +1269,9 @@ export const upsertDiscoveredUrls = async (
   topRaceListCount: number;
   upserted: number;
 }> => {
-  const [raceListUrls, localRaces, jraRaces] = await Promise.all([
-    fetchTodayRaceListUrls(targetDate),
-    fetchNarRacesByDate(env, targetDate),
-    fetchJraRacesByDate(env, targetDate),
-  ]);
+  const raceListUrls = await fetchTodayRaceListUrls(targetDate);
+  const localRaces = await fetchNarRacesByDate(env, targetDate);
+  const jraRaces = await fetchJraRacesByDate(env, targetDate);
   const fallbackRaceListUrls = Array.from(
     new Set(
       localRaces
@@ -1299,11 +1351,11 @@ export const upsertDiscoveredUrls = async (
 };
 
 const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Promise<void> => {
-  const [d1RaceCount, missingRaceDateFieldCount, jraRaces] = await Promise.all([
+  const [d1RaceCount, missingRaceDateFieldCount] = await Promise.all([
     countRaceSourcesByDate(env.REALTIME_DB, targetDate),
     countJraRaceSourcesMissingRaceDateFieldsByDate(env.REALTIME_DB, targetDate),
-    fetchJraRacesByDate(env, targetDate),
   ]);
+  const jraRaces = await fetchJraRacesByDate(env, targetDate);
   if (jraRaces.length === 0) {
     return;
   }
@@ -1617,6 +1669,7 @@ export const writeWeightRaceListFallbackToKv = async (
 export interface StaleWeightFetchRace {
   lastWeightFetchAt: string | null;
   lastWeightFetchAttemptAt: string | null;
+  lastWeightFetchSoftMissAt: string | null;
   raceKey: string;
   raceStartAtJst: string;
 }
@@ -1624,6 +1677,7 @@ export interface StaleWeightFetchRace {
 interface StaleWeightFetchRaceRow {
   last_weight_fetch_at: string | null;
   last_weight_fetch_attempt_at: string | null;
+  last_weight_fetch_soft_miss_at: string | null;
   race_key: string;
   race_start_at_jst: string;
 }
@@ -1651,8 +1705,8 @@ const buildTanshoOddsRowsFromHotOdds = (
     .filter((row): row is RaceResultTanshoOddsRow => row !== null);
 
 // Direct D1 query for races whose post time falls inside the watchdog
-// lookahead window and whose last weight fetch is null or older than the
-// stale threshold. Keeps the watchdog independent of the heavier
+// lookahead window and whose last weight fetch is null. Keeps the watchdog
+// independent of the heavier
 // plan-realtime-fetches code path so a circuit-breaker open state does not
 // silently skip weight enqueueing.
 export const findStaleWeightFetchRaces = async (
@@ -1671,61 +1725,83 @@ export const findStaleWeightFetchRaces = async (
   const lookBackJst = toJstIsoString(
     new Date(now.getTime() - WEIGHT_WATCHDOG_LOOKBACK_MINUTES * MILLISECONDS_PER_MINUTE),
   );
-  const staleJst = toJstIsoString(
-    new Date(now.getTime() - WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE),
+  const nearRaceJst = toJstIsoString(
+    new Date(now.getTime() + WEIGHT_WATCHDOG_NEAR_RACE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE),
   );
-  const attemptBackoffJst = toJstIsoString(
-    new Date(now.getTime() - WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE),
+  const adaptiveRaceJst = toJstIsoString(
+    new Date(
+      now.getTime() + WEIGHT_WATCHDOG_ADAPTIVE_RACE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE,
+    ),
   );
-  const nowJst = toJstIsoString(now);
+  const adaptiveAttemptBackoffJst = toJstIsoString(
+    new Date(
+      now.getTime() - WEIGHT_WATCHDOG_ADAPTIVE_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE,
+    ),
+  );
+  const farAttemptBackoffJst = toJstIsoString(
+    new Date(now.getTime() - WEIGHT_WATCHDOG_FAR_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE),
+  );
+  const nearAttemptBackoffJst = toJstIsoString(
+    new Date(
+      now.getTime() - WEIGHT_WATCHDOG_NEAR_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE,
+    ),
+  );
   const result = await db
     .prepare(
       `
-        select race_key, race_start_at_jst, last_weight_fetch_at, last_weight_fetch_attempt_at
+        select race_key, race_start_at_jst, last_weight_fetch_at,
+          last_weight_fetch_attempt_at, last_weight_fetch_soft_miss_at
         from realtime_race_sources
         where race_start_at_jst > ?
-          and race_start_at_jst < ?
-          and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
-          and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
-        order by
-          case
-            when source = 'jra' and last_weight_fetch_at is null and race_start_at_jst >= ? then 0
-            else 1
-          end,
-          race_start_at_jst
+          and race_start_at_jst <= ?
+          and last_weight_fetch_at is null
+          and (
+            last_weight_fetch_attempt_at is null
+            or last_weight_fetch_attempt_at < case
+              when last_weight_fetch_soft_miss_at = last_weight_fetch_attempt_at
+                and race_start_at_jst <= ? then ?
+              when race_start_at_jst <= ? then ?
+              else ?
+            end
+          )
+        order by race_start_at_jst
         limit ?
       `,
     )
     .bind(
       lookBackJst,
       lookAheadJst,
-      staleJst,
-      attemptBackoffJst,
-      nowJst,
+      adaptiveRaceJst,
+      adaptiveAttemptBackoffJst,
+      nearRaceJst,
+      nearAttemptBackoffJst,
+      farAttemptBackoffJst,
       WEIGHT_WATCHDOG_MAX_PER_TICK,
     )
     .all<StaleWeightFetchRaceRow>();
   return result.results.map((row) => ({
     lastWeightFetchAt: row.last_weight_fetch_at,
     lastWeightFetchAttemptAt: row.last_weight_fetch_attempt_at,
+    lastWeightFetchSoftMissAt: row.last_weight_fetch_soft_miss_at ?? null,
     raceKey: row.race_key,
     raceStartAtJst: row.race_start_at_jst,
   }));
 };
 
-// Dedicated weight watchdog tick. Runs every minute alongside the existing
-// "*/15 0-14" weight plan cron and the every-minute plan-realtime-fetches
-// path on the hot worker. The watchdog only touches a single D1 read and
+// Dedicated weight watchdog tick. Runs every two minutes as the only automatic
+// horse-weight scheduler. The watchdog only touches a single D1 read and
 // the queue, so a Hyperdrive saturation that opens the planner circuit
 // breaker still leaves weight fetches flowing here.
 //
 // 2026-06-28 (D1 cost optimization): every logFetch call here passes the
 // shared KV namespace so storage.shouldSkipFetchLog dedupes identical rows
 // (same jobType + status + raceKey + message hash) within
-// LOG_DEDUPE_TTL_SECONDS (60s). Without dedupe the */1 watchdog wrote 60
-// "no stale weight races" rows / hour during the quiet 00:00-08:59 JST
-// window. With dedupe it writes 1 row / hour while still surfacing distinct
-// outcomes (enqueued counts, error messages) immediately.
+// default 60-second window. The quiet "no stale weight races" heartbeat uses
+// a dedicated one-hour TTL, while enqueued counts and errors retain the
+// default TTL so distinct operational outcomes remain visible immediately.
+// Each candidate is
+// atomically reserved in D1 before enqueueing, which prevents a queue backlog
+// from allowing the next watchdog tick to enqueue the same race again.
 export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
   try {
     const stale = await findStaleWeightFetchRaces(env.REALTIME_DB, now);
@@ -1737,13 +1813,38 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
         null,
         "no stale weight races",
         env.DETAIL_SECTION_CACHE_KV,
+        WEIGHT_WATCHDOG_HEARTBEAT_DEDUPE_TTL_SECONDS,
       );
       return;
     }
-    const jobs: FetchWeightsJobShape[] = stale.map((race) => ({
-      raceKey: race.raceKey,
-      type: "fetch-weights",
-    }));
+    const reservedAt = toJstIsoString(now);
+    const reservations = await Promise.all(
+      stale.map(async (race): Promise<FetchWeightsJobShape | null> => {
+        const minutesUntil =
+          (new Date(race.raceStartAtJst).getTime() - now.getTime()) / MILLISECONDS_PER_MINUTE;
+        const backoffMinutes =
+          race.lastWeightFetchSoftMissAt === race.lastWeightFetchAttemptAt &&
+          race.lastWeightFetchSoftMissAt !== null &&
+          minutesUntil <= WEIGHT_WATCHDOG_ADAPTIVE_RACE_THRESHOLD_MINUTES
+            ? WEIGHT_WATCHDOG_ADAPTIVE_ATTEMPT_BACKOFF_MINUTES
+            : minutesUntil <= WEIGHT_WATCHDOG_NEAR_RACE_THRESHOLD_MINUTES
+              ? WEIGHT_WATCHDOG_NEAR_ATTEMPT_BACKOFF_MINUTES
+              : WEIGHT_WATCHDOG_FAR_ATTEMPT_BACKOFF_MINUTES;
+        const retryBefore = toJstIsoString(
+          new Date(now.getTime() - backoffMinutes * MILLISECONDS_PER_MINUTE),
+        );
+        const claimed = await claimWeightFetch(
+          env.REALTIME_DB,
+          race.raceKey,
+          reservedAt,
+          retryBefore,
+        );
+        return claimed
+          ? { raceKey: race.raceKey, type: "fetch-weights", watchdogReservedAt: reservedAt }
+          : null;
+      }),
+    );
+    const jobs = reservations.filter((job): job is FetchWeightsJobShape => job !== null);
     await enqueueJobs(env, jobs);
     await logFetch(
       env.REALTIME_DB,
@@ -1784,32 +1885,6 @@ export const weightFetchPriorityTier = (input: WeightFetchPriorityInput): number
   return WEIGHT_FETCH_PRIORITY_TIER_LOW;
 };
 
-const isWeightCandidate = (pair: WeightCandidatePair): pair is WeightCandidate =>
-  pair.minutes !== null;
-
-const isFallbackWeightCandidate = (
-  pair: FallbackWeightCandidatePair,
-): pair is FallbackWeightCandidate => pair.minutes !== null;
-
-// Re-applies the lead-time + cooldown gating used by the live-query path so
-// the KV fallback does not enqueue past races or races still inside the
-// per-race cooldown window. Without this filter the 24h KV TTL would cause
-// every minute-cron tick to re-enqueue stale race keys after Hyperdrive
-// returns an empty result.
-const isFallbackWeightCandidateDue = (candidate: FallbackWeightCandidate, now: Date): boolean =>
-  candidate.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
-  isDue(
-    candidate.race.lastWeightFetchAt,
-    resolveWeightFetchCooldownMinutes({
-      lastFetchAt: candidate.race.lastWeightFetchAt,
-      now,
-      raceStartAtJst: candidate.race.raceStartAtJst,
-    }),
-    now,
-  );
-
-const isNarRaceSourcePresent = (race: NarRaceSource | null): race is NarRaceSource => race !== null;
-
 export const compareWeightCandidates = (a: WeightCandidate, b: WeightCandidate): number => {
   const ta = weightFetchPriorityTier({
     source: a.race.source,
@@ -1840,6 +1915,12 @@ export const isD1OverloadError = (error: unknown): boolean => {
   return D1_OVERLOAD_MARKERS.some((marker) => error.message.includes(marker));
 };
 
+export const isConnectionPressureError = (error: unknown): boolean => {
+  if (!(error instanceof Error) || isD1OverloadError(error)) return false;
+  const message = error.message.toLowerCase();
+  return CONNECTION_PRESSURE_MARKERS.some((marker) => message.includes(marker));
+};
+
 export const isPlanRealtimeCircuitBreakerOpen = async (env: Env): Promise<boolean> => {
   if (!env.DETAIL_SECTION_CACHE_KV) return false;
   const value = await env.DETAIL_SECTION_CACHE_KV.get(PLAN_REALTIME_CIRCUIT_BREAKER_KV_KEY);
@@ -1859,6 +1940,10 @@ export const buildPlanRealtimeOverloadRetryDelaySeconds = (): number =>
   PLAN_REALTIME_OVERLOAD_RETRY_DELAY_BASE_SECONDS +
   Math.floor(Math.random() * PLAN_REALTIME_OVERLOAD_RETRY_DELAY_JITTER_SECONDS);
 
+export const buildConnectionPressureRecoveryDelaySeconds = (): number =>
+  CONNECTION_PRESSURE_RECOVERY_DELAY_BASE_SECONDS +
+  Math.floor(Math.random() * CONNECTION_PRESSURE_RECOVERY_DELAY_JITTER_SECONDS);
+
 const getLatestSuccessfulRealtimePlanAt = async (env: Env): Promise<string | null> => {
   const row = await env.REALTIME_DB.prepare(
     `
@@ -1873,22 +1958,12 @@ const getLatestSuccessfulRealtimePlanAt = async (env: Env): Promise<string | nul
   return row?.created_at ?? null;
 };
 
-const getLatestQueuedSelfRealtimePlanAt = async (env: Env): Promise<string | null> => {
-  const row = await env.REALTIME_DB.prepare(
-    `
-      select created_at
-      from fetch_logs
-      where job_type = 'plan-realtime-fetches-self'
-        and status = 'queued'
-      order by created_at desc
-      limit 1
-    `,
-  ).first<{ created_at: string }>();
-  return row?.created_at ?? null;
-};
-
-const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getNow(env)) => {
-  if (!isJstPollingWindow(now)) {
+const enqueueSelfRealtimePlanIfStale = async (
+  env: Env,
+  date: string,
+  options: RealtimePlanRecoveryOptions,
+): Promise<void> => {
+  if (!isJstPollingWindow(options.now)) {
     return;
   }
   if (await isPlanRealtimeCircuitBreakerOpen(env)) {
@@ -1897,23 +1972,87 @@ const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getN
   const latest = await getLatestSuccessfulRealtimePlanAt(env);
   if (
     latest &&
-    new Date(latest).getTime() > now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
+    new Date(latest).getTime() >
+      options.now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
   ) {
     return;
   }
-  const latestQueued = await getLatestQueuedSelfRealtimePlanAt(env);
-  if (
-    latestQueued &&
-    new Date(latestQueued).getTime() >
-      now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS * 1000
-  ) {
-    return;
-  }
-  await env.REALTIME_JOBS.send(
-    { date, selfSchedule: true, type: "plan-realtime-fetches" },
-    { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
+  const claimKey = `${REALTIME_PLAN_RECOVERY_CLAIM_KEY_PREFIX}:${date}`;
+  const ownerToken = crypto.randomUUID();
+  const claimedAt = toJstIsoString(options.now);
+  const expiresAt = toJstIsoString(
+    new Date(options.now.getTime() + REALTIME_PLAN_RECOVERY_CLAIM_TTL_SECONDS * 1000),
   );
+  const claimed = await claimRealtimePlanRecovery({
+    claimedAt,
+    claimKey,
+    db: env.REALTIME_DB,
+    expiresAt,
+    ownerToken,
+  });
+  if (!claimed) {
+    return;
+  }
+  try {
+    await env.REALTIME_JOBS.send(
+      { date, selfSchedule: true, type: "plan-realtime-fetches" },
+      { delaySeconds: options.delaySeconds },
+    );
+  } catch (error) {
+    await releaseRealtimePlanRecovery({
+      claimKey,
+      db: env.REALTIME_DB,
+      ownerToken,
+    }).catch((releaseError: unknown) =>
+      console.error(
+        formatErrorLogLine(
+          "Realtime planner recovery claim rollback failed",
+          { claimKey, stage: "recovery-claim.rollback" },
+          releaseError,
+        ),
+      ),
+    );
+    throw error;
+  }
   await logFetch(env.REALTIME_DB, "plan-realtime-fetches-self", "queued", null, date);
+  await logFetch(
+    env.REALTIME_DB,
+    "plan-realtime-fetches-recovery",
+    "queued",
+    null,
+    JSON.stringify({
+      delaySeconds: options.delaySeconds,
+      failureClass: options.failureClass,
+      stage: options.stage,
+    }),
+    env.DETAIL_SECTION_CACHE_KV,
+  );
+};
+
+const runScheduledRealtimePlanWithRecovery = async (env: Env, date: string): Promise<void> => {
+  try {
+    await handleJob(env, { date, type: "plan-realtime-fetches" });
+  } catch (error) {
+    try {
+      await enqueueSelfRealtimePlanIfStale(env, date, {
+        delaySeconds: isConnectionPressureError(error)
+          ? buildConnectionPressureRecoveryDelaySeconds()
+          : REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS,
+        failureClass: isConnectionPressureError(error) ? "connection_pressure" : "other",
+        now: getNow(env),
+        stage: "scheduled.enqueue-single-recovery",
+      });
+    } catch (recoveryError) {
+      console.error(
+        formatErrorLogLine(
+          "Scheduled realtime planner self-recovery failed",
+          { date },
+          recoveryError,
+        ),
+      );
+    }
+    throw error;
+  }
 };
 
 export const getJstDayStart = (targetDate: string): Date =>
@@ -1985,11 +2124,9 @@ export const isRaceFinished = (race: NarRaceSource, now: Date): boolean => {
 };
 
 const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Promise<void> => {
-  const [d1RaceCount, localRaces, jraRaces] = await Promise.all([
-    countRaceSourcesByDate(env.REALTIME_DB, targetDate),
-    fetchNarRacesByDate(env, targetDate),
-    fetchJraRacesByDate(env, targetDate),
-  ]);
+  const d1RaceCount = await countRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const localRaces = await fetchNarRacesByDate(env, targetDate);
+  const jraRaces = await fetchJraRacesByDate(env, targetDate);
   const raceListUrls = await fetchTodayRaceListUrls(targetDate);
   const expectedKeibajoCodes = raceListUrls
     .map((raceList) => BABA_CODE_TO_LOCAL_KEIBAJO[raceList.babaCode])
@@ -2560,21 +2697,6 @@ export const getEmptyWeightRetryDelaySeconds = (race: NarRaceSource, now: Date):
     : WEIGHT_FETCH_EMPTY_RETRY_DELAY_SECONDS;
 };
 
-const retryEmptyWeightsWhileInWindow = async (env: Env, race: NarRaceSource): Promise<void> => {
-  const delaySeconds = getEmptyWeightRetryDelaySeconds(race, getNow(env));
-  if (delaySeconds === null) {
-    return;
-  }
-  await env.REALTIME_JOBS.send({ raceKey: race.raceKey, type: "fetch-weights" }, { delaySeconds });
-  await logFetch(
-    env.REALTIME_DB,
-    "fetch-weights",
-    "queued:weights-empty-retry",
-    race.raceKey,
-    `delaySeconds=${delaySeconds}`,
-  );
-};
-
 // Returns active (non-scratched) entry horse numbers missing from a non-empty
 // weight set. Empty weights intentionally return [] so the empty-retry path
 // owns count=0 rather than the sparse path.
@@ -2654,7 +2776,7 @@ const buildSparseWeightsLogDetail = (
 
 const shouldRunHourlyDiscoveryRecovery = (now: Date): boolean => {
   const { minute } = getJstDateParts(now);
-  return Number(minute) < HOURLY_RECOVERY_MINUTE_THRESHOLD;
+  return Number(minute) === HOURLY_DISCOVERY_RECOVERY_MINUTE;
 };
 
 export type ResultFetchEligibility = "due" | "too-recent" | "ineligible";
@@ -2760,19 +2882,23 @@ export const planResultFetchesOnly = async (
   const jobs: Extract<Job, { type: "fetch-results" }>[] = races
     .map((race) => buildResultFetchJobIfDue(race, now))
     .filter((job): job is Extract<Job, { type: "fetch-results" }> => job !== null);
-  await enqueueJobs(env, jobs);
   const inlineJobs = selectInlineRealtimeJobs(jobs, {
     jra: RESULT_FETCH_INLINE_JRA_MAX_PER_TICK,
     nar: RESULT_FETCH_INLINE_NAR_MAX_PER_TICK,
   });
+  const inlineRaceKeys = new Set(inlineJobs.map((job) => job.raceKey));
+  const queuedJobs = jobs.filter((job) => !inlineRaceKeys.has(job.raceKey));
+  await enqueueJobs(env, queuedJobs);
   let inlineAttempted = 0;
   let inlineError = 0;
+  const inlineFallbackJobs: Extract<Job, { type: "fetch-results" }>[] = [];
   for (const job of inlineJobs) {
     inlineAttempted += 1;
     try {
       await handleJob(env, job);
     } catch (error: unknown) {
       inlineError += 1;
+      inlineFallbackJobs.push(job);
       await logFetch(
         env.REALTIME_DB,
         "plan-result-fetches-inline",
@@ -2783,6 +2909,8 @@ export const planResultFetchesOnly = async (
       );
     }
   }
+  await enqueueJobs(env, inlineFallbackJobs);
+  const enqueuedJobs = [...queuedJobs, ...inlineFallbackJobs];
   const breakdown = summariseResultFetchEligibility(races, now);
   await logFetch(
     env.REALTIME_DB,
@@ -2791,12 +2919,12 @@ export const planResultFetchesOnly = async (
     null,
     inlineAttempted === 0
       ? JSON.stringify({
-          enqueued: jobs.length,
+          enqueued: enqueuedJobs.length,
           eligible: breakdown.eligible,
           skipped_too_recent: breakdown.skippedTooRecent,
         })
       : JSON.stringify({
-          enqueued: jobs.length,
+          enqueued: enqueuedJobs.length,
           eligible: breakdown.eligible,
           inlineAttempted,
           inlineError,
@@ -2809,10 +2937,9 @@ export const planResultFetchesOnly = async (
     // first transition to a new payload.
     env.DETAIL_SECTION_CACHE_KV,
   );
-  const inlineRaceKeys = new Set(inlineJobs.map((job) => job.raceKey));
   await markResultFetchQueued(
     env.REALTIME_DB,
-    jobs.filter((job) => !inlineRaceKeys.has(job.raceKey)).map((job) => job.raceKey),
+    enqueuedJobs.map((job) => job.raceKey),
     toJstIsoString(now),
   );
   return jobs.length;
@@ -2846,6 +2973,67 @@ export const planPremiumPaddockFetchesOnly = async (
   return jobs.length;
 };
 
+const runLoggedPlannerStage = async (input: LoggedPlannerStageInput): Promise<void> => {
+  try {
+    const count = await input.plan();
+    await logFetch(input.env.REALTIME_DB, input.jobType, "ok", null, `${count} jobs queued`).catch(
+      (logError: unknown) =>
+        console.error(
+          formatErrorLogLine(
+            "Scheduled planner success log failed",
+            { jobType: input.jobType, stage: `${input.jobType}.log-ok` },
+            logError,
+          ),
+        ),
+    );
+  } catch (planError) {
+    await logFetch(
+      input.env.REALTIME_DB,
+      input.jobType,
+      "error",
+      null,
+      formatError(planError),
+      input.env.DETAIL_SECTION_CACHE_KV,
+    ).catch((logError: unknown) =>
+      console.error(
+        formatErrorLogLine(
+          "Scheduled planner error log failed",
+          {
+            jobType: input.jobType,
+            planError: formatError(planError),
+            stage: `${input.jobType}.log-error`,
+          },
+          logError,
+        ),
+      ),
+    );
+  }
+};
+
+const runResultAndPaddockPlans = async (env: Env, targetDate: string): Promise<void> => {
+  await runLoggedPlannerStage({
+    env,
+    jobType: "drain-result-cache-busts",
+    plan: () => drainPendingResultCacheBusts(env),
+  });
+  await runLoggedPlannerStage({
+    env,
+    jobType: "plan-result-fetches",
+    plan: async () => {
+      const todayCount = await planResultFetchesOnly(env, targetDate);
+      const yesterdayCount = await planResultFetchesOnly(env, addDaysToYyyymmdd(targetDate, -1), {
+        discoveryRecovery: false,
+      });
+      return todayCount + yesterdayCount;
+    },
+  });
+  await runLoggedPlannerStage({
+    env,
+    jobType: "plan-premium-paddock",
+    plan: () => planPremiumPaddockFetchesOnly(env, targetDate),
+  });
+};
+
 export const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
@@ -2865,49 +3053,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
-    const weightCandidates: WeightCandidate[] = races
-      .map((race): WeightCandidatePair => ({ race, minutes: minutesUntilRace(race, now) }))
-      .filter(isWeightCandidate)
-      .filter(
-        (c) =>
-          c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
-          isDue(
-            c.race.lastWeightFetchAt,
-            resolveWeightFetchCooldownMinutes({
-              lastFetchAt: c.race.lastWeightFetchAt,
-              now,
-              raceStartAtJst: c.race.raceStartAtJst,
-            }),
-            now,
-          ),
-      );
-    [...weightCandidates].sort(compareWeightCandidates).forEach((c) => {
-      jobs.push({ raceKey: c.race.raceKey, type: "fetch-weights" });
-    });
-    if (races.length > 0) {
-      await writeWeightRaceListFallbackToKv(
-        env,
-        targetDate,
-        races.map(
-          (race): WeightRaceListKvEntry => ({ raceKey: race.raceKey, source: race.source }),
-        ),
-      );
-    } else {
-      const fallback = await readWeightRaceListFallbackFromKv(env, targetDate);
-      const fallbackRaces = await Promise.all(
-        fallback.map((entry) => getRaceSource(env.REALTIME_DB, entry.raceKey)),
-      );
-      fallbackRaces
-        .filter(isNarRaceSourcePresent)
-        .map(
-          (race): FallbackWeightCandidatePair => ({ race, minutes: minutesUntilRace(race, now) }),
-        )
-        .filter(isFallbackWeightCandidate)
-        .filter((candidate) => isFallbackWeightCandidateDue(candidate, now))
-        .forEach((candidate) => {
-          jobs.push({ raceKey: candidate.race.raceKey, type: "fetch-weights" });
-        });
-    }
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
@@ -3076,17 +3221,41 @@ export const parseHorseWeightsForRace = async (
   return primaryWeights;
 };
 
-const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean> => {
-  // Skip entirely -- no D1 write, no HTTP fetch -- when a complete snapshot
-  // already exists. insertHorseWeightSnapshot is only ever reached after the
-  // soft completeness gates below pass, so any stored row set already
-  // represents every expected non-scratched horse; there is no partial state
-  // to worry about missing here. This also removes one source of repeat
-  // request pressure against already-solved races (2026-07-03 incident:
-  // races whose weight was already captured were still getting re-hit every
-  // watchdog tick).
+const fetchAndStoreWeights = async (
+  env: Env,
+  raceKey: string,
+  watchdogReservedAt: string | null,
+  requestedGeneration: WeightSnapshotGeneration | null,
+): Promise<boolean> => {
+  // Only a generation-bound repair delivery may reuse a stored snapshot. A
+  // normal watchdog/manual job must scrape again: otherwise any old non-empty
+  // snapshot could be promoted to post-weight success without proving it is
+  // the generation that caused this rescore request.
   const alreadyStored = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
-  if (alreadyStored !== null && alreadyStored.horses.length > 0) {
+  if (alreadyStored !== null && alreadyStored.horses.length > 0 && requestedGeneration !== null) {
+    const storedRace = await getRaceSource(env.REALTIME_DB, raceKey);
+    if (!storedRace) {
+      throw new Error(`race source not found: ${raceKey}`);
+    }
+    const storedGeneration = await buildWeightSnapshotGeneration(
+      alreadyStored.fetchedAt,
+      alreadyStored.horses,
+    );
+    if (!isSameWeightGeneration(storedGeneration, requestedGeneration)) {
+      throw new Error(`weight snapshot repair generation mismatch: ${raceKey}`);
+    }
+    await triggerRescoreAfterWeights({
+      env,
+      generation: requestedGeneration,
+      raceKey,
+      raceStartAtJst: storedRace.raceStartAtJst,
+    });
+    await updateLastFetch(
+      env.REALTIME_DB,
+      raceKey,
+      "last_weight_fetch_at",
+      alreadyStored.fetchedAt,
+    );
     await logFetch(
       env.REALTIME_DB,
       "fetch-weights",
@@ -3102,12 +3271,18 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
   }
   const now = getNow(env);
   const fetchedAt = toJstIsoString(now);
-  const claimed = await claimWeightFetch(
-    env.REALTIME_DB,
-    raceKey,
-    fetchedAt,
-    toJstIsoString(new Date(now.getTime() - WEIGHT_FETCH_LEASE_SECONDS * 1000)),
+  const claimedAt =
+    watchdogReservedAt === fetchedAt ? toJstIsoString(new Date(now.getTime() + 1000)) : fetchedAt;
+  const leaseExpiredBefore = toJstIsoString(
+    new Date(now.getTime() - WEIGHT_FETCH_LEASE_SECONDS * 1000),
   );
+  const reservationClaimed =
+    watchdogReservedAt === null
+      ? false
+      : await claimReservedWeightFetch(env.REALTIME_DB, raceKey, watchdogReservedAt, claimedAt);
+  const claimed =
+    reservationClaimed ||
+    (await claimWeightFetch(env.REALTIME_DB, raceKey, claimedAt, leaseExpiredBefore));
   if (!claimed) {
     await logFetch(
       env.REALTIME_DB,
@@ -3148,14 +3323,25 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
     );
   }
   const weights = await parseHorseWeightsForRace(race, html, entries);
-  // Fail-closed soft path: incomplete non-empty weights must NOT throw and
-  // must NOT write last_weight_fetch_at / snapshot (24h cooldown would block
-  // recovery). Soft-retry while still in the lead/near-race window, same as
-  // empty weights. 2026-07-19..21: assert* throws turned sparse NAR/JRA
-  // parses into hard `error` rows with no retry (e.g. nar:2026:0721:35:04).
+  // Fail-closed pending path: an empty or incomplete upstream response must
+  // not throw and must not write last_weight_fetch_at / snapshot (a success
+  // cooldown would block recovery). The watchdog schedules the next single
+  // fetch while the provider is still publishing the table. 2026-07-19..21:
+  // assert* throws turned sparse NAR/JRA parses into hard `error` rows with no
+  // recovery (e.g. nar:2026:0721:35:04).
   if (weights.length === 0) {
-    await retryEmptyWeightsWhileInWindow(env, race);
-    await logFetch(env.REALTIME_DB, "fetch-weights", SKIP_STATUS.weightsEmpty, raceKey, "count=0");
+    await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_soft_miss_at", claimedAt);
+    // An empty upstream response means the provider has not published the
+    // weight table yet. This is an expected pending state, not a fetch error
+    // and must not enter Queue retry/DLQ accounting. The watchdog owns the
+    // next single fetch reservation.
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-weights",
+      SKIP_STATUS.weightsPending,
+      raceKey,
+      "count=0 upstream-not-published",
+    );
     return false;
   }
   const missingHorseNumbers =
@@ -3164,22 +3350,47 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
       : race.source === "nar"
         ? getMissingNarHorseWeightNumbers(entries, weights)
         : [];
+  const entryGeneration = await buildEntrySnapshotGeneration({
+    entries,
+    fetchedAt,
+    source: race.source,
+  });
+  const unexpectedHorseNumbers =
+    entryGeneration.activeHorseNumbers.length === 0
+      ? []
+      : getUnexpectedWeightHorseNumbers(entryGeneration.activeHorseNumbers, weights);
   const tooFewRows = weights.length < MIN_HORSE_WEIGHT_ROWS_PER_RACE;
-  if (missingHorseNumbers.length > 0 || tooFewRows) {
-    await retryEmptyWeightsWhileInWindow(env, race);
+  if (
+    missingHorseNumbers.length > 0 ||
+    unexpectedHorseNumbers.length > 0 ||
+    entryGeneration.activeHorseNumbers.length === 0 ||
+    tooFewRows
+  ) {
+    await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_soft_miss_at", claimedAt);
     await logFetch(
       env.REALTIME_DB,
       "fetch-weights",
-      SKIP_STATUS.weightsSparse,
+      SKIP_STATUS.weightsIncomplete,
       raceKey,
-      buildSparseWeightsLogDetail(weights, missingHorseNumbers),
+      `${buildSparseWeightsLogDetail(weights, missingHorseNumbers)} upstream-incomplete${
+        unexpectedHorseNumbers.length > 0 ? ` unexpected=${unexpectedHorseNumbers.join(",")}` : ""
+      }`,
     );
     return false;
   }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
   await broadcastHorseWeightsToDO(env, raceKey, fetchedAt, weights);
+  const generation: WeightSnapshotGeneration = {
+    ...(await buildWeightSnapshotGeneration(fetchedAt, weights)),
+    ...entryGeneration,
+  };
+  await triggerOrEnqueueWeightGenerationRepair({
+    env,
+    generation,
+    raceKey,
+    raceStartAtJst: race.raceStartAtJst,
+  });
   await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
-  await triggerRescoreAfterWeights(env, raceKey);
   if (entries.length > 0) {
     await pushResultsToRaceTrendDO(
       env,
@@ -3195,8 +3406,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
       race,
     );
   }
-  await runTrendCacheBust(env, raceKey, race);
-  await runRaceCacheBust(env, raceKey, race);
+  await runResultCacheBusts({ claim: null, env, race });
   return true;
 };
 
@@ -3232,17 +3442,166 @@ const broadcastHorseWeightsToDO = async (
   }
 };
 
-interface RescoreTriggerRequest {
+interface RescoreTriggerRequest extends WeightSnapshotGeneration {
   category: "ban-ei" | "jra" | "nar";
   keibajoCode: string;
   raceBango: string;
+  raceStartAtJst?: string;
   runYmd: string;
 }
 
-interface RescoreTriggerOutcome {
-  detail: string | null;
+interface FailedRescoreTriggerOutcome {
+  detail: string;
   status: string;
+  succeeded: false;
 }
+
+interface SuccessfulRescoreTriggerOutcome {
+  detail: null;
+  status: string;
+  succeeded: true;
+}
+
+type RescoreTriggerOutcome = FailedRescoreTriggerOutcome | SuccessfulRescoreTriggerOutcome;
+
+interface TriggerRescoreAfterWeightsInput {
+  env: Env;
+  raceKey: string;
+  raceStartAtJst?: string;
+  generation: WeightSnapshotGeneration;
+}
+
+interface CanonicalWeightRow {
+  horseNumber: number;
+  weight: number;
+}
+
+interface EntrySnapshotGeneration {
+  activeHorseNumbers: number[];
+  entrySnapshotFetchedAt: string;
+  entrySnapshotHash: string;
+  excludedHorseNumbers: number[];
+}
+
+interface CanonicalEntrySnapshot {
+  activeHorseNumbers: number[];
+  excludedHorseNumbers: number[];
+}
+
+interface BuildEntrySnapshotGenerationInput {
+  entries: ReadonlyArray<Omit<RaceEntry, "fetchedAt">>;
+  fetchedAt: string;
+  source: "jra" | "nar";
+}
+
+const compareCanonicalWeightRows = (left: CanonicalWeightRow, right: CanonicalWeightRow): number =>
+  left.horseNumber - right.horseNumber;
+
+const canonicalWeightRows = (weights: ReadonlyArray<HorseWeight>): CanonicalWeightRow[] =>
+  weights
+    .map((entry): CanonicalWeightRow => {
+      const horseNumber = Number(entry.horseNumber);
+      if (!Number.isInteger(horseNumber) || horseNumber <= 0) {
+        throw new Error(`invalid weight snapshot horse number: ${entry.horseNumber}`);
+      }
+      if (
+        typeof entry.weight !== "number" ||
+        !Number.isInteger(entry.weight) ||
+        entry.weight <= 0
+      ) {
+        throw new Error(`invalid weight snapshot value: ${entry.horseNumber}`);
+      }
+      return { horseNumber, weight: entry.weight };
+    })
+    .sort(compareCanonicalWeightRows);
+
+const sha256Hex = async (value: string): Promise<string> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const compareHorseNumbers = (left: number, right: number): number => left - right;
+
+const canonicalEntrySnapshot = (
+  source: "jra" | "nar",
+  entries: ReadonlyArray<Omit<RaceEntry, "fetchedAt">>,
+): CanonicalEntrySnapshot => {
+  const activeHorseNumbers = new Set<number>();
+  const excludedHorseNumbers = new Set<number>();
+  for (const entry of entries) {
+    const horseNumber = Number(entry.horseNumber);
+    if (!Number.isInteger(horseNumber) || horseNumber <= 0) {
+      throw new Error(`invalid entry snapshot horse number: ${entry.horseNumber}`);
+    }
+    const excluded =
+      entry.status !== null && (source === "nar" || isJraScratchStatus(entry.status));
+    if (excluded) {
+      excludedHorseNumbers.add(horseNumber);
+      activeHorseNumbers.delete(horseNumber);
+    } else if (!excludedHorseNumbers.has(horseNumber)) {
+      activeHorseNumbers.add(horseNumber);
+    }
+  }
+  return {
+    activeHorseNumbers: Array.from(activeHorseNumbers).sort(compareHorseNumbers),
+    excludedHorseNumbers: Array.from(excludedHorseNumbers).sort(compareHorseNumbers),
+  };
+};
+
+export const buildEntrySnapshotGeneration = async (
+  input: BuildEntrySnapshotGenerationInput,
+): Promise<EntrySnapshotGeneration> => {
+  const snapshot = canonicalEntrySnapshot(input.source, input.entries);
+  return {
+    ...snapshot,
+    entrySnapshotFetchedAt: input.fetchedAt,
+    entrySnapshotHash: await sha256Hex(JSON.stringify(snapshot)),
+  };
+};
+
+const getUnexpectedWeightHorseNumbers = (
+  activeHorseNumbers: ReadonlyArray<number>,
+  weights: ReadonlyArray<HorseWeight>,
+): string[] => {
+  const expected = new Set(activeHorseNumbers.map(String));
+  return weights
+    .map((weight) => weight.horseNumber)
+    .filter((horseNumber) => !expected.has(horseNumber));
+};
+
+export const buildWeightSnapshotGeneration = async (
+  fetchedAt: string,
+  weights: ReadonlyArray<HorseWeight>,
+): Promise<WeightSnapshotGeneration> => {
+  const rows = canonicalWeightRows(weights);
+  return {
+    weightSnapshotCount: rows.length,
+    weightSnapshotFetchedAt: fetchedAt,
+    weightSnapshotHash: await sha256Hex(JSON.stringify(rows)),
+  };
+};
+
+const isSameWeightGeneration = (
+  left: WeightSnapshotGeneration,
+  right: WeightSnapshotGeneration,
+): boolean =>
+  left.weightSnapshotCount === right.weightSnapshotCount &&
+  left.weightSnapshotFetchedAt === right.weightSnapshotFetchedAt &&
+  left.weightSnapshotHash === right.weightSnapshotHash;
+
+const triggerOrEnqueueWeightGenerationRepair = async (
+  input: TriggerRescoreAfterWeightsInput,
+): Promise<void> => {
+  try {
+    await triggerRescoreAfterWeights(input);
+  } catch {
+    await input.env.REALTIME_JOBS.send({
+      raceKey: input.raceKey,
+      type: "fetch-weights",
+      weightGeneration: input.generation,
+    });
+  }
+};
 
 const resolveRescoreCategory = (
   source: string,
@@ -3257,7 +3616,11 @@ const resolveRescoreCategory = (
 // buildRealtimeRaceKey in race-key.ts). Returns null when the shape does not
 // match or the source maps to no predict category (defensive — every D1 row
 // today is jra or nar).
-export const parseRescoreTriggerRequest = (raceKey: string): RescoreTriggerRequest | null => {
+export const parseRescoreTriggerRequest = (
+  raceKey: string,
+  generation: WeightSnapshotGeneration,
+  raceStartAtJst?: string,
+): RescoreTriggerRequest | null => {
   const parts = raceKey.split(":");
   if (parts.length !== RACE_KEY_PART_COUNT) return null;
   const source = parts[0]!;
@@ -3268,7 +3631,14 @@ export const parseRescoreTriggerRequest = (raceKey: string): RescoreTriggerReque
   if (!source || !year || !mmdd || !keibajoCode || !raceBango) return null;
   const category = resolveRescoreCategory(source, keibajoCode);
   if (!category) return null;
-  return { category, keibajoCode, raceBango, runYmd: `${year}${mmdd}` };
+  return {
+    category,
+    keibajoCode,
+    raceBango,
+    ...(raceStartAtJst === undefined ? {} : { raceStartAtJst }),
+    runYmd: `${year}${mmdd}`,
+    ...generation,
+  };
 };
 
 const postRescoreTriggerRequest = async (
@@ -3290,59 +3660,72 @@ const postRescoreTriggerRequest = async (
 // 200 {claimed:false} on a DO claim collision, and 202 {claimed:true} when the
 // per-race rescore message was really enqueued.
 const readRescoreTriggerOutcome = async (response: Response): Promise<RescoreTriggerOutcome> => {
-  if (!response.ok) return { detail: `http ${response.status}`, status: "error" };
+  if (!response.ok) return { detail: `http ${response.status}`, status: "error", succeeded: false };
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return { detail: "unparsable response body", status: "error" };
+    return { detail: "unparsable response body", status: "error", succeeded: false };
   }
-  if (!isObjectRecord(body)) return { detail: "unparsable response body", status: "error" };
-  if (body.rescoreEnabled === false) return { detail: null, status: SKIP_STATUS.rescoreDisabled };
-  if (body.claimed !== true) return { detail: null, status: SKIP_STATUS.rescoreNotClaimed };
-  return { detail: null, status: FETCH_LOG_SUCCESS.okStatus };
+  if (!isObjectRecord(body))
+    return { detail: "unparsable response body", status: "error", succeeded: false };
+  if (body.rescoreEnabled === false)
+    return {
+      detail: "rescore disabled",
+      status: SKIP_STATUS.rescoreDisabled,
+      succeeded: false,
+    };
+  if (body.claimed !== true)
+    return { detail: null, status: SKIP_STATUS.rescoreNotClaimed, succeeded: true };
+  return { detail: null, status: FETCH_LOG_SUCCESS.okStatus, succeeded: true };
 };
 
-// Fire-and-forget event-driven trigger fired right after a successful horse
-// weight write to D1. Failures (binding missing, token missing, network) are
-// swallowed and logged so they never fail the already-committed weight write.
-// The finish-position coordinator deduplicates repeated weight events for the
-// same race; there is intentionally no timer-based rescore backstop because it
-// could consume the one second-pass claim before weights arrive.
-export const triggerRescoreAfterWeights = async (env: Env, raceKey: string): Promise<void> => {
+const throwRescoreTriggerFailure = async (
+  env: Env,
+  raceKey: string,
+  detail: string,
+): Promise<never> => {
+  await logFetch(env.REALTIME_DB, WEIGHT_RESCORE_TRIGGER_LOG_KIND, "error", raceKey, detail);
+  throw new Error(`weight rescore trigger failed: ${detail}`);
+};
+
+// Trigger immediately after a successful horse-weight write, and also on a
+// queue redelivery that finds the snapshot already stored. The finish-position
+// coordinator owns idempotency; this caller must fail closed until it receives
+// a confirmed enqueue or an idempotent already-claimed response. Throwing after
+// a transport/config/protocol failure lets the Queue retry the trigger without
+// scraping or rewriting the already-persisted horse weights.
+export const triggerRescoreAfterWeights = async (
+  input: TriggerRescoreAfterWeightsInput,
+): Promise<void> => {
+  const { env, generation, raceKey, raceStartAtJst } = input;
   const binding = env.FINISH_POSITION_CRON;
   const token = env.TRIGGER_TOKEN;
-  if (!binding || !token) return;
-  const target = parseRescoreTriggerRequest(raceKey);
+  if (!binding) {
+    return throwRescoreTriggerFailure(env, raceKey, "missing FINISH_POSITION_CRON binding");
+  }
+  if (!token) {
+    return throwRescoreTriggerFailure(env, raceKey, "missing TRIGGER_TOKEN");
+  }
+  const target = parseRescoreTriggerRequest(raceKey, generation, raceStartAtJst);
   if (!target) {
-    await logFetch(
-      env.REALTIME_DB,
-      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
-      "error",
-      raceKey,
-      "invalid race key shape",
-    );
-    return;
+    return throwRescoreTriggerFailure(env, raceKey, "invalid race key shape");
   }
-  try {
-    const response = await postRescoreTriggerRequest(binding, token, target);
-    const outcome = await readRescoreTriggerOutcome(response);
-    await logFetch(
-      env.REALTIME_DB,
-      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
-      outcome.status,
-      raceKey,
-      outcome.detail,
-    );
-  } catch (error) {
-    await logFetch(
-      env.REALTIME_DB,
-      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
-      "error",
-      raceKey,
-      formatError(error),
-    );
+  const response = await postRescoreTriggerRequest(binding, token, target).catch(
+    async (error: unknown): Promise<never> =>
+      throwRescoreTriggerFailure(env, raceKey, formatError(error)),
+  );
+  const outcome = await readRescoreTriggerOutcome(response);
+  if (!outcome.succeeded) {
+    await throwRescoreTriggerFailure(env, raceKey, outcome.detail);
   }
+  await logFetch(
+    env.REALTIME_DB,
+    WEIGHT_RESCORE_TRIGGER_LOG_KIND,
+    outcome.status,
+    raceKey,
+    outcome.detail,
+  );
 };
 
 interface BuildRaceTrendRowArgs {
@@ -3459,6 +3842,60 @@ interface ResolvedRaceTrendEntries {
   source: RaceTrendEntriesSource;
 }
 
+interface ResultEntryPage {
+  html: string;
+  notFound: boolean;
+  storedEntries: Omit<RaceEntry, "fetchedAt">[] | null;
+}
+
+interface ResultPage {
+  html: string;
+  notFound: boolean;
+}
+
+const fetchNarEntryPageForResult = async (
+  env: Env,
+  race: NarRaceSource,
+): Promise<ResultEntryPage> => {
+  try {
+    return { html: await fetchRacePage(race.debaUrl), notFound: false, storedEntries: null };
+  } catch (error: unknown) {
+    if (!(error instanceof FetchStatusError) || error.status !== 404) {
+      throw error;
+    }
+    const stored = await getLatestRaceEntries(env.REALTIME_DB, race.raceKey);
+    if (stored === null || stored.horses.length === 0) {
+      return { html: "", notFound: true, storedEntries: null };
+    }
+    const storedEntries = stored.horses.map((entry) => ({
+      horseName: entry.horseName,
+      horseNumber: entry.horseNumber,
+      jockeyName: entry.jockeyName,
+      status: entry.status,
+    }));
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-results",
+      "fallback:stored-entry-after-404",
+      race.raceKey,
+      `fetched_at=${stored.fetchedAt} horses=${storedEntries.length}`,
+      env.DETAIL_SECTION_CACHE_KV,
+    );
+    return { html: "", notFound: true, storedEntries };
+  }
+};
+
+const fetchNarResultPage = async (url: string): Promise<ResultPage> => {
+  try {
+    return { html: await fetchRacePage(url), notFound: false };
+  } catch (error: unknown) {
+    if (!(error instanceof FetchStatusError) || error.status !== 404) {
+      throw error;
+    }
+    return { html: "", notFound: true };
+  }
+};
+
 const resolveRaceTrendEntries = async (
   env: Env,
   raceKey: string,
@@ -3489,24 +3926,33 @@ const resolveRaceTrendEntries = async (
 //                  environmental skip). Lower severity than error but still
 //                  worth surfacing because a long "skipped" streak silently
 //                  disables the bust signal across the entire card.
-const runTrendCacheBust = async (env: Env, raceKey: string, race: NarRaceSource): Promise<void> => {
+const runTrendCacheBust = async (
+  env: Env,
+  raceKey: string,
+  race: NarRaceSource,
+): Promise<boolean> => {
   const outcome = await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
   if (outcome.status === "error") {
     await logFetch(env.REALTIME_DB, "trend-cache-bust", "error", raceKey, outcome.message);
-    return;
+    return false;
   }
   if (outcome.status === "skipped") {
     await logFetch(env.REALTIME_DB, "trend-cache-bust", "skipped", raceKey, outcome.message);
+    return false;
   }
+  return true;
 };
 
 // Per-race cache-bust signal. Fires alongside the day-level trend bust so
 // the viewer drops both the main and stale-tier KV entries for every
 // detail-section variant of the finished race plus bumps the generation
-// counter that defeats the Cache API tier. fire-and-forget vs the
-// surrounding `fetchAndStoreResults` flow — any failure is logged but
-// never thrown so a viewer outage cannot abort result persistence.
-const runRaceCacheBust = async (env: Env, raceKey: string, race: NarRaceSource): Promise<void> => {
+// counter that defeats the Cache API tier. Failures are logged and returned
+// to the persistent outbox without aborting result persistence.
+const runRaceCacheBust = async (
+  env: Env,
+  raceKey: string,
+  race: NarRaceSource,
+): Promise<boolean> => {
   const outcome = await triggerRaceCacheBust(env, {
     keibajoCode: race.keibajoCode,
     mmdd: race.kaisaiTsukihi,
@@ -3516,11 +3962,90 @@ const runRaceCacheBust = async (env: Env, raceKey: string, race: NarRaceSource):
   });
   if (outcome.status === "error") {
     await logFetch(env.REALTIME_DB, "race-cache-bust", "error", raceKey, outcome.message);
-    return;
+    return false;
   }
   if (outcome.status === "skipped") {
     await logFetch(env.REALTIME_DB, "race-cache-bust", "skipped", raceKey, outcome.message);
+    return false;
   }
+  return true;
+};
+
+// Result persistence is the Queue message's success boundary. Viewer cache
+// invalidation is best-effort: run the day and race busts concurrently, and
+// contain even an unexpected rejection (including a D1 telemetry failure)
+// so it cannot turn a completed result write into a Queue redelivery.
+const runResultCacheBusts = async (
+  input: RunResultCacheBustsInput,
+): Promise<ResultCacheBustOutcomes> => {
+  const raceKey = input.race.raceKey;
+  const [trendOutcome, raceOutcome] = await Promise.allSettled([
+    input.claim === null || input.claim.needsTrendBust
+      ? runTrendCacheBust(input.env, raceKey, input.race)
+      : Promise.resolve(true),
+    input.claim === null || input.claim.needsRaceBust
+      ? runRaceCacheBust(input.env, raceKey, input.race)
+      : Promise.resolve(true),
+  ]);
+  if (trendOutcome.status === "rejected") {
+    console.warn(
+      formatErrorLogLine(
+        "Result cache bust side effect failed",
+        { kind: "trend", raceKey },
+        trendOutcome.reason,
+      ),
+    );
+  }
+  if (raceOutcome.status === "rejected") {
+    console.warn(
+      formatErrorLogLine(
+        "Result cache bust side effect failed",
+        { kind: "race", raceKey },
+        raceOutcome.reason,
+      ),
+    );
+  }
+  return {
+    raceDelivered: raceOutcome.status === "fulfilled" && raceOutcome.value,
+    trendDelivered: trendOutcome.status === "fulfilled" && trendOutcome.value,
+  };
+};
+
+const processPendingResultCacheBust = async (env: Env, race: NarRaceSource): Promise<boolean> => {
+  const now = getNow(env);
+  const nowIso = toJstIsoString(now);
+  const claim = await claimResultCacheBust({
+    db: env.REALTIME_DB,
+    leaseUntil: toJstIsoString(new Date(now.getTime() + RESULT_CACHE_BUST_LEASE_SECONDS * 1_000)),
+    now: nowIso,
+    raceKey: race.raceKey,
+  });
+  if (claim === null) {
+    return false;
+  }
+  const outcomes = await runResultCacheBusts({ claim, env, race });
+  await completeResultCacheBust({
+    claim,
+    db: env.REALTIME_DB,
+    now: nowIso,
+    ...outcomes,
+  });
+  return outcomes.raceDelivered && outcomes.trendDelivered;
+};
+
+export const drainPendingResultCacheBusts = async (env: Env): Promise<number> => {
+  const raceKeys = await listPendingResultCacheBustRaceKeys(
+    env.REALTIME_DB,
+    toJstIsoString(getNow(env)),
+    RESULT_CACHE_BUST_DRAIN_LIMIT,
+  );
+  const outcomes = await Promise.all(
+    raceKeys.map(async (raceKey) => {
+      const race = await getRaceSource(env.REALTIME_DB, raceKey);
+      return race === null ? false : processPendingResultCacheBust(env, race);
+    }),
+  );
+  return outcomes.filter(Boolean).length;
 };
 
 // The DO push is intentionally fire-and-forget for the surrounding
@@ -3866,6 +4391,13 @@ const dispatchResultFetchOutcome = async (
 const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): Promise<void> => {
   const retryLockMinutes = resolveRetryLockMinutes(input.outcome);
   const retryLockUntil = toJstIsoString(new Date(input.now.getTime() + retryLockMinutes * 60_000));
+  await registerResultCacheBust({
+    db: input.env.REALTIME_DB,
+    fetchedAt: input.fetchedAt,
+    isComplete: false,
+    raceKey: input.raceKey,
+    results: input.results,
+  });
   await recordPartialResultFetch(
     input.env.REALTIME_DB,
     input.raceKey,
@@ -3889,10 +4421,7 @@ const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): P
     }),
     input.race,
   );
-  if (input.inserted > 0) {
-    await runTrendCacheBust(input.env, input.raceKey, input.race);
-    await runRaceCacheBust(input.env, input.raceKey, input.race);
-  }
+  await processPendingResultCacheBust(input.env, input.race);
   await logFetch(
     input.env.REALTIME_DB,
     "fetch-results",
@@ -3908,6 +4437,13 @@ const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput)
     inserted: input.inserted,
     outcome: input.outcome,
     source: input.race.source,
+  });
+  await registerResultCacheBust({
+    db: input.env.REALTIME_DB,
+    fetchedAt: input.fetchedAt,
+    isComplete,
+    raceKey: input.raceKey,
+    results: input.results,
   });
   await completeResultFetch(input.env.REALTIME_DB, input.raceKey, input.fetchedAt, {
     expectedHorseCount: input.expectedHorseCount,
@@ -3927,18 +4463,10 @@ const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput)
     }),
     input.race,
   );
-  // Always bust the viewer trend cache when ANY result row landed (not just
-  // when the full field is parsed). JRA / NAR sometimes publish results in
-  // multiple stages — for example a long objection delay can hold the last
-  // 1-2 horses while the leading horses are already on the result page. If
-  // we only bust on `isComplete` the merged race-trend payload keeps the
-  // pre-race "no result yet" cache for that race until natural TTL expiry,
-  // which is exactly the "1R-11R confirmed but 12R detail still shows them
-  // as unfinished" failure mode this commit targets.
-  if (input.inserted > 0) {
-    await runTrendCacheBust(input.env, input.raceKey, input.race);
-    await runRaceCacheBust(input.env, input.raceKey, input.race);
-  }
+  // The outbox only claims a changed result signature or a completion-state
+  // transition. Each cache tier advances independently, so retrying one
+  // failed tier does not repeat the already-delivered day-wide invalidation.
+  await processPendingResultCacheBust(input.env, input.race);
   // Force-completion (24h give-up) is the highest-severity silent finish: the
   // planner stops re-enqueuing forever, so an operator MUST be able to see
   // that this race finalised with fewer horses than the field had.
@@ -4000,14 +4528,14 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     if (!resultUrl) {
       throw new Error(`race result url is unavailable: ${raceKey}`);
     }
-    const [entryHtml, resultHtml] = await Promise.all([
+    const [entryPage, resultPage] = await Promise.all([
       race.source === "jra"
         ? fetchJraResultHtmlWithFallback({
             browserBinding: env.JRA_BROWSER,
             needsParse: (html) => parseJraRaceEntries(html).length > 0,
             url: race.debaUrl,
-          })
-        : fetchRacePage(race.debaUrl),
+          }).then((html): ResultEntryPage => ({ html, notFound: false, storedEntries: null }))
+        : fetchNarEntryPageForResult(env, race),
       race.source === "jra"
         ? fetchJraResultHtmlWithFallback({
             browserBinding: env.JRA_BROWSER,
@@ -4015,18 +4543,22 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
               parseJraRaceResults(html).length > 0 ||
               parseJraRaceResultExcludedHorseNumbers(html).length > 0,
             url: resultUrl,
-          })
-        : fetchRacePage(resultUrl),
+          }).then((html): ResultPage => ({ html, notFound: false }))
+        : fetchNarResultPage(resultUrl),
     ]);
-    const entries =
+    const resultHtml = resultPage.html;
+    const parsedEntries =
       race.source === "jra"
-        ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(entryHtml), null)
-        : parseRaceEntries(entryHtml);
-    await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
+        ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(entryPage.html), null)
+        : parseRaceEntries(entryPage.html);
+    const entries = entryPage.storedEntries ?? parsedEntries;
+    if (entryPage.storedEntries === null && !entryPage.notFound) {
+      await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
+    }
     const parsedEntryHorseNumbers =
-      race.source === "jra"
+      entryPage.storedEntries !== null || race.source === "jra"
         ? entries.map((entry) => entry.horseNumber)
-        : parseRaceEntryHorseNumbers(entryHtml);
+        : parseRaceEntryHorseNumbers(entryPage.html);
     const excludedHorseNumbers = new Set(
       race.source === "jra"
         ? [
@@ -4039,12 +4571,19 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     );
     const results =
       race.source === "jra" ? parseJraRaceResults(resultHtml) : parseRaceResults(resultHtml);
-    // 2026-06-07: when the entry HTML parses to 0 horses AND the result HTML
-    // parses to 0 rows, treat it as a transient upstream parse failure and keep
-    // the race in the retry pool. Without this guard expectedHorseCount = 0
-    // falls through, insertRaceResultSnapshot short-circuits on 0 rows, and
-    // resolveResultFetchOutcome returns "complete" → permanently locks the
-    // race at 0 result rows (same shape as the BBB fix 3c7f877 for entries).
+    // A NAR 404 explicitly means that the page is not published, so route it
+    // through the empty-result state machine and acknowledge this queue job.
+    // If neither page returned that explicit signal, zero parsed rows remain a
+    // transient parser/upstream failure and must keep the Queue retry behavior.
+    if (
+      parsedEntryHorseNumbers.length === 0 &&
+      results.length === 0 &&
+      race.source === "nar" &&
+      (entryPage.notFound || resultPage.notFound)
+    ) {
+      await handleEmptyResultFetch({ env, now, race, raceKey });
+      return;
+    }
     if (parsedEntryHorseNumbers.length === 0 && results.length === 0) {
       throw new Error(`race entry rows are empty: ${raceKey}`);
     }
@@ -4187,6 +4726,83 @@ const isPremiumRaceDataQueueRaceKey = (raceKey: string): boolean => {
   return parts[0] === "jra" || (parts[0] === "nar" && parts[3] !== BAN_EI_KEIBAJO_CODE);
 };
 
+const normalizePremiumTrainingReview = (row: PremiumTrainingReview): PremiumTrainingReview => ({
+  commentText: row.commentText,
+  evaluationGrade: row.evaluationGrade,
+  evaluationText: row.evaluationText,
+  horseName: row.horseName,
+  horseNumber: row.horseNumber,
+  riderName: row.riderName,
+  trainingDate: row.trainingDate,
+});
+
+const normalizePremiumStableComment = (row: PremiumStableComment): PremiumStableComment => ({
+  commentText: row.commentText,
+  evaluationGrade: row.evaluationGrade,
+  evaluationText: row.evaluationText,
+  frameNumber: row.frameNumber,
+  horseName: row.horseName,
+  horseNumber: row.horseNumber,
+});
+
+const normalizePremiumDataTopHorse = (row: PremiumDataTopHorse): PremiumDataTopHorse => ({
+  horseName: row.horseName,
+  horseNumber: row.horseNumber,
+  rank: row.rank,
+  reasons: row.reasons,
+});
+
+const comparePremiumTrainingReviews = (
+  left: PremiumTrainingReview,
+  right: PremiumTrainingReview,
+): number =>
+  `${left.horseNumber}:${left.trainingDate}`.localeCompare(
+    `${right.horseNumber}:${right.trainingDate}`,
+  );
+
+const comparePremiumStableComments = (
+  left: PremiumStableComment,
+  right: PremiumStableComment,
+): number => left.horseNumber.localeCompare(right.horseNumber);
+
+const comparePremiumDataTopHorses = (
+  left: PremiumDataTopHorse,
+  right: PremiumDataTopHorse,
+): number => left.rank - right.rank;
+
+const premiumTrainingReviewsSignature = (rows: readonly PremiumTrainingReview[]): string =>
+  JSON.stringify(rows.map(normalizePremiumTrainingReview).toSorted(comparePremiumTrainingReviews));
+
+const premiumStableCommentsSignature = (rows: readonly PremiumStableComment[]): string =>
+  JSON.stringify(rows.map(normalizePremiumStableComment).toSorted(comparePremiumStableComments));
+
+const premiumDataTopHorsesSignature = (rows: readonly PremiumDataTopHorse[]): string =>
+  JSON.stringify(rows.map(normalizePremiumDataTopHorse).toSorted(comparePremiumDataTopHorses));
+
+const hasPremiumRaceDataChanged = (
+  previous: PremiumRacePayload | null,
+  next: PremiumRaceDataSections,
+): boolean => {
+  if (previous === null) {
+    return (
+      (next.trainingReviews?.length ?? 0) > 0 ||
+      (next.stableComments?.length ?? 0) > 0 ||
+      (next.dataTopHorses?.length ?? 0) > 0
+    );
+  }
+  return (
+    (next.trainingReviews !== undefined &&
+      premiumTrainingReviewsSignature(next.trainingReviews) !==
+        premiumTrainingReviewsSignature(previous.trainingReviews)) ||
+    (next.stableComments !== undefined &&
+      premiumStableCommentsSignature(next.stableComments) !==
+        premiumStableCommentsSignature(previous.stableComments)) ||
+    (next.dataTopHorses !== undefined &&
+      premiumDataTopHorsesSignature(next.dataTopHorses) !==
+        premiumDataTopHorsesSignature(previous.dataTopHorses))
+  );
+};
+
 const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || !isPremiumRaceDataTarget(race)) {
@@ -4306,6 +4922,12 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   // authenticated, so it must not be used to suppress data-top persistence
   // (it wrongly wiped valid, already-fetched data-top data in production).
   const dataTopHorsesForReplace = dataTopAuthRequired ? undefined : dataTopHorses;
+  const previousPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
+  const premiumRaceDataChanged = hasPremiumRaceDataChanged(previousPayload, {
+    dataTopHorses: dataTopHorsesForReplace,
+    stableComments,
+    trainingReviews,
+  });
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses: dataTopHorsesForReplace,
     fetchedAt,
@@ -4325,13 +4947,11 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     (trainingReviews?.length ?? 0) > 0 ||
     (parsedStableComments?.length ?? 0) > 0 ||
     (dataTopHorses?.length ?? 0) > 0;
-  // Bust the viewer's per-race cache as soon as new premium training/stable
-  // comment content lands, not only after results land later. Without this,
-  // a same-day cache pre-warm that ran before premium data was ready keeps
-  // serving a stale/empty training section until race-start+6h. Skip the
-  // bust when this fetch produced nothing (empty/failed) so we do not spend
-  // it on a no-op.
-  if (hasAnyData) {
+  // The premium queue polls hot races repeatedly. Compare semantic content
+  // against the durable D1 snapshot (ignoring fetchedAt) so an unchanged poll
+  // does not fan out another Viewer invalidation + warm. A first insert,
+  // repaired section, or authorized removal still busts immediately.
+  if (premiumRaceDataChanged) {
     await runRaceCacheBust(env, raceKey, race);
   }
   const commentAuthRequired = Boolean(commentHtml) && !commentAuthorized;
@@ -4780,7 +5400,12 @@ const handleFetchWeightsOrUnknown = async (env: Env, job: unknown): Promise<void
   const stored = await withHandlerTimeout({
     label: "fetch-weights",
     ms: QUEUE_HANDLER_TIMEOUT_MS,
-    task: fetchAndStoreWeights(env, fetchWeightsJob.raceKey),
+    task: fetchAndStoreWeights(
+      env,
+      fetchWeightsJob.raceKey,
+      fetchWeightsJob.watchdogReservedAt ?? null,
+      fetchWeightsJob.weightGeneration ?? null,
+    ),
   });
   if (!stored) return;
   await logFetch(env.REALTIME_DB, fetchWeightsJob.type, "ok", fetchWeightsJob.raceKey, null);
@@ -4789,6 +5414,8 @@ const handleFetchWeightsOrUnknown = async (env: Env, job: unknown): Promise<void
 interface FetchWeightsJobShape {
   raceKey: string;
   type: "fetch-weights";
+  watchdogReservedAt?: string;
+  weightGeneration?: WeightSnapshotGeneration;
 }
 
 const raceKeyDateYmd = (raceKey: string): string | null => {
@@ -4824,11 +5451,63 @@ const skipStaleLiveRealtimeJob = async (
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const isCanonicalHorseNumberArray = (value: unknown): value is number[] =>
+  Array.isArray(value) &&
+  value.every(
+    (horseNumber, index) =>
+      Number.isInteger(horseNumber) &&
+      horseNumber > 0 &&
+      (index === 0 || value[index - 1] < horseNumber),
+  );
+
+const hasRunnerSnapshotFields = (value: Record<string, unknown>): boolean =>
+  value.activeHorseNumbers !== undefined ||
+  value.entrySnapshotFetchedAt !== undefined ||
+  value.entrySnapshotHash !== undefined ||
+  value.excludedHorseNumbers !== undefined;
+
+export const pickWeightGeneration = (value: unknown): WeightSnapshotGeneration | null => {
+  if (!isObjectRecord(value)) return null;
+  if (!Number.isInteger(value.weightSnapshotCount) || Number(value.weightSnapshotCount) <= 0)
+    return null;
+  if (typeof value.weightSnapshotFetchedAt !== "string") return null;
+  if (typeof value.weightSnapshotHash !== "string") return null;
+  const generation: WeightSnapshotGeneration = {
+    weightSnapshotCount: Number(value.weightSnapshotCount),
+    weightSnapshotFetchedAt: value.weightSnapshotFetchedAt,
+    weightSnapshotHash: value.weightSnapshotHash,
+  };
+  if (!hasRunnerSnapshotFields(value)) return generation;
+  if (!isCanonicalHorseNumberArray(value.activeHorseNumbers)) return null;
+  if (value.activeHorseNumbers.length === 0) return null;
+  if (!isCanonicalHorseNumberArray(value.excludedHorseNumbers)) return null;
+  if (typeof value.entrySnapshotFetchedAt !== "string") return null;
+  if (typeof value.entrySnapshotHash !== "string") return null;
+  const active = new Set(value.activeHorseNumbers);
+  if (value.excludedHorseNumbers.some((horseNumber) => active.has(horseNumber))) return null;
+  return {
+    ...generation,
+    activeHorseNumbers: value.activeHorseNumbers,
+    entrySnapshotFetchedAt: value.entrySnapshotFetchedAt,
+    entrySnapshotHash: value.entrySnapshotHash,
+    excludedHorseNumbers: value.excludedHorseNumbers,
+  };
+};
+
 const pickFetchWeightsJob = (job: unknown): FetchWeightsJobShape | null => {
   if (!isObjectRecord(job)) return null;
   if (job.type !== "fetch-weights") return null;
   if (typeof job.raceKey !== "string") return null;
-  return { raceKey: job.raceKey, type: "fetch-weights" };
+  const weightGeneration = pickWeightGeneration(job.weightGeneration);
+  if (job.weightGeneration !== undefined && weightGeneration === null) return null;
+  return {
+    raceKey: job.raceKey,
+    type: "fetch-weights",
+    ...(typeof job.watchdogReservedAt === "string"
+      ? { watchdogReservedAt: job.watchdogReservedAt }
+      : {}),
+    ...(weightGeneration === null ? {} : { weightGeneration }),
+  };
 };
 
 const pickRaceKey = (job: unknown): string | null => {
@@ -4844,10 +5523,8 @@ const pickJobType = (job: unknown): string | null => {
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
   try {
     if (job.type === "discover-urls") {
-      const [result, premiumResult] = await Promise.all([
-        upsertDiscoveredUrls(env, job.date, { sleep: defaultDiscoverSleep }),
-        discoverPremiumRacesForDate(env, job.date),
-      ]);
+      const result = await upsertDiscoveredUrls(env, job.date, { sleep: defaultDiscoverSleep });
+      const premiumResult = await discoverPremiumRacesForDate(env, job.date);
       const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, job.date);
       await enqueueJobs(
         env,
@@ -5044,14 +5721,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     if (job.type === "plan-realtime-fetches" && isD1OverloadError(error)) {
       await tripPlanRealtimeCircuitBreaker(env).catch(() => {});
     }
-    await logFetch(
-      env.REALTIME_DB,
-      job.type,
-      "error",
-      "raceKey" in job ? job.raceKey : null,
-      formatError(error),
-      env.DETAIL_SECTION_CACHE_KV,
-    );
+    if (job.type !== "generate-running-style-predictions") {
+      await logFetch(
+        env.REALTIME_DB,
+        job.type,
+        "error",
+        "raceKey" in job ? job.raceKey : null,
+        formatError(error),
+        env.DETAIL_SECTION_CACHE_KV,
+      );
+    }
     throw error;
   }
 };
@@ -5642,46 +6321,7 @@ export default {
         : new Date();
     if (controller.cron === RESULT_POLL_CRON) {
       const targetDate = getTodayJst(scheduledAt);
-      ctx.waitUntil(
-        (async () => {
-          const todayCount = await planResultFetchesOnly(env, targetDate);
-          const yesterdayCount = await planResultFetchesOnly(
-            env,
-            addDaysToYyyymmdd(targetDate, -1),
-            { discoveryRecovery: false },
-          );
-          return todayCount + yesterdayCount;
-        })()
-          .then((count) =>
-            logFetch(env.REALTIME_DB, "plan-result-fetches", "ok", null, `${count} jobs queued`),
-          )
-          .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "plan-result-fetches",
-              "error",
-              null,
-              formatError(error),
-              env.DETAIL_SECTION_CACHE_KV,
-            ),
-          ),
-      );
-      ctx.waitUntil(
-        planPremiumPaddockFetchesOnly(env, targetDate)
-          .then((count) =>
-            logFetch(env.REALTIME_DB, "plan-premium-paddock", "ok", null, `${count} jobs queued`),
-          )
-          .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "plan-premium-paddock",
-              "error",
-              null,
-              formatError(error),
-              env.DETAIL_SECTION_CACHE_KV,
-            ),
-          ),
-      );
+      ctx.waitUntil(runResultAndPaddockPlans(env, targetDate));
       return;
     }
     if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
@@ -5757,19 +6397,117 @@ export default {
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);
-    ctx.waitUntil(handleJob(env, job));
     if (job.type === "plan-realtime-fetches") {
-      ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date));
+      ctx.waitUntil(runScheduledRealtimePlanWithRecovery(env, job.date));
+      return;
     }
+    ctx.waitUntil(handleJob(env, job));
   },
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
+      const runningStyleRaceKey =
+        message.body.type === "generate-running-style-predictions" ? message.body.raceKey : null;
+      if (runningStyleRaceKey !== null) {
+        await logFetch(
+          env.REALTIME_DB,
+          message.body.type,
+          "started",
+          runningStyleRaceKey,
+          `${RUNNING_STYLE_QUEUE_LOG_MARKER} attempts=${message.attempts}`,
+          env.DETAIL_SECTION_CACHE_KV,
+        ).catch((logError: unknown) =>
+          console.warn(
+            formatErrorLogLine(
+              "Running-style queue start log failed",
+              {
+                attempts: String(message.attempts),
+                raceKey: runningStyleRaceKey,
+              },
+              logError,
+            ),
+          ),
+        );
+      }
       try {
         await handleJob(env, message.body);
         message.ack();
       } catch (error) {
-        console.error(formatErrorLogLine("Queue job failed", { type: message.body.type }, error));
+        if (runningStyleRaceKey !== null) {
+          await logFetch(
+            env.REALTIME_DB,
+            message.body.type,
+            "error",
+            runningStyleRaceKey,
+            `${RUNNING_STYLE_QUEUE_LOG_MARKER} attempts=${message.attempts} error=${formatError(error)}`,
+            env.DETAIL_SECTION_CACHE_KV,
+          ).catch((logError: unknown) =>
+            console.warn(
+              formatErrorLogLine(
+                "Running-style queue error log failed",
+                {
+                  attempts: String(message.attempts),
+                  raceKey: runningStyleRaceKey,
+                },
+                logError,
+              ),
+            ),
+          );
+        }
+        console.error(
+          formatErrorLogLine(
+            "Queue job failed",
+            runningStyleRaceKey === null
+              ? { type: message.body.type }
+              : {
+                  attempts: String(message.attempts),
+                  raceKey: runningStyleRaceKey,
+                  type: message.body.type,
+                },
+            error,
+          ),
+        );
+        if (message.body.type === "plan-realtime-fetches" && isConnectionPressureError(error)) {
+          const realtimePlanJob = message.body;
+          if (!realtimePlanJob.selfSchedule) {
+            await enqueueSelfRealtimePlanIfStale(env, realtimePlanJob.date, {
+              delaySeconds: buildConnectionPressureRecoveryDelaySeconds(),
+              failureClass: "connection_pressure",
+              now: getNow(env),
+              stage: "queue.enqueue-single-recovery",
+            }).catch((recoveryError: unknown) =>
+              console.error(
+                formatErrorLogLine(
+                  "Queue realtime planner single recovery enqueue failed",
+                  { date: realtimePlanJob.date, stage: "queue.enqueue-single-recovery" },
+                  recoveryError,
+                ),
+              ),
+            );
+          } else {
+            await logFetch(
+              env.REALTIME_DB,
+              "plan-realtime-fetches-recovery",
+              "exhausted",
+              null,
+              JSON.stringify({
+                failureClass: "connection_pressure",
+                stage: "queue.single-recovery-exhausted",
+              }),
+              env.DETAIL_SECTION_CACHE_KV,
+            ).catch((logError: unknown) =>
+              console.error(
+                formatErrorLogLine(
+                  "Queue realtime planner recovery exhaustion log failed",
+                  { date: realtimePlanJob.date, stage: "queue.single-recovery-exhausted" },
+                  logError,
+                ),
+              ),
+            );
+          }
+          message.ack();
+          continue;
+        }
         const delaySeconds = isD1OverloadError(error)
           ? buildPlanRealtimeOverloadRetryDelaySeconds()
           : QUEUE_RETRY_DELAY_SECONDS;
@@ -5779,7 +6517,13 @@ export default {
           console.error(
             formatErrorLogLine(
               "Queue delayed retry failed",
-              { type: message.body.type },
+              runningStyleRaceKey === null
+                ? { type: message.body.type }
+                : {
+                    attempts: String(message.attempts),
+                    raceKey: runningStyleRaceKey,
+                    type: message.body.type,
+                  },
               retryError,
             ),
           );

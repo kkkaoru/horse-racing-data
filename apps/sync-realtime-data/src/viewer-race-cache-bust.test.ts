@@ -16,6 +16,23 @@ const buildEnv = (overrides: Partial<Env> = {}): Env =>
     ...overrides,
   }) as unknown as Env;
 
+test("triggerRaceCacheBust drains the response stream before accepting success", async () => {
+  const response = new Response("accepted", { status: 202 });
+  const pipeTo = vi.spyOn(response.body!, "pipeTo");
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+
+  expect(
+    await triggerRaceCacheBust(buildEnv(), {
+      keibajoCode: "55",
+      mmdd: "0525",
+      raceBango: "07",
+      source: "nar",
+      year: "2026",
+    }),
+  ).toStrictEqual({ attempts: 1, status: "ok" });
+  expect(pipeTo).toHaveBeenCalledTimes(1);
+});
+
 test("parseRaceKey parses a JRA raceKey into source/year/mmdd/keibajoCode/raceBango", () => {
   expect(parseRaceKey("jra:20260628:05:11")).toStrictEqual({
     keibajoCode: "05",

@@ -11,7 +11,7 @@
 // cleared the trend-cache namespace.
 //
 // Same retry semantics as the trend bust: 5xx / network errors get one
-// retry, 4xx is terminal, network timeout is 8s.
+// retry, 4xx is terminal, network timeout is 3s.
 
 import { formatError } from "./format-error";
 import type { Env } from "./types";
@@ -19,7 +19,10 @@ import type { Env } from "./types";
 const VIEWER_INTERNAL_BUST_PATH = "/api/internal/race-cache-bust";
 const AUTH_HEADER = "x-pc-keiba-internal-token";
 const DEFAULT_VIEWER_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
-const FETCH_TIMEOUT_MS = 8_000;
+// Result queue handlers have a 25s hard deadline. Two attempts must leave
+// enough time for result persistence, the companion trend bust, and feature
+// refresh without turning a viewer outage into a Queue redelivery.
+const FETCH_TIMEOUT_MS = 3_000;
 const MAX_ATTEMPTS = 2;
 const SERVER_ERROR_STATUS_MIN = 500;
 const RETRY_DELAY_MS = 200;
@@ -115,6 +118,12 @@ const buildRequestInit = (token: string, body: RaceCacheBustBody): RequestInit =
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const drainResponseBody = async (response: Response): Promise<void> => {
+  if (response.body !== null) {
+    await response.body.pipeTo(new WritableStream());
+  }
+};
+
 const resolveViewerFetcher = (env: Env): ViewerFetcher => {
   const viewer = env.PC_KEIBA_VIEWER;
   return viewer ? (input, init) => viewer.fetch(input, init) : fetch;
@@ -123,6 +132,7 @@ const resolveViewerFetcher = (env: Env): ViewerFetcher => {
 const performAttempt = async (args: AttemptArgs): Promise<AttemptOutcome> => {
   try {
     const response = await args.fetcher(args.url, args.init);
+    await drainResponseBody(response);
     if (response.ok) {
       return { retryable: false, status: "ok" };
     }

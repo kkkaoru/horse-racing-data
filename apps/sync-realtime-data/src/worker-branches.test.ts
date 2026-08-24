@@ -34,10 +34,18 @@ vi.mock("./storage", () => ({
   markOddsFetchQueued: vi.fn(async () => {}),
   claimOddsFetch: vi.fn(async () => false),
   claimResultFetch: vi.fn(async () => false),
+  claimResultCacheBust: vi.fn(async () => ({
+    isComplete: true,
+    needsRaceBust: true,
+    needsTrendBust: true,
+    raceKey: "nar:2026:0512:55:01",
+    resultSignature: "snapshot-v1",
+  })),
   claimWeightFetch: vi.fn(async () => true),
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
+  completeResultCacheBust: vi.fn(async () => {}),
   recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),
   incrementEmptyResultAttempts: vi.fn(async () => 0),
@@ -47,6 +55,8 @@ vi.mock("./storage", () => ({
   insertHorseWeightSnapshot: vi.fn(async () => {}),
   insertRaceEntrySnapshot: vi.fn(async () => 0),
   insertRaceResultSnapshot: vi.fn(async () => 0),
+  listPendingResultCacheBustRaceKeys: vi.fn(async () => []),
+  registerResultCacheBust: vi.fn(async () => {}),
   runD1Retention: vi.fn(async () => ({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 })),
   upsertPremiumRaceLink: vi.fn(async () => {}),
   getPremiumRaceLink: vi.fn(async () => null),
@@ -648,6 +658,75 @@ it("fetch-results triggers trend cache bust when expectedHorseCount > 0 and rows
   expect(insertRaceResultSnapshot).toHaveBeenCalled();
 });
 
+it("fetch-results does not redeliver a completed result when cache-bust telemetry rejects", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimResultFetch,
+    completeResultFetch,
+    getRaceSource,
+    insertRaceResultSnapshot,
+    logFetch,
+  } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  const telemetryError = new Error("D1 cache-bust log unavailable");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.mocked(logFetch).mockRejectedValueOnce(telemetryError);
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const viewerFetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const url = input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+    return url.endsWith("/api/internal/trend-cache-bust")
+      ? new Response("busy", { status: 503 })
+      : new Response(null, { status: 200 });
+  });
+  const doFetch = vi.fn(async (): Promise<Response> => Response.json({ ok: true }));
+
+  await expect(
+    handleJob(
+      buildEnv({
+        PC_KEIBA_VIEWER: { fetch: viewerFetch },
+        PC_KEIBA_VIEWER_INTERNAL_TOKEN: "token",
+        RACE_TREND_DAILY_TRACK_DO: {
+          get: vi.fn(() => ({ fetch: doFetch })),
+          idFromName: vi.fn((name: string) => name),
+        },
+        REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+      }),
+      { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+    ),
+  ).resolves.toBeUndefined();
+
+  expect(completeResultFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    { expectedHorseCount: 2, isComplete: true, savedHorseCount: 2 },
+  );
+  expect(viewerFetch).toHaveBeenCalledWith(
+    "https://pc-keiba-viewer.kkk4oru.com/api/internal/race-cache-bust",
+    expect.anything(),
+  );
+  expect(viewerFetch).toHaveBeenCalledWith(
+    "https://pc-keiba-viewer.kkk4oru.com/api/internal/trend-cache-bust",
+    expect.anything(),
+  );
+  expect(warn.mock.calls[0]?.[0]).toBe(
+    `Result cache bust side effect failed kind=trend raceKey=nar:2026:0512:55:01 name=Error message=D1 cache-bust log unavailable stack=${telemetryError.stack}`,
+  );
+});
+
 // Covers the RACE_TREND_DAILY_TRACK_DO push helper hitting the bound stub fetch
 // with a fully-built row in the fetch-results happy path. Without this case
 // the binding access in pushResultsToRaceTrendDO never resolves to a real
@@ -899,11 +978,132 @@ it("fetch-results still busts trend cache when partial-final (inserted > 0 but <
   );
 });
 
+it("fetch-results does not bust caches again when an unchanged partial generation is delivered", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimResultCacheBust,
+    claimResultFetch,
+    getRaceSource,
+    insertRaceResultSnapshot,
+    registerResultCacheBust,
+  } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(claimResultCacheBust).mockResolvedValueOnce(null);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+    buildRaceEntry({ horseNumber: "3" }),
+  ]);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const viewerFetch = vi.fn(async (): Promise<Response> => new Response(null, { status: 202 }));
+
+  await handleJob(
+    buildEnv({
+      PC_KEIBA_VIEWER: { fetch: viewerFetch },
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "token",
+      REALTIME_TEST_NOW: "2026-05-12T01:05:00.000Z",
+    }),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+
+  expect(registerResultCacheBust).toHaveBeenCalledWith({
+    db: expect.anything(),
+    fetchedAt: expect.any(String),
+    isComplete: false,
+    raceKey: "nar:2026:0512:55:01",
+    results: expect.any(Array),
+  });
+  expect(viewerFetch).not.toHaveBeenCalled();
+});
+
+it("drainPendingResultCacheBusts retains failed delivery and completes it after a later retry", async () => {
+  const { drainPendingResultCacheBusts } = await import("./worker");
+  const {
+    claimResultCacheBust,
+    completeResultCacheBust,
+    getRaceSource,
+    listPendingResultCacheBustRaceKeys,
+  } = await import("./storage");
+  vi.mocked(listPendingResultCacheBustRaceKeys)
+    .mockResolvedValueOnce(["nar:2026:0512:55:01"])
+    .mockResolvedValueOnce(["nar:2026:0512:55:01"]);
+  vi.mocked(getRaceSource)
+    .mockResolvedValueOnce(buildNarNarRaceSource())
+    .mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(claimResultCacheBust)
+    .mockResolvedValueOnce({
+      isComplete: false,
+      needsRaceBust: true,
+      needsTrendBust: true,
+      raceKey: "nar:2026:0512:55:01",
+      resultSignature: "partial-five",
+    })
+    .mockResolvedValueOnce({
+      isComplete: false,
+      needsRaceBust: false,
+      needsTrendBust: true,
+      raceKey: "nar:2026:0512:55:01",
+      resultSignature: "partial-five",
+    });
+  const viewerState = { available: false };
+  const viewerFetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const url = input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+    return viewerState.available || url.endsWith("/api/internal/race-cache-bust")
+      ? new Response(null, { status: 202 })
+      : new Response("busy", { status: 503 });
+  });
+  const env = buildEnv({
+    PC_KEIBA_VIEWER: { fetch: viewerFetch },
+    PC_KEIBA_VIEWER_INTERNAL_TOKEN: "token",
+    REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+  });
+
+  expect(await drainPendingResultCacheBusts(env)).toBe(0);
+  expect(completeResultCacheBust).toHaveBeenCalledWith({
+    claim: {
+      isComplete: false,
+      needsRaceBust: true,
+      needsTrendBust: true,
+      raceKey: "nar:2026:0512:55:01",
+      resultSignature: "partial-five",
+    },
+    db: expect.anything(),
+    now: "2026-05-12T16:00:00+09:00",
+    raceDelivered: true,
+    trendDelivered: false,
+  });
+  viewerState.available = true;
+  expect(await drainPendingResultCacheBusts(env)).toBe(1);
+  expect(completeResultCacheBust).toHaveBeenCalledWith({
+    claim: {
+      isComplete: false,
+      needsRaceBust: false,
+      needsTrendBust: true,
+      raceKey: "nar:2026:0512:55:01",
+      resultSignature: "partial-five",
+    },
+    db: expect.anything(),
+    now: "2026-05-12T16:00:00+09:00",
+    raceDelivered: true,
+    trendDelivered: true,
+  });
+});
+
 // 2026-06-28 (D1 cost optimization): plan-result-fetches summary log forwards
 // the KV namespace so identical (enqueued/eligible/skipped) summaries dedupe
 // within LOG_DEDUPE_TTL_SECONDS instead of writing one row per */2 cron tick.
 it("planResultFetchesOnly forwards the KV namespace to logFetch for summary dedupe", async () => {
   const { planResultFetchesOnly } = await import("./worker");
+  const { fetchJraRacesByDate, fetchNarRacesByDate } = await import("./postgres");
   const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
   const kv = { get: vi.fn(), put: vi.fn() } as unknown as KVNamespace;
@@ -920,10 +1120,12 @@ it("planResultFetchesOnly forwards the KV namespace to logFetch for summary dedu
     '{"enqueued":0,"eligible":0,"skipped_too_recent":0}',
     kv,
   );
+  expect(fetchJraRacesByDate).not.toHaveBeenCalled();
+  expect(fetchNarRacesByDate).not.toHaveBeenCalled();
 });
 
 // Covers planResultFetchesOnly running the hourly discover-urls recovery
-// when the tick lands inside the first minute of an hour, plus the queued
+// when the two-minute result cron lands at :02, plus the queued
 // race path so both the discovery side effect and job enqueue land.
 it("planResultFetchesOnly runs hourly discovery recovery and enqueues due result jobs", async () => {
   const { planResultFetchesOnly } = await import("./worker");
@@ -931,25 +1133,25 @@ it("planResultFetchesOnly runs hourly discovery recovery and enqueues due result
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
     buildNarSchedulableRaceSource({ raceName: "Recovery" }),
   ]);
-  // Now = 12:00 JST (= 03:00 UTC) so the JST minute is 00 and the recovery
+  // Now = 12:02 JST (= 03:02 UTC) so the recovery
   // discovery side-effect path fires this tick.
   const send = vi.fn(queueSendOk);
   const env = buildEnv({
     REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
-    REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+    REALTIME_TEST_NOW: "2026-05-12T03:02:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(1);
 });
 
 // Covers planResultFetchesOnly NOT running discovery recovery when the JST
-// minute is past the hourly window (= second branch of the
+// minute is not :02 (= second branch of the
 // shouldRunHourlyDiscoveryRecovery guard).
-it("planResultFetchesOnly skips discovery recovery outside the first minute of the hour", async () => {
+it("planResultFetchesOnly skips discovery recovery outside the :02 tick", async () => {
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
-  // Now = 12:04 JST (= 03:04 UTC) — minute 04 is past the threshold.
+  // Now = 12:04 JST (= 03:04 UTC) — minute 04 is not the recovery phase.
   const send = vi.fn(queueSendOk);
   const env = buildEnv({
     REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
@@ -1226,7 +1428,7 @@ it("planResultFetchesOnly returns 0 when there are no schedulable races", async 
   expect(count).toBe(0);
 });
 
-it("planResultFetchesOnly enqueues fetch-results for a finished NAR race with no completion", async () => {
+it("planResultFetchesOnly handles a finished NAR race inline without duplicate queue dispatch", async () => {
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, markResultFetchQueued } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
@@ -1239,7 +1441,7 @@ it("planResultFetchesOnly enqueues fetch-results for a finished NAR race with no
   });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(1);
-  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0512:55:01", type: "fetch-results" });
+  expect(send).not.toHaveBeenCalled();
   expect(markResultFetchQueued).toHaveBeenCalled();
 });
 
@@ -2000,7 +2202,7 @@ it("fetch-results keeps result-only NAR rows partial instead of completing a shr
   expect(completeResultFetch).toHaveBeenCalledTimes(0);
 });
 
-it("fetch-weights logs weights-empty without recording ok when parser returns no rows", async () => {
+it("fetch-weights records pending when upstream has not published rows", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
   const { fetchRacePage, parseRaceEntries } = await import("./keiba-go");
@@ -2012,9 +2214,9 @@ it("fetch-weights logs weights-empty without recording ok when parser returns no
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",
-    "skip:weights-empty",
+    "pending:weights-unavailable",
     "nar:2026:0512:55:01",
-    "count=0",
+    "count=0 upstream-not-published",
   );
   expect(logFetch).not.toHaveBeenCalledWith(
     expect.anything(),
@@ -2025,9 +2227,10 @@ it("fetch-weights logs weights-empty without recording ok when parser returns no
   );
 });
 
-it("fetch-weights requeues an empty JRA weight fetch while the race is still upcoming", async () => {
+it("fetch-weights empty result leaves retry scheduling to the watchdog", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch, updateLastFetch } =
+    await import("./storage");
   const { fetchRacePage } = await import("./keiba-go");
   vi.mocked(getRaceSource).mockResolvedValueOnce(
     buildJraNarRaceSource({
@@ -2040,23 +2243,26 @@ it("fetch-weights requeues an empty JRA weight fetch while the race is still upc
   const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
   await handleJob(env, { raceKey: "jra:2026:0512:08:10", type: "fetch-weights" });
   expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
-  expect(sendSpy).toHaveBeenCalledWith(
-    { raceKey: "jra:2026:0512:08:10", type: "fetch-weights" },
-    { delaySeconds: 600 },
+  expect(sendSpy).not.toHaveBeenCalled();
+  expect(updateLastFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "jra:2026:0512:08:10",
+    "last_weight_fetch_soft_miss_at",
+    "2026-05-12T12:00:00+09:00",
   );
-  expect(logFetch).toHaveBeenCalledWith(
+  expect(logFetch).not.toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",
     "queued:weights-empty-retry",
-    "jra:2026:0512:08:10",
-    "delaySeconds=600",
+    expect.anything(),
+    expect.anything(),
   );
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",
-    "skip:weights-empty",
+    "pending:weights-unavailable",
     "jra:2026:0512:08:10",
-    "count=0",
+    "count=0 upstream-not-published",
   );
 });
 
@@ -2107,6 +2313,12 @@ it("fetch-weights broadcasts target weights before pushing weight rows to RaceTr
   const raceTrendIdFromName = vi.fn((name: string): string => name);
   await handleJob(
     buildEnv({
+      FINISH_POSITION_CRON: {
+        fetch: vi.fn(
+          async (): Promise<Response> =>
+            Response.json({ claimed: true, ok: true }, { status: 202 }),
+        ),
+      },
       HORSE_WEIGHT_DO: {
         get: vi.fn((_id: string) => ({ fetch: horseWeightFetch })),
         idFromName: horseWeightIdFromName,
@@ -2115,10 +2327,91 @@ it("fetch-weights broadcasts target weights before pushing weight rows to RaceTr
         get: vi.fn((_id: string) => ({ fetch: raceTrendFetch })),
         idFromName: raceTrendIdFromName,
       },
+      TRIGGER_TOKEN: "secret-token",
     }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" },
   );
   expect(callOrder).toStrictEqual(["race-trend-do", "insert", "horse-weight-do", "race-trend-do"]);
+});
+
+it("fetch-weights keeps the persisted snapshot successful when cache-bust telemetry rejects", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch, updateLastFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries } = await import("./keiba-go");
+  const telemetryError = new Error("D1 cache-bust log unavailable");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.mocked(logFetch).mockResolvedValueOnce(undefined).mockRejectedValueOnce(telemetryError);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue(`
+    <table>
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">1</td>
+        <td colspan="3"><a class="horseName">WeightA</a></td>
+        <td class="odds_weight" rowspan="2">1.8<br>482(+4)</td>
+      </tr>
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">12</td>
+        <td colspan="3"><a class="horseName">WeightB</a></td>
+        <td class="odds_weight" rowspan="2">7.2<br>510(-2)</td>
+      </tr>
+    </table>
+  `);
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    buildRaceEntry({ horseName: "WeightA", horseNumber: "1", jockeyName: "JockeyA" }),
+    buildRaceEntry({ horseName: "WeightB", horseNumber: "12", jockeyName: "JockeyB" }),
+  ]);
+  const viewerFetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const url = input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+    return url.endsWith("/api/internal/trend-cache-bust")
+      ? new Response("busy", { status: 503 })
+      : new Response(null, { status: 200 });
+  });
+  const doFetch = vi.fn(async (): Promise<Response> => Response.json({ ok: true }));
+
+  await expect(
+    handleJob(
+      buildEnv({
+        FINISH_POSITION_CRON: {
+          fetch: vi.fn(
+            async (): Promise<Response> =>
+              Response.json({ claimed: true, ok: true }, { status: 202 }),
+          ),
+        },
+        HORSE_WEIGHT_DO: {
+          get: vi.fn(() => ({ fetch: doFetch })),
+          idFromName: vi.fn((name: string) => name),
+        },
+        PC_KEIBA_VIEWER: { fetch: viewerFetch },
+        PC_KEIBA_VIEWER_INTERNAL_TOKEN: "token",
+        RACE_TREND_DAILY_TRACK_DO: {
+          get: vi.fn(() => ({ fetch: doFetch })),
+          idFromName: vi.fn((name: string) => name),
+        },
+        TRIGGER_TOKEN: "secret-token",
+      }),
+      { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" },
+    ),
+  ).resolves.toBeUndefined();
+
+  expect(insertHorseWeightSnapshot).toHaveBeenCalled();
+  expect(updateLastFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    "last_weight_fetch_at",
+    expect.any(String),
+  );
+  expect(viewerFetch).toHaveBeenCalledWith(
+    "https://pc-keiba-viewer.kkk4oru.com/api/internal/race-cache-bust",
+    expect.anything(),
+  );
+  expect(viewerFetch).toHaveBeenCalledWith(
+    "https://pc-keiba-viewer.kkk4oru.com/api/internal/trend-cache-bust",
+    expect.anything(),
+  );
+  expect(warn.mock.calls[0]?.[0]).toBe(
+    `Result cache bust side effect failed kind=trend raceKey=nar:2026:0512:55:01 name=Error message=D1 cache-bust log unavailable stack=${telemetryError.stack}`,
+  );
 });
 
 // 2026-06-28: queue-stall preventive fix. fetchAndStoreResults wrapping with

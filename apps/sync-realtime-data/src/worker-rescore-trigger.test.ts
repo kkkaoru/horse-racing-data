@@ -3,12 +3,17 @@
 // Tests for the event-driven per-race rescore trigger fired right after a
 // horse-weight write. Exercises parseRescoreTriggerRequest (pure raceKey ->
 // {category, keibajoCode, raceBango, runYmd}) and triggerRescoreAfterWeights
-// (the fire-and-forget service-binding POST to finish-position-cron).
+// (the fail-closed service-binding POST to finish-position-cron).
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "./types";
 
 const logFetchMock = vi.fn(async () => undefined);
+const WEIGHT_GENERATION = {
+  weightSnapshotCount: 2,
+  weightSnapshotFetchedAt: "2026-05-12T11:00:00+09:00",
+  weightSnapshotHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+};
 
 vi.mock("./storage", () => ({
   logFetch: logFetchMock,
@@ -27,8 +32,10 @@ vi.mock("./storage", () => ({
   updateLastFetch: vi.fn(async () => {}),
   markResultFetchQueued: vi.fn(async () => {}),
   claimResultFetch: vi.fn(async () => false),
+  claimResultCacheBust: vi.fn(async () => null),
   claimWeightFetch: vi.fn(async () => true),
   completeResultFetch: vi.fn(async () => {}),
+  completeResultCacheBust: vi.fn(async () => {}),
   recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),
   incrementEmptyResultAttempts: vi.fn(async () => 0),
@@ -37,6 +44,8 @@ vi.mock("./storage", () => ({
   insertHorseWeightSnapshot: vi.fn(async () => {}),
   insertRaceEntrySnapshot: vi.fn(async () => 0),
   insertRaceResultSnapshot: vi.fn(async () => 0),
+  listPendingResultCacheBustRaceKeys: vi.fn(async () => []),
+  registerResultCacheBust: vi.fn(async () => {}),
   runD1Retention: vi.fn(async () => ({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 })),
   upsertPremiumRaceLink: vi.fn(async () => {}),
   getPremiumRaceLink: vi.fn(async () => null),
@@ -94,59 +103,235 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("buildWeightSnapshotGeneration canonicalizes horse order into one stable generation", async () => {
+  const { buildWeightSnapshotGeneration } = await import("./worker");
+  await expect(
+    buildWeightSnapshotGeneration("2026-05-12T11:00:00+09:00", [
+      {
+        changeAmount: null,
+        changeSign: null,
+        horseName: null,
+        horseNumber: "2",
+        weight: 490,
+      },
+      {
+        changeAmount: null,
+        changeSign: null,
+        horseName: null,
+        horseNumber: "1",
+        weight: 480,
+      },
+    ]),
+  ).resolves.toStrictEqual({
+    weightSnapshotCount: 2,
+    weightSnapshotFetchedAt: "2026-05-12T11:00:00+09:00",
+    weightSnapshotHash: "c74635426c9344e2fc1681f2e5c0e06a1f71d61d2dfa7d72324b24ad32c5c73b",
+  });
+});
+
+it("buildEntrySnapshotGeneration binds active and excluded NAR runners canonically", async () => {
+  const { buildEntrySnapshotGeneration } = await import("./worker");
+  await expect(
+    buildEntrySnapshotGeneration({
+      entries: [
+        { horseName: "h3", horseNumber: "3", jockeyName: "j3", status: null },
+        { horseName: "h2", horseNumber: "2", jockeyName: "j2", status: "出走取消" },
+        { horseName: "h1", horseNumber: "1", jockeyName: "j1", status: null },
+      ],
+      fetchedAt: "2026-08-24T12:03:41+09:00",
+      source: "nar",
+    }),
+  ).resolves.toStrictEqual({
+    activeHorseNumbers: [1, 3],
+    entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+    entrySnapshotHash: "00574dee8f89ae6c93ded1fc8187aa58e1a9d460db315e00c1d782296997e5d7",
+    excludedHorseNumbers: [2],
+  });
+});
+
+it("buildEntrySnapshotGeneration keeps a JRA jockey change active and excludes a scratch", async () => {
+  const { buildEntrySnapshotGeneration } = await import("./worker");
+  await expect(
+    buildEntrySnapshotGeneration({
+      entries: [
+        { horseName: "h1", horseNumber: "1", jockeyName: "j1", status: "騎手変更" },
+        { horseName: "h2", horseNumber: "2", jockeyName: "j2", status: "競走除外" },
+        { horseName: "h2", horseNumber: "2", jockeyName: "j2", status: null },
+      ],
+      fetchedAt: "2026-08-24T12:03:41+09:00",
+      source: "jra",
+    }),
+  ).resolves.toMatchObject({ activeHorseNumbers: [1], excludedHorseNumbers: [2] });
+});
+
+it("buildEntrySnapshotGeneration rejects an invalid horse number", async () => {
+  const { buildEntrySnapshotGeneration } = await import("./worker");
+  await expect(
+    buildEntrySnapshotGeneration({
+      entries: [{ horseName: "h", horseNumber: "0", jockeyName: "j", status: null }],
+      fetchedAt: "2026-08-24T12:03:41+09:00",
+      source: "nar",
+    }),
+  ).rejects.toThrow("invalid entry snapshot horse number: 0");
+});
+
+it("pickWeightGeneration accepts a canonical runner-bound generation", async () => {
+  const { pickWeightGeneration } = await import("./worker");
+  expect(
+    pickWeightGeneration({
+      activeHorseNumbers: [1, 3],
+      entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      entrySnapshotHash: "entry-hash",
+      excludedHorseNumbers: [2],
+      weightSnapshotCount: 2,
+      weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      weightSnapshotHash: "weight-hash",
+    }),
+  ).toStrictEqual({
+    activeHorseNumbers: [1, 3],
+    entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+    entrySnapshotHash: "entry-hash",
+    excludedHorseNumbers: [2],
+    weightSnapshotCount: 2,
+    weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+    weightSnapshotHash: "weight-hash",
+  });
+});
+
+it("pickWeightGeneration keeps a legacy weight-only generation compatible", async () => {
+  const { pickWeightGeneration } = await import("./worker");
+  expect(pickWeightGeneration(WEIGHT_GENERATION)).toStrictEqual(WEIGHT_GENERATION);
+});
+
+it("pickWeightGeneration rejects malformed weight metadata", async () => {
+  const { pickWeightGeneration } = await import("./worker");
+  expect(pickWeightGeneration(null)).toBe(null);
+  expect(pickWeightGeneration({ weightSnapshotCount: 0 })).toBe(null);
+  expect(
+    pickWeightGeneration({
+      weightSnapshotCount: 1,
+      weightSnapshotFetchedAt: 1,
+      weightSnapshotHash: "hash",
+    }),
+  ).toBe(null);
+  expect(
+    pickWeightGeneration({
+      weightSnapshotCount: 1,
+      weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      weightSnapshotHash: 1,
+    }),
+  ).toBe(null);
+});
+
+it("pickWeightGeneration rejects partial and noncanonical runner metadata", async () => {
+  const { pickWeightGeneration } = await import("./worker");
+  expect(pickWeightGeneration({ ...WEIGHT_GENERATION, activeHorseNumbers: [] })).toBe(null);
+  expect(
+    pickWeightGeneration({
+      ...WEIGHT_GENERATION,
+      activeHorseNumbers: [2, 1],
+      entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      entrySnapshotHash: "hash",
+      excludedHorseNumbers: [],
+    }),
+  ).toBe(null);
+  expect(
+    pickWeightGeneration({
+      ...WEIGHT_GENERATION,
+      activeHorseNumbers: [1],
+      entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      entrySnapshotHash: "hash",
+      excludedHorseNumbers: "2",
+    }),
+  ).toBe(null);
+});
+
+it("pickWeightGeneration rejects missing entry metadata and overlapping runner sets", async () => {
+  const { pickWeightGeneration } = await import("./worker");
+  expect(
+    pickWeightGeneration({
+      ...WEIGHT_GENERATION,
+      activeHorseNumbers: [1],
+      entrySnapshotHash: "hash",
+      excludedHorseNumbers: [],
+    }),
+  ).toBe(null);
+  expect(
+    pickWeightGeneration({
+      ...WEIGHT_GENERATION,
+      activeHorseNumbers: [1],
+      entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      excludedHorseNumbers: [],
+    }),
+  ).toBe(null);
+  expect(
+    pickWeightGeneration({
+      ...WEIGHT_GENERATION,
+      activeHorseNumbers: [1],
+      entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+      entrySnapshotHash: "hash",
+      excludedHorseNumbers: [1],
+    }),
+  ).toBe(null);
+});
+
 it("parseRescoreTriggerRequest maps a JRA race key to category jra", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("jra:2026:0512:05:11")).toStrictEqual({
+  expect(parseRescoreTriggerRequest("jra:2026:0512:05:11", WEIGHT_GENERATION)).toStrictEqual({
     category: "jra",
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260512",
+    ...WEIGHT_GENERATION,
   });
 });
 
 it("parseRescoreTriggerRequest maps a NAR mainland race key to category nar", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("nar:2026:0619:45:12")).toStrictEqual({
+  expect(parseRescoreTriggerRequest("nar:2026:0619:45:12", WEIGHT_GENERATION)).toStrictEqual({
     category: "nar",
     keibajoCode: "45",
     raceBango: "12",
     runYmd: "20260619",
+    ...WEIGHT_GENERATION,
   });
 });
 
 it("parseRescoreTriggerRequest maps NAR keibajoCode 65 to category ban-ei", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("nar:2026:0623:65:10")).toStrictEqual({
+  expect(parseRescoreTriggerRequest("nar:2026:0623:65:10", WEIGHT_GENERATION)).toStrictEqual({
     category: "ban-ei",
     keibajoCode: "65",
     raceBango: "10",
     runYmd: "20260623",
+    ...WEIGHT_GENERATION,
   });
 });
 
 it("parseRescoreTriggerRequest maps NAR keibajoCode 83 to category ban-ei", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("nar:2026:0624:83:05")).toStrictEqual({
+  expect(parseRescoreTriggerRequest("nar:2026:0624:83:05", WEIGHT_GENERATION)).toStrictEqual({
     category: "ban-ei",
     keibajoCode: "83",
     raceBango: "05",
     runYmd: "20260624",
+    ...WEIGHT_GENERATION,
   });
 });
 
 it("parseRescoreTriggerRequest returns null for a malformed race key (too few parts)", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("nar:2026:0612:55")).toBe(null);
+  expect(parseRescoreTriggerRequest("nar:2026:0612:55", WEIGHT_GENERATION)).toBe(null);
 });
 
 it("parseRescoreTriggerRequest returns null when an unknown source prefix is used", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("xyz:2026:0612:55:01")).toBe(null);
+  expect(parseRescoreTriggerRequest("xyz:2026:0612:55:01", WEIGHT_GENERATION)).toBe(null);
 });
 
 it("parseRescoreTriggerRequest returns null when a race key segment is empty", async () => {
   const { parseRescoreTriggerRequest } = await import("./worker");
-  expect(parseRescoreTriggerRequest("nar:2026:0612::01")).toBe(null);
+  expect(parseRescoreTriggerRequest("nar:2026:0612::01", WEIGHT_GENERATION)).toBe(null);
 });
 
 it("triggerRescoreAfterWeights posts a per-race rescore body and logs ok", async () => {
@@ -155,10 +340,12 @@ it("triggerRescoreAfterWeights posts a per-race rescore body and logs ok", async
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ claimed: true, ok: true }), { status: 202 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await triggerRescoreAfterWeights({
+    env: buildRescoreEnv({ fetchImpl: fetchStub }),
+    generation: WEIGHT_GENERATION,
+    raceKey: "jra:2026:0512:05:11",
+    raceStartAtJst: "2026-05-12T15:40:00+09:00",
+  });
   expect(fetchStub).toHaveBeenCalledTimes(1);
   const call = fetchStub.mock.calls[0]!;
   const request = call[0] as Request;
@@ -171,7 +358,9 @@ it("triggerRescoreAfterWeights posts a per-race rescore body and logs ok", async
     category: "jra",
     keibajoCode: "05",
     raceBango: "11",
+    raceStartAtJst: "2026-05-12T15:40:00+09:00",
     runYmd: "20260512",
+    ...WEIGHT_GENERATION,
   });
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
@@ -182,17 +371,20 @@ it("triggerRescoreAfterWeights posts a per-race rescore body and logs ok", async
   );
 });
 
-it("triggerRescoreAfterWeights swallows a fetch reject and logs an error", async () => {
+it("triggerRescoreAfterWeights rethrows a fetch reject after logging an error", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
   const fetchStub = vi.fn(
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       throw new Error("boom");
     },
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: boom");
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
@@ -202,22 +394,52 @@ it("triggerRescoreAfterWeights swallows a fetch reject and logs an error", async
   );
 });
 
-it("triggerRescoreAfterWeights is a no-op when the FINISH_POSITION_CRON binding is missing", async () => {
+it("triggerRescoreAfterWeights fails closed when the FINISH_POSITION_CRON binding is missing", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
-  await triggerRescoreAfterWeights(buildRescoreEnv({ omitBinding: true }), "jra:2026:0512:05:11");
-  expect(logFetchMock).not.toHaveBeenCalled();
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ omitBinding: true }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: missing FINISH_POSITION_CRON binding");
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "error",
+    "jra:2026:0512:05:11",
+    "missing FINISH_POSITION_CRON binding",
+  );
 });
 
-it("triggerRescoreAfterWeights is a no-op when TRIGGER_TOKEN is missing", async () => {
+it("triggerRescoreAfterWeights fails closed when TRIGGER_TOKEN is missing", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
-  await triggerRescoreAfterWeights(buildRescoreEnv({ omitToken: true }), "jra:2026:0512:05:11");
-  expect(logFetchMock).not.toHaveBeenCalled();
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ omitToken: true }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: missing TRIGGER_TOKEN");
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "error",
+    "jra:2026:0512:05:11",
+    "missing TRIGGER_TOKEN",
+  );
 });
 
 it("triggerRescoreAfterWeights logs an invalid race key shape error without posting", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
   const fetchStub = vi.fn(async () => new Response("{}", { status: 202 }));
-  await triggerRescoreAfterWeights(buildRescoreEnv({ fetchImpl: fetchStub }), "bad-race-key");
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "bad-race-key",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: invalid race key shape");
   expect(fetchStub).not.toHaveBeenCalled();
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
@@ -234,10 +456,11 @@ it("triggerRescoreAfterWeights forwards a NAR race key payload when binding is w
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ claimed: true, ok: true }), { status: 202 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "nar:2026:0619:45:12",
-  );
+  await triggerRescoreAfterWeights({
+    env: buildRescoreEnv({ fetchImpl: fetchStub }),
+    generation: WEIGHT_GENERATION,
+    raceKey: "nar:2026:0619:45:12",
+  });
   const request = fetchStub.mock.calls[0]![0] as Request;
   const body = (await request.json()) as Record<string, string>;
   expect(body).toStrictEqual({
@@ -245,10 +468,11 @@ it("triggerRescoreAfterWeights forwards a NAR race key payload when binding is w
     keibajoCode: "45",
     raceBango: "12",
     runYmd: "20260619",
+    ...WEIGHT_GENERATION,
   });
 });
 
-it("triggerRescoreAfterWeights logs skip:rescore-disabled when the cron reports rescoreEnabled false", async () => {
+it("triggerRescoreAfterWeights fails when the cron reports rescoreEnabled false", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
   const fetchStub = vi.fn(
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
@@ -256,16 +480,19 @@ it("triggerRescoreAfterWeights logs skip:rescore-disabled when the cron reports 
         status: 200,
       }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: rescore disabled");
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
-    "skip:rescore-disabled",
+    "error",
     "jra:2026:0512:05:11",
-    null,
+    "rescore disabled",
   );
 });
 
@@ -275,10 +502,11 @@ it("triggerRescoreAfterWeights logs skip:not-claimed on a claim collision", asyn
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ claimed: false, ok: true }), { status: 200 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await triggerRescoreAfterWeights({
+    env: buildRescoreEnv({ fetchImpl: fetchStub }),
+    generation: WEIGHT_GENERATION,
+    raceKey: "jra:2026:0512:05:11",
+  });
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
@@ -294,10 +522,13 @@ it("triggerRescoreAfterWeights logs an error with the status code when the cron 
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ error: "unauthorized", ok: false }), { status: 401 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: http 401");
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
@@ -313,10 +544,13 @@ it("triggerRescoreAfterWeights logs an error when the cron response body is not 
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response("null", { status: 200 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: unparsable response body");
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
@@ -332,10 +566,13 @@ it("triggerRescoreAfterWeights logs an error when the cron response JSON cannot 
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response("<html>bad gateway</html>", { status: 200 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "jra:2026:0512:05:11",
-  );
+  await expect(
+    triggerRescoreAfterWeights({
+      env: buildRescoreEnv({ fetchImpl: fetchStub }),
+      generation: WEIGHT_GENERATION,
+      raceKey: "jra:2026:0512:05:11",
+    }),
+  ).rejects.toThrow("weight rescore trigger failed: unparsable response body");
   expect(logFetchMock).toHaveBeenCalledWith(
     expect.anything(),
     "weight-rescore-trigger",
@@ -351,10 +588,11 @@ it("triggerRescoreAfterWeights forwards a ban-ei race key payload when keibajoCo
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ claimed: true, ok: true }), { status: 202 }),
   );
-  await triggerRescoreAfterWeights(
-    buildRescoreEnv({ fetchImpl: fetchStub }),
-    "nar:2026:0624:83:05",
-  );
+  await triggerRescoreAfterWeights({
+    env: buildRescoreEnv({ fetchImpl: fetchStub }),
+    generation: WEIGHT_GENERATION,
+    raceKey: "nar:2026:0624:83:05",
+  });
   const request = fetchStub.mock.calls[0]![0] as Request;
   const body = (await request.json()) as Record<string, string>;
   expect(body).toStrictEqual({
@@ -362,5 +600,6 @@ it("triggerRescoreAfterWeights forwards a ban-ei race key payload when keibajoCo
     keibajoCode: "83",
     raceBango: "05",
     runYmd: "20260624",
+    ...WEIGHT_GENERATION,
   });
 });

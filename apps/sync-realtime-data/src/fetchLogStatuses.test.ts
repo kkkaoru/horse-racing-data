@@ -6,7 +6,7 @@ import {
   SKIP_STATUS,
 } from "./fetchLogStatuses";
 
-it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () => {
+it("fetch log status constants expose every silent-return and pending status", () => {
   expect(SKIP_STATUS).toStrictEqual({
     authRequired: "skip:auth-required",
     awaitingPublish: "skip:awaiting-publish",
@@ -20,8 +20,8 @@ it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () =>
     rescoreDisabled: "skip:rescore-disabled",
     rescoreNotClaimed: "skip:not-claimed",
     weightsAlreadyStored: "skip:weights-already-stored",
-    weightsEmpty: "skip:weights-empty",
-    weightsSparse: "skip:weights-sparse",
+    weightsPending: "pending:weights-unavailable",
+    weightsIncomplete: "pending:weights-incomplete",
   });
 });
 

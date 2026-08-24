@@ -51,7 +51,7 @@ test("enqueues a race when prediction counts are below the expected horse count"
   expect(selected.needed[0]?.existingHorseCount).toBe(10);
 });
 
-test("marks a race completed when prediction count reaches the expected horse count", () => {
+test("requeues orphaned predictions when inference state is missing", () => {
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],
     new Map([[RACE_KEY, 14]]),
@@ -60,8 +60,8 @@ test("marks a race completed when prediction count reaches the expected horse co
     new Map(),
   );
 
-  expect(selected.needed).toHaveLength(0);
-  expect(selected.completed).toBe(1);
+  expect(selected.needed).toHaveLength(1);
+  expect(selected.completed).toBe(0);
 });
 
 test("treats inference state status=completed with full horse count as completed even when expectedHorseCount is unknown", () => {

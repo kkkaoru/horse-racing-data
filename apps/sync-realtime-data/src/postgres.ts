@@ -1,13 +1,13 @@
 // run with: bun
 import "pg-cloudflare";
-import { Pool } from "pg";
+import { Client } from "pg";
 
 import {
   getCachedDailyPgRows,
   setCachedDailyPgRows,
   type DailyPgCacheSource,
 } from "./daily-pg-cache";
-import type { Env } from "./types";
+import type { HyperdriveBinding } from "./types";
 
 interface PgRaceRow {
   hasso_jikoku: string | null;
@@ -20,13 +20,13 @@ interface PgRaceRow {
   race_bango: string;
 }
 
-// Idle pool clients keep the Neon compute clock alive. Releasing them after
-// a short idle window lets Neon autosuspend faster between cron ticks.
-const POOL_IDLE_TIMEOUT_MS = 10 * 1000;
+interface PostgresEnv {
+  DATABASE_TARGET?: string;
+  DATABASE_URL_NEON?: string;
+  HYPERDRIVE?: HyperdriveBinding;
+}
 
-let pool: Pool | null = null;
-
-const getConnectionString = (env: Env): string => {
+const getConnectionString = (env: PostgresEnv): string => {
   if (env.DATABASE_TARGET === "cloudflare" && env.HYPERDRIVE?.connectionString) {
     return env.HYPERDRIVE.connectionString;
   }
@@ -39,38 +39,45 @@ const getConnectionString = (env: Env): string => {
   throw new Error("HYPERDRIVE or DATABASE_URL_NEON is required.");
 };
 
-const getPool = (env: Env): Pool => {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: getConnectionString(env),
-      max: 2,
-      idleTimeoutMillis: POOL_IDLE_TIMEOUT_MS,
-    });
-  }
-  return pool;
-};
-
 interface FetchByDateArgs {
   source: DailyPgCacheSource;
   sql: string;
   targetDate: string;
 }
 
-const runDailyPgFetch = async (env: Env, args: FetchByDateArgs): Promise<PgRaceRow[]> => {
+const runDailyPgFetch = async (env: PostgresEnv, args: FetchByDateArgs): Promise<PgRaceRow[]> => {
   const cached = getCachedDailyPgRows<PgRaceRow>({
     source: args.source,
     targetDate: args.targetDate,
   });
   if (cached) return [...cached];
-  const result = await getPool(env).query<PgRaceRow>(args.sql, [
-    args.targetDate.slice(0, 4),
-    args.targetDate.slice(4, 8),
-  ]);
-  setCachedDailyPgRows<PgRaceRow>(
-    { source: args.source, targetDate: args.targetDate },
-    result.rows,
-  );
-  return result.rows;
+  const client = new Client({
+    connectionString: getConnectionString(env),
+  });
+  try {
+    await client.connect();
+    const result = await client.query<PgRaceRow>(args.sql, [
+      args.targetDate.slice(0, 4),
+      args.targetDate.slice(4, 8),
+    ]);
+    setCachedDailyPgRows<PgRaceRow>(
+      { source: args.source, targetDate: args.targetDate },
+      result.rows,
+    );
+    return result.rows;
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+        message: "Postgres daily race fetch failed",
+        stage: `postgres.fetch-${args.source}-races`,
+        targetDate: args.targetDate,
+      }),
+    );
+    throw error;
+  } finally {
+    await client.end();
+  }
 };
 
 const NAR_RACES_SQL = `
@@ -105,8 +112,8 @@ const JRA_RACES_SQL = `
   order by hasso_jikoku asc, keibajo_code asc, race_bango asc
 `;
 
-export const fetchNarRacesByDate = (env: Env, targetDate: string): Promise<PgRaceRow[]> =>
+export const fetchNarRacesByDate = (env: PostgresEnv, targetDate: string): Promise<PgRaceRow[]> =>
   runDailyPgFetch(env, { source: "nar", sql: NAR_RACES_SQL, targetDate });
 
-export const fetchJraRacesByDate = (env: Env, targetDate: string): Promise<PgRaceRow[]> =>
+export const fetchJraRacesByDate = (env: PostgresEnv, targetDate: string): Promise<PgRaceRow[]> =>
   runDailyPgFetch(env, { source: "jra", sql: JRA_RACES_SQL, targetDate });

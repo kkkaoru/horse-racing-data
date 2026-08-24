@@ -14,6 +14,16 @@ import type {
 } from "horse-racing-realtime/types";
 import type { BrowserWorker } from "@cloudflare/playwright";
 
+export interface WeightSnapshotGeneration {
+  activeHorseNumbers?: number[];
+  entrySnapshotFetchedAt?: string;
+  entrySnapshotHash?: string;
+  excludedHorseNumbers?: number[];
+  weightSnapshotCount: number;
+  weightSnapshotFetchedAt: string;
+  weightSnapshotHash: string;
+}
+
 export type Job =
   | {
       type: "discover-urls";
@@ -27,6 +37,8 @@ export type Job =
   | {
       type: "fetch-weights";
       raceKey: string;
+      watchdogReservedAt?: string;
+      weightGeneration?: WeightSnapshotGeneration;
     }
   | {
       type: "fetch-results";

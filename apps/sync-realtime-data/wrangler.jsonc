@@ -35,10 +35,11 @@
       "0 5 * * 6",
       "0 12 * * *",
       "30 12 * * *",
-      // 2026-06-06: 0 0-13 (hourly, JST 09-22) -> */15 0-14 (every 15 min,
-      // JST 09:00-23:45). Paired with WEIGHT_FETCH_LEAD_MINUTES = 180 so
+      // 2026-08-24: keep the 15-minute frequency but start at :06. This avoids
+      // finish-position's :07/:22/:37/:52 coordinator phase as well as the
+      // :00 running-style phase. Paired with WEIGHT_FETCH_LEAD_MINUTES = 180 so
       // each race has ~12 attempts to capture bataiju before post time.
-      "*/15 0-14 * * *",
+      "6-59/15 0-14 * * *",
       // 2026-05-31: shortened from "*/5" to "*/2" so freshly-confirmed JRA
       // and NAR race results land in D1 (and bust the merged race-trend
       // cache) within one or two cron ticks instead of up to five minutes.
@@ -54,15 +55,16 @@
       // for no enqueue. Matches RUNNING_STYLE_INFERENCE_CRON in
       // running-style-cron.ts.
       "*/10 0-14 * * *",
-      // 2026-06-07: every-two-minute weight watchdog. Runs runWeightWatchdog
+      // 2026-08-24: retain the every-two-minute watchdog frequency but use
+      // odd minutes so its D1 reservation query does not collide with the
+      // even-minute result/paddock planner.
+      // Runs runWeightWatchdog
       // which inspects realtime_race_sources directly and enqueues
-      // fetch-weights jobs for races within +/- the watchdog window whose
-      // last weight fetch is null or older than the stale threshold. Lives
-      // alongside (does not replace) the existing "*/15 0-14" weight plan
-      // cron and the hot worker's plan-realtime-fetches path; the watchdog
-      // is a dedicated minimal-D1-read path so a circuit breaker open in
+      // fetch-weights jobs for races within the watchdog window whose last
+      // successful weight fetch is null. It is the sole automatic weight-job
+      // scheduler and uses a dedicated minimal-D1-read path, so a breaker in
       // the planner does not silently skip weight enqueueing.
-      "*/2 * * * *",
+      "1-59/2 * * * *",
     ],
   },
   "queues": {
@@ -77,7 +79,7 @@
       },
       {
         "binding": "RUNNING_STYLE_JOBS",
-        "queue": "sync-realtime-data-running-style-jobs",
+        "queue": "sync-realtime-data-running-style-jobs-v2",
       },
       {
         "binding": "FINISH_POSITION_PREDICT_QUEUE",
@@ -129,11 +131,14 @@
         // three model+parquet workloads simultaneously and Workers killed the
         // isolate before it could ack. Serializing keeps the same throughput
         // (jobs are short) while halving peak resident memory.
-        "queue": "sync-realtime-data-running-style-jobs",
+        "queue": "sync-realtime-data-running-style-jobs-v2",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 1,
         "max_retries": 3,
+        // Keep poison messages for diagnosis and bounded manual redrive. This
+        // DLQ intentionally has no consumer binding in this Worker.
+        "dead_letter_queue": "sync-realtime-data-running-style-dlq-v2",
         "retry_delay": 60,
       },
       {

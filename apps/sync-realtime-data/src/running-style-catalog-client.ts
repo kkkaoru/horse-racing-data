@@ -9,7 +9,12 @@ import type { CatalogServiceBinding } from "./types";
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 export const RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1";
 const CATALOG_HTTP_5XX_PATTERN = /PC_KEIBA_R2_CATALOG \S+ failed with HTTP 5\d\d/;
-const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 45_000;
+// A Catalog race-wide query normally finishes within the original 45s
+// budget. When R2 SQL returns execution-resource code 70200, the Catalog
+// Worker retries the exact race in three bounded per-horse batches. Keep the
+// client deadline above that recovery path so it cannot abort a healthy
+// split and unnecessarily start the slower PostgreSQL mirror fallback.
+const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 300_000;
 // Bounded slice of a failing Catalog response body appended to the thrown error so
 // the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
 // HTTP status. Never echoes request headers or env values.

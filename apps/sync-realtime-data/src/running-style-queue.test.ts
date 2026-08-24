@@ -67,6 +67,10 @@ vi.mock("./running-style-calibration", () => ({
 }));
 vi.mock("./running-style-model-binary", () => ({
   buildRunningStyleFlatModelKey: vi.fn(() => "models/jra/latest.flatbin"),
+  loadFlatLightGBMHeaderFromR2: vi.fn(async () => ({
+    feature_names: ["x"],
+    model_version: "v7-lineage",
+  })),
   loadFlatLightGBMModelFromR2: vi.fn(),
 }));
 vi.mock("./running-style-neon", () => ({
@@ -491,7 +495,7 @@ it("does not trigger finish-position when the same-day R2 export is incomplete",
   expect(summary?.parquetExportedRows).toBe(2);
   expect(summary?.finishPositionTriggerMode).toBe("skipped");
   expect(summary?.finishPositionTriggerError).toBe(
-    "R2 Parquet export row count 2 is below expected source-day horse count 3",
+    "R2 Parquet export row count 2 is below expected jra day horse count 3",
   );
 });
 
@@ -513,7 +517,7 @@ it("captures same-day R2 export failures without falling back to Neon reads", as
   expect(summary?.finishPositionTriggerError).toBe("R2 Parquet export failed: R2 write failed");
 });
 
-it("exports the available rows while waiting for every authoritative source-day race", async () => {
+it("does not replace the by-day export while the current category is incomplete", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const {
     getRunningStyleInferenceState,
@@ -563,14 +567,14 @@ it("exports the available rows while waiting for every authoritative source-day 
   );
 
   expect(summary?.finishPositionTriggerError).toBe(
-    "running-style source-day is incomplete; waiting for jra:20260512:08:02",
+    "running-style jra day is incomplete; waiting for jra:20260512:08:02",
   );
-  expect(summary?.parquetExportedRows).toBe(100);
-  expect(exportRunningStyleParquetForDay).toHaveBeenCalledTimes(1);
+  expect(summary?.parquetExportedRows).toBe(0);
+  expect(exportRunningStyleParquetForDay).not.toHaveBeenCalled();
   expect(send).not.toHaveBeenCalled();
 });
 
-it("exports once and fans out every NAR source-day category after the barrier", async () => {
+it("exports and triggers NAR without waiting for an incomplete ban-ei race", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const {
     getRunningStyleInferenceState,
@@ -612,7 +616,10 @@ it("exports once and fans out every NAR source-day category after the barrier", 
   vi.mocked(listRunningStyleInferenceStates).mockResolvedValueOnce(
     new Map([
       ["nar:20260512:45:01", { ...completedState(1), raceKey: "nar:20260512:45:01" }],
-      ["nar:20260512:65:02", { ...completedState(1), raceKey: "nar:20260512:65:02" }],
+      [
+        "nar:20260512:65:02",
+        { ...completedState(1), raceKey: "nar:20260512:65:02", status: "processing" },
+      ],
     ]),
   );
   vi.mocked(exportRunningStyleParquetForDay).mockResolvedValueOnce({
@@ -629,14 +636,87 @@ it("exports once and fans out every NAR source-day category after the barrier", 
   );
 
   expect(exportRunningStyleParquetForDay).toHaveBeenCalledTimes(1);
-  expect(fetch).toHaveBeenCalledTimes(2);
-  const bodies = await Promise.all(
-    fetch.mock.calls.map(async ([request]) => (request as Request).json()),
+  expect(listRunningStyleInferenceStates).toHaveBeenCalledWith({}, ["nar:20260512:45:01"]);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const request = fetch.mock.calls[0]![0] as Request;
+  expect(await request.json()).toStrictEqual({
+    category: "nar",
+    generatePredictionsAfterHit: true,
+    runYmd: "20260512",
+  });
+});
+
+it("keeps the ban-ei barrier and trigger separate from NAR", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    listRunningStyleInferenceStates,
+  } = await import("./running-style-d1");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const banEiJob: RunningStylePredictionJob = {
+    ...JOB,
+    keibajoCode: "65",
+    raceKey: "nar:20260512:65:02",
+    raceBango: "02",
+    source: "nar",
+  };
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("armed", { status: 200 }));
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(syncFailedState(1));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(1);
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        source: "nar",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "45",
+        race_bango: "01",
+      },
+      {
+        source: "nar",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "65",
+        race_bango: "02",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValueOnce(
+    new Map([
+      [
+        "nar:20260512:45:01",
+        { ...completedState(1), raceKey: "nar:20260512:45:01", status: "processing" },
+      ],
+      ["nar:20260512:65:02", { ...completedState(1), raceKey: "nar:20260512:65:02" }],
+    ]),
   );
-  expect(bodies).toStrictEqual([
-    { category: "nar", generatePredictionsAfterHit: true, runYmd: "20260512" },
-    { category: "ban-ei", generatePredictionsAfterHit: true, runYmd: "20260512" },
-  ]);
+  vi.mocked(exportRunningStyleParquetForDay).mockResolvedValueOnce({
+    bytesWritten: 100,
+    fileCount: 1,
+    keys: ["running-style.parquet"],
+    rowCount: 2,
+    skipped: false,
+  });
+
+  await handleRunningStylePredictionJob(
+    buildEnv({ FINISH_POSITION_CRON: { fetch }, TRIGGER_TOKEN: "secret-token" }),
+    banEiJob,
+  );
+
+  expect(exportRunningStyleParquetForDay).toHaveBeenCalledTimes(1);
+  expect(listRunningStyleInferenceStates).toHaveBeenCalledWith({}, ["nar:20260512:65:02"]);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const request = fetch.mock.calls[0]![0] as Request;
+  expect(await request.json()).toStrictEqual({
+    category: "ban-ei",
+    generatePredictionsAfterHit: true,
+    runYmd: "20260512",
+  });
 });
 
 it("completes the job from an R2 hit and returns the success summary", async () => {
@@ -708,11 +788,12 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   );
 });
 
-it("loads the selected cell model key and rematerializes with the selected header", async () => {
+it("loads only the selected cell model body and rematerializes with its ranged header", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
-  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { loadFlatLightGBMHeaderFromR2, loadFlatLightGBMModelFromR2 } =
+    await import("./running-style-model-binary");
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
   const { filterRunningStyleFeatureRowsByActiveEntries } =
@@ -720,13 +801,18 @@ it("loads the selected cell model key and rematerializes with the selected heade
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
   const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("armed", { status: 200 }));
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
-  vi.mocked(loadFlatLightGBMModelFromR2)
+  vi.mocked(loadFlatLightGBMHeaderFromR2)
     .mockResolvedValueOnce({
-      header: { feature_names: ["initial_feature"], model_version: "default-model" },
+      feature_names: ["initial_feature"],
+      model_version: "default-model",
     } as never)
     .mockResolvedValueOnce({
-      header: { feature_names: ["selected_feature"], model_version: "grade-a-model" },
+      feature_names: ["selected_feature"],
+      model_version: "grade-a-model",
     } as never);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["selected_feature"], model_version: "grade-a-model" },
+  } as never);
   vi.mocked(loadOrBuildRunningStyleFeatureParquet)
     .mockResolvedValueOnce({
       featuresR2Key: "features.parquet",
@@ -761,10 +847,14 @@ it("loads the selected cell model key and rematerializes with the selected heade
   expect(summary?.cellModelKey).toBe("models/jra/grade-a.flatbin");
   expect(summary?.finishPositionTriggerMode).toBe("service-binding");
   expect(summary?.finishPositionTriggerError).toBeUndefined();
-  expect(vi.mocked(loadFlatLightGBMModelFromR2).mock.calls[0]?.[1]).toBe(
+  expect(vi.mocked(loadFlatLightGBMHeaderFromR2).mock.calls[0]?.[1]).toBe(
     "models/jra/latest.flatbin",
   );
-  expect(vi.mocked(loadFlatLightGBMModelFromR2).mock.calls[1]?.[1]).toBe(
+  expect(vi.mocked(loadFlatLightGBMHeaderFromR2).mock.calls[1]?.[1]).toBe(
+    "models/jra/grade-a.flatbin",
+  );
+  expect(loadFlatLightGBMModelFromR2).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(loadFlatLightGBMModelFromR2).mock.calls[0]?.[1]).toBe(
     "models/jra/grade-a.flatbin",
   );
   expect(

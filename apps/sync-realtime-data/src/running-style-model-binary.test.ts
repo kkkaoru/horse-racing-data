@@ -4,6 +4,7 @@ import {
   buildRunningStyleFlatModelKey,
   decodeFlatLightGBMModel,
   encodeCategoricalThreshold,
+  loadFlatLightGBMHeaderFromR2,
   loadFlatLightGBMModelFromR2,
   predictFlatRunningStyle,
 } from "./running-style-model-binary";
@@ -149,6 +150,43 @@ it("loadFlatLightGBMModelFromR2 decodes the buffer returned by R2", async () => 
   const bucket = { get } as unknown as R2Bucket;
   const model = await loadFlatLightGBMModelFromR2(bucket, "models/test.flatbin");
   expect(model.header.node_count).toBe(1);
+});
+
+it("loadFlatLightGBMHeaderFromR2 reads only the prefix and JSON header ranges", async () => {
+  const buffer = buildBuffer({ nodes: [{ kind: 0, leafValue: 0.5 }] });
+  const get = vi.fn(async (_key: string, options: R2GetOptions) => {
+    const range = options.range as { length: number; offset: number };
+    return {
+      arrayBuffer: async (): Promise<ArrayBuffer> =>
+        buffer.slice(range.offset, range.offset + range.length),
+    };
+  });
+  const bucket = { get } as unknown as R2Bucket;
+  const header = await loadFlatLightGBMHeaderFromR2(bucket, "models/test.flatbin");
+  expect(header.feature_names).toStrictEqual(["x"]);
+  expect(get.mock.calls).toStrictEqual([
+    ["models/test.flatbin", { range: { length: 12, offset: 0 } }],
+    ["models/test.flatbin", { range: { length: expect.any(Number), offset: 12 } }],
+  ]);
+});
+
+it("loadFlatLightGBMHeaderFromR2 rejects a missing prefix object", async () => {
+  const bucket = { get: vi.fn(async () => null) } as unknown as R2Bucket;
+  await expect(loadFlatLightGBMHeaderFromR2(bucket, "models/missing.flatbin")).rejects.toThrow(
+    "R2 object not found: models/missing.flatbin",
+  );
+});
+
+it("loadFlatLightGBMHeaderFromR2 rejects a missing header range object", async () => {
+  const buffer = buildBuffer({ nodes: [{ kind: 0 }] });
+  const get = vi
+    .fn()
+    .mockResolvedValueOnce({ arrayBuffer: async (): Promise<ArrayBuffer> => buffer.slice(0, 12) })
+    .mockResolvedValueOnce(null);
+  const bucket = { get } as unknown as R2Bucket;
+  await expect(loadFlatLightGBMHeaderFromR2(bucket, "models/test.flatbin")).rejects.toThrow(
+    "R2 object not found: models/test.flatbin",
+  );
 });
 
 it("predictFlatRunningStyle returns probabilities from a single-leaf tree per class", () => {

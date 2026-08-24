@@ -889,6 +889,22 @@ describe("keiba.go realtime helpers", () => {
         <td class="d horseName">対象外</td>
         <td class="j horseWeight">452<span>(0)</span></td>
       </tr>
+      <tr>
+        <td class="a"></td>
+        <td class="b">6</td>
+        <td class="c">2</td>
+        <td class="d horseName">ソルトチャンス</td>
+        <td class="k"></td>
+        <td class="l">中止</td>
+      </tr>
+      <tr>
+        <td class="a"></td>
+        <td class="b">7</td>
+        <td class="c">3</td>
+        <td class="d horseName">余白のみ</td>
+        <td class="k"></td>
+        <td class="l">ハナ</td>
+      </tr>
     `;
     expect(parseRaceResults(html)).toEqual([
       {
@@ -896,6 +912,12 @@ describe("keiba.go realtime helpers", () => {
         horseName: "ナムラハカ",
         horseNumber: "4",
         time: "1:35.0",
+      },
+      {
+        finishPosition: "中止",
+        horseName: "ソルトチャンス",
+        horseNumber: "2",
+        time: null,
       },
     ]);
     expect(parseRaceResultExcludedHorseNumbers(html)).toEqual(["8"]);

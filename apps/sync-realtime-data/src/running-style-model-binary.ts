@@ -45,19 +45,26 @@ export interface FlatLightGBMModel {
 
 const decoder = new TextDecoder();
 
-const readHeader = (buffer: ArrayBuffer): { dataOffset: number; header: FlatLightGBMHeader } => {
+const readHeaderLength = (buffer: ArrayBuffer): number => {
   const prefix = decoder.decode(buffer.slice(0, MAGIC.length));
   if (prefix !== MAGIC) {
     throw new Error("invalid running-style binary model magic");
   }
-  const view = new DataView(buffer);
-  const headerLength = view.getUint32(HEADER_LENGTH_OFFSET, true);
-  const headerBytes = buffer.slice(HEADER_OFFSET, HEADER_OFFSET + headerLength);
+  return new DataView(buffer).getUint32(HEADER_LENGTH_OFFSET, true);
+};
+
+const decodeHeader = (headerBytes: ArrayBuffer): FlatLightGBMHeader => {
   const header = JSON.parse(decoder.decode(headerBytes)) as FlatLightGBMHeader;
   if (header.format !== "rs-lgbm-flat-v1") {
     throw new Error(`unsupported running-style binary model format: ${String(header.format)}`);
   }
-  return { dataOffset: HEADER_OFFSET + headerLength, header };
+  return header;
+};
+
+const readHeader = (buffer: ArrayBuffer): { dataOffset: number; header: FlatLightGBMHeader } => {
+  const headerLength = readHeaderLength(buffer);
+  const headerBytes = buffer.slice(HEADER_OFFSET, HEADER_OFFSET + headerLength);
+  return { dataOffset: HEADER_OFFSET + headerLength, header: decodeHeader(headerBytes) };
 };
 
 export const decodeFlatLightGBMModel = (buffer: ArrayBuffer): FlatLightGBMModel => {
@@ -82,6 +89,20 @@ export const loadFlatLightGBMModelFromR2 = async (
   const object = await bucket.get(key);
   if (object === null) throw new Error(`R2 object not found: ${key}`);
   return decodeFlatLightGBMModel(await object.arrayBuffer());
+};
+
+export const loadFlatLightGBMHeaderFromR2 = async (
+  bucket: R2Bucket,
+  key: string,
+): Promise<FlatLightGBMHeader> => {
+  const prefixObject = await bucket.get(key, { range: { length: HEADER_OFFSET, offset: 0 } });
+  if (prefixObject === null) throw new Error(`R2 object not found: ${key}`);
+  const headerLength = readHeaderLength(await prefixObject.arrayBuffer());
+  const headerObject = await bucket.get(key, {
+    range: { length: headerLength, offset: HEADER_OFFSET },
+  });
+  if (headerObject === null) throw new Error(`R2 object not found: ${key}`);
+  return decodeHeader(await headerObject.arrayBuffer());
 };
 
 const nodeBase = (model: FlatLightGBMModel, nodeIndex: number): number =>

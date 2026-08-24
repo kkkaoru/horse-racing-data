@@ -30,7 +30,10 @@ import {
   buildRunningStyleRaceKey,
 } from "./running-style-features";
 import { runRunningStyleInferenceRowsWithFlatModel } from "./running-style-inference";
-import { loadFlatLightGBMModelFromR2 } from "./running-style-model-binary";
+import {
+  loadFlatLightGBMHeaderFromR2,
+  loadFlatLightGBMModelFromR2,
+} from "./running-style-model-binary";
 import {
   buildCalibrationR2Key,
   loadCalibratorsFromR2,
@@ -194,6 +197,9 @@ const resolveRouteFromRows = (
   return resolveRunningStyleCellRoute(routeInputFromFeatureRow(job, firstRow), config);
 };
 
+const featureNamesMatch = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
+  left.length === right.length && left.every((name, index) => name === right[index]);
+
 const triggerFinishPositionAfterDayBaseHit = async (
   env: Env,
   job: RunningStylePredictionJob,
@@ -300,10 +306,6 @@ const triggerFinishPositionDayWhenReady = async (
   }
   try {
     const raceList = await listRunningStyleRacesByDate(env, buildFinishPositionRunYmd(job));
-    // JRA and NAR use different shared daily Parquet objects. Ban-ei is part of
-    // the NAR object, so wait for the whole source-day rather than allowing one
-    // model category to publish a partial object that another category later
-    // overwrites.
     const sourceRaces = raceList.races.filter((race) => race.source === job.source);
     if (sourceRaces.length === 0) {
       const reason = `no authoritative ${job.source} races registered for ${buildFinishPositionRunYmd(job)}`;
@@ -314,19 +316,42 @@ const triggerFinishPositionDayWhenReady = async (
         parquetExportedRows: 0,
       };
     }
-    const jobs = sourceRaces.map((race) =>
+    const category = deriveRunningStyleCategory(job);
+    const categoryRaces = sourceRaces.filter(
+      (race) =>
+        deriveRunningStyleCategory({ keibajoCode: race.keibajo_code, source: race.source }) ===
+        category,
+    );
+    const jobs = categoryRaces.map((race) =>
       buildPredictionJobFromRegisteredRace(race, job.predictedAt),
     );
     const states = await listRunningStyleInferenceStates(
       env.REALTIME_DB,
       jobs.map((registeredJob) => registeredJob.raceKey),
     );
-    // Publish the currently available source-day rows after every completed
-    // race.  The finish-position day-base can safely consume this immutable
-    // snapshot for completed races while later races remain pending.  Waiting
-    // for every race here made one failed state suppress the by-day shard for
-    // the whole category, which in turn caused repeated standard-4 rebuilds
-    // with an absent running-style watermark.
+    const incompleteRace = jobs.find((registeredJob) => {
+      const state = states.get(registeredJob.raceKey);
+      return (
+        state?.status !== "completed" ||
+        state.expectedHorseCount === null ||
+        state.writtenHorseCount === null ||
+        state.writtenHorseCount < state.expectedHorseCount
+      );
+    });
+    if (incompleteRace !== undefined) {
+      const reason = `running-style ${category} day is incomplete; waiting for ${incompleteRace.raceKey}`;
+      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
+      return {
+        finishPositionTriggerError: reason,
+        finishPositionTriggerMode: "skipped",
+        parquetExportedRows: 0,
+      };
+    }
+
+    // The R2 object is shared by source, so publish only after the current
+    // category is complete. This keeps NAR independent from optional ban-ei
+    // readiness without repeatedly replacing the by-day object with a
+    // partial snapshot after every race.
     const parquetExportResult = await exportRunningStylesToR2(env, job);
     if (typeof parquetExportResult === "string") {
       const reason = `R2 Parquet export failed: ${parquetExportResult}`;
@@ -338,32 +363,13 @@ const triggerFinishPositionDayWhenReady = async (
         parquetExportedRows: 0,
       };
     }
-    const incompleteRace = jobs.find((registeredJob) => {
-      const state = states.get(registeredJob.raceKey);
-      return (
-        state?.status !== "completed" ||
-        state.expectedHorseCount === null ||
-        state.writtenHorseCount === null ||
-        state.writtenHorseCount < state.expectedHorseCount
-      );
-    });
-    if (incompleteRace !== undefined) {
-      const reason = `running-style source-day is incomplete; waiting for ${incompleteRace.raceKey}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
-      return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
-        parquetExportedRows: parquetExportResult,
-      };
-    }
-
     const expectedRows = jobs.reduce(
       (total, registeredJob) =>
         total + (states.get(registeredJob.raceKey)?.expectedHorseCount ?? 0),
       0,
     );
     if (parquetExportResult < expectedRows) {
-      const reason = `R2 Parquet export row count ${parquetExportResult} is below expected source-day horse count ${expectedRows}`;
+      const reason = `R2 Parquet export row count ${parquetExportResult} is below expected ${category} day horse count ${expectedRows}`;
       console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
       return {
         finishPositionTriggerError: reason,
@@ -372,19 +378,9 @@ const triggerFinishPositionDayWhenReady = async (
       };
     }
 
-    const categories = [...new Set(jobs.map(deriveRunningStyleCategory))];
-    const triggerResults = await Promise.all(
-      categories.map((category) => triggerFinishPositionAfterDayBaseHit(env, job, category)),
-    );
-    const failedTrigger = triggerResults.find(
-      (result) => result.finishPositionTriggerError !== undefined,
-    );
+    const triggerResult = await triggerFinishPositionAfterDayBaseHit(env, job, category);
     return {
-      ...failedTrigger,
-      finishPositionTriggerMode:
-        failedTrigger?.finishPositionTriggerMode ??
-        triggerResults[0]?.finishPositionTriggerMode ??
-        "skipped",
+      ...triggerResult,
       parquetExportedRows: parquetExportResult,
     };
   } catch (error) {
@@ -525,26 +521,40 @@ export const handleRunningStylePredictionJob = async (
       env.REALTIME_DB,
       buildRealtimeRaceKeyFromRunningStyle(job),
     );
-    let selectedRoute = resolveRunningStyleCellRoute(routeInputFromJob(job), routingConfig);
-    let model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, selectedRoute.modelKey);
-    const calibrators = await tryLoadCalibrators(env.RUNNING_STYLE_MODELS, job.source);
-    let featureNames = model.header.feature_names;
+    const defaultRoute = resolveRunningStyleCellRoute(routeInputFromJob(job), routingConfig);
+    const defaultHeader = await loadFlatLightGBMHeaderFromR2(
+      env.RUNNING_STYLE_MODELS,
+      defaultRoute.modelKey,
+    );
+    let featureNames = defaultHeader.feature_names;
     let loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
       env,
       featureNames,
       race: job,
     });
     const routeFromRows = resolveRouteFromRows(job, loadOrBuild.rows, routingConfig);
-    if (routeFromRows.modelKey !== selectedRoute.modelKey) {
-      selectedRoute = routeFromRows;
-      model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, selectedRoute.modelKey);
-      featureNames = model.header.feature_names;
+    const selectedRoute = routeFromRows;
+    const selectedHeader =
+      selectedRoute.modelKey === defaultRoute.modelKey
+        ? defaultHeader
+        : await loadFlatLightGBMHeaderFromR2(env.RUNNING_STYLE_MODELS, selectedRoute.modelKey);
+    if (!featureNamesMatch(selectedHeader.feature_names, featureNames)) {
+      featureNames = selectedHeader.feature_names;
       loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
         env,
         featureNames,
         race: job,
       });
     }
+    // Load the 33-49 MiB flatbin only after Catalog/PostgreSQL and Parquet work
+    // has finished. Header-only R2 range reads above keep both routing and
+    // feature-contract selection correct without overlapping two full models
+    // or retaining a model during the memory-heavy fallback path.
+    const model = await loadFlatLightGBMModelFromR2(
+      env.RUNNING_STYLE_MODELS,
+      selectedRoute.modelKey,
+    );
+    const calibrators = await tryLoadCalibrators(env.RUNNING_STYLE_MODELS, job.source);
     const inferenceRows = filterRunningStyleFeatureRowsByActiveEntries(
       loadOrBuild.rows,
       latestEntries,

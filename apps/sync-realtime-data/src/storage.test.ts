@@ -2,10 +2,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
   claimPremiumPaddockNotificationSend,
+  claimResultCacheBust,
   claimResultFetch,
   claimTrackConditionFetch,
   claimWeightFetch,
+  claimReservedWeightFetch,
   completeResultFetch,
+  completeResultCacheBust,
   completeTrackConditionFetch,
   computePremiumPaddockContentHash,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
@@ -31,6 +34,7 @@ import {
   getSameDayVenueJockeyWins,
   insertJraTrackConditionSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
+  listPendingResultCacheBustRaceKeys,
   listRaceKeysByDateFromHyperdrive,
   replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
@@ -46,6 +50,7 @@ import {
   markResultFetchQueued,
   markTrackConditionQueued,
   recordPartialResultFetch,
+  registerResultCacheBust,
   recordPremiumPaddockNotificationEvent,
   runD1Retention,
   toHorseTrends,
@@ -61,6 +66,141 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("registerResultCacheBust stores a canonical desired generation and completion state", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  await registerResultCacheBust({
+    db,
+    fetchedAt: "2026-08-24T11:54:00+09:00",
+    isComplete: false,
+    raceKey: "nar:2026:0824:35:01",
+    results: [
+      { finishPosition: "2", horseName: "B", horseNumber: "2", time: null },
+      { finishPosition: "1", horseName: "A", horseNumber: "1", time: "1:20.0" },
+    ],
+  });
+
+  expect(prepare).toHaveBeenCalledWith(expect.stringContaining("on conflict(race_key)"));
+  expect(prepare).toHaveBeenCalledWith(
+    expect.stringContaining("desired_result_signature != excluded.desired_result_signature"),
+  );
+  expect(bind).toHaveBeenCalledWith(
+    "nar:2026:0824:35:01",
+    "1\u001fA\u001f1\u001f1:20.0\u001e2\u001fB\u001f2\u001f\u0000",
+    0,
+    "2026-08-24T11:54:00+09:00",
+  );
+});
+
+it("claimResultCacheBust atomically leases an undelivered generation", async () => {
+  const first = vi.fn(async () => ({
+    desired_is_complete: 1,
+    desired_result_signature: "snapshot-v2",
+    race_delivered_is_complete: null,
+    race_delivered_result_signature: null,
+    race_key: "nar:2026:0824:35:01",
+    trend_delivered_is_complete: 1,
+    trend_delivered_result_signature: "snapshot-v2",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await claimResultCacheBust({
+      db,
+      leaseUntil: "2026-08-24T11:55:30+09:00",
+      now: "2026-08-24T11:54:00+09:00",
+      raceKey: "nar:2026:0824:35:01",
+    }),
+  ).toStrictEqual({
+    isComplete: true,
+    needsRaceBust: true,
+    needsTrendBust: false,
+    raceKey: "nar:2026:0824:35:01",
+    resultSignature: "snapshot-v2",
+  });
+  expect(prepare).toHaveBeenCalledWith(
+    expect.stringContaining("trend_delivered_result_signature is null"),
+  );
+  expect(bind).toHaveBeenCalledWith(
+    "2026-08-24T11:55:30+09:00",
+    "2026-08-24T11:54:00+09:00",
+    "nar:2026:0824:35:01",
+    "2026-08-24T11:54:00+09:00",
+  );
+});
+
+it("claimResultCacheBust returns null when the generation is delivered or leased", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await claimResultCacheBust({
+      db,
+      leaseUntil: "2026-08-24T11:55:30+09:00",
+      now: "2026-08-24T11:54:00+09:00",
+      raceKey: "nar:2026:0824:35:01",
+    }),
+  ).toBeNull();
+});
+
+it("completeResultCacheBust advances delivered state with a desired-generation fence", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  await completeResultCacheBust({
+    claim: {
+      isComplete: true,
+      needsRaceBust: false,
+      needsTrendBust: true,
+      raceKey: "nar:2026:0824:35:01",
+      resultSignature: "snapshot-v2",
+    },
+    db,
+    now: "2026-08-24T11:54:02+09:00",
+    raceDelivered: false,
+    trendDelivered: true,
+  });
+
+  expect(prepare).toHaveBeenCalledWith(expect.stringContaining("desired_result_signature = ?"));
+  expect(bind).toHaveBeenCalledWith(
+    1,
+    "snapshot-v2",
+    1,
+    1,
+    0,
+    "snapshot-v2",
+    0,
+    1,
+    "2026-08-24T11:54:02+09:00",
+    "nar:2026:0824:35:01",
+    "snapshot-v2",
+    1,
+  );
+});
+
+it("listPendingResultCacheBustRaceKeys returns only the bounded pending race keys", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:2026:0824:35:01" }, { race_key: "nar:2026:0824:35:02" }],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await listPendingResultCacheBustRaceKeys(db, "2026-08-24T11:54:00+09:00", 12),
+  ).toStrictEqual(["nar:2026:0824:35:01", "nar:2026:0824:35:02"]);
+  expect(bind).toHaveBeenCalledWith("2026-08-24T11:54:00+09:00", 12);
 });
 
 it("claimResultFetch returns true when changes > 0", async () => {
@@ -121,6 +261,9 @@ it("claimWeightFetch atomically claims an unclaimed race", async () => {
   );
   expect(prepare).toHaveBeenCalledWith(expect.stringContaining("last_weight_fetch_at is null"));
   expect(prepare).toHaveBeenCalledWith(
+    expect.stringContaining("last_weight_fetch_soft_miss_at = null"),
+  );
+  expect(prepare).toHaveBeenCalledWith(
     expect.stringContaining("last_weight_fetch_attempt_at <= ?"),
   );
   expect(bind).toHaveBeenCalledWith(
@@ -143,6 +286,45 @@ it("claimWeightFetch rejects a race with an active lease", async () => {
       "jra:2026:0823:01:01",
       "2026-08-23T12:00:00+09:00",
       "2026-08-23T11:58:30+09:00",
+    ),
+  ).toBe(false);
+});
+
+it("claimReservedWeightFetch fences the consumer to its watchdog reservation", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await claimReservedWeightFetch(
+      db,
+      "jra:2026:0823:01:01",
+      "2026-08-23T12:00:00+09:00",
+      "2026-08-23T12:00:01+09:00",
+    ),
+  ).toBe(true);
+  expect(prepare).toHaveBeenCalledWith(expect.stringContaining("last_weight_fetch_attempt_at = ?"));
+  expect(bind).toHaveBeenCalledWith(
+    "2026-08-23T12:00:01+09:00",
+    "2026-08-23T12:00:01+09:00",
+    "jra:2026:0823:01:01",
+    "2026-08-23T12:00:00+09:00",
+  );
+});
+
+it("claimReservedWeightFetch rejects a duplicate consumer after the token was fenced", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+
+  expect(
+    await claimReservedWeightFetch(
+      db,
+      "jra:2026:0823:01:01",
+      "2026-08-23T12:00:00+09:00",
+      "2026-08-23T12:00:01+09:00",
     ),
   ).toBe(false);
 });
@@ -342,6 +524,17 @@ it("updateLastFetch builds the SQL for the last_weight_fetch_attempt_at column",
   expect(bind).toHaveBeenCalledWith("2026-07-03T11:30:00+09:00", expect.any(String), "key");
 });
 
+it("updateLastFetch builds the SQL for the last_weight_fetch_soft_miss_at column", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updateLastFetch(db, "key", "last_weight_fetch_soft_miss_at", "2026-08-24T11:30:00+09:00");
+  expect(prepare).toHaveBeenCalledWith(
+    "update realtime_race_sources set last_weight_fetch_soft_miss_at = ?, updated_at = ? where race_key = ?",
+  );
+});
+
 it("markResultFetchQueued returns immediately when raceKeys is empty", async () => {
   const batch = vi.fn(async () => []);
   const db = { batch, prepare: vi.fn() } as unknown as D1Database;
@@ -501,7 +694,46 @@ it("logFetch inserts and writes a dedupe sentinel when KV miss", async () => {
   const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
   await logFetch(db, "plan-realtime-fetches", "error", null, "boom", kv);
   expect(kvGet).toHaveBeenCalledTimes(1);
-  expect(kvPut).toHaveBeenCalledTimes(1);
+  expect(kvPut).toHaveBeenCalledWith(expect.any(String), "1", { expirationTtl: 60 });
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch accepts a custom valid dedupe TTL", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "weight-watchdog", "ok", null, "no stale weight races", kv, 3600);
+  expect(kvPut).toHaveBeenCalledWith(expect.any(String), "1", { expirationTtl: 3600 });
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch replaces an unsafe integer dedupe TTL with the valid default", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "weight-watchdog", "ok", null, "no stale weight races", kv, 60.5);
+  expect(kvPut).toHaveBeenCalledWith(expect.any(String), "1", { expirationTtl: 60 });
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch replaces a below-minimum dedupe TTL with the valid default", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "weight-watchdog", "ok", null, "no stale weight races", kv, 59);
+  expect(kvPut).toHaveBeenCalledWith(expect.any(String), "1", { expirationTtl: 60 });
   expect(prepare).toHaveBeenCalledTimes(1);
 });
 

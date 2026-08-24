@@ -15,7 +15,10 @@ import type { Env } from "./types";
 const VIEWER_INTERNAL_BUST_PATH = "/api/internal/trend-cache-bust";
 const AUTH_HEADER = "x-pc-keiba-internal-token";
 const DEFAULT_VIEWER_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
-const FETCH_TIMEOUT_MS = 8_000;
+// Result queue handlers have a 25s hard deadline. Keep each viewer attempt
+// short so two attempts can finish well inside that budget even while the
+// race-level bust and other post-persistence side effects run alongside it.
+const FETCH_TIMEOUT_MS = 3_000;
 const MAX_ATTEMPTS = 2;
 const SERVER_ERROR_STATUS_MIN = 500;
 const RETRY_DELAY_MS = 200;
@@ -23,6 +26,8 @@ const RETRY_DELAY_MS = 200;
 export type TrendBustSource = "jra" | "nar";
 
 export interface TrendBustRequest {
+  keibajoCode?: string;
+  raceBango?: string;
   source: TrendBustSource;
   targetYmd: string;
 }
@@ -64,8 +69,19 @@ type TrendBustAttemptOutcome = TrendBustAttemptErrorOutcome | TrendBustAttemptOk
 
 interface BustLoopArgs {
   body: TrendBustRequest;
+  fetcher: ViewerFetcher;
   token: string;
   url: string;
+}
+
+interface BustAttemptArgs {
+  fetcher: ViewerFetcher;
+  init: RequestInit;
+  url: string;
+}
+
+interface ViewerFetcher {
+  (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
 const isYyyymmdd = (value: string): boolean => /^\d{8}$/u.test(value);
@@ -73,6 +89,11 @@ const isYyyymmdd = (value: string): boolean => /^\d{8}$/u.test(value);
 const resolveViewerOrigin = (env: Env): string => {
   const configured = env.RUNNING_STYLE_CACHE_ORIGIN?.trim();
   return configured && configured.length > 0 ? configured : DEFAULT_VIEWER_ORIGIN;
+};
+
+const resolveViewerFetcher = (env: Env): ViewerFetcher => {
+  const viewer = env.PC_KEIBA_VIEWER;
+  return viewer ? (input, init) => viewer.fetch(input, init) : fetch;
 };
 
 const buildBustRequestInit = (token: string, body: TrendBustRequest): RequestInit => ({
@@ -87,12 +108,16 @@ const buildBustRequestInit = (token: string, body: TrendBustRequest): RequestIni
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const performBustAttempt = async (
-  url: string,
-  init: RequestInit,
-): Promise<TrendBustAttemptOutcome> => {
+const drainResponseBody = async (response: Response): Promise<void> => {
+  if (response.body !== null) {
+    await response.body.pipeTo(new WritableStream());
+  }
+};
+
+const performBustAttempt = async (args: BustAttemptArgs): Promise<TrendBustAttemptOutcome> => {
   try {
-    const response = await fetch(url, init);
+    const response = await args.fetcher(args.url, args.init);
+    await drainResponseBody(response);
     if (response.ok) {
       return { retryable: false, status: "ok" };
     }
@@ -123,7 +148,11 @@ const reduceBustAttempts =
     if (index > 0) {
       await sleep(RETRY_DELAY_MS);
     }
-    const outcome = await performBustAttempt(args.url, buildBustRequestInit(args.token, args.body));
+    const outcome = await performBustAttempt({
+      fetcher: args.fetcher,
+      init: buildBustRequestInit(args.token, args.body),
+      url: args.url,
+    });
     return [...previous, outcome];
   };
 
@@ -144,7 +173,7 @@ export const requestTrendCacheBust = async (
     return { message: "PC_KEIBA_VIEWER_INTERNAL_TOKEN not configured", status: "skipped" };
   }
   const url = `${resolveViewerOrigin(env)}${VIEWER_INTERNAL_BUST_PATH}`;
-  const attempts = await runBustWithRetry({ body, token, url });
+  const attempts = await runBustWithRetry({ body, fetcher: resolveViewerFetcher(env), token, url });
   const last = attempts[attempts.length - 1]!;
   if (last.status === "ok") {
     return { attempts: attempts.length, status: "ok" };
@@ -153,12 +182,16 @@ export const requestTrendCacheBust = async (
 };
 
 export interface RaceFinishContext {
+  keibajoCode: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
+  raceBango: string;
   source: TrendBustSource;
 }
 
 export const buildTrendBustFromRaceContext = (context: RaceFinishContext): TrendBustRequest => ({
+  keibajoCode: context.keibajoCode,
+  raceBango: context.raceBango,
   source: context.source,
   targetYmd: `${context.kaisaiNen}${context.kaisaiTsukihi}`,
 });

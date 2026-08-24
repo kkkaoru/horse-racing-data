@@ -8,9 +8,12 @@ interface MockPoolClient {
 }
 
 interface MockPoolOptions {
+  connectionTimeoutMillis: number;
   connectionString: string;
   max: number;
   onConnect?: (client: MockPoolClient) => unknown;
+  query_timeout: number;
+  statement_timeout: number;
 }
 
 const pgMock = vi.hoisted(() => ({
@@ -38,8 +41,11 @@ it("keeps the read pool on Hyperdrive when a writable Neon secret is also presen
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
+    connectionTimeoutMillis: 15_000,
     connectionString: "postgres://readonly-hyperdrive",
     max: 24,
+    query_timeout: 90_000,
+    statement_timeout: 90_000,
   });
 });
 
@@ -68,8 +74,11 @@ it("reuses the existing write pool after the first Neon connection", async () =>
   expect(secondPool).toBe(firstPool);
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionTimeoutMillis).toBe(15_000);
   expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
   expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.query_timeout).toBe(90_000);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.statement_timeout).toBe(90_000);
 });
 
 it("uses DATABASE_URL_NEON for the write pool before Hyperdrive", async () => {
@@ -231,7 +240,10 @@ it("does not reuse the Hyperdrive read pool for writes when Neon secrets are mis
   );
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
+    connectionTimeoutMillis: 15_000,
     connectionString: "postgres://readonly-hyperdrive",
     max: 24,
+    query_timeout: 90_000,
+    statement_timeout: 90_000,
   });
 });
