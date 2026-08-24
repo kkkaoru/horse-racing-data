@@ -1,6 +1,8 @@
 // Run with bun (vitest).
+// @vitest-environment node
 import { expect, it, vi } from "vitest";
 
+import type { RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
 import {
   handleRaceDetailSectionCacheQueue,
   scheduleDueRaceTrendCache,
@@ -38,7 +40,8 @@ const getFirstRequest = (worker: FakeWorker): Request => {
 };
 
 it("schedule-today-posts-correct-url-with-date-query", async () => {
-  const worker = buildOpenNextWorker(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
   const env = buildEnv();
   const ctx = buildCtx();
   await scheduleTodayRaceDetailSectionCache({
@@ -54,6 +57,7 @@ it("schedule-today-posts-correct-url-with-date-query", async () => {
   );
   expect(request.method).toBe("POST");
   expect(request.headers.get("X-PC-Keiba-Cache-Warm")).toBe("scheduled");
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("schedule-today-throws-on-non-ok-response", async () => {
@@ -71,7 +75,8 @@ it("schedule-today-throws-on-non-ok-response", async () => {
 });
 
 it("schedule-tomorrow-posts-correct-url-without-date-query", async () => {
-  const worker = buildOpenNextWorker(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
   const env = buildEnv();
   const ctx = buildCtx();
   await scheduleTomorrowRaceDetailSectionCache(worker, env, ctx);
@@ -80,6 +85,7 @@ it("schedule-tomorrow-posts-correct-url-without-date-query", async () => {
   expect(request.url).toBe("https://pc-keiba-viewer.local/api/cache-warm/race-detail-sections");
   expect(request.method).toBe("POST");
   expect(request.headers.get("X-PC-Keiba-Cache-Warm")).toBe("scheduled");
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("schedule-tomorrow-throws-on-non-ok-response", async () => {
@@ -92,7 +98,8 @@ it("schedule-tomorrow-throws-on-non-ok-response", async () => {
 });
 
 it("schedule-due-race-trend-posts-to-trend-endpoint", async () => {
-  const worker = buildOpenNextWorker(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
   const env = buildEnv();
   const ctx = buildCtx();
   await scheduleDueRaceTrendCache(worker, env, ctx);
@@ -100,6 +107,7 @@ it("schedule-due-race-trend-posts-to-trend-endpoint", async () => {
   const request = getFirstRequest(worker);
   expect(request.url).toBe("https://pc-keiba-viewer.local/api/cache-warm/race-trends");
   expect(request.method).toBe("POST");
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("schedule-due-race-trend-throws-on-non-ok-response", async () => {
@@ -112,13 +120,15 @@ it("schedule-due-race-trend-throws-on-non-ok-response", async () => {
 });
 
 it("schedule-ssr-warm-without-date-omits-query", async () => {
-  const worker = buildOpenNextWorker(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
   const env = buildEnv();
   const ctx = buildCtx();
   await scheduleRaceDetailSsrCacheWarm(worker, env, ctx);
   expect(worker.fetch).toHaveBeenCalledTimes(1);
   const request = getFirstRequest(worker);
   expect(request.url).toBe("https://pc-keiba-viewer.local/api/cache-warm/race-detail-ssr");
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("schedule-ssr-warm-with-date-adds-query", async () => {
@@ -210,4 +220,103 @@ it("schedule-ssr-warm-throws-on-non-ok-response", async () => {
   await expect(
     scheduleRaceDetailSsrCacheWarm(worker, env, ctx, { date: "2026-06-01" }),
   ).rejects.toThrowError("race detail SSR cache warm failed: 504");
+});
+
+it("warms a trend once, drains the response, and records its generation", async () => {
+  const response = new Response('{"ok":true}', { status: 200 });
+  const worker = buildOpenNextWorker(response);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("2").mockResolvedValueOnce(null).mockResolvedValueOnce("2");
+  const put = vi
+    .fn<(key: string, value: string, options?: { expirationTtl?: number }) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const message = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      cacheGeneration: "2",
+      day: "24",
+      kind: "race-trend",
+      keibajoCode: "35",
+      month: "08",
+      options: {
+        frameEndYmd: "20260824",
+        frameStartYmd: "20260810",
+        includeRealtimeResults: true,
+        jockeyEndYmd: "20260824",
+        jockeyStartYmd: "20260810",
+        source: "nar",
+      },
+      raceNumber: "03",
+      source: "nar",
+      year: "2026",
+    },
+  } satisfies PcKeibaMessage<RaceTrendCacheWarmMessage>;
+  const env: CloudflareEnv = {
+    DETAIL_SECTION_CACHE_KV: {
+      delete: vi.fn<(key: string) => Promise<void>>(),
+      get,
+      list: vi
+        .fn<() => Promise<PcKeibaKvListResult>>()
+        .mockResolvedValue({ keys: [], list_complete: true }),
+      put,
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [message], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    buildCtx(),
+  );
+  expect(message.ack).toHaveBeenCalledTimes(1);
+  expect(message.retry).not.toHaveBeenCalled();
+  expect(response.bodyUsed).toBe(true);
+  expect(put).toHaveBeenCalledTimes(1);
+});
+
+it("acks an already valid trend generation without recomputing it", async () => {
+  const worker = buildOpenNextWorker(new Response("unused", { status: 200 }));
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("2").mockResolvedValueOnce("2");
+  const message = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      cacheGeneration: "2",
+      day: "24",
+      kind: "race-trend",
+      keibajoCode: "35",
+      month: "08",
+      options: {
+        frameEndYmd: "20260824",
+        frameStartYmd: "20260810",
+        includeRealtimeResults: true,
+        jockeyEndYmd: "20260824",
+        jockeyStartYmd: "20260810",
+        source: "nar",
+      },
+      raceNumber: "03",
+      source: "nar",
+      year: "2026",
+    },
+  } satisfies PcKeibaMessage<RaceTrendCacheWarmMessage>;
+  const env: CloudflareEnv = {
+    DETAIL_SECTION_CACHE_KV: {
+      delete: vi.fn<(key: string) => Promise<void>>(),
+      get,
+      list: vi
+        .fn<() => Promise<PcKeibaKvListResult>>()
+        .mockResolvedValue({ keys: [], list_complete: true }),
+      put: vi.fn<(key: string, value: string) => Promise<void>>(),
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [message], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    buildCtx(),
+  );
+  expect(message.ack).toHaveBeenCalledTimes(1);
+  expect(message.retry).not.toHaveBeenCalled();
+  expect(worker.fetch).not.toHaveBeenCalled();
 });

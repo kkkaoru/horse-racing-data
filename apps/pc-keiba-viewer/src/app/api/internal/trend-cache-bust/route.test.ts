@@ -7,19 +7,21 @@ const mocks = vi.hoisted(() => ({
   bustRaceCachesForRaceMock: vi.fn<(...args: never[]) => unknown>(),
   bustRaceTrendCachesForDayMock: vi.fn<(...args: never[]) => unknown>(),
   getRacesByDateWithoutJockeyNamesMock: vi.fn<(...args: never[]) => unknown>(),
-  notifyRaceTrendRoomMock: vi.fn<(...args: never[]) => unknown>(),
+  safeGetCloudflareEnvMock: vi.fn<(...args: never[]) => unknown>(),
+  safeGetCloudflareExecutionContextMock: vi.fn<(...args: never[]) => unknown>(),
 }));
 
 vi.mock("../../../../db/queries", () => ({
   getRacesByDateWithoutJockeyNames: mocks.getRacesByDateWithoutJockeyNamesMock,
 }));
 
-vi.mock("../../../../lib/race-trend-cache.server", () => ({
-  bustRaceTrendCachesForDay: mocks.bustRaceTrendCachesForDayMock,
+vi.mock("../../../../lib/cloudflare-context.server", () => ({
+  safeGetCloudflareEnv: mocks.safeGetCloudflareEnvMock,
+  safeGetCloudflareExecutionContext: mocks.safeGetCloudflareExecutionContextMock,
 }));
 
-vi.mock("../../../../lib/race-trend-room.server", () => ({
-  notifyRaceTrendRoom: mocks.notifyRaceTrendRoomMock,
+vi.mock("../../../../lib/race-trend-cache.server", () => ({
+  bustRaceTrendCachesForDay: mocks.bustRaceTrendCachesForDayMock,
 }));
 
 vi.mock("../../../../lib/race-cache-bust.server", () => ({
@@ -30,7 +32,8 @@ const {
   bustRaceCachesForRaceMock,
   bustRaceTrendCachesForDayMock,
   getRacesByDateWithoutJockeyNamesMock,
-  notifyRaceTrendRoomMock,
+  safeGetCloudflareEnvMock,
+  safeGetCloudflareExecutionContextMock,
 } = mocks;
 
 import { POST } from "./route";
@@ -177,12 +180,14 @@ beforeEach(() => {
   bustRaceCachesForRaceMock.mockReset();
   bustRaceTrendCachesForDayMock.mockReset();
   getRacesByDateWithoutJockeyNamesMock.mockReset();
-  notifyRaceTrendRoomMock.mockReset();
+  safeGetCloudflareEnvMock.mockReset();
+  safeGetCloudflareExecutionContextMock.mockReset();
   vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", INTERNAL_TOKEN);
   bustRaceCachesForRaceMock.mockResolvedValue({ busted: 0, generation: 1 });
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
   getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([]);
-  notifyRaceTrendRoomMock.mockResolvedValue(true);
+  safeGetCloudflareEnvMock.mockResolvedValue(null);
+  safeGetCloudflareExecutionContextMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -290,20 +295,52 @@ it("POST returns 200 with keys and notified count for valid JRA body", async () 
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: ["k-1", "k-2"] });
   bustRaceCachesForRaceMock.mockResolvedValue({ busted: 10, generation: 2 });
-  notifyRaceTrendRoomMock.mockResolvedValue(true);
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
   expect(body).toStrictEqual({
     keys: ["k-1", "k-2"],
-    notified: 2,
+    notified: 0,
     ok: true,
     sectionBusted: 20,
   });
   expect(getRacesByDateWithoutJockeyNamesMock).toHaveBeenCalledWith("2026", "05", "29");
   expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledTimes(1);
-  expect(notifyRaceTrendRoomMock).toHaveBeenCalledTimes(2);
   expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(2);
+});
+
+it("POST accepts a production cache bust before the day-wide work completes", async () => {
+  const races = Promise.withResolvers<DayRaceRow[]>();
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  safeGetCloudflareExecutionContextMock.mockResolvedValue({ waitUntil });
+  getRacesByDateWithoutJockeyNamesMock.mockReturnValue(races.promise);
+
+  const response = await POST(buildAuthedRequest({ source: "nar", targetYmd: "20260529" }));
+
+  expect(response.status).toBe(202);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({ accepted: true, ok: true });
+  expect(waitUntil).toHaveBeenCalledTimes(1);
+  expect(bustRaceTrendCachesForDayMock).not.toHaveBeenCalled();
+
+  races.resolve([buildNarDayRow({ keibajoCode: "42", raceBango: "03" })]);
+  await waitUntil.mock.calls[0]![0];
+  expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledTimes(1);
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(1);
+});
+
+it("POST contains and logs a rejected production background cache bust", async () => {
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const error = new Error("bust unavailable");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  safeGetCloudflareExecutionContextMock.mockResolvedValue({ waitUntil });
+  bustRaceTrendCachesForDayMock.mockRejectedValue(error);
+
+  const response = await POST(buildAuthedRequest({ source: "nar", targetYmd: "20260529" }));
+
+  expect(response.status).toBe(202);
+  await waitUntil.mock.calls[0]![0];
+  expect(consoleError).toHaveBeenCalledWith("Trend cache bust background task failed", error);
 });
 
 it("POST passes source jra and target races to bustRaceTrendCachesForDay", async () => {
@@ -325,13 +362,12 @@ it("POST returns 200 for valid NAR body with NAR-only rows", async () => {
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: ["nar-k"] });
   bustRaceCachesForRaceMock.mockResolvedValue({ busted: 5, generation: 3 });
-  notifyRaceTrendRoomMock.mockResolvedValue(true);
   const response = await POST(buildAuthedRequest({ source: "nar", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
   expect(body).toStrictEqual({
     keys: ["nar-k"],
-    notified: 1,
+    notified: 0,
     ok: true,
     sectionBusted: 5,
   });
@@ -387,13 +423,12 @@ it("POST propagates the rejection when bustRaceTrendCachesForDay rejects", async
   );
 });
 
-it("POST returns 200 with notified=0 when notifyRaceTrendRoom rejects for every race", async () => {
+it("POST leaves room notification to the changed-hash warm rebuild", async () => {
   getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([
     buildJraDayRow({ keibajoCode: "05", raceBango: "01" }),
     buildJraDayRow({ keibajoCode: "05", raceBango: "02" }),
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: ["k-1", "k-2"] });
-  notifyRaceTrendRoomMock.mockRejectedValue(new Error("notify boom"));
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
@@ -403,23 +438,7 @@ it("POST returns 200 with notified=0 when notifyRaceTrendRoom rejects for every 
     ok: true,
     sectionBusted: 0,
   });
-});
-
-it("POST counts only races where notifyRaceTrendRoom resolved true", async () => {
-  getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([
-    buildJraDayRow({ keibajoCode: "05", raceBango: "01" }),
-    buildJraDayRow({ keibajoCode: "05", raceBango: "02" }),
-    buildJraDayRow({ keibajoCode: "05", raceBango: "03" }),
-  ]);
-  bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
-  notifyRaceTrendRoomMock
-    .mockResolvedValueOnce(true)
-    .mockResolvedValueOnce(false)
-    .mockResolvedValueOnce(true);
-  const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
-  expect(response.status).toBe(200);
-  const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: [], notified: 2, ok: true, sectionBusted: 0 });
+  expect(body).toStrictEqual({ keys: ["k-1", "k-2"], notified: 0, ok: true, sectionBusted: 0 });
 });
 
 it("POST swallows bustRaceCachesForRace rejection and returns sectionBusted=0", async () => {
@@ -428,33 +447,100 @@ it("POST swallows bustRaceCachesForRace rejection and returns sectionBusted=0", 
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
   bustRaceCachesForRaceMock.mockRejectedValue(new Error("section bust boom"));
-  notifyRaceTrendRoomMock.mockResolvedValue(true);
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
   expect(body).toStrictEqual({
     keys: [],
-    notified: 1,
+    notified: 0,
     ok: true,
     sectionBusted: 0,
   });
 });
 
-it("POST calls notifyRaceTrendRoom with split year/month/day plus source and cacheKey", async () => {
+it("POST scopes a result bust to the same venue at and after the changed race", async () => {
   getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([
+    buildJraDayRow({ keibajoCode: "05", raceBango: "06" }),
     buildJraDayRow({ keibajoCode: "05", raceBango: "07" }),
+    buildJraDayRow({ keibajoCode: "05", raceBango: "08" }),
+    buildJraDayRow({ keibajoCode: "06", raceBango: "08" }),
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
-  await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
-  expect(notifyRaceTrendRoomMock).toHaveBeenCalledWith(
-    {
-      day: "29",
+  await POST(
+    buildAuthedRequest({
       keibajoCode: "05",
-      month: "05",
-      raceNumber: "07",
+      raceBango: "07",
       source: "jra",
-      year: "2026",
-    },
-    { cacheKey: "race-trend-day:jra:20260529" },
+      targetYmd: "20260529",
+    }),
   );
+  expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledWith({
+    races: [
+      { keibajoCode: "05", raceBango: "07" },
+      { keibajoCode: "05", raceBango: "08" },
+    ],
+    source: "jra",
+    targetYmd: "20260529",
+  });
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(2);
+});
+
+it("POST enqueues immediate changed-hash rebuilds only for scoped affected races", async () => {
+  getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([
+    buildJraDayRow({ keibajoCode: "05", raceBango: "06" }),
+    buildJraDayRow({ keibajoCode: "05", raceBango: "07" }),
+    buildJraDayRow({ keibajoCode: "05", raceBango: "08" }),
+    buildJraDayRow({ keibajoCode: "06", raceBango: "08" }),
+  ]);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("4").mockResolvedValueOnce(null);
+  get.mockResolvedValueOnce("5").mockResolvedValueOnce(null);
+  const send = vi.fn<(body: unknown) => Promise<void>>().mockResolvedValue(undefined);
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    DETAIL_SECTION_CACHE_KV: {
+      get,
+      put: vi.fn<(key: string, value: string) => Promise<void>>(),
+    },
+    DETAIL_SECTION_CACHE_QUEUE: { send },
+  });
+  await POST(
+    buildAuthedRequest({
+      keibajoCode: "05",
+      raceBango: "07",
+      source: "jra",
+      targetYmd: "20260529",
+    }),
+  );
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ cacheGeneration: "4", keibajoCode: "05", raceNumber: "07" }),
+  );
+  expect(send).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ cacheGeneration: "5", keibajoCode: "05", raceNumber: "08" }),
+  );
+});
+
+it("POST rejects a scoped body when only keibajoCode is present", async () => {
+  const response = await POST(
+    buildAuthedRequest({ keibajoCode: "05", source: "jra", targetYmd: "20260529" }),
+  );
+  expect(response.status).toBe(400);
+  const body = await readJsonAsErrorResponse(response);
+  expect(body).toStrictEqual({ error: "invalid body" });
+});
+
+it("POST rejects invalid scoped race identifiers", async () => {
+  const response = await POST(
+    buildAuthedRequest({
+      keibajoCode: "tokyo",
+      raceBango: "7",
+      source: "jra",
+      targetYmd: "20260529",
+    }),
+  );
+  expect(response.status).toBe(400);
+  const body = await readJsonAsErrorResponse(response);
+  expect(body).toStrictEqual({ error: "invalid body" });
 });

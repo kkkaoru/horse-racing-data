@@ -5,13 +5,18 @@ vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
   bustRaceCachesForRaceMock: vi.fn<(...args: never[]) => unknown>(),
+  safeGetCloudflareExecutionContextMock: vi.fn<(...args: never[]) => unknown>(),
+}));
+
+vi.mock("../../../../lib/cloudflare-context.server", () => ({
+  safeGetCloudflareExecutionContext: mocks.safeGetCloudflareExecutionContextMock,
 }));
 
 vi.mock("../../../../lib/race-cache-bust.server", () => ({
   bustRaceCachesForRace: mocks.bustRaceCachesForRaceMock,
 }));
 
-const { bustRaceCachesForRaceMock } = mocks;
+const { bustRaceCachesForRaceMock, safeGetCloudflareExecutionContextMock } = mocks;
 
 import { POST } from "./route";
 
@@ -85,8 +90,10 @@ const buildRequestWithRawBody = (rawBody: string): Request =>
 
 beforeEach(() => {
   bustRaceCachesForRaceMock.mockReset();
+  safeGetCloudflareExecutionContextMock.mockReset();
   vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", INTERNAL_TOKEN);
   bustRaceCachesForRaceMock.mockResolvedValue({ busted: 0, generation: 1 });
+  safeGetCloudflareExecutionContextMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -242,4 +249,52 @@ it("POST returns 200 with busted and generation for a valid NAR body", async () 
   expect(response.status).toBe(200);
   const body = await readSuccess(response);
   expect(body).toStrictEqual({ busted: 8, generation: 2, ok: true });
+});
+
+it("POST accepts a production cache bust before the cache work completes", async () => {
+  const outcome = Promise.withResolvers<{ busted: number; generation: number }>();
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  safeGetCloudflareExecutionContextMock.mockResolvedValue({ waitUntil });
+  bustRaceCachesForRaceMock.mockReturnValue(outcome.promise);
+
+  const response = await POST(
+    buildAuthedRequest({
+      keibajoCode: "50",
+      mmdd: "0529",
+      raceBango: "07",
+      source: "nar",
+      year: "2026",
+    }),
+  );
+
+  expect(response.status).toBe(202);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({ accepted: true, ok: true });
+  expect(waitUntil).toHaveBeenCalledTimes(1);
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(1);
+
+  outcome.resolve({ busted: 8, generation: 2 });
+  await waitUntil.mock.calls[0]![0];
+});
+
+it("POST contains and logs a rejected production background cache bust", async () => {
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const error = new Error("cache unavailable");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  safeGetCloudflareExecutionContextMock.mockResolvedValue({ waitUntil });
+  bustRaceCachesForRaceMock.mockRejectedValue(error);
+
+  const response = await POST(
+    buildAuthedRequest({
+      keibajoCode: "50",
+      mmdd: "0529",
+      raceBango: "07",
+      source: "nar",
+      year: "2026",
+    }),
+  );
+
+  expect(response.status).toBe(202);
+  await waitUntil.mock.calls[0]![0];
+  expect(consoleError).toHaveBeenCalledWith("Race cache bust background task failed", error);
 });

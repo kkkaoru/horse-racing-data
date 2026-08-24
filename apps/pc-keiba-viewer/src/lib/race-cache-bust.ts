@@ -21,6 +21,7 @@ import { buildWinRateHeatmapCacheKey } from "./win-rate-heatmap-cache";
 // purging it explicitly (Cloudflare Cache API does not expose a global
 // purge from inside a Worker).
 const RACE_CACHE_GEN_PREFIX = "race-cache:gen";
+const CACHE_WARM_MARKER_PREFIX = "race-cache:warm:v1";
 const STALE_KEY_PREFIX = "stale";
 
 // PC_KEIBA_INTERNAL_TOKEN-protected internal endpoint path.
@@ -37,8 +38,11 @@ export interface RaceCacheBustRequest {
 export interface RaceCacheBustKeySet {
   generationKey: string;
   mainKeys: string[];
+  markerKeys: string[];
   staleKeys: string[];
 }
+
+export type RaceCacheWarmKind = "race-detail-ssr" | "race-trend";
 
 const YYYY_PATTERN = /^\d{4}$/u;
 const MMDD_PATTERN = /^\d{4}$/u;
@@ -93,6 +97,11 @@ export const buildRaceCacheGenerationKey = (request: RaceCacheBustRequest): stri
     request.raceBango,
   ].join(":");
 
+export const buildRaceCacheWarmMarkerKey = (
+  kind: RaceCacheWarmKind,
+  request: RaceCacheBustRequest,
+): string => `${CACHE_WARM_MARKER_PREFIX}:${kind}:${buildRaceCacheGenerationKey(request)}`;
+
 export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCacheBustKeySet => {
   const sectionMainKeys = DETAIL_SECTION_CACHEABLE_SECTIONS.map((section) =>
     buildSectionMainKey(request, section),
@@ -109,6 +118,10 @@ export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCache
   return {
     generationKey: buildRaceCacheGenerationKey(request),
     mainKeys: [...sectionMainKeys, heatmapKey],
+    markerKeys: [
+      buildRaceCacheWarmMarkerKey("race-detail-ssr", request),
+      buildRaceCacheWarmMarkerKey("race-trend", request),
+    ],
     staleKeys,
   };
 };

@@ -100,6 +100,7 @@ import { DELETE, GET } from "./route";
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.unstubAllEnvs();
   // Default stub: pass-through to URLSearchParams so route logic sees the real query.
   stripDetailSectionCacheWarmParamsMock.mockImplementation(
     (params: URLSearchParams) => new URLSearchParams(params),
@@ -458,6 +459,144 @@ it("skips finish-prediction inputs cache read but still writes when __prediction
   expect(response.status).toBe(200);
   expect(getCachedFinishPredictionInputsMock).not.toHaveBeenCalled();
   expect(mocks.putFinishPredictionInputsCacheMock).toHaveBeenCalledTimes(1);
+});
+
+it("rejects an invalid expected prediction generation", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction?__predictionRefresh=1&expectedPredictionGeneratedAt=invalid",
+  );
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "03",
+      keibajoCode: "43",
+      month: "06",
+      raceNumber: "12",
+      section: "finish-prediction",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(400);
+  expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
+});
+
+it("rejects an unauthenticated generation-bound prediction refresh", async () => {
+  vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", "internal-secret");
+  const request = new Request(
+    "https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction?__predictionRefresh=1&expectedPredictionGeneratedAt=2026-08-24T03%3A40%3A15.000Z",
+  );
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "03",
+      keibajoCode: "43",
+      month: "06",
+      raceNumber: "12",
+      section: "finish-prediction",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(403);
+  expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
+});
+
+it("fails closed without stale fallback when the authenticated expected generation is unavailable", async () => {
+  vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", "internal-secret");
+  stripDetailSectionCacheWarmParamsMock.mockImplementation((params: URLSearchParams) => {
+    const next = new URLSearchParams(params);
+    next.delete("__predictionRefresh");
+    return next;
+  });
+  isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
+  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  getStaleDetailSectionBodyMock.mockResolvedValue("stale-body");
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
+  getDetailSectionPayloadMock.mockRejectedValue(new Error("generation unavailable"));
+  const request = new Request(
+    "https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction?__predictionRefresh=1&expectedPredictionGeneratedAt=2026-08-24T03%3A40%3A15.000Z",
+    { headers: { "x-pc-keiba-internal-token": "internal-secret" } },
+  );
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "03",
+      keibajoCode: "43",
+      month: "06",
+      raceNumber: "12",
+      section: "finish-prediction",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(503);
+  expect(getDetailSectionPayloadMock).toHaveBeenCalledWith(
+    "finish-prediction",
+    expect.objectContaining({
+      expectedPredictionGeneratedAt: "2026-08-24T03:40:15.000Z",
+      query: {},
+    }),
+  );
+  expect(mocks.buildStaleDetailSectionResponseMock).not.toHaveBeenCalled();
+  expect(mocks.putDetailSectionCacheMock).not.toHaveBeenCalled();
+  expect(mocks.putFinishPredictionInputsCacheMock).not.toHaveBeenCalled();
+});
+
+it("waits for generation-bound input and detail cache stores before responding", async () => {
+  vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", "internal-secret");
+  stripDetailSectionCacheWarmParamsMock.mockImplementation((params: URLSearchParams) => {
+    const next = new URLSearchParams(params);
+    next.delete("__predictionRefresh");
+    return next;
+  });
+  isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
+  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
+  getDetailSectionPayloadMock.mockResolvedValue({
+    evaluation: {},
+    inputs: {
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter20",
+          predictedFinishNorm: 0.12,
+          predictionGeneratedAt: "2026-08-24T03:40:15.000Z",
+        },
+      ],
+    },
+    type: "finish-prediction",
+  });
+  const inputStore = Promise.withResolvers<void>();
+  const detailStore = Promise.withResolvers<void>();
+  mocks.putFinishPredictionInputsCacheMock.mockReturnValue(inputStore.promise);
+  mocks.putDetailSectionCacheMock.mockReturnValue(detailStore.promise);
+  const request = new Request(
+    "https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction?__predictionRefresh=1&expectedPredictionGeneratedAt=2026-08-24T03%3A40%3A15.000Z",
+    { headers: { "x-pc-keiba-internal-token": "internal-secret" } },
+  );
+  const completed = vi.fn<() => void>();
+  const responsePromise = GET(request, {
+    params: Promise.resolve({
+      day: "03",
+      keibajoCode: "43",
+      month: "06",
+      raceNumber: "12",
+      section: "finish-prediction",
+      year: "2026",
+    }),
+  });
+  void responsePromise.then(completed);
+  await vi.waitFor(() =>
+    expect(mocks.putFinishPredictionInputsCacheMock).toHaveBeenCalledWith(
+      expect.objectContaining({ awaitWrite: true }),
+    ),
+  );
+  expect(completed).not.toHaveBeenCalled();
+  expect(mocks.putDetailSectionCacheMock).not.toHaveBeenCalled();
+  inputStore.resolve();
+  await vi.waitFor(() => expect(mocks.putDetailSectionCacheMock).toHaveBeenCalledTimes(1));
+  expect(completed).not.toHaveBeenCalled();
+  detailStore.resolve();
+  const response = await responsePromise;
+  expect(response.status).toBe(200);
+  expect(completed).toHaveBeenCalledTimes(1);
 });
 
 it("skips finish-prediction cache shortcut when section is ability", async () => {

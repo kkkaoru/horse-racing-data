@@ -83,6 +83,7 @@ export interface RaceTrendCacheOptions {
 }
 
 export interface RaceTrendCacheWarmMessage {
+  cacheGeneration: string;
   day: string;
   kind: "race-trend";
   keibajoCode: string;

@@ -180,6 +180,7 @@ interface ResolveFinishPositionBucketInput {
 
 export interface DetailSectionParams {
   day: string;
+  expectedPredictionGeneratedAt?: string;
   keibajoCode: string;
   month: string;
   query: Record<string, string | string[] | undefined>;
@@ -1796,7 +1797,13 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
 
   if (section === "time-score") {
     const [catalogStats, catalogCondition, rows] = await Promise.all([
-      loadCatalogGroupedRateStats(params, context.statsSettings, race.source, true),
+      // The time-score section has a complete Neon computation path.  Do not
+      // turn a transient Catalog 5xx into a section-level 503; the Catalog
+      // result is an optimisation and the local fallback below can still
+      // render the section.
+      loadCatalogGroupedRateStats(params, context.statsSettings, race.source, true).catch(
+        () => null,
+      ),
       loadConditionHistoryCatalogStats(params, context.conditionAnalysisSettings, race.source),
       getTimeScoreRows(race, context.conditionAnalysisSettings),
     ]);
@@ -1925,7 +1932,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       bucketSectionData,
     ] = await Promise.all([
       getFinishPositionSimilarityFeatures(race, runners),
-      getActiveFinishPositionPredictions(race, runners),
+      getActiveFinishPositionPredictions(race, runners, params.expectedPredictionGeneratedAt),
       fetchSameDayVenueJockeyWins(race),
       getActiveFinishPredictionEvaluation(evaluationCategory),
       getFinishPositionBucketSectionData(params),

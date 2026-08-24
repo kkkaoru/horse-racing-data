@@ -1,4 +1,5 @@
 // Run with bun (vitest).
+// @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -116,13 +117,15 @@ it("computeRaceTrendBodyHash returns deterministic SHA-256 hex for a fixed body"
 
 it("notifyRaceTrendRoom proxies to production trends API when useProductionApiProxy is true", async () => {
   useProductionApiProxyMock.mockReturnValue(true);
-  fetchProductionApiMock.mockResolvedValue(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  fetchProductionApiMock.mockResolvedValue(response);
   const ok = await notifyRaceTrendRoom(
     { day: "29", keibajoCode: "05", month: "05", raceNumber: "07", source: "jra", year: "2026" },
     { cacheKey: "race-trend-key" },
   );
   expect(ok).toBe(true);
   expect(fetchProductionApiMock).toHaveBeenCalledTimes(1);
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("notifyRaceTrendRoom returns false when RACE_TREND_ROOM binding is missing", async () => {
@@ -135,7 +138,8 @@ it("notifyRaceTrendRoom returns false when RACE_TREND_ROOM binding is missing", 
 });
 
 it("notifyRaceTrendRoom hits the DO room when RACE_TREND_ROOM binding is present", async () => {
-  const room = buildDoStub(new Response("ok", { status: 200 }));
+  const response = new Response("ok", { status: 200 });
+  const room = buildDoStub(response);
   getCloudflareContextMock.mockResolvedValue({
     env: { RACE_TREND_ROOM: buildRoomNamespace(room) },
     ctx: null,
@@ -146,6 +150,7 @@ it("notifyRaceTrendRoom hits the DO room when RACE_TREND_ROOM binding is present
   );
   expect(ok).toBe(true);
   expect(room.fetch).toHaveBeenCalledTimes(1);
+  expect(response.bodyUsed).toBe(true);
 });
 
 it("notifyRaceTrendRoomIfChanged falls back to notifyRaceTrendRoom when KV binding is missing", async () => {

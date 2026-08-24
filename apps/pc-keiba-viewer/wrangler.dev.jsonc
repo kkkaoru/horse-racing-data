@@ -3,7 +3,7 @@
   "name": "pc-keiba-viewer-dev",
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-05-09",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
   // Used only by `next dev` via initOpenNextCloudflareForDev/getPlatformProxy.
   // Durable Objects are accessed through the production API proxy in local dev.
   "kv_namespaces": [

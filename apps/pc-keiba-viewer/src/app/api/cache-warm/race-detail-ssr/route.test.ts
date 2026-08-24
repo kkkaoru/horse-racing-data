@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   getSameVenueRacesByDateMock: vi.fn<(...args: never[]) => Promise<unknown[]>>(),
   putRaceDetailSsrSnapshotMock: vi.fn<(input: unknown) => Promise<void>>(),
   putRecentResultsCacheMock: vi.fn<(key: string, value: string) => Promise<void>>(),
+  safeGetCloudflareEnvMock: vi.fn<() => Promise<unknown>>(),
 }));
 
 vi.mock("../../../../db/queries", () => ({
@@ -51,6 +52,10 @@ vi.mock("../../../../lib/recent-results-cache.server", () => ({
   putRecentResultsCache: mocks.putRecentResultsCacheMock,
 }));
 
+vi.mock("../../../../lib/cloudflare-context.server", () => ({
+  safeGetCloudflareEnv: mocks.safeGetCloudflareEnvMock,
+}));
+
 const {
   getHorseRaceResultsMock,
   getRaceCourseInfoMock,
@@ -61,6 +66,7 @@ const {
   getSameVenueRacesByDateMock,
   putRaceDetailSsrSnapshotMock,
   putRecentResultsCacheMock,
+  safeGetCloudflareEnvMock,
 } = mocks;
 
 import { POST } from "./route";
@@ -115,6 +121,8 @@ beforeEach(() => {
   getSameVenueRacesByDateMock.mockReset();
   putRaceDetailSsrSnapshotMock.mockReset();
   putRecentResultsCacheMock.mockReset();
+  safeGetCloudflareEnvMock.mockReset();
+  safeGetCloudflareEnvMock.mockResolvedValue(null);
 });
 
 it("POST returns 404 when neither the cache-warm header nor debug query is present", async () => {
@@ -322,4 +330,42 @@ it("POST counts a missing race when getRaceDetail resolves to null", async () =>
   const body = await readJsonRecord(response);
   expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 0 });
   expect(putRaceDetailSsrSnapshotMock).not.toHaveBeenCalled();
+});
+
+it("POST skips SSR fan-out when the current race generation is already warm", async () => {
+  getRacesByDateMock.mockResolvedValue([buildJraRow({ keibajoCode: "05", raceBango: "01" })]);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("3").mockResolvedValueOnce("3");
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    DETAIL_SECTION_CACHE_KV: {
+      get,
+      put: vi.fn<(key: string, value: string) => Promise<void>>(),
+    },
+  });
+  const response = await POST(buildAuthedRequest("?date=2026-05-29"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 0 });
+  expect(getRaceDetailMock).not.toHaveBeenCalled();
+});
+
+it("POST refreshes SSR and marks an invalidated race generation", async () => {
+  getRacesByDateMock.mockResolvedValue([buildJraRow({ keibajoCode: "05", raceBango: "01" })]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "1200", trackCode: "10" });
+  getRaceCourseInfoMock.mockResolvedValue(null);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("4").mockResolvedValueOnce("3").mockResolvedValueOnce("4");
+  const put = vi
+    .fn<(key: string, value: string, options?: { expirationTtl?: number }) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  safeGetCloudflareEnvMock.mockResolvedValue({ DETAIL_SECTION_CACHE_KV: { get, put } });
+  const response = await POST(buildAuthedRequest("?date=2026-05-29"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 1 });
+  expect(put).toHaveBeenCalledTimes(1);
 });

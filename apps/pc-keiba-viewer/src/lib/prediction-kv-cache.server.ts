@@ -25,8 +25,39 @@ export const readPredictionKvText = async (
   const window = resolvePredictionCacheWindow(raceYmd, nowMs);
   if (window === "outside") return null;
 
+  const { ctx, env } = await safeGetCloudflareRuntime();
   const defaultCache = getDefaultCache();
   const cacheRequest = createPredictionKvCacheRequest(cacheKey);
+
+  // Today's prediction is overwritten after the post-weight rescore. A
+  // colo-local Cache API entry may still contain the pre-weight payload even
+  // after the global KV value has propagated, so reading Cache API first can
+  // display an old generation for the cache TTL. Read KV first for today's
+  // races and refresh the local cache from that authoritative value.
+  if (window === "today") {
+    const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+    if (kvBody) {
+      const cacheApiTtl = getPredictionCacheApiTtlSeconds(window);
+      const putCache = async (): Promise<void> => {
+        await defaultCache?.put(
+          cacheRequest,
+          new Response(kvBody, {
+            headers: {
+              "Cache-Control": `public, max-age=${cacheApiTtl}`,
+              "Content-Type": DEFAULT_CONTENT_TYPE,
+            },
+          }),
+        );
+      };
+      if (ctx !== null) {
+        ctx.waitUntil(putCache());
+      } else {
+        await putCache();
+      }
+      return kvBody;
+    }
+  }
+
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
     const text = await cachedResponse.text();
@@ -34,7 +65,6 @@ export const readPredictionKvText = async (
     await defaultCache?.delete(cacheRequest);
   }
 
-  const { ctx, env } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) return null;
 
@@ -59,11 +89,13 @@ export const readPredictionKvText = async (
 };
 
 export const writePredictionKvText = async ({
+  awaitWrite,
   body,
   cacheKey,
   nowMs = Date.now(),
   raceYmd,
 }: {
+  awaitWrite?: boolean;
   body: string;
   cacheKey: string;
   nowMs?: number;
@@ -89,7 +121,7 @@ export const writePredictionKvText = async ({
     ),
     env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: kvTtl }),
   ]);
-  if (ctx !== null) {
+  if (ctx !== null && awaitWrite !== true) {
     ctx.waitUntil(putCaches);
     return;
   }

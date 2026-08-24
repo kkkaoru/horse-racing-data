@@ -110,6 +110,7 @@ describe("race trend cache helpers", () => {
   it("builds the warm API path under the trends endpoint", () => {
     const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
     const path = buildRaceTrendApiPath({
+      cacheGeneration: "3",
       day: "20",
       kind: "race-trend",
       keibajoCode: "05",

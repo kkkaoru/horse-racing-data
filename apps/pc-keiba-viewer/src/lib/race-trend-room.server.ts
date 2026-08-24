@@ -1,5 +1,6 @@
 // Run with bun (vitest).
 import "server-only";
+import { drainResponseBody } from "./bounded-response-drain";
 import { safeGetCloudflareEnv } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
@@ -115,20 +116,22 @@ export const notifyRaceTrendRoom = async (
 ): Promise<boolean> => {
   if (useProductionApiProxy()) {
     void event;
-    const response = await fetchProductionApi(getTrendsApiPath(params));
+    const response = await fetchProductionApi(getTrendsApiPath(params)).then(drainResponseBody);
     return response.ok;
   }
   const room = await getRaceTrendRoom(params);
   if (!room) {
     return false;
   }
-  const response = await room.fetch(
-    getRoomRequest("update", getRaceTrendRoomKey(params), {
-      body: JSON.stringify(event),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
-  );
+  const response = await room
+    .fetch(
+      getRoomRequest("update", getRaceTrendRoomKey(params), {
+        body: JSON.stringify(event),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    )
+    .then(drainResponseBody);
   return response.ok;
 };
 

@@ -1,3 +1,8 @@
+import { drainResponseBody } from "../lib/bounded-response-drain";
+import {
+  markRaceCacheWarmGeneration,
+  readRaceCacheWarmGeneration,
+} from "../lib/race-cache-warm-generation";
 import {
   DETAIL_SECTION_CACHE_WARM_PARAM,
   buildDetailSectionApiPath,
@@ -55,7 +60,7 @@ export const scheduleTomorrowRaceDetailSectionCache = async (
     }),
     env,
     ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race detail cache schedule failed: ${response.status}`);
   }
@@ -76,7 +81,7 @@ export const scheduleTodayRaceDetailSectionCache = async (
     }),
     params.env,
     params.ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race detail today cache schedule failed: ${response.status}`);
   }
@@ -97,7 +102,7 @@ export const scheduleDueRaceTrendCache = async (
     }),
     env,
     ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race trend cache schedule failed: ${response.status}`);
   }
@@ -123,7 +128,7 @@ export const scheduleRaceDetailSsrCacheWarm = async (
     }),
     env,
     ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race detail SSR cache warm failed: ${response.status}`);
   }
@@ -146,7 +151,7 @@ const warmDetailSection = async (
     }),
     env,
     ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race detail cache warm failed: ${response.status} ${url.pathname}`);
   }
@@ -169,7 +174,7 @@ const warmRaceTrend = async (
     }),
     env,
     ctx,
-  );
+  ).then(drainResponseBody);
   if (!response.ok) {
     throw new Error(`race trend cache warm failed: ${response.status} ${url.pathname}`);
   }
@@ -210,7 +215,32 @@ const warmQueueMessage = async (
 ): Promise<void> => {
   try {
     if (isRaceTrendCacheWarmMessage(message.body)) {
+      const race = {
+        keibajoCode: message.body.keibajoCode,
+        mmdd: `${message.body.month}${message.body.day}`,
+        raceBango: message.body.raceNumber,
+        source: message.body.source,
+        year: message.body.year,
+      };
+      const state = await readRaceCacheWarmGeneration({
+        kind: "race-trend",
+        kv: env.DETAIL_SECTION_CACHE_KV,
+        race,
+      });
+      if (state?.valid || (state !== null && state.generation !== message.body.cacheGeneration)) {
+        message.ack();
+        return;
+      }
       await warmRaceTrend(openNextWorker, message.body, env, ctx);
+      const marked = await markRaceCacheWarmGeneration({
+        generation: message.body.cacheGeneration,
+        kind: "race-trend",
+        kv: env.DETAIL_SECTION_CACHE_KV,
+        race,
+      });
+      if (state !== null && !marked) {
+        throw new Error("race trend cache generation changed during warm");
+      }
       message.ack();
       return;
     }

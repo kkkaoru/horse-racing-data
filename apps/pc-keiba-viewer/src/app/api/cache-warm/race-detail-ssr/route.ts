@@ -20,7 +20,12 @@ import {
   getRacesByDate,
   getSameVenueRacesByDate,
 } from "../../../../db/queries";
+import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../lib/codes";
+import {
+  markRaceCacheWarmGeneration,
+  readRaceCacheWarmGeneration,
+} from "../../../../lib/race-cache-warm-generation";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
   buildRaceDetailSsrCacheKey,
@@ -174,6 +179,34 @@ const warmRaceDetailSsr = async (params: WarmRaceParams): Promise<"warmed" | "mi
   return "warmed";
 };
 
+const warmRaceDetailSsrIfInvalidated = async (
+  params: WarmRaceParams,
+  kv: PcKeibaKvNamespace | undefined,
+): Promise<"warmed" | "missing" | "valid"> => {
+  const race = {
+    keibajoCode: params.keibajoCode,
+    mmdd: `${params.month}${params.day}`,
+    raceBango: params.raceBango,
+    source: params.source,
+    year: params.year,
+  };
+  const state = await readRaceCacheWarmGeneration({ kind: "race-detail-ssr", kv, race });
+  if (state?.valid) {
+    return "valid";
+  }
+  const outcome = await warmRaceDetailSsr(params);
+  if (outcome === "missing") {
+    return outcome;
+  }
+  await markRaceCacheWarmGeneration({
+    generation: state?.generation ?? "0",
+    kind: "race-detail-ssr",
+    kv,
+    race,
+  });
+  return outcome;
+};
+
 const chunkArray = <T>(items: readonly T[], size: number): T[][] =>
   items.reduce<T[][]>((accumulator, item, index) => {
     if (index % size === 0) {
@@ -219,9 +252,10 @@ export async function POST(request: Request) {
     keibajoCode !== null && raceBango !== null
       ? await resolveSingleRaceParams({ keibajoCode, raceBango, target })
       : await resolveListedRaceParams({ keibajoCode, raceBango, target });
+  const env = await safeGetCloudflareEnv();
   const outcomes = await processInPool(raceParams, WARM_CONCURRENCY, async (params) => {
     try {
-      return await warmRaceDetailSsr(params);
+      return await warmRaceDetailSsrIfInvalidated(params, env?.DETAIL_SECTION_CACHE_KV);
     } catch {
       return "missing" as const;
     }

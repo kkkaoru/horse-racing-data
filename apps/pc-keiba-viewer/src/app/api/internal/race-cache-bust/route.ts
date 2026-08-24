@@ -4,6 +4,7 @@
 // race, and bumps a generation counter so the Cache API tier is defeated.
 import { NextResponse } from "next/server";
 
+import { safeGetCloudflareExecutionContext } from "../../../../lib/cloudflare-context.server";
 import {
   parseRaceCacheBustRequest,
   type RaceCacheBustRequest,
@@ -32,6 +33,15 @@ export async function POST(request: Request): Promise<Response> {
   const body = await parseRequestBody(request);
   if (!body) {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
+  }
+  const ctx = await safeGetCloudflareExecutionContext();
+  if (ctx) {
+    ctx.waitUntil(
+      bustRaceCachesForRace(body).catch((error: unknown) => {
+        console.error("Race cache bust background task failed", error);
+      }),
+    );
+    return NextResponse.json({ accepted: true, ok: true }, { status: 202 });
   }
   const outcome = await bustRaceCachesForRace(body);
   return NextResponse.json({

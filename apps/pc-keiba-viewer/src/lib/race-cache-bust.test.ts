@@ -186,6 +186,21 @@ it("buildRaceCacheBustKeys includes the generation key shape", () => {
   ).toBe("race-cache:gen:nar:2026:0529:50:07");
 });
 
+it("buildRaceCacheBustKeys invalidates both generation-bound warm markers", () => {
+  expect(
+    buildRaceCacheBustKeys({
+      keibajoCode: "50",
+      mmdd: "0529",
+      raceBango: "07",
+      source: "nar",
+      year: "2026",
+    }).markerKeys,
+  ).toStrictEqual([
+    "race-cache:warm:v1:race-detail-ssr:race-cache:gen:nar:2026:0529:50:07",
+    "race-cache:warm:v1:race-trend:race-cache:gen:nar:2026:0529:50:07",
+  ]);
+});
+
 it("parseRaceKey accepts the JRA raceKey shape", () => {
   expect(parseRaceKey("jra:20260628:05:11")).toStrictEqual({
     keibajoCode: "05",

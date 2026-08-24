@@ -125,6 +125,20 @@ export const buildFinishPredictionInputsCacheKeyFromRaceParts = ({
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
 
+const isTodayCacheKey = (cacheKey: string, nowMs = Date.now()): boolean => {
+  const match = /:((?:\d{4})):([0-1]\d):([0-3]\d):/u.exec(cacheKey);
+  if (match === null) return false;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(new Date(nowMs))
+    .replaceAll("-", "");
+  return `${match[1]}${match[2]}${match[3]}` === today;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -165,8 +179,41 @@ const parsePayloadFromText = (text: string): FinishPredictionStaticPayload | nul
 export const getCachedFinishPredictionInputs = async (
   cacheKey: string,
 ): Promise<FinishPredictionStaticPayload | null> => {
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const defaultCache = getDefaultCache();
   const cacheRequest = getCacheRequest(cacheKey);
+
+  // The input snapshot is part of the prediction display contract. For
+  // today's races, a local Cache API copy can outlive a post-weight KV write
+  // and return the pre-weight model features. Read the global KV value first
+  // so a propagated snapshot becomes visible immediately at every colo, then
+  // refresh the local edge copy from that value.
+  const kvBody = isTodayCacheKey(cacheKey)
+    ? await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey)
+    : null;
+  if (kvBody) {
+    const parsed = parsePayloadFromText(kvBody);
+    if (parsed !== null) {
+      const putCache = async (): Promise<void> => {
+        await defaultCache?.put(
+          cacheRequest,
+          new Response(kvBody, {
+            headers: {
+              "Cache-Control": "public, max-age=60",
+              "Content-Type": DEFAULT_CONTENT_TYPE,
+            },
+          }),
+        );
+      };
+      if (ctx !== null) {
+        ctx.waitUntil(putCache());
+      } else {
+        await putCache();
+      }
+      return parsed;
+    }
+  }
+
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
     const fromResponse = await readPayloadFromResponse(cachedResponse);
@@ -174,8 +221,6 @@ export const getCachedFinishPredictionInputs = async (
     await defaultCache?.delete(cacheRequest);
   }
 
-  const { env, ctx } = await safeGetCloudflareRuntime();
-  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) {
     return null;
   }
@@ -200,10 +245,12 @@ export const getCachedFinishPredictionInputs = async (
 };
 
 export const putFinishPredictionInputsCache = async ({
+  awaitWrite,
   body,
   cacheKey,
   race,
 }: {
+  awaitWrite?: boolean;
   body: string;
   cacheKey: string;
   race: RaceDetail;
@@ -227,7 +274,7 @@ export const putFinishPredictionInputsCache = async ({
     ),
     env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
   ]);
-  if (ctx !== null) {
+  if (ctx !== null && awaitWrite !== true) {
     ctx.waitUntil(putCaches);
     return;
   }

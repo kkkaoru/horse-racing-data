@@ -140,6 +140,24 @@ it("GET uses REALTIME_DATA binding fetch when proxy is disabled and binding is p
   expect(realtimeDataFetchMock).toHaveBeenCalledTimes(1);
 });
 
+it("GET propagates the browser request signal to the REALTIME_DATA stream", async () => {
+  useProductionApiProxyMock.mockReturnValue(false);
+  realtimeDataFetchMock.mockResolvedValue(
+    new Response("event: hello\ndata: {}\n\n", {
+      headers: { "Content-Type": "text/event-stream" },
+      status: 200,
+    }),
+  );
+  safeGetCloudflareEnvMock.mockResolvedValue({ REALTIME_DATA: { fetch: realtimeDataFetchMock } });
+  const controller = new AbortController();
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/horse-weights-stream?source=jra",
+    { signal: controller.signal },
+  );
+  await GET(request, buildContext());
+  expect(realtimeDataFetchMock.mock.calls[0]?.[1]?.signal).toBe(request.signal);
+});
+
 it("GET binding path requests the upstream URL with padded raceNumber for single-digit input", async () => {
   useProductionApiProxyMock.mockReturnValue(false);
   realtimeDataFetchMock.mockResolvedValue(

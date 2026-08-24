@@ -3,8 +3,10 @@ import { NextResponse } from "next/server";
 // Use getRacesByDate so the warmer hits the same KV key as page SSR.
 import { getRacesByDate } from "../../../../db/queries";
 import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
+import { readRaceCacheWarmGeneration } from "../../../../lib/race-cache-warm-generation";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
+  RACE_TREND_CACHE_AFTER_START_SECONDS,
   RACE_TREND_CACHE_PRE_START_SECONDS,
   RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   buildRaceTrendCacheWarmOptions,
@@ -15,10 +17,11 @@ import {
 export const dynamic = "force-dynamic";
 
 const WARM_LOOKAHEAD_SECONDS = 5 * 60;
-// Extended to 12 hours so finished races within the same day also stay
-// inside the warm window. This guards against cold-compute slowness right
-// after `runTrendCacheBust` invalidates the day's variants.
-const WARM_AFTER_START_SECONDS = 12 * 60 * 60;
+
+interface DueTrendWarmMessage {
+  delaySeconds: number;
+  message: Omit<RaceTrendCacheWarmMessage, "cacheGeneration">;
+}
 
 const parseNowMs = (searchParams: URLSearchParams): number => {
   const value = searchParams.get("now");
@@ -46,7 +49,7 @@ const getWarmDelaySeconds = (
   }
 
   const warmStart = raceStartTime - RACE_TREND_CACHE_PRE_START_SECONDS * 1000;
-  const warmEnd = raceStartTime + WARM_AFTER_START_SECONDS * 1000;
+  const warmEnd = raceStartTime + RACE_TREND_CACHE_AFTER_START_SECONDS * 1000;
   if (nowMs >= warmStart && nowMs <= warmEnd) {
     return 0;
   }
@@ -68,30 +71,28 @@ export async function POST(request: Request) {
   const nowMs = parseNowMs(searchParams);
   const target = getTargetDateParts(searchParams, nowMs);
   const races = await getRacesByDate(target.year, target.month, target.day);
-  const messages = races.flatMap(
-    (race): { delaySeconds: number; message: RaceTrendCacheWarmMessage }[] => {
-      const delaySeconds = getWarmDelaySeconds(race, nowMs);
-      if (delaySeconds === null) {
-        return [];
-      }
-      return buildRaceTrendCacheWarmOptions(
-        race.source,
-        `${race.kaisaiNen}${race.kaisaiTsukihi}`,
-      ).map((options) => ({
-        delaySeconds,
-        message: {
-          day: target.day,
-          kind: "race-trend",
-          keibajoCode: race.keibajoCode,
-          month: target.month,
-          options,
-          raceNumber: race.raceBango,
-          source: race.source,
-          year: target.year,
-        },
-      }));
-    },
-  );
+  const dueMessages = races.flatMap((race): DueTrendWarmMessage[] => {
+    const delaySeconds = getWarmDelaySeconds(race, nowMs);
+    if (delaySeconds === null) {
+      return [];
+    }
+    return buildRaceTrendCacheWarmOptions(
+      race.source,
+      `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+    ).map((options) => ({
+      delaySeconds,
+      message: {
+        day: target.day,
+        kind: "race-trend",
+        keibajoCode: race.keibajoCode,
+        month: target.month,
+        options,
+        raceNumber: race.raceBango,
+        source: race.source,
+        year: target.year,
+      },
+    }));
+  });
 
   const env = await safeGetCloudflareEnv();
   const queue = env?.DETAIL_SECTION_CACHE_QUEUE;
@@ -99,7 +100,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         date: `${target.year}-${target.month}-${target.day}`,
-        dueRaceCount: messages.length,
+        dueRaceCount: dueMessages.length,
         enqueued: 0,
         error: "DETAIL_SECTION_CACHE_QUEUE binding is unavailable",
         raceCount: races.length,
@@ -109,6 +110,28 @@ export async function POST(request: Request) {
     );
   }
 
+  const candidateMessages = await Promise.all(
+    dueMessages.map(async ({ delaySeconds, message }) => {
+      const state = await readRaceCacheWarmGeneration({
+        kind: "race-trend",
+        kv: env.DETAIL_SECTION_CACHE_KV,
+        race: {
+          keibajoCode: message.keibajoCode,
+          mmdd: `${message.month}${message.day}`,
+          raceBango: message.raceNumber,
+          source: message.source,
+          year: message.year,
+        },
+      });
+      return state?.valid
+        ? null
+        : {
+            delaySeconds,
+            message: { ...message, cacheGeneration: state?.generation ?? "0" },
+          };
+    }),
+  );
+  const messages = candidateMessages.filter((message) => message !== null);
   await Promise.all(
     messages.map(({ delaySeconds, message }) =>
       queue.send(message, delaySeconds > 0 ? { delaySeconds } : undefined),
@@ -117,9 +140,10 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     date: `${target.year}-${target.month}-${target.day}`,
-    dueRaceCount: messages.length,
+    dueRaceCount: dueMessages.length,
     enqueued: messages.length,
     raceCount: races.length,
+    skippedValid: dueMessages.length - messages.length,
     variantsPerRace: RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   });
 }

@@ -13,6 +13,7 @@ import {
   type FinishPositionBucketFilter,
   type FinishPositionBucketMetrics,
 } from "../lib/finish-prediction-dimensions";
+import { arePredictionFeaturesFreshForGeneration } from "../lib/prediction-generation-freshness";
 import {
   buildFinishPositionPredictionKvKey,
   parsePredictionFinishPositionFeatures,
@@ -3307,36 +3308,51 @@ const calculateFinishPositionConfidenceTier = (
   stddev === null ? null : resolveFinishPositionConfidenceTier(stddev);
 
 export const getFinishPositionLambdarankPredictions = cache(
-  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
-    return withDbQueryCache(
-      [
-        "getFinishPositionLambdarankPredictions",
-        race.source,
-        race.kaisaiNen,
-        race.kaisaiTsukihi,
-        race.keibajoCode,
-        race.raceBango,
-        runners.map((runner) => runner.umaban).join(","),
-      ],
-      async () => {
-        if (runners.length <= 1) return [];
-        const category = CATEGORY_FROM_RACE(race);
-        // Overseas races are stored in jvd_ra (source='jra') but their
-        // prediction rows use source='overseas' in the predictions table.
-        const predictionSource = isOverseasKeibajoCode(race.keibajoCode) ? "overseas" : race.source;
-        const cellVariantModelVersion = resolveFinishPositionDisplayPriorityModelVersion({
-          category,
-          race,
-        });
-        try {
-          const result = await getDb().execute<{
-            model_version: string;
-            predicted_rank: number;
-            predicted_score: string | null;
-            prediction_generated_at: Date | string | null;
-            shusso_tosu: number | null;
-            umaban: number;
-          }>(sql`
+  async (
+    race: RaceDetail,
+    runners: Runner[],
+    expectedPredictionGeneratedAt?: string,
+  ): Promise<FinishPositionModelPredictionFeature[]> => {
+    const queryCacheKey: readonly unknown[] =
+      expectedPredictionGeneratedAt === undefined
+        ? [
+            "getFinishPositionLambdarankPredictions",
+            race.source,
+            race.kaisaiNen,
+            race.kaisaiTsukihi,
+            race.keibajoCode,
+            race.raceBango,
+            runners.map((runner) => runner.umaban).join(","),
+          ]
+        : [
+            "getFinishPositionLambdarankPredictions",
+            race.source,
+            race.kaisaiNen,
+            race.kaisaiTsukihi,
+            race.keibajoCode,
+            race.raceBango,
+            runners.map((runner) => runner.umaban).join(","),
+            expectedPredictionGeneratedAt,
+          ];
+    return withDbQueryCache(queryCacheKey, async () => {
+      if (runners.length <= 1) return [];
+      const category = CATEGORY_FROM_RACE(race);
+      // Overseas races are stored in jvd_ra (source='jra') but their
+      // prediction rows use source='overseas' in the predictions table.
+      const predictionSource = isOverseasKeibajoCode(race.keibajoCode) ? "overseas" : race.source;
+      const cellVariantModelVersion = resolveFinishPositionDisplayPriorityModelVersion({
+        category,
+        race,
+      });
+      try {
+        const result = await getDb().execute<{
+          model_version: string;
+          predicted_rank: number;
+          predicted_score: string | null;
+          prediction_generated_at: Date | string | null;
+          shusso_tosu: number | null;
+          umaban: number;
+        }>(sql`
             with allowed_model_versions(model_version) as (
               values ${sql.join(
                 FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS.map((version) => sql`(${version})`),
@@ -3464,38 +3480,49 @@ export const getFinishPositionLambdarankPredictions = cache(
               and p.keibajo_code = ${race.keibajoCode}
               and p.race_bango = ${race.raceBango}
           `);
-          const stddev = calculateFinishPositionScoreStddev(
-            result.rows.map((row) => row.predicted_score),
+        const stddev = calculateFinishPositionScoreStddev(
+          result.rows.map((row) => row.predicted_score),
+        );
+        const confidenceTier = calculateFinishPositionConfidenceTier(stddev);
+        const features: FinishPositionModelPredictionFeature[] = result.rows.map((row) => {
+          const fieldSize = Math.max(1, row.shusso_tosu ?? runners.length);
+          const denominator = Math.max(1, fieldSize - 1);
+          const predictedFinishNorm = Math.min(
+            1,
+            Math.max(0, (row.predicted_rank - 1) / denominator),
           );
-          const confidenceTier = calculateFinishPositionConfidenceTier(stddev);
-          return result.rows.map((row) => {
-            const fieldSize = Math.max(1, row.shusso_tosu ?? runners.length);
-            const denominator = Math.max(1, fieldSize - 1);
-            const predictedFinishNorm = Math.min(
-              1,
-              Math.max(0, (row.predicted_rank - 1) / denominator),
-            );
-            return {
-              confidenceTier,
-              horseNumber: String(row.umaban),
-              modelVersion: row.model_version,
-              predictedFinishNorm,
-              predictedScoreStddev: stddev,
-              predictionGeneratedAt: toPredictionGeneratedAt(row.prediction_generated_at),
-              showProbability: null,
-              winProbability: null,
-            };
-          });
-        } catch {
-          return [];
+          return {
+            confidenceTier,
+            horseNumber: String(row.umaban),
+            modelVersion: row.model_version,
+            predictedFinishNorm,
+            predictedScoreStddev: stddev,
+            predictionGeneratedAt: toPredictionGeneratedAt(row.prediction_generated_at),
+            showProbability: null,
+            winProbability: null,
+          };
+        });
+        if (
+          expectedPredictionGeneratedAt !== undefined &&
+          !arePredictionFeaturesFreshForGeneration(features, expectedPredictionGeneratedAt)
+        ) {
+          throw new Error("Expected prediction generation is not available");
         }
-      },
-    );
+        return features;
+      } catch (error) {
+        if (expectedPredictionGeneratedAt !== undefined) throw error;
+        return [];
+      }
+    });
   },
 );
 
 export const getActiveFinishPositionPredictions = cache(
-  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
+  async (
+    race: RaceDetail,
+    runners: Runner[],
+    expectedPredictionGeneratedAt?: string,
+  ): Promise<FinishPositionModelPredictionFeature[]> => {
     // Prediction KV/Cache-API tier. Serves yesterday/today/tomorrow races
     // without querying Neon; the race-day today TTL is short (30s) and
     // finish-position-cron overwrites the same key after a weight rescore, so
@@ -3511,18 +3538,41 @@ export const getActiveFinishPositionPredictions = cache(
     const predictionBody = await readPredictionKvText(predictionKey, predictionWindowYmd);
     if (predictionBody !== null) {
       const predictionFeatures = parsePredictionFinishPositionFeatures(predictionBody);
-      if (predictionFeatures !== null) {
+      const cacheGenerationMatches =
+        predictionFeatures !== null &&
+        (expectedPredictionGeneratedAt === undefined ||
+          arePredictionFeaturesFreshForGeneration(
+            predictionFeatures,
+            expectedPredictionGeneratedAt,
+          ));
+      if (cacheGenerationMatches) {
         return predictionFeatures;
       }
     }
 
-    const lambdaRows = await getFinishPositionLambdarankPredictions(race, runners);
+    const lambdaRows = await getFinishPositionLambdarankPredictions(
+      race,
+      runners,
+      expectedPredictionGeneratedAt,
+    );
+    if (
+      expectedPredictionGeneratedAt !== undefined &&
+      !arePredictionFeaturesFreshForGeneration(lambdaRows, expectedPredictionGeneratedAt)
+    ) {
+      throw new Error("Expected prediction generation is not available");
+    }
     if (lambdaRows.length > 0) {
-      await writePredictionKvText({
+      const write = writePredictionKvText({
+        awaitWrite: expectedPredictionGeneratedAt !== undefined,
         body: JSON.stringify(lambdaRows),
         cacheKey: predictionKey,
         raceYmd: predictionWindowYmd,
-      }).catch(() => undefined);
+      });
+      if (expectedPredictionGeneratedAt === undefined) {
+        await write.catch(() => undefined);
+      } else {
+        await write;
+      }
       return lambdaRows;
     }
     const modelFeatures = await getFinishPositionModelPredictionFeatures(race, runners);

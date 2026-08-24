@@ -53,6 +53,7 @@ const deleteEvery = async (kv: PcKeibaKvNamespace, keys: string[]): Promise<numb
 
 const collectAllKeys = (keys: RaceCacheBustKeySet): string[] => [
   ...keys.mainKeys,
+  ...keys.markerKeys,
   ...keys.staleKeys,
 ];
 

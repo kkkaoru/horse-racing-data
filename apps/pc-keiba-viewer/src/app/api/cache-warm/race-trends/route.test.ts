@@ -132,4 +132,24 @@ it("POST enqueues trend warm messages for due races when the queue binding exist
   expect(messageBody.keibajoCode).toStrictEqual("05");
   expect(messageBody.raceNumber).toStrictEqual("01");
   expect(messageBody.source).toStrictEqual("jra");
+  expect(messageBody.cacheGeneration).toStrictEqual("0");
+});
+
+it("POST skips a due trend whose current generation is already warm", async () => {
+  getRacesByDateMock.mockResolvedValue([buildJraRow({ keibajoCode: "05", raceBango: "01" })]);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("5").mockResolvedValueOnce("5");
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    ...buildQueueEnv(),
+    DETAIL_SECTION_CACHE_KV: {
+      get,
+      put: vi.fn<(key: string, value: string) => Promise<void>>(),
+    },
+  });
+  const response = await POST(buildAuthedRequest("?date=2026-05-29&now=2026-05-29T02:05:00Z"));
+  expect(response.status).toBe(200);
+  const body = await readJsonRecord(response);
+  expect(body.enqueued).toStrictEqual(0);
+  expect(body.skippedValid).toStrictEqual(1);
+  expect(sendMock).not.toHaveBeenCalled();
 });

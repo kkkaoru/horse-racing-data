@@ -66,7 +66,9 @@ export const GET = async (request: Request, context: RouteContext): Promise<Resp
       { status: HTTP_SERVICE_UNAVAILABLE },
     );
   }
-  const upstream = await realtimeData.fetch(buildUpstreamUrl(source, params));
+  const upstream = await realtimeData.fetch(buildUpstreamUrl(source, params), {
+    signal: request.signal,
+  });
   return new Response(upstream.body, {
     headers: {
       "Cache-Control": SSE_CACHE_CONTROL,

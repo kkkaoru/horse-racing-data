@@ -41,6 +41,7 @@ type GetFinishPositionBucketEvaluationFn = (args: {
 }) => Promise<FinishPositionBucketMetrics | null>;
 
 const {
+  getActiveFinishPositionPredictionsMock,
   getBloodlineStatsMock,
   getCarriedWeightClassStatsMock,
   getFinishPositionStatsMock,
@@ -69,6 +70,7 @@ const {
   fetchWinRateHeatmapStatsFromCatalogMock:
     vi.fn<(query: Record<string, unknown>) => Promise<unknown>>(),
   getCachedDetailSectionResponseMock: vi.fn<() => Promise<Response | null>>(),
+  getActiveFinishPositionPredictionsMock: vi.fn<() => Promise<unknown[]>>(),
   getDatabaseTargetMock: vi.fn<() => "cloudflare" | "local" | "neon">(),
   getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getCarriedWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
@@ -88,7 +90,7 @@ const {
 }));
 
 vi.mock("../../../db/queries", () => ({
-  getActiveFinishPositionPredictions: vi.fn<() => Promise<unknown[]>>(),
+  getActiveFinishPositionPredictions: getActiveFinishPositionPredictionsMock,
   getActiveFinishPredictionEvaluation: vi.fn<() => Promise<unknown>>(),
   getBloodlineStats: getBloodlineStatsMock,
   getFinishPositionBucketEvaluation: getFinishPositionBucketEvaluationMock,
@@ -333,6 +335,8 @@ beforeEach(() => {
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockReset();
   getCachedDetailSectionResponseMock.mockResolvedValue(null);
+  getActiveFinishPositionPredictionsMock.mockReset();
+  getActiveFinishPositionPredictionsMock.mockResolvedValue([]);
   getDatabaseTargetMock.mockReset();
   getDatabaseTargetMock.mockReturnValue("cloudflare");
   getBloodlineStatsMock.mockReset();
@@ -367,6 +371,30 @@ it("uses the stable title-relaxed default for ban-ei rate statistics", async () 
   });
 
   expect(context?.statsSettings.includeRaceTitle).toBe(false);
+});
+
+it("threads the expected generation into finish-position prediction loading", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getActiveFinishPositionPredictionsMock.mockRejectedValue(new Error("generation unavailable"));
+  await expect(
+    getDetailSectionPayload("finish-prediction", {
+      day: "24",
+      expectedPredictionGeneratedAt: "2026-08-24T03:40:15.000Z",
+      keibajoCode: "06",
+      month: "08",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2026",
+    }),
+  ).rejects.toThrow("generation unavailable");
+  expect(getActiveFinishPositionPredictionsMock).toHaveBeenCalledWith(
+    JRA_RACE,
+    [OVERSEAS_RUNNER],
+    "2026-08-24T03:40:15.000Z",
+  );
 });
 
 it("uses cell classification flags for condition analysis past-race matching", async () => {
@@ -3457,6 +3485,82 @@ it("time-score payload uses Catalog similar/bloodline and Catalog raceTimeStats"
       "includeJockeyFrame",
     ),
   ).toBe(false);
+});
+
+it("time-score payload falls back to Neon when Catalog heatmap stats return 502", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    correlationRows: [{ horseNumber: "1", score: 0.4 }],
+  });
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+  getSimilarRaceStatsMock.mockResolvedValue([
+    {
+      category: "jockey",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 1,
+      name: "Jockey",
+      quinellaCount: 1,
+      quinellaRate: 50,
+      showCount: 1,
+      showRate: 50,
+      starts: 2,
+      winCount: 1,
+      winRate: 50,
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 1,
+      name: "Trainer",
+      quinellaCount: 1,
+      quinellaRate: 50,
+      showCount: 1,
+      showRate: 50,
+      starts: 2,
+      winCount: 1,
+      winRate: 50,
+    },
+  ]);
+  getBloodlineStatsMock.mockResolvedValue([
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 1,
+      name: "Sire",
+      quinellaCount: 1,
+      quinellaRate: 100,
+      showCount: 1,
+      showRate: 100,
+      starts: 1,
+      winCount: 1,
+      winRate: 100,
+    },
+  ]);
+
+  const payload = await getDetailSectionPayload("time-score", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    correlationRows: [{ horseNumber: "1", score: 0.4 }],
+    similarRows: [{ name: "Jockey" }, { name: "Trainer" }],
+    type: "time-score",
+  });
+  expect(getSimilarRaceStatsMock).toHaveBeenCalledOnce();
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
 it("time-score payload uses Neon race time stats when Catalog correlationRows are empty", async () => {

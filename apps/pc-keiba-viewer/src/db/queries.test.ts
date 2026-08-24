@@ -9,10 +9,13 @@ type ExecuteFn = (query: unknown) => Promise<{ rows: unknown[] }>;
 type WithDbQueryCacheFn = <T>(keyParts: readonly unknown[], loader: () => Promise<T>) => Promise<T>;
 type GetDbFn = () => { execute: ExecuteFn };
 
-const { executeMock, withDbQueryCacheMock } = vi.hoisted(() => ({
-  executeMock: vi.fn<ExecuteFn>(),
-  withDbQueryCacheMock: vi.fn<WithDbQueryCacheFn>(),
-}));
+const { executeMock, readPredictionKvTextMock, withDbQueryCacheMock, writePredictionKvTextMock } =
+  vi.hoisted(() => ({
+    executeMock: vi.fn<ExecuteFn>(),
+    readPredictionKvTextMock: vi.fn<() => Promise<string | null>>(),
+    withDbQueryCacheMock: vi.fn<WithDbQueryCacheFn>(),
+    writePredictionKvTextMock: vi.fn<() => Promise<void>>(),
+  }));
 
 vi.mock("./client", () => ({
   getDb: vi.fn<GetDbFn>(() => ({
@@ -24,10 +27,16 @@ vi.mock("./query-cache", () => ({
   withDbQueryCache: withDbQueryCacheMock,
 }));
 
+vi.mock("../lib/prediction-kv-cache.server", () => ({
+  readPredictionKvText: readPredictionKvTextMock,
+  writePredictionKvText: writePredictionKvTextMock,
+}));
+
 import type { FinishPositionBucketFilter } from "../lib/finish-prediction-dimensions";
 import type { RaceDetail, Runner, SimilarRaceStatsSettings } from "../lib/race-types";
 import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-dimensions";
 import {
+  getActiveFinishPositionPredictions,
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
   getHorseDetailData,
@@ -295,10 +304,14 @@ const PERFECT_AGGREGATE_ROW = {
 
 beforeEach(() => {
   executeMock.mockReset();
+  readPredictionKvTextMock.mockReset();
+  readPredictionKvTextMock.mockResolvedValue(null);
   withDbQueryCacheMock.mockReset();
   withDbQueryCacheMock.mockImplementation(
     async (_keyParts: unknown, loader: () => Promise<unknown>) => loader(),
   );
+  writePredictionKvTextMock.mockReset();
+  writePredictionKvTextMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -2244,6 +2257,102 @@ it("getFinishPositionLambdarankPredictions drops empty or invalid generated time
   );
   expect(result[0]?.predictionGeneratedAt).toBe(null);
   expect(result[1]?.predictionGeneratedAt).toBe(null);
+});
+
+it("getActiveFinishPositionPredictions accepts a KV payload matching the expected generation", async () => {
+  readPredictionKvTextMock.mockResolvedValue(
+    '[{"horseNumber":"1","modelVersion":"iter23","predictedFinishNorm":0,"predictionGeneratedAt":"2026-08-24T03:40:15.000Z","showProbability":null,"winProbability":null}]',
+  );
+  const result = await getActiveFinishPositionPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+    "2026-08-24T03:40:15.000Z",
+  );
+  expect(result[0]?.predictionGeneratedAt).toBe("2026-08-24T03:40:15.000Z");
+  expect(executeMock).not.toHaveBeenCalled();
+  expect(writePredictionKvTextMock).not.toHaveBeenCalled();
+});
+
+it("getActiveFinishPositionPredictions reloads stale KV with a generation-keyed query", async () => {
+  readPredictionKvTextMock.mockResolvedValue(
+    '[{"horseNumber":"1","modelVersion":"iter23","predictedFinishNorm":0,"predictionGeneratedAt":"2026-08-24T03:40:14.000Z","showProbability":null,"winProbability":null}]',
+  );
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        prediction_generated_at: "2026-08-24T03:40:15.000Z",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "0.55",
+        prediction_generated_at: "2026-08-24T03:40:15.000Z",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getActiveFinishPositionPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+    "2026-08-24T03:40:15.000Z",
+  );
+  expect(result.length).toBe(2);
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0].at(-1)).toBe("2026-08-24T03:40:15.000Z");
+  expect(writePredictionKvTextMock).toHaveBeenCalledTimes(1);
+  expect(writePredictionKvTextMock).toHaveBeenCalledWith(
+    expect.objectContaining({ awaitWrite: true }),
+  );
+});
+
+it("getActiveFinishPositionPredictions rejects mixed-generation database rows", async () => {
+  readPredictionKvTextMock.mockResolvedValue(null);
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        prediction_generated_at: "2026-08-24T03:41:15.000Z",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "0.55",
+        prediction_generated_at: "2026-08-24T03:41:14.999Z",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  await expect(
+    getActiveFinishPositionPredictions(
+      PERCLASS_703_RACE,
+      PERCLASS_703_RUNNERS,
+      "2026-08-24T03:41:15.000Z",
+    ),
+  ).rejects.toThrow("Expected prediction generation is not available");
+  expect(writePredictionKvTextMock).not.toHaveBeenCalled();
+});
+
+it("getActiveFinishPositionPredictions preserves database errors for generation-bound refresh", async () => {
+  readPredictionKvTextMock.mockResolvedValue(null);
+  executeMock.mockRejectedValue(new Error("database unavailable"));
+  await expect(
+    getActiveFinishPositionPredictions(
+      PERCLASS_703_RACE,
+      PERCLASS_703_RUNNERS,
+      "2026-08-24T03:42:15.000Z",
+    ),
+  ).rejects.toThrow("database unavailable");
+  expect(writePredictionKvTextMock).not.toHaveBeenCalled();
 });
 
 it("getFinishPositionLambdarankPredictions computes a low confidenceTier from a tight within-race predicted_score spread", async () => {

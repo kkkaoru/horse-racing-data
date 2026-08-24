@@ -9,6 +9,8 @@ import {
   getCachedFinishPredictionInputs,
   putFinishPredictionInputsCache,
 } from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
+import { secretsEqual } from "../../../../../../../../../../lib/mcp-auth";
+import { normalizeExpectedPredictionGeneratedAt } from "../../../../../../../../../../lib/prediction-generation-freshness";
 import {
   buildDetailSectionCacheKey,
   DETAIL_SECTION_CACHE_WARM_PARAM,
@@ -66,6 +68,8 @@ const SECTIONS = [
 ] as const satisfies readonly DetailSection[];
 
 const NON_EMPTY_MODEL_PREDICTION_FEATURES_MARKER = '"modelPredictionFeatures":[{';
+const EXPECTED_PREDICTION_GENERATED_AT_PARAM = "expectedPredictionGeneratedAt";
+const INTERNAL_AUTH_HEADER = "x-pc-keiba-internal-token";
 
 const FINISH_PREDICTION_BROWSER_CACHE_CONTROL = "private, no-cache, max-age=0, must-revalidate";
 
@@ -127,6 +131,7 @@ const withFinishPredictionCacheControl = (response: Response, section: string): 
 interface ComputeSectionParams {
   cacheKey: string | null;
   day: string;
+  expectedPredictionGeneratedAt: string | undefined;
   finishPredictionInputsCacheKey: string | null;
   keibajoCode: string;
   month: string;
@@ -185,6 +190,7 @@ const computeAndStoreSection = async (
   const {
     cacheKey,
     day,
+    expectedPredictionGeneratedAt,
     finishPredictionInputsCacheKey,
     keibajoCode,
     month,
@@ -203,6 +209,7 @@ const computeAndStoreSection = async (
       : null;
   const payload = await getDetailSectionPayload(section, {
     day,
+    expectedPredictionGeneratedAt,
     keibajoCode,
     month,
     query: searchParamsToRecord(sectionSearchParams),
@@ -223,6 +230,7 @@ const computeAndStoreSection = async (
     shouldCacheFinishPrediction(section, body)
   ) {
     await putFinishPredictionInputsCache({
+      awaitWrite: expectedPredictionGeneratedAt !== undefined,
       body: JSON.stringify({
         evaluation: payload.evaluation,
         inputs: payload.inputs,
@@ -244,6 +252,17 @@ const computeAndStoreSection = async (
 
 const getExecutionContext = async (): Promise<PcKeibaExecutionContext | null> =>
   safeGetCloudflareExecutionContext();
+
+const isInternalPredictionRefresh = (request: Request): boolean => {
+  const expectedToken = process.env.PC_KEIBA_INTERNAL_TOKEN;
+  const providedToken = request.headers.get(INTERNAL_AUTH_HEADER);
+  return (
+    typeof expectedToken === "string" &&
+    expectedToken.length > 0 &&
+    providedToken !== null &&
+    secretsEqual(providedToken, expectedToken)
+  );
+};
 
 const hasHeatmapCatalogRateRows = (payload: {
   bloodlineRows: unknown[];
@@ -277,6 +296,25 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
 
   const requestUrl = new URL(request.url);
   const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
+  sectionSearchParams.delete(EXPECTED_PREDICTION_GENERATED_AT_PARAM);
+  const rawExpectedPredictionGeneratedAt = requestUrl.searchParams.get(
+    EXPECTED_PREDICTION_GENERATED_AT_PARAM,
+  );
+  const expectedPredictionGeneratedAt =
+    rawExpectedPredictionGeneratedAt === null
+      ? undefined
+      : (normalizeExpectedPredictionGeneratedAt(rawExpectedPredictionGeneratedAt) ?? undefined);
+  if (
+    rawExpectedPredictionGeneratedAt !== null &&
+    (expectedPredictionGeneratedAt === undefined ||
+      section !== "finish-prediction" ||
+      !requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM))
+  ) {
+    return NextResponse.json({ error: "invalid_expected_prediction_generation" }, { status: 400 });
+  }
+  if (typeof expectedPredictionGeneratedAt === "string" && !isInternalPredictionRefresh(request)) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
   if (section === "win-rate-heatmap") {
     const heatmapCacheKey = buildWinRateHeatmapCacheKey({
       day,
@@ -383,10 +421,9 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       },
     });
   }
-  const defaultSectionRequest =
-    stripDetailSectionCacheWarmParams(requestUrl.searchParams).toString() === "";
+  const defaultSectionRequest = sectionSearchParams.toString() === "";
   const cacheableDefaultRequest =
-    isDefaultDetailSectionCacheRequest(section, requestUrl.searchParams) && defaultSectionRequest;
+    isDefaultDetailSectionCacheRequest(section, sectionSearchParams) && defaultSectionRequest;
   const finishPredictionInputsCacheKey =
     section === "finish-prediction" && defaultSectionRequest
       ? buildFinishPredictionInputsCacheKey({ day, keibajoCode, month, raceNumber, year })
@@ -450,6 +487,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
         computeAndStoreSection({
           cacheKey,
           day,
+          expectedPredictionGeneratedAt,
           finishPredictionInputsCacheKey,
           keibajoCode,
           month,
@@ -470,6 +508,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     result = await computeAndStoreSection({
       cacheKey,
       day,
+      expectedPredictionGeneratedAt,
       finishPredictionInputsCacheKey,
       keibajoCode,
       month,
@@ -480,7 +519,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     });
   } catch (error) {
     console.error(`section ${section} compute failed`, error);
-    if (cacheKey) {
+    if (cacheKey && expectedPredictionGeneratedAt === undefined) {
       const staleBody = await getStaleDetailSectionBody(cacheKey).catch(() => null);
       if (staleBody) {
         return withFinishPredictionCacheControl(
