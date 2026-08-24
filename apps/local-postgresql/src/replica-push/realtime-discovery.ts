@@ -30,6 +30,20 @@ interface FetchAttemptFailure {
 
 type FetchAttempt = FetchAttemptFailure | FetchAttemptSuccess;
 
+interface RealtimeRequest {
+  date: string;
+  init: RequestInit;
+  input: string;
+  label: string;
+}
+
+interface HttpFailureLog {
+  attempt: number;
+  request: RealtimeRequest;
+  responseBody: string;
+  status: number;
+}
+
 interface DiscoveryStatus {
   complete: boolean;
   d1JraRaceCount: number;
@@ -43,6 +57,10 @@ const MAX_ATTEMPTS = 3;
 const RETRYABLE_REQUEST_TIMEOUT = 408;
 const RETRYABLE_TOO_MANY_REQUESTS = 429;
 const SERVER_ERROR_STATUS = 500;
+const MAX_LOGGED_RESPONSE_BODY_LENGTH = 256;
+const SENSITIVE_JSON_FIELD_PATTERN =
+  /("(?:api[-_]?key|authorization|cookie|password|secret|token)"\s*:\s*)"(?:\\.|[^"\\])*"/giu;
+const BEARER_TOKEN_PATTERN = /\bBearer\s+[a-z0-9._~+/-]+=*/giu;
 
 const validateDate = (date: string): string => {
   if (/^\d{8}$/u.test(date)) return date;
@@ -124,36 +142,66 @@ const executeFetch = async (
     (error: unknown): FetchAttempt => ({ error, kind: "failure" }),
   );
 
+const sanitizeResponseBody = (responseBody: string): string => {
+  const normalized = responseBody
+    .replace(SENSITIVE_JSON_FIELD_PATTERN, '$1"[REDACTED]"')
+    .replace(BEARER_TOKEN_PATTERN, "Bearer [REDACTED]")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalized.length <= MAX_LOGGED_RESPONSE_BODY_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_LOGGED_RESPONSE_BODY_LENGTH)}…`;
+};
+
+const responseBodyDetail = (responseBody: string): string =>
+  responseBody === "" ? "no response body" : responseBody;
+
+const logHttpFailure = (options: RealtimeDiscoveryOptions, failure: HttpFailureLog): void => {
+  const body = responseBodyDetail(sanitizeResponseBody(failure.responseBody));
+  options.log(
+    `Realtime request non-2xx url=${failure.request.input} date=${failure.request.date} attempt=${failure.attempt}/${MAX_ATTEMPTS} status=${failure.status} body=${JSON.stringify(body)}`,
+  );
+};
+
 const requestWithRetry = async (
   options: RealtimeDiscoveryOptions,
-  label: string,
-  input: string,
-  init: RequestInit,
+  request: RealtimeRequest,
   attempt: number,
 ): Promise<Response> => {
-  const result = await executeFetch(options, input, init);
+  const result = await executeFetch(options, request.input, request.init);
   if (result.kind === "failure") {
     if (attempt >= MAX_ATTEMPTS) {
       const detail = result.error instanceof Error ? result.error.message : String(result.error);
-      throw new Error(`Realtime request ${label} failed after ${attempt} attempts: ${detail}`);
+      throw new Error(
+        `Realtime request ${request.label} failed after ${attempt} attempts: ${detail}`,
+        { cause: result.error },
+      );
     }
-    options.log(`Realtime request ${label} failed; retrying attempt ${attempt + 1}...`);
+    options.log(`Realtime request ${request.label} failed; retrying attempt ${attempt + 1}...`);
     await options.retryDelay(retryDelayMilliseconds(attempt));
-    return requestWithRetry(options, label, input, init, attempt + 1);
+    return requestWithRetry(options, request, attempt + 1);
   }
 
   if (result.response.ok) return result.response;
   const responseBody = (await result.response.text()).trim();
+  logHttpFailure(options, {
+    attempt,
+    request,
+    responseBody,
+    status: result.response.status,
+  });
   if (shouldRetryStatus(result.response.status) && attempt < MAX_ATTEMPTS) {
     options.log(
-      `Realtime request ${label} returned HTTP ${result.response.status}; retrying attempt ${attempt + 1}...`,
+      `Realtime request ${request.label} returned HTTP ${result.response.status}; retrying attempt ${attempt + 1}...`,
     );
     await options.retryDelay(retryDelayMilliseconds(attempt));
-    return requestWithRetry(options, label, input, init, attempt + 1);
+    return requestWithRetry(options, request, attempt + 1);
   }
-  const detail = responseBody === "" ? "no response body" : responseBody;
+  const detail = responseBodyDetail(sanitizeResponseBody(responseBody));
+  const cause = new Error(`HTTP ${result.response.status}: ${detail}`);
   throw new Error(
-    `Realtime request ${label} failed with HTTP ${result.response.status}: ${detail}`,
+    `Realtime request ${request.label} failed with HTTP ${result.response.status}: ${detail}`,
+    { cause },
   );
 };
 
@@ -169,12 +217,15 @@ const enqueueJob = async (
 ): Promise<void> => {
   await requestWithRetry(
     options,
-    `enqueue ${jobType} ${date}`,
-    `${options.baseUrl.replace(/\/+$/u, "")}${JOB_PATH}`,
     {
-      body: JSON.stringify({ date, type: jobType }),
-      headers: requestHeaders(options.token),
-      method: "POST",
+      date,
+      init: {
+        body: JSON.stringify({ date, type: jobType }),
+        headers: requestHeaders(options.token),
+        method: "POST",
+      },
+      input: `${options.baseUrl.replace(/\/+$/u, "")}${JOB_PATH}`,
+      label: `enqueue ${jobType} ${date}`,
     },
     1,
   );
@@ -220,9 +271,12 @@ const pollDiscovery = async (
 ): Promise<void> => {
   const response = await requestWithRetry(
     options,
-    `discovery status ${date}`,
-    `${options.baseUrl.replace(/\/+$/u, "")}${DISCOVERY_STATUS_PATH}?date=${date}`,
-    { headers: requestHeaders(options.token), method: "GET" },
+    {
+      date,
+      init: { headers: requestHeaders(options.token), method: "GET" },
+      input: `${options.baseUrl.replace(/\/+$/u, "")}${DISCOVERY_STATUS_PATH}?date=${date}`,
+      label: `discovery status ${date}`,
+    },
     1,
   );
   const body: unknown = await response.json();

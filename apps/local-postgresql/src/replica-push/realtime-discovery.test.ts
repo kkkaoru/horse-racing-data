@@ -176,6 +176,51 @@ it("retries transient enqueue failures before polling", async () => {
   expect(retryDelay.mock.calls).toStrictEqual([[250], [1_000]]);
 });
 
+it("logs sanitized discovery status failures with request context before retrying", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    .mockResolvedValueOnce(
+      new Response(`{"code":"D1_ERROR","token":"top-secret","detail":"${"x".repeat(300)}"}`, {
+        status: 500,
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        '{"complete":true,"d1JraRaceCount":36,"date":"20260825","neonJraRaceCount":36}',
+        { status: 200 },
+      ),
+    )
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    .mockResolvedValueOnce(
+      new Response('{"complete":true,"d1JraRaceCount":0,"date":"20260826","neonJraRaceCount":0}', {
+        status: 200,
+      }),
+    )
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+  const retryDelay = vi.fn<(milliseconds: number) => Promise<void>>().mockResolvedValue(undefined);
+  const log = vi.fn<(message: string) => void>();
+
+  await triggerRealtimeDiscoveryAfterReplica({
+    baseUrl: "https://sync-realtime-data.example",
+    dates: { base: "20260825", next: "20260826" },
+    fetcher,
+    log,
+    pollIntervalMilliseconds: 10_000,
+    pollTimeoutMilliseconds: 60_000,
+    retryDelay,
+    token: "secret",
+  });
+
+  expect(log.mock.calls[0]?.[0]).toMatch(
+    /^Realtime request non-2xx url=https:\/\/sync-realtime-data\.example\/api\/internal\/discovery-status\?date=20260825 date=20260825 attempt=1\/3 status=500 body="\{\\"code\\":\\"D1_ERROR\\",\\"token\\":\\"\[REDACTED\]\\",\\"detail\\":\\"x+…"$/u,
+  );
+  expect(log.mock.calls[0]?.[0]).not.toMatch(/top-secret/u);
+  expect(log.mock.calls).toHaveLength(4);
+  expect(retryDelay.mock.calls).toStrictEqual([[250]]);
+});
+
 it("fails closed on authorization and exhausted network errors", async () => {
   await expect(
     triggerRealtimeDiscoveryAfterReplica({
@@ -192,9 +237,11 @@ it("fails closed on authorization and exhausted network errors", async () => {
       retryDelay: vi.fn().mockResolvedValue(undefined),
       token: "wrong",
     }),
-  ).rejects.toThrow(
-    'Realtime request enqueue discover-urls 20260822 failed with HTTP 403: {"error":"forbidden"}',
-  );
+  ).rejects.toMatchObject({
+    cause: new Error('HTTP 403: {"error":"forbidden"}'),
+    message:
+      'Realtime request enqueue discover-urls 20260822 failed with HTTP 403: {"error":"forbidden"}',
+  });
   const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
   await expect(
     triggerRealtimeDiscoveryAfterReplica({
@@ -207,9 +254,10 @@ it("fails closed on authorization and exhausted network errors", async () => {
       retryDelay: vi.fn().mockResolvedValue(undefined),
       token: "secret",
     }),
-  ).rejects.toThrow(
-    "Realtime request enqueue discover-urls 20260822 failed after 3 attempts: offline",
-  );
+  ).rejects.toMatchObject({
+    cause: new Error("offline"),
+    message: "Realtime request enqueue discover-urls 20260822 failed after 3 attempts: offline",
+  });
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
