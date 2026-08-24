@@ -3,10 +3,12 @@
 import { scaleLinear } from "d3";
 
 import { cleanText, formatDate, formatKeibajo } from "./format";
-import type { HorseRaceResult, RaceTimeStats } from "./race-types";
+import { horseRaceChartColorForUmaban } from "./horse-race-results-chart-data";
+import type { HorseRaceResult, RaceTimeStats, Runner } from "./race-types";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
 
 export interface RaceTimeChartPoint {
+  carriedWeightDeltaKg: number | null;
   carriedWeightKg: number | null;
   dateLabel: string;
   distanceDeltaMeters: number | null;
@@ -21,6 +23,7 @@ export interface RaceTimeChartPoint {
   pastJockeyLabel: string;
   radius: number | null;
   scaledSohaTimeTenths: number;
+  scheduledCarriedWeightKg: number | null;
   scheduledJockeyLabel: string;
   sortKey: string;
   sohaTimeTenths: number;
@@ -57,6 +60,9 @@ export interface DrawnRaceTimeChart {
   plotTop: number;
   points: RaceTimeChartPoint[];
   references: RaceTimeReferenceLine[];
+  scheduledGuides: RaceTimeScheduledGuide[];
+  scheduledMarks: RaceTimeScheduledMark[];
+  weightLinks: RaceTimeWeightLink[];
   width: number;
   xAxisTitle: string;
   xTicks: RaceTimeChartAxisTick[];
@@ -66,7 +72,30 @@ export interface DrawnRaceTimeChart {
 
 export interface RaceTimeHorseLink {
   path: string;
+  stroke: string;
   umaban: string;
+}
+
+export interface RaceTimeWeightLink {
+  stroke: string;
+  umaban: string;
+  x1: number;
+  x2: number;
+  y: number;
+}
+
+export interface RaceTimeScheduledMark {
+  id: string;
+  points: string;
+  stroke: string;
+  umaban: string;
+  x: number;
+  y: number;
+}
+
+export interface RaceTimeScheduledGuide {
+  label: string;
+  x: number;
 }
 
 export type RaceTimeReferenceKind =
@@ -114,6 +143,7 @@ interface ToBanEiAbilityPointParams {
   isLatest: boolean;
   layout: RaceTimeChartLayout;
   row: BanEiAbilityRow;
+  scheduledCarriedWeightKg: number | null;
   xValue: number;
 }
 
@@ -128,6 +158,14 @@ interface BuildDrawnRaceTimeChartParams {
   currentDistance: string | null | undefined;
   keibajoCode?: string | null;
   results: HorseRaceResult[];
+  stats: RaceTimeStats | null;
+}
+
+interface BuildDrawnBanEiAbilityChartParams {
+  currentDistance: string | null | undefined;
+  keibajoCode?: string | null;
+  results: HorseRaceResult[];
+  runners: Runner[];
   stats: RaceTimeStats | null;
 }
 
@@ -165,7 +203,7 @@ export const RACE_TIME_CHART_NOTE: string =
   "各点は出走予定馬の過去レースです。レースタイムは今走の距離に比例換算しています。今走と同じ距離ほど点は濃く、距離が離れるほど薄くします。上ほど換算タイムが速く、右ほど上がり3Fが速い。点の色は着順、数字は馬番。最速・平均・中央値の線は目安です。";
 
 export const RACE_TIME_CHART_BAN_EI_NOTE: string =
-  "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の色と大きさは着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。";
+  "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。";
 
 export const RACE_TIME_CHART_EMPTY: string = "レースタイムと上がり3Fが揃った競走成績がありません。";
 
@@ -184,11 +222,14 @@ export const RACE_TIME_CHART_BAN_EI_X_AXIS_TITLE: string = "着順（右が上�
 export const RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE: string = "斤量（右が重い）";
 export const RACE_TIME_CHART_Y_AXIS_TITLE: string = "換算レースタイム（今走距離、上が速い）";
 export const BAN_EI_ABILITY_HORSE_LINK_STROKE: string = "#d5ddd8";
-export const BAN_EI_FINISH_FIRST_RADIUS: number = 7;
-export const BAN_EI_FINISH_SECOND_RADIUS: number = 5.8;
-export const BAN_EI_FINISH_THIRD_RADIUS: number = 4.8;
-export const BAN_EI_FINISH_PLACE_RADIUS: number = 3.8;
-export const BAN_EI_FINISH_OTHER_RADIUS: number = 2.6;
+export const BAN_EI_WEIGHT_LINK_STROKE: string = "#c5cdc8";
+export const BAN_EI_SCHEDULED_GUIDE_STROKE: string = "#78716c";
+export const BAN_EI_SCHEDULED_MARK_SIZE: number = 6;
+export const BAN_EI_FINISH_FIRST_RADIUS: number = 10;
+export const BAN_EI_FINISH_SECOND_RADIUS: number = 8.6;
+export const BAN_EI_FINISH_THIRD_RADIUS: number = 7.6;
+export const BAN_EI_FINISH_PLACE_RADIUS: number = 6.6;
+export const BAN_EI_FINISH_OTHER_RADIUS: number = 5.6;
 export const RACE_TIME_REFERENCE_STROKE_OPACITY: number = 0.1;
 export const RACE_TIME_REFERENCE_STROKE_WIDTH: number = 0.45;
 export const RACE_TIME_DISTANCE_FADE_METERS: number = 400;
@@ -287,6 +328,23 @@ export const formatKohan3fTenthsLabel = (tenths: number): string => (tenths / 10
 export const formatFinishRankAxisLabel = (rank: number): string => `${Math.round(rank)}着`;
 
 export const formatCarriedWeightKgLabel = (kg: number): string => `${Math.round(kg)}kg`;
+
+export const formatCarriedWeightDeltaLabel = (deltaKg: number): string => {
+  if (deltaKg === 0) {
+    return "±0kg";
+  }
+  const rounded = Math.round(deltaKg);
+  if (rounded > 0) {
+    return `+${rounded}kg`;
+  }
+  return `${rounded}kg`;
+};
+
+export const formatBanEiFinishMarkLabel = (rank: number | null): string =>
+  rank === null ? "-" : String(rank);
+
+export const scheduledWeightMarkPoints = (x: number, y: number): string =>
+  `${x},${y - BAN_EI_SCHEDULED_MARK_SIZE} ${x + BAN_EI_SCHEDULED_MARK_SIZE},${y} ${x},${y + BAN_EI_SCHEDULED_MARK_SIZE} ${x - BAN_EI_SCHEDULED_MARK_SIZE},${y}`;
 
 export const banEiFinishMarkRadius = (rank: number | null): number => {
   if (rank === 1) {
@@ -407,6 +465,7 @@ const toChartPoint = ({ currentDistance, layout, row }: ToChartPointParams): Rac
   const distanceDeltaMeters =
     currentDistance === null || distanceMeters === null ? null : distanceMeters - currentDistance;
   return {
+    carriedWeightDeltaKg: null,
     carriedWeightKg: null,
     dateLabel:
       row.result.kaisaiNen.length >= 4 && row.result.kaisaiTsukihi.length >= 4
@@ -424,6 +483,7 @@ const toChartPoint = ({ currentDistance, layout, row }: ToChartPointParams): Rac
     pastJockeyLabel: cleanText(row.result.kishumeiRyakusho),
     radius: null,
     scaledSohaTimeTenths: row.scaledSohaTimeTenths,
+    scheduledCarriedWeightKg: null,
     scheduledJockeyLabel: cleanText(row.result.currentJockey),
     sortKey: `${row.result.kaisaiNen}${row.result.kaisaiTsukihi}${row.result.keibajoCode}${row.result.raceBango}`,
     sohaTimeTenths: row.sohaTimeTenths,
@@ -587,6 +647,12 @@ export const formatRaceTimeChartTooltip = (point: RaceTimeChartPoint): string[] 
     ...(point.carriedWeightKg === null
       ? []
       : [`斤量 ${formatCarriedWeightKgLabel(point.carriedWeightKg)}`]),
+    ...(point.scheduledCarriedWeightKg === null
+      ? []
+      : [`予定斤量 ${formatCarriedWeightKgLabel(point.scheduledCarriedWeightKg)}`]),
+    ...(point.carriedWeightDeltaKg === null
+      ? []
+      : [`斤量差 ${formatCarriedWeightDeltaLabel(point.carriedWeightDeltaKg)}`]),
     `レースタイム ${formatRaceTimeTenthsLabel(point.sohaTimeTenths)}`,
     ...scaledLine,
     ...(point.kohan3fTenths === null
@@ -650,6 +716,9 @@ export const buildDrawnRaceTimeChart = ({
       });
       return line === null ? [] : [line];
     }),
+    scheduledGuides: [],
+    scheduledMarks: [],
+    weightLinks: [],
     width: RACE_TIME_CHART_VIEW_WIDTH,
     xAxisTitle: RACE_TIME_CHART_X_AXIS_TITLE,
     xTicks: TICK_FRACTIONS.map((fraction) => {
@@ -723,6 +792,7 @@ const toBanEiAbilityPoint = ({
   isLatest,
   layout,
   row,
+  scheduledCarriedWeightKg,
   xValue,
 }: ToBanEiAbilityPointParams): RaceTimeChartPoint => {
   const umaban = formatRunnerNumber(row.result.currentUmaban);
@@ -730,6 +800,8 @@ const toBanEiAbilityPoint = ({
   const distanceDeltaMeters =
     currentDistance === null || distanceMeters === null ? null : distanceMeters - currentDistance;
   return {
+    carriedWeightDeltaKg:
+      scheduledCarriedWeightKg === null ? null : row.carriedWeightKg - scheduledCarriedWeightKg,
     carriedWeightKg: row.carriedWeightKg,
     dateLabel:
       row.result.kaisaiNen.length >= 4 && row.result.kaisaiTsukihi.length >= 4
@@ -747,6 +819,7 @@ const toBanEiAbilityPoint = ({
     pastJockeyLabel: cleanText(row.result.kishumeiRyakusho),
     radius: banEiFinishMarkRadius(row.finishRank),
     scaledSohaTimeTenths: row.scaledSohaTimeTenths,
+    scheduledCarriedWeightKg,
     scheduledJockeyLabel: cleanText(row.result.currentJockey),
     sortKey: banEiAbilityRowSortKey(row),
     sohaTimeTenths: row.sohaTimeTenths,
@@ -755,6 +828,91 @@ const toBanEiAbilityPoint = ({
     x: layout.xScale(xValue),
     y: layout.yScale(row.scaledSohaTimeTenths),
   };
+};
+
+const scheduledCarriedWeightByUmaban = (runners: Runner[]): Map<string, number> =>
+  runners.reduce((index, runner) => {
+    const umaban = formatRunnerNumber(runner.umaban);
+    const kg = parseBanEiCarriedWeightKg(runner.futanJuryo);
+    if (umaban === "-" || kg === null) {
+      return index;
+    }
+    return new Map(index).set(umaban, kg);
+  }, new Map<string, number>());
+
+const uniqueScheduledWeights = (points: RaceTimeChartPoint[]): number[] =>
+  Array.from(
+    points
+      .reduce((index, point) => {
+        if (point.scheduledCarriedWeightKg === null) {
+          return index;
+        }
+        return new Map(index).set(point.scheduledCarriedWeightKg, true);
+      }, new Map<number, true>())
+      .keys(),
+  );
+
+const buildBanEiWeightLinks = (
+  layout: RaceTimeChartLayout,
+  points: RaceTimeChartPoint[],
+): RaceTimeWeightLink[] =>
+  points.flatMap((point) => {
+    if (point.scheduledCarriedWeightKg === null || point.carriedWeightKg === null) {
+      return [];
+    }
+    if (point.scheduledCarriedWeightKg === point.carriedWeightKg) {
+      return [];
+    }
+    return [
+      {
+        stroke: point.stroke,
+        umaban: point.umaban,
+        x1: point.x,
+        x2: layout.xScale(point.scheduledCarriedWeightKg),
+        y: point.y,
+      },
+    ];
+  });
+
+const buildBanEiScheduledMarks = (
+  layout: RaceTimeChartLayout,
+  points: RaceTimeChartPoint[],
+): RaceTimeScheduledMark[] =>
+  points.flatMap((point) => {
+    if (point.scheduledCarriedWeightKg === null || point.carriedWeightKg === null) {
+      return [];
+    }
+    if (point.scheduledCarriedWeightKg === point.carriedWeightKg) {
+      return [];
+    }
+    const x = layout.xScale(point.scheduledCarriedWeightKg);
+    return [
+      {
+        id: point.id,
+        points: scheduledWeightMarkPoints(x, point.y),
+        stroke: point.stroke,
+        umaban: point.umaban,
+        x,
+        y: point.y,
+      },
+    ];
+  });
+
+const buildBanEiScheduledGuides = (
+  layout: RaceTimeChartLayout,
+  points: RaceTimeChartPoint[],
+): RaceTimeScheduledGuide[] => {
+  const unique = uniqueScheduledWeights(points);
+  const only = unique[0];
+  if (only === undefined || unique.length !== 1) {
+    return [];
+  }
+  return [
+    {
+      label: `予定斤量 ${formatCarriedWeightKgLabel(only)}`,
+      x: layout.xScale(only),
+    },
+  ];
 };
 
 const buildBanEiHorseLinks = (points: RaceTimeChartPoint[]): RaceTimeHorseLink[] => {
@@ -771,15 +929,16 @@ const buildBanEiHorseLinks = (points: RaceTimeChartPoint[]): RaceTimeHorseLink[]
     const path = ordered
       .slice(1)
       .reduce((current, point) => `${current} L ${point.x} ${point.y}`, `M ${first.x} ${first.y}`);
-    return [{ path, umaban }];
+    return [{ path, stroke: horseRaceChartColorForUmaban(umaban), umaban }];
   });
 };
 
 export const buildDrawnBanEiAbilityChart = ({
   currentDistance,
   results,
+  runners,
   stats,
-}: BuildDrawnRaceTimeChartParams): DrawnRaceTimeChart | null => {
+}: BuildDrawnBanEiAbilityChartParams): DrawnRaceTimeChart | null => {
   const currentDistanceMeters = parseRaceDistanceMeters(currentDistance);
   const rows = collectBanEiAbilityRows({
     currentDistance: currentDistanceMeters,
@@ -788,6 +947,11 @@ export const buildDrawnBanEiAbilityChart = ({
   if (rows.length === 0) {
     return null;
   }
+  const scheduledByUmaban = scheduledCarriedWeightByUmaban(runners);
+  const plottedUmabans = new Set(rows.map((row) => formatRunnerNumber(row.result.currentUmaban)));
+  const scheduledValues = Array.from(scheduledByUmaban.entries()).flatMap(([umaban, kg]) =>
+    plottedUmabans.has(umaban) ? [kg] : [],
+  );
   const specs = referenceSpecs(stats, false);
   const yValues = [
     ...rows.map((row) => row.scaledSohaTimeTenths),
@@ -795,7 +959,7 @@ export const buildDrawnBanEiAbilityChart = ({
       spec.orientation === "horizontal" && spec.value !== null ? [spec.value] : [],
     ),
   ];
-  const xDomain = collectDomain(rows.map((row) => row.carriedWeightKg));
+  const xDomain = collectDomain([...rows.map((row) => row.carriedWeightKg), ...scheduledValues]);
   const yDomain = collectDomain(yValues);
   const latestKeys = latestSortKeyByUmaban(rows);
   const layout = buildLayout({
@@ -806,17 +970,18 @@ export const buildDrawnBanEiAbilityChart = ({
     yDomain,
   });
   const points = rows
-    .map((row) =>
-      toBanEiAbilityPoint({
+    .map((row) => {
+      const umaban = formatRunnerNumber(row.result.currentUmaban);
+      const scheduled = scheduledByUmaban.get(umaban);
+      return toBanEiAbilityPoint({
         currentDistance: currentDistanceMeters,
-        isLatest:
-          latestKeys.get(formatRunnerNumber(row.result.currentUmaban)) ===
-          banEiAbilityRowSortKey(row),
+        isLatest: latestKeys.get(umaban) === banEiAbilityRowSortKey(row),
         layout,
         row,
+        scheduledCarriedWeightKg: scheduled === undefined ? null : scheduled,
         xValue: row.carriedWeightKg,
-      }),
-    )
+      });
+    })
     .toSorted(compareRaceTimeChartPoints);
   return {
     height: RACE_TIME_CHART_VIEW_HEIGHT,
@@ -835,6 +1000,9 @@ export const buildDrawnBanEiAbilityChart = ({
       });
       return line === null ? [] : [line];
     }),
+    scheduledGuides: buildBanEiScheduledGuides(layout, points),
+    scheduledMarks: buildBanEiScheduledMarks(layout, points),
+    weightLinks: buildBanEiWeightLinks(layout, points),
     width: RACE_TIME_CHART_VIEW_WIDTH,
     xAxisTitle: RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE,
     xTicks: TICK_FRACTIONS.map((fraction) => {

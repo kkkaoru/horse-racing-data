@@ -4,9 +4,11 @@ import { expect, it } from "vitest";
 
 import {
   buildDrawnBanEiAbilityChart,
+  formatBanEiFinishMarkLabel,
   buildDrawnRaceTimeChart,
   DEFAULT_SHOW_RESULTS_CHART,
   banEiFinishMarkRadius,
+  formatCarriedWeightDeltaLabel,
   formatCarriedWeightKgLabel,
   formatFinishRankAxisLabel,
   formatKohan3fTenthsLabel,
@@ -30,8 +32,9 @@ import {
   RACE_TIME_CHART_X_AXIS_TITLE,
   RACE_TIME_CHART_Y_AXIS_TITLE,
   raceTimeFinishStroke,
+  scheduledWeightMarkPoints,
 } from "./horse-race-time-charts";
-import type { HorseRaceResult, RaceTimeStats } from "./race-types";
+import type { HorseRaceResult, RaceTimeStats, Runner } from "./race-types";
 
 const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   babajotaiCodeDirt: "1",
@@ -84,6 +87,36 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   ...overrides,
 });
 
+const runner = (overrides: Partial<Runner>): Runner => ({
+  bamei: "出走馬",
+  banushimei: "馬主",
+  barei: "04",
+  bataiju: "480",
+  chokyoshimeiRyakusho: "調教師",
+  damSireName: null,
+  futanJuryo: "262",
+  kakuteiChakujun: null,
+  kettoTorokuBango: "2022100001",
+  kishumeiRyakusho: "騎手",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  kohan3f: null,
+  seibetsuCode: "1",
+  sireName: null,
+  sireSireName: null,
+  sohaTime: null,
+  tanshoNinkijun: null,
+  tanshoOdds: null,
+  timeSa: null,
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: null,
+  zogenSa: null,
+  ...overrides,
+});
+
 const stats = (overrides: Partial<RaceTimeStats> = {}): RaceTimeStats => ({
   averageKohan3f: 360,
   averageRaceTime: 1120,
@@ -121,10 +154,10 @@ it("uses finish rank instead of last 3F copy for Ban-ei charts", () => {
     "レースタイムと着順と斤量が揃った競走成績がありません。",
   );
   expect(RACE_TIME_CHART_BAN_EI_NOTE).toBe(
-    "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の色と大きさは着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+    "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。",
   );
   expect(raceTimeChartNote(true)).toBe(
-    "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の色と大きさは着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+    "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。",
   );
   expect(raceTimeChartEmptyMessage(true)).toBe(
     "レースタイムと着順と斤量が揃った競走成績がありません。",
@@ -132,16 +165,23 @@ it("uses finish rank instead of last 3F copy for Ban-ei charts", () => {
   expect(formatFinishRankAxisLabel(1)).toBe("1着");
   expect(formatFinishRankAxisLabel(8.4)).toBe("8着");
   expect(formatCarriedWeightKgLabel(610)).toBe("610kg");
+  expect(formatCarriedWeightDeltaLabel(0)).toBe("±0kg");
+  expect(formatCarriedWeightDeltaLabel(10.4)).toBe("+10kg");
+  expect(formatCarriedWeightDeltaLabel(-10.4)).toBe("-10kg");
+  expect(scheduledWeightMarkPoints(10, 20)).toBe("10,14 16,20 10,26 4,20");
   expect(parseBanEiCarriedWeightKg("262")).toBe(610);
   expect(parseBanEiCarriedWeightKg("26C")).toBe(620);
   expect(parseBanEiCarriedWeightKg("FFF")).toBe(null);
   expect(parseBanEiCarriedWeightKg("000")).toBe(null);
-  expect(banEiFinishMarkRadius(1)).toBe(7);
-  expect(banEiFinishMarkRadius(2)).toBe(5.8);
-  expect(banEiFinishMarkRadius(3)).toBe(4.8);
-  expect(banEiFinishMarkRadius(4)).toBe(3.8);
-  expect(banEiFinishMarkRadius(8)).toBe(2.6);
-  expect(banEiFinishMarkRadius(null)).toBe(2.6);
+  expect(formatBanEiFinishMarkLabel(1)).toBe("1");
+  expect(formatBanEiFinishMarkLabel(8)).toBe("8");
+  expect(formatBanEiFinishMarkLabel(null)).toBe("-");
+  expect(banEiFinishMarkRadius(1)).toBe(10);
+  expect(banEiFinishMarkRadius(2)).toBe(8.6);
+  expect(banEiFinishMarkRadius(3)).toBe(7.6);
+  expect(banEiFinishMarkRadius(4)).toBe(6.6);
+  expect(banEiFinishMarkRadius(8)).toBe(5.6);
+  expect(banEiFinishMarkRadius(null)).toBe(5.6);
 });
 
 it("parses soha times as tenths and packed ban-ei clocks", () => {
@@ -509,6 +549,7 @@ it("plots Ban-ei clocks without last 3F and puts a better finish to the right", 
         umaban: "02",
       }),
     ],
+    runners: [],
     stats: stats({
       averageKohan3f: 360,
       fastestKohan3f: 340,
@@ -530,8 +571,8 @@ it("plots Ban-ei clocks without last 3F and puts a better finish to the right", 
     throw new Error("expected Ban-ei finish points");
   }
   expect(weightLast.x > weightWinner.x).toBe(true);
-  expect(weightWinner.radius === 7).toBe(true);
-  expect(weightLast.radius === 2.6).toBe(true);
+  expect(weightWinner.radius === 10).toBe(true);
+  expect(weightLast.radius === 5.6).toBe(true);
   expect(weightWinner.kohan3fTenths).toBe(null);
   expect(weightWinner.carriedWeightKg).toBe(610);
   expect(formatRaceTimeChartTooltip(weightWinner)).toStrictEqual([
@@ -573,6 +614,7 @@ it("connects multiple Ban-ei races of the same horse", () => {
         sohaTime: "3300",
       }),
     ],
+    runners: [],
     stats: null,
   });
   if (drawn === null) {
@@ -580,6 +622,7 @@ it("connects multiple Ban-ei races of the same horse", () => {
   }
   expect(drawn.horseLinks.length).toBe(1);
   expect(drawn.horseLinks[0]?.umaban).toBe("1");
+  expect(drawn.horseLinks[0]?.stroke).toBe("#e6194b");
   expect(drawn.horseLinks[0]?.path.startsWith("M ")).toBe(true);
   const older = drawn.points.find((point) => point.sortKey === "202603228301");
   const newer = drawn.points.find((point) => point.sortKey === "202604018301");
@@ -603,6 +646,7 @@ it("drops a Ban-ei result without a finish rank", () => {
         sohaTime: "3188",
       }),
     ],
+    runners: [],
     stats: null,
   });
   expect(drawn).toBe(null);
@@ -621,7 +665,158 @@ it("drops a Ban-ei result without a carried weight", () => {
         sohaTime: "3188",
       }),
     ],
+    runners: [],
     stats: null,
   });
   expect(drawn).toBe(null);
+});
+
+it("links a Ban-ei past weight to a heavier scheduled weight", () => {
+  const drawn = buildDrawnBanEiAbilityChart({
+    currentDistance: "200",
+    keibajoCode: "83",
+    results: [
+      result({
+        futanJuryo: "262",
+        keibajoCode: "83",
+        kohan3f: "000",
+        kyori: "200",
+        sohaTime: "3188",
+      }),
+    ],
+    runners: [runner({ futanJuryo: "26C" })],
+    stats: null,
+  });
+  if (drawn === null) {
+    throw new Error("expected scheduled weight marks");
+  }
+  expect(drawn.scheduledGuides.length).toBe(1);
+  expect(drawn.scheduledGuides[0]?.label).toBe("予定斤量 620kg");
+  expect(drawn.scheduledMarks.length).toBe(1);
+  expect(drawn.weightLinks.length).toBe(1);
+  const past = drawn.points[0];
+  const scheduled = drawn.scheduledMarks[0];
+  const link = drawn.weightLinks[0];
+  if (past === undefined || scheduled === undefined || link === undefined) {
+    throw new Error("expected past and scheduled Ban-ei marks");
+  }
+  expect(scheduled.x > past.x).toBe(true);
+  expect(link.stroke).toBe("#b45309");
+  expect(link.x1).toBe(past.x);
+  expect(link.x2).toBe(scheduled.x);
+  expect(past.scheduledCarriedWeightKg).toBe(620);
+  expect(past.carriedWeightDeltaKg).toBe(-10);
+  expect(formatRaceTimeChartTooltip(past)).toStrictEqual([
+    "1 テストホース",
+    "2026-03-22",
+    "帯広(ばんえい)",
+    "過去騎手 騎手",
+    "予定騎手 騎手",
+    "距離 200m",
+    "着順 1",
+    "斤量 610kg",
+    "予定斤量 620kg",
+    "斤量差 -10kg",
+    "レースタイム 3:18.8",
+  ]);
+});
+
+it("omits a Ban-ei weight link when the scheduled load matches the past load", () => {
+  const drawn = buildDrawnBanEiAbilityChart({
+    currentDistance: "200",
+    keibajoCode: "83",
+    results: [
+      result({
+        futanJuryo: "262",
+        keibajoCode: "83",
+        kohan3f: "000",
+        kyori: "200",
+        sohaTime: "3188",
+      }),
+    ],
+    runners: [runner({ futanJuryo: "262" })],
+    stats: null,
+  });
+  if (drawn === null) {
+    throw new Error("expected matching scheduled weight");
+  }
+  expect(drawn.scheduledMarks.length).toBe(0);
+  expect(drawn.weightLinks.length).toBe(0);
+  expect(drawn.scheduledGuides[0]?.label).toBe("予定斤量 610kg");
+  expect(drawn.points[0]?.carriedWeightDeltaKg).toBe(0);
+  const matched = drawn.points[0];
+  if (matched === undefined) {
+    throw new Error("expected a matched Ban-ei point");
+  }
+  expect(formatRaceTimeChartTooltip(matched)).toStrictEqual([
+    "1 テストホース",
+    "2026-03-22",
+    "帯広(ばんえい)",
+    "過去騎手 騎手",
+    "予定騎手 騎手",
+    "距離 200m",
+    "着順 1",
+    "斤量 610kg",
+    "予定斤量 610kg",
+    "斤量差 ±0kg",
+    "レースタイム 3:18.8",
+  ]);
+});
+
+it("does not draw one Ban-ei scheduled guide when horses have different loads", () => {
+  const drawn = buildDrawnBanEiAbilityChart({
+    currentDistance: "200",
+    keibajoCode: "83",
+    results: [
+      result({
+        futanJuryo: "262",
+        keibajoCode: "83",
+        kohan3f: "000",
+        kyori: "200",
+        sohaTime: "3188",
+      }),
+      result({
+        currentUmaban: "02",
+        futanJuryo: "262",
+        keibajoCode: "83",
+        kohan3f: "000",
+        kyori: "200",
+        sohaTime: "3300",
+        umaban: "02",
+      }),
+    ],
+    runners: [runner({ futanJuryo: "26C" }), runner({ futanJuryo: "276", umaban: "02" })],
+    stats: null,
+  });
+  if (drawn === null) {
+    throw new Error("expected mixed scheduled weights");
+  }
+  expect(drawn.scheduledGuides.length).toBe(0);
+  expect(drawn.scheduledMarks.length).toBe(2);
+  expect(drawn.weightLinks.length).toBe(2);
+});
+
+it("skips Ban-ei runners without a usable scheduled weight", () => {
+  const drawn = buildDrawnBanEiAbilityChart({
+    currentDistance: "200",
+    keibajoCode: "83",
+    results: [
+      result({
+        futanJuryo: "262",
+        keibajoCode: "83",
+        kohan3f: "000",
+        kyori: "200",
+        sohaTime: "3188",
+      }),
+    ],
+    runners: [runner({ futanJuryo: "FFF" }), runner({ futanJuryo: "262", umaban: "00" })],
+    stats: null,
+  });
+  if (drawn === null) {
+    throw new Error("expected past-only Ban-ei marks");
+  }
+  expect(drawn.scheduledMarks.length).toBe(0);
+  expect(drawn.weightLinks.length).toBe(0);
+  expect(drawn.scheduledGuides.length).toBe(0);
+  expect(drawn.points[0]?.scheduledCarriedWeightKg).toBe(null);
 });

@@ -1353,6 +1353,7 @@ export function HorseRaceResultsTable({
           currentDistance={currentDistance}
           keibajoCode={currentKeibajoCode}
           results={visibleResults}
+          runners={runners}
           stats={raceTimeStats}
         />
       ) : null}

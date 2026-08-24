@@ -10401,6 +10401,13 @@ fieldset.race-results-chart-view-toggle {
   width: var(--space-12px-9);
 }
 
+.training-chart-legend-mark {
+  display: block;
+  height: var(--space-24px-50);
+  overflow: visible;
+  width: var(--space-24px-50);
+}
+
 .training-chart-point {
   cursor: pointer;
 }

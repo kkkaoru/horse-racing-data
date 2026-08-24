@@ -613,6 +613,14 @@ const pickChartColor = (paletteIndex: number): string =>
 const resolveUmabanColor = (umaban: number): string =>
   pickChartColor((umaban - 1) % HORSE_RACE_CHART_COLORS.length);
 
+export const horseRaceChartColorForUmaban = (umaban: string): string => {
+  const parsed = Number(umaban);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return FALLBACK_CHART_COLOR;
+  }
+  return resolveUmabanColor(parsed);
+};
+
 const isUmabanKeyedDraft = (draft: HorseRaceChartSeriesDraft): draft is UmabanKeyedDraft =>
   draft.umaban !== null;
 

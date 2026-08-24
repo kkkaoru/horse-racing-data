@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 
-import type { HorseRaceResult, RaceTimeStats } from "../../../lib/race-types";
+import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
 import { HorseRaceTimeChart } from "./horse-race-time-charts";
 
 afterEach(cleanup);
@@ -59,6 +59,36 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   ...overrides,
 });
 
+const runner = (overrides: Partial<Runner>): Runner => ({
+  bamei: "出走馬",
+  banushimei: "馬主",
+  barei: "04",
+  bataiju: "480",
+  chokyoshimeiRyakusho: "調教師",
+  damSireName: null,
+  futanJuryo: "262",
+  kakuteiChakujun: null,
+  kettoTorokuBango: "2022100001",
+  kishumeiRyakusho: "騎手",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  kohan3f: null,
+  seibetsuCode: "1",
+  sireName: null,
+  sireSireName: null,
+  sohaTime: null,
+  tanshoNinkijun: null,
+  tanshoOdds: null,
+  timeSa: null,
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: null,
+  zogenSa: null,
+  ...overrides,
+});
+
 const stats = (): RaceTimeStats => ({
   averageKohan3f: 360,
   averageRaceTime: 1120,
@@ -80,6 +110,7 @@ it("renders the race-time scatter with finish colors and reference lines", () =>
         result({}),
         result({ bamei: "2着馬", currentUmaban: "02", kakuteiChakujun: "02", umaban: "02" }),
       ]}
+      runners={[]}
       stats={stats()}
     />,
   );
@@ -110,6 +141,7 @@ it("shows an empty message when clocks cannot be plotted", () => {
       currentDistance="1800"
       keibajoCode="05"
       results={[result({ kohan3f: "000", sohaTime: "0000" })]}
+      runners={[]}
       stats={null}
     />,
   );
@@ -139,6 +171,7 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
           sohaTime: "3300",
         }),
       ]}
+      runners={[runner({ futanJuryo: "262" })]}
       stats={null}
     />,
   );
@@ -147,18 +180,24 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
   expect(screen.queryByText("着順（右が上位）")).toBeNull();
   expect(
     screen.getByText(
-      "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の色と大きさは着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+      "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。",
     ),
   ).toBeDefined();
+  expect(screen.getByText("過去斤量")).toBeDefined();
+  expect(screen.getByText("予定斤量")).toBeDefined();
+  expect(screen.getByText("予定斤量 610kg")).toBeDefined();
   expect(screen.queryByText("上がり3F（右が速い）")).toBeNull();
   expect(document.querySelectorAll("[data-horse-link='1']").length).toBe(1);
+  expect(document.querySelectorAll("[data-weight-link='1']").length).toBe(1);
+  expect(document.querySelectorAll("[data-scheduled-weight='1']").length).toBe(1);
+  expect(document.querySelectorAll("[data-finish-label='1']").length).toBe(2);
   const firstMark = document.querySelector('[data-finish="1"]');
-  expect(firstMark?.getAttribute("r")).toBe("7");
+  expect(firstMark?.getAttribute("r")).toBe("10");
   if (firstMark === null) {
     throw new Error("expected a Ban-ei finish mark");
   }
   fireEvent.pointerEnter(firstMark, { clientX: 40, clientY: 48 });
-  expect(firstMark.getAttribute("r")).toBe("8.4");
+  expect(firstMark.getAttribute("r")).toBe("11.4");
 });
 
 it("shows a Ban-ei empty message when finish ranks are missing", () => {
@@ -175,6 +214,7 @@ it("shows a Ban-ei empty message when finish ranks are missing", () => {
           sohaTime: "3188",
         }),
       ]}
+      runners={[]}
       stats={null}
     />,
   );
@@ -183,7 +223,9 @@ it("shows a Ban-ei empty message when finish ranks are missing", () => {
 });
 
 it("follows the pointer with a tooltip of horse, clocks, and finish", () => {
-  render(<HorseRaceTimeChart currentDistance="1800" results={[result({})]} stats={null} />);
+  render(
+    <HorseRaceTimeChart currentDistance="1800" results={[result({})]} runners={[]} stats={null} />,
+  );
   const hoverPoint = document.querySelector('[data-horse="チャートホース"]');
   if (hoverPoint === null) {
     throw new Error("expected a scatter point");
@@ -214,6 +256,7 @@ it("fades a point whose race distance is farther from the current race", () => {
           umaban: "02",
         }),
       ]}
+      runners={[]}
       stats={null}
     />,
   );
@@ -238,6 +281,7 @@ it("dims the other horse and enlarges the hovered point", () => {
           umaban: "02",
         }),
       ]}
+      runners={[]}
       stats={null}
     />,
   );
@@ -254,4 +298,49 @@ it("dims the other horse and enlarges the hovered point", () => {
   expect(otherPoint.getAttribute("r")).toBe("3.2");
   expect(document.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("1");
   expect(document.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.26");
+});
+
+it("dims the other Ban-ei scheduled-weight mark while hovering a horse", () => {
+  render(
+    <HorseRaceTimeChart
+      currentDistance="200"
+      keibajoCode="83"
+      results={[
+        result({
+          futanJuryo: "262",
+          keibajoCode: "83",
+          kohan3f: "000",
+          kyori: "200",
+          sohaTime: "3188",
+        }),
+        result({
+          bamei: "別の馬",
+          currentUmaban: "02",
+          futanJuryo: "262",
+          keibajoCode: "83",
+          kohan3f: "000",
+          kyori: "200",
+          sohaTime: "3300",
+          umaban: "02",
+        }),
+      ]}
+      runners={[runner({ futanJuryo: "26C" }), runner({ futanJuryo: "276", umaban: "02" })]}
+      stats={null}
+    />,
+  );
+  const hoverPoint = document.querySelector('[data-horse="チャートホース"]');
+  const hoverLink = document.querySelector('[data-weight-link="1"]');
+  const otherLink = document.querySelector('[data-weight-link="2"]');
+  const otherMark = document.querySelector('[data-scheduled-weight="2"]');
+  if (hoverPoint === null || hoverLink === null || otherLink === null || otherMark === null) {
+    throw new Error("expected Ban-ei weight marks");
+  }
+  expect(hoverLink.getAttribute("stroke-opacity")).toBe("0.38");
+  fireEvent.pointerEnter(hoverPoint, { clientX: 40, clientY: 48 });
+  expect(hoverLink.getAttribute("stroke-opacity")).toBe("0.62");
+  expect(otherLink.getAttribute("stroke-opacity")).toBe("0.08");
+  expect(otherMark.getAttribute("stroke-opacity")).toBe("0.1");
+  fireEvent.pointerEnter(otherMark, { clientX: 48, clientY: 52 });
+  expect(screen.getByText("予定斤量 630kg")).toBeDefined();
+  expect(screen.getByText("斤量差 -20kg")).toBeDefined();
 });
