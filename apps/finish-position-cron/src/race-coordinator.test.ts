@@ -2,9 +2,15 @@
 
 import { beforeEach, expect, test, vi } from "vitest";
 
-const { claimRescoreRaceMock } = vi.hoisted(() => ({ claimRescoreRaceMock: vi.fn() }));
+const { claimRescoreRaceMock, releaseRescoreRaceClaimMock } = vi.hoisted(() => ({
+  claimRescoreRaceMock: vi.fn(),
+  releaseRescoreRaceClaimMock: vi.fn(),
+}));
 
-vi.mock("./do-state", () => ({ claimRescoreRace: claimRescoreRaceMock }));
+vi.mock("./do-state", () => ({
+  claimRescoreRace: claimRescoreRaceMock,
+  releaseRescoreRaceClaim: releaseRescoreRaceClaimMock,
+}));
 
 import {
   DEFAULT_RESCORE_LEAD_MINUTES,
@@ -58,6 +64,8 @@ const stubD1FirstRow = (maxRaceBango: number | null): void => {
 
 beforeEach(() => {
   claimRescoreRaceMock.mockClear();
+  releaseRescoreRaceClaimMock.mockClear();
+  releaseRescoreRaceClaimMock.mockResolvedValue(undefined);
   sendMock.mockClear();
   bindMock.mockClear();
   prepareMock.mockClear();
@@ -280,11 +288,41 @@ test("planRescoreForCategory claims each in-window race in the DO", async () => 
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260619",
   });
+});
+
+test("planRescoreForCategory releases the exact race claim when Queue send fails", async () => {
+  sendMock.mockRejectedValueOnce(new Error("queue unavailable"));
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
+  const env = makeEnv();
+  await expect(
+    planRescoreForCategory({
+      category: "jra",
+      date: "2026-06-19",
+      env,
+      leadMinutes: 25,
+      now: new Date("2026-06-19T05:00:00.000Z"),
+      runYmd: "20260619",
+    }),
+  ).rejects.toThrow("queue unavailable");
+  expect(releaseRescoreRaceClaimMock).toHaveBeenCalledWith({
+    category: "jra",
+    claimId: expect.any(String),
+    env,
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(releaseRescoreRaceClaimMock.mock.calls[0]?.[0].claimId).toBe(
+    claimRescoreRaceMock.mock.calls[0]?.[0].claimId,
+  );
 });
 
 test("planRescoreForCategory skips an overseas A8 venue on the jra source", async () => {
@@ -577,6 +615,7 @@ test("triggerWeightRebuildIfNeeded claims a synthetic WR race keyed by the JST h
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1000",
@@ -602,6 +641,7 @@ test("triggerWeightRebuildIfNeeded uses different dedup keys for different JST h
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1000",
@@ -609,6 +649,7 @@ test("triggerWeightRebuildIfNeeded uses different dedup keys for different JST h
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1030",
@@ -634,6 +675,7 @@ test("triggerWeightRebuildIfNeeded uses the same dedup key within a single half-
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1000",
@@ -641,6 +683,7 @@ test("triggerWeightRebuildIfNeeded uses the same dedup key within a single half-
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1000",
@@ -659,6 +702,7 @@ test("triggerWeightRebuildIfNeeded floors to the lower slot just before the half
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1000",
@@ -677,6 +721,7 @@ test("triggerWeightRebuildIfNeeded uses the upper slot at the half-hour boundary
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1030",
@@ -703,6 +748,7 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
   expect(claimRescoreRaceMock).toHaveBeenCalledTimes(4);
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "05",
     raceBango: "01",
@@ -710,6 +756,7 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "05",
     raceBango: "02",
@@ -717,6 +764,7 @@ test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per rac
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(4, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "02",
     raceBango: "11",
@@ -771,6 +819,32 @@ test("triggerWeightRebuildIfNeeded enqueues nothing on a day with zero registere
   expect(sendMock).not.toHaveBeenCalled();
 });
 
+test("triggerWeightRebuildIfNeeded releases its synthetic claim when race enumeration fails", async () => {
+  bindMock.mockReturnValue({
+    all: vi.fn(async () => {
+      throw new Error("D1 unavailable");
+    }),
+  });
+  const env = makeEnv();
+  await expect(
+    triggerWeightRebuildIfNeeded({
+      category: "jra",
+      date: "2026-06-19",
+      env,
+      now: new Date("2026-06-19T05:00:00.000Z"),
+      runYmd: "20260619",
+    }),
+  ).rejects.toThrow("D1 unavailable");
+  expect(releaseRescoreRaceClaimMock).toHaveBeenCalledWith({
+    category: "jra",
+    claimId: expect.any(String),
+    env,
+    keibajoCode: "WR",
+    raceBango: "1400",
+    runYmd: "20260619",
+  });
+});
+
 test("triggerWeightRebuildIfNeeded does not scan or send when its synthetic claim is rejected", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: false, state: "enqueued" });
   stubD1Rows([
@@ -803,6 +877,7 @@ test("triggerWeightRebuildIfNeeded skips a real race that another rescore source
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "05",
     raceBango: "11",
@@ -837,6 +912,7 @@ test("triggerWeightRebuildIfNeeded suppresses a repeated fan-out within the same
   expect(claimRescoreRaceMock).toHaveBeenCalledTimes(3);
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1400",
@@ -844,6 +920,7 @@ test("triggerWeightRebuildIfNeeded suppresses a repeated fan-out within the same
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1400",
@@ -869,6 +946,7 @@ test("runRaceCoordinatorTick deduplicates the near-post enqueue against its weig
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
     raceBango: "1400",
@@ -876,6 +954,7 @@ test("runRaceCoordinatorTick deduplicates the near-post enqueue against its weig
   });
   expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(3, {
     category: "jra",
+    claimId: expect.any(String),
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "05",
     raceBango: "11",

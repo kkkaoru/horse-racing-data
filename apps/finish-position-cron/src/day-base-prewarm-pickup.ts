@@ -42,10 +42,18 @@ interface ToResultLineParams {
   parquetKey: string;
 }
 
+export type DayBasePickupOutcome =
+  | "foundation-landed"
+  | "landed"
+  | "missing"
+  | "rejected"
+  | "stale";
+
 const PREWARM_CACHE_PATH: string = "/prewarm-day-base-cache";
 const PREDICT_HOST: string = "http://do";
 const RESULT_LINE_TYPE: ResultLineType = "result";
 const PLACEHOLDER_RACES_PREDICTED: number = 0;
+const RUNNING_STYLE_FOUNDATION_PREFIX: string = "feat-running-style-base/catalog-v1";
 const WATERMARK_META_MAX_UPDATED: string = "max-data-sakusei-nengappi";
 const WATERMARK_META_ROW_COUNT: string = "row-count";
 const WATERMARK_META_RS_PREDICTED_AT_MAX: string = "rs-predicted-at-max";
@@ -131,10 +139,13 @@ const toResultLine = (params: ToResultLineParams): PredictResultLine => ({
   daybaseWatermark: params.daybaseWatermark,
 });
 
+const buildRunningStyleFoundationObjectKey = (params: PrewarmCachePickupParams): string =>
+  `${RUNNING_STYLE_FOUNDATION_PREFIX}/${params.category}/${params.runYmd}/features.parquet`;
+
 const pickUpPrewarmDayBaseFromDo = async (
   params: PrewarmCachePickupParams,
   doName: string,
-): Promise<boolean> => {
+): Promise<DayBasePickupOutcome> => {
   const { env, category, runYmd, debug } = params;
   const url = buildPrewarmCacheUrl(params);
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
@@ -144,20 +155,41 @@ const pickUpPrewarmDayBaseFromDo = async (
     console.warn(
       `[day-base-prewarm-pickup] non-ok status=${response.status} doName=${doName} url=${url}`,
     );
-    return false;
+    return "missing";
   }
   const body = parsePrewarmCacheResponse(await response.json());
-  if (body === null || !body.found) return false;
-  if (body.parquetBase64 === undefined || body.parquetBase64 === null) return false;
-  if (body.parquetKey === undefined || body.parquetKey === null) return false;
-  if (body.parquetBase64 === "" || body.parquetKey === "") return false;
+  if (body === null || !body.found) return "missing";
+  if (body.parquetBase64 === undefined || body.parquetBase64 === null) return "missing";
+  if (body.parquetKey === undefined || body.parquetKey === null) return "missing";
+  if (body.parquetBase64 === "" || body.parquetKey === "") return "missing";
+  const expectedFinalKey = buildDayBaseObjectKey({ category, runYmd });
+  const expectedFoundationKey = buildRunningStyleFoundationObjectKey(params);
+  if (body.parquetKey !== expectedFinalKey && body.parquetKey !== expectedFoundationKey) {
+    console.warn(
+      `[day-base-prewarm-pickup] rejected unexpected key category=${category} runYmd=${runYmd} key=${body.parquetKey}`,
+    );
+    return "rejected";
+  }
   if (body.daybaseWatermark === undefined || body.daybaseWatermark === null) {
     const reason =
       body.watermarkError === undefined || body.watermarkError === null ? "-" : body.watermarkError;
     console.warn(
       `[day-base-prewarm-pickup] missing watermark category=${category} runYmd=${runYmd} reason=${reason}`,
     );
-    return false;
+    return "missing";
+  }
+  if (body.parquetKey === expectedFoundationKey) {
+    await proxyResultParquetsToR2(
+      toResultLine({
+        category,
+        daybaseWatermark: body.daybaseWatermark,
+        parquetBase64: body.parquetBase64,
+        parquetKey: body.parquetKey,
+      }),
+      env,
+      debug === true,
+    );
+    return "foundation-landed";
   }
   const readiness = await getDayBaseCandidateReadiness({
     category,
@@ -169,7 +201,7 @@ const pickUpPrewarmDayBaseFromDo = async (
     console.warn(
       `[day-base-prewarm-pickup] rejected stale candidate category=${category} runYmd=${runYmd} reason=${readiness.reason}`,
     );
-    return false;
+    return "stale";
   }
   await proxyResultParquetsToR2(
     toResultLine({
@@ -182,16 +214,19 @@ const pickUpPrewarmDayBaseFromDo = async (
     debug === true,
   );
   await materializeDayBasePerRaceCache({ category, env, runYmd });
-  return true;
+  return "landed";
 };
 
-export const pickUpPrewarmDayBase = async (params: PrewarmCachePickupParams): Promise<boolean> => {
+export const pickUpPrewarmDayBaseWithOutcome = async (
+  params: PrewarmCachePickupParams,
+): Promise<DayBasePickupOutcome> => {
   const { env, category, runYmd } = params;
-  const tryDoNames = async (doNames: readonly string[]): Promise<boolean> => {
+  const tryDoNames = async (doNames: readonly string[]): Promise<DayBasePickupOutcome> => {
     const [doName, ...rest] = doNames;
-    if (doName === undefined) return false;
+    if (doName === undefined) return "missing";
     try {
-      if (await pickUpPrewarmDayBaseFromDo(params, doName)) return true;
+      const outcome = await pickUpPrewarmDayBaseFromDo(params, doName);
+      if (outcome !== "missing") return outcome;
     } catch (err) {
       console.warn(
         `[day-base-prewarm-pickup] failed category=${category} runYmd=${runYmd} doName=${doName}: ${String(err)}`,
@@ -201,3 +236,6 @@ export const pickUpPrewarmDayBase = async (params: PrewarmCachePickupParams): Pr
   };
   return tryDoNames(listDayBasePickupDoNames({ category, env }));
 };
+
+export const pickUpPrewarmDayBase = async (params: PrewarmCachePickupParams): Promise<boolean> =>
+  (await pickUpPrewarmDayBaseWithOutcome(params)) === "landed";

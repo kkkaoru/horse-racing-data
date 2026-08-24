@@ -9,7 +9,14 @@ import type { CatalogServiceBinding, PredictCategory } from "./types";
 
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog";
 const FRESH_ENTRIES_PATH = "/v1/internal/fresh-race-entries";
-const ATTESTATION_TIMEOUT_MS = 5_000;
+// R2 SQL-backed catalog requests can legitimately take several seconds when
+// the warehouse is waking up. Five seconds was shorter than the observed
+// cold-path latency (83:01 timed out at exactly this boundary), which turned
+// a transient Service Binding delay into a Queue redelivery. Keep the request
+// bounded, but leave enough wall time for one cold query to complete. The
+// attestation remains fail-closed: a timeout still aborts rather than using
+// stale or cached entrant data.
+const ATTESTATION_TIMEOUT_MS = 15_000;
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/u;
 const encoder = new TextEncoder();

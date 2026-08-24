@@ -21,7 +21,7 @@
 // that category; JRA has no such restriction.
 
 import { isOverseasKeibajoCode } from "./cron-decision";
-import { claimRescoreRace } from "./do-state";
+import { claimRescoreRace, releaseRescoreRaceClaim } from "./do-state";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
 // Default lead time: enqueue a race for rescore when its post time is within
@@ -382,24 +382,31 @@ const buildRescoreMessage = (params: BuildRescoreMessageParams): PredictQueueMes
 // Claim a single race in the DO (strong consistency) and, when this is the first
 // claim, enqueue its per-race rescore message. Returns true when enqueued.
 const claimAndEnqueueRace = async (params: ClaimAndEnqueueParams): Promise<boolean> => {
-  const claim = await claimRescoreRace({
+  const claimParams = {
     category: params.category,
+    claimId: crypto.randomUUID(),
     env: params.env,
     keibajoCode: params.target.keibajoCode,
     raceBango: params.target.raceBango,
     runYmd: params.runYmd,
-  });
+  };
+  const claim = await claimRescoreRace(claimParams);
   if (!claim.proceed) {
     return false;
   }
-  await params.env.PREDICT_QUEUE.send(
-    buildRescoreMessage({
-      category: params.category,
-      date: params.date,
-      runYmd: params.runYmd,
-      target: params.target,
-    }),
-  );
+  try {
+    await params.env.PREDICT_QUEUE.send(
+      buildRescoreMessage({
+        category: params.category,
+        date: params.date,
+        runYmd: params.runYmd,
+        target: params.target,
+      }),
+    );
+  } catch (error) {
+    await releaseRescoreRaceClaim(claimParams);
+    throw error;
+  }
   return true;
 };
 
@@ -496,33 +503,40 @@ export const resolveRescoreCategories = (env: Env): PredictCategory[] => {
 export const triggerWeightRebuildIfNeeded = async (
   params: WeightRebuildParams,
 ): Promise<number> => {
-  const claim = await claimRescoreRace({
+  const syntheticClaimParams = {
     category: params.category,
+    claimId: crypto.randomUUID(),
     env: params.env,
     keibajoCode: WEIGHT_REBUILD_KEIBAJO,
     raceBango: getJstHalfHourSlot(params.now),
     runYmd: params.runYmd,
-  });
+  };
+  const claim = await claimRescoreRace(syntheticClaimParams);
   if (!claim.proceed) {
     return 0;
   }
-  const rows = await listRacesForCategory(params.env, params.category, params.runYmd);
-  const claimResults = await Promise.all(
-    rows.map((row) =>
-      claimAndEnqueueRace({
-        category: params.category,
-        date: params.date,
-        env: params.env,
-        runYmd: params.runYmd,
-        target: {
-          keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
-          raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
-          raceStartAtJst: row.race_start_at_jst,
-        },
-      }),
-    ),
-  );
-  return claimResults.filter((proceeded) => proceeded).length;
+  try {
+    const rows = await listRacesForCategory(params.env, params.category, params.runYmd);
+    const claimResults = await Promise.all(
+      rows.map((row) =>
+        claimAndEnqueueRace({
+          category: params.category,
+          date: params.date,
+          env: params.env,
+          runYmd: params.runYmd,
+          target: {
+            keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
+            raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+            raceStartAtJst: row.race_start_at_jst,
+          },
+        }),
+      ),
+    );
+    return claimResults.filter((proceeded) => proceeded).length;
+  } catch (error) {
+    await releaseRescoreRaceClaim(syntheticClaimParams);
+    throw error;
+  }
 };
 
 export const runRaceCoordinatorTick = async (

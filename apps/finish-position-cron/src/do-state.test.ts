@@ -23,20 +23,28 @@ const makeEnv = (): Env => ({
 });
 
 import {
+  cancelFocusedFullRaceRepair,
   claimContainerSlot,
   claimFocusedFullRace,
+  claimFocusedFullTerminalWatch,
   claimRescoreExecution,
   claimRescoreRace,
   claimRun,
   checkContainerSlotStop,
+  clearFocusedFullWatchOutbox,
   clearContainerSlot,
   completeFocusedFullRace,
+  completeFocusedFullTerminalWatch,
   completeRescoreRace,
   completeRun,
   failFocusedFullRaceEnqueue,
   getRunState,
+  markContainerSlotStopped,
+  markFocusedFullTerminalWatchStopped,
   releaseContainerSlot,
+  releaseRescoreRaceClaim,
   reserveFocusedFullRaceEnqueue,
+  reserveFocusedFullRaceRepair,
   touchContainerSlot,
 } from "./do-state";
 
@@ -130,6 +138,7 @@ test("claimRescoreRace calls DO /claim-race and returns the result", async () =>
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
   const result = await claimRescoreRace({
     category: "jra",
+    claimId: "claim-1",
     env: makeEnv(),
     keibajoCode: "05",
     raceBango: "11",
@@ -145,6 +154,7 @@ test("claimRescoreRace sends the per-race key fields in the body", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
   await claimRescoreRace({
     category: "nar",
+    claimId: "claim-2",
     env: makeEnv(),
     keibajoCode: "30",
     raceBango: "02",
@@ -153,14 +163,50 @@ test("claimRescoreRace sends the per-race key fields in the body", async () => {
   const req = (fetchMock.mock.calls[0] as [Request])[0];
   const body = (await req.json()) as {
     category: string;
+    claimId: string;
     keibajoCode: string;
     raceBango: string;
     runYmd: string;
   };
   expect(body.category).toBe("nar");
+  expect(body.claimId).toBe("claim-2");
   expect(body.keibajoCode).toBe("30");
   expect(body.raceBango).toBe("02");
   expect(body.runYmd).toBe("20260619");
+});
+
+test("releaseRescoreRaceClaim sends the exact claim owner to the coordinator", async () => {
+  await releaseRescoreRaceClaim({
+    category: "jra",
+    claimId: "claim-release-1",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/release-race-claim");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "jra",
+    claimId: "claim-release-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+});
+
+test("releaseRescoreRaceClaim throws when the coordinator rejects cleanup", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    releaseRescoreRaceClaim({
+      category: "jra",
+      claimId: "claim-release-2",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260619",
+    }),
+  ).rejects.toThrow("DO release-race-claim failed: 503");
 });
 
 test("claimRescoreRace returns proceed:false when DO returns it", async () => {
@@ -169,6 +215,7 @@ test("claimRescoreRace returns proceed:false when DO returns it", async () => {
   );
   const result = await claimRescoreRace({
     category: "jra",
+    claimId: "claim-3",
     env: makeEnv(),
     keibajoCode: "05",
     raceBango: "11",
@@ -182,6 +229,7 @@ test("claimRescoreRace throws when DO returns non-200", async () => {
   await expect(
     claimRescoreRace({
       category: "jra",
+      claimId: "claim-4",
       env: makeEnv(),
       keibajoCode: "05",
       raceBango: "11",
@@ -383,6 +431,96 @@ test("reserveFocusedFullRaceEnqueue rejects a failed coordinator request", async
   ).rejects.toThrow("DO reserve-focused-full-race-enqueue failed: 503");
 });
 
+test("reserveFocusedFullRaceRepair requests one atomic lane-preserving reservation", async () => {
+  await reserveFocusedFullRaceRepair({
+    category: "ban-ei",
+    env: makeEnv(),
+    keibajoCode: "83",
+    raceBango: "05",
+    raceStartAtJst: "2026-08-24T12:20:00+09:00",
+    reservationId: "repair-1",
+    runYmd: "20260824",
+    staleAfterMs: 1_860_000,
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/reserve-focused-full-race-repair");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "ban-ei",
+    doName: "predict-ban-ei",
+    keibajoCode: "83",
+    raceBango: "05",
+    raceStartAtJst: "2026-08-24T12:20:00+09:00",
+    reservationId: "repair-1",
+    runYmd: "20260824",
+    staleAfterMs: 1_860_000,
+  });
+});
+
+test("reserveFocusedFullRaceRepair returns a duplicate reservation state", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ proceed: false, state: "enqueued" }));
+  await expect(
+    reserveFocusedFullRaceRepair({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "35",
+      raceBango: "01",
+      reservationId: "repair-2",
+      runYmd: "20260824",
+      staleAfterMs: 1_860_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "enqueued" });
+});
+
+test("reserveFocusedFullRaceRepair rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    reserveFocusedFullRaceRepair({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "35",
+      raceBango: "01",
+      reservationId: "repair-2",
+      runYmd: "20260824",
+      staleAfterMs: 1_860_000,
+    }),
+  ).rejects.toThrow("DO reserve-focused-full-race-repair failed: 503");
+});
+
+test("cancelFocusedFullRaceRepair restores the matching active lane reservation", async () => {
+  await cancelFocusedFullRaceRepair({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "35",
+    raceBango: "01",
+    reservationId: "repair-2",
+    runYmd: "20260824",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/cancel-focused-full-race-repair");
+  await expect(request.json()).resolves.toStrictEqual({
+    category: "nar",
+    doName: "predict-nar",
+    keibajoCode: "35",
+    raceBango: "01",
+    reservationId: "repair-2",
+    runYmd: "20260824",
+  });
+});
+
+test("cancelFocusedFullRaceRepair rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    cancelFocusedFullRaceRepair({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "35",
+      raceBango: "01",
+      reservationId: "repair-2",
+      runYmd: "20260824",
+    }),
+  ).rejects.toThrow("DO cancel-focused-full-race-repair failed: 503");
+});
+
 test("failFocusedFullRaceEnqueue marks the matching reservation failed", async () => {
   await failFocusedFullRaceEnqueue({
     category: "nar",
@@ -473,6 +611,23 @@ test("claimContainerSlot forwards same-owner cleanup permission", async () => {
   await expect(request.json()).resolves.toMatchObject({ allowSameOwner: true, workKey: "work-1" });
 });
 
+test("claimContainerSlot forwards an atomic replacement owner", async () => {
+  await claimContainerSlot({
+    category: "nar",
+    doName: "predict-nar",
+    env: makeEnv(),
+    kind: "day-base",
+    replaceWorkKey: "day-base:20260824:nar",
+    staleAfterMs: 3_600_000,
+    workKey: "day-base-stale:20260824:nar",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  await expect(request.json()).resolves.toMatchObject({
+    replaceWorkKey: "day-base:20260824:nar",
+    workKey: "day-base-stale:20260824:nar",
+  });
+});
+
 test("checkContainerSlotStop returns coordinator ownership decision", async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ allowed: false }));
   const env = makeEnv();
@@ -504,6 +659,33 @@ test("checkContainerSlotStop rejects a failed coordinator request", async () => 
       workKey: "work-1",
     }),
   ).rejects.toThrow("DO check-container-slot-stop failed: 503");
+});
+
+test("markContainerSlotStopped persists the destroy stage through the coordinator", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+  const env = makeEnv();
+
+  await markContainerSlotStopped({
+    acceptableWorkKeys: ["work-1", "work-old"],
+    doName: "predict-jra-1",
+    env,
+    workKey: "work-1",
+  });
+
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/mark-container-slot-stopped");
+  await expect(request.json()).resolves.toStrictEqual({
+    acceptableWorkKeys: ["work-1", "work-old"],
+    doName: "predict-jra-1",
+    workKey: "work-1",
+  });
+});
+
+test("markContainerSlotStopped rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    markContainerSlotStopped({ doName: "predict-jra-1", env: makeEnv(), workKey: "work-1" }),
+  ).rejects.toThrow("DO mark-container-slot-stopped failed: 503");
 });
 
 test("claimContainerSlot returns proceed:false when the DO reports capped", async () => {
@@ -620,4 +802,91 @@ test("completeFocusedFullRace throws when DO returns non-200", async () => {
       status: "error",
     }),
   ).rejects.toThrow("DO complete-focused-full-race failed: 500");
+});
+
+test("claimFocusedFullTerminalWatch sends watch ownership and stale budget", async () => {
+  await expect(
+    claimFocusedFullTerminalWatch({
+      claimId: "watch-claim-1",
+      env: makeEnv(),
+      staleAfterMs: 60_000,
+      watchId: "container:focused-full:20260824:jra:05:11",
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/claim-focused-full-terminal-watch");
+  await expect(request.json()).resolves.toStrictEqual({
+    claimId: "watch-claim-1",
+    staleAfterMs: 60_000,
+    watchId: "container:focused-full:20260824:jra:05:11",
+  });
+});
+
+test("claimFocusedFullTerminalWatch rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    claimFocusedFullTerminalWatch({
+      claimId: "watch-claim-1",
+      env: makeEnv(),
+      staleAfterMs: 60_000,
+      watchId: "watch-1",
+    }),
+  ).rejects.toThrow("DO claim-focused-full-terminal-watch failed: 503");
+});
+
+test("completeFocusedFullTerminalWatch sends the exact watch owner", async () => {
+  await completeFocusedFullTerminalWatch({
+    claimId: "watch-claim-1",
+    env: makeEnv(),
+    watchId: "watch-1",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/complete-focused-full-terminal-watch");
+  await expect(request.json()).resolves.toStrictEqual({
+    claimId: "watch-claim-1",
+    watchId: "watch-1",
+  });
+});
+
+test("completeFocusedFullTerminalWatch rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    completeFocusedFullTerminalWatch({
+      claimId: "watch-claim-1",
+      env: makeEnv(),
+      watchId: "watch-1",
+    }),
+  ).rejects.toThrow("DO complete-focused-full-terminal-watch failed: 503");
+});
+
+test("markFocusedFullTerminalWatchStopped sends the exact stopped watch owner", async () => {
+  await markFocusedFullTerminalWatchStopped({
+    claimId: "watch-claim-stopped-1",
+    env: makeEnv(),
+    watchId: "watch-stopped-1",
+  });
+  const request = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/mark-focused-full-terminal-watch-stopped");
+  await expect(request.json()).resolves.toStrictEqual({
+    claimId: "watch-claim-stopped-1",
+    watchId: "watch-stopped-1",
+  });
+});
+
+test("markFocusedFullTerminalWatchStopped rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    markFocusedFullTerminalWatchStopped({
+      claimId: "watch-claim-stopped-1",
+      env: makeEnv(),
+      watchId: "watch-stopped-1",
+    }),
+  ).rejects.toThrow("DO mark-focused-full-terminal-watch-stopped failed: 503");
+});
+
+test("clearFocusedFullWatchOutbox rejects a failed coordinator request", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("error", { status: 503 }));
+  await expect(
+    clearFocusedFullWatchOutbox({ env: makeEnv(), outboxId: "focused-full-watch:watch-1" }),
+  ).rejects.toThrow("DO clear-focused-full-watch-outbox failed: 503");
 });

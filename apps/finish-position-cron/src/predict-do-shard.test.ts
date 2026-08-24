@@ -2,7 +2,9 @@
 
 import { expect, test } from "vitest";
 import {
+  listAllowedPredictDoNames,
   listDayBasePickupDoNames,
+  MAX_PREDICT_DO_SHARDS_PER_CATEGORY,
   PREDICT_DO_NAME_PREFIX,
   resolvePredictDoName,
 } from "./predict-do-shard";
@@ -93,14 +95,44 @@ test("defaults the shard modulus to 3 when RACE_SHARD_MAX_CONCURRENT is unset", 
   );
 });
 
-test("honors a custom RACE_SHARD_MAX_CONCURRENT to widen the shard modulus", () => {
+test("caps a custom RACE_SHARD_MAX_CONCURRENT at the finite namespace boundary", () => {
   const env = makeEnv({ RACE_SHARDED_DO: "1", RACE_SHARD_MAX_CONCURRENT: "5" });
-  expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "05", raceBango: "01" })).toBe(
-    "predict-jra-2",
+  expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "01", raceBango: "01" })).toBe(
+    "predict-jra-0",
   );
   expect(resolvePredictDoName({ category: "jra", env, keibajoCode: "05", raceBango: "02" })).toBe(
-    "predict-jra-1",
+    "predict-jra-2",
   );
+});
+
+test("rejects an unknown category before deriving a Durable Object name", () => {
+  expect(() => resolvePredictDoName({ category: "jra-20260824-01-01", env: makeEnv() })).toThrow(
+    "Unsupported predict DO category: jra-20260824-01-01",
+  );
+});
+
+test("rejects an unknown day-base category before deriving a Durable Object name", () => {
+  expect(() => listDayBasePickupDoNames({ category: "overseas", env: makeEnv() })).toThrow(
+    "Unsupported predict DO category: overseas",
+  );
+});
+
+test("lists exactly the twelve protected standard-4 Durable Object names", () => {
+  expect(MAX_PREDICT_DO_SHARDS_PER_CATEGORY).toBe(3);
+  expect(listAllowedPredictDoNames()).toStrictEqual([
+    "predict-jra",
+    "predict-jra-0",
+    "predict-jra-1",
+    "predict-jra-2",
+    "predict-nar",
+    "predict-nar-0",
+    "predict-nar-1",
+    "predict-nar-2",
+    "predict-ban-ei",
+    "predict-ban-ei-0",
+    "predict-ban-ei-1",
+    "predict-ban-ei-2",
+  ]);
 });
 
 test("collapses every race onto a single shard when RACE_SHARD_MAX_CONCURRENT is 1", () => {

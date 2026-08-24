@@ -5,6 +5,8 @@ import {
   recordDeliveryDetected,
   recordDeliveryEnqueued,
   recordPredictionCompleted,
+  recordPreweightDisplayCompleted,
+  recordPreweightGenerationStarted,
 } from "./delivery-lifecycle";
 import type { Env, PredictQueueMessage } from "./types";
 
@@ -46,6 +48,7 @@ it("records detected identity and all three lifecycle timestamps", async () => {
     "jra",
     "05",
     "01",
+    "full",
     now.toISOString(),
   );
   expect(prepareMock).toHaveBeenCalledTimes(4);
@@ -54,12 +57,49 @@ it("records detected identity and all three lifecycle timestamps", async () => {
   expect(prepareMock.mock.calls[3]?.[0]).toContain("prediction_completed_at");
 });
 
-it("does nothing for untracked or unscoped messages", async () => {
+it("derives a stable timing identity for ordinary full builds", async () => {
+  const { bindMock, env, prepareMock } = makeEnv();
+  const now = new Date("2026-08-15T00:00:00Z");
+  await recordDeliveryDetected(env, message({ deliveryTrackingId: undefined }), now);
+  expect(bindMock).toHaveBeenCalledWith(
+    "preweight:20260815:jra:05:01",
+    "20260815",
+    "jra",
+    "05",
+    "01",
+    "full",
+    now.toISOString(),
+  );
+  expect(prepareMock).toHaveBeenCalledTimes(1);
+});
+
+it("does nothing for post-weight or unscoped messages", async () => {
   const { env, prepareMock } = makeEnv();
   const now = new Date();
-  await recordDeliveryDetected(env, message({ deliveryTrackingId: undefined }), now);
+  await recordDeliveryDetected(
+    env,
+    message({ deliveryTrackingId: undefined, mode: "rescore" }),
+    now,
+  );
   await recordDeliveryEnqueued(env, message({ keibajoCode: undefined }), now);
   await recordDeliveryConsumed(env, message({ raceBango: undefined }), now);
-  await recordPredictionCompleted(env, message({ deliveryTrackingId: undefined }), now);
+  await recordPredictionCompleted(
+    env,
+    message({ deliveryTrackingId: undefined, mode: "rescore" }),
+    now,
+  );
   expect(prepareMock).not.toHaveBeenCalled();
+});
+
+it("records generation and display timestamps only for pre-weight builds", async () => {
+  const { env, prepareMock } = makeEnv();
+  const startedAt = new Date("2026-08-15T00:00:01.000Z");
+  const displayedAt = new Date("2026-08-15T00:00:03.000Z");
+  await recordPreweightGenerationStarted(env, message(), startedAt);
+  await recordPreweightDisplayCompleted(env, message(), displayedAt);
+  await recordPreweightGenerationStarted(env, message({ mode: "rescore" }), startedAt);
+  await recordPreweightDisplayCompleted(env, message({ mode: "rescore" }), displayedAt);
+  expect(prepareMock).toHaveBeenCalledTimes(2);
+  expect(prepareMock.mock.calls[0]?.[0]).toContain("generation_started_at");
+  expect(prepareMock.mock.calls[1]?.[0]).toContain("kv_display_completed_at");
 });

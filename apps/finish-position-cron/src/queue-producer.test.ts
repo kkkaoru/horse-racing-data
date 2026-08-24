@@ -6,30 +6,37 @@ import { enqueuePredict } from "./queue-producer";
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 
 const {
-  completeFocusedFullRaceMock,
   failFocusedFullRaceEnqueueMock,
   featureHeadMock,
   reserveFocusedFullRaceEnqueueMock,
+  reserveFocusedFullRaceRepairMock,
 } = vi.hoisted(() => ({
-  completeFocusedFullRaceMock: vi.fn(async () => undefined),
   failFocusedFullRaceEnqueueMock: vi.fn(async () => undefined),
   featureHeadMock: vi.fn(async (): Promise<R2Object | null> => null),
   reserveFocusedFullRaceEnqueueMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
+  reserveFocusedFullRaceRepairMock: vi.fn(
+    async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
+  ),
 }));
 
 vi.mock("./do-state", () => ({
-  completeFocusedFullRace: completeFocusedFullRaceMock,
   failFocusedFullRaceEnqueue: failFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceEnqueue: reserveFocusedFullRaceEnqueueMock,
+  reserveFocusedFullRaceRepair: reserveFocusedFullRaceRepairMock,
 }));
 
 const sendMock = vi.fn(async () => undefined);
 
+const lifecycleRunMock = vi.fn(async () => undefined);
+const lifecyclePrepareMock = vi.fn(() => ({
+  bind: vi.fn(() => ({ run: lifecycleRunMock })),
+}));
+
 const makeEnv = (): Env => ({
   FEATURES_CACHE: { head: featureHeadMock } as unknown as R2Bucket,
-  FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
+  FINISH_POSITION_CRON_DB: { prepare: lifecyclePrepareMock } as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
@@ -48,11 +55,14 @@ beforeEach(() => {
   sendMock.mockReset();
   sendMock.mockResolvedValue(undefined);
   failFocusedFullRaceEnqueueMock.mockClear();
-  completeFocusedFullRaceMock.mockClear();
+  reserveFocusedFullRaceRepairMock.mockReset();
+  reserveFocusedFullRaceRepairMock.mockResolvedValue({ proceed: true });
   featureHeadMock.mockReset();
   featureHeadMock.mockResolvedValue(null);
   reserveFocusedFullRaceEnqueueMock.mockReset();
   reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: true });
+  lifecyclePrepareMock.mockClear();
+  lifecycleRunMock.mockClear();
 });
 
 test("enqueuePredict sends all 3 categories when category is omitted", async () => {
@@ -580,14 +590,12 @@ test("enqueuePredict keeps a completed race suppressed when its exact feature ca
   expect(featureHeadMock).toHaveBeenCalledWith(
     "feat-cache/catalog-v1/ban-ei/20260824/83/01/features.parquet",
   );
-  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalled();
 });
 
 test("enqueuePredict reopens only a cacheless completed race and reserves its repair", async () => {
-  reserveFocusedFullRaceEnqueueMock
-    .mockResolvedValueOnce({ proceed: false, state: "success" })
-    .mockResolvedValueOnce({ proceed: true });
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValueOnce({ proceed: false, state: "success" });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   await expect(
@@ -604,15 +612,16 @@ test("enqueuePredict reopens only a cacheless completed race and reserves its re
     }),
   ).resolves.toStrictEqual(["ban-ei"]);
 
-  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith({
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledWith({
     category: "ban-ei",
     env: expect.anything(),
     keibajoCode: "83",
     raceBango: "01",
+    reservationId: expect.any(String),
     runYmd: "20260824",
-    status: "error",
+    staleAfterMs: 31 * 60 * 1000,
   });
-  expect(reserveFocusedFullRaceEnqueueMock).toHaveBeenCalledTimes(2);
+  expect(reserveFocusedFullRaceEnqueueMock).toHaveBeenCalledTimes(1);
   expect(sendMock).toHaveBeenCalledTimes(1);
   expect(warnSpy).toHaveBeenCalledWith(
     "[predict-producer] reopened cacheless focused-full success category=ban-ei runYmd=20260824 keibajo=83 race=01",

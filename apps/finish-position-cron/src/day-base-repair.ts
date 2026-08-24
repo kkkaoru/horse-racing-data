@@ -6,6 +6,7 @@ import type { Env, PredictCategory } from "./types";
 interface DayBaseRepairParams {
   category: PredictCategory;
   env: Env;
+  force?: boolean;
   now?: Date;
   runYmd: string;
 }
@@ -47,6 +48,7 @@ export const enqueueDayBaseRepairOnce = async (
       category: params.category,
       daysAhead: 0,
       env: params.env,
+      ...(params.force === true ? { force: true } : {}),
       runYmd: params.runYmd,
     });
     return "enqueued";

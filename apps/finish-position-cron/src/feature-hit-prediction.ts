@@ -26,12 +26,18 @@ export const fanOutPredictionsAfterDayBaseHit = async (
 ): Promise<number> => {
   const races = await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd);
   const categoryRaces = races.filter((race) => race.category === params.category);
-  const readiness = await getRunningStyleRaceReadiness({
-    category: params.category,
-    db: params.env.REALTIME_DB,
-    races: categoryRaces,
-    runYmd: params.runYmd,
-  });
+  // Ban-ei day-base artifacts intentionally use an empty running-style
+  // watermark. Treat every category race as RS-ready so an optional inference
+  // state cannot suppress the entire fan-out before Queue delivery.
+  const readiness =
+    params.category === "ban-ei"
+      ? categoryRaces.map((race) => ({ race, reason: null }))
+      : await getRunningStyleRaceReadiness({
+          category: params.category,
+          db: params.env.REALTIME_DB,
+          races: categoryRaces,
+          runYmd: params.runYmd,
+        });
   const readyRaces = readiness.filter((item) => item.reason === null).map((item) => item.race);
   readiness
     .filter((item) => item.reason !== null)

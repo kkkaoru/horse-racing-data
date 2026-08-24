@@ -332,6 +332,141 @@ test("fetchWeightForRace requests the weight worker URL", async () => {
   );
 });
 
+test("fetchWeightForRace accepts the exact requested weight snapshot generation", async () => {
+  const fetchImpl = vi.fn(async () =>
+    jsonResponse({
+      fetchedAt: "2026-06-14T14:30:00+09:00",
+      horses: [
+        { horseNumber: "1", weight: 484 },
+        { horseNumber: "2", weight: 470 },
+      ],
+    }),
+  );
+  const result = await fetchWeightForRace({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260614",
+    source: "jra",
+    weightGeneration: {
+      weightSnapshotCount: 2,
+      weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+      weightSnapshotHash: "58932920408cbacc3cd03d06c135bbe111b24c21585c78af8c1a00c1a391f414",
+    },
+  });
+  expect(result.get(1)).toBe(484);
+  expect(result.get(2)).toBe(470);
+});
+
+test("fetchWeightForRace fails closed when a non-empty fetched snapshot is from another generation", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const fetchImpl = vi.fn(async () =>
+    jsonResponse({
+      fetchedAt: "2026-06-14T14:29:00+09:00",
+      horses: [
+        { horseNumber: "1", weight: 484 },
+        { horseNumber: "2", weight: 470 },
+      ],
+    }),
+  );
+  await expect(
+    fetchWeightForRace({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260614",
+      source: "jra",
+      weightGeneration: {
+        weightSnapshotCount: 2,
+        weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+        weightSnapshotHash: "58932920408cbacc3cd03d06c135bbe111b24c21585c78af8c1a00c1a391f414",
+      },
+    }),
+  ).rejects.toThrow("horse weight snapshot generation mismatch: jra:2026:0614:05:11");
+  warnSpy.mockRestore();
+});
+
+test("fetchWeightForRace fails closed when the fetched snapshot count differs", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const fetchImpl = vi.fn(async () =>
+    jsonResponse({
+      fetchedAt: "2026-06-14T14:30:00+09:00",
+      horses: [
+        { horseNumber: "1", weight: 484 },
+        { horseNumber: "2", weight: 470 },
+      ],
+    }),
+  );
+  await expect(
+    fetchWeightForRace({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260614",
+      source: "jra",
+      weightGeneration: {
+        weightSnapshotCount: 3,
+        weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+        weightSnapshotHash: "58932920408cbacc3cd03d06c135bbe111b24c21585c78af8c1a00c1a391f414",
+      },
+    }),
+  ).rejects.toThrow("horse weight snapshot generation mismatch: jra:2026:0614:05:11");
+  warnSpy.mockRestore();
+});
+
+test("fetchWeightForRace fails closed when the fetched snapshot hash differs", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const fetchImpl = vi.fn(async () =>
+    jsonResponse({
+      fetchedAt: "2026-06-14T14:30:00+09:00",
+      horses: [
+        { horseNumber: "1", weight: 484 },
+        { horseNumber: "2", weight: 470 },
+      ],
+    }),
+  );
+  await expect(
+    fetchWeightForRace({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260614",
+      source: "jra",
+      weightGeneration: {
+        weightSnapshotCount: 2,
+        weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    }),
+  ).rejects.toThrow("horse weight snapshot generation mismatch: jra:2026:0614:05:11");
+  warnSpy.mockRestore();
+});
+
+test("fetchWeightForRace fails closed when the payload has an extra malformed horse", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const fetchImpl = vi.fn(async () =>
+    jsonResponse({
+      fetchedAt: "2026-06-14T14:30:00+09:00",
+      horses: [{ horseNumber: "1", weight: 484 }, "malformed"],
+    }),
+  );
+  await expect(
+    fetchWeightForRace({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260614",
+      source: "jra",
+      weightGeneration: {
+        weightSnapshotCount: 1,
+        weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    }),
+  ).rejects.toThrow("horse weight snapshot generation mismatch: jra:2026:0614:05:11");
+  warnSpy.mockRestore();
+});
+
 test("fetchWeightForRace parses a string horseNumber and weight", async () => {
   const fetchImpl = vi.fn(async () =>
     jsonResponse({ horses: [{ horseNumber: "3", weight: "458" }] }),

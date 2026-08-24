@@ -12,14 +12,16 @@ const {
   handleDlqQueueMock,
   coordinatorTickMock,
   checkContainerSlotStopMock,
+  claimContainerSlotStopMock,
   claimContainerSlotMock,
   claimRescoreRaceMock,
+  releaseRescoreRaceClaimMock,
   clearContainerSlotMock,
+  markContainerSlotStoppedMock,
   completeFocusedFullRaceMock,
   releaseContainerSlotMock,
   runDayBasePrewarmMock,
-  enqueueDayBasePrewarmMock,
-  prewarmCategoryMock,
+  prewarmCategoryWithOutcomeMock,
   resolveCardMaxRaceBangoForKochiMock,
   runCoverageSelfHealMock,
   refreshCornerFeaturesMock,
@@ -30,7 +32,7 @@ const {
   getPredictionReadinessMock,
   pickUpPrewarmDayBaseMock,
   headDayBaseObjectMock,
-  fanOutPredictionsAfterDayBaseHitMock,
+  completeLandedDayBaseMock,
   getFocusedFullDayBaseReadinessMock,
   materializeDayBasePerRaceCacheMock,
 } = vi.hoisted(() => {
@@ -43,14 +45,18 @@ const {
   const claimContainerSlot = vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   );
-  const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
+  const claimRescoreRace = vi.fn(async (_params: { claimId: string }) => ({ proceed: true }));
+  const releaseRescoreRaceClaim = vi.fn(async (_params: { claimId: string }) => undefined);
   const checkContainerSlotStop = vi.fn(async () => true);
+  const claimContainerSlotStop = vi.fn(async () => ({ allowed: true, state: "claimed" as const }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const clearContainerSlot = vi.fn(async () => undefined);
+  const markContainerSlotStopped = vi.fn(async () => undefined);
   const releaseContainerSlot = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => true);
-  const enqueueDayBasePrewarm = vi.fn(async () => undefined);
-  const prewarmCategory = vi.fn(async () => true);
+  const prewarmCategoryWithOutcome = vi.fn(
+    async (): Promise<"failed" | "landed" | "pickup-scheduled"> => "landed",
+  );
   const refreshCornerFeatures = vi.fn(async () => undefined);
   const runRunningStyleKickMorningGap = vi.fn(async () => undefined);
   const runRunningStyleKickTomorrowPrewarm = vi.fn(async () => undefined);
@@ -76,7 +82,7 @@ const {
   }));
   const pickUpPrewarmDayBase = vi.fn(async () => false);
   const headDayBaseObject = vi.fn(async (): Promise<unknown> => null);
-  const fanOutPredictionsAfterDayBaseHit = vi.fn(async () => 0);
+  const completeLandedDayBase = vi.fn(async () => 0);
   const getFocusedFullDayBaseReadiness = vi.fn(async () => ({ ready: true, reason: "ready" }));
   const materializeDayBasePerRaceCache = vi.fn(
     async (): Promise<
@@ -116,13 +122,15 @@ const {
     coordinatorTickMock: runRaceCoordinatorTick,
     claimContainerSlotMock: claimContainerSlot,
     claimRescoreRaceMock: claimRescoreRace,
+    releaseRescoreRaceClaimMock: releaseRescoreRaceClaim,
     checkContainerSlotStopMock: checkContainerSlotStop,
+    claimContainerSlotStopMock: claimContainerSlotStop,
     clearContainerSlotMock: clearContainerSlot,
+    markContainerSlotStoppedMock: markContainerSlotStopped,
     completeFocusedFullRaceMock: completeFocusedFullRace,
     releaseContainerSlotMock: releaseContainerSlot,
     runDayBasePrewarmMock: runDayBasePrewarm,
-    enqueueDayBasePrewarmMock: enqueueDayBasePrewarm,
-    prewarmCategoryMock: prewarmCategory,
+    prewarmCategoryWithOutcomeMock: prewarmCategoryWithOutcome,
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
     runCoverageSelfHealMock: runCoverageSelfHeal,
     refreshCornerFeaturesMock: refreshCornerFeatures,
@@ -133,7 +141,7 @@ const {
     getPredictionReadinessMock: getPredictionReadiness,
     pickUpPrewarmDayBaseMock: pickUpPrewarmDayBase,
     headDayBaseObjectMock: headDayBaseObject,
-    fanOutPredictionsAfterDayBaseHitMock: fanOutPredictionsAfterDayBaseHit,
+    completeLandedDayBaseMock: completeLandedDayBase,
     getFocusedFullDayBaseReadinessMock: getFocusedFullDayBaseReadiness,
     materializeDayBasePerRaceCacheMock: materializeDayBasePerRaceCache,
   };
@@ -176,15 +184,17 @@ vi.mock("./race-coordinator", () => ({
 vi.mock("./do-state", () => ({
   claimContainerSlot: claimContainerSlotMock,
   claimRescoreRace: claimRescoreRaceMock,
+  releaseRescoreRaceClaim: releaseRescoreRaceClaimMock,
   checkContainerSlotStop: checkContainerSlotStopMock,
+  claimContainerSlotStop: claimContainerSlotStopMock,
   clearContainerSlot: clearContainerSlotMock,
+  markContainerSlotStopped: markContainerSlotStoppedMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
   releaseContainerSlot: releaseContainerSlotMock,
 }));
 
 vi.mock("./day-base-prewarm", () => ({
-  enqueueDayBasePrewarm: enqueueDayBasePrewarmMock,
-  prewarmCategory: prewarmCategoryMock,
+  prewarmCategoryWithOutcome: prewarmCategoryWithOutcomeMock,
   runDayBasePrewarm: runDayBasePrewarmMock,
 }));
 
@@ -193,12 +203,12 @@ vi.mock("./day-base-prewarm-pickup", () => ({
   pickUpPrewarmDayBase: pickUpPrewarmDayBaseMock,
 }));
 
-vi.mock("./day-base-race-materializer", () => ({
-  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+vi.mock("./day-base-pickup", () => ({
+  completeLandedDayBase: completeLandedDayBaseMock,
 }));
 
-vi.mock("./feature-hit-prediction", () => ({
-  fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
+vi.mock("./day-base-race-materializer", () => ({
+  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
 }));
 
 vi.mock("./focused-full-day-base-readiness", () => ({
@@ -254,6 +264,9 @@ import workerDefault, {
 import type { Env } from "./types";
 
 const PER_RACE_SCOPE = { keibajoCode: "05", raceBango: "11" };
+const STALE_PREDICT_DO_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SECOND_STALE_PREDICT_DO_ID =
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 const perRaceTriggerBody = (extra: Record<string, unknown> = {}): string =>
   JSON.stringify({ ...PER_RACE_SCOPE, runDate: "20260603", ...extra });
@@ -264,11 +277,22 @@ const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const predictQueueSendMock = vi.fn(async () => undefined);
 const weightRescoreQueueSendMock = vi.fn(async () => undefined);
 const controlQueueSendMock = vi.fn(async () => undefined);
-const containerDoFetchMock = vi.fn(async () => Response.json({ ok: true }));
+const containerDoFetchMock = vi.fn(async (_request: Request) => Response.json({ ok: true }));
 const containerDoGetMock = vi.fn(() => ({ fetch: containerDoFetchMock }));
-const containerDoIdFromNameMock = vi.fn((name: string) => ({ name }));
+const containerDoIdFromNameMock = vi.fn((name: string) => ({
+  name,
+  toString: () => name,
+}));
+const containerDoIdFromStringMock = vi.fn((id: string) => ({ id }));
 const realtimeAllMock = vi.fn(async () => ({
-  results: [{ keibajo_code: "05", race_bango: "11", source: "jra" }],
+  results: [
+    {
+      keibajo_code: "05",
+      race_bango: "11",
+      race_start_at_jst: "2026-06-19T15:30:00+09:00",
+      source: "jra",
+    },
+  ],
 }));
 const realtimeBindMock = vi.fn(() => ({ all: realtimeAllMock }));
 const realtimePrepareMock = vi.fn(() => ({ bind: realtimeBindMock }));
@@ -282,6 +306,7 @@ const makeEnv = (): Env => ({
   FINISH_POSITION_PREDICT_CONTAINER: {
     get: containerDoGetMock,
     idFromName: containerDoIdFromNameMock,
+    idFromString: containerDoIdFromStringMock,
   } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
@@ -321,16 +346,22 @@ beforeEach(() => {
   coordinatorTickMock.mockClear();
   claimContainerSlotMock.mockClear();
   claimRescoreRaceMock.mockClear();
+  releaseRescoreRaceClaimMock.mockClear();
   checkContainerSlotStopMock.mockClear();
   checkContainerSlotStopMock.mockResolvedValue(true);
+  claimContainerSlotStopMock.mockClear();
+  claimContainerSlotStopMock.mockResolvedValue({ allowed: true, state: "claimed" });
   completeFocusedFullRaceMock.mockClear();
   clearContainerSlotMock.mockClear();
+  markContainerSlotStoppedMock.mockClear();
   releaseContainerSlotMock.mockClear();
   runDayBasePrewarmMock.mockClear();
-  prewarmCategoryMock.mockClear();
+  prewarmCategoryWithOutcomeMock.mockReset();
+  prewarmCategoryWithOutcomeMock.mockResolvedValue("landed");
   pickUpPrewarmDayBaseMock.mockClear();
   headDayBaseObjectMock.mockClear();
-  fanOutPredictionsAfterDayBaseHitMock.mockClear();
+  completeLandedDayBaseMock.mockReset();
+  completeLandedDayBaseMock.mockResolvedValue(0);
   getFocusedFullDayBaseReadinessMock.mockReset();
   getFocusedFullDayBaseReadinessMock.mockResolvedValue({
     ready: false,
@@ -347,10 +378,10 @@ beforeEach(() => {
   predictQueueSendMock.mockClear();
   weightRescoreQueueSendMock.mockClear();
   controlQueueSendMock.mockClear();
-  enqueueDayBasePrewarmMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
+  containerDoIdFromStringMock.mockClear();
   realtimeAllMock.mockClear();
   realtimeBindMock.mockClear();
   realtimePrepareMock.mockClear();
@@ -365,18 +396,50 @@ beforeEach(() => {
   resolveCardMaxRaceBangoForKochiMock.mockResolvedValue(undefined);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
   headDayBaseObjectMock.mockResolvedValue(null);
-  fanOutPredictionsAfterDayBaseHitMock.mockResolvedValue(0);
 });
+
+const withWeightSnapshotGeneration = (body: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return body;
+    return JSON.stringify({
+      ...parsed,
+      activeHorseNumbers: [1, 2, 3],
+      excludedHorseNumbers: [],
+      entrySnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+      entrySnapshotHash: "15009c28e8b5798aa98f3533adc74f52ee79a66b3f1be93a78d6d35df059f406",
+      weightSnapshotCount: 3,
+      weightSnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+      weightSnapshotHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    });
+  } catch {
+    return body;
+  }
+};
 
 const internalRescoreRaceRequest = (token: string | null, body: string): Request =>
   new Request("https://cron.example/api/internal/rescore-race", {
-    body,
+    body: withWeightSnapshotGeneration(body),
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const rawInternalRescoreRaceRequest = (token: string, body: string): Request =>
+  new Request("https://cron.example/api/internal/rescore-race", {
+    body,
+    headers: { authorization: `Bearer ${token}` },
     method: "POST",
   });
 
 const adminStopContainersRequest = (token: string | null, body: string): Request =>
   new Request("https://cron.example/api/admin/stop-predict-containers", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const adminPurgeUnusedPredictDoStateRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/purge-unused-predict-do-state", {
     body,
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
@@ -505,7 +568,7 @@ test("admin pickup-day-base reports a cache miss without touching container coor
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
   expect(containerDoFetchMock).not.toHaveBeenCalled();
-  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(completeLandedDayBaseMock).not.toHaveBeenCalled();
 });
 
 test("admin pickup-day-base verifies R2 before ordered prediction fanout", async () => {
@@ -515,7 +578,7 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
     .mockResolvedValueOnce({ ready: false, reason: "day-base-missing-or-invalid" })
     .mockResolvedValueOnce({ ready: true, reason: "ready" });
   headDayBaseObjectMock.mockResolvedValue({ customMetadata: {} });
-  fanOutPredictionsAfterDayBaseHitMock.mockResolvedValue(36);
+  completeLandedDayBaseMock.mockResolvedValue(36);
   const response = await handleFetch(
     adminPickupDayBaseRequest(
       "secret-token",
@@ -536,9 +599,10 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
     racesEnqueued: 36,
     runYmd: "20260817",
   });
-  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledWith({
+  expect(completeLandedDayBaseMock).toHaveBeenCalledWith({
     category: "jra",
     env,
+    generatePredictionsAfterHit: true,
     runYmd: "20260817",
   });
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
@@ -575,7 +639,7 @@ test("admin pickup-day-base rejects a stale partial canonical object and blocks 
     racesEnqueued: 0,
     runYmd: "20260817",
   });
-  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(completeLandedDayBaseMock).not.toHaveBeenCalled();
 });
 
 test("admin pickup-day-base uses an already-ready R2 generation without waking its Container", async () => {
@@ -596,13 +660,38 @@ test("admin pickup-day-base uses an already-ready R2 generation without waking i
     readiness: "ready",
   });
   expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
+  expect(completeLandedDayBaseMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env,
+    generatePredictionsAfterHit: false,
+    runYmd: "20260817",
+  });
+});
+
+test("admin pickup-day-base exposes terminal cleanup failure as a retryable HTTP error", async () => {
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  completeLandedDayBaseMock.mockRejectedValueOnce(new Error("cleanup queue unavailable"));
+
+  const response = await handleFetch(
+    adminPickupDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(503);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "Error: cleanup queue unavailable",
+    ok: false,
+  });
 });
 
 test("admin prewarm-day-base rejects unauthenticated requests", async () => {
   const response = await handleFetch(adminPrewarmDayBaseRequest(null, "{}"), makeEnv());
   expect(response.status).toBe(401);
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
-  expect(prewarmCategoryMock).not.toHaveBeenCalled();
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base rejects an invalid runYmd", async () => {
@@ -623,7 +712,7 @@ test("admin prewarm-day-base rejects an invalid category", async () => {
     makeEnv(),
   );
   expect(response.status).toBe(400);
-  expect(prewarmCategoryMock).not.toHaveBeenCalled();
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base rejects an invalid or unscoped generation intent", async () => {
@@ -643,10 +732,10 @@ test("admin prewarm-day-base rejects an invalid or unscoped generation intent", 
   );
   expect(invalidFlag.status).toBe(400);
   expect(unscopedFlag.status).toBe(400);
-  expect(prewarmCategoryMock).not.toHaveBeenCalled();
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
 });
 
-test("admin prewarm-day-base dispatches one category", async () => {
+test("admin prewarm-day-base directly lands one category without queue starvation", async () => {
   const response = await handleFetch(
     adminPrewarmDayBaseRequest(
       "secret-token",
@@ -654,17 +743,18 @@ test("admin prewarm-day-base dispatches one category", async () => {
     ),
     makeEnv(),
   );
-  expect(response.status).toBe(202);
+  expect(response.status).toBe(200);
   await expect(response.json()).resolves.toStrictEqual({
+    accepted: true,
     category: "ban-ei",
     ok: true,
-    queued: true,
+    outcome: "landed",
+    queued: false,
     runYmd: "20260817",
   });
-  expect(enqueueDayBasePrewarmMock).toHaveBeenCalledWith(
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "ban-ei", daysAhead: 0, runYmd: "20260817" }),
   );
-  expect(prewarmCategoryMock).not.toHaveBeenCalled();
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
@@ -680,8 +770,8 @@ test("admin prewarm-day-base forwards the feature-hit generation intent", async 
     ),
     makeEnv(),
   );
-  expect(response.status).toBe(202);
-  expect(enqueueDayBasePrewarmMock).toHaveBeenCalledWith({
+  expect(response.status).toBe(200);
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
     env: expect.any(Object),
@@ -698,8 +788,8 @@ test("admin prewarm-day-base preserves an explicit category-scoped historical fo
     ),
     makeEnv(),
   );
-  expect(response.status).toBe(202);
-  expect(enqueueDayBasePrewarmMock).toHaveBeenCalledWith({
+  expect(response.status).toBe(200);
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
     env: expect.any(Object),
@@ -740,7 +830,47 @@ test("admin prewarm-day-base without category warms every scheduled category", a
   expect(runDayBasePrewarmMock).toHaveBeenCalledWith(
     expect.objectContaining({ daysAhead: 0, runYmd: "20260817" }),
   );
-  expect(prewarmCategoryMock).not.toHaveBeenCalled();
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm-day-base reports pickup ownership without requeueing the build", async () => {
+  prewarmCategoryWithOutcomeMock.mockResolvedValueOnce("pickup-scheduled");
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toStrictEqual({
+    accepted: true,
+    category: "nar",
+    ok: true,
+    outcome: "pickup-scheduled",
+    queued: false,
+    runYmd: "20260817",
+  });
+});
+
+test("admin prewarm-day-base exposes a direct dispatch failure", async () => {
+  prewarmCategoryWithOutcomeMock.mockResolvedValueOnce("failed");
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(503);
+  await expect(response.json()).resolves.toStrictEqual({
+    accepted: false,
+    category: "jra",
+    ok: false,
+    outcome: "failed",
+    queued: false,
+    runYmd: "20260817",
+  });
 });
 
 test("monitor endpoint predicates require GET and exact paths", () => {
@@ -1489,6 +1619,18 @@ test("admin stop containers endpoint rejects non-predict names", async () => {
   expect(containerDoFetchMock).not.toHaveBeenCalled();
 });
 
+test("admin stop containers endpoint rejects obsolete race-scoped predict names", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["predict-nar-20260702-50-01"] }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(controlQueueSendMock).not.toHaveBeenCalled();
+});
+
 test("admin stop containers endpoint rejects missing and empty names", async () => {
   const missingResponse = await handleFetch(
     adminStopContainersRequest("secret-token", JSON.stringify({})),
@@ -1529,7 +1671,7 @@ test("admin stop containers endpoint enqueues each requested container on the co
     adminStopContainersRequest(
       "secret-token",
       JSON.stringify({
-        names: ["predict-nar-20260702-50-01", "predict-nar-20260702-50-02"],
+        names: ["predict-nar-0", "predict-nar-1"],
       }),
     ),
     makeEnv(),
@@ -1538,11 +1680,11 @@ test("admin stop containers endpoint enqueues each requested container on the co
   expect(controlQueueSendMock).toHaveBeenCalledTimes(2);
   expect(controlQueueSendMock).toHaveBeenNthCalledWith(
     1,
-    expect.objectContaining({ name: "predict-nar-20260702-50-01", type: "container-stop" }),
+    expect.objectContaining({ name: "predict-nar-0", type: "container-stop" }),
   );
   expect(controlQueueSendMock).toHaveBeenNthCalledWith(
     2,
-    expect.objectContaining({ name: "predict-nar-20260702-50-02", type: "container-stop" }),
+    expect.objectContaining({ name: "predict-nar-1", type: "container-stop" }),
   );
   expect(controlQueueSendMock).toHaveBeenNthCalledWith(
     1,
@@ -1570,7 +1712,79 @@ test("admin stop containers endpoint forces a stop only with an explicit active 
   );
 });
 
+test("admin Durable Object purge route rejects unauthenticated and malformed requests", async () => {
+  const unauthorized = await handleFetch(
+    adminPurgeUnusedPredictDoStateRequest(
+      null,
+      JSON.stringify({ dryRun: true, ids: [STALE_PREDICT_DO_ID] }),
+    ),
+    makeEnv(),
+  );
+  const malformed = await handleFetch(
+    adminPurgeUnusedPredictDoStateRequest("secret-token", "{"),
+    makeEnv(),
+  );
+  expect(unauthorized.status).toBe(401);
+  expect(malformed.status).toBe(400);
+  expect(containerDoIdFromStringMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin Durable Object purge route recalculates and refuses a current routing ID", async () => {
+  containerDoIdFromNameMock.mockImplementationOnce((name: string) => ({
+    name,
+    toString: () => STALE_PREDICT_DO_ID,
+  }));
+  const response = await handleFetch(
+    adminPurgeUnusedPredictDoStateRequest(
+      "secret-token",
+      JSON.stringify({ dryRun: false, ids: [STALE_PREDICT_DO_ID] }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(409);
+  expect(containerDoIdFromNameMock).toHaveBeenCalledTimes(12);
+  expect(containerDoIdFromStringMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin Durable Object purge route targets validated IDs through the same namespace", async () => {
+  const response = await handleFetch(
+    adminPurgeUnusedPredictDoStateRequest(
+      "secret-token",
+      JSON.stringify({
+        dryRun: false,
+        ids: [STALE_PREDICT_DO_ID, SECOND_STALE_PREDICT_DO_ID],
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(containerDoIdFromNameMock).toHaveBeenCalledTimes(12);
+  expect(containerDoIdFromStringMock).toHaveBeenNthCalledWith(1, STALE_PREDICT_DO_ID);
+  expect(containerDoIdFromStringMock).toHaveBeenNthCalledWith(2, SECOND_STALE_PREDICT_DO_ID);
+  expect(containerDoGetMock).toHaveBeenNthCalledWith(1, { id: STALE_PREDICT_DO_ID });
+  expect(containerDoGetMock).toHaveBeenNthCalledWith(2, { id: SECOND_STALE_PREDICT_DO_ID });
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
+  const firstInternalRequest = containerDoFetchMock.mock.calls[0]?.[0];
+  expect(firstInternalRequest?.url).toBe("http://predict-container-do/__admin/purge-unused-state");
+  expect(firstInternalRequest?.headers.get("authorization")).toBe("Bearer secret-token");
+  expect(await response.json()).toStrictEqual({
+    dryRun: false,
+    failedCount: 0,
+    ok: true,
+    purgedCount: 2,
+    requestedCount: 2,
+    results: [
+      { id: STALE_PREDICT_DO_ID, status: "purged" },
+      { id: SECOND_STALE_PREDICT_DO_ID, status: "purged" },
+    ],
+  });
+});
+
 test("admin complete focused full race endpoint rejects unauthenticated requests", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const response = await handleFetch(
     adminCompleteFocusedFullRaceRequest(
       null,
@@ -1586,9 +1800,15 @@ test("admin complete focused full race endpoint rejects unauthenticated requests
   );
   expect(response.status).toBe(401);
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledOnce();
+  expect(log).not.toHaveBeenCalled();
+  warn.mockRestore();
+  log.mockRestore();
 });
 
 test("admin complete focused full race endpoint rejects invalid requests", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const missingStatusResponse = await handleFetch(
     adminCompleteFocusedFullRaceRequest(
       "secret-token",
@@ -1617,9 +1837,15 @@ test("admin complete focused full race endpoint rejects invalid requests", async
   expect(missingStatusResponse.status).toBe(400);
   expect(invalidCategoryResponse.status).toBe(400);
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledTimes(2);
+  expect(log).not.toHaveBeenCalled();
+  warn.mockRestore();
+  log.mockRestore();
 });
 
 test("admin complete focused full race endpoint writes terminal focused state", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const response = await handleFetch(
     adminCompleteFocusedFullRaceRequest(
       "secret-token",
@@ -1645,6 +1871,10 @@ test("admin complete focused full race endpoint writes terminal focused state", 
   });
   const body = (await response.json()) as { ok: boolean };
   expect(body.ok).toBe(true);
+  expect(log).toHaveBeenCalledTimes(2);
+  expect(warn).not.toHaveBeenCalled();
+  warn.mockRestore();
+  log.mockRestore();
 });
 
 test("admin run focused full race endpoint rejects unauthenticated requests", async () => {
@@ -1681,6 +1911,69 @@ test("admin run focused full race endpoint rejects invalid requests", async () =
   expect(response.status).toBe(400);
   expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(retryPopulateViewerDisplayCacheMock).not.toHaveBeenCalled();
+});
+
+test("admin run focused full race rejects a shell-word-splitting race target before enqueue", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "43",
+        raceBango: "12 nar:43:01 nar:43:02",
+        runYmd: "20260824",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("admin run focused full race normalizes one-digit race targets and rejects invalid ranges", async () => {
+  const oneDigitResponse = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "43",
+        raceBango: "1",
+        runYmd: "20260824",
+      }),
+    ),
+    makeEnv(),
+  );
+  const outOfRangeResponse = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "43",
+        raceBango: "13",
+        runYmd: "20260824",
+      }),
+    ),
+    makeEnv(),
+  );
+  const invalidVenueResponse = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "00",
+        raceBango: "01",
+        runYmd: "20260824",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(oneDigitResponse.status).toBe(202);
+  expect(outOfRangeResponse.status).toBe(400);
+  expect(invalidVenueResponse.status).toBe(400);
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "43", raceBango: "01" }),
+  );
 });
 
 test("admin run focused full race endpoint enqueues a focused full prediction", async () => {
@@ -1769,14 +2062,22 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
   );
   expect(weightRescoreQueueSendMock).toHaveBeenCalledTimes(1);
   expect(weightRescoreQueueSendMock).toHaveBeenCalledWith({
+    activeHorseNumbers: [1, 2, 3],
     category: "nar",
     daysAhead: 0,
+    entrySnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+    entrySnapshotHash: "15009c28e8b5798aa98f3533adc74f52ee79a66b3f1be93a78d6d35df059f406",
+    excludedHorseNumbers: [],
     keibajoCode: "45",
     mode: "rescore",
     raceBango: "12",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
+    weightSnapshotCount: 3,
+    weightSnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+    weightSnapshotHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   });
   expect(predictQueueSendMock).not.toHaveBeenCalled();
 });
@@ -1798,16 +2099,51 @@ test("internal rescore-race endpoint safely falls back to the primary queue duri
   );
   expect(response.status).toBe(202);
   expect(predictQueueSendMock).toHaveBeenCalledWith({
+    activeHorseNumbers: [1, 2, 3],
     category: "jra",
     daysAhead: 0,
+    entrySnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+    entrySnapshotHash: "15009c28e8b5798aa98f3533adc74f52ee79a66b3f1be93a78d6d35df059f406",
+    excludedHorseNumbers: [],
     keibajoCode: "05",
     mode: "rescore",
     raceBango: "11",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     runDate: "2026-06-20",
     runDateIso: "2026-06-20",
     runYmd: "20260620",
+    weightSnapshotCount: 3,
+    weightSnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
+    weightSnapshotHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   });
   expect(weightRescoreQueueSendMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race releases its exact claim when Queue send fails", async () => {
+  weightRescoreQueueSendMock.mockRejectedValueOnce(new Error("queue unavailable"));
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        raceStartAtJst: "2026-06-20T15:30:00+09:00",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ claimId: expect.any(String) }),
+  );
+  expect(releaseRescoreRaceClaimMock).toHaveBeenCalledWith(
+    expect.objectContaining({ claimId: expect.any(String) }),
+  );
+  expect(releaseRescoreRaceClaimMock.mock.calls[0]?.[0].claimId).toBe(
+    claimRescoreRaceMock.mock.calls[0]?.[0].claimId,
+  );
 });
 
 test("internal rescore-race endpoint forwards debug to per-race queue messages", async () => {
@@ -1833,6 +2169,27 @@ test("internal rescore-race endpoint forwards debug to per-race queue messages",
       raceBango: "12",
     }),
   );
+});
+
+test("internal rescore-race preserves the source race deadline in its Queue message", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        raceStartAtJst: "2026-06-20T15:30:00+09:00",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ raceStartAtJst: "2026-06-20T15:30:00+09:00" }),
+  );
+  expect(realtimePrepareMock).not.toHaveBeenCalled();
 });
 
 test("internal rescore-race endpoint response body marks claimed true when proceed", async () => {
@@ -1944,6 +2301,174 @@ test("internal rescore-race endpoint returns 400 when category is missing", asyn
   expect(claimRescoreRaceMock).not.toHaveBeenCalled();
 });
 
+test("internal rescore-race endpoint fails closed when weight generation is missing", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "35",
+        raceBango: "01",
+        runYmd: "20260824",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+  expect(weightRescoreQueueSendMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint rejects a non-positive snapshot count", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "35",
+        raceBango: "01",
+        runYmd: "20260824",
+        weightSnapshotCount: 0,
+        weightSnapshotFetchedAt: "2026-08-24T12:00:00+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects an invalid snapshot fetchedAt", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "35",
+        raceBango: "01",
+        runYmd: "20260824",
+        weightSnapshotCount: 8,
+        weightSnapshotFetchedAt: "not-a-date",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects a non-SHA256 snapshot hash", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "35",
+        raceBango: "01",
+        runYmd: "20260824",
+        weightSnapshotCount: 8,
+        weightSnapshotFetchedAt: "2026-08-24T12:00:00+09:00",
+        weightSnapshotHash: "not-a-sha256",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects a partial entry snapshot identity", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        entrySnapshotHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        keibajoCode: "35",
+        raceBango: "03",
+        runYmd: "20260824",
+        weightSnapshotCount: 2,
+        weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects an empty active runner set", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        activeHorseNumbers: [],
+        category: "nar",
+        entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        entrySnapshotHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        excludedHorseNumbers: [2],
+        keibajoCode: "35",
+        raceBango: "03",
+        runYmd: "20260824",
+        weightSnapshotCount: 2,
+        weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects overlapping active and excluded runners", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        activeHorseNumbers: [1, 2],
+        category: "nar",
+        entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        entrySnapshotHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        excludedHorseNumbers: [2],
+        keibajoCode: "35",
+        raceBango: "03",
+        runYmd: "20260824",
+        weightSnapshotCount: 2,
+        weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint rejects an active count different from weights", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        activeHorseNumbers: [1, 3],
+        category: "nar",
+        entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        entrySnapshotHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        excludedHorseNumbers: [2],
+        keibajoCode: "35",
+        raceBango: "03",
+        runYmd: "20260824",
+        weightSnapshotCount: 3,
+        weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
 test("internal rescore-race endpoint returns 400 when category is invalid", async () => {
   const response = await handleFetch(
     internalRescoreRaceRequest(
@@ -2005,6 +2530,25 @@ test("internal rescore-race endpoint returns 400 when runYmd is malformed", asyn
   );
   expect(response.status).toBe(400);
   expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint rejects an invalid race deadline", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        raceStartAtJst: "not-a-date",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+  expect(weightRescoreQueueSendMock).not.toHaveBeenCalled();
 });
 
 test("internal rescore-race endpoint returns 400 when body is not parseable JSON", async () => {

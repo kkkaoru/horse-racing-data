@@ -13,6 +13,11 @@ export interface CatalogServiceBinding {
   fetch(request: Request): Promise<Response>;
 }
 
+export interface RunningStylePlanJobMessage {
+  date: string;
+  type: "plan-running-style-predictions";
+}
+
 export interface Env {
   FINISH_POSITION_PREDICT_CONTAINER: DurableObjectNamespace<Container<Env>>;
   // Default-off canary binding for focused race-chain work. It is optional in
@@ -61,14 +66,13 @@ export interface Env {
   SOURCE_DATABASE_URL?: string;
   PREDICT_DAYS_AHEAD: string;
   TRIGGER_TOKEN: string;
-  // Bearer token for sync-realtime-data's POST /api/jobs endpoint, used by
-  // running-style-kick.ts to enqueue plan-running-style-predictions for the
-  // JST windows sync-realtime-data's own native running-style crons do not
-  // cover. Same secret value scripts/launchd/race-prediction-guard.sh already
-  // reads from apps/sync-realtime-data/.dev.vars locally; set here via
-  // `wrangler secret put REALTIME_ADMIN_TOKEN`. Optional so existing
-  // callers/tests need not set it -- an unset value fails the kick's bearer
-  // auth against sync-realtime-data (logged, never thrown).
+  // Direct producer route to sync-realtime-data's general job consumer.
+  // This avoids public HTTP, Access, and bearer-token failure modes. Optional
+  // only for rolling-deploy and local fixture compatibility; the kick fails
+  // closed when it is absent.
+  RUNNING_STYLE_PLAN_JOBS?: Queue<RunningStylePlanJobMessage>;
+  // Deprecated credential retained in the environment type during migration.
+  // running-style-kick.ts never reads it after direct Queue delivery lands.
   REALTIME_ADMIN_TOKEN?: string;
   // Legacy/manual feature flag for the per-race time coordinator. Production
   // has no coordinator cron: the second prediction is exclusively triggered
@@ -118,10 +122,20 @@ export interface Env {
   // requires a metadata-bearing R2 day-base object at dispatch time.
   RACE_CHAIN_CONTAINER_ENABLED?: string;
   RACE_CHAIN_CONTAINER_CATEGORIES?: string;
+  // Default-off Worker producer for the attested per-race market-signal
+  // foundation. A miss keeps the legacy Container layer active.
+  WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED?: string;
+  // Default-off rollout gate for Durable Object scheduled completion watches.
+  // Exactly "1" lets a focused-full accepted response acknowledge its source
+  // Queue delivery after the Container DO durably registers the watch.
+  FOCUSED_FULL_WATCH_ENABLED?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
   PREDICT_QUEUE: Queue<PredictQueueBody>;
+  // Terminal-only lane used by Container DO completion watches. Optional so a
+  // rolling deploy without the new binding keeps the legacy Queue polling path.
+  FOCUSED_FULL_COMPLETION_QUEUE?: Queue<FocusedFullCompletionMessage | FocusedFullWatchTickMessage>;
   // Dedicated low-latency lane for the one post-weight rescore pass. Optional
   // during rolling deploys; the internal weight endpoint falls back to the
   // primary queue until this binding is present.
@@ -225,6 +239,11 @@ export interface DayBasePrewarmMessage {
 
 export interface ContainerControlMessage {
   type: "container-stop";
+  // A lifecycle may atomically transfer a Container lease between a small,
+  // explicit set of owners before its terminal stop is consumed. The stop
+  // consumer accepts exactly one currently-active owner from this list and
+  // still destroys the DO only once.
+  acceptableWorkKeys?: string[];
   force?: boolean;
   name: string;
   requestedAt: string;
@@ -235,10 +254,42 @@ export interface ContainerControlMessage {
 
 export interface ContainerCleanupMessage {
   type: "container-cleanup";
+  acceptableWorkKeys?: string[];
   attempt: number;
   name: string;
   role: "legacy" | "race-chain";
   workKey: string;
+}
+
+export interface PredictionCacheRepairMessage {
+  type: "prediction-cache-repair";
+  category: PredictCategory;
+  keibajoCode: string;
+  raceBango: string;
+  runYmd: string;
+}
+
+export type FocusedFullWatchOutcome = "error" | "missing" | "success" | "timeout";
+
+export interface FocusedFullWatchPayload {
+  body: PredictQueueMessage;
+  doName: string;
+  role: "legacy" | "race-chain";
+  // Stable for every redelivery of one logical Queue generation. The Worker
+  // derives this from workKey + source message id before calling Container.
+  watchId: string;
+  workKey: string;
+}
+
+export interface FocusedFullCompletionMessage extends FocusedFullWatchPayload {
+  type: "focused-full-completion";
+  error?: string;
+  outcome: FocusedFullWatchOutcome;
+}
+
+export interface FocusedFullWatchTickMessage extends FocusedFullWatchPayload {
+  type: "focused-full-watch-tick";
+  deadlineAtMs: number;
 }
 
 export interface PredictQueueMessage {
@@ -257,6 +308,17 @@ export interface PredictQueueMessage {
   // it so downstream queue ordering can prioritize imminent races. Optional
   // for backward compatibility with manual/admin and already queued messages.
   raceStartAtJst?: string;
+  // Immutable identity of the horse-weight snapshot that caused this rescore.
+  // Required by event-driven rescore producers and preserved across every
+  // Queue retry/redrive so a newer or older non-empty snapshot cannot be
+  // mistaken for the requested post-weight generation.
+  weightSnapshotCount?: number;
+  weightSnapshotFetchedAt?: string;
+  weightSnapshotHash?: string;
+  activeHorseNumbers?: number[];
+  excludedHorseNumbers?: number[];
+  entrySnapshotFetchedAt?: string;
+  entrySnapshotHash?: string;
   // Backward-compatible field for older queued messages. Focused per-race full
   // builds intentionally ignore it and use the stable race-scoped DO name.
   requestId?: string;
@@ -338,7 +400,10 @@ export type PredictQueueBody =
   | DeliveryCanaryMessage
   | DayBasePickupMessage
   | DayBasePrewarmMessage
-  | ContainerCleanupMessage;
+  | ContainerCleanupMessage
+  | FocusedFullCompletionMessage
+  | FocusedFullWatchTickMessage
+  | PredictionCacheRepairMessage;
 
 export interface PredictRunState {
   status: "started" | "success" | "error";

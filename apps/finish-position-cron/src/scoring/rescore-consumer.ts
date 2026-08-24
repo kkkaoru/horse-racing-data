@@ -12,7 +12,12 @@ import {
   groupRowsByRace,
   refreshLateBindingColumns,
 } from "./feature-cache";
-import { fetchOddsForRace, fetchWeightForRace, sourceForCategory } from "./rescore-realtime";
+import {
+  fetchOddsForRace,
+  fetchWeightForRace,
+  sourceForCategory,
+  type WeightSnapshotGeneration,
+} from "./rescore-realtime";
 import {
   JRA_SHADOW_MODEL_SPECS,
   loadSelectedJraShadowModel,
@@ -21,6 +26,8 @@ import {
   type JraShadowPrediction,
   type JraShadowScoreResult,
 } from "./jra-shadow-scorer";
+import { createRescoreAttestation, type RescoreAttestation } from "../rescore-attestation";
+import { assertBeforeRaceStartDeadline } from "../race-deadline";
 import type { Env, PredictQueueMessage } from "../types";
 import type { FeatureEntry } from "./feature-projection";
 
@@ -29,6 +36,13 @@ const RACE_ID_NEN_END = 4;
 // popularity_score needs runner_count > 1; a 0- or 1-entry odds map cannot give
 // a valid denominator, so it degrades to the category median (null runnerCount).
 const ODDS_MAP_RUNNER_FLOOR = 1;
+const SCRATCH_STATUSES: ReadonlySet<string> = new Set([
+  "出場停止",
+  "出走取消",
+  "取消",
+  "競走除外",
+  "除外",
+]);
 
 const PREDICTIONS_TABLE = "race_finish_position_model_predictions";
 const PRIMARY_KEY_COLUMNS = [
@@ -99,6 +113,35 @@ interface PredictionRowContext {
   entries: ReadonlyArray<FeatureEntry>;
   modelVersion: string;
   parts: RaceIdParts;
+}
+
+const requiredWeightGeneration = (message: PredictQueueMessage): WeightSnapshotGeneration => {
+  const count = message.weightSnapshotCount;
+  const fetchedAt = message.weightSnapshotFetchedAt;
+  const hash = message.weightSnapshotHash;
+  if (count === undefined || fetchedAt === undefined || hash === undefined) {
+    throw new Error("Horse weight snapshot generation is missing");
+  }
+  return {
+    weightSnapshotCount: count,
+    weightSnapshotFetchedAt: fetchedAt,
+    weightSnapshotHash: hash,
+  };
+};
+
+interface EntrySnapshotRow {
+  horse_number: string | number | null;
+  status: string | null;
+}
+
+interface ExpectedRunnerSnapshot {
+  active: ReadonlySet<number>;
+  scratched: ReadonlySet<number>;
+}
+
+interface WeightSetValidationInput extends ExpectedRunnerSnapshot {
+  raceId: string;
+  weights: ReadonlyMap<number, number>;
 }
 
 const CACHE_MISS_RESULT: RescoreJraRaceResult = {
@@ -314,8 +357,20 @@ const upsertPredictions = async (input: UpsertInput): Promise<void> => {
 };
 
 interface TargetRaceRows {
+  cacheEtag: string;
+  cacheVersion: string;
+  isPerRace: boolean;
   status: RescoreStatus;
   rows: FeatureEntry[];
+}
+
+interface CacheRowsValidationInput {
+  attestation: RescoreAttestation;
+  cacheEtag: string;
+  cacheVersion: string;
+  isPerRace: boolean;
+  rows: ReadonlyArray<FeatureEntry>;
+  targetRaceId: string;
 }
 
 const decodeR2Object = async (object: R2ObjectBody): Promise<FeatureEntry[]> =>
@@ -326,7 +381,21 @@ const decodeR2Object = async (object: R2ObjectBody): Promise<FeatureEntry[]> =>
 // was not materialised, mirroring the whole-day race_not_found contract.
 const loadPerRaceRows = async (object: R2ObjectBody): Promise<TargetRaceRows> => {
   const rows = await decodeR2Object(object);
-  return rows.length > 0 ? { rows, status: "ok" } : { rows: [], status: "race_not_found" };
+  return rows.length > 0
+    ? {
+        cacheEtag: object.etag,
+        cacheVersion: object.version,
+        isPerRace: true,
+        rows,
+        status: "ok",
+      }
+    : {
+        cacheEtag: object.etag,
+        cacheVersion: object.version,
+        isPerRace: true,
+        rows: [],
+        status: "race_not_found",
+      };
 };
 
 const loadWholeDayRows = async (
@@ -334,16 +403,33 @@ const loadWholeDayRows = async (
   message: PredictQueueMessage,
 ): Promise<TargetRaceRows> => {
   const object = await env.FEATURES_CACHE.get(buildFeatCacheKey(JRA_CATEGORY, message.runYmd));
-  if (object === null) return { rows: [], status: "cache_miss" };
+  if (object === null) {
+    return { cacheEtag: "", cacheVersion: "", isPerRace: false, rows: [], status: "cache_miss" };
+  }
   const rows = await decodeR2Object(object);
   const targetRaceId = buildTargetRaceId(message);
   const group = groupRowsByRace(rows).find((race) => race.raceId === targetRaceId);
-  if (group === undefined) return { rows: [], status: "race_not_found" };
-  return { rows: group.rows, status: "ok" };
+  if (group === undefined) {
+    return {
+      cacheEtag: object.etag,
+      cacheVersion: object.version,
+      isPerRace: false,
+      rows: [],
+      status: "race_not_found",
+    };
+  }
+  return {
+    cacheEtag: object.etag,
+    cacheVersion: object.version,
+    isPerRace: false,
+    rows: group.rows,
+    status: "ok",
+  };
 };
 
-// Prefer the smaller per-race cache key (no day-wide decode + grouping); fall
-// back to the whole-day key when the per-race parquet has not been written yet.
+// Read the smaller per-race cache key first. The legacy whole-day lookup is
+// retained only to preserve cache_miss/race_not_found diagnostics; attestation
+// validation prevents a whole-day object from reaching scoring or publication.
 const loadTargetRaceRows = async (
   env: Env,
   message: PredictQueueMessage,
@@ -359,8 +445,104 @@ const loadTargetRaceRows = async (
   return loadWholeDayRows(env, message);
 };
 
+const normalizePositiveHorseNumber = (value: unknown): number | null => {
+  const parsed = Number(cellToString(value));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const hex = (bytes: ArrayBuffer): string =>
+  [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
+
+const hashCacheEntries = async (rows: ReadonlyArray<FeatureEntry>): Promise<string> => {
+  const tokens = rows.map((row) => {
+    const ketto = cellToString(row.ketto_toroku_bango)?.trim();
+    const umaban = normalizePositiveHorseNumber(row.umaban);
+    if (ketto === undefined || ketto === "" || umaban === null) {
+      throw new Error("JRA final cache contains an invalid entry identity");
+    }
+    return `${ketto}:${String(umaban)}`;
+  });
+  if (new Set(tokens).size !== tokens.length) {
+    throw new Error("JRA final cache contains duplicate entry identities");
+  }
+  const contract = [...tokens].sort().join("\n");
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(contract)));
+};
+
+const assertAttestedTargetCacheRows = async (input: CacheRowsValidationInput): Promise<void> => {
+  if (!input.isPerRace) throw new Error("JRA final cache is not race-scoped");
+  if (
+    input.cacheEtag !== input.attestation.featureCacheEtag ||
+    input.cacheVersion !== input.attestation.featureCacheVersion
+  ) {
+    throw new Error("JRA final cache object does not match its attestation");
+  }
+  if (input.rows.some((row) => cellToString(row.race_id) !== input.targetRaceId)) {
+    throw new Error(`JRA final cache race scope mismatch: ${input.targetRaceId}`);
+  }
+  if (input.rows.length !== input.attestation.entryCount) {
+    throw new Error(`JRA final cache entry count mismatch: ${input.targetRaceId}`);
+  }
+  if ((await hashCacheEntries(input.rows)) !== input.attestation.entrySetHash) {
+    throw new Error(`JRA final cache entry set mismatch: ${input.targetRaceId}`);
+  }
+};
+
+const loadExpectedRunnerNumbers = async (
+  env: Env,
+  message: PredictQueueMessage,
+): Promise<ExpectedRunnerSnapshot> => {
+  const result = await env.REALTIME_DB.prepare(
+    `with latest as (
+       select max(fetched_at) as fetched_at
+         from race_entry_snapshots
+        where race_key = ?1
+     )
+     select entries.horse_number, entries.status
+       from race_entry_snapshots entries
+       join latest on latest.fetched_at = entries.fetched_at
+      where entries.race_key = ?1
+      order by cast(entries.horse_number as integer)`,
+  )
+    .bind(buildTargetRaceId(message))
+    .all<EntrySnapshotRow>();
+  const active = new Set<number>();
+  const scratched = new Set<number>();
+  result.results.forEach((row) => {
+    const horseNumber = normalizePositiveHorseNumber(row.horse_number);
+    if (horseNumber === null) return;
+    if (row.status !== null && SCRATCH_STATUSES.has(row.status)) {
+      scratched.add(horseNumber);
+      return;
+    }
+    active.add(horseNumber);
+  });
+  if (active.size === 0) {
+    throw new Error(`Active JRA runner snapshot is empty: ${buildTargetRaceId(message)}`);
+  }
+  return { active, scratched };
+};
+
+const assertCompleteWeightSet = (input: WeightSetValidationInput): void => {
+  const missing = [...input.active].filter((horseNumber) => !input.weights.has(horseNumber));
+  if (missing.length > 0) {
+    throw new Error(
+      `JRA horse weight rows are incomplete: ${input.raceId} missing=${missing.join(",")}`,
+    );
+  }
+  const unexpected = [...input.weights.keys()].filter(
+    (horseNumber) => !input.active.has(horseNumber) && !input.scratched.has(horseNumber),
+  );
+  if (unexpected.length > 0) {
+    throw new Error(
+      `JRA horse weight rows do not match entries: ${input.raceId} unexpected=${unexpected.join(",")}`,
+    );
+  }
+};
+
 interface ScoreAndWriteInput {
   env: Env;
+  message: PredictQueueMessage;
   rows: FeatureEntry[];
   oddsMap: Map<number, { tanshoOdds: number; tanshoNinkijun: number }>;
   weightMap: Map<number, number>;
@@ -385,6 +567,10 @@ const scoreAndWrite = async (input: ScoreAndWriteInput): Promise<RescoreJraRaceR
       )
     : initialScore;
   const parts = splitRaceId(cellToString(input.rows[0]?.race_id) ?? "");
+  assertBeforeRaceStartDeadline({
+    nowMs: Date.now(),
+    raceStartAtJst: input.message.raceStartAtJst,
+  });
   await upsertPredictions({ entries, env: input.env, parts, scored });
   return {
     modelVersion: scored.modelVersion,
@@ -406,18 +592,47 @@ export const rescoreJraRace = async (input: RescoreJraRaceInput): Promise<Rescor
     console.warn(`rescore ${target.status} race_id=${targetRaceId} runYmd=${input.message.runYmd}`);
     return MISS_RESULT_BY_STATUS[target.status];
   }
+  const targetRaceId = buildTargetRaceId(input.message);
+  const attestation = await createRescoreAttestation({
+    category: JRA_CATEGORY,
+    env: input.env,
+    keibajoCode: input.message.keibajoCode ?? "",
+    raceBango: input.message.raceBango ?? "",
+    runYmd: input.message.runYmd,
+  });
+  await assertAttestedTargetCacheRows({
+    attestation,
+    cacheEtag: target.cacheEtag,
+    cacheVersion: target.cacheVersion,
+    isPerRace: target.isPerRace,
+    rows: target.rows,
+    targetRaceId,
+  });
   const fetchInput = {
     fetchImpl: input.fetchImpl,
     keibajoCode: input.message.keibajoCode ?? "",
     raceBango: input.message.raceBango ?? "",
     runYmd: input.message.runYmd,
     source: sourceForCategory(JRA_CATEGORY),
+    weightGeneration: requiredWeightGeneration(input.message),
   };
-  const [oddsMap, weightMap] = await Promise.all([
+  const [oddsMap, weightMap, expectedRunners] = await Promise.all([
     fetchOddsForRace(fetchInput),
     fetchWeightForRace(fetchInput),
+    loadExpectedRunnerNumbers(input.env, input.message),
   ]);
-  return scoreAndWrite({ env: input.env, oddsMap, rows: target.rows, weightMap });
+  assertCompleteWeightSet({
+    ...expectedRunners,
+    raceId: targetRaceId,
+    weights: weightMap,
+  });
+  return scoreAndWrite({
+    env: input.env,
+    message: input.message,
+    oddsMap,
+    rows: target.rows,
+    weightMap,
+  });
 };
 
 export {
@@ -427,4 +642,6 @@ export {
   classifySeasonBand,
   classifySurface,
   splitRaceId,
+  assertCompleteWeightSet,
+  assertAttestedTargetCacheRows,
 };

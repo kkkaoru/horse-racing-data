@@ -150,6 +150,94 @@ test("decideContainerSlotClaim preserves custom expiry and work ownership", () =
   });
 });
 
+test("decideContainerSlotClaim atomically transfers an expected day-base owner", () => {
+  const first = decideContainerSlotClaim(
+    [
+      makeLease({
+        doName: "predict-nar",
+        kind: "day-base",
+        workKey: "day-base:20260824:nar",
+      }),
+    ],
+    {
+      category: "nar",
+      doName: "predict-nar",
+      kind: "day-base",
+      now: NOW_MS + 1,
+      replaceWorkKey: "day-base:20260824:nar",
+      staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
+      workKey: "day-base-stale:20260824:nar",
+    },
+  );
+  expect(first).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 1_000_001,
+        workKey: "day-base-stale:20260824:nar",
+      },
+    ],
+    proceed: true,
+  });
+
+  const duplicate = decideContainerSlotClaim(first.leases, {
+    category: "nar",
+    doName: "predict-nar",
+    kind: "day-base",
+    now: NOW_MS + 2,
+    replaceWorkKey: "day-base:20260824:nar",
+    staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
+    workKey: "day-base-stale:20260824:nar",
+  });
+  expect(duplicate).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 1_000_001,
+        workKey: "day-base-stale:20260824:nar",
+      },
+    ],
+    proceed: false,
+    state: "busy",
+  });
+  expect(
+    releaseContainerSlotLease(
+      duplicate.leases,
+      "predict-nar",
+      "day-base",
+      NOW_MS + 3,
+      "day-base:20260824:nar",
+    ),
+  ).toStrictEqual([
+    {
+      category: "jra",
+      doName: "predict-nar",
+      holders: 1,
+      kind: "day-base",
+      rescoreHolders: 0,
+      timestamp: 1_000_001,
+      workKey: "day-base-stale:20260824:nar",
+    },
+  ]);
+  expect(
+    releaseContainerSlotLease(
+      duplicate.leases,
+      "predict-nar",
+      "day-base",
+      NOW_MS + 3,
+      "day-base-stale:20260824:nar",
+    ),
+  ).toStrictEqual([]);
+});
+
 test("the same work owner can reclaim its slot for terminal cleanup", () => {
   const lease = makeLease({ doName: "predict-jra-1", workKey: "work-1" });
   const decision = decideContainerSlotClaim([lease], {
@@ -170,7 +258,7 @@ test("terminal stop ownership rejects a newer owner but allows safe cleanup", ()
 
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "old-work", NOW_MS)).toBe(false);
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "new-work", NOW_MS)).toBe(true);
-  expect(isContainerSlotStopAllowed(owned, "predict-nar-1", "old-work", NOW_MS)).toBe(true);
+  expect(isContainerSlotStopAllowed(owned, "predict-nar-1", "old-work", NOW_MS)).toBe(false);
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", undefined, NOW_MS)).toBe(true);
   expect(
     isContainerSlotStopAllowed(
@@ -180,6 +268,12 @@ test("terminal stop ownership rejects a newer owner but allows safe cleanup", ()
       NOW_MS,
     ),
   ).toBe(false);
+  expect(
+    isContainerSlotStopAllowed(owned, "predict-jra-1", "canonical-work", NOW_MS, [
+      "canonical-work",
+      "new-work",
+    ]),
+  ).toBe(true);
 });
 
 test("decideContainerSlotClaim starts the first unique DO", () => {

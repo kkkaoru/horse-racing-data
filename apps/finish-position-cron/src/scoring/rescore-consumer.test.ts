@@ -12,6 +12,7 @@ const {
   selectShadowModelMock,
   fetchOddsMock,
   fetchWeightMock,
+  createAttestationMock,
 } = vi.hoisted(() => {
   const query = vi.fn(async () => []);
   const loadSelectedModel = vi.fn(async (_bucket, spec) => ({ spec }));
@@ -37,7 +38,15 @@ const {
   }));
   const fetchOdds = vi.fn(async () => new Map());
   const fetchWeight = vi.fn(async () => new Map());
+  const createAttestation = vi.fn(async () => ({
+    attestationIssuedAtMs: 1_777_000_000_000,
+    entryCount: 3,
+    entrySetHash: "c9b6dd15b6539b195ce006d2a3c7ed8d755ef4af0753fd7305e0cce5cdb6109d",
+    featureCacheEtag: "per-race-etag",
+    featureCacheVersion: "per-race-version",
+  }));
   return {
+    createAttestationMock: createAttestation,
     fetchOddsMock: fetchOdds,
     fetchWeightMock: fetchWeight,
     loadSelectedModelMock: loadSelectedModel,
@@ -49,6 +58,7 @@ const {
 });
 
 vi.mock("@neondatabase/serverless", () => ({ neon: neonMock }));
+vi.mock("../rescore-attestation", () => ({ createRescoreAttestation: createAttestationMock }));
 vi.mock("./jra-shadow-scorer", async () => {
   const actual = await vi.importActual<typeof import("./jra-shadow-scorer")>("./jra-shadow-scorer");
   return {
@@ -71,6 +81,8 @@ import {
   classifyFieldSizeBand,
   classifySeasonBand,
   classifySurface,
+  assertCompleteWeightSet,
+  assertAttestedTargetCacheRows,
   rescoreJraRace,
   splitRaceId,
 } from "./rescore-consumer";
@@ -87,15 +99,37 @@ const WHOLE_DAY_CACHE_KEY = "feat-cache/catalog-v1/jra/20260614/features.parquet
 
 const cacheObject = {
   arrayBuffer: async () => sampleBytes.buffer.slice(0),
+  etag: "whole-day-etag",
+  version: "whole-day-version",
 };
 const emptyCacheObject = {
   arrayBuffer: async () => emptyBytes.buffer.slice(0),
+  etag: "per-race-etag",
+  version: "per-race-version",
+};
+const perRaceCacheObject = {
+  arrayBuffer: async () => threeRaceBytes.buffer.slice(0),
+  etag: "per-race-etag",
+  version: "per-race-version",
 };
 
 const makeEnv = (getImpl: (key: string) => Promise<unknown>): Env =>
   ({
     FEATURES_CACHE: { get: vi.fn(getImpl) } as unknown as R2Bucket,
     NEON_DATABASE_URL: "postgres://example",
+    REALTIME_DB: {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({
+            results: [
+              { horse_number: "1", status: null },
+              { horse_number: "2", status: null },
+              { horse_number: "3", status: null },
+            ],
+          })),
+        })),
+      })),
+    } as unknown as D1Database,
   }) as unknown as Env;
 
 const makeKeyedEnv = (objectsByKey: Map<string, unknown>): Env =>
@@ -107,9 +141,13 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): PredictQueue
   keibajoCode: "05",
   mode: "rescore",
   raceBango: "11",
+  raceStartAtJst: "2099-01-01T00:00:00+09:00",
   runDate: "2026-06-14",
   runDateIso: "2026-06-14",
   runYmd: "20260614",
+  weightSnapshotCount: 3,
+  weightSnapshotFetchedAt: "2026-06-14T14:30:00+09:00",
+  weightSnapshotHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   ...overrides,
 });
 
@@ -121,9 +159,16 @@ beforeEach(() => {
   selectShadowModelMock.mockClear();
   fetchOddsMock.mockClear();
   fetchWeightMock.mockClear();
+  createAttestationMock.mockClear();
   queryMock.mockResolvedValue([]);
   fetchOddsMock.mockResolvedValue(new Map());
-  fetchWeightMock.mockResolvedValue(new Map());
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 480],
+      [2, 490],
+      [3, 500],
+    ]),
+  );
 });
 
 test("buildTargetRaceId composes jra:nen:tsukihi:keibajo:bango from the message", () => {
@@ -303,11 +348,16 @@ test("rescoreJraRace returns race_not_found when the target race is absent from 
   warnSpy.mockRestore();
 });
 
-test("rescoreJraRace reads the per-race cache key directly without whole-day grouping", async () => {
+test("rescoreJraRace reads and attests the per-race cache key directly", async () => {
   fetchOddsMock.mockResolvedValue(new Map([[1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }]]));
-  fetchWeightMock.mockResolvedValue(new Map([[1, 484]]));
-  const perRaceObject = { arrayBuffer: async () => threeRaceBytes.buffer.slice(0) };
-  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceObject]]));
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 484],
+      [2, 490],
+      [3, 500],
+    ]),
+  );
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(result.status).toBe("ok");
   expect(result.racesPredicted).toBe(1);
@@ -315,14 +365,56 @@ test("rescoreJraRace reads the per-race cache key directly without whole-day gro
   expect(queryMock).toHaveBeenCalledTimes(1);
 });
 
-test("rescoreJraRace falls back to the whole-day cache when the per-race key is absent", async () => {
+test("rescoreJraRace blocks the Neon upsert when scoring crosses the race deadline", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-24T05:59:59.000Z"));
+  loadSelectedModelMock.mockImplementationOnce(async (_bucket, spec) => {
+    vi.setSystemTime(new Date("2026-08-24T06:00:00.000Z"));
+    return { spec };
+  });
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  await expect(
+    rescoreJraRace({
+      env,
+      fetchImpl: fetch,
+      message: makeMessage({ raceStartAtJst: "2026-08-24T15:00:00+09:00" }),
+    }),
+  ).rejects.toThrow("Race start deadline has been reached");
+  expect(queryMock).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test("rescoreJraRace fails closed before publish when only the whole-day cache exists", async () => {
   fetchOddsMock.mockResolvedValue(new Map([[1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }]]));
-  fetchWeightMock.mockResolvedValue(new Map([[1, 484]]));
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 484],
+      [2, 490],
+      [3, 500],
+    ]),
+  );
   const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
-  const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
-  expect(result.status).toBe("ok");
-  expect(result.predictionCount).toBe(3);
-  expect(queryMock).toHaveBeenCalledTimes(1);
+  await expect(rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() })).rejects.toThrow(
+    "JRA final cache is not race-scoped",
+  );
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("rescoreJraRace fails before realtime fetch and Neon publish on an entry attestation mismatch", async () => {
+  createAttestationMock.mockResolvedValueOnce({
+    attestationIssuedAtMs: 1_777_000_000_000,
+    entryCount: 3,
+    entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    featureCacheEtag: "per-race-etag",
+    featureCacheVersion: "per-race-version",
+  });
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  await expect(rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() })).rejects.toThrow(
+    "JRA final cache entry set mismatch: jra:2026:0614:05:11",
+  );
+  expect(fetchOddsMock).not.toHaveBeenCalled();
+  expect(fetchWeightMock).not.toHaveBeenCalled();
+  expect(queryMock).not.toHaveBeenCalled();
 });
 
 test("rescoreJraRace returns race_not_found when the per-race cache parquet is empty", async () => {
@@ -335,20 +427,239 @@ test("rescoreJraRace returns race_not_found when the per-race cache parquet is e
 });
 
 test("rescoreJraRace passes a 66-element params list for the 3-horse target race", async () => {
-  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
   await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   const call = queryMock.mock.calls[0] as unknown as [string, (string | number | null)[]];
   expect(call[1].length).toBe(66);
   expect(call[1][0]).toBe("jra-cb-v9-sim-2013-clean");
 });
 
-test("rescoreJraRace still scores when the realtime odds + weight maps are empty", async () => {
+test("rescoreJraRace fails closed when the realtime weight map is empty", async () => {
   fetchOddsMock.mockResolvedValue(new Map());
   fetchWeightMock.mockResolvedValue(new Map());
-  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  await expect(rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() })).rejects.toThrow(
+    "JRA horse weight rows are incomplete: jra:2026:0614:05:11 missing=1,2,3",
+  );
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("rescoreJraRace fails closed when the requested weight generation is missing", async () => {
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  await expect(
+    rescoreJraRace({
+      env,
+      fetchImpl: fetch,
+      message: makeMessage({ weightSnapshotHash: undefined }),
+    }),
+  ).rejects.toThrow("Horse weight snapshot generation is missing");
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("assertCompleteWeightSet rejects a partial active-runner snapshot", () => {
+  expect(() =>
+    assertCompleteWeightSet({
+      active: new Set([1, 2, 3]),
+      raceId: "jra:2026:0614:05:11",
+      scratched: new Set(),
+      weights: new Map([[1, 480]]),
+    }),
+  ).toThrow("JRA horse weight rows are incomplete: jra:2026:0614:05:11 missing=2,3");
+});
+
+test("assertCompleteWeightSet permits an extra scratched runner while requiring every active runner", () => {
+  expect(() =>
+    assertCompleteWeightSet({
+      active: new Set([1, 3]),
+      raceId: "jra:2026:0614:05:11",
+      scratched: new Set([2]),
+      weights: new Map([
+        [1, 480],
+        [2, 490],
+        [3, 500],
+      ]),
+    }),
+  ).not.toThrow();
+});
+
+test("assertCompleteWeightSet rejects a weight row absent from the entry snapshot", () => {
+  expect(() =>
+    assertCompleteWeightSet({
+      active: new Set([1, 3]),
+      raceId: "jra:2026:0614:05:11",
+      scratched: new Set([2]),
+      weights: new Map([
+        [1, 480],
+        [3, 500],
+        [4, 510],
+      ]),
+    }),
+  ).toThrow("JRA horse weight rows do not match entries: jra:2026:0614:05:11 unexpected=4");
+});
+
+test("assertAttestedTargetCacheRows accepts an exact race scope and current entry set", async () => {
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 3,
+        entrySetHash: "c9b6dd15b6539b195ce006d2a3c7ed8d755ef4af0753fd7305e0cce5cdb6109d",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [
+        { ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 },
+        { ketto_toroku_bango: "2019100002", race_id: "jra:2026:0614:05:11", umaban: 2 },
+        { ketto_toroku_bango: "2019100003", race_id: "jra:2026:0614:05:11", umaban: 3 },
+      ],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).resolves.toBeUndefined();
+});
+
+test("assertAttestedTargetCacheRows rejects a replaced final cache object", async () => {
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 1,
+        entrySetHash: "f1b9c2230e7056e68e9195ca11552d22e99f0c238eef53545954574ac23230b5",
+        featureCacheEtag: "attested-etag",
+        featureCacheVersion: "attested-version",
+      },
+      cacheEtag: "replacement-etag",
+      cacheVersion: "replacement-version",
+      isPerRace: true,
+      rows: [{ ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 }],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache object does not match its attestation");
+});
+
+test("assertAttestedTargetCacheRows rejects any out-of-scope row", async () => {
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 2,
+        entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [
+        { ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 },
+        { ketto_toroku_bango: "2019100002", race_id: "jra:2026:0614:09:12", umaban: 2 },
+      ],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache race scope mismatch: jra:2026:0614:05:11");
+});
+
+test("assertAttestedTargetCacheRows rejects stale entry count and horse set", async () => {
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 2,
+        entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [{ ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 }],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache entry count mismatch: jra:2026:0614:05:11");
+
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 1,
+        entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [{ ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 }],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache entry set mismatch: jra:2026:0614:05:11");
+});
+
+test("assertAttestedTargetCacheRows rejects invalid and duplicate cache entry identities", async () => {
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 1,
+        entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [{ ketto_toroku_bango: "", race_id: "jra:2026:0614:05:11", umaban: 0 }],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache contains an invalid entry identity");
+
+  await expect(
+    assertAttestedTargetCacheRows({
+      attestation: {
+        attestationIssuedAtMs: 1_777_000_000_000,
+        entryCount: 2,
+        entrySetHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        featureCacheEtag: "per-race-etag",
+        featureCacheVersion: "per-race-version",
+      },
+      cacheEtag: "per-race-etag",
+      cacheVersion: "per-race-version",
+      isPerRace: true,
+      rows: [
+        { ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 },
+        { ketto_toroku_bango: "2019100001", race_id: "jra:2026:0614:05:11", umaban: 1 },
+      ],
+      targetRaceId: "jra:2026:0614:05:11",
+    }),
+  ).rejects.toThrow("JRA final cache contains duplicate entry identities");
+});
+
+test("rescoreJraRace excludes a scratched entry from required weight coverage", async () => {
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 480],
+      [3, 500],
+    ]),
+  );
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  env.REALTIME_DB = {
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => ({
+          results: [
+            { horse_number: "1", status: null },
+            { horse_number: "2", status: "取消" },
+            { horse_number: "3", status: null },
+          ],
+        })),
+      })),
+    })),
+  } as unknown as D1Database;
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(result.status).toBe("ok");
-  expect(result.predictionCount).toBe(3);
+  expect(queryMock).toHaveBeenCalledTimes(1);
 });
 
 test("rescoreJraRace switches to the market-free model when stage-2 spread is degraded", async () => {
@@ -369,7 +680,7 @@ test("rescoreJraRace switches to the market-free model when stage-2 spread is de
     })
     .mockReturnValueOnce({
       gradeCode: null,
-      modelVersion: "jra-cb-stage1-marketfree235-2013",
+      modelVersion: "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
       predictions: [
         { kettoTorokuBango: "2019100001", predictedRank: 1, predictedScore: 0.8, umaban: 1 },
         { kettoTorokuBango: "2019100002", predictedRank: 2, predictedScore: 0.6, umaban: 2 },
@@ -381,9 +692,9 @@ test("rescoreJraRace switches to the market-free model when stage-2 spread is de
       stage1RescoreRequired: false,
       variant: "stage1_marketfree",
     });
-  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
-  expect(result.modelVersion).toBe("jra-cb-stage1-marketfree235-2013");
+  expect(result.modelVersion).toBe("jra-cb-stage1-marketfree235-iter500-top1swap-2013");
   expect(loadSelectedModelMock).toHaveBeenCalledTimes(2);
   expect(scoreShadowMock).toHaveBeenCalledTimes(2);
 });
@@ -409,8 +720,14 @@ test("rescoreJraRace refreshes odds before selecting and scoring the model", asy
       [3, { tanshoNinkijun: 3, tanshoOdds: 9 }],
     ]),
   );
-  fetchWeightMock.mockResolvedValue(new Map());
-  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 480],
+      [2, 490],
+      [3, 500],
+    ]),
+  );
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
   await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(selectShadowModelMock).toHaveBeenCalledTimes(1);
   expect(scoreShadowMock).toHaveBeenCalledTimes(1);

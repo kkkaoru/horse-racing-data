@@ -74,12 +74,21 @@ export const JRA_SHADOW_MODEL_SPECS: Readonly<Record<JraShadowVariant, JraShadow
   stage1_marketfree: {
     architecture: "catboost",
     featureCount: 235,
-    modelVersion: "jra-cb-stage1-marketfree235-2013",
+    modelVersion: "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
     variant: "stage1_marketfree",
   },
 };
 
+const STAGE1_MARKETFREE_BASE_SPEC: JraShadowModelSpec = {
+  architecture: "catboost",
+  featureCount: 235,
+  modelVersion: "jra-cb-stage1-marketfree235-2013",
+  variant: "stage1_marketfree",
+};
+
 export interface LoadedJraShadowModel {
+  baseFeatureNames?: string[];
+  baseModel?: CatBoostModel;
   featureNames: string[];
   model: CatBoostModel;
   spec: JraShadowModelSpec;
@@ -260,6 +269,32 @@ export const loadSelectedJraShadowModel = async (
   bucket: R2Bucket,
   spec: JraShadowModelSpec,
 ): Promise<LoadedJraShadowModel> => {
+  if (spec.variant === "stage1_marketfree") {
+    const [modelJson, metadataJson, baseModelJson, baseMetadataJson] = await Promise.all([
+      getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, MODEL_FILE)),
+      getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, METADATA_FILE)),
+      getJson(
+        bucket,
+        buildModelKey(CATEGORY, STAGE1_MARKETFREE_BASE_SPEC.modelVersion, MODEL_FILE),
+      ),
+      getJson(
+        bucket,
+        buildModelKey(CATEGORY, STAGE1_MARKETFREE_BASE_SPEC.modelVersion, METADATA_FILE),
+      ),
+    ]);
+    const featureNames = parseMetadata(metadataJson, spec);
+    const baseFeatureNames = parseMetadata(baseMetadataJson, STAGE1_MARKETFREE_BASE_SPEC);
+    if (featureNames.join("\0") !== baseFeatureNames.join("\0")) {
+      throw new Error("Stage-1 top1-swap base and companion feature order mismatch");
+    }
+    return {
+      baseFeatureNames,
+      baseModel: parseCatBoostJsonModel(baseModelJson),
+      featureNames,
+      model: parseCatBoostJsonModel(modelJson),
+      spec,
+    };
+  }
   const [modelJson, metadataJson] = await Promise.all([
     getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, MODEL_FILE)),
     getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, METADATA_FILE)),
@@ -323,18 +358,64 @@ const populationStddev = (scores: ReadonlyArray<number>): number => {
   return Math.sqrt(variance);
 };
 
+const topIndex = (horseIds: ReadonlyArray<string>, scores: ReadonlyArray<number>): number =>
+  scores.reduce(
+    (bestIndex, score, index) =>
+      score > scores[bestIndex]! ||
+      (score === scores[bestIndex]! && horseIds[index]! < horseIds[bestIndex]!)
+        ? index
+        : bestIndex,
+    0,
+  );
+
+export const applyTop1ScoreSwap = (
+  horseIds: ReadonlyArray<string>,
+  baseScores: ReadonlyArray<number>,
+  companionScores: ReadonlyArray<number>,
+): number[] => {
+  if (horseIds.length !== baseScores.length || horseIds.length !== companionScores.length) {
+    throw new Error("horseIds, baseScores, and companionScores must have equal lengths");
+  }
+  const adjusted = [...baseScores];
+  if (adjusted.length === 0) return adjusted;
+  const baseTop = topIndex(horseIds, baseScores);
+  const companionTop = topIndex(horseIds, companionScores);
+  if (baseTop !== companionTop) {
+    [adjusted[baseTop], adjusted[companionTop]] = [adjusted[companionTop]!, adjusted[baseTop]!];
+  }
+  return adjusted;
+};
+
 export const scoreJraRaceShadow = (
   entries: ReadonlyArray<FeatureEntry>,
   loaded: LoadedJraShadowModel,
 ): JraShadowScoreResult => {
   if (entries.length === 0) throw new Error("final feature contract: race has no entries");
   assertFinalFeatureContract(entries, loaded);
-  const scores = entries.map((entry) =>
+  const companionScores = entries.map((entry) =>
     scoreCatBoostModel({
       features: projectCatBoostCells(entry, loaded.featureNames),
       model: loaded.model,
     }),
   );
+  let scores = companionScores;
+  if (loaded.spec.variant === "stage1_marketfree") {
+    const { baseFeatureNames, baseModel } = loaded;
+    if (baseModel === undefined || baseFeatureNames === undefined) {
+      throw new Error("Stage-1 top1-swap base model is not loaded");
+    }
+    const baseScores = entries.map((entry) =>
+      scoreCatBoostModel({
+        features: projectCatBoostCells(entry, baseFeatureNames),
+        model: baseModel,
+      }),
+    );
+    scores = applyTop1ScoreSwap(
+      entries.map((entry) => textCell(entry, "ketto_toroku_bango")!),
+      baseScores,
+      companionScores,
+    );
+  }
   const scoreStddev = populationStddev(scores);
   const predictions = entries
     .map((entry, index) => ({

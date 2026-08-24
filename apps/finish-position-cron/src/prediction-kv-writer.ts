@@ -54,6 +54,7 @@ export type PredictionKvPublishStatus =
 
 export interface PredictionKvPublishResult {
   busted: boolean;
+  expectedGeneratedAt: string | null;
   status: PredictionKvPublishStatus;
 }
 
@@ -102,6 +103,17 @@ const toPredictionGeneratedAt = (value: unknown): string | null => {
   }
   if (typeof value === "string" && value.length > 0) return value;
   return null;
+};
+
+export const resolveExpectedPredictionGeneratedAt = (
+  rows: ReadonlyArray<FinishPositionPredictionRow>,
+): string | null => {
+  if (rows.length === 0) return null;
+  const generatedAtMs = rows.map((row) =>
+    row.predictionGeneratedAt === null ? Number.NaN : Date.parse(row.predictionGeneratedAt),
+  );
+  if (generatedAtMs.some((value) => !Number.isFinite(value))) return null;
+  return new Date(Math.max(...generatedAtMs)).toISOString();
 };
 
 const resolveConfidenceTier = (stddev: number): FinishPositionConfidenceTier => {
@@ -255,11 +267,11 @@ const writeFinishPositionPredictionKv = async (
   const window = resolvePredictionCacheWindow(params.runYmd, nowMs);
   const ttlSeconds = getPredictionKvTtlSeconds(window);
   if (ttlSeconds <= 0) {
-    return { busted: false, status: "skipped-outside-window" };
+    return { busted: false, expectedGeneratedAt: null, status: "skipped-outside-window" };
   }
   const kv = params.env.DETAIL_SECTION_CACHE_KV;
   if (!kv) {
-    return { busted: false, status: "skipped-no-kv" };
+    return { busted: false, expectedGeneratedAt: null, status: "skipped-no-kv" };
   }
   const keibajoCode = params.keibajoCode.padStart(KEIBAJO_PAD_WIDTH, "0");
   const raceBango = params.raceBango.padStart(RACE_BANGO_PAD_WIDTH, "0");
@@ -272,7 +284,11 @@ const writeFinishPositionPredictionKv = async (
   });
   const features = mapFinishPositionPredictionFeatures(rows);
   if (features.length === 0) {
-    return { busted: false, status: "skipped-empty" };
+    return { busted: false, expectedGeneratedAt: null, status: "skipped-empty" };
+  }
+  const expectedGeneratedAt = resolveExpectedPredictionGeneratedAt(rows);
+  if (expectedGeneratedAt === null) {
+    return { busted: false, expectedGeneratedAt: null, status: "error" };
   }
   const cacheKey = buildFinishPositionPredictionKvKey({
     keibajoCode,
@@ -282,7 +298,7 @@ const writeFinishPositionPredictionKv = async (
   });
   await kv.put(cacheKey, JSON.stringify(features), { expirationTtl: ttlSeconds });
   if (!params.bustCacheApi) {
-    return { busted: false, status: "written" };
+    return { busted: false, expectedGeneratedAt, status: "written" };
   }
   const bust = await triggerPredictionCacheBust(params.env, {
     keibajoCode,
@@ -291,7 +307,7 @@ const writeFinishPositionPredictionKv = async (
     source,
     year: params.runYmd.slice(0, RUN_YMD_YEAR_END),
   });
-  return { busted: bust.status === "ok", status: "written" };
+  return { busted: bust.status === "ok", expectedGeneratedAt, status: "written" };
 };
 
 export const publishFinishPositionPredictionCache = async (
@@ -304,7 +320,7 @@ export const publishFinishPositionPredictionCache = async (
       `prediction kv fp write failed category=${params.category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}:`,
       String(error),
     );
-    return { busted: false, status: "error" };
+    return { busted: false, expectedGeneratedAt: null, status: "error" };
   }
 };
 

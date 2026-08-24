@@ -5,6 +5,7 @@ import cbSmall from "./__fixtures__/cb-small.json";
 import golden from "./__fixtures__/jra-parity-golden.json";
 import type { FeatureEntry } from "./feature-projection";
 import {
+  applyTop1ScoreSwap,
   JRA_SHADOW_MODEL_SPECS,
   loadSelectedJraShadowModel,
   scoreJraRaceShadow,
@@ -174,6 +175,32 @@ test("loads only the selected production model and its metadata from R2", async 
   );
 });
 
+test("loads the Stage-1 top1 companion and its base contract together", async () => {
+  const spec = JRA_SHADOW_MODEL_SPECS.stage1_marketfree;
+  const featureNames = featureNamesFor(spec);
+  const get = vi.fn(async (key: string) => {
+    if (key.endsWith("model.json")) return jsonObject(cbSmall);
+    const modelVersion = key.includes("iter500-top1swap")
+      ? spec.modelVersion
+      : "jra-cb-stage1-marketfree235-2013";
+    return jsonObject({
+      architecture: "catboost-yetirank",
+      feature_count: 235,
+      feature_names: featureNames,
+      model_version: modelVersion,
+    });
+  });
+
+  const loaded = await loadSelectedJraShadowModel({ get } as unknown as R2Bucket, spec);
+
+  expect(loaded.baseFeatureNames).toStrictEqual(featureNames);
+  expect(loaded.baseModel).toBeDefined();
+  expect(get).toHaveBeenCalledTimes(4);
+  expect(get).toHaveBeenCalledWith(
+    "finish-position/jra/jra-cb-stage1-marketfree235-2013/model.json",
+  );
+});
+
 test("selected model load fails closed when its R2 object is absent", async () => {
   const bucket = { get: vi.fn(async () => null) } as unknown as R2Bucket;
   await expect(loadSelectedJraShadowModel(bucket, JRA_SHADOW_MODEL_SPECS.sim)).rejects.toThrow(
@@ -238,6 +265,18 @@ test.each([
       ],
     },
     "within-race leak",
+  ],
+  [
+    "sorted leak features",
+    {
+      ...metadataFor(JRA_SHADOW_MODEL_SPECS.sim),
+      feature_names: [
+        "target_corner_4_norm",
+        "target_corner_2_norm",
+        ...featureNamesFor(JRA_SHADOW_MODEL_SPECS.sim).slice(2),
+      ],
+    },
+    "within-race leak columns: target_corner_2_norm, target_corner_4_norm",
   ],
 ])("rejects %s metadata", async (_label, metadata, message) => {
   await expect(
@@ -311,10 +350,34 @@ test("reports the Stage-1 safety-net rescore without loading or writing it", () 
   expect(
     scoreJraRaceShadow(goldenRaceEntries, {
       ...goldenLoadedModel,
+      baseFeatureNames: golden.featureNames,
+      baseModel: zeroModel,
       model: zeroModel,
       spec: JRA_SHADOW_MODEL_SPECS.stage1_marketfree,
     }).stage1RescoreRequired,
   ).toBe(false);
+});
+
+test("applyTop1ScoreSwap changes only the two top selections", () => {
+  expect(applyTop1ScoreSwap(["H1", "H2", "H3", "H4"], [4, 3, 2, 1], [0, 1, 5, 2])).toStrictEqual([
+    2, 3, 4, 1,
+  ]);
+  expect(applyTop1ScoreSwap(["H1", "H2"], [2, 1], [3, 1])).toStrictEqual([2, 1]);
+  expect(applyTop1ScoreSwap([], [], [])).toStrictEqual([]);
+});
+
+test("applyTop1ScoreSwap uses horse-id ties and rejects misaligned inputs", () => {
+  expect(applyTop1ScoreSwap(["H2", "H1"], [2, 1], [3, 3])).toStrictEqual([1, 2]);
+  expect(() => applyTop1ScoreSwap(["H1"], [1], [])).toThrow("equal lengths");
+});
+
+test("Stage-1 scoring fails closed when its base model is missing", () => {
+  expect(() =>
+    scoreJraRaceShadow(goldenRaceEntries, {
+      ...goldenLoadedModel,
+      spec: JRA_SHADOW_MODEL_SPECS.stage1_marketfree,
+    }),
+  ).toThrow("base model is not loaded");
 });
 
 test("final feature contract rejects missing, non-numeric, and identity gaps", () => {

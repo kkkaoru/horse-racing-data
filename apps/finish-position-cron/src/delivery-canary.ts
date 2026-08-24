@@ -37,7 +37,8 @@ export const isPredictQueueMessage = (
 ): message is Message<PredictQueueMessage> =>
   !isDeliveryCanaryMessage(message.body) &&
   !isDayBasePickupMessage(message.body) &&
-  !isDayBasePrewarmMessage(message.body);
+  !isDayBasePrewarmMessage(message.body) &&
+  !("type" in message.body && message.body.type === "prediction-cache-repair");
 
 export const enqueueDeliveryCanary = async (
   env: Env,

@@ -104,6 +104,89 @@ test("rescore is ready only after Neon completion and the per-race R2 cache both
   );
 });
 
+test("rescore accepts an exact pre-weight prediction generated on the previous evening", async () => {
+  cacheHeadMock.mockResolvedValue({ key: "cached" });
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "35",
+      raceBango: "01",
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
+    "nar",
+    "2026",
+    "0824",
+    "35",
+    "01",
+    "iter40-nar-settransformer-blend-v1",
+    buildCatalogRows().map((row) => row.ketto_toroku_bango),
+    "2026-08-22T15:00:00",
+  ]);
+  expect(cacheHeadMock).toHaveBeenCalledWith(
+    "feat-cache/catalog-v1/nar/20260824/35/01/features.parquet",
+  );
+});
+
+test("rescore rejects previous-day predictions when the exact entrant set is incomplete", async () => {
+  queryMock.mockResolvedValue([{ actual_rows: 11 }]);
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "35",
+      raceBango: "01",
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe(false);
+
+  expect(queryMock.mock.calls[0]?.[0]).toContain("and not exists");
+  expect(queryMock.mock.calls[0]?.[0]).toContain(
+    "not (unexpected.ketto_toroku_bango = any($7::text[]))",
+  );
+  expect(queryMock.mock.calls[0]?.[1]?.[7]).toBe("2026-08-22T15:00:00");
+  expect(cacheHeadMock).not.toHaveBeenCalled();
+});
+
+test("rescore honors an explicit freshness bound and rejects older prediction rows", async () => {
+  queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+
+  await expect(
+    isPerRaceRescoreReady({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "01",
+      notBefore: "2026-08-24T01:57:44.000Z",
+      raceBango: "03",
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe(false);
+
+  expect(queryMock.mock.calls[0]?.[1]?.[7]).toBe("2026-08-24T01:57:44");
+  expect(cacheHeadMock).not.toHaveBeenCalled();
+});
+
+test("rescore rejects an invalid run date before querying Catalog, Neon, or R2", async () => {
+  await expect(
+    isPerRaceRescoreReady({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "01",
+      raceBango: "03",
+      runYmd: "2026082",
+    }),
+  ).resolves.toBe(false);
+
+  expect(catalogFetchMock).not.toHaveBeenCalled();
+  expect(queryMock).not.toHaveBeenCalled();
+  expect(cacheHeadMock).not.toHaveBeenCalled();
+});
+
 test("rescore stays deferred when Neon is complete but the per-race R2 cache is missing", async () => {
   cacheHeadMock.mockResolvedValue(null);
 
@@ -197,7 +280,7 @@ test("isFocusedFullPredictionComplete only counts rows -- it cannot detect a deg
     expect.anything(),
   );
   expect(queryMock).toHaveBeenCalledWith(
-    expect.stringContaining("count(distinct ketto_toroku_bango)"),
+    expect.stringContaining("count(distinct prediction.ketto_toroku_bango)"),
     expect.anything(),
   );
 });
@@ -502,7 +585,9 @@ test("recognizes a JRA race the stage1 market-free fallback gate routed away fro
 
   expect(queryMock).toHaveBeenCalledTimes(2);
   expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
-  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-stage1-marketfree235-2013");
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe(
+    "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
+  );
 });
 
 test("does not retry under a stage1 fallback model_version for ban-ei -- stage1_routing.json has no ban-ei entry", async () => {

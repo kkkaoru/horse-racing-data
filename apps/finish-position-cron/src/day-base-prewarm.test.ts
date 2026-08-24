@@ -16,6 +16,7 @@ const {
   controlSendMock,
   enumerateTodaysRacesMock,
   fanOutPredictionsAfterDayBaseHitMock,
+  getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadinessMock,
   headDayBaseObjectMock,
   pickUpPrewarmDayBaseMock,
@@ -27,6 +28,10 @@ const {
   controlSendMock: vi.fn(async () => undefined),
   enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
   fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
+  getDayBasePrewarmHitReadinessMock: vi.fn(async () => ({
+    ready: false,
+    reason: "day-base-missing-or-invalid",
+  })),
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   headDayBaseObjectMock: vi.fn(async (): Promise<DayBaseHeadResult> => null),
   pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
@@ -52,6 +57,7 @@ vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
 }));
 vi.mock("./focused-full-day-base-readiness", () => ({
+  getDayBasePrewarmHitReadiness: getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
 
@@ -148,6 +154,11 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
 beforeEach(() => {
   enumerateTodaysRacesMock.mockClear();
   fanOutPredictionsAfterDayBaseHitMock.mockClear();
+  getDayBasePrewarmHitReadinessMock.mockReset();
+  getDayBasePrewarmHitReadinessMock.mockResolvedValue({
+    ready: false,
+    reason: "day-base-missing-or-invalid",
+  });
   getFocusedFullDayBaseReadinessMock.mockReset();
   getFocusedFullDayBaseReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   containerDoFetchMock.mockClear();
@@ -259,6 +270,110 @@ test("prewarmCategory still builds when FEATURES_CACHE has an unwatermarked obje
   });
   expect(landed).toBe(false);
   expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory returns a live Worker HIT before slot claim and Container fetch", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  const landed = await prewarmCategory({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    generatePredictionsAfterHit: true,
+    runYmd: "20260824",
+  });
+
+  expect(landed).toBe(true);
+  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledWith({
+    category: "nar",
+    env: expect.any(Object),
+    runYmd: "20260824",
+  });
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] worker-hit category=nar runYmd=20260824 containerStarted=false",
+  );
+  logSpy.mockRestore();
+});
+
+test("prewarmCategory Worker HIT does not fan out without generation intent", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategory({ category: "ban-ei", daysAhead: 0, env: makeEnv(), runYmd: "20260824" }),
+  ).resolves.toBe(true);
+
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
+});
+
+test("prewarmCategory Worker HIT reports fanout failure without starting Container", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  fanOutPredictionsAfterDayBaseHitMock.mockRejectedValueOnce(new Error("Queue unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategory({
+      category: "jra",
+      daysAhead: 0,
+      env: makeEnv(),
+      generatePredictionsAfterHit: true,
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe(false);
+
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] worker-hit fanout failed category=jra runYmd=20260824: Error: Queue unavailable",
+  );
+  errorSpy.mockRestore();
+});
+
+test("prewarmCategory keeps stale and forced work on the Container generation path", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "rs-row-count-368-of-479",
+  });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await prewarmCategory({ category: "nar", daysAhead: 0, env: makeEnv(), runYmd: "20260824" });
+  await prewarmCategory({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    force: true,
+    runYmd: "20260824",
+  });
+
+  expect(getDayBasePrewarmHitReadinessMock).toHaveBeenCalledTimes(1);
+  expect(claimContainerSlotMock).toHaveBeenCalledTimes(2);
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
+  expect(logSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] worker-hit-miss category=nar runYmd=20260824 reason=rs-row-count-368-of-479",
+  );
+  logSpy.mockRestore();
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory falls back to Container freshness when the Worker probe fails", async () => {
+  getDayBasePrewarmHitReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await prewarmCategory({ category: "jra", daysAhead: 0, env: makeEnv(), runYmd: "20260824" });
+
+  expect(claimContainerSlotMock).toHaveBeenCalledTimes(1);
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] worker-hit-check failed category=jra runYmd=20260824: Error: Catalog unavailable -- continuing to container freshness check",
+  );
   warnSpy.mockRestore();
 });
 

@@ -4,9 +4,9 @@
 
 import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
 import {
-  completeFocusedFullRace,
   failFocusedFullRaceEnqueue,
   reserveFocusedFullRaceEnqueue,
+  reserveFocusedFullRaceRepair,
 } from "./do-state";
 import { isPerRaceFeatureCachePresent } from "./focused-full-completion";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
@@ -73,15 +73,16 @@ const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> =
         runYmd: params.runYmd,
       });
       if (!cachePresent) {
-        await completeFocusedFullRace({
+        reservation = await reserveFocusedFullRaceRepair({
           category,
           env: params.env,
           keibajoCode: params.keibajoCode,
           raceBango: params.raceBango,
+          raceStartAtJst: params.raceStartAtJst,
+          reservationId,
           runYmd: params.runYmd,
-          status: "error",
+          staleAfterMs: FOCUSED_FULL_ENQUEUE_RESERVATION_STALE_MS,
         });
-        reservation = await reserveFocusedFullRaceEnqueue(reservationParams);
         if (reservation.proceed) {
           console.warn(
             `[predict-producer] reopened cacheless focused-full success category=${category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}`,

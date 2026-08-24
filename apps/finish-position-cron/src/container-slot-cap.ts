@@ -28,6 +28,7 @@ export interface ContainerSlotClaimParams {
   kind: ContainerSlotKind;
   now: number;
   staleAfterMs: number;
+  replaceWorkKey?: string;
   workKey?: string;
 }
 
@@ -132,12 +133,33 @@ const decideNewContainerSlotClaim = (
   return { leases: [...live, created], proceed: true };
 };
 
+const transferExistingContainerSlotClaim = (
+  live: readonly ContainerSlotLease[],
+  params: ContainerSlotClaimParams,
+): ContainerSlotClaimDecision => ({
+  leases: live.map((lease) =>
+    lease.doName === params.doName
+      ? { ...lease, timestamp: params.now, workKey: params.workKey }
+      : lease,
+  ),
+  proceed: true,
+});
+
 export const decideContainerSlotClaim = (
   leases: readonly ContainerSlotLease[],
   params: ContainerSlotClaimParams,
 ): ContainerSlotClaimDecision => {
   const live = pruneStaleContainerSlots(leases, params.now);
   const existing = live.find((lease) => lease.doName === params.doName);
+  if (
+    existing !== undefined &&
+    params.replaceWorkKey !== undefined &&
+    params.workKey !== undefined &&
+    existing.workKey === params.replaceWorkKey &&
+    existing.workKey !== params.workKey
+  ) {
+    return transferExistingContainerSlotClaim(live, params);
+  }
   if (
     existing !== undefined &&
     params.allowSameOwner === true &&
@@ -156,10 +178,14 @@ export const isContainerSlotStopAllowed = (
   doName: string,
   workKey: string | undefined,
   now: number,
+  acceptableWorkKeys?: readonly string[],
 ): boolean => {
-  if (workKey === undefined) return true;
+  const ownerKeys = acceptableWorkKeys ?? (workKey === undefined ? undefined : [workKey]);
+  if (ownerKeys === undefined) return true;
   const existing = pruneStaleContainerSlots(leases, now).find((lease) => lease.doName === doName);
-  return existing === undefined || existing.workKey === workKey;
+  return (
+    existing !== undefined && existing.workKey !== undefined && ownerKeys.includes(existing.workKey)
+  );
 };
 
 export const releaseContainerSlotLease = (
@@ -232,10 +258,15 @@ export const clearContainerSlotLease = (
   doName: string,
   now: number,
   workKeyOrLegacyStaleAfterMs?: string | number,
+  acceptableWorkKeys?: readonly string[],
 ): ContainerSlotLease[] => {
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
+  const ownerKeys = acceptableWorkKeys ?? (workKey === undefined ? undefined : [workKey]);
   return pruneStaleContainerSlots(leases, now).filter(
-    (lease) => lease.doName !== doName || (workKey !== undefined && lease.workKey !== workKey),
+    (lease) =>
+      lease.doName !== doName ||
+      (ownerKeys !== undefined &&
+        (lease.workKey === undefined || !ownerKeys.includes(lease.workKey))),
   );
 };

@@ -15,11 +15,22 @@ import {
 const featureHeadMock = vi.fn<() => Promise<R2Object | null>>();
 const catalogFetchMock = vi.fn<(request: Request) => Promise<Response>>();
 const runningStyleFirstMock = vi.fn<() => Promise<Record<string, unknown> | null>>();
+const raceSourceAllMock = vi.fn<() => Promise<{ results: Record<string, unknown>[] }>>();
+const runningStyleReadinessAllMock = vi.fn<() => Promise<{ results: Record<string, unknown>[] }>>();
+const realtimePrepareSqlMock = vi.fn<(sql: string) => void>();
 const repairFirstMock = vi.fn<() => Promise<{ category: string } | null>>();
 const repairInsertBindMock = vi.fn((..._values: unknown[]) => ({ first: repairFirstMock }));
 const repairPrepareSqlMock = vi.fn<(sql: string) => void>();
 const repairRunMock = vi.fn(async () => ({ success: true }));
 const queueSendMock = vi.fn(async () => undefined);
+const RACE_ENUMERATION_QUERY_FRAGMENT: string = "SELECT DISTINCT source";
+
+const bindRealtimeSql = (sql: string): Record<string, unknown> => {
+  if (sql.includes(RACE_ENUMERATION_QUERY_FRAGMENT)) return { all: raceSourceAllMock };
+  return sql.startsWith("with target(running_key")
+    ? { all: runningStyleReadinessAllMock }
+    : { first: runningStyleFirstMock };
+};
 
 const metadataObject = (overrides: Record<string, string> = {}): R2Object =>
   ({
@@ -46,7 +57,10 @@ const makeEnv = (): Env =>
     PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
     PREDICT_QUEUE: { send: queueSendMock },
     REALTIME_DB: {
-      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ first: runningStyleFirstMock })) })),
+      prepare: vi.fn((sql: string) => {
+        realtimePrepareSqlMock(sql);
+        return { bind: vi.fn(() => bindRealtimeSql(sql)) };
+      }),
     },
   }) as unknown as Env;
 
@@ -65,7 +79,54 @@ beforeEach(() => {
   );
   runningStyleFirstMock.mockReset();
   runningStyleFirstMock.mockResolvedValue(readyRunningStyleRow());
+  raceSourceAllMock.mockReset();
+  raceSourceAllMock.mockResolvedValue({
+    results: [
+      {
+        keibajo_code: "05",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:00:00+09:00",
+        source: "jra",
+      },
+      {
+        keibajo_code: "43",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:30:00+09:00",
+        source: "nar",
+      },
+      {
+        keibajo_code: "83",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:45:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+  runningStyleReadinessAllMock.mockReset();
+  runningStyleReadinessAllMock.mockResolvedValue({
+    results: [
+      {
+        entrant_count: 2,
+        expected_horse_count: 2,
+        features_r2_key: "running-style/features.parquet",
+        prediction_count: 2,
+        running_key: "jra:20260823:05:01",
+        status: "completed",
+        written_horse_count: 2,
+      },
+      {
+        entrant_count: 2,
+        expected_horse_count: 2,
+        features_r2_key: "running-style/features.parquet",
+        prediction_count: 2,
+        running_key: "nar:20260823:43:01",
+        status: "completed",
+        written_horse_count: 2,
+      },
+    ],
+  });
   repairFirstMock.mockReset();
+  realtimePrepareSqlMock.mockClear();
   repairFirstMock.mockResolvedValue({ category: "jra" });
   repairInsertBindMock.mockClear();
   repairPrepareSqlMock.mockClear();
@@ -87,6 +148,17 @@ test("accepts only matching Catalog and current running-style metadata", async (
   const request = catalogFetchMock.mock.calls[0]?.[0];
   expect(request?.url).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/race-features?date=20260823&source=jra",
+  );
+});
+
+test("accepts a NAR artifact only after every exact-category race is complete", async () => {
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+
+  expect(runningStyleReadinessAllMock).toHaveBeenCalledTimes(1);
+  expect(realtimePrepareSqlMock).toHaveBeenCalledWith(
+    expect.stringContaining("races.source = 'nar' and races.keibajo_code <> '83'"),
   );
 });
 
@@ -193,7 +265,7 @@ test("rejects a stale populated artifact while the export source has no running-
   ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-2-of-0" });
 });
 
-test("accepts the canonical absent watermark before the first running-style row exists", async () => {
+test("rejects a zero-running-style artifact while a category race lacks inference state", async () => {
   featureHeadMock.mockResolvedValueOnce(
     metadataObject({ "rs-predicted-at-max": "none", "rs-row-count": "0" }),
   );
@@ -202,21 +274,117 @@ test("accepts the canonical absent watermark before the first running-style row 
     rs_predicted_at_max: null,
     rs_row_count: 0,
   });
+  runningStyleReadinessAllMock.mockResolvedValueOnce({ results: [] });
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({
+    ready: false,
+    reason: "running-style-race-incomplete-43-01-state-missing",
+  });
 });
 
-test("accepts all currently exportable rows while later races are still pending", async () => {
+test("rejects a partial category artifact while a later race is still pending", async () => {
   runningStyleFirstMock.mockResolvedValueOnce({
     ...readyRunningStyleRow(),
-    race_count: 3,
+    race_count: 2,
+  });
+  raceSourceAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        keibajo_code: "43",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:30:00+09:00",
+        source: "nar",
+      },
+      {
+        keibajo_code: "43",
+        race_bango: "02",
+        race_start_at_jst: "2026-08-23T11:00:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+  runningStyleReadinessAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        entrant_count: 2,
+        expected_horse_count: 2,
+        features_r2_key: "running-style/features.parquet",
+        prediction_count: 2,
+        running_key: "nar:20260823:43:01",
+        status: "completed",
+        written_horse_count: 2,
+      },
+    ],
   });
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({
+    ready: false,
+    reason: "running-style-race-incomplete-43-02-state-missing",
+  });
+});
+
+test("rejects a category race whose inference state is not completed", async () => {
+  runningStyleReadinessAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        entrant_count: 2,
+        expected_horse_count: 2,
+        features_r2_key: "running-style/features.parquet",
+        prediction_count: 2,
+        running_key: "nar:20260823:43:01",
+        status: "processing",
+        written_horse_count: 2,
+      },
+    ],
+  });
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({
+    ready: false,
+    reason: "running-style-race-incomplete-43-01-status-processing",
+  });
+});
+
+test("rejects a category race whose prediction count is incomplete", async () => {
+  runningStyleReadinessAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        entrant_count: 2,
+        expected_horse_count: 2,
+        features_r2_key: "running-style/features.parquet",
+        prediction_count: 1,
+        running_key: "nar:20260823:43:01",
+        status: "completed",
+        written_horse_count: 2,
+      },
+    ],
+  });
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({
+    ready: false,
+    reason: "running-style-race-incomplete-43-01-prediction-count-1-of-2",
+  });
+});
+
+test("fails closed when category race enumeration is empty or unavailable", async () => {
+  raceSourceAllMock.mockResolvedValueOnce({
+    results: [{ keibajo_code: "43", race_bango: "01", source: "nar" }],
+  });
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-races-missing" });
+
+  raceSourceAllMock.mockRejectedValueOnce(new Error("D1 enumeration unavailable"));
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
+  ).rejects.toThrow("D1 enumeration unavailable");
 });
 
 test("uses the canonical no-running-style watermark for Ban-ei", async () => {
@@ -256,6 +424,26 @@ test("atomically enqueues one day-base repair and suppresses duplicates", async 
   expect(queueSendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
+    requestedAt: expect.any(String),
+    runYmd: "20260823",
+    type: "day-base-prewarm",
+  });
+});
+
+test("preserves force on an old-date day-base repair message", async () => {
+  await expect(
+    enqueueDayBaseRepairOnce({
+      category: "jra",
+      env: makeEnv(),
+      force: true,
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe("enqueued");
+
+  expect(queueSendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    force: true,
     requestedAt: expect.any(String),
     runYmd: "20260823",
     type: "day-base-prewarm",

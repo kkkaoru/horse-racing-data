@@ -113,4 +113,15 @@ it("narrows canary and prediction queue messages", () => {
       },
     } as never),
   ).toBe(false);
+  expect(
+    isPredictQueueMessage({
+      body: {
+        category: "nar",
+        keibajoCode: "55",
+        raceBango: "10",
+        runYmd: "20260823",
+        type: "prediction-cache-repair",
+      },
+    } as never),
+  ).toBe(false);
 });

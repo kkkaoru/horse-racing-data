@@ -33,6 +33,12 @@ beforeEach(() => {
 
 test("isContainerCleanupMessage accepts an exact cleanup body", () => {
   expect(isContainerCleanupMessage(cleanupMessage)).toBe(true);
+  expect(
+    isContainerCleanupMessage({
+      ...cleanupMessage,
+      acceptableWorkKeys: ["day-base:20260824:nar", "day-base-stale:20260824:nar"],
+    }),
+  ).toBe(true);
   expect(isContainerCleanupQueueMessage({ body: cleanupMessage } as never)).toBe(true);
 });
 
@@ -41,6 +47,9 @@ test("isContainerCleanupMessage rejects malformed cleanup bodies", () => {
   expect(isContainerCleanupMessage({ ...cleanupMessage, name: "" })).toBe(false);
   expect(isContainerCleanupMessage({ ...cleanupMessage, role: "unknown" })).toBe(false);
   expect(isContainerCleanupMessage({ ...cleanupMessage, workKey: "" })).toBe(false);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, acceptableWorkKeys: [] })).toBe(false);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, acceptableWorkKeys: [""] })).toBe(false);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, acceptableWorkKeys: [1] })).toBe(false);
   expect(isContainerCleanupMessage({ ...cleanupMessage, type: "predict" })).toBe(false);
   expect(isContainerCleanupMessage(null)).toBe(false);
 });

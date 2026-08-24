@@ -17,8 +17,9 @@ import {
   shouldRunRescoreCron,
   shouldRunWarmCron,
 } from "./cron-decision";
-import { enqueueDayBasePrewarm, runDayBasePrewarm } from "./day-base-prewarm";
+import { prewarmCategoryWithOutcome, runDayBasePrewarm } from "./day-base-prewarm";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { completeLandedDayBase } from "./day-base-pickup";
 import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   enqueueDeliveryCanary,
@@ -26,14 +27,25 @@ import {
   shouldRunDeliveryCanaryCron,
 } from "./delivery-canary";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
-import { consumeContainerStop, isContainerControlQueueMessage } from "./container-control";
-import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
+import {
+  consumeContainerStop,
+  isAllowedContainerDoName,
+  isContainerControlQueueMessage,
+} from "./container-control";
+import { claimRescoreRace, completeFocusedFullRace, releaseRescoreRaceClaim } from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
+import {
+  handlePredictDoStatePurge,
+  PREDICT_DO_INTERNAL_PURGE_PATH,
+} from "./predict-do-state-purge";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
-import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
+import {
+  hasRequiredPerRaceScope,
+  normalizePerRaceScope,
+  PER_RACE_SCOPE_REQUIRED_ERROR,
+} from "./per-race-scope-guard";
 import { getPredictionReadiness } from "./prediction-readiness";
-import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
@@ -70,6 +82,10 @@ const SKIP_DEDUP_FIELD = "skipDedup";
 const DEBUG_FIELD = "debug";
 const FORCE_FIELD = "force";
 const RUN_YMD_FIELD = "runYmd";
+const RACE_START_AT_JST_FIELD = "raceStartAtJst";
+const WEIGHT_SNAPSHOT_COUNT_FIELD = "weightSnapshotCount";
+const WEIGHT_SNAPSHOT_FETCHED_AT_FIELD = "weightSnapshotFetchedAt";
+const WEIGHT_SNAPSHOT_HASH_FIELD = "weightSnapshotHash";
 const DEFAULT_MODE: PredictMode = "full";
 const RESCORE_MODE: PredictMode = "rescore";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
@@ -87,6 +103,7 @@ const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_PREWARM_DAY_BASE_PATH = "/api/admin/prewarm-day-base";
 const ADMIN_PICKUP_DAY_BASE_PATH = "/api/admin/pickup-day-base";
 const ADMIN_MATERIALIZE_DAY_BASE_PATH = "/api/admin/materialize-day-base-races";
+const ADMIN_PURGE_UNUSED_PREDICT_DO_STATE_PATH = "/api/admin/purge-unused-predict-do-state";
 export const CONTAINER_CONTROL_QUEUE_NAME = "finish-position-container-control-queue";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
@@ -98,9 +115,10 @@ const RUN_YMD_LENGTH = 8;
 const RUN_YMD_YEAR_END = 4;
 const RUN_YMD_MONTH_END = 6;
 const RUN_YMD_PATTERN = /^\d{8}$/u;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 const RUN_DATE_SEPARATOR = "-";
 
-interface InternalRescoreRaceRequest {
+interface RaceScopedPredictRequest {
   category: PredictCategory;
   debug?: boolean;
   // See PredictUrlParams.force in queue-consumer.ts (Defect H) -- forwarded
@@ -110,9 +128,24 @@ interface InternalRescoreRaceRequest {
   keibajoCode: string;
   raceBango: string;
   runYmd: string;
+  raceStartAtJst?: string;
 }
 
-interface AdminCompleteFocusedFullRaceRequest extends InternalRescoreRaceRequest {
+interface InternalRescoreRaceRequest extends RaceScopedPredictRequest {
+  activeHorseNumbers?: number[];
+  excludedHorseNumbers?: number[];
+  entrySnapshotFetchedAt?: string;
+  entrySnapshotHash?: string;
+  weightSnapshotCount: number;
+  weightSnapshotFetchedAt: string;
+  weightSnapshotHash: string;
+}
+
+interface RescoreRaceStartRow {
+  race_start_at_jst: string;
+}
+
+interface AdminCompleteFocusedFullRaceRequest extends RaceScopedPredictRequest {
   status: "error" | "success";
 }
 
@@ -271,11 +304,26 @@ export const isAdminPickupDayBaseRequest = (method: string, pathname: string): b
 export const isAdminMaterializeDayBaseRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_MATERIALIZE_DAY_BASE_PATH;
 
+export const isAdminPurgeUnusedPredictDoStateRequest = (
+  method: string,
+  pathname: string,
+): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PURGE_UNUSED_PREDICT_DO_STATE_PATH;
+
 const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
   typeof value === "string" && VALID_CATEGORIES.has(value);
 
 const isValidNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
+
+const isCanonicalHorseNumbers = (value: unknown): value is number[] =>
+  Array.isArray(value) &&
+  value.every(
+    (horseNumber, index) =>
+      Number.isInteger(horseNumber) &&
+      Number(horseNumber) > 0 &&
+      (index === 0 || Number(value[index - 1]) < Number(horseNumber)),
+  );
 
 const isValidRunYmd = (value: unknown): value is string =>
   typeof value === "string" && value.length === RUN_YMD_LENGTH && RUN_YMD_PATTERN.test(value);
@@ -288,6 +336,60 @@ const isFocusedFullTerminalStatus = (
 const parseInternalRescoreRaceBody = (
   body: Record<string, unknown>,
 ): InternalRescoreRaceRequest | null => {
+  const parsed = parseRaceScopedPredictBody(body);
+  if (parsed === null) return null;
+  const weightSnapshotCount = body[WEIGHT_SNAPSHOT_COUNT_FIELD];
+  const weightSnapshotFetchedAt = body[WEIGHT_SNAPSHOT_FETCHED_AT_FIELD];
+  const weightSnapshotHash = body[WEIGHT_SNAPSHOT_HASH_FIELD];
+  const activeHorseNumbers = body.activeHorseNumbers;
+  const excludedHorseNumbers = body.excludedHorseNumbers;
+  const entrySnapshotFetchedAt = body.entrySnapshotFetchedAt;
+  const entrySnapshotHash = body.entrySnapshotHash;
+  if (!Number.isInteger(weightSnapshotCount) || Number(weightSnapshotCount) <= 0) return null;
+  if (
+    !isValidNonEmptyString(weightSnapshotFetchedAt) ||
+    !Number.isFinite(Date.parse(weightSnapshotFetchedAt))
+  )
+    return null;
+  if (typeof weightSnapshotHash !== "string" || !SHA256_HEX_PATTERN.test(weightSnapshotHash))
+    return null;
+  const hasEntrySnapshot =
+    activeHorseNumbers !== undefined ||
+    excludedHorseNumbers !== undefined ||
+    entrySnapshotFetchedAt !== undefined ||
+    entrySnapshotHash !== undefined;
+  if (hasEntrySnapshot) {
+    if (!isCanonicalHorseNumbers(activeHorseNumbers) || activeHorseNumbers.length === 0)
+      return null;
+    if (!isCanonicalHorseNumbers(excludedHorseNumbers)) return null;
+    if (activeHorseNumbers.some((horseNumber) => excludedHorseNumbers.includes(horseNumber)))
+      return null;
+    if (activeHorseNumbers.length !== Number(weightSnapshotCount)) return null;
+    if (entrySnapshotFetchedAt !== weightSnapshotFetchedAt) return null;
+    if (typeof entrySnapshotHash !== "string" || !SHA256_HEX_PATTERN.test(entrySnapshotHash))
+      return null;
+  }
+  return {
+    ...parsed,
+    ...(hasEntrySnapshot && isCanonicalHorseNumbers(activeHorseNumbers)
+      ? { activeHorseNumbers }
+      : {}),
+    ...(hasEntrySnapshot && isCanonicalHorseNumbers(excludedHorseNumbers)
+      ? { excludedHorseNumbers }
+      : {}),
+    ...(hasEntrySnapshot && typeof entrySnapshotFetchedAt === "string"
+      ? { entrySnapshotFetchedAt }
+      : {}),
+    ...(hasEntrySnapshot && typeof entrySnapshotHash === "string" ? { entrySnapshotHash } : {}),
+    weightSnapshotCount: Number(weightSnapshotCount),
+    weightSnapshotFetchedAt,
+    weightSnapshotHash,
+  };
+};
+
+const parseRaceScopedPredictBody = (
+  body: Record<string, unknown>,
+): RaceScopedPredictRequest | null => {
   const category = body[CATEGORY_FIELD];
   const keibajoCode = body[KEIBAJO_CODE_FIELD];
   const raceBango = body[RACE_BANGO_FIELD];
@@ -296,13 +398,21 @@ const parseInternalRescoreRaceBody = (
   if (!isValidNonEmptyString(keibajoCode)) return null;
   if (!isValidNonEmptyString(raceBango)) return null;
   if (!isValidRunYmd(runYmd)) return null;
+  const raceTarget = normalizePerRaceScope({ keibajoCode, raceBango });
+  if (raceTarget === null) return null;
+  const raceStartAtJst = body[RACE_START_AT_JST_FIELD];
+  if (
+    raceStartAtJst !== undefined &&
+    (!isValidNonEmptyString(raceStartAtJst) || !Number.isFinite(Date.parse(raceStartAtJst)))
+  )
+    return null;
   return {
     category,
     ...(resolveDebugFlag(body) ? { debug: true } : {}),
     ...(body[FORCE_FIELD] === true ? { force: true } : {}),
-    keibajoCode: keibajoCode.trim(),
-    raceBango: raceBango.trim(),
+    ...raceTarget,
     runYmd,
+    ...(typeof raceStartAtJst === "string" ? { raceStartAtJst } : {}),
   };
 };
 
@@ -332,7 +442,7 @@ const parseAdminPrewarmDayBaseBody = (
 const parseAdminCompleteFocusedFullRaceBody = (
   body: Record<string, unknown>,
 ): AdminCompleteFocusedFullRaceRequest | null => {
-  const parsed = parseInternalRescoreRaceBody(body);
+  const parsed = parseRaceScopedPredictBody(body);
   if (!parsed || !isFocusedFullTerminalStatus(body.status)) return null;
   return { ...parsed, status: body.status };
 };
@@ -344,8 +454,36 @@ const buildRunDateFromYmd = (runYmd: string): string =>
     runYmd.slice(RUN_YMD_MONTH_END, RUN_YMD_LENGTH),
   ].join(RUN_DATE_SEPARATOR);
 
-const describeRaceRequest = (body: InternalRescoreRaceRequest): string =>
+const describeRaceRequest = (body: RaceScopedPredictRequest): string =>
   `category=${body.category} runYmd=${body.runYmd} keibajo=${body.keibajoCode} race=${body.raceBango}`;
+
+const resolveRescoreRaceStartAtJst = async (
+  env: Env,
+  body: InternalRescoreRaceRequest,
+): Promise<string> => {
+  if (body.raceStartAtJst !== undefined) return body.raceStartAtJst;
+  const source = body.category === "jra" ? "jra" : "nar";
+  const result = await env.REALTIME_DB.prepare(
+    `select race_start_at_jst
+       from realtime_race_sources
+      where source = ?1 and kaisai_nen = ?2 and kaisai_tsukihi = ?3
+        and keibajo_code = ?4 and race_bango = ?5
+      limit 1`,
+  )
+    .bind(
+      source,
+      body.runYmd.slice(0, RUN_YMD_YEAR_END),
+      body.runYmd.slice(RUN_YMD_YEAR_END),
+      body.keibajoCode,
+      body.raceBango,
+    )
+    .all<RescoreRaceStartRow>();
+  const raceStartAtJst = result.results[0]?.race_start_at_jst;
+  if (raceStartAtJst === undefined || !Number.isFinite(Date.parse(raceStartAtJst))) {
+    throw new Error(`Missing valid race start: ${describeRaceRequest(body)}`);
+  }
+  return raceStartAtJst;
+};
 
 const sendRescoreRaceMessage = async (
   env: Env,
@@ -364,6 +502,14 @@ const sendRescoreRaceMessage = async (
     runDate,
     runDateIso: runDate,
     runYmd: body.runYmd,
+    raceStartAtJst: body.raceStartAtJst,
+    activeHorseNumbers: body.activeHorseNumbers,
+    excludedHorseNumbers: body.excludedHorseNumbers,
+    entrySnapshotFetchedAt: body.entrySnapshotFetchedAt,
+    entrySnapshotHash: body.entrySnapshotHash,
+    weightSnapshotCount: body.weightSnapshotCount,
+    weightSnapshotFetchedAt: body.weightSnapshotFetchedAt,
+    weightSnapshotHash: body.weightSnapshotHash,
   } satisfies PredictQueueMessage);
 };
 
@@ -385,13 +531,20 @@ const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Re
   if (parsed.debug) {
     console.log(`[predict-worker] internal-rescore claim start ${describeRaceRequest(parsed)}`);
   }
-  const claim = await claimRescoreRace({
+  const raceStartAtJst = await resolveRescoreRaceStartAtJst(env, parsed);
+  const claimId = crypto.randomUUID();
+  const claimParams = {
     category: parsed.category,
+    claimId,
     env,
     keibajoCode: parsed.keibajoCode,
     raceBango: parsed.raceBango,
     runYmd: parsed.runYmd,
-  });
+    weightSnapshotCount: parsed.weightSnapshotCount,
+    weightSnapshotFetchedAt: parsed.weightSnapshotFetchedAt,
+    weightSnapshotHash: parsed.weightSnapshotHash,
+  };
+  const claim = await claimRescoreRace(claimParams);
   if (parsed.debug) {
     console.log(
       `[predict-worker] internal-rescore claim result ${describeRaceRequest(parsed)} proceed=${
@@ -402,7 +555,19 @@ const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Re
   if (!claim.proceed) {
     return Response.json({ claimed: false, ok: true }, { status: HTTP_OK });
   }
-  await sendRescoreRaceMessage(env, parsed);
+  try {
+    await sendRescoreRaceMessage(env, { ...parsed, raceStartAtJst });
+  } catch (error) {
+    try {
+      await releaseRescoreRaceClaim(claimParams);
+    } catch (releaseError) {
+      console.error(
+        `[predict-worker] internal-rescore claim release failed ${describeRaceRequest(parsed)}:`,
+        String(releaseError),
+      );
+    }
+    throw error;
+  }
   console.log(`[predict-worker] internal-rescore enqueued ${describeRaceRequest(parsed)}`);
   return Response.json({ claimed: true, ok: true }, { status: HTTP_ACCEPTED });
 };
@@ -420,7 +585,10 @@ const parseStopContainerNames = (body: Record<string, unknown>): string[] | null
   if (!Array.isArray(names)) return null;
   if (names.length === 0 || names.length > MAX_ADMIN_STOP_NAMES) return null;
   const parsed = names.filter(
-    (name): name is string => typeof name === "string" && name.startsWith(PREDICT_DO_NAME_PREFIX),
+    (name): name is string =>
+      typeof name === "string" &&
+      name.startsWith(PREDICT_DO_NAME_PREFIX) &&
+      isAllowedContainerDoName(name, "legacy"),
   );
   return parsed.length === names.length ? parsed : null;
 };
@@ -482,13 +650,40 @@ const guardedAdminStopContainers = async (request: Request, env: Env): Promise<R
   }
 };
 
+const purgePredictDoStateById = async (id: string, env: Env): Promise<Response> => {
+  const namespace = env.FINISH_POSITION_PREDICT_CONTAINER;
+  const durableObjectId = namespace.idFromString(id);
+  return namespace.get(durableObjectId).fetch(
+    new Request(`http://predict-container-do${PREDICT_DO_INTERNAL_PURGE_PATH}`, {
+      headers: { authorization: `Bearer ${env.TRIGGER_TOKEN}` },
+      method: "POST",
+    }),
+  );
+};
+
+const guardedAdminPurgeUnusedPredictDoState = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  try {
+    return await handlePredictDoStatePurge(request, {
+      purgeId: (id) => purgePredictDoStateById(id, env),
+      resolveIdFromName: (name) =>
+        env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(name).toString(),
+      triggerToken: env.TRIGGER_TOKEN,
+    });
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
 const handleAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     console.warn("[predict-worker] admin-run-focused-full unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const raw = await parseBody(request);
-  const parsed = parseInternalRescoreRaceBody(raw);
+  const parsed = parseRaceScopedPredictBody(raw);
   if (!parsed) {
     console.warn("[predict-worker] admin-run-focused-full invalid request");
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
@@ -538,20 +733,31 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
   console.warn(
     `[predict-worker] admin-prewarm-day-base start runYmd=${parsed.runYmd} category=${parsed.category ?? "all"}`,
   );
-  const queued =
-    parsed.category === undefined
-      ? await runDayBasePrewarm({ daysAhead, env, runYmd: parsed.runYmd })
-      : (await enqueueDayBasePrewarm({
-          category: parsed.category,
-          daysAhead,
-          env,
-          ...(parsed.force === true ? { force: true } : {}),
-          ...(parsed.generatePredictionsAfterHit === true
-            ? { generatePredictionsAfterHit: true }
-            : {}),
-          runYmd: parsed.runYmd,
-        }),
-        true);
+  if (parsed.category !== undefined) {
+    const outcome = await prewarmCategoryWithOutcome({
+      category: parsed.category,
+      daysAhead,
+      env,
+      ...(parsed.force === true ? { force: true } : {}),
+      ...(parsed.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
+      runYmd: parsed.runYmd,
+    });
+    const accepted = outcome !== "failed";
+    const status =
+      outcome === "landed" ? HTTP_OK : accepted ? HTTP_ACCEPTED : HTTP_SERVICE_UNAVAILABLE;
+    return Response.json(
+      {
+        accepted,
+        category: parsed.category,
+        ok: accepted,
+        outcome,
+        queued: false,
+        runYmd: parsed.runYmd,
+      },
+      { status },
+    );
+  }
+  const queued = await runDayBasePrewarm({ daysAhead, env, runYmd: parsed.runYmd });
   return Response.json(
     {
       category: parsed.category ?? "all",
@@ -607,14 +813,14 @@ const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Res
       : { ready: false, reason: "pickup-missing" };
   const pickedUp = readiness.ready;
   const landed = pickedUp;
-  const racesEnqueued =
-    landed && parsed.generatePredictionsAfterHit === true
-      ? await fanOutPredictionsAfterDayBaseHit({
-          category: parsed.category,
-          env,
-          runYmd: parsed.runYmd,
-        })
-      : 0;
+  const racesEnqueued = landed
+    ? await completeLandedDayBase({
+        category: parsed.category,
+        env,
+        generatePredictionsAfterHit: parsed.generatePredictionsAfterHit === true,
+        runYmd: parsed.runYmd,
+      })
+    : 0;
   return Response.json({
     category: parsed.category,
     ok: landed,
@@ -629,7 +835,7 @@ const guardedAdminPickupDayBase = async (request: Request, env: Env): Promise<Re
   try {
     return await handleAdminPickupDayBase(request, env);
   } catch (error) {
-    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_SERVICE_UNAVAILABLE });
   }
 };
 
@@ -677,11 +883,11 @@ const handleAdminCompleteFocusedFullRace = async (
     console.warn("[predict-worker] admin-complete-focused-full invalid request");
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
   }
-  console.warn(
+  console.log(
     `[predict-worker] admin-complete-focused-full start ${describeRaceRequest(parsed)} status=${parsed.status}`,
   );
   await completeFocusedFullRace({ env, ...parsed });
-  console.warn(
+  console.log(
     `[predict-worker] admin-complete-focused-full completed ${describeRaceRequest(
       parsed,
     )} status=${parsed.status}`,
@@ -729,6 +935,9 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   }
   if (isAdminStopContainersRequest(request.method, url.pathname)) {
     return guardedAdminStopContainers(request, env);
+  }
+  if (isAdminPurgeUnusedPredictDoStateRequest(request.method, url.pathname)) {
+    return guardedAdminPurgeUnusedPredictDoState(request, env);
   }
   if (isAdminCompleteFocusedFullRaceRequest(request.method, url.pathname)) {
     return guardedAdminCompleteFocusedFullRace(request, env);

@@ -1,7 +1,9 @@
 // Run with bun. Canonical fail-closed day-base readiness for focused-full work.
 
 import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { enumerateTodaysRaces } from "./cron-decision";
 import type { DaybaseWatermark } from "./ndjson-stream";
+import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface FocusedFullDayBaseReadinessParams {
@@ -48,6 +50,7 @@ const RUN_YMD_YEAR_END: number = 4;
 const RUN_YMD_LENGTH: number = 8;
 const READY_REASON: string = "ready";
 const NONE_WATERMARK: string = "none";
+const RUNNING_STYLE_RACES_MISSING_REASON: string = "running-style-races-missing";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -179,12 +182,36 @@ const liveWatermark = async (
   return { ...catalog, ...runningStyle };
 };
 
+const runningStyleRaceReadinessReason = async (
+  params: FocusedFullDayBaseReadinessParams,
+): Promise<string | null> => {
+  if (params.category === "ban-ei") return null;
+  const races = (await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd)).filter(
+    (race) => race.category === params.category,
+  );
+  if (races.length === 0) return RUNNING_STYLE_RACES_MISSING_REASON;
+  const readiness = await getRunningStyleRaceReadiness({
+    category: params.category,
+    db: params.env.REALTIME_DB,
+    races,
+    runYmd: params.runYmd,
+  });
+  const incomplete = readiness.find((item) => item.reason !== null);
+  return incomplete === undefined
+    ? null
+    : `running-style-race-incomplete-${incomplete.race.keibajoCode}-${incomplete.race.raceBango}-${incomplete.reason}`;
+};
+
 const compareWithLiveWatermark = async (
   params: FocusedFullDayBaseReadinessParams,
   metadata: DayBaseMetadata,
 ): Promise<FocusedFullDayBaseReadiness> => {
-  const live = await liveWatermark(params);
+  const [live, raceReadinessReason] = await Promise.all([
+    liveWatermark(params),
+    runningStyleRaceReadinessReason(params),
+  ]);
   if (live === null) return { ready: false, reason: "live-readiness-incomplete" };
+  if (raceReadinessReason !== null) return { ready: false, reason: raceReadinessReason };
   if (metadata.rowCount !== live.rowCount)
     return {
       ready: false,
@@ -218,3 +245,9 @@ export const getFocusedFullDayBaseReadiness = async (
   if (metadata === null) return { ready: false, reason: "day-base-missing-or-invalid" };
   return compareWithLiveWatermark(params, metadata);
 };
+
+// The hourly category prewarm uses the same live Catalog + per-race
+// running-style contract as focused-full dispatch. Keeping this alias in the
+// readiness module gives the prewarm path an explicit fail-closed API while
+// ensuring the two callers cannot drift to different freshness rules.
+export const getDayBasePrewarmHitReadiness = getFocusedFullDayBaseReadiness;

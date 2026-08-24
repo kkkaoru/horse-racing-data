@@ -18,9 +18,12 @@ const SECTION_PATH: string = "finish-prediction";
 const RACE_DETAIL_SSR_PATH: string = "/api/cache-warm/race-detail-ssr";
 const CACHE_WARM_HEADER_NAME: string = "X-PC-Keiba-Cache-Warm";
 const CACHE_WARM_HEADER_VALUE: string = "scheduled";
+const INTERNAL_TOKEN_HEADER_NAME: string = "x-pc-keiba-internal-token";
+const HTTP_GET_METHOD: string = "GET";
 const HTTP_POST_METHOD: string = "POST";
 const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 const PREDICTION_REFRESH_VALUE = "1";
+const EXPECTED_PREDICTION_GENERATED_AT_PARAM = "expectedPredictionGeneratedAt";
 const WARM_TIMEOUT_MS = 20_000;
 const RUN_DATE_YEAR_START = 0;
 const RUN_DATE_YEAR_END = 4;
@@ -41,6 +44,8 @@ const BAN_EI_KEIBAJO_CODES = ["83"] as const;
 const POPULATE_MAX_ATTEMPTS = 8;
 const POPULATE_RETRY_DELAY_MS = 10_000;
 const YMD_LENGTH = 8;
+const MAX_WARM_RESPONSE_BYTES = 1024 * 1024;
+const WARM_RESPONSE_LIMIT_ERROR = "viewer warm response exceeded byte limit";
 interface CategoryRaceFilter {
   keibajoCodes: ReadonlyArray<string>;
   keibajoMode: "all" | "exclude" | "include";
@@ -67,6 +72,8 @@ const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter
 
 interface WarmRaceParams {
   day: string;
+  expectedGeneratedAt?: string;
+  internalToken?: string;
   keibajoCode: string;
   month: string;
   raceNumber: string;
@@ -76,8 +83,8 @@ interface WarmRaceParams {
 }
 
 interface WarmFetchInit {
-  headers: Readonly<Record<string, string>>;
-  method: string;
+  headers?: Readonly<Record<string, string>>;
+  method?: string;
 }
 
 interface WarmCategoryParams {
@@ -138,7 +145,11 @@ const buildKeibajoFilter = (
 const buildSectionUrl = (params: WarmRaceParams): string => {
   const base = `${VIEWER_BASE_URL}/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/sections/${SECTION_PATH}`;
   if (params.refresh !== true) return base;
-  return `${base}?${PREDICTION_REFRESH_PARAM}=${PREDICTION_REFRESH_VALUE}`;
+  const query = new URLSearchParams({ [PREDICTION_REFRESH_PARAM]: PREDICTION_REFRESH_VALUE });
+  if (params.expectedGeneratedAt !== undefined) {
+    query.set(EXPECTED_PREDICTION_GENERATED_AT_PARAM, params.expectedGeneratedAt);
+  }
+  return `${base}?${query.toString()}`;
 };
 
 const buildRaceDetailPageUrl = (params: WarmRaceParams): string =>
@@ -149,6 +160,25 @@ const buildRaceDetailSsrWarmUrl = (params: WarmRaceParams): string =>
 
 const resolveViewerFetcher = (viewer: Env["PC_KEIBA_VIEWER"]): typeof fetch =>
   viewer ? (input, init) => viewer.fetch(input, init) : fetch;
+
+const drainWarmResponseReader = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  bytesRead: number,
+): Promise<void> => {
+  const chunk = await reader.read();
+  if (chunk.done) return;
+  const nextBytesRead = bytesRead + chunk.value.byteLength;
+  if (nextBytesRead > MAX_WARM_RESPONSE_BYTES) {
+    await reader.cancel(WARM_RESPONSE_LIMIT_ERROR);
+    throw new Error(WARM_RESPONSE_LIMIT_ERROR);
+  }
+  await drainWarmResponseReader(reader, nextBytesRead);
+};
+
+const drainWarmResponseBody = async (response: Response): Promise<void> => {
+  if (response.body === null) return;
+  await drainWarmResponseReader(response.body.getReader(), 0);
+};
 
 const fetchWithTimeout = async (
   url: string,
@@ -162,6 +192,7 @@ const fetchWithTimeout = async (
       ...(init === undefined ? {} : init),
       signal: controller.signal,
     });
+    await drainWarmResponseBody(response);
     return response.ok;
   } catch {
     return false;
@@ -172,8 +203,17 @@ const fetchWithTimeout = async (
 
 // Fire-and-forget warm of one race's viewer section. Returns true on a 2xx
 // response; any non-2xx, timeout, or network error returns false (never throws).
-export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promise<boolean> =>
-  fetchWithTimeout(buildSectionUrl(params), params.viewer);
+export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promise<boolean> => {
+  if (params.expectedGeneratedAt === undefined) {
+    return fetchWithTimeout(buildSectionUrl(params), params.viewer);
+  }
+  const internalToken = params.internalToken?.trim();
+  if (internalToken === undefined || internalToken.length === 0) return false;
+  return fetchWithTimeout(buildSectionUrl(params), params.viewer, {
+    headers: { [INTERNAL_TOKEN_HEADER_NAME]: internalToken },
+    method: HTTP_GET_METHOD,
+  });
+};
 
 export const warmRaceDetailPage = async (params: WarmRaceParams): Promise<boolean> =>
   fetchWithTimeout(buildRaceDetailPageUrl(params), params.viewer);
@@ -185,12 +225,9 @@ export const warmRaceDetailSsrSnapshot = async (params: WarmRaceParams): Promise
   });
 
 export const warmViewerDisplayForRace = async (params: WarmRaceParams): Promise<boolean> => {
-  const [sectionOk, ssrOk] = await Promise.all([
-    warmPredictionCacheForRace(params),
-    warmRaceDetailSsrSnapshot(params),
-  ]);
-  const pageOk = await warmRaceDetailPage(params);
-  return sectionOk && ssrOk && pageOk;
+  if (!(await warmPredictionCacheForRace(params))) return false;
+  if (!(await warmRaceDetailSsrSnapshot(params))) return false;
+  return warmRaceDetailPage(params);
 };
 
 const listRacesForCategory = async (params: WarmCategoryParams): Promise<RaceWarmRow[]> => {
@@ -251,7 +288,11 @@ export const populateViewerDisplayCache = async (
     raceBango: params.raceBango,
     runYmd: params.runYmd,
   });
-  if (published.status !== "written") return false;
+  if (published.status !== "written" || typeof published.expectedGeneratedAt !== "string") {
+    return false;
+  }
+  const internalToken = params.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN?.trim();
+  if (internalToken === undefined || internalToken.length === 0) return false;
   const warmParams: WarmRaceParams = buildWarmRaceParamsFromYmd(
     params.runYmd,
     params.keibajoCode,
@@ -259,6 +300,8 @@ export const populateViewerDisplayCache = async (
   );
   return warmViewerDisplayForRace({
     ...warmParams,
+    expectedGeneratedAt: published.expectedGeneratedAt,
+    internalToken,
     refresh: true,
     viewer: params.env.PC_KEIBA_VIEWER,
   });

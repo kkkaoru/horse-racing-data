@@ -1,4 +1,4 @@
-// Run with bun. Tests for the running-style HTTP kick module.
+// Run with bun. Tests for the running-style Queue kick module.
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
@@ -10,26 +10,19 @@ import {
   shouldRunRunningStyleKickMorningGapCron,
   shouldRunRunningStyleKickTomorrowPrewarmCron,
 } from "./running-style-kick";
-import type { Env } from "./types";
+import type { RunningStylePlanJobMessage } from "./types";
 
-const makeEnv = (): Env =>
-  ({
-    REALTIME_ADMIN_TOKEN: "admin-secret",
-  }) as Env;
+const sendMock = vi.fn(async (_message: RunningStylePlanJobMessage): Promise<void> => undefined);
 
-const fetchMock = vi.fn(
-  async (_url: string, _init: RequestInit): Promise<Response> =>
-    new Response(null, { status: 200 }),
-);
+const makeEnv = () => ({ RUNNING_STYLE_PLAN_JOBS: { send: sendMock } });
 
 beforeEach(() => {
-  fetchMock.mockClear();
-  fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
-  vi.stubGlobal("fetch", fetchMock);
+  sendMock.mockClear();
+  sendMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 test("shouldRunRunningStyleKickMorningGapCron matches the morning-gap cron", () => {
@@ -50,61 +43,46 @@ test("shouldRunRunningStyleKickTomorrowPrewarmCron rejects an unrelated cron str
   expect(shouldRunRunningStyleKickTomorrowPrewarmCron("*/10 1-11 * * *")).toBe(false);
 });
 
-test("kickRunningStylePlan POSTs to sync-realtime-data's /api/jobs with the plan job body", async () => {
+test("kickRunningStylePlan enqueues the dated plan job through the direct binding", async () => {
   await kickRunningStylePlan({ date: "20260719", env: makeEnv() });
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(url).toBe("https://sync-realtime-data.kkk4oru.com/api/jobs");
-  expect(init.method).toBe("POST");
-  expect(init.body).toBe('{"date":"20260719","type":"plan-running-style-predictions"}');
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(sendMock).toHaveBeenCalledWith({
+    date: "20260719",
+    type: "plan-running-style-predictions",
+  });
 });
 
-test("kickRunningStylePlan authorizes with the REALTIME_ADMIN_TOKEN bearer header", async () => {
-  await kickRunningStylePlan({ date: "20260719", env: makeEnv() });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  const headers = init.headers as Record<string, string>;
-  expect(headers.authorization).toBe("Bearer admin-secret");
-  expect(headers["content-type"]).toBe("application/json");
-});
-
-test("kickRunningStylePlan falls back to an empty bearer token when REALTIME_ADMIN_TOKEN is unset", async () => {
-  await kickRunningStylePlan({ date: "20260719", env: {} as Env });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  const headers = init.headers as Record<string, string>;
-  expect(headers.authorization).toBe("Bearer ");
-});
-
-test("kickRunningStylePlan logs ok on a 2xx response and does not throw", async () => {
+test("kickRunningStylePlan logs the queued date", async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
   await expect(kickRunningStylePlan({ date: "20260719", env: makeEnv() })).resolves.toBeUndefined();
-  expect(logSpy).toHaveBeenCalledWith("[running-style-kick] ok date=20260719 status=200");
-  logSpy.mockRestore();
+  expect(logSpy).toHaveBeenCalledWith("[running-style-kick] queued date=20260719");
 });
 
-test("kickRunningStylePlan logs a non-2xx response as an error and does not throw", async () => {
+test("kickRunningStylePlan logs the failed date and rethrows a Queue failure", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
-  await expect(kickRunningStylePlan({ date: "20260719", env: makeEnv() })).resolves.toBeUndefined();
-  expect(errorSpy).toHaveBeenCalledWith("[running-style-kick] non-2xx date=20260719 status=403");
-  errorSpy.mockRestore();
-});
-
-test("kickRunningStylePlan swallows a network failure instead of throwing", async () => {
-  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  fetchMock.mockRejectedValue(new Error("network unreachable"));
-  await expect(kickRunningStylePlan({ date: "20260719", env: makeEnv() })).resolves.toBeUndefined();
-  expect(errorSpy).toHaveBeenCalledWith(
-    "[running-style-kick] failed date=20260719: Error: network unreachable",
+  sendMock.mockRejectedValueOnce(new Error("queue unavailable"));
+  await expect(kickRunningStylePlan({ date: "20260719", env: makeEnv() })).rejects.toThrow(
+    "queue unavailable",
   );
-  errorSpy.mockRestore();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[running-style-kick] failed date=20260719: Error: queue unavailable",
+  );
 });
 
-test("kickRunningStylePlan logs an unconditional start line before the fetch", async () => {
+test("kickRunningStylePlan fails closed and logs the date when the binding is absent", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await expect(kickRunningStylePlan({ date: "20260719", env: {} })).rejects.toThrow(
+    "RUNNING_STYLE_PLAN_JOBS binding is unavailable",
+  );
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[running-style-kick] failed date=20260719: Error: RUNNING_STYLE_PLAN_JOBS binding is unavailable",
+  );
+});
+
+test("kickRunningStylePlan logs an unconditional start line before the enqueue", async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await kickRunningStylePlan({ date: "20260719", env: makeEnv() });
   expect(logSpy).toHaveBeenCalledWith("[running-style-kick] start date=20260719");
-  logSpy.mockRestore();
 });
 
 test("runRunningStyleKickMorningGap kicks TODAY's JST date derived from now", async () => {
@@ -112,8 +90,10 @@ test("runRunningStyleKickMorningGap kicks TODAY's JST date derived from now", as
     env: makeEnv(),
     now: new Date("2026-07-18T16:00:00.000Z"),
   });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(init.body).toBe('{"date":"20260719","type":"plan-running-style-predictions"}');
+  expect(sendMock).toHaveBeenCalledWith({
+    date: "20260719",
+    type: "plan-running-style-predictions",
+  });
 });
 
 test("runRunningStyleKickTomorrowPrewarm kicks TOMORROW's JST date derived from now", async () => {
@@ -121,8 +101,10 @@ test("runRunningStyleKickTomorrowPrewarm kicks TOMORROW's JST date derived from 
     env: makeEnv(),
     now: new Date("2026-07-18T13:00:00.000Z"),
   });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(init.body).toBe('{"date":"20260719","type":"plan-running-style-predictions"}');
+  expect(sendMock).toHaveBeenCalledWith({
+    date: "20260719",
+    type: "plan-running-style-predictions",
+  });
 });
 
 test("runRunningStyleKickTomorrowPrewarm rolls over a month boundary", async () => {
@@ -130,8 +112,10 @@ test("runRunningStyleKickTomorrowPrewarm rolls over a month boundary", async () 
     env: makeEnv(),
     now: new Date("2026-01-31T01:00:00.000Z"),
   });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(init.body).toBe('{"date":"20260201","type":"plan-running-style-predictions"}');
+  expect(sendMock).toHaveBeenCalledWith({
+    date: "20260201",
+    type: "plan-running-style-predictions",
+  });
 });
 
 test("runRunningStyleKickTomorrowPrewarm rolls over a year boundary", async () => {
@@ -139,6 +123,8 @@ test("runRunningStyleKickTomorrowPrewarm rolls over a year boundary", async () =
     env: makeEnv(),
     now: new Date("2026-12-31T01:00:00.000Z"),
   });
-  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-  expect(init.body).toBe('{"date":"20270101","type":"plan-running-style-predictions"}');
+  expect(sendMock).toHaveBeenCalledWith({
+    date: "20270101",
+    type: "plan-running-style-predictions",
+  });
 });

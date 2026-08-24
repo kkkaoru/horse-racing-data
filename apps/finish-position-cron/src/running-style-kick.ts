@@ -1,6 +1,6 @@
-// Run with bun. HTTP kick of sync-realtime-data's plan-running-style-predictions
-// job for the JST windows sync-realtime-data's own native running-style crons do
-// not cover.
+// Run with bun. Queue kick of sync-realtime-data's plan-running-style-predictions
+// job for the JST windows sync-realtime-data's native running-style crons do not
+// cover.
 //
 // sync-realtime-data (read-only reference -- this Worker does not edit that
 // package) already runs two native running-style crons of its own
@@ -11,14 +11,12 @@
 //     daily) -- plans TOMORROW's races.
 // Neither fires during JST 00:00-08:59 (UTC 15:00-23:59 the previous UTC day)
 // for TODAY -- exactly the gap scripts/launchd/race-prediction-guard.sh's JST
-// 0-9 hourly band exists to fill today, by POSTing the same job to the same
-// endpoint from a Mac launchd timer (USER directive 2026-07-18: production
-// prediction generation must never depend on Mac-based batch processing). This
-// module reproduces that gap-filling kick as a Cloudflare Cron Trigger owned by
-// THIS worker instead, HTTP POSTing sync-realtime-data's existing
-// POST /api/jobs endpoint with the SAME job shape the guard already uses
-// ({type: "plan-running-style-predictions", date}) -- it never touches
-// sync-realtime-data's own code, crons, or D1/Neon state directly.
+// 0-9 hourly band exists to fill today, by submitting the same job from a Mac
+// launchd timer (USER directive 2026-07-18: production prediction generation
+// must never depend on Mac-based batch processing). This module reproduces that
+// gap-filling kick as a Cloudflare Cron Trigger owned by THIS Worker, using a
+// direct producer binding to sync-realtime-data-jobs. It never needs the public
+// /api/jobs endpoint, an Access policy, or a bearer token.
 //
 // A second cron below re-kicks TOMORROW's prewarm at JST 22:00 and 23:00 (UTC
 // 13:00, 14:00), matching the guard's own 21/22/23 hourly tomorrow band:
@@ -35,11 +33,9 @@
 // queued/complete" and enqueues nothing extra.
 
 import { getRunYmdJst } from "./time";
-import type { Env } from "./types";
+import type { RunningStylePlanJobMessage } from "./types";
 
-const REALTIME_JOBS_URL = "https://sync-realtime-data.kkk4oru.com/api/jobs";
 const RS_KICK_JOB_TYPE = "plan-running-style-predictions";
-const MISSING_TOKEN_FALLBACK = "";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const YYYYMMDD_YEAR_END = 4;
 const YYYYMMDD_MONTH_END = 6;
@@ -47,6 +43,7 @@ const YYYYMMDD_LENGTH = 8;
 const TOMORROW_OFFSET_DAYS = 1;
 const DATE_PAD_WIDTH = 2;
 const PAD_CHAR = "0";
+const MISSING_QUEUE_ERROR = "RUNNING_STYLE_PLAN_JOBS binding is unavailable";
 
 // Hourly, UTC 15:00-23:00 == JST 00:00-08:00 (9 fires). JST 09:00 (UTC 00:00)
 // is already covered by sync-realtime-data's RUNNING_STYLE_INFERENCE_CRON, so
@@ -65,12 +62,20 @@ const TOMORROW_PREWARM_CRONS: ReadonlySet<string> = new Set([
 
 interface KickRunningStylePlanParams {
   date: string;
-  env: Env;
+  env: RunningStyleKickEnv;
 }
 
 interface RunRunningStyleKickParams {
-  env: Env;
+  env: RunningStyleKickEnv;
   now: Date;
+}
+
+interface RunningStyleKickEnv {
+  RUNNING_STYLE_PLAN_JOBS?: RunningStyleKickQueue;
+}
+
+interface RunningStyleKickQueue {
+  send(message: RunningStylePlanJobMessage): Promise<unknown>;
 }
 
 // Returns true when the cron string matches the TODAY morning-gap schedule.
@@ -97,30 +102,20 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   return `${y}${m}${d}`;
 };
 
-// Fire-and-log dispatch: never throws. A failed kick here just means the same
-// gap this cron exists to fill is still open next tick -- the next scheduled
-// fire (or, during the transition window, the still-running Mac guard) is the
-// retry, mirroring every other best-effort cron in this Worker
-// (day-base-prewarm.ts, corner-features-refresh.ts).
+// Queue failures are logged with their target date and rethrown so the Cron
+// execution is observable as failed instead of silently leaving the gap open.
 export const kickRunningStylePlan = async (params: KickRunningStylePlanParams): Promise<void> => {
   const { date, env } = params;
   console.log(`[running-style-kick] start date=${date}`);
   try {
-    const response = await fetch(REALTIME_JOBS_URL, {
-      body: JSON.stringify({ date, type: RS_KICK_JOB_TYPE }),
-      headers: {
-        authorization: `Bearer ${env.REALTIME_ADMIN_TOKEN ?? MISSING_TOKEN_FALLBACK}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-    });
-    if (!response.ok) {
-      console.error(`[running-style-kick] non-2xx date=${date} status=${response.status}`);
-      return;
+    if (!env.RUNNING_STYLE_PLAN_JOBS) {
+      throw new Error(MISSING_QUEUE_ERROR);
     }
-    console.log(`[running-style-kick] ok date=${date} status=${response.status}`);
+    await env.RUNNING_STYLE_PLAN_JOBS.send({ date, type: RS_KICK_JOB_TYPE });
+    console.log(`[running-style-kick] queued date=${date}`);
   } catch (err) {
     console.error(`[running-style-kick] failed date=${date}: ${String(err)}`);
+    throw err;
   }
 };
 

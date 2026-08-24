@@ -56,8 +56,8 @@
       // cron until now). Idempotent upsert-only, safe to run twice a day.
       "15 0 * * *", // JST 09:15 — corner-features refresh (morning, pre-race)
       "0 13 * * *", // JST 22:00 — corner-features refresh (evening, settlement)
-      // Running-style (脚質) kick crons (src/running-style-kick.ts): HTTP POST
-      // sync-realtime-data's existing POST /api/jobs endpoint with the same
+      // Running-style (脚質) kick crons (src/running-style-kick.ts): enqueue to
+      // sync-realtime-data-jobs through RUNNING_STYLE_PLAN_JOBS with the same
       // {type: "plan-running-style-predictions", date} job
       // scripts/launchd/race-prediction-guard.sh already sends, for the two
       // JST windows sync-realtime-data's own native running-style crons
@@ -326,10 +326,18 @@
     // but cannot prove the live Catalog/running-style watermark still matches.
     "RACE_CHAIN_CONTAINER_ENABLED": "1",
     "RACE_CHAIN_CONTAINER_CATEGORIES": "jra",
+    // Default-off rollout for durable Container DO completion watches. The
+    // legacy Queue-redelivery polling path remains authoritative until this is
+    // explicitly changed to "1" after production observation.
+    "FOCUSED_FULL_WATCH_ENABLED": "1",
   },
   "queues": {
     "producers": [
       { "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" },
+      {
+        "binding": "FOCUSED_FULL_COMPLETION_QUEUE",
+        "queue": "finish-position-focused-full-completion-queue",
+      },
       {
         "binding": "WEIGHT_RESCORE_QUEUE",
         "queue": "finish-position-weight-rescore-queue",
@@ -337,6 +345,10 @@
       {
         "binding": "CONTAINER_CONTROL_QUEUE",
         "queue": "finish-position-container-control-queue",
+      },
+      {
+        "binding": "RUNNING_STYLE_PLAN_JOBS",
+        "queue": "sync-realtime-data-jobs",
       },
     ],
     "consumers": [
@@ -411,6 +423,17 @@
         // src/dlq-consumer.ts) that logs a durable ERROR row and re-enqueues
         // once instead of dropping the message silently.
         "max_retries": 100,
+        "dead_letter_queue": "finish-position-predict-dlq",
+      },
+      {
+        // Terminal-only notifications from Container DO durable schedules.
+        // Keeping this lane separate prevents prediction backlog from delaying
+        // cache pickup, completion commit, and Container shutdown.
+        "queue": "finish-position-focused-full-completion-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 6,
+        "max_retries": 16,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
       {

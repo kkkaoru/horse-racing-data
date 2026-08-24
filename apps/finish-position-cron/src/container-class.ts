@@ -11,6 +11,17 @@
 
 import { Container } from "@cloudflare/containers";
 import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
+import {
+  createFocusedFullWatchTickMessage,
+  FOCUSED_FULL_WATCH_POLL_SECONDS,
+  hasAcceptedResult,
+  isFocusedFullPredictUrl,
+  parseFocusedFullWatchHeader,
+  sendFocusedFullWatchMessageDurably,
+  WATCH_RESPONSE_HEADER,
+} from "./focused-full-watch";
+import type { ValidatedFocusedFullWatchPayload } from "./focused-full-watch";
+import { PREDICT_DO_INTERNAL_PURGE_PATH, purgePredictDoStorage } from "./predict-do-state-purge";
 import type { Env } from "./types";
 
 type PredictContainerRole = "legacy" | "race-chain";
@@ -109,6 +120,18 @@ const isAuthorizedAdmin = (request: Request, token: string): boolean => {
   return header.slice(BEARER_PREFIX.length) === token;
 };
 
+const parseWatchPayload = (
+  request: Request,
+  enabled: boolean,
+): ValidatedFocusedFullWatchPayload | Response | undefined => {
+  if (!enabled) return undefined;
+  try {
+    return parseFocusedFullWatchHeader(request);
+  } catch (error) {
+    return Response.json({ error: String(error) }, { status: 400 });
+  }
+};
+
 export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
   override sleepAfter = SLEEP_AFTER;
@@ -129,11 +152,30 @@ export class FinishPositionPredictContainer extends Container<Env> {
         console.warn(`[predict-container-do] admin-stop unauthorized ${requestSummary}`);
         return Response.json({ error: "unauthorized", ok: false }, { status: 401 });
       }
-      console.warn(`[predict-container-do] admin-stop requested ${requestSummary}`);
+      console.log(`[predict-container-do] admin-stop requested ${requestSummary}`);
       await this.destroy();
-      console.warn(`[predict-container-do] admin-stop destroyed ${requestSummary}`);
+      console.log(`[predict-container-do] admin-stop destroyed ${requestSummary}`);
       return Response.json({ ok: true });
     }
+    if (url.pathname === PREDICT_DO_INTERNAL_PURGE_PATH) {
+      if (!isAuthorizedAdmin(request, this.env.TRIGGER_TOKEN)) {
+        console.warn(`[predict-container-do] admin-purge unauthorized ${requestSummary}`);
+        return Response.json({ error: "unauthorized", ok: false }, { status: 401 });
+      }
+      console.log(`[predict-container-do] admin-purge requested ${requestSummary}`);
+      await purgePredictDoStorage({
+        deleteApplicationState: async () => undefined,
+        destroy: () => this.destroy(),
+      });
+      console.log(`[predict-container-do] admin-purge completed ${requestSummary}`);
+      return Response.json({ ok: true, purged: true });
+    }
+    const watchEnabled =
+      this.env.FOCUSED_FULL_WATCH_ENABLED === "1" &&
+      this.env.FOCUSED_FULL_COMPLETION_QUEUE !== undefined &&
+      isFocusedFullPredictUrl(url);
+    const watchPayload = parseWatchPayload(request, watchEnabled);
+    if (watchPayload instanceof Response) return watchPayload;
     this.envVars = this.buildContainerEnvVars();
     const startedAt = Date.now();
     const debug = isDebugRequest(url);
@@ -147,13 +189,24 @@ export class FinishPositionPredictContainer extends Container<Env> {
           }`,
         );
       }
-      return proxyParquetFromNdjson(
+      const accepted =
+        watchPayload === undefined ? false : await hasAcceptedResult(response.clone());
+      const proxied = proxyParquetFromNdjson(
         response,
         this.env,
         this.ctx.waitUntil.bind(this.ctx),
         this.renewActivityTimeout.bind(this),
         debug,
       );
+      if (!accepted || watchPayload === undefined) return proxied;
+      await sendFocusedFullWatchMessageDurably(
+        this.env,
+        createFocusedFullWatchTickMessage(watchPayload, Date.now()),
+        FOCUSED_FULL_WATCH_POLL_SECONDS,
+      );
+      const watchedResponse = new Response(proxied.body, proxied);
+      watchedResponse.headers.set(WATCH_RESPONSE_HEADER, watchPayload.watchId);
+      return watchedResponse;
     } catch (err) {
       console.error(
         `[predict-container-do] fetch failed ${requestSummary} durationMs=${

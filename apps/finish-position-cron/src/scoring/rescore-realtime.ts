@@ -58,6 +58,18 @@ export interface FetchRaceInput {
   raceBango: string;
   // Injectable fetch so tests can stub the network without patching globals.
   fetchImpl: typeof fetch;
+  weightGeneration?: WeightSnapshotGeneration;
+}
+
+export interface WeightSnapshotGeneration {
+  weightSnapshotCount: number;
+  weightSnapshotFetchedAt: string;
+  weightSnapshotHash: string;
+}
+
+interface CanonicalWeightRow {
+  horseNumber: number;
+  weight: number;
 }
 
 interface TanshoEntry {
@@ -189,6 +201,47 @@ const extractWeightMap = (response: unknown): Map<number, number> => {
   return result;
 };
 
+const compareCanonicalWeightRows = (left: CanonicalWeightRow, right: CanonicalWeightRow): number =>
+  left.horseNumber - right.horseNumber;
+
+const sha256Hex = async (value: string): Promise<string> => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const actualWeightGeneration = async (
+  response: unknown,
+  weights: Map<number, number>,
+): Promise<WeightSnapshotGeneration | null> => {
+  if (!isRecord(response) || typeof response.fetchedAt !== "string") return null;
+  if (!Array.isArray(response.horses) || response.horses.length !== weights.size) return null;
+  const rows = Array.from(weights, ([horseNumber, weight]) => ({ horseNumber, weight })).sort(
+    compareCanonicalWeightRows,
+  );
+  return {
+    weightSnapshotCount: rows.length,
+    weightSnapshotFetchedAt: response.fetchedAt,
+    weightSnapshotHash: await sha256Hex(JSON.stringify(rows)),
+  };
+};
+
+const assertWeightGeneration = async (
+  response: unknown,
+  weights: Map<number, number>,
+  expected: WeightSnapshotGeneration,
+  raceKey: string,
+): Promise<void> => {
+  const actual = await actualWeightGeneration(response, weights);
+  if (
+    actual === null ||
+    actual.weightSnapshotCount !== expected.weightSnapshotCount ||
+    actual.weightSnapshotFetchedAt !== expected.weightSnapshotFetchedAt ||
+    actual.weightSnapshotHash !== expected.weightSnapshotHash
+  ) {
+    throw new Error(`horse weight snapshot generation mismatch: ${raceKey}`);
+  }
+};
+
 // Fetch {umaban -> {tanshoOdds, tanshoNinkijun}} for one race; empty Map on any
 // error (the late-binding recompute then falls back to the cached odds).
 export const fetchOddsForRace = async (
@@ -211,9 +264,14 @@ export const fetchWeightForRace = async (input: FetchRaceInput): Promise<Map<num
   const url = `${WEIGHT_BASE_URL}/${encodeRaceKey(raceKey)}`;
   try {
     const response = await fetchWithRetry({ attempt: 0, fetchImpl: input.fetchImpl, url });
-    return extractWeightMap(response);
+    const weights = extractWeightMap(response);
+    if (input.weightGeneration !== undefined) {
+      await assertWeightGeneration(response, weights, input.weightGeneration, raceKey);
+    }
+    return weights;
   } catch (error) {
     console.warn(`realtime weight fetch failed race_key=${raceKey}`, String(error));
+    if (input.weightGeneration !== undefined) throw error;
     return new Map<number, number>();
   }
 };

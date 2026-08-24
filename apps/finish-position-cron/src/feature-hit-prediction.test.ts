@@ -193,3 +193,34 @@ test("skips only the race whose running-style entrants are incomplete", async ()
   warnSpy.mockRestore();
   logSpy.mockRestore();
 });
+
+test("fans out every ban-ei race without requiring optional running-style state", async () => {
+  enumerateTodaysRacesMock.mockResolvedValue([
+    { category: "ban-ei", keibajoCode: "83", raceBango: "11" },
+    { category: "ban-ei", keibajoCode: "83", raceBango: "12" },
+    { category: "nar", keibajoCode: "55", raceBango: "10" },
+  ]);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await expect(
+    fanOutPredictionsAfterDayBaseHit({ category: "ban-ei", env, runYmd: "20260824" }),
+  ).resolves.toBe(2);
+
+  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ category: "ban-ei", keibajoCode: "83", raceBango: "11" }),
+  );
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ category: "ban-ei", keibajoCode: "83", raceBango: "12" }),
+  );
+  expect(warnSpy).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[feature-hit-prediction] enqueued category=ban-ei runYmd=20260824 races=2 duplicates=0 runningStyleIncomplete=0",
+  );
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
+});

@@ -32,6 +32,7 @@ import {
   mapFinishPositionPredictionFeatures,
   publishFinishPositionPredictionCache,
   publishFinishPositionPredictionCacheForCategory,
+  resolveExpectedPredictionGeneratedAt,
 } from "./prediction-kv-writer";
 
 const NOON_JST_MS = Date.parse("2026-08-09T12:00:00+09:00");
@@ -78,6 +79,53 @@ afterEach(() => {
 
 test("mapFinishPositionPredictionFeatures returns empty for no rows", () => {
   expect(mapFinishPositionPredictionFeatures([])).toStrictEqual([]);
+});
+
+test("resolveExpectedPredictionGeneratedAt returns the latest normalized timestamp", () => {
+  expect(
+    resolveExpectedPredictionGeneratedAt([
+      {
+        modelVersion: "v",
+        predictedRank: 1,
+        predictionGeneratedAt: "2026-08-22T01:15:00Z",
+        predictedScore: 1,
+        umaban: "1",
+      },
+      {
+        modelVersion: "v",
+        predictedRank: 2,
+        predictionGeneratedAt: "2026-08-22T01:16:00.123Z",
+        predictedScore: 0,
+        umaban: "2",
+      },
+    ]),
+  ).toBe("2026-08-22T01:16:00.123Z");
+});
+
+test("resolveExpectedPredictionGeneratedAt fails closed for empty, missing, or invalid timestamps", () => {
+  expect(resolveExpectedPredictionGeneratedAt([])).toBeNull();
+  expect(
+    resolveExpectedPredictionGeneratedAt([
+      {
+        modelVersion: "v",
+        predictedRank: 1,
+        predictionGeneratedAt: null,
+        predictedScore: 1,
+        umaban: "1",
+      },
+    ]),
+  ).toBeNull();
+  expect(
+    resolveExpectedPredictionGeneratedAt([
+      {
+        modelVersion: "v",
+        predictedRank: 1,
+        predictionGeneratedAt: "invalid",
+        predictedScore: 1,
+        umaban: "1",
+      },
+    ]),
+  ).toBeNull();
 });
 
 test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high confidence", () => {
@@ -214,7 +262,11 @@ test("publishFinishPositionPredictionCache skips races outside the 3-day JST win
     raceBango: "11",
     runYmd: "20260801",
   });
-  expect(result).toStrictEqual({ busted: false, status: "skipped-outside-window" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: null,
+    status: "skipped-outside-window",
+  });
   expect(queryMock).not.toHaveBeenCalled();
   expect(putMock).not.toHaveBeenCalled();
 });
@@ -229,7 +281,11 @@ test("publishFinishPositionPredictionCache skips when KV binding is absent", asy
     raceBango: "11",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "skipped-no-kv" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: null,
+    status: "skipped-no-kv",
+  });
   expect(queryMock).not.toHaveBeenCalled();
 });
 
@@ -255,7 +311,11 @@ test("publishFinishPositionPredictionCache skips when Neon returns no usable row
     raceBango: "11",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "skipped-empty" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: null,
+    status: "skipped-empty",
+  });
   expect(putMock).not.toHaveBeenCalled();
 });
 
@@ -270,7 +330,42 @@ test("publishFinishPositionPredictionCache skips when Neon returns a non-array",
     raceBango: "1",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "skipped-empty" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: null,
+    status: "skipped-empty",
+  });
+});
+
+test("publishFinishPositionPredictionCache fails closed when any row timestamp is invalid", async () => {
+  queryMock.mockResolvedValue([
+    {
+      model_version: "v",
+      predicted_rank: 1,
+      predicted_score: 1,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 1,
+    },
+    {
+      model_version: "v",
+      predicted_rank: 2,
+      predicted_score: 0,
+      prediction_generated_at: "invalid",
+      umaban: 2,
+    },
+  ]);
+  const result = await publishFinishPositionPredictionCache({
+    bustCacheApi: true,
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    nowMs: NOON_JST_MS,
+    raceBango: "11",
+    runYmd: "20260809",
+  });
+  expect(result).toStrictEqual({ busted: false, expectedGeneratedAt: null, status: "error" });
+  expect(putMock).not.toHaveBeenCalled();
+  expect(triggerPredictionCacheBustMock).not.toHaveBeenCalled();
 });
 
 test("publishFinishPositionPredictionCache writes today TTL without busting", async () => {
@@ -307,7 +402,11 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
     raceBango: "11",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "written" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: "2026-08-22T01:15:00.000Z",
+    status: "written",
+  });
   expect(neonMock).toHaveBeenCalledWith("postgres://example");
   expect(queryMock).toHaveBeenCalledWith(expect.any(String), ["jra", "2026", "0809", "05", "11"]);
   expect(putMock).toHaveBeenCalledTimes(1);
@@ -347,12 +446,14 @@ test("publishFinishPositionPredictionCache uses yesterday TTL and busts after ov
       model_version: "iter12-nar-xgb-hpo-v8-clean188",
       predicted_rank: 1,
       predicted_score: 1.2,
+      prediction_generated_at: "2026-08-08T01:15:00.000Z",
       umaban: 1,
     },
     {
       model_version: "iter12-nar-xgb-hpo-v8-clean188",
       predicted_rank: 2,
       predicted_score: 0.4,
+      prediction_generated_at: "2026-08-08T01:16:00.000Z",
       umaban: 2,
     },
   ]);
@@ -365,7 +466,11 @@ test("publishFinishPositionPredictionCache uses yesterday TTL and busts after ov
     raceBango: "01",
     runYmd: "20260808",
   });
-  expect(result).toStrictEqual({ busted: true, status: "written" });
+  expect(result).toStrictEqual({
+    busted: true,
+    expectedGeneratedAt: "2026-08-08T01:16:00.000Z",
+    status: "written",
+  });
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260808:44:01", putMock.mock.calls[0]?.[1], {
     expirationTtl: 86400,
   });
@@ -380,8 +485,20 @@ test("publishFinishPositionPredictionCache uses yesterday TTL and busts after ov
 
 test("publishFinishPositionPredictionCache uses tomorrow TTL and reports busted false when bust skips", async () => {
   queryMock.mockResolvedValue([
-    { model_version: "banei-cb-v9-sim-2011", predicted_rank: 1, predicted_score: 1.1, umaban: 4 },
-    { model_version: "banei-cb-v9-sim-2011", predicted_rank: 2, predicted_score: 0.9, umaban: 8 },
+    {
+      model_version: "banei-cb-v9-sim-2011",
+      predicted_rank: 1,
+      predicted_score: 1.1,
+      prediction_generated_at: "2026-08-10T01:15:00.000Z",
+      umaban: 4,
+    },
+    {
+      model_version: "banei-cb-v9-sim-2011",
+      predicted_rank: 2,
+      predicted_score: 0.9,
+      prediction_generated_at: "2026-08-10T01:15:00.000Z",
+      umaban: 8,
+    },
   ]);
   triggerPredictionCacheBustMock.mockResolvedValue({
     message: "PC_KEIBA_VIEWER_INTERNAL_TOKEN not configured",
@@ -396,7 +513,11 @@ test("publishFinishPositionPredictionCache uses tomorrow TTL and reports busted 
     raceBango: "12",
     runYmd: "20260810",
   });
-  expect(result).toStrictEqual({ busted: false, status: "written" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: "2026-08-10T01:15:00.000Z",
+    status: "written",
+  });
   expect(queryMock).toHaveBeenCalledWith(expect.any(String), ["nar", "2026", "0810", "83", "12"]);
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260810:83:12", putMock.mock.calls[0]?.[1], {
     expirationTtl: 86400,
@@ -407,8 +528,20 @@ test("publishFinishPositionPredictionCache uses Date.now when nowMs is omitted",
   vi.useFakeTimers();
   vi.setSystemTime(NOON_JST_MS);
   queryMock.mockResolvedValue([
-    { model_version: "v", predicted_rank: 1, predicted_score: 0, umaban: 1 },
-    { model_version: "v", predicted_rank: 2, predicted_score: 3, umaban: 2 },
+    {
+      model_version: "v",
+      predicted_rank: 1,
+      predicted_score: 0,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 1,
+    },
+    {
+      model_version: "v",
+      predicted_rank: 2,
+      predicted_score: 3,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 2,
+    },
   ]);
   const result = await publishFinishPositionPredictionCache({
     bustCacheApi: false,
@@ -418,7 +551,11 @@ test("publishFinishPositionPredictionCache uses Date.now when nowMs is omitted",
     raceBango: "11",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "written" });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: "2026-08-09T01:15:00.000Z",
+    status: "written",
+  });
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260809:05:11", putMock.mock.calls[0]?.[1], {
     expirationTtl: 129600,
   });
@@ -437,7 +574,7 @@ test("publishFinishPositionPredictionCache returns error without throwing when n
     raceBango: "11",
     runYmd: "20260809",
   });
-  expect(result).toStrictEqual({ busted: false, status: "error" });
+  expect(result).toStrictEqual({ busted: false, expectedGeneratedAt: null, status: "error" });
   expect(warnSpy).toHaveBeenCalledTimes(1);
 });
 
@@ -449,8 +586,20 @@ test("publishFinishPositionPredictionCacheForCategory writes each listed race", 
     ],
   });
   queryMock.mockResolvedValue([
-    { model_version: "v", predicted_rank: 1, predicted_score: 1.6, umaban: 1 },
-    { model_version: "v", predicted_rank: 2, predicted_score: 0.2, umaban: 2 },
+    {
+      model_version: "v",
+      predicted_rank: 1,
+      predicted_score: 1.6,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 1,
+    },
+    {
+      model_version: "v",
+      predicted_rank: 2,
+      predicted_score: 0.2,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 2,
+    },
   ]);
   const written = await publishFinishPositionPredictionCacheForCategory({
     bustCacheApi: false,
@@ -474,7 +623,13 @@ test("publishFinishPositionPredictionCacheForCategory skips an overseas A8 venue
     ],
   });
   queryMock.mockResolvedValue([
-    { model_version: "v", predicted_rank: 1, predicted_score: 1.6, umaban: 1 },
+    {
+      model_version: "v",
+      predicted_rank: 1,
+      predicted_score: 1.6,
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 1,
+    },
   ]);
   const written = await publishFinishPositionPredictionCacheForCategory({
     bustCacheApi: false,

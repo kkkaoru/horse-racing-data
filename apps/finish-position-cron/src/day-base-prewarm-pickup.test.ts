@@ -34,6 +34,7 @@ import {
   buildDayBaseObjectKey,
   headDayBaseObject,
   pickUpPrewarmDayBase,
+  pickUpPrewarmDayBaseWithOutcome,
 } from "./day-base-prewarm-pickup";
 
 interface PickupFeaturesCache {
@@ -344,6 +345,82 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
   });
 });
 
+test("pickUpPrewarmDayBaseWithOutcome lands the exact running-style foundation without final readiness", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260824/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260824190000",
+        rowCount: 479,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+  const env: Env = createPickupEnv({ head: headMock });
+
+  const outcome = await pickUpPrewarmDayBaseWithOutcome({
+    category: "nar",
+    env,
+    runYmd: "20260824",
+  });
+
+  expect(outcome).toBe("foundation-landed");
+  expect(proxyResultParquetsToRMock).toHaveBeenCalledWith(
+    {
+      type: "result",
+      category: "nar",
+      racesPredicted: 0,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260824/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260824190000",
+        rowCount: 479,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    },
+    env,
+    false,
+  );
+  expect(getDayBaseCandidateReadinessMock).not.toHaveBeenCalled();
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+});
+
+test("pickUpPrewarmDayBaseWithOutcome rejects a payload outside both exact cache slots", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/jra/20260824/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260824190000",
+        rowCount: 479,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await pickUpPrewarmDayBaseWithOutcome({
+    category: "nar",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260824",
+  });
+
+  expect(outcome).toBe("rejected");
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+  expect(getDayBaseCandidateReadinessMock).not.toHaveBeenCalled();
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm-pickup] rejected unexpected key category=nar runYmd=20260824 key=feat-running-style-base/catalog-v1/jra/20260824/features.parquet",
+  );
+  warnSpy.mockRestore();
+});
+
 test("pickUpPrewarmDayBase rejects a stale candidate before canonical R2 PUT", async () => {
   stubFetchMock.mockResolvedValueOnce(
     Response.json({
@@ -376,6 +453,37 @@ test("pickUpPrewarmDayBase rejects a stale candidate before canonical R2 PUT", a
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm-pickup] rejected stale candidate category=jra runYmd=20260823 reason=source-row-count-26-of-392",
   );
+  warnSpy.mockRestore();
+});
+
+test("pickUpPrewarmDayBaseWithOutcome distinguishes a stale candidate from a missing one", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-daybase/catalog-v1/nar/20260824/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260824030000",
+        rowCount: 479,
+        rsPredictedAtMax: "2026-08-24T03:00:00Z",
+        rsRowCount: 368,
+      },
+    }),
+  );
+  getDayBaseCandidateReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "rs-row-count-368-of-479",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await pickUpPrewarmDayBaseWithOutcome({
+    category: "nar",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260824",
+  });
+
+  expect(outcome).toBe("stale");
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
 

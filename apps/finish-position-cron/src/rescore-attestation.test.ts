@@ -231,7 +231,7 @@ describe("fails closed before Container dispatch", () => {
       .spyOn(AbortSignal, "timeout")
       .mockReturnValue(AbortSignal.abort(new DOMException("catalog timed out", "TimeoutError")));
     await expect(create().result).rejects.toThrow("catalog timed out");
-    expect(timeout).toHaveBeenCalledWith(5_000);
+    expect(timeout).toHaveBeenCalledWith(15_000);
     timeout.mockRestore();
   });
 

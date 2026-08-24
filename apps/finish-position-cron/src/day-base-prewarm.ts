@@ -28,7 +28,10 @@ import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
-import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
+import {
+  getDayBasePrewarmHitReadiness,
+  getFocusedFullDayBaseReadiness,
+} from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { DayBasePrewarmMessage, Env, PredictCategory } from "./types";
@@ -251,6 +254,50 @@ const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): P
   }
 };
 
+const readExistingDayBaseHit = async (params: PrewarmCategoryParams): Promise<boolean | null> => {
+  if (params.force === true) return null;
+  try {
+    const readiness = await getDayBasePrewarmHitReadiness(params);
+    if (!readiness.ready) {
+      console.log(
+        `[day-base-prewarm] worker-hit-miss category=${params.category} runYmd=${params.runYmd} reason=${readiness.reason}`,
+      );
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn(
+      `[day-base-prewarm] worker-hit-check failed category=${params.category} runYmd=${params.runYmd}: ${String(error)} -- continuing to container freshness check`,
+    );
+    return false;
+  }
+};
+
+const useExistingDayBaseHit = async (
+  params: PrewarmCategoryParams,
+): Promise<PrewarmCategoryOutcome | null> => {
+  const hit = await readExistingDayBaseHit(params);
+  if (hit !== true) return null;
+  try {
+    if (params.generatePredictionsAfterHit === true) {
+      await fanOutPredictionsAfterDayBaseHit({
+        category: params.category,
+        env: params.env,
+        runYmd: params.runYmd,
+      });
+    }
+    console.log(
+      `[day-base-prewarm] worker-hit category=${params.category} runYmd=${params.runYmd} containerStarted=false`,
+    );
+    return "landed";
+  } catch (error) {
+    console.error(
+      `[day-base-prewarm] worker-hit fanout failed category=${params.category} runYmd=${params.runYmd}: ${String(error)}`,
+    );
+    return "failed";
+  }
+};
+
 // Fire-and-log dispatch for one category: never throws. The container's
 // per-race lazy day-base build is the safety net when this cache warm fails
 // or times out, so every failure path here is caught and logged instead of
@@ -259,9 +306,11 @@ export const prewarmCategoryWithOutcome = async (
   params: PrewarmCategoryParams,
 ): Promise<PrewarmCategoryOutcome> => {
   const { category, daysAhead, env, runYmd } = params;
-  // Do not trust R2 presence or an old in-process pickup here. The
-  // container's prewarm endpoint must first compare the object's metadata
-  // with the live Catalog + running-style watermark.
+  // A plain R2 HEAD is not enough: the explicit readiness probe compares the
+  // canonical object's metadata with live Catalog and complete per-race
+  // running-style state. Only that verified HIT may bypass Container startup.
+  const existingHit = await useExistingDayBaseHit(params);
+  if (existingHit !== null) return existingHit;
   const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   const url = buildPrewarmUrl({ category, daysAhead, runYmd });
   const claim = await claimContainerSlot({

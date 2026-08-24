@@ -24,6 +24,7 @@ interface CatalogEntry {
 const RUN_YMD_YEAR_END = 4;
 const RUN_YMD_MONTH_START = 4;
 const RUN_YMD_DAY_END = 8;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 const NAR_SOURCE = "nar";
 const JRA_SOURCE = "jra";
@@ -52,7 +53,7 @@ const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y";
 // this file's ONE commit around 2026-07-24 for the incident trail). ban-ei
 // has no stage1_routing.json entry, so it stays without a fallback here too.
 const STAGE1_MARKET_FREE_MODEL_VERSIONS: Partial<Record<PredictCategory, string>> = {
-  jra: "jra-cb-stage1-marketfree235-2013",
+  jra: "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
   nar: "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
 };
 
@@ -193,6 +194,12 @@ const buildRunDateStartUtc = (runYmd: string): string | null => {
   return jstDate.toISOString().slice(0, 19);
 };
 
+const buildPreviousDateStartUtc = (runYmd: string): string | null => {
+  const runDateStart = buildRunDateStartUtc(runYmd);
+  if (runDateStart === null) return null;
+  return new Date(Date.parse(`${runDateStart}Z`) - MILLISECONDS_PER_DAY).toISOString();
+};
+
 const resolveCompletionNotBefore = (runYmd: string, notBefore?: string): string | null => {
   if (notBefore === undefined) return buildRunDateStartUtc(runYmd);
   const parsed = new Date(notBefore);
@@ -202,16 +209,28 @@ const resolveCompletionNotBefore = (runYmd: string, notBefore?: string): string 
 const countMatchesModelVersion = async (params: CountMatchParams): Promise<boolean> => {
   const sql = neon(params.env.NEON_DATABASE_URL);
   const result: unknown = await sql.query(
-    `select count(distinct ketto_toroku_bango)::int as actual_rows
-       from race_finish_position_model_predictions
-      where source = $1
-        and kaisai_nen = $2
-        and kaisai_tsukihi = $3
-        and keibajo_code = $4
-        and race_bango = $5
-        and model_version = $6
-        and ketto_toroku_bango = any($7::text[])
-        and prediction_generated_at >= $8::timestamp`,
+    `select count(distinct prediction.ketto_toroku_bango)::int as actual_rows
+       from race_finish_position_model_predictions as prediction
+      where prediction.source = $1
+        and prediction.kaisai_nen = $2
+        and prediction.kaisai_tsukihi = $3
+        and prediction.keibajo_code = $4
+        and prediction.race_bango = $5
+        and prediction.model_version = $6
+        and prediction.ketto_toroku_bango = any($7::text[])
+        and prediction.prediction_generated_at >= $8::timestamp
+        and not exists (
+          select 1
+            from race_finish_position_model_predictions as unexpected
+           where unexpected.source = $1
+             and unexpected.kaisai_nen = $2
+             and unexpected.kaisai_tsukihi = $3
+             and unexpected.keibajo_code = $4
+             and unexpected.race_bango = $5
+             and unexpected.model_version = $6
+             and unexpected.prediction_generated_at >= $8::timestamp
+             and not (unexpected.ketto_toroku_bango = any($7::text[]))
+        )`,
     [
       params.source,
       params.kaisaiNen,
@@ -278,6 +297,9 @@ export const isPerRaceFeatureCachePresent = async (params: CompletionParams): Pr
 // Python rescore path falls back to a long full rebuild when that cache is
 // absent, monopolizing the canonical container and delaying later races.
 export const isPerRaceRescoreReady = async (params: CompletionParams): Promise<boolean> => {
-  if (!(await isFocusedFullPredictionComplete(params))) return false;
+  const notBefore =
+    params.notBefore === undefined ? buildPreviousDateStartUtc(params.runYmd) : params.notBefore;
+  if (notBefore === null) return false;
+  if (!(await isFocusedFullPredictionComplete({ ...params, notBefore }))) return false;
   return isPerRaceFeatureCachePresent(params);
 };

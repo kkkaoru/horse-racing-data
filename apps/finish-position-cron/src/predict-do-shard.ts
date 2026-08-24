@@ -20,7 +20,7 @@
 // construction, while the existing single-slot guard stays untouched and
 // still necessary within one shard.
 
-import type { Env } from "./types";
+import type { Env, PredictCategory } from "./types";
 
 export const PREDICT_DO_NAME_PREFIX = "predict-";
 const RACE_SHARDED_DO_FLAG_VALUE = "1";
@@ -32,6 +32,11 @@ const RACE_SHARDED_DO_FLAG_VALUE = "1";
 // starts at or under 12; shardCount 3 remains the default so focused-full
 // and per-race rescore can fan out without exceeding the bounded pool.
 const DEFAULT_RACE_SHARD_MAX_CONCURRENT = 3;
+// This is also the hard namespace cardinality boundary. The standard-4
+// application has a finite pool and must never derive a DO name from a race,
+// date, venue, or operator-provided category. A larger value would silently
+// create persistent Durable Objects even after their Containers went idle.
+export const MAX_PREDICT_DO_SHARDS_PER_CATEGORY = 3;
 const SHARD_KEY_SEPARATOR = ":";
 
 // FNV-1a-style string hash over UTF-16 code units masked to a byte: pure,
@@ -49,6 +54,9 @@ interface ResolvePredictDoNameParams {
   raceBango?: string;
 }
 
+const PREDICT_CATEGORIES: readonly PredictCategory[] = Object.freeze(["jra", "nar", "ban-ei"]);
+const PREDICT_CATEGORY_SET: ReadonlySet<string> = new Set(PREDICT_CATEGORIES);
+
 const hashString = (value: string): number =>
   Array.from(value).reduce(
     (hash, char) => Math.imul(hash ^ (char.charCodeAt(0) & BYTE_MASK), FNV_PRIME) >>> 0,
@@ -60,7 +68,15 @@ const isRaceShardingEnabled = (env: Env): boolean =>
 
 const resolveShardMaxConcurrent = (env: Env): number => {
   const parsed = Number(env.RACE_SHARD_MAX_CONCURRENT);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_RACE_SHARD_MAX_CONCURRENT;
+  return Number.isInteger(parsed) && parsed > 0
+    ? Math.min(parsed, MAX_PREDICT_DO_SHARDS_PER_CATEGORY)
+    : DEFAULT_RACE_SHARD_MAX_CONCURRENT;
+};
+
+const assertPredictCategory = (category: string): void => {
+  if (!PREDICT_CATEGORY_SET.has(category)) {
+    throw new Error(`Unsupported predict DO category: ${category}`);
+  }
 };
 
 // keibajoCode and raceBango are hashed TOGETHER, never raceBango alone --
@@ -89,10 +105,26 @@ const resolveShardIndex = (keibajoCode: string, raceBango: string, maxConcurrent
 export const listDayBasePickupDoNames = (params: {
   category: string;
   env: Env;
-}): readonly string[] => [`${PREDICT_DO_NAME_PREFIX}${params.category}`];
+}): readonly string[] => {
+  assertPredictCategory(params.category);
+  return [`${PREDICT_DO_NAME_PREFIX}${params.category}`];
+};
+
+// The complete, immutable name universe for the legacy standard-4 binding.
+// Admin cleanup uses this same list to derive protected IDs. Keep unsharded
+// owners even when race sharding is enabled because day-base work uses them.
+export const listAllowedPredictDoNames = (): readonly string[] =>
+  PREDICT_CATEGORIES.flatMap((category) => [
+    `${PREDICT_DO_NAME_PREFIX}${category}`,
+    ...Array.from(
+      { length: MAX_PREDICT_DO_SHARDS_PER_CATEGORY },
+      (_, shardIndex) => `${PREDICT_DO_NAME_PREFIX}${category}-${shardIndex}`,
+    ),
+  ]);
 
 export const resolvePredictDoName = (params: ResolvePredictDoNameParams): string => {
   const { category, env, keibajoCode, raceBango } = params;
+  assertPredictCategory(category);
   const unshardedName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   if (!isRaceShardingEnabled(env) || keibajoCode === undefined || raceBango === undefined) {
     return unshardedName;
