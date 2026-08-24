@@ -207,19 +207,15 @@ Per tick:
      that target — the worker upsert is naturally idempotent and the next
      hourly tick will see the freshly-discovered rows and proceed with
      predictions. (In DRY_RUN, only the planned POST is logged.)
-   - **If the D1 count is > 0**, run a per-venue coverage check: GROUP BY
-     `keibajo_code` on `realtime_race_sources` for the JST date and compare
-     each row against the per-venue lower bounds.
-     NAR major venues (`30 35 36 42 43 44 46 47 48 50 51 53 54 55 56 57 65 66`)
-     use `EXPECTED_NAR_RACES_PER_VENUE` (10). Typical day is 10-12 races;
-     under-10 is partial-coverage. This is the check that would have caught
-     today's incident: 大井 (44) at 7 races was below the threshold and the
-     guard would have re-kicked discover-urls.
-     JRA major venues (`01 02 03 04 05 06 07 08 09 10`) use
-     `EXPECTED_JRA_RACES_PER_VENUE` (11). JRA always runs 12 race cards, so
-     anything below 11 is incomplete. Unknown / non-major `keibajo_code` rows
-     do not trigger a re-kick.
-     If ANY listed major venue is under threshold the guard logs a
+   - **If the D1 count is > 0**, enumerate the exact per-venue race-number set
+     from the authoritative raw PostgreSQL card (`jvd_ra` for domestic JRA,
+     `nvd_ra` for NAR/Ban-ei; local PC-KEIBA first, Neon replica fallback) and
+     compare it with D1 `realtime_race_sources`. There is no fixed 10/11-race
+     lower bound: a published 9-race card is complete when all nine race
+     numbers exist in D1, while one missing race from a 12-race card is
+     incomplete. If PostgreSQL is unavailable or its card is empty, the check
+     is logged as `UNVERIFIABLE` and does not cause an evidence-free retry.
+     If ANY authoritative race number is absent the guard logs a
      `WARN per-venue coverage[$label] INCOMPLETE` line and POSTs
      `discover-urls` again. The worker UPSERT is idempotent so re-discovery
      is cheap. The per-venue check runs independently from the running-style
@@ -309,12 +305,13 @@ DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 \
   bash scripts/launchd/race-prediction-guard.sh
 
 # Dry-run that exercises the per-venue coverage check path.
-# FORCE_VENUE_COUNTS=keibajo:count[,keibajo:count...] feeds synthetic D1
-# venue counts; FORCE_EXPECTED_COUNT=N bypasses the EXPECTED_COUNT=0 early
-# return so per-venue evaluation actually runs. The example below mirrors
-# the 2026-06-09 incident: 大井 (44) at 7 races + JRA 札幌 (05) at 8 races.
+# FORCE_D1_VENUE_RACES and FORCE_AUTHORITATIVE_VENUE_RACES accept
+# `keibajo:01-02-...` cards. FORCE_EXPECTED_COUNT=N bypasses the
+# EXPECTED_COUNT=0 early return so per-venue evaluation actually runs.
 DRY_RUN=1 FORCE_HOUR=05 FORCE_TARGET_DATE=20300101 \
-  FORCE_EXPECTED_COUNT=42 FORCE_VENUE_COUNTS=44:7,30:12,36:11,05:8 \
+  FORCE_EXPECTED_COUNT=9 \
+  FORCE_D1_VENUE_RACES=46:01-02-03-04-05-06-07-08-09 \
+  FORCE_AUTHORITATIVE_VENUE_RACES=46:01-02-03-04-05-06-07-08-09 \
   bash scripts/launchd/race-prediction-guard.sh
 ```
 

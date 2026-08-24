@@ -53,8 +53,9 @@
 #   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
 #   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
-#   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
-#     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_VENUE_RACES=46:01-02-03-04-05-06-07-08-09 \
+#     FORCE_AUTHORITATIVE_VENUE_RACES=46:01-02-03-04-05-06-07-08-09 \
+#     FORCE_EXPECTED_COUNT=9 FORCE_TARGET_DATE=20300101 bash ...              # exercise dynamic 9-race card coverage path
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=11 bash ... # exercise RS-before-FP order skip
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # exercise FP dry-run skip
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # D1-unavailable non-race hours: retries -> failsafe planner kick + Discord alert (no more silent abort)
@@ -116,15 +117,6 @@ ROOT_ENV_FILE="$REPO_ROOT/.env"
 # own coverage re-check is the verifier, per team-lead's simplified design.
 CF_TRIGGER_MARKER_DIR="/tmp/race-prediction-guard-cf-trigger"
 
-# Per-venue coverage lower bounds. NAR major venues typically run 10-12 races
-# per active day, JRA major venues typically run 12; if D1 shows fewer than
-# these we treat the date as partially-discovered and re-kick discover-urls.
-# Higher race counts are fine (some days have extra races).
-# Today's incident: 大井 (44) ended up at 7 races because discover-urls D1
-# write retries all failed — this guard would have caught that and re-kicked.
-EXPECTED_NAR_RACES_PER_VENUE=10
-EXPECTED_JRA_RACES_PER_VENUE=11
-
 # Finish-position is Cloudflare-owned by default. Leave this at 1 for normal
 # diagnostics so the local Docker runner cannot become production authority.
 # Set FINISH_POSITION_OFFLOADED_TO_CF=0 only for an explicit manual backfill.
@@ -137,15 +129,6 @@ FINISH_POSITION_OFFLOADED_TO_CF="${FINISH_POSITION_OFFLOADED_TO_CF:-1}"
 # loop. Set GUARD_LOCAL_FALLBACK_ENABLED=1 to restore the old behavior for an
 # explicit emergency/manual run — never as a standing default.
 GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"
-
-# NAR major venue keibajo_codes (門別/盛岡/水沢/浦和/船橋/大井/川崎/金沢/笠松/
-# 名古屋/園田/姫路/高知/佐賀/帯広). Listed as a space-separated string so the
-# Bash 3.2 shipped with macOS can iterate them without associative arrays.
-NAR_MAJOR_VENUE_CODES="30 35 36 42 43 44 46 47 48 50 51 53 54 55 56 57 65 66"
-
-# JRA major venue keibajo_codes (札幌/函館/福島/新潟/東京/中山/中京/京都/阪神/
-# 小倉). All 10 official JRA tracks; not all run on a given day.
-JRA_MAJOR_VENUE_CODES="01 02 03 04 05 06 07 08 09 10"
 
 mkdir -p "$LOG_DIR"
 
@@ -603,58 +586,107 @@ cf_trigger_categories() {
   [ "$all_ok" = "1" ]
 }
 
-# Query D1 for per-venue race counts on the target date, emitting one
-# `<keibajo_code> <count>` line per row to stdout. Returns 0 on success even
+# Query D1 for per-venue race-number sets on the target date, emitting one
+# `<keibajo_code> <count> <01,02,...>` line per row. Returns 0 on success even
 # when the result set is empty; the caller decides what to do with the rows.
-# When DRY_RUN=1 and FORCE_VENUE_COUNTS is set, the override is parsed instead
+# When DRY_RUN=1 and FORCE_D1_VENUE_RACES is set, the override is parsed instead
 # of touching D1 so the partial-coverage path can be exercised offline.
 #
 # Args:
 #   $1 target_date_iso   e.g. 2026-06-09
 query_d1_venue_counts() {
   local target_date_iso="$1"
-  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_VENUE_COUNTS:-}" ]; then
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_D1_VENUE_RACES:-}" ]; then
     # Log to stderr so it doesn't interleave with stdout rows the caller reads.
-    log "DRY_RUN: FORCE_VENUE_COUNTS=$FORCE_VENUE_COUNTS override (target=$target_date_iso, skipping D1 query)" >&2
-    printf '%s' "$FORCE_VENUE_COUNTS" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
+    log "DRY_RUN: FORCE_D1_VENUE_RACES=$FORCE_D1_VENUE_RACES override (target=$target_date_iso, skipping D1 query)" >&2
+    printf '%s' "$FORCE_D1_VENUE_RACES" | tr ',' '\n' | awk -F: 'NF==2 {r=$2; gsub(/-/, ",", r); n=split(r, a, ","); print $1" "n" "r}'
     return 0
   fi
-  local d1_query="SELECT keibajo_code, COUNT(*) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' GROUP BY keibajo_code;"
+  local d1_query="SELECT keibajo_code, COUNT(*) AS c, GROUP_CONCAT(race_bango, ',') AS races FROM (SELECT DISTINCT printf('%02d', CAST(keibajo_code AS INTEGER)) AS keibajo_code, printf('%02d', CAST(race_bango AS INTEGER)) AS race_bango FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' AND keibajo_code GLOB '[0-9]*' ORDER BY keibajo_code, race_bango) GROUP BY keibajo_code;"
   local d1_result
   d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
-  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.keibajo_code) \(.c)"' 2>/dev/null || true
+  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.keibajo_code) \(.c) \(.races)"' 2>/dev/null || true
 }
 
-# Decide whether a (keibajo_code, count) pair is under the per-venue
-# expected lower bound. Returns 0 (true) when the venue is "suspicious",
-# 1 (false) when at-or-above the bound or the code is not in either major
-# venue list (so we don't kick on minor / unscheduled venues).
+# Enumerate the authoritative card from the raw PostgreSQL race tables. The
+# local PC-KEIBA mirror is preferred; Neon is a fallback when the local
+# endpoint is unavailable. Both have the same jvd_ra/nvd_ra schema. Filtering
+# jvd_ra to domestic JRA codes avoids its known historical NAR duplicates.
+# Output is `<venue> <count> <01,02,...>`.
 #
 # Args:
-#   $1 keibajo_code   e.g. 44
-#   $2 count          e.g. 7
-is_venue_under_threshold() {
-  local keibajo_code="$1"
-  local count="$2"
-  if [[ " $NAR_MAJOR_VENUE_CODES " == *" $keibajo_code "* ]]; then
-    [ "$count" -lt "$EXPECTED_NAR_RACES_PER_VENUE" ] && return 0
-    return 1
+#   $1 target_nen       e.g. 2026
+#   $2 target_tsukihi   e.g. 0824
+query_authoritative_venue_races() {
+  local target_nen="$1"
+  local target_tsukihi="$2"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_AUTHORITATIVE_VENUE_RACES:-}" ]; then
+    log "DRY_RUN: FORCE_AUTHORITATIVE_VENUE_RACES=$FORCE_AUTHORITATIVE_VENUE_RACES override (skipping PostgreSQL query)" >&2
+    printf '%s' "$FORCE_AUTHORITATIVE_VENUE_RACES" | tr ',' '\n' | awk -F: 'NF==2 {r=$2; gsub(/-/, ",", r); n=split(r, a, ","); print $1" "n" "r}'
+    return 0
   fi
-  if [[ " $JRA_MAJOR_VENUE_CODES " == *" $keibajo_code "* ]]; then
-    [ "$count" -lt "$EXPECTED_JRA_RACES_PER_VENUE" ] && return 0
-    return 1
+
+  local local_database_url=""
+  local local_line
+  local_line="$(grep -E '^LOCAL_PUBLIC_DATABASE_URL=' "$NEON_ENV_FILE" | head -1 || true)"
+  if [ -n "$local_line" ]; then
+    local_database_url="${local_line#LOCAL_PUBLIC_DATABASE_URL=}"
+    local_database_url="${local_database_url%\'}"
+    local_database_url="${local_database_url#\'}"
+    local_database_url="${local_database_url%\"}"
+    local_database_url="${local_database_url#\"}"
   fi
-  # Unknown / non-major venue: not under threshold (do not kick on these).
+
+  local database_url
+  for database_url in "$local_database_url" "$NEON_DATABASE_URL"; do
+    if [ -z "$database_url" ]; then
+      continue
+    fi
+    local output
+    if output="$(AUTHORITATIVE_DATABASE_URL="$database_url" uv run --quiet --with 'psycopg[binary]' python - "$target_nen" "$target_tsukihi" <<'PY'
+import os
+import sys
+
+import psycopg
+
+nen, tsukihi = sys.argv[1], sys.argv[2]
+sql = """
+with races as (
+  select lpad(trim(keibajo_code), 2, '0') as keibajo_code,
+         lpad(trim(race_bango), 2, '0') as race_bango
+    from jvd_ra
+   where kaisai_nen = %s and kaisai_tsukihi = %s
+     and trim(keibajo_code) in ('01','02','03','04','05','06','07','08','09','10')
+  union
+  select lpad(trim(keibajo_code), 2, '0') as keibajo_code,
+         lpad(trim(race_bango), 2, '0') as race_bango
+    from nvd_ra
+   where kaisai_nen = %s and kaisai_tsukihi = %s
+)
+select keibajo_code, count(*), string_agg(race_bango, ',' order by race_bango)
+  from races
+ group by keibajo_code
+ order by keibajo_code
+"""
+with psycopg.connect(os.environ["AUTHORITATIVE_DATABASE_URL"], connect_timeout=5) as conn:
+    with conn.cursor() as cur:
+        cur.execute(sql, (nen, tsukihi, nen, tsukihi))
+        for venue, count, race_numbers in cur.fetchall():
+            print(f"{venue} {count} {race_numbers}")
+PY
+)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    log "WARN authoritative PostgreSQL race enumeration failed; trying the next configured replica" >&2
+  done
   return 1
 }
 
-# Per-venue coverage check. Compares each major-venue's D1 race count for the
-# target date against the configured lower bound. If ANY major venue is under,
-# log a structured WARN line and re-kick discover-urls.
-#
-# Today's incident was the canonical failure mode this catches: NAR 大井 (44)
-# had only 7 races in D1 when it should have had 12, because the discover-urls
-# cron + retries all failed with D1_ERROR / Idle connection closed and gave up.
+# Per-venue coverage check. Compare D1's exact race-number set with the raw
+# PostgreSQL card instead of assuming every NAR venue has at least ten races.
+# Short cards pass when all their races exist; an absent race is detected even
+# if another unexpected row leaves the aggregate count unchanged.
 #
 # Args:
 #   $1 target_date         e.g. 20260609
@@ -668,30 +700,55 @@ check_venue_coverage() {
   local label="$3"
 
   log "checking per-venue coverage in D1 for $target_date_iso ($label) ..."
-  local rows
-  rows="$(query_d1_venue_counts "$target_date_iso")"
-  if [ -z "$rows" ]; then
+  local d1_rows
+  d1_rows="$(query_d1_venue_counts "$target_date_iso")"
+  if [ -z "$d1_rows" ]; then
     log "per-venue check[$label]: no rows returned from D1 (target=$target_date_iso) — skip"
     return 0
   fi
 
-  local under_venues=""
-  while read -r keibajo_code count; do
-    if [ -z "$keibajo_code" ] || [ -z "$count" ]; then
-      continue
-    fi
-    log "per-venue[$label] keibajo_code=$keibajo_code count=$count"
-    if is_venue_under_threshold "$keibajo_code" "$count"; then
-      under_venues="$under_venues $keibajo_code=$count"
-    fi
-  done <<< "$rows"
-
-  if [ -z "$under_venues" ]; then
-    log "per-venue coverage[$label] OK — all listed major venues meet thresholds"
+  local target_nen="${target_date:0:4}"
+  local target_tsukihi="${target_date:4:4}"
+  local authoritative_rows
+  if ! authoritative_rows="$(query_authoritative_venue_races "$target_nen" "$target_tsukihi")"; then
+    log "WARN per-venue coverage[$label] UNVERIFIABLE — authoritative PostgreSQL enumeration unavailable; not re-kicking discover-urls without evidence"
+    return 0
+  fi
+  if [ -z "$authoritative_rows" ]; then
+    log "per-venue coverage[$label] UNVERIFIABLE — authoritative card is empty; not re-kicking discover-urls"
     return 0
   fi
 
-  log "WARN per-venue coverage[$label] INCOMPLETE — under-threshold venues:$under_venues"
+  local incomplete_venues=""
+  local keibajo_code expected_count expected_races actual_count actual_races missing_races race_bango
+  while read -r keibajo_code expected_count expected_races; do
+    if [ -z "$keibajo_code" ] || [ -z "$expected_count" ] || [ -z "$expected_races" ]; then
+      continue
+    fi
+    actual_count="$(printf '%s\n' "$d1_rows" | awk -v venue="$keibajo_code" '$1 == venue {print $2; exit}')"
+    actual_races="$(printf '%s\n' "$d1_rows" | awk -v venue="$keibajo_code" '$1 == venue {print $3; exit}')"
+    if ! printf '%s' "$actual_count" | grep -Eq '^[0-9]+$'; then
+      actual_count=0
+      actual_races=""
+    fi
+    missing_races=""
+    while read -r race_bango; do
+      if [ -n "$race_bango" ] && ! printf '%s\n' "$actual_races" | tr ',' '\n' | grep -Fxq "$race_bango"; then
+        missing_races="${missing_races}${missing_races:+,}${race_bango}"
+      fi
+    done < <(printf '%s\n' "$expected_races" | tr ',' '\n')
+    log "per-venue[$label] keibajo_code=$keibajo_code actual=$actual_count expected=$expected_count missing=${missing_races:-none}"
+    if [ -n "$missing_races" ]; then
+      incomplete_venues="$incomplete_venues $keibajo_code(actual=$actual_count,expected=$expected_count,missing=$missing_races)"
+    fi
+  done <<< "$authoritative_rows"
+
+  if [ -z "$incomplete_venues" ]; then
+    log "per-venue coverage[$label] OK — D1 covers the authoritative race card"
+    return 0
+  fi
+
+  log "WARN per-venue coverage[$label] INCOMPLETE — authoritative race gaps:$incomplete_venues"
   log "re-kicking $DISCOVER_JOB_TYPE for date=$target_date (per-venue partial-coverage recovery)"
   if [ "${DRY_RUN:-0}" = "1" ]; then
     log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
