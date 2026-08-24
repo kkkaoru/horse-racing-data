@@ -5,9 +5,25 @@ import {
   fetchWithCache,
   isArchiveDate,
   parseWeatherResponse,
+  validateWeatherRows,
 } from "./weather-api";
 
 const TOKYO_VENUE = { name: "東京", lat: 35.6622, lon: 139.4856 };
+
+const completeHourlyResponse = (raceDate: string): string =>
+  JSON.stringify({
+    hourly: {
+      precipitation: Array.from({ length: 24 }, () => 0),
+      temperature_2m: Array.from({ length: 24 }, () => 22),
+      time: Array.from(
+        { length: 24 },
+        (_, hour) => `${raceDate}T${String(hour).padStart(2, "0")}:00`,
+      ),
+      weather_code: Array.from({ length: 24 }, () => 1),
+      wind_gusts_10m: Array.from({ length: 24 }, () => 5),
+      wind_speed_10m: Array.from({ length: 24 }, () => 3),
+    },
+  });
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -231,16 +247,7 @@ describe("fetchVenueWeather", () => {
   });
 
   it("calls fetch with the correct URL and returns parsed rows for forecast", async () => {
-    const mockResponseBody = JSON.stringify({
-      hourly: {
-        time: ["2026-06-22T10:00"],
-        weather_code: [1],
-        temperature_2m: [22.0],
-        precipitation: [0.0],
-        wind_speed_10m: [3.0],
-        wind_gusts_10m: [5.0],
-      },
-    });
+    const mockResponseBody = completeHourlyResponse("2026-06-22");
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response(mockResponseBody, { status: 200 })),
@@ -252,8 +259,8 @@ describe("fetchVenueWeather", () => {
       weatherType: "forecast",
     });
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toStrictEqual({
+    expect(rows).toHaveLength(24);
+    expect(rows[10]).toStrictEqual({
       date: "2026-06-22",
       hour: 10,
       weatherCode: 1,
@@ -265,21 +272,9 @@ describe("fetchVenueWeather", () => {
   });
 
   it("calls fetch with archive URL for old actual dates", async () => {
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          hourly: {
-            time: [],
-            weather_code: [],
-            temperature_2m: [],
-            precipitation: [],
-            wind_speed_10m: [],
-            wind_gusts_10m: [],
-          },
-        }),
-        { status: 200 },
-      ),
-    );
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(new Response(completeHourlyResponse("2025-01-01"), { status: 200 }));
     vi.stubGlobal("fetch", mockFetch);
 
     await fetchVenueWeather({
@@ -290,5 +285,82 @@ describe("fetchVenueWeather", () => {
 
     const calledUrl = mockFetch.mock.calls[0]![0] as string;
     expect(calledUrl.startsWith("https://archive-api.open-meteo.com")).toBe(true);
+  });
+
+  it("rejects an incomplete hourly response so the queue can retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            hourly: {
+              precipitation: [0],
+              temperature_2m: [22],
+              time: ["2026-06-22T00:00"],
+              weather_code: [1],
+              wind_gusts_10m: [5],
+              wind_speed_10m: [3],
+            },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    await expect(
+      fetchVenueWeather({
+        venue: TOKYO_VENUE,
+        raceDate: "2026-06-22",
+        weatherType: "forecast",
+      }),
+    ).rejects.toThrow("Incomplete hourly weather: expected 24 rows, got 1");
+  });
+});
+
+describe("validateWeatherRows", () => {
+  it("rejects a mismatched date", () => {
+    const rows = parseWeatherResponse(completeHourlyResponse("2026-06-22"));
+    rows[0] = { ...rows[0]!, date: "2026-06-21" };
+
+    expect(() => validateWeatherRows(rows, "2026-06-22")).toThrow(
+      "Weather row date mismatch: 2026-06-21",
+    );
+  });
+
+  it("rejects an invalid hour", () => {
+    const rows = parseWeatherResponse(completeHourlyResponse("2026-06-22"));
+    rows[0] = { ...rows[0]!, hour: 24 };
+
+    expect(() => validateWeatherRows(rows, "2026-06-22")).toThrow("Invalid weather hour: 24");
+  });
+
+  it("rejects duplicate hours", () => {
+    const rows = parseWeatherResponse(completeHourlyResponse("2026-06-22"));
+    rows[23] = { ...rows[23]!, hour: 22 };
+
+    expect(() => validateWeatherRows(rows, "2026-06-22")).toThrow("Duplicate weather hour: 22");
+  });
+
+  it("rejects missing metrics", () => {
+    const rows = parseWeatherResponse(completeHourlyResponse("2026-06-22"));
+    rows[12] = { ...rows[12]!, temperature: null };
+
+    expect(() => validateWeatherRows(rows, "2026-06-22")).toThrow(
+      "Incomplete weather metrics at hour 12",
+    );
+  });
+
+  it.each([
+    ["weatherCode", { weatherCode: null }],
+    ["precipitation", { precipitation: null }],
+    ["windSpeed", { windSpeed: null }],
+    ["windGusts", { windGusts: null }],
+  ] as const)("rejects a missing %s value", (_name, missing) => {
+    const rows = parseWeatherResponse(completeHourlyResponse("2026-06-22"));
+    rows[6] = { ...rows[6]!, ...missing };
+
+    expect(() => validateWeatherRows(rows, "2026-06-22")).toThrow(
+      "Incomplete weather metrics at hour 6",
+    );
   });
 });

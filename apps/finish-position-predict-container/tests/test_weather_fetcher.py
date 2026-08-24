@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+from itertools import product
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -20,6 +23,7 @@ from weather_fetcher import (
     build_weather_url,
     fetch_venue_weather_dir,
     fetch_weather_json,
+    parse_weather_response,
     write_weather_duckdb,
 )
 
@@ -33,6 +37,42 @@ _ONE_ROW: dict[str, object] = {
     "wind_gusts": 8.1,
     "weather_type": "actual",
 }
+_VENUE_CODES: tuple[str, ...] = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "30",
+    "35",
+    "36",
+    "42",
+    "43",
+    "44",
+    "45",
+    "46",
+    "47",
+    "48",
+    "50",
+    "51",
+    "54",
+    "55",
+    "83",
+)
+
+
+def _weather_row(key: tuple[str, int]) -> dict[str, object]:
+    venue, hour = key
+    return {**_ONE_ROW, "keibajo_code": venue, "weather_hour": hour}
+
+
+def _complete_rows() -> list[dict[str, object]]:
+    return list(map(_weather_row, product(_VENUE_CODES, range(24))))
 
 
 def _make_urlopen_returning(body: bytes) -> MagicMock:
@@ -55,32 +95,62 @@ def test_build_weather_url_subdomain() -> None:
 
 
 def test_fetch_weather_json_success() -> None:
-    body = json.dumps({"rows": [_ONE_ROW], "source": "kv"}).encode("utf-8")
+    body = json.dumps({"rows": _complete_rows(), "source": "kv"}).encode("utf-8")
     with patch("weather_fetcher.urllib.request.urlopen", _make_urlopen_returning(body)):
         rows = fetch_weather_json("20260624")
-    assert len(rows) == 1
+    assert len(rows) == 600
     assert rows[0]["keibajo_code"] == "01"
 
 
 def test_fetch_weather_json_http_error_returns_empty() -> None:
     urlopen = MagicMock(side_effect=urllib.error.URLError("boom"))
-    with patch("weather_fetcher.urllib.request.urlopen", urlopen):
+    with (
+        patch("weather_fetcher.urllib.request.urlopen", urlopen),
+        patch("weather_fetcher.time.sleep") as sleep,
+    ):
         rows = fetch_weather_json("20260624")
     assert rows == []
+    assert urlopen.call_count == 3
+    assert sleep.call_count == 2
 
 
 def test_fetch_weather_json_malformed_rows_returns_empty() -> None:
     body = json.dumps({"source": "kv"}).encode("utf-8")
-    with patch("weather_fetcher.urllib.request.urlopen", _make_urlopen_returning(body)):
+    with (
+        patch("weather_fetcher.urllib.request.urlopen", _make_urlopen_returning(body)),
+        patch("weather_fetcher.time.sleep"),
+    ):
         rows = fetch_weather_json("20260624")
     assert rows == []
 
 
 def test_fetch_weather_json_non_object_returns_empty() -> None:
     body = json.dumps([_ONE_ROW]).encode("utf-8")
-    with patch("weather_fetcher.urllib.request.urlopen", _make_urlopen_returning(body)):
+    with (
+        patch("weather_fetcher.urllib.request.urlopen", _make_urlopen_returning(body)),
+        patch("weather_fetcher.time.sleep"),
+    ):
         rows = fetch_weather_json("20260624")
     assert rows == []
+
+
+def test_fetch_weather_json_retries_then_succeeds() -> None:
+    body = json.dumps({"rows": _complete_rows(), "source": "r2"}).encode("utf-8")
+    success = _make_urlopen_returning(body).return_value
+    urlopen = MagicMock(side_effect=[urllib.error.URLError("temporary"), success])
+    with (
+        patch("weather_fetcher.urllib.request.urlopen", urlopen),
+        patch("weather_fetcher.time.sleep") as sleep,
+    ):
+        rows = fetch_weather_json("20260624")
+    assert len(rows) == 600
+    assert urlopen.call_count == 2
+    sleep.assert_called_once_with(0.5)
+
+
+def test_parse_weather_response_rejects_partial_cloudflare_data() -> None:
+    with pytest.raises(ValueError, match="response is incomplete rows=1 venues=1"):
+        parse_weather_response({"rows": [_ONE_ROW], "source": "r2"}, "20260624")
 
 
 def test_write_weather_duckdb_empty_rows_returns_none(tmp_path: Path) -> None:
@@ -89,6 +159,7 @@ def test_write_weather_duckdb_empty_rows_returns_none(tmp_path: Path) -> None:
 
 def test_write_weather_duckdb_success(tmp_path: Path) -> None:
     fake_duckdb = MagicMock()
+    fake_duckdb.Error = RuntimeError
     fake_con = MagicMock()
     fake_duckdb.connect.return_value = fake_con
     with patch.dict(sys.modules, {"duckdb": fake_duckdb}):
@@ -97,8 +168,9 @@ def test_write_weather_duckdb_success(tmp_path: Path) -> None:
     assert fake_duckdb.connect.called
     create_sql = fake_con.execute.call_args[0][0]
     assert "venue_weather" in create_sql
+    assert "primary key" in create_sql
     insert_sql = fake_con.executemany.call_args[0][0]
-    assert "venue_weather" in insert_sql
+    assert insert_sql == "insert or replace into venue_weather values (?,?,?,?,?,?,?)"
     inserted_params = fake_con.executemany.call_args[0][1]
     assert len(inserted_params) == 1
     assert inserted_params[0][0] == "01"
@@ -107,6 +179,7 @@ def test_write_weather_duckdb_success(tmp_path: Path) -> None:
 
 def test_write_weather_duckdb_rows_all_filtered_returns_none(tmp_path: Path) -> None:
     fake_duckdb = MagicMock()
+    fake_duckdb.Error = RuntimeError
     bad_rows: list[dict[str, object]] = [
         {"keibajo_code": "01", "weather_hour": 9, "temperature": 20.0}
     ]
@@ -118,6 +191,7 @@ def test_write_weather_duckdb_rows_all_filtered_returns_none(tmp_path: Path) -> 
 
 def test_write_weather_duckdb_connect_failure_returns_none(tmp_path: Path) -> None:
     fake_duckdb = MagicMock()
+    fake_duckdb.Error = RuntimeError
     fake_duckdb.connect.side_effect = RuntimeError("disk full")
     with patch.dict(sys.modules, {"duckdb": fake_duckdb}):
         result = write_weather_duckdb([dict(_ONE_ROW)], "20260624", tmp_path)

@@ -6,6 +6,7 @@ import {
   buildCatalogStagingWeatherR2Key,
   buildLiveWeatherR2Key,
   buildSnapshotWeatherR2Key,
+  preferActualLiveWeatherKeys,
   putVenueWeatherRuntimeObjects,
   readWeatherByDate,
   upsertVenueWeather,
@@ -300,4 +301,41 @@ it("readWeatherByDate skips invalid, missing, and mismatched payloads", async ()
   const result = await readWeatherByDate({ get, list } as unknown as R2Bucket, "2026-06-22");
 
   expect(result).toHaveLength(1);
+});
+
+it("prefers actual per venue while retaining forecast for venues without actual", () => {
+  const keys = preferActualLiveWeatherKeys([
+    "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=01/forecast.json",
+    "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=01/actual.json",
+    "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=05/forecast.json",
+  ]);
+
+  expect(keys).toStrictEqual([
+    "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=01/actual.json",
+    "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=05/forecast.json",
+  ]);
+});
+
+it("readWeatherByDate does not duplicate forecast after actual arrives", async () => {
+  const forecastKey = "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=05/forecast.json";
+  const actualKey = "venue-weather-live/v1/race_date=2026-06-22/keibajo_code=05/actual.json";
+  const list = vi.fn().mockResolvedValue({
+    objects: [{ key: forecastKey }, { key: actualKey }],
+    truncated: false,
+  });
+  const get = vi.fn().mockResolvedValue({
+    json: vi.fn().mockResolvedValue({
+      keibajoCode: "05",
+      raceDate: "2026-06-22",
+      rows: [{ ...WEATHER_ROW, keibajo_code: "05", race_date: "2026-06-22" }],
+      schemaVersion: 1,
+      weatherDataType: "actual",
+    }),
+  });
+
+  const result = await readWeatherByDate({ get, list } as unknown as R2Bucket, "2026-06-22");
+
+  expect(result).toHaveLength(1);
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(get).toHaveBeenCalledWith(actualKey);
 });

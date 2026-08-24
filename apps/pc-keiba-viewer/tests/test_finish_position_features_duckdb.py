@@ -278,7 +278,10 @@ def test_upcoming_target_union_sql_jra_reads_jvd_tables_and_nulls_corners():
 
 def test_upcoming_target_union_sql_nullifies_unrun_finish_position():
     sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
-    assert "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position" in sql
+    assert (
+        "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position"
+        in sql
+    )
 
 
 def test_upcoming_target_union_sql_requires_numeric_umaban():
@@ -473,7 +476,10 @@ def test_win_rate_specs_still_use_race_count_in_denominator():
     damsire_distance_sql = subject.pedigree_monthly_stat_sql(damsire_distance)
     assert "sire_track_win_rate_val" in sire_track_sql
     assert "nullif(c.cum_race_count, 0) as sire_track_win_rate_val" in sire_track_sql
-    assert "nullif(c.cum_race_count, 0) as dam_sire_distance_win_rate_val" in damsire_distance_sql
+    assert (
+        "nullif(c.cum_race_count, 0) as dam_sire_distance_win_rate_val"
+        in damsire_distance_sql
+    )
 
 
 def test_pedigree_rec_um_sql_projects_required_columns():
@@ -496,8 +502,12 @@ def test_target_pedigree_sql_joins_both_horse_masters():
     assert "left join jra_um" in sql
     assert "left join nar_um" in sql
     assert "left join nar_nu" in sql
-    assert "coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b, n_nu.ketto_joho_01b)" in sql
-    assert "coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b, n_nu.ketto_joho_05b)" in sql
+    assert (
+        "coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b, n_nu.ketto_joho_01b)" in sql
+    )
+    assert (
+        "coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b, n_nu.ketto_joho_05b)" in sql
+    )
 
 
 def test_target_months_sql_groups_distinct_year_months():
@@ -593,7 +603,10 @@ def test_recent_form_cte_emits_prior_window_trend_and_acceleration():
     cte = subject.recent_form_cte()
     assert "as finish_trend_prior5" in cte
     assert "as finish_trend_acceleration_5_10" in cte
-    assert f"between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}" in cte
+    assert (
+        f"between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}"
+        in cte
+    )
 
 
 def test_trend_prior_window_constants_cover_races_6_through_10():
@@ -652,7 +665,10 @@ def test_assemble_final_select_appends_race_internal_relative_features():
 def test_assemble_final_select_uses_race_partition_window():
     sql = subject.assemble_final_select_from_temp_tables("jra")
     assert "with base_features as" in sql
-    assert "partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango" in sql
+    assert (
+        "partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+        in sql
+    )
     assert "order by b.speed_index_avg_5 asc nulls last" in sql
     assert "order by b.jockey_recent_win_rate desc nulls last" in sql
 
@@ -876,7 +892,9 @@ def test_jockey_cte_emits_running_style_aggregates():
 
 
 def test_partner_history_cte_propagates_corner_1_norm():
-    cte = subject.partner_history_cte("jockey_history", "kishumei_ryakusho", "jockey_career")
+    cte = subject.partner_history_cte(
+        "jockey_history", "kishumei_ryakusho", "jockey_career"
+    )
     assert "cast(h.corner1_norm as double) as corner1_norm" in cte
 
 
@@ -978,7 +996,9 @@ def test_base_features_select_sql_includes_extended_horse_features():
 
 
 def test_per_year_specs_registers_horse_running_style_history():
-    names = [spec["name"] for spec in subject.build_per_year_specs(subject.CATEGORY_JRA)]
+    names = [
+        spec["name"] for spec in subject.build_per_year_specs(subject.CATEGORY_JRA)
+    ]
     assert "horse_running_style_history" in names
 
 
@@ -1048,9 +1068,7 @@ def test_build_target_table_keeps_finish_position_intact():
         """
     )
     subject.build_target_table(con, "jra", "20250101", "20251231")
-    row = con.execute(
-        "select finish_position, finish_norm from target"
-    ).fetchone()
+    row = con.execute("select finish_position, finish_norm from target").fetchone()
     assert row == (3, 3.0 / 12.0)
 
 
@@ -1069,7 +1087,9 @@ def test_nar_subclass_named_classes_constant():
 
 
 def test_nar_subclass_case_sql_emits_meisho_regex_matches_with_null_for_non_nar():
-    sql = subject.nar_subclass_case_sql("t.source", "t.keibajo_code", "wl.nar_kyoso_joken_meisho")
+    sql = subject.nar_subclass_case_sql(
+        "t.source", "t.keibajo_code", "wl.nar_kyoso_joken_meisho"
+    )
     assert "when t.source <> 'nar' or t.keibajo_code = '83' then null" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'ＯＰ')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, '新馬')" in sql
@@ -1242,7 +1262,9 @@ def test_create_empty_realtime_odds_stub_creates_zero_row_table() -> None:
 
     con = duckdb.connect()
     subject.create_empty_realtime_odds_stub(con)
-    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    rc_row = con.execute(
+        f"select count(*) from {subject.REALTIME_ODDS_TABLE}"
+    ).fetchone()
     assert rc_row is not None
     assert rc_row[0] == 0
     # Verify bataiju_realtime column is present so COALESCE references resolve.
@@ -1279,7 +1301,9 @@ def test_stage_source_tables_creates_stub_when_no_realtime_path(
 
     subject.stage_source_tables(con, "20260610", "20260610", "nar", None, None)
 
-    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    rc_row = con.execute(
+        f"select count(*) from {subject.REALTIME_ODDS_TABLE}"
+    ).fetchone()
     assert rc_row is not None
     assert rc_row[0] == 0
 
@@ -1303,7 +1327,9 @@ def test_stage_source_tables_loads_realtime_odds_when_path_provided(
 
     subject.stage_source_tables(con, "20260610", "20260610", "nar", None, path)
 
-    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    rc_row = con.execute(
+        f"select count(*) from {subject.REALTIME_ODDS_TABLE}"
+    ).fetchone()
     assert rc_row is not None
     assert rc_row[0] == 2
 
@@ -1381,7 +1407,9 @@ def test_coalesce_falls_back_to_se_when_realtime_absent() -> None:
     assert rank == 1
 
 
-def test_coalesce_returns_zero_from_se_when_both_realtime_absent_and_se_all_zeros() -> None:
+def test_coalesce_returns_zero_from_se_when_both_realtime_absent_and_se_all_zeros() -> (
+    None
+):
     # No realtime AND se has '0000' (JV-Link "no odds" sentinel = 0.0 after /10).
     # The COALESCE itself produces 0.0; the downstream legacy_five_cte formula
     # guards with ``odds_value > 0`` so odds_score is still NULL at feature time.
@@ -1619,7 +1647,9 @@ def _eval_legacy_scores_in_duckdb(
     return pop, odds
 
 
-def test_legacy_five_cte_popularity_score_uses_computed_value_when_present_jra() -> None:
+def test_legacy_five_cte_popularity_score_uses_computed_value_when_present_jra() -> (
+    None
+):
     # ninkijun=1 out of 8 runners → score = (1-1)/(8-1) = 0.0
     pop, _ = _eval_legacy_scores_in_duckdb(1, 5.0, 8, subject.CATEGORY_JRA)
     assert pop == pytest.approx(0.0)
@@ -1705,7 +1735,10 @@ def test_build_per_year_specs_legacy_features_uses_nar_median() -> None:
 def test_build_rec_select_sql_ban_ei_uses_double_nullif_for_finish_position() -> None:
     """B001: Ban-ei rec SQL must use double nullif so '00' → NULL (not 0)."""
     sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231", None)
-    assert "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position" in sql
+    assert (
+        "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position"
+        in sql
+    )
 
 
 def test_build_rec_select_sql_ban_ei_uses_double_nullif_in_finish_norm_case() -> None:
@@ -1830,7 +1863,9 @@ def test_base_features_select_sql_includes_tansho_odds_and_ninkijun() -> None:
     """
     sql = subject.base_features_select_sql("jra")
     assert "t.tansho_odds" in sql, "t.tansho_odds missing from base_features_select_sql"
-    assert "t.tansho_ninkijun" in sql, "t.tansho_ninkijun missing from base_features_select_sql"
+    assert "t.tansho_ninkijun" in sql, (
+        "t.tansho_ninkijun missing from base_features_select_sql"
+    )
 
 
 def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
@@ -1874,12 +1909,13 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
         """
     )
     subject.build_target_table(con, "jra", "20260607", "20260607")
-    col_names = [
-        c[0]
-        for c in con.execute("describe target").fetchall()
-    ]
-    assert "tansho_odds" in col_names, "tansho_odds not in target — market-signal layer will crash"
-    assert "tansho_ninkijun" in col_names, "tansho_ninkijun not in target — market-signal layer will crash"
+    col_names = [c[0] for c in con.execute("describe target").fetchall()]
+    assert "tansho_odds" in col_names, (
+        "tansho_odds not in target — market-signal layer will crash"
+    )
+    assert "tansho_ninkijun" in col_names, (
+        "tansho_ninkijun not in target — market-signal layer will crash"
+    )
     # Values must be non-null and correct
     rows = con.execute(
         "select ketto_toroku_bango, tansho_odds, tansho_ninkijun from target order by ketto_toroku_bango"
@@ -1900,6 +1936,7 @@ def test_category_source_filter_nar_includes_null_keibajo() -> None:
         "NAR filter does not handle NULL keibajo_code — rows with missing keibajo are silently dropped"
     )
     import duckdb
+
     con = duckdb.connect()
     con.execute(
         """
@@ -1911,12 +1948,14 @@ def test_category_source_filter_nar_includes_null_keibajo() -> None:
         ) as v(source, keibajo_code)
         """
     )
-    rows = con.execute(
-        f"select source, keibajo_code from t where {sql}"
-    ).fetchall()
+    rows = con.execute(f"select source, keibajo_code from t where {sql}").fetchall()
     keibajo_codes = [r[1] for r in rows]
-    assert None in keibajo_codes, "NULL keibajo_code NAR row must be included in NAR filter"
-    assert "83" not in keibajo_codes, "keibajo_code='83' (ban-ei) must be excluded from NAR filter"
+    assert None in keibajo_codes, (
+        "NULL keibajo_code NAR row must be included in NAR filter"
+    )
+    assert "83" not in keibajo_codes, (
+        "keibajo_code='83' (ban-ei) must be excluded from NAR filter"
+    )
     assert "01" in keibajo_codes, "Non-ban-ei NAR row must be included"
     con.close()
 
@@ -1926,7 +1965,9 @@ def test_pedigree_score_is_null_when_all_components_missing() -> None:
     sql = subject.base_features_select_sql("jra")
     assert "pedigree_score_for_race" in sql
     # Dynamic divisor pattern: nullif(..., 0)::double should appear for pedigree score
-    assert "nullif(" in sql.lower(), "pedigree_score_for_race must use dynamic divisor via NULLIF"
+    assert "nullif(" in sql.lower(), (
+        "pedigree_score_for_race must use dynamic divisor via NULLIF"
+    )
 
 
 def test_pedigree_score_uses_available_component_count_as_divisor() -> None:
@@ -1939,6 +1980,7 @@ def test_pedigree_score_uses_available_component_count_as_divisor() -> None:
     # The fixed-divisor pattern (/ 3::double) must NOT appear in the pedigree score expression.
     # Instead, the count of non-null components must be the divisor.
     import re
+
     # Extract the pedigree_score_for_race expression from the SQL
     m = re.search(
         r"([\s\S]+?)\s+as\s+pedigree_score_for_race",
@@ -1961,12 +2003,17 @@ def test_sire_running_style_stats_uses_corner_count_as_denominator() -> None:
     underestimates running-style rates for sires whose offspring have incomplete corner data.
     """
     srs_spec = next(
-        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_running_style_stats"
+        s
+        for s in subject.PEDIGREE_STAT_SPECS
+        if s["table"] == "sire_running_style_stats"
     )
     accum = srs_spec["accum_metrics_select"]
     # Each rate must use corner1_norm_count, not race_count, as denominator
     for metric in ("nige", "senkou", "sashi", "oikomi"):
-        assert f"sum(m.{metric}_count)::double / nullif(sum(m.corner1_norm_count), 0)" in accum, (
+        assert (
+            f"sum(m.{metric}_count)::double / nullif(sum(m.corner1_norm_count), 0)"
+            in accum
+        ), (
             f"sire_{metric}_rate_val uses race_count denominator — NULL-corner races inflate denominator"
         )
 
@@ -2022,7 +2069,10 @@ def test_pedigree_monthly_stat_sql_sire_keibajo() -> None:
     assert "ketto_joho_01b as sire" in sql
     assert "keibajo_code as keibajo_code" in sql
     assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
-    assert "c.cum_win_count::double / nullif(c.cum_race_count, 0) as sire_keibajo_win_rate_val" in sql
+    assert (
+        "c.cum_win_count::double / nullif(c.cum_race_count, 0) as sire_keibajo_win_rate_val"
+        in sql
+    )
     assert "from pedigree_rec_um" in sql
 
 
@@ -2035,7 +2085,10 @@ def test_pedigree_monthly_stat_sql_damsire_keibajo() -> None:
     assert "ketto_joho_05b as damsire" in sql
     assert "keibajo_code as keibajo_code" in sql
     assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
-    assert "c.cum_win_count::double / nullif(c.cum_race_count, 0) as damsire_keibajo_win_rate_val" in sql
+    assert (
+        "c.cum_win_count::double / nullif(c.cum_race_count, 0) as damsire_keibajo_win_rate_val"
+        in sql
+    )
     assert "from pedigree_rec_um" in sql
 
 
@@ -2046,7 +2099,10 @@ def test_base_features_select_sql_includes_sire_keibajo_win_rate() -> None:
 
 def test_base_features_select_sql_includes_damsire_keibajo_win_rate() -> None:
     sql = subject.base_features_select_sql("jra")
-    assert "pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate" in sql
+    assert (
+        "pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate"
+        in sql
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2114,7 +2170,9 @@ def test_spill_temp_tables_to_disk_replaces_tables_with_views_preserving_data(
 
     con = duckdb.connect()
     for spill_table in subject.SPILL_TABLES:
-        con.execute(f"create table {spill_table} as select 1 as k, '{spill_table}' as label")
+        con.execute(
+            f"create table {spill_table} as select 1 as k, '{spill_table}' as label"
+        )
     subject.spill_temp_tables_to_disk(con, tmp_path)
     table_rows = con.execute(
         "select table_name from information_schema.tables where table_type = 'BASE TABLE'"
@@ -2214,9 +2272,7 @@ def test_venue_weather_empty_agg_sql_has_expected_columns() -> None:
 
     con = duckdb.connect()
     con.execute(subject.venue_weather_empty_agg_sql())
-    columns = [
-        row[0] for row in con.execute("describe venue_weather_agg").fetchall()
-    ]
+    columns = [row[0] for row in con.execute("describe venue_weather_agg").fetchall()]
     assert columns == [
         "keibajo_code",
         "weather_date",
@@ -2228,14 +2284,34 @@ def test_venue_weather_empty_agg_sql_has_expected_columns() -> None:
     ]
 
 
+def test_venue_weather_empty_prior3_sql_has_expected_columns() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(subject.venue_weather_empty_prior3_sql())
+    columns = [
+        row[0] for row in con.execute("describe venue_weather_prior3").fetchall()
+    ]
+    assert columns == [
+        "keibajo_code",
+        "weather_date",
+        "weather_date_yyyymmdd",
+        "post_hour",
+        "venue_temperature_prior3",
+    ]
+
+
 def test_materialize_venue_weather_creates_empty_agg_when_dir_none() -> None:
     import duckdb
 
     con = duckdb.connect()
     subject.materialize_venue_weather(con, None, [2020])
     row = con.execute("select count(*) from venue_weather_agg").fetchone()
+    prior3_row = con.execute("select count(*) from venue_weather_prior3").fetchone()
     assert row is not None
+    assert prior3_row is not None
     assert row[0] == 0
+    assert prior3_row[0] == 0
 
 
 def test_materialize_venue_weather_creates_empty_agg_when_no_matching_files(
@@ -2281,6 +2357,85 @@ def test_materialize_venue_weather_aggregates_race_hours_from_attached_db(
     assert row[1] == pytest.approx(3.0)
     assert row[2] == pytest.approx(7.0)
     assert row[3] == pytest.approx(11.0)
+
+
+def test_materialize_venue_weather_aggregates_three_hours_strictly_before_post(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    src_path = tmp_path / "venue_weather_2020.duckdb"
+    src = duckdb.connect(str(src_path))
+    src.execute(
+        "create table venue_weather ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, "
+        "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+    )
+    src.execute(
+        "insert into venue_weather values "
+        "('01', date '2020-01-01', 9, 100.0, 0.0, 1.0, 2.0), "
+        "('01', date '2020-01-01', 10, 10.0, 0.0, 1.0, 2.0), "
+        "('01', date '2020-01-01', 11, 20.0, 0.0, 1.0, 2.0), "
+        "('01', date '2020-01-01', 12, 30.0, 0.0, 1.0, 2.0), "
+        "('01', date '2020-01-01', 13, 200.0, 0.0, 1.0, 2.0)"
+    )
+    src.close()
+    con = duckdb.connect(":memory:")
+
+    subject.materialize_venue_weather(con, tmp_path, [2020])
+
+    row = con.execute(
+        "select venue_temperature_prior3 from venue_weather_prior3 "
+        "where keibajo_code = '01' and weather_date = date '2020-01-01' "
+        "and post_hour = 13"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(20.0)
+
+
+def test_materialize_weather_lookup_joins_prior3_window_by_post_hour() -> None:
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "create table target (source varchar, kaisai_nen varchar, "
+        "kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar, "
+        "ketto_toroku_bango varchar)"
+    )
+    con.execute(
+        "insert into target values ('jra', '2020', '0101', '01', '01', 'horse')"
+    )
+    con.execute(
+        "create table jra_ra (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, tenko_code varchar, "
+        "hasso_jikoku varchar)"
+    )
+    con.execute("insert into jra_ra values ('2020', '0101', '01', '01', '1', '1305')")
+    con.execute(
+        "create table nar_ra (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, tenko_code varchar, "
+        "kyoso_joken_meisho varchar, hasso_jikoku varchar)"
+    )
+    con.execute(subject.venue_weather_empty_agg_sql())
+    con.execute(subject.venue_weather_empty_prior3_sql())
+    con.execute(
+        "insert into venue_weather_agg values "
+        "('01', date '2020-01-01', '20200101', 18.0, 0.0, 2.0, 4.0)"
+    )
+    con.execute(
+        "insert into venue_weather_prior3 values "
+        "('01', date '2020-01-01', '20200101', 13, 20.0)"
+    )
+
+    subject.materialize_weather_lookup(con)
+
+    row = con.execute(
+        "select venue_temperature, venue_temperature_prior3 "
+        "from weather_lookup where ketto_toroku_bango = 'horse'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(18.0)
+    assert row[1] == pytest.approx(20.0)
 
 
 def test_materialize_venue_weather_detaches_so_source_db_is_not_locked(
@@ -2372,7 +2527,10 @@ def test_parse_args_supports_incremental_flag() -> None:
 
 
 def test_checkpoint_manifest_path_is_under_table_spill(tmp_path: Path) -> None:
-    assert subject.CheckpointManifest.path(tmp_path) == tmp_path / "table_spill" / "checkpoint.json"
+    assert (
+        subject.CheckpointManifest.path(tmp_path)
+        == tmp_path / "table_spill" / "checkpoint.json"
+    )
 
 
 def test_checkpoint_manifest_load_returns_none_when_missing(tmp_path: Path) -> None:
@@ -2386,7 +2544,9 @@ def test_checkpoint_manifest_load_returns_none_on_corrupt_json(tmp_path: Path) -
     assert subject.CheckpointManifest.load(tmp_path) is None
 
 
-def test_checkpoint_manifest_load_returns_none_when_top_level_not_dict(tmp_path: Path) -> None:
+def test_checkpoint_manifest_load_returns_none_when_top_level_not_dict(
+    tmp_path: Path,
+) -> None:
     manifest_path = subject.CheckpointManifest.path(tmp_path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text("[1, 2, 3]")
@@ -2394,7 +2554,9 @@ def test_checkpoint_manifest_load_returns_none_when_top_level_not_dict(tmp_path:
 
 
 def test_checkpoint_manifest_save_then_load_round_trips(tmp_path: Path) -> None:
-    manifest = subject.CheckpointManifest(category="jra", from_date="20200101", to_date="20201231")
+    manifest = subject.CheckpointManifest(
+        category="jra", from_date="20200101", to_date="20201231"
+    )
     manifest.stages["source"] = subject.StageCheckpoint(
         status="done",
         tables=["rec.parquet"],
@@ -2432,7 +2594,9 @@ def test_checkpoint_manifest_load_skips_non_dict_stage_payload(tmp_path: Path) -
     manifest_path = subject.CheckpointManifest.path(tmp_path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
-        json.dumps({"version": 1, "stages": {"source": "bogus", "target": {"status": "done"}}})
+        json.dumps(
+            {"version": 1, "stages": {"source": "bogus", "target": {"status": "done"}}}
+        )
     )
     loaded = subject.CheckpointManifest.load(tmp_path)
     assert loaded is not None
@@ -2440,7 +2604,9 @@ def test_checkpoint_manifest_load_skips_non_dict_stage_payload(tmp_path: Path) -
     assert loaded.stages["target"].status == "done"
 
 
-def test_checkpoint_manifest_mark_done_writes_stage_and_persists(tmp_path: Path) -> None:
+def test_checkpoint_manifest_mark_done_writes_stage_and_persists(
+    tmp_path: Path,
+) -> None:
     manifest = subject.CheckpointManifest()
     manifest.mark_done("source", ["rec.parquet"], {"rec.parquet": 3}, "hash1", tmp_path)
     reloaded = subject.CheckpointManifest.load(tmp_path)
@@ -2449,7 +2615,9 @@ def test_checkpoint_manifest_mark_done_writes_stage_and_persists(tmp_path: Path)
     assert reloaded.stages["source"].query_hash == "hash1"
 
 
-def test_checkpoint_manifest_invalidate_removes_stage_and_persists(tmp_path: Path) -> None:
+def test_checkpoint_manifest_invalidate_removes_stage_and_persists(
+    tmp_path: Path,
+) -> None:
     manifest = subject.CheckpointManifest()
     manifest.mark_done("source", ["rec.parquet"], {"rec.parquet": 3}, "hash1", tmp_path)
     manifest.invalidate("source", tmp_path)
@@ -2481,7 +2649,11 @@ def test_is_stage_valid_false_when_hash_mismatch(tmp_path: Path) -> None:
     (tmp_path / "rec.parquet").write_text("x")
     manifest = subject.CheckpointManifest()
     manifest.stages["source"] = subject.StageCheckpoint(
-        status="done", tables=["rec.parquet"], row_counts={}, query_hash="old", timestamp=1.0
+        status="done",
+        tables=["rec.parquet"],
+        row_counts={},
+        query_hash="old",
+        timestamp=1.0,
     )
     assert manifest.is_stage_valid("source", "new", tmp_path) is False
 
@@ -2489,12 +2661,18 @@ def test_is_stage_valid_false_when_hash_mismatch(tmp_path: Path) -> None:
 def test_is_stage_valid_false_when_parquet_missing(tmp_path: Path) -> None:
     manifest = subject.CheckpointManifest()
     manifest.stages["source"] = subject.StageCheckpoint(
-        status="done", tables=["rec.parquet"], row_counts={}, query_hash="hash1", timestamp=1.0
+        status="done",
+        tables=["rec.parquet"],
+        row_counts={},
+        query_hash="hash1",
+        timestamp=1.0,
     )
     assert manifest.is_stage_valid("source", "hash1", tmp_path) is False
 
 
-def test_is_stage_valid_true_when_done_hash_matches_files_present(tmp_path: Path) -> None:
+def test_is_stage_valid_true_when_done_hash_matches_files_present(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "rec.parquet").write_text("x")
     (tmp_path / "jra_se.parquet").write_text("x")
     manifest = subject.CheckpointManifest()
@@ -2515,8 +2693,12 @@ def test_build_target_fingerprint_differs_by_category() -> None:
 
 
 def test_compute_stage_hash_is_deterministic() -> None:
-    first = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
-    second = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
+    first = subject.compute_stage_hash(
+        "source", "jra", "20200101", "20201231", [2020, 2021]
+    )
+    second = subject.compute_stage_hash(
+        "source", "jra", "20200101", "20201231", [2020, 2021]
+    )
     assert first == second
 
 
@@ -2528,7 +2710,9 @@ def test_compute_stage_hash_changes_with_category() -> None:
 
 def test_compute_stage_hash_changes_with_years() -> None:
     one = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
-    two = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
+    two = subject.compute_stage_hash(
+        "source", "jra", "20200101", "20201231", [2020, 2021]
+    )
     assert one != two
 
 
@@ -2539,7 +2723,9 @@ def test_compute_stage_hash_changes_with_date_window() -> None:
 
 
 def test_compute_stage_hash_changes_with_extra() -> None:
-    without = subject.compute_stage_hash("weather_lookup", "jra", "20200101", "20201231", [2020])
+    without = subject.compute_stage_hash(
+        "weather_lookup", "jra", "20200101", "20201231", [2020]
+    )
     with_dir = subject.compute_stage_hash(
         "weather_lookup", "jra", "20200101", "20201231", [2020], "/vw"
     )
@@ -2562,7 +2748,9 @@ def test_compute_stage_hash_changes_with_target_race_extra() -> None:
 def test_compute_stage_hash_differs_per_stage() -> None:
     source = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
     target = subject.compute_stage_hash("target", "jra", "20200101", "20201231", [2020])
-    pedigree = subject.compute_stage_hash("pedigree", "jra", "20200101", "20201231", [2020])
+    pedigree = subject.compute_stage_hash(
+        "pedigree", "jra", "20200101", "20201231", [2020]
+    )
     assert len({source, target, pedigree}) == 3
 
 
@@ -2575,7 +2763,9 @@ def test_stage_sql_fingerprint_covers_every_known_stage() -> None:
 
 
 def test_stage_sql_fingerprint_unknown_stage_returns_name() -> None:
-    assert subject._stage_sql_fingerprint("mystery_stage", "jra", None) == "mystery_stage"
+    assert (
+        subject._stage_sql_fingerprint("mystery_stage", "jra", None) == "mystery_stage"
+    )
 
 
 def test_stage_sql_fingerprint_horse_history_includes_base_select() -> None:
@@ -2617,7 +2807,9 @@ def test_spilled_row_counts_reports_per_table_counts() -> None:
     assert counts == {"target.parquet": 3, "rec.parquet": 1}
 
 
-def test_restore_stage_from_spill_creates_views_and_returns_true(tmp_path: Path) -> None:
+def test_restore_stage_from_spill_creates_views_and_returns_true(
+    tmp_path: Path,
+) -> None:
     import duckdb
 
     writer = duckdb.connect()
@@ -2633,13 +2825,17 @@ def test_restore_stage_from_spill_creates_views_and_returns_true(tmp_path: Path)
         query_hash="h",
         timestamp=1.0,
     )
-    restored = subject.restore_stage_from_spill(con, "horse_history_derived", checkpoint, tmp_path)
+    restored = subject.restore_stage_from_spill(
+        con, "horse_history_derived", checkpoint, tmp_path
+    )
     assert restored is True
     row = con.execute("select k from horse_career").fetchone()
     assert row == (11,)
 
 
-def test_restore_stage_from_spill_returns_false_when_file_missing(tmp_path: Path) -> None:
+def test_restore_stage_from_spill_returns_false_when_file_missing(
+    tmp_path: Path,
+) -> None:
     import duckdb
 
     con = duckdb.connect()
@@ -2650,10 +2846,14 @@ def test_restore_stage_from_spill_returns_false_when_file_missing(tmp_path: Path
         query_hash="h",
         timestamp=1.0,
     )
-    assert subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+    assert (
+        subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+    )
 
 
-def test_restore_stage_from_spill_returns_false_when_parquet_unreadable(tmp_path: Path) -> None:
+def test_restore_stage_from_spill_returns_false_when_parquet_unreadable(
+    tmp_path: Path,
+) -> None:
     import duckdb
 
     bad_path = tmp_path / "horse_career.parquet"
@@ -2666,7 +2866,9 @@ def test_restore_stage_from_spill_returns_false_when_parquet_unreadable(tmp_path
         query_hash="h",
         timestamp=1.0,
     )
-    assert subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+    assert (
+        subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+    )
 
 
 def test_drop_view_or_table_drops_a_view() -> None:
@@ -2855,7 +3057,9 @@ def test_controller_try_restore_true_when_spill_present(tmp_path: Path) -> None:
     spill_dir.mkdir(parents=True, exist_ok=True)
     writer = duckdb.connect()
     writer.execute("create table target as select 5 as race_year")
-    writer.execute(f"copy target to '{(spill_dir / 'target.parquet').as_posix()}' (format parquet)")
+    writer.execute(
+        f"copy target to '{(spill_dir / 'target.parquet').as_posix()}' (format parquet)"
+    )
     writer.close()
     con = duckdb.connect()
     controller = subject.CheckpointController(
@@ -2908,13 +3112,17 @@ def test_controller_try_restore_invalidates_when_file_vanished(tmp_path: Path) -
         timestamp=1.0,
     )
     monkey_patched = pytest.MonkeyPatch()
-    monkey_patched.setattr(controller.manifest, "is_stage_valid", lambda *_a, **_k: True)
+    monkey_patched.setattr(
+        controller.manifest, "is_stage_valid", lambda *_a, **_k: True
+    )
     assert controller.try_restore(con, "target", [2020]) is False
     monkey_patched.undo()
     assert "target" not in controller.manifest.stages
 
 
-def test_controller_cascade_invalidate_noop_when_not_incremental(tmp_path: Path) -> None:
+def test_controller_cascade_invalidate_noop_when_not_incremental(
+    tmp_path: Path,
+) -> None:
     controller = subject.CheckpointController(
         active=True,
         incremental=False,
@@ -2933,7 +3141,9 @@ def test_controller_cascade_invalidate_noop_when_not_incremental(tmp_path: Path)
     assert "pedigree" in controller.manifest.stages
 
 
-def test_controller_cascade_invalidate_drops_downstream_when_incremental(tmp_path: Path) -> None:
+def test_controller_cascade_invalidate_drops_downstream_when_incremental(
+    tmp_path: Path,
+) -> None:
     controller = subject.CheckpointController(
         active=True,
         incremental=True,
@@ -3006,10 +3216,16 @@ def test_make_checkpoint_controller_defaults_temp_dir_when_none() -> None:
 def test_make_checkpoint_controller_loads_existing_manifest(tmp_path: Path) -> None:
     seed = subject.CheckpointManifest(category="old")
     seed.stages["source"] = subject.StageCheckpoint(
-        status="done", tables=["rec.parquet"], row_counts={}, query_hash="h", timestamp=1.0
+        status="done",
+        tables=["rec.parquet"],
+        row_counts={},
+        query_hash="h",
+        timestamp=1.0,
     )
     seed.save(tmp_path)
-    args = subject.parse_args(["--resume", "--category", "jra", "--temp-dir", str(tmp_path)])
+    args = subject.parse_args(
+        ["--resume", "--category", "jra", "--temp-dir", str(tmp_path)]
+    )
     controller = subject.make_checkpoint_controller(args)
     assert "source" in controller.manifest.stages
     assert controller.manifest.category == "jra"
@@ -3017,7 +3233,13 @@ def test_make_checkpoint_controller_loads_existing_manifest(tmp_path: Path) -> N
 
 def test_make_checkpoint_controller_records_venue_weather_extra(tmp_path: Path) -> None:
     args = subject.parse_args(
-        ["--resume", "--temp-dir", str(tmp_path), "--venue-weather-dir", str(tmp_path / "vw")]
+        [
+            "--resume",
+            "--temp-dir",
+            str(tmp_path),
+            "--venue-weather-dir",
+            str(tmp_path / "vw"),
+        ]
     )
     controller = subject.make_checkpoint_controller(args)
     assert controller.venue_weather_extra == (tmp_path / "vw").as_posix()
@@ -3076,7 +3298,10 @@ def test_pedigree_interaction_columns_respect_min_races_guard() -> None:
 def test_sire_style_match_returns_null_when_horse_style_unknown() -> None:
     sql = subject.base_features_select_sql("jra")
     assert "when rsh.past_nige_rate_self is null then null" in sql
-    assert f"pf.srs_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_nige_rate_val" in sql
+    assert (
+        f"pf.srs_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_nige_rate_val"
+        in sql
+    )
 
 
 def test_parse_args_log_file_defaults_none() -> None:
@@ -3194,7 +3419,10 @@ def test_trainer_cte_emits_class_surface_season_aggregates():
     assert "trainer_class_surface_season_win_rate" in cte
     assert "trainer_class_surface_season_count" in cte
     assert "coalesce(history_grade_code, '') = coalesce(target_grade_code, '')" in cte
-    assert "left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)" in cte
+    assert (
+        "left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)"
+        in cte
+    )
     assert "(cast(month(history_race_dt) as int) + 9) % 12 // 3" in cte
     assert "(cast(month(target_race_dt) as int) + 9) % 12 // 3" in cte
 
@@ -3330,9 +3558,11 @@ def test_finish_trend_acceleration_is_null_when_prior_window_insufficient():
         """
     ).fetchall()
     con.close()
-    assert rows[0][0] is not None  # finish_trend_5 computed (5 races >= TREND_MIN_RACES)
-    assert rows[0][1] is None      # finish_trend_prior5 NULL (0 races in 6-10 window)
-    assert rows[0][2] is None      # acceleration NULL (subtraction of NULL propagates)
+    assert (
+        rows[0][0] is not None
+    )  # finish_trend_5 computed (5 races >= TREND_MIN_RACES)
+    assert rows[0][1] is None  # finish_trend_prior5 NULL (0 races in 6-10 window)
+    assert rows[0][2] is None  # acceleration NULL (subtraction of NULL propagates)
 
 
 def test_finish_trend_acceleration_computed_when_both_windows_populated():
@@ -3397,7 +3627,11 @@ def test_write_parquet_writes_per_year_from_target_table(tmp_path: Path) -> None
     rows = con.execute(
         f"select race_year, race_id, horse_id, val from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet', hive_partitioning=true) order by val"
     ).fetchall()
-    assert rows == [(2023, "R1", "H1", 1.0), (2023, "R2", "H2", 2.0), (2024, "R3", "H3", 3.0)]
+    assert rows == [
+        (2023, "R1", "H1", 1.0),
+        (2023, "R2", "H2", 2.0),
+        (2024, "R3", "H3", 3.0),
+    ]
 
     con.close()
 
@@ -3407,9 +3641,7 @@ def test_write_parquet_restores_threads_after_write(tmp_path: Path) -> None:
 
     con = duckdb.connect()
     con.execute("set threads = 4")
-    con.execute(
-        "create temp table target (race_year int, race_id text, val double)"
-    )
+    con.execute("create temp table target (race_year int, race_id text, val double)")
     con.execute("insert into target values (2025, 'R1', 10.0)")
 
     final_query = "select race_year, race_id, val from target"
@@ -3427,9 +3659,7 @@ def test_write_parquet_no_staging_table_leak(tmp_path: Path) -> None:
     import duckdb
 
     con = duckdb.connect()
-    con.execute(
-        "create temp table target (race_year int, race_id text, val double)"
-    )
+    con.execute("create temp table target (race_year int, race_id text, val double)")
     con.execute("insert into target values (2023, 'R1', 1.0)")
     con.execute("insert into target values (2024, 'R2', 2.0)")
 
@@ -3445,7 +3675,9 @@ def test_write_parquet_no_staging_table_leak(tmp_path: Path) -> None:
     con.close()
 
 
-def test_window_query_from_base_table_produces_valid_sql_with_expected_columns() -> None:
+def test_window_query_from_base_table_produces_valid_sql_with_expected_columns() -> (
+    None
+):
     sql = subject._window_query_from_base_table("my_base_table")
     assert "from my_base_table b" in sql
     assert "speed_index_avg_5_rank_in_race" in sql
@@ -3467,7 +3699,9 @@ def test_window_query_from_base_table_produces_valid_sql_with_expected_columns()
 
 def test_window_query_from_base_table_uses_race_partition_columns() -> None:
     sql = subject._window_query_from_base_table("tbl")
-    assert "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango" in sql
+    assert (
+        "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango" in sql
+    )
 
 
 def test_window_query_from_base_table_is_executable_in_duckdb() -> None:
@@ -3606,7 +3840,9 @@ def test_pedigree_target_key_column_uses_target_damsire_for_damsire_specs() -> N
 
 
 def test_pedigree_stats_index_sql_indexes_composite_probe_key() -> None:
-    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats")
+    spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats"
+    )
     sql = subject.pedigree_stats_index_sql(spec)
     assert (
         sql
@@ -3615,7 +3851,9 @@ def test_pedigree_stats_index_sql_indexes_composite_probe_key() -> None:
 
 
 def test_pedigree_stats_index_sql_for_keibajo_bucketed_spec() -> None:
-    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_keibajo_stats")
+    spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_keibajo_stats"
+    )
     sql = subject.pedigree_stats_index_sql(spec)
     assert (
         sql
@@ -3658,7 +3896,9 @@ def test_pedigree_features_sql_projects_per_table_race_count_aliases() -> None:
 def test_pedigree_features_sql_projects_every_val_column() -> None:
     sql = subject.pedigree_features_sql()
     assert "sds.sire_distance_win_rate_val as sire_distance_win_rate_val" in sql
-    assert "sds.sire_avg_finish_at_distance_val as sire_avg_finish_at_distance_val" in sql
+    assert (
+        "sds.sire_avg_finish_at_distance_val as sire_avg_finish_at_distance_val" in sql
+    )
     assert "srs.sire_corner_1_norm_avg_val as sire_corner_1_norm_avg_val" in sql
     assert "dks.damsire_keibajo_win_rate_val as damsire_keibajo_win_rate_val" in sql
 
@@ -3843,8 +4083,12 @@ def test_materialize_pedigree_stats_leaves_only_pedigree_features(
     con.execute(
         "create temp table jra_um as select 'H1' as ketto_toroku_bango, 'SIRE' as ketto_joho_01b, 'DAM' as ketto_joho_05b"
     )
-    con.execute("create temp table nar_um as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false")
-    con.execute("create temp table nar_nu as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false")
+    con.execute(
+        "create temp table nar_um as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false"
+    )
+    con.execute(
+        "create temp table nar_nu as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false"
+    )
     con.execute(
         """
         create temp table pedigree_rec_um as
@@ -3855,7 +4099,13 @@ def test_materialize_pedigree_stats_leaves_only_pedigree_features(
         """
     )
 
-    monkeypatch.setattr(subject, "pedigree_rec_um_sql", lambda category: "create or replace temp table pedigree_rec_um as select * from pedigree_rec_um")
+    monkeypatch.setattr(
+        subject,
+        "pedigree_rec_um_sql",
+        lambda category: (
+            "create or replace temp table pedigree_rec_um as select * from pedigree_rec_um"
+        ),
+    )
     subject.materialize_pedigree_stats(con, "jra")
 
     remaining = {
@@ -3883,7 +4133,9 @@ def test_pedigree_stats_index_sql_creates_a_usable_index() -> None:
                9 as race_count
         """
     )
-    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats")
+    spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats"
+    )
     con.execute(subject.pedigree_stats_index_sql(spec))
     index_names = {
         r[0] for r in con.execute("select index_name from duckdb_indexes()").fetchall()
@@ -3912,12 +4164,16 @@ def test_target_pedigree_index_sql_creates_a_usable_index() -> None:
 
 
 def test_stage_sql_fingerprint_pedigree_includes_consolidation_sql() -> None:
-    fingerprint = subject._stage_sql_fingerprint(subject.CHECKPOINT_PEDIGREE, "jra", None)
+    fingerprint = subject._stage_sql_fingerprint(
+        subject.CHECKPOINT_PEDIGREE, "jra", None
+    )
     assert "create or replace temp table pedigree_features as" in fingerprint
 
 
 def test_checkpoint_pedigree_stage_owns_pedigree_features_only() -> None:
-    assert subject.CHECKPOINT_STAGE_TABLES[subject.CHECKPOINT_PEDIGREE] == ("pedigree_features",)
+    assert subject.CHECKPOINT_STAGE_TABLES[subject.CHECKPOINT_PEDIGREE] == (
+        "pedigree_features",
+    )
 
 
 def test_spill_after_pedigree_is_just_pedigree_features() -> None:
@@ -3984,7 +4240,6 @@ def test_build_horse_filter_from_target_race_entities_uses_target_horses_only() 
     result = subject._build_horse_filter_from_target_race_entities(con)
     con.close()
     assert result == " and ketto_toroku_bango in ('h-target')"
-
 
 
 # ---------------------------------------------------------------------------
@@ -4200,7 +4455,13 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
     monkeypatch.setattr(subject, "stage_um_table", fake_stage_um)
     monkeypatch.setattr(subject, "stage_ra_table", fake_stage_ra)
     subject.stage_source_tables(
-        con, "20260628", "20260628", "jra", ("20260628", "20260628"), None, ("05", "01"),
+        con,
+        "20260628",
+        "20260628",
+        "jra",
+        ("20260628", "20260628"),
+        None,
+        ("05", "01"),
     )
     con.close()
     assert all(f != "" for f in captured_se)
@@ -4263,7 +4524,13 @@ def test_stage_source_tables_passes_empty_filter_when_target_race_none(
     monkeypatch.setattr(subject, "stage_um_table", fake_stage_um)
     monkeypatch.setattr(subject, "stage_ra_table", fake_stage_ra)
     subject.stage_source_tables(
-        con, "20260628", "20260628", "jra", ("20260628", "20260628"), None, None,
+        con,
+        "20260628",
+        "20260628",
+        "jra",
+        ("20260628", "20260628"),
+        None,
+        None,
     )
     con.close()
     assert all(f == "" for f in captured_se)
@@ -4327,7 +4594,9 @@ def test_rec_select_from_ban_ei_excludes_scratched_and_excluded_entrants() -> No
     assert "coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')" in sql
 
 
-def test_rec_select_from_ban_ei_entity_filter_still_excludes_scratched_entrants() -> None:
+def test_rec_select_from_ban_ei_entity_filter_still_excludes_scratched_entrants() -> (
+    None
+):
     """The entity_filter branch (used for the focused per-race build path)
     builds a differently-shaped subquery but shares the exact same
     ``where_clause`` string, so the ijo_kubun_code predicate must survive
@@ -4371,7 +4640,9 @@ def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(
                 "'t-target' as chokyoshimei_ryakusho, '35' as keibajo_code"
             )
 
-    monkeypatch.setattr(subject, "stage_target_race_entities", fake_stage_target_entities)
+    monkeypatch.setattr(
+        subject, "stage_target_race_entities", fake_stage_target_entities
+    )
     monkeypatch.setattr(subject, "run_staged_sql", capture_run)
     subject.create_empty_realtime_odds_stub(con)
     subject.stage_rec_table(
@@ -4409,6 +4680,7 @@ def test_target_race_arg_missing_part() -> None:
 
 def test_stage_source_passes_target_race(monkeypatch: pytest.MonkeyPatch) -> None:
     import duckdb
+
     con = duckdb.connect()
     captured: dict[str, object] = {}
 
@@ -4428,6 +4700,8 @@ def test_stage_source_passes_target_race(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(subject, "install_and_attach_pg", fake_install)
     monkeypatch.setattr(subject, "stage_source_tables", fake_stage_source_tables)
-    subject.stage_source(con, "pg://test", "20260628", "20260628", "jra", target_race=("05", "11"))
+    subject.stage_source(
+        con, "pg://test", "20260628", "20260628", "jra", target_race=("05", "11")
+    )
     con.close()
     assert captured["target_race"] == ("05", "11")

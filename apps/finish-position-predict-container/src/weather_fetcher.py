@@ -29,7 +29,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import urllib.error
 import urllib.request
+from collections import Counter
 from pathlib import Path
 from typing import Final
 
@@ -39,6 +42,39 @@ VENUE_WEATHER_BASE_URL: Final[str] = os.environ.get(
     "VENUE_WEATHER_URL", "https://venue-weather.kaoru.workers.dev"
 )
 FETCH_TIMEOUT_SECONDS: Final[float] = 10.0
+FETCH_ATTEMPTS: Final[int] = 3
+RETRY_BASE_SECONDS: Final[float] = 0.5
+HOURS_PER_DAY: Final[int] = 24
+EXPECTED_VENUE_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+        "30",
+        "35",
+        "36",
+        "42",
+        "43",
+        "44",
+        "45",
+        "46",
+        "47",
+        "48",
+        "50",
+        "51",
+        "54",
+        "55",
+        "83",
+    }
+)
+EXPECTED_ROW_COUNT: Final[int] = len(EXPECTED_VENUE_CODES) * HOURS_PER_DAY
 
 # Cloudflare WAF rejects Python's default empty User-Agent with HTTP 403; an
 # explicit, descriptive UA passes and keeps worker-side logs legible. Same
@@ -70,14 +106,54 @@ _CREATE_TABLE_SQL: Final[str] = (
     "temperature DOUBLE, "
     "precipitation DOUBLE, "
     "wind_speed DOUBLE, "
-    "wind_gusts DOUBLE)"
+    "wind_gusts DOUBLE, "
+    "primary key (keibajo_code, weather_date, weather_hour))"
 )
-_INSERT_SQL: Final[str] = "insert into venue_weather values (?,?,?,?,?,?,?)"
+_INSERT_SQL: Final[str] = "insert or replace into venue_weather values (?,?,?,?,?,?,?)"
 
 
 def build_weather_url(target_date: str) -> str:
     """Return the venue-weather worker URL for ``target_date`` (YYYYMMDD)."""
     return f"{VENUE_WEATHER_BASE_URL}/weather?race_date={target_date}"
+
+
+def parse_weather_response(parsed: object, target_date: str) -> tuple[list[dict[str, object]], str]:
+    """Validate a complete 25-venue hourly Cloudflare weather response."""
+    if not isinstance(parsed, dict):
+        raise ValueError("response is not an object")
+    source = parsed.get("source")
+    if source not in ("kv", "r2"):
+        raise ValueError("response has invalid source")
+    raw_rows = parsed.get("rows")
+    if not isinstance(raw_rows, list):
+        raise ValueError("response has no rows list")
+    expected_date = f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:8]}"
+    rows: list[dict[str, object]] = []
+    keys: set[tuple[str, int]] = set()
+    venue_counts: Counter[str] = Counter()
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            raise ValueError("response row is not an object")
+        venue = raw_row.get("keibajo_code")
+        race_date = raw_row.get("race_date")
+        hour = raw_row.get("weather_hour")
+        if not isinstance(venue, str) or venue not in EXPECTED_VENUE_CODES:
+            raise ValueError("response row has invalid keibajo_code")
+        if race_date != expected_date:
+            raise ValueError("response row has invalid race_date")
+        if not isinstance(hour, int) or isinstance(hour, bool) or hour not in range(24):
+            raise ValueError("response row has invalid weather_hour")
+        key = (venue, hour)
+        if key in keys:
+            raise ValueError("response contains a duplicate venue-hour")
+        keys.add(key)
+        venue_counts[venue] += 1
+        rows.append(raw_row)
+    if len(rows) != EXPECTED_ROW_COUNT or frozenset(venue_counts) != EXPECTED_VENUE_CODES:
+        raise ValueError(f"response is incomplete rows={len(rows)} venues={len(venue_counts)}")
+    if set(venue_counts.values()) != {HOURS_PER_DAY}:
+        raise ValueError("response has incomplete hourly venue coverage")
+    return rows, source
 
 
 def fetch_weather_json(target_date: str) -> list[dict[str, object]]:
@@ -90,22 +166,35 @@ def fetch_weather_json(target_date: str) -> list[dict[str, object]]:
     NULL-weather path gracefully.
     """
     url = build_weather_url(target_date)
-    try:
-        req = urllib.request.Request(url, headers=_REQUEST_HEADERS)
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS) as resp:
-            raw = resp.read().decode("utf-8")
-        parsed: object = json.loads(raw)
-    except Exception as exc:
-        debug_log(f"[venue-weather] fetch failed target_date={target_date} error={exc!r}")
-        return []
-    if not isinstance(parsed, dict):
-        debug_log(f"[venue-weather] response is not an object target_date={target_date}")
-        return []
-    rows: object = parsed.get("rows")
-    if not isinstance(rows, list):
-        debug_log(f"[venue-weather] response has no rows list target_date={target_date}")
-        return []
-    return [row for row in rows if isinstance(row, dict)]
+    req = urllib.request.Request(url, headers=_REQUEST_HEADERS)
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS) as resp:
+                raw = resp.read().decode("utf-8")
+            rows, source = parse_weather_response(json.loads(raw), target_date)
+            debug_log(
+                f"[venue-weather] fetch complete target_date={target_date} "
+                f"source={source} rows={len(rows)} attempt={attempt}"
+            )
+            return rows
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            TimeoutError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            debug_log(
+                f"[venue-weather] fetch attempt failed target_date={target_date} "
+                f"attempt={attempt}/{FETCH_ATTEMPTS} error={exc!r}"
+            )
+            if attempt < FETCH_ATTEMPTS:
+                time.sleep(RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
+    debug_log(
+        f"[venue-weather] fetch exhausted target_date={target_date} attempts={FETCH_ATTEMPTS}"
+    )
+    return []
 
 
 def write_weather_duckdb(
@@ -137,7 +226,10 @@ def write_weather_duckdb(
     weather_dir = work_dir / "venue-weather"
     try:
         import duckdb
-
+    except ImportError as exc:
+        debug_log(f"[venue-weather] duckdb import failed target_date={target_date} error={exc!r}")
+        return None
+    try:
         weather_dir.mkdir(parents=True, exist_ok=True)
         db_path = weather_dir / f"venue_weather_{year:04d}.duckdb"
         con = duckdb.connect(str(db_path))
@@ -146,7 +238,7 @@ def write_weather_duckdb(
             con.executemany(_INSERT_SQL, params)
         finally:
             con.close()
-    except Exception as exc:
+    except (OSError, duckdb.Error) as exc:
         debug_log(f"[venue-weather] duckdb write failed target_date={target_date} error={exc!r}")
         return None
     debug_log(f"[venue-weather] wrote {len(params)} rows to {db_path} target_date={target_date}")

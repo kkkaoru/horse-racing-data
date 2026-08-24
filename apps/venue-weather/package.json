@@ -9,6 +9,8 @@
     "format": "oxfmt --write src scripts package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "format:check": "oxfmt --check src scripts package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "sync:weather-local": "uv run --with duckdb python scripts/sync_r2_sql_to_duckdb.py",
+    "test:python": "uv run --with duckdb python -m unittest discover -s scripts -p 'test_*.py'",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tsc": "tsc --noEmit"

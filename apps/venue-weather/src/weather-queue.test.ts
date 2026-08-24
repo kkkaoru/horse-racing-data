@@ -2,17 +2,17 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { handleWeatherBatch, processWeatherJob } from "./weather-queue";
 
 vi.mock("./weather-api", () => ({
-  fetchVenueWeather: vi.fn().mockResolvedValue([
-    {
+  fetchVenueWeather: vi.fn().mockResolvedValue(
+    Array.from({ length: 24 }, (_, hour) => ({
       date: "2026-06-22",
-      hour: 10,
+      hour,
       precipitation: 0,
       temperature: 20,
       weatherCode: 1,
       windGusts: 5,
       windSpeed: 3,
-    },
-  ]),
+    })),
+  ),
 }));
 
 vi.mock("./weather-r2-store", () => ({
@@ -115,5 +115,22 @@ it("handleWeatherBatch handles empty message batch", async () => {
   await handleWeatherBatch(batch, mockEnv);
 
   expect(fetchVenueWeather).not.toHaveBeenCalled();
+  expect(upsertVenueWeather).not.toHaveBeenCalled();
+});
+
+it("handleWeatherBatch leaves a failed message unacked for queue retry", async () => {
+  vi.mocked(fetchVenueWeather).mockRejectedValueOnce(new Error("incomplete weather"));
+  const ack = vi.fn();
+  const batch = {
+    messages: [
+      {
+        ack,
+        body: { keibajoCode: "05", raceDate: "2026-06-22", type: "forecast" },
+      },
+    ],
+  } as unknown as MessageBatch<import("./types").WeatherJob>;
+
+  await expect(handleWeatherBatch(batch, mockEnv)).rejects.toThrow("incomplete weather");
+  expect(ack).not.toHaveBeenCalled();
   expect(upsertVenueWeather).not.toHaveBeenCalled();
 });

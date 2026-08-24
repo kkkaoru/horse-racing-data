@@ -1182,7 +1182,7 @@ def stage_ra_table(
         from_source = (
             f"("
             f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
-            f" tenko_code, kyoso_joken_meisho"
+            f" tenko_code, kyoso_joken_meisho, hasso_jikoku"
             f" FROM pg.{pg_table} WHERE {where_clause}"
             f")"
         )
@@ -1195,7 +1195,7 @@ def stage_ra_table(
         f"""
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code,
-               kyoso_joken_meisho
+               kyoso_joken_meisho, hasso_jikoku
         from {from_source}
         {where_sql}
         """,
@@ -1332,7 +1332,8 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
         "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
         "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
         "cast(null as varchar) as tenko_code, "
-        "cast(null as varchar) as kyoso_joken_meisho "
+        "cast(null as varchar) as kyoso_joken_meisho, "
+        "cast(null as varchar) as hasso_jikoku "
         "where false",
         row_count_table="jra_ra",
     )
@@ -2481,6 +2482,19 @@ def venue_weather_empty_agg_sql() -> str:
     """
 
 
+def venue_weather_empty_prior3_sql() -> str:
+    """Empty race-hour weather window used when no hourly files are available."""
+    return """
+    create or replace temp table venue_weather_prior3 (
+      keibajo_code varchar,
+      weather_date date,
+      weather_date_yyyymmdd varchar,
+      post_hour integer,
+      venue_temperature_prior3 double
+    )
+    """
+
+
 def venue_weather_files_for_years(
     venue_weather_dir: Path, years: list[int]
 ) -> list[tuple[int, Path]]:
@@ -2511,6 +2525,7 @@ def materialize_venue_weather(
     )
     if not files:
         con.execute(venue_weather_empty_agg_sql())
+        con.execute(venue_weather_empty_prior3_sql())
         log_event("weather.venue_weather", "done", perf_counter() - started, 0)
         return
     aliases: list[str] = []
@@ -2543,6 +2558,21 @@ def materialize_venue_weather(
         group by keibajo_code, weather_date
         """
     )
+    con.execute(
+        """
+        create or replace temp table venue_weather_prior3 as
+        select w.keibajo_code, w.weather_date,
+          strftime(w.weather_date, '%Y%m%d') as weather_date_yyyymmdd,
+          p.post_hour,
+          avg(w.temperature) as venue_temperature_prior3
+        from venue_weather_raw w
+        cross join range(0, 24) p(post_hour)
+        where w.weather_hour < p.post_hour
+          and w.weather_hour >= p.post_hour - 3
+        group by w.keibajo_code, w.weather_date, p.post_hour
+        having count(*) = 3
+        """
+    )
     con.execute("drop table if exists venue_weather_raw")
     agg_row = con.execute("select count(*) from venue_weather_agg").fetchone()
     agg_rows = int(agg_row[0]) if agg_row is not None else 0
@@ -2559,6 +2589,7 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
           coalesce(jr.tenko_code, nr.tenko_code) as tenko_code,
           nr.kyoso_joken_meisho as nar_kyoso_joken_meisho,
           vw.venue_temperature,
+          vp.venue_temperature_prior3,
           vw.venue_precipitation_total,
           vw.venue_wind_speed_max,
           vw.venue_wind_gusts_max
@@ -2569,6 +2600,9 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
           and nr.keibajo_code=t.keibajo_code and nr.race_bango=t.race_bango
         left join venue_weather_agg vw on vw.keibajo_code = t.keibajo_code
           and vw.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
+        left join venue_weather_prior3 vp on vp.keibajo_code = t.keibajo_code
+          and vp.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
+          and vp.post_hour = try_cast(substr(coalesce(jr.hasso_jikoku, nr.hasso_jikoku), 1, 2) as integer)
         """
     )
     log_event("weather.weather_lookup", "done", perf_counter() - started)
@@ -2674,6 +2708,7 @@ def base_features_select_sql(category: str) -> str:
         when '5' then 1.0::double when '6' then 1.0::double
         else null end as weather_normalized,
       wl.venue_temperature,
+      wl.venue_temperature_prior3,
       wl.venue_precipitation_total,
       wl.venue_wind_speed_max,
       wl.venue_wind_gusts_max,

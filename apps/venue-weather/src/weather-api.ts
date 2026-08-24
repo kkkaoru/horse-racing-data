@@ -10,6 +10,7 @@ const CACHE_URL_BASE = "https://venue-weather.local/open-meteo/";
 const FORECAST_CACHE_TTL_SECONDS = 1800;
 const ACTUAL_CACHE_TTL_SECONDS = 86400;
 const ARCHIVE_LAG_DAYS = 5;
+const HOURS_PER_DAY = 24;
 
 const CACHE_TTL_BY_TYPE: Record<WeatherType, number> = {
   forecast: FORECAST_CACHE_TTL_SECONDS,
@@ -100,9 +101,35 @@ export const parseWeatherResponse = (raw: string): WeatherRow[] => {
   }));
 };
 
+export const validateWeatherRows = (rows: WeatherRow[], raceDate: string): void => {
+  if (rows.length !== HOURS_PER_DAY) {
+    throw new Error(`Incomplete hourly weather: expected 24 rows, got ${String(rows.length)}`);
+  }
+  const hours = new Set<number>();
+  for (const row of rows) {
+    if (row.date !== raceDate) throw new Error(`Weather row date mismatch: ${row.date}`);
+    if (!Number.isInteger(row.hour) || row.hour < 0 || row.hour >= HOURS_PER_DAY) {
+      throw new Error(`Invalid weather hour: ${String(row.hour)}`);
+    }
+    if (hours.has(row.hour)) throw new Error(`Duplicate weather hour: ${String(row.hour)}`);
+    if (
+      row.weatherCode === null ||
+      row.temperature === null ||
+      row.precipitation === null ||
+      row.windSpeed === null ||
+      row.windGusts === null
+    ) {
+      throw new Error(`Incomplete weather metrics at hour ${String(row.hour)}`);
+    }
+    hours.add(row.hour);
+  }
+};
+
 export const fetchVenueWeather = async (params: BuildUrlParams): Promise<WeatherRow[]> => {
   const ttl = CACHE_TTL_BY_TYPE[params.weatherType];
   const url = buildWeatherUrl(params);
   const raw = await fetchWithCache(url, ttl);
-  return parseWeatherResponse(raw);
+  const rows = parseWeatherResponse(raw);
+  validateWeatherRows(rows, params.raceDate);
+  return rows;
 };

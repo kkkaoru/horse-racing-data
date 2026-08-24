@@ -160,7 +160,7 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
 def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
     jra_ra = pl.DataFrame(
         [
-            ("2020", "0101", "01", "01", "1", None),
+            ("2020", "0101", "01", "01", "1", None, "1305"),
         ],
         schema=[
             "kaisai_nen",
@@ -169,12 +169,13 @@ def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
             "race_bango",
             "tenko_code",
             "kyoso_joken_meisho",
+            "hasso_jikoku",
         ],
         orient="row",
     )
     nar_ra = pl.DataFrame(
         [
-            ("2020", "0601", "01", "02", "2", "「　　　Ｃ２　」"),
+            ("2020", "0601", "01", "02", "2", "「　　　Ｃ２　」", "1405"),
         ],
         schema=[
             "kaisai_nen",
@@ -183,6 +184,7 @@ def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
             "race_bango",
             "tenko_code",
             "kyoso_joken_meisho",
+            "hasso_jikoku",
         ],
         orient="row",
     )

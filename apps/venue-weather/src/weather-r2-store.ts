@@ -208,9 +208,6 @@ const putCatalogStagingEvents = async ({
   weatherType: WeatherType;
 }): Promise<void> => {
   const events = toCatalogEvents(payload);
-  if (events.length === 0) {
-    return;
-  }
   await catalogStream?.send(events).catch(() => undefined);
   const body = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   await archive.put(
@@ -332,11 +329,27 @@ const listLiveWeatherKeys = async (
   return [...keys, ...(await listLiveWeatherKeys(archive, raceDate, result.cursor))];
 };
 
+const liveWeatherKeyBase = (key: string): string => {
+  if (key.endsWith("/actual.json")) return key.slice(0, -"/actual.json".length);
+  return key.slice(0, -"/forecast.json".length);
+};
+
+export const preferActualLiveWeatherKeys = (keys: string[]): string[] => {
+  const actualBases = new Set(
+    keys.filter((key) => key.endsWith("/actual.json")).map((key) => liveWeatherKeyBase(key)),
+  );
+  return keys.filter((key) => {
+    if (!key.endsWith("/forecast.json")) return true;
+    const base = liveWeatherKeyBase(key);
+    return !actualBases.has(base);
+  });
+};
+
 export const readWeatherByDate = async (
   archive: R2Bucket,
   raceDate: string,
 ): Promise<WeatherCacheRow[]> => {
-  const keys = await listLiveWeatherKeys(archive, raceDate);
+  const keys = preferActualLiveWeatherKeys(await listLiveWeatherKeys(archive, raceDate));
   const payloads = await Promise.all(
     keys.map(async (key) => {
       const object = await archive.get(key).catch(() => null);
