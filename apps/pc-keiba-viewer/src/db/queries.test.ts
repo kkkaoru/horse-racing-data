@@ -2164,6 +2164,22 @@ it("getFinishPositionLambdarankPredictions references prediction_generated_at on
   expect(queryText).not.toMatch(/p3\.predicted_at/u);
 });
 
+it("getFinishPositionLambdarankPredictions selects only the newest generation within the selected model", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /selected_generation as \(\s*select\s+p4\.model_version,\s*max\(p4\.prediction_generated_at\) as prediction_generated_at/u,
+  );
+  expect(queryText).toMatch(
+    /join selected_generation\s+on selected_generation\.model_version = p\.model_version\s+and p\.prediction_generated_at is not distinct from selected_generation\.prediction_generated_at/u,
+  );
+  expect(queryText).toMatch(
+    /p2\.prediction_generated_at is not distinct from p\.prediction_generated_at/u,
+  );
+});
+
 it("getFinishPositionLambdarankPredictions returns predictions from priority 2 fallback model_version", async () => {
   executeMock.mockResolvedValue({
     rows: [
@@ -2307,6 +2323,74 @@ it("getActiveFinishPositionPredictions reloads stale KV with a generation-keyed 
   expect(writePredictionKvTextMock).toHaveBeenCalledTimes(1);
   expect(writePredictionKvTextMock).toHaveBeenCalledWith(
     expect.objectContaining({ awaitWrite: true }),
+  );
+});
+
+it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload with the database latest generation", async () => {
+  readPredictionKvTextMock.mockResolvedValue(
+    JSON.stringify([
+      ...Array.from({ length: 9 }, (_, index) => ({
+        horseNumber: String(index + 1),
+        modelVersion: "banei-cb-v9-sim-2011",
+        predictedFinishNorm: index / 8,
+        predictionGeneratedAt: "2026-08-24T08:18:05.649Z",
+        showProbability: null,
+        winProbability: null,
+      })),
+      {
+        horseNumber: "10",
+        modelVersion: "banei-cb-v9-sim-2011",
+        predictedFinishNorm: 0.5,
+        predictionGeneratedAt: "2026-08-24T00:34:29.223Z",
+        showProbability: null,
+        winProbability: null,
+      },
+    ]),
+  );
+  executeMock.mockResolvedValue({
+    rows: Array.from({ length: 9 }, (_, index) => ({
+      model_version: "banei-cb-v9-sim-2011",
+      predicted_rank: index + 1,
+      predicted_score: String(index + 1),
+      prediction_generated_at: "2026-08-24T08:18:05.649Z",
+      shusso_tosu: 9,
+      umaban: index + 1,
+    })),
+  });
+  const result = await getActiveFinishPositionPredictions(
+    NAR_CELL_RACE,
+    Array.from({ length: 10 }, (_, index) => ({
+      ...PERCLASS_703_RUNNERS[0]!,
+      umaban: String(index + 1),
+    })),
+  );
+  expect(result.length).toBe(9);
+  expect(result.map((feature) => feature.horseNumber)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+  ]);
+  expect(result.map((feature) => feature.predictionGeneratedAt)).toStrictEqual([
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+    "2026-08-24T08:18:05.649Z",
+  ]);
+  expect(result[0]?.predictedScoreStddev).toBe(2.7386127875258306);
+  expect(result[8]?.predictedFinishNorm).toBe(1);
+  expect(writePredictionKvTextMock).toHaveBeenCalledWith(
+    expect.objectContaining({ body: JSON.stringify(result) }),
   );
 });
 

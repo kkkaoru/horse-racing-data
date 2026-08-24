@@ -22,3 +22,16 @@ export const arePredictionFeaturesFreshForGeneration = (
     })
   );
 };
+
+export const havePredictionFeaturesSingleGeneration = (
+  features: readonly PredictionGenerationFeature[],
+): boolean => {
+  const generationTimestamp = Date.parse(features[0]?.predictionGeneratedAt ?? "");
+  return (
+    features.length > 0 &&
+    Number.isFinite(generationTimestamp) &&
+    features.every(
+      (feature) => Date.parse(feature.predictionGeneratedAt ?? "") === generationTimestamp,
+    )
+  );
+};

@@ -13,7 +13,10 @@ import {
   type FinishPositionBucketFilter,
   type FinishPositionBucketMetrics,
 } from "../lib/finish-prediction-dimensions";
-import { arePredictionFeaturesFreshForGeneration } from "../lib/prediction-generation-freshness";
+import {
+  arePredictionFeaturesFreshForGeneration,
+  havePredictionFeaturesSingleGeneration,
+} from "../lib/prediction-generation-freshness";
 import {
   buildFinishPositionPredictionKvKey,
   parsePredictionFinishPositionFeatures,
@@ -3452,6 +3455,19 @@ export const getFinishPositionLambdarankPredictions = cache(
               ) candidates
               order by priority, recency desc nulls last
               limit 1
+            ),
+            selected_generation as (
+              select
+                p4.model_version,
+                max(p4.prediction_generated_at) as prediction_generated_at
+              from race_finish_position_model_predictions p4
+              join selected_model on selected_model.model_version = p4.model_version
+              where p4.source = ${predictionSource}
+                and p4.kaisai_nen = ${race.kaisaiNen}
+                and p4.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                and p4.keibajo_code = ${race.keibajoCode}
+                and p4.race_bango = ${race.raceBango}
+              group by p4.model_version
             )
             select
               p.model_version,
@@ -3468,9 +3484,13 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p2.kaisai_tsukihi = p.kaisai_tsukihi
                   and p2.keibajo_code = p.keibajo_code
                   and p2.race_bango = p.race_bango
+                  and p2.prediction_generated_at is not distinct from p.prediction_generated_at
               )::integer as shusso_tosu
             from race_finish_position_model_predictions p
             join selected_model on selected_model.model_version = p.model_version
+            join selected_generation
+              on selected_generation.model_version = p.model_version
+              and p.prediction_generated_at is not distinct from selected_generation.prediction_generated_at
             where p.source = ${predictionSource}
               and p.model_version in (
                 select model_version from allowed_prediction_model_versions
@@ -3540,6 +3560,7 @@ export const getActiveFinishPositionPredictions = cache(
       const predictionFeatures = parsePredictionFinishPositionFeatures(predictionBody);
       const cacheGenerationMatches =
         predictionFeatures !== null &&
+        havePredictionFeaturesSingleGeneration(predictionFeatures) &&
         (expectedPredictionGeneratedAt === undefined ||
           arePredictionFeaturesFreshForGeneration(
             predictionFeatures,
@@ -3555,13 +3576,15 @@ export const getActiveFinishPositionPredictions = cache(
       runners,
       expectedPredictionGeneratedAt,
     );
+    const lambdaRowsHaveSingleGeneration = havePredictionFeaturesSingleGeneration(lambdaRows);
     if (
       expectedPredictionGeneratedAt !== undefined &&
-      !arePredictionFeaturesFreshForGeneration(lambdaRows, expectedPredictionGeneratedAt)
+      (!lambdaRowsHaveSingleGeneration ||
+        !arePredictionFeaturesFreshForGeneration(lambdaRows, expectedPredictionGeneratedAt))
     ) {
       throw new Error("Expected prediction generation is not available");
     }
-    if (lambdaRows.length > 0) {
+    if (lambdaRowsHaveSingleGeneration) {
       const write = writePredictionKvText({
         awaitWrite: expectedPredictionGeneratedAt !== undefined,
         body: JSON.stringify(lambdaRows),

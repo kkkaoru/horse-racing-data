@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 
 import {
   arePredictionFeaturesFreshForGeneration,
+  havePredictionFeaturesSingleGeneration,
   normalizeExpectedPredictionGeneratedAt,
 } from "./prediction-generation-freshness";
 
@@ -58,4 +59,27 @@ it("rejects missing and invalid prediction row timestamps", () => {
       "2026-08-24T03:40:15.000Z",
     ),
   ).toBe(false);
+});
+
+it("accepts only a non-empty prediction result with one valid generation", () => {
+  expect(
+    havePredictionFeaturesSingleGeneration([
+      { predictionGeneratedAt: "2026-08-24T03:40:15.000Z" },
+      { predictionGeneratedAt: "2026-08-24T12:40:15+09:00" },
+    ]),
+  ).toBe(true);
+  expect(havePredictionFeaturesSingleGeneration([])).toBe(false);
+});
+
+it("rejects mixed, missing, and invalid prediction generations", () => {
+  expect(
+    havePredictionFeaturesSingleGeneration([
+      { predictionGeneratedAt: "2026-08-24T03:40:15.000Z" },
+      { predictionGeneratedAt: "2026-08-24T03:40:14.999Z" },
+    ]),
+  ).toBe(false);
+  expect(havePredictionFeaturesSingleGeneration([{ predictionGeneratedAt: null }])).toBe(false);
+  expect(havePredictionFeaturesSingleGeneration([{ predictionGeneratedAt: "invalid" }])).toBe(
+    false,
+  );
 });
