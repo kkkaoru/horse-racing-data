@@ -2445,7 +2445,31 @@ test("internal rescore-race endpoint rejects overlapping active and excluded run
   expect(response.status).toBe(400);
 });
 
-test("internal rescore-race endpoint rejects an active count different from weights", async () => {
+test("internal rescore-race endpoint rejects fewer snapshot rows than active runners", async () => {
+  const response = await handleFetch(
+    rawInternalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        activeHorseNumbers: [1, 3],
+        category: "nar",
+        entrySnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        entrySnapshotHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        excludedHorseNumbers: [2],
+        keibajoCode: "35",
+        raceBango: "03",
+        runYmd: "20260824",
+        weightSnapshotCount: 1,
+        weightSnapshotFetchedAt: "2026-08-24T12:03:41+09:00",
+        weightSnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
+test("internal rescore-race endpoint accepts extra snapshot rows for scratched runners", async () => {
   const response = await handleFetch(
     rawInternalRescoreRaceRequest(
       "secret-token",
@@ -2466,7 +2490,13 @@ test("internal rescore-race endpoint rejects an active count different from weig
     makeEnv(),
   );
 
-  expect(response.status).toBe(400);
+  expect(response.status).toBe(202);
+  expect(weightRescoreQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      activeHorseNumbers: [1, 3],
+      weightSnapshotCount: 3,
+    }),
+  );
 });
 
 test("internal rescore-race endpoint returns 400 when category is invalid", async () => {

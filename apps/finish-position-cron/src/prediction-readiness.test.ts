@@ -508,6 +508,112 @@ it("reports weight delivery pending without conflating it with pre-weight comple
   });
 });
 
+it("accepts snapshot rows for scratched runners while requiring every active prediction", () => {
+  const result = buildPredictionReadiness({
+    entries: [
+      {
+        ketto_toroku_bango: "H1",
+        keibajo_code: "05",
+        race_bango: "01",
+        source: "jra",
+        umaban: 1,
+      },
+    ],
+    kvPayloads: new Map([
+      [
+        "jra:05:01",
+        [
+          {
+            horseNumber: "1",
+            modelVersion: "model-v1",
+            predictionGeneratedAt: "2026-08-15T00:06:00Z",
+          },
+        ],
+      ],
+    ]),
+    now: NOW,
+    predictions: [
+      {
+        generated_at: "2026-08-15T00:06:00Z",
+        ketto_toroku_bango: "H1",
+        keibajo_code: "05",
+        model_version: "model-v1",
+        race_bango: "01",
+        source: "jra",
+        umaban: 1,
+      },
+    ],
+    races: [
+      {
+        keibajo_code: "05",
+        last_weight_fetch_at: "2026-08-15T00:05:30Z",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-15T10:00:00+09:00",
+        source: "jra",
+        weight_snapshot_at: "2026-08-15T00:05:00Z",
+        weight_snapshot_count: 2,
+      },
+    ],
+    runYmd: "20260815",
+  });
+
+  expect(result.races[0]?.postWeight).toMatchObject({
+    complete: true,
+    reason: null,
+    predictionAfterWeightCount: 1,
+    weightReady: true,
+    weightSnapshotCount: 2,
+  });
+});
+
+it("accepts twelve snapshot rows for eleven active runners without relaxing prediction completeness", () => {
+  const entries = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"].map((umaban) => ({
+    ketto_toroku_bango: `H${umaban}`,
+    keibajo_code: "05",
+    race_bango: "01",
+    source: "jra",
+    umaban: Number(umaban),
+  }));
+  const predictions = entries.map((entry) => ({
+    generated_at: "2026-08-15T00:06:00Z",
+    ...entry,
+    model_version: "model-v1",
+  }));
+  const kvRows = entries.map((entry) => ({
+    horseNumber: String(entry.umaban),
+    modelVersion: "model-v1",
+    predictionGeneratedAt: "2026-08-15T00:06:00Z",
+  }));
+  const result = buildPredictionReadiness({
+    entries,
+    kvPayloads: new Map([["jra:05:01", kvRows]]),
+    now: NOW,
+    predictions,
+    races: [
+      {
+        keibajo_code: "05",
+        last_weight_fetch_at: "2026-08-15T00:05:30Z",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-15T10:00:00+09:00",
+        source: "jra",
+        weight_snapshot_at: "2026-08-15T00:05:00Z",
+        weight_snapshot_count: 12,
+      },
+    ],
+    runYmd: "20260815",
+  });
+
+  expect(result.races[0]?.expectedCount).toBe(11);
+  expect(result.races[0]?.postWeight).toMatchObject({
+    complete: true,
+    missingCount: 0,
+    predictionAfterWeightCount: 11,
+    reason: null,
+    weightReady: true,
+    weightSnapshotCount: 12,
+  });
+});
+
 it("requires complete snapshots and a newer uniform KV generation for post-weight readiness", () => {
   const result = buildPredictionReadiness({
     entries: [

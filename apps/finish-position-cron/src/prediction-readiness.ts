@@ -183,7 +183,7 @@ const sameInstant = (left: string, right: string): boolean => {
 const resolvePostWeightReason = (input: PostWeightReasonInput): string | null => {
   if (input.lastWeightFetchAt === null) return "weight-not-delivered";
   if (input.weightSnapshotAt === null) return "weight-snapshot-missing";
-  if (input.weightSnapshotCount !== input.expectedCount) return "weight-snapshot-incomplete";
+  if (input.weightSnapshotCount < input.expectedCount) return "weight-snapshot-incomplete";
   if (!input.postNeonComplete) return "prediction-before-weight";
   return input.kvAfterWeight ? null : "kv-generation-mismatch";
 };
@@ -618,7 +618,7 @@ export const buildPredictionReadiness = (input: {
     const predictionAfterWeightCount = predictionsAfterWeight.length;
     const weightReady =
       expectedCount > 0 &&
-      weightSnapshotCount === expectedCount &&
+      weightSnapshotCount >= expectedCount &&
       Number.isFinite(snapshotMs) &&
       Number.isFinite(fetchMs);
     const postNeonComplete =

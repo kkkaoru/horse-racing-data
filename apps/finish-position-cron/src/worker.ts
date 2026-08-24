@@ -364,7 +364,7 @@ const parseInternalRescoreRaceBody = (
     if (!isCanonicalHorseNumbers(excludedHorseNumbers)) return null;
     if (activeHorseNumbers.some((horseNumber) => excludedHorseNumbers.includes(horseNumber)))
       return null;
-    if (activeHorseNumbers.length !== Number(weightSnapshotCount)) return null;
+    if (activeHorseNumbers.length > Number(weightSnapshotCount)) return null;
     if (entrySnapshotFetchedAt !== weightSnapshotFetchedAt) return null;
     if (typeof entrySnapshotHash !== "string" || !SHA256_HEX_PATTERN.test(entrySnapshotHash))
       return null;
