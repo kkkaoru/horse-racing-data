@@ -100,6 +100,7 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
     "jra-cb-v10-prior-corner274-2013",
     "jra-cb-stage1-marketfree235-2013",
+    "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
     "iter12-nar-xgb-hpo-v8-clean188",
     "iter40-nar-settransformer-blend-v1",
     "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",

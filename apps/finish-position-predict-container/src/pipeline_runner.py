@@ -69,9 +69,20 @@ from predict_lib.foundation_cache import (
     build_foundation_source_key,
     validate_foundation_objects,
 )
+from predict_lib.market_signal_foundation import (
+    MARKET_SIGNAL_ADDED_COLUMNS,
+    MARKET_SIGNAL_FLOAT_COLUMNS,
+    MARKET_SIGNAL_FOUNDATION_MAX_BYTES,
+    MARKET_SIGNAL_INTEGER_COLUMNS,
+    build_market_signal_base_evidence,
+    build_market_signal_foundation_key,
+    market_signal_foundation_enabled,
+    validate_market_signal_foundation,
+)
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
     BABA_PEDIGREE_SCRIPT,
+    MARKET_SIGNAL_SCRIPT,
     RELATIONSHIP_SCRIPT,
     build_base_argv,
     build_layer_argv,
@@ -88,7 +99,12 @@ from predict_lib.r2_client import (
     r2_head_watermark,
 )
 from predict_lib.rescore import RaceScope, race_matches_scope
-from predict_lib.serve import R2Config, build_r2_day_base_key, pipeline_total_timeout_seconds
+from predict_lib.serve import (
+    R2Config,
+    build_r2_day_base_key,
+    current_market_signal_foundation_attestation,
+    pipeline_total_timeout_seconds,
+)
 
 PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline"))
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
@@ -535,7 +551,47 @@ def _log_pipeline_progress(message: str) -> None:
         progress_fn(message)
 
 
+def _log_operational_cache_event(
+    *,
+    cache: str,
+    status: str,
+    category: Category,
+    target_date: str,
+    reason: str,
+    target_race: str | None = None,
+    source: str | None = None,
+) -> None:
+    """Emit cache provenance without enabling request-scoped debug logging.
+
+    Cache provenance is an operational fact needed to distinguish a genuine
+    cache miss from a slow prediction.  Keep it separate from the debug
+    progress protocol: debug remains opt-in, while this one-line JSON record
+    is safe and small enough for normal production logs.
+    """
+    event: dict[str, str] = {
+        "event": "prediction-cache",
+        "cache": cache,
+        "status": status,
+        "category": category,
+        "target_date": target_date,
+        "reason": reason,
+    }
+    if target_race is not None:
+        event["target_race"] = target_race
+    if source is not None:
+        event["source"] = source
+    print(json.dumps(event, separators=(",", ":"), sort_keys=True), file=sys.stderr, flush=True)
+
+
 def _log_day_base_hit(*, category: Category, target_date: str, source: str, reason: str) -> None:
+    _log_operational_cache_event(
+        cache="daybase",
+        status="hit",
+        category=category,
+        target_date=target_date,
+        source=source,
+        reason=reason,
+    )
     _log_pipeline_progress(
         f"step=daybase-hit source={source} category={category} "
         f"target_date={target_date} reason={reason}"
@@ -543,6 +599,13 @@ def _log_day_base_hit(*, category: Category, target_date: str, source: str, reas
 
 
 def _log_day_base_miss(*, category: Category, target_date: str, reason: str) -> None:
+    _log_operational_cache_event(
+        cache="daybase",
+        status="miss",
+        category=category,
+        target_date=target_date,
+        reason=reason,
+    )
     _log_pipeline_progress(
         f"step=daybase-miss category={category} target_date={target_date} reason={reason}"
     )
@@ -714,6 +777,20 @@ _RS_WATERMARK_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra", "nar"})
 ``ban-ei`` predictions are not split out by day the same way, so its day-base
 has no RS freshness signal to check."""
 
+_RS_JRA_KEIBAJO_CODES: Final[tuple[str, ...]] = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+)
+"""JRA venue codes used to isolate JRA rows in a potentially mixed RS shard."""
+
 DayBaseWatermark = tuple[str, int, str, int]
 """``(max_data_sakusei_nengappi, entrant_row_count, rs_predicted_at_max,
 rs_row_count)`` -- the combined freshness signal :func:`ensure_day_base`
@@ -755,6 +832,13 @@ def _compute_rs_watermark(
     glob = (
         f"s3://{r2_config.bucket}/{_RS_PREDICTIONS_R2_PREFIX}/{yyyy}/{mm}/{dd}/{category}/*.parquet"
     )
+    if category == "jra":
+        venue_placeholders = ", ".join("?" for _code in _RS_JRA_KEIBAJO_CODES)
+        venue_predicate = f"keibajo_code in ({venue_placeholders})"
+        venue_params = _RS_JRA_KEIBAJO_CODES
+    else:
+        venue_predicate = "keibajo_code <> ?"
+        venue_params = ("83",)
     try:
         connection = duckdb.connect(":memory:")
         try:
@@ -772,7 +856,8 @@ def _compute_rs_watermark(
                 """
             )
             row = connection.execute(
-                f"select max(predicted_at), count(*) from read_parquet('{glob}')"
+                f"select max(predicted_at), count(*) from read_parquet(?) where {venue_predicate}",
+                (glob, *venue_params),
             ).fetchone()
         finally:
             connection.close()
@@ -1425,24 +1510,46 @@ def build_day_base(
     source_outcome: SourceWatermarkOutcome | None = None
     if is_catalog_source_url(database_url):
         source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
-        if (
-            category in _RS_WATERMARK_CATEGORIES
-            and source_outcome.value is not None
-            and running_style_foundation_commit_fn is not None
-        ):
-            try:
-                running_style_foundation_commit_fn(
-                    category, target_date, base_dir, source_outcome.value
-                )
-                _log_pipeline_progress(
-                    f"step=running-style-foundation status=committed category={category} "
-                    f"target_date={target_date}"
-                )
-            except Exception as exc:
-                debug_log(
-                    f"[day-base] running-style foundation commit failed category={category} "
-                    f"target_date={target_date} error={exc}"
-                )
+        if source_outcome.value is None:
+            reason = source_outcome.reason or "source watermark unavailable"
+            message = (
+                f"running-style foundation source watermark unavailable category={category} "
+                f"target_date={target_date} reason={reason}"
+            )
+            _log_pipeline_progress(
+                f"step=running-style-foundation status=failed category={category} "
+                f"target_date={target_date} reason=source-watermark-unavailable "
+                f"detail={reason}"
+            )
+            raise RuntimeError(message)
+        if running_style_foundation_commit_fn is None:
+            message = (
+                f"running-style foundation commit callback missing category={category} "
+                f"target_date={target_date}"
+            )
+            _log_pipeline_progress(
+                f"step=running-style-foundation status=failed category={category} "
+                f"target_date={target_date} reason=commit-callback-missing"
+            )
+            raise RuntimeError(message)
+        try:
+            running_style_foundation_commit_fn(
+                category, target_date, base_dir, source_outcome.value
+            )
+            _log_pipeline_progress(
+                f"step=running-style-foundation status=committed category={category} "
+                f"target_date={target_date}"
+            )
+        except Exception as exc:
+            message = (
+                f"running-style foundation commit failed category={category} "
+                f"target_date={target_date}: {exc}"
+            )
+            _log_pipeline_progress(
+                f"step=running-style-foundation status=failed category={category} "
+                f"target_date={target_date} reason=commit-failed error={exc}"
+            )
+            raise RuntimeError(message) from exc
     current = base_dir
     for index, script in enumerate(chain):
         nxt = day_dir / f"layer-{index}"
@@ -1870,6 +1977,7 @@ def build_pipeline_from_day_base(
     target_race: str,
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
+    market_signal_foundation_dir: Path | None = None,
 ) -> bool:
     """Run only the RACE_CHAIN layers against a pre-built day-base, into ``final_dir``.
 
@@ -1902,6 +2010,14 @@ def build_pipeline_from_day_base(
     run_id = f"{category}:{target_date}:{target_race}:racechain:{uuid.uuid4().hex[:8]}"
     run_start = perf_counter()
     current = day_base_dir
+    if market_signal_foundation_dir is not None and MARKET_SIGNAL_SCRIPT in chain:
+        current = market_signal_foundation_dir
+        chain = tuple(script for script in chain if script != MARKET_SIGNAL_SCRIPT)
+        _log_pipeline_progress(
+            f"step=racechain-layer status=skipped category={category} "
+            f"script={MARKET_SIGNAL_SCRIPT} target_race={target_race} "
+            "reason=worker-foundation-contract-match"
+        )
     for index, script in enumerate(chain):
         nxt = WORK_DIR / f"feat-{category}-layer-{index}"
         layer_start = perf_counter()
@@ -2195,6 +2311,14 @@ def _materialize_r2_race_foundation(
 ) -> Path | None:
     """Restore an exact-race typed foundation, returning ``None`` on any gap."""
     if r2_config is None or not is_catalog_source_url(database_url):
+        _log_operational_cache_event(
+            cache="foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="not-configured",
+        )
         return None
     snapshot = readiness or _foundation_readiness_snapshot(
         category=category,
@@ -2204,6 +2328,14 @@ def _materialize_r2_race_foundation(
         r2_config=r2_config,
     )
     if snapshot is None:
+        _log_operational_cache_event(
+            cache="foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="readiness-unavailable",
+        )
         return None
     venue_code, race_number = target_race.split(":", 1)
     manifest_key = build_foundation_manifest_key(category, target_date)
@@ -2216,6 +2348,14 @@ def _materialize_r2_race_foundation(
         manifest_bytes = manifest_future.result()
         race_bytes = race_future.result()
     if manifest_bytes is None or race_bytes is None:
+        _log_operational_cache_event(
+            cache="foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="object-missing",
+        )
         return None
     result = validate_foundation_objects(
         category=category,
@@ -2227,6 +2367,14 @@ def _materialize_r2_race_foundation(
         expected_entries=snapshot.expected_entries,
     )
     if result.rows is None or result.schema is None:
+        _log_operational_cache_event(
+            cache="foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason=result.reason,
+        )
         debug_log(
             f"[foundation] MISS category={category} target_date={target_date} "
             f"target_race={target_race} reason={result.reason}"
@@ -2248,7 +2396,24 @@ def _materialize_r2_race_foundation(
         table = pa.Table.from_pylist(list(result.rows), schema=schema)
         pq.write_table(table, dest)
         if not has_parquet_output(final_dir):
+            _log_operational_cache_event(
+                cache="foundation",
+                status="miss",
+                category=category,
+                target_date=target_date,
+                target_race=target_race,
+                reason="materialized-output-missing",
+            )
             return None
+        _log_operational_cache_event(
+            cache="foundation",
+            status="hit",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            source="r2",
+            reason="contract-match",
+        )
         _log_day_base_hit(
             category=category,
             target_date=target_date,
@@ -2257,9 +2422,232 @@ def _materialize_r2_race_foundation(
         )
         return final_dir
     except Exception as exc:
+        _log_operational_cache_event(
+            cache="foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="materialize-error",
+        )
         debug_log(
             f"[foundation] materialize failed category={category} target_race={target_race} "
             f"error={exc}"
+        )
+        return None
+
+
+def _materialize_r2_market_signal_foundation(
+    *,
+    category: Category,
+    target_date: str,
+    target_race: str,
+    r2_config: R2Config | None,
+    readiness: FoundationReadinessSnapshot | None,
+) -> Path | None:
+    """Restore an attested Worker market layer, or fail closed to the subprocess."""
+    if (
+        category != "jra"
+        or r2_config is None
+        or readiness is None
+        or not market_signal_foundation_enabled(os.environ)
+    ):
+        return None
+    attestation = current_market_signal_foundation_attestation()
+    if attestation is None:
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="attestation-unavailable",
+        )
+        return None
+    venue_code, race_number = target_race.split(":", 1)
+    manifest_key = build_foundation_manifest_key(category, target_date)
+    foundation_key = build_foundation_race_key(category, target_date, venue_code, race_number)
+    artifact_key = build_market_signal_foundation_key(
+        category, target_date, venue_code, race_number
+    )
+    if attestation.key != artifact_key:
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="attestation-key-mismatch",
+        )
+        return None
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="market-foundation-r2") as executor:
+        artifact_future = executor.submit(
+            r2_get_bytes,
+            r2_config,
+            artifact_key,
+            MARKET_SIGNAL_FOUNDATION_MAX_BYTES,
+        )
+        manifest_future = executor.submit(
+            r2_get_bytes, r2_config, manifest_key, FOUNDATION_MANIFEST_MAX_BYTES
+        )
+        foundation_future = executor.submit(
+            r2_get_bytes, r2_config, foundation_key, FOUNDATION_RACE_MAX_BYTES
+        )
+        manifest_head_future = executor.submit(r2_head_object, r2_config, manifest_key)
+        foundation_head_future = executor.submit(r2_head_object, r2_config, foundation_key)
+        artifact_head_future = executor.submit(r2_head_object, r2_config, artifact_key)
+        artifact_bytes = artifact_future.result()
+        manifest_bytes = manifest_future.result()
+        foundation_bytes = foundation_future.result()
+        manifest_head = manifest_head_future.result()
+        foundation_head = foundation_head_future.result()
+        artifact_head = artifact_head_future.result()
+    if (
+        artifact_bytes is None
+        or manifest_bytes is None
+        or foundation_bytes is None
+        or manifest_head is None
+        or manifest_head.identity is None
+        or foundation_head is None
+        or foundation_head.identity is None
+        or artifact_head is None
+        or artifact_head.identity is None
+        or artifact_head.identity.etag != attestation.etag
+        or artifact_head.identity.version != attestation.version
+    ):
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="object-missing-or-attestation-mismatch",
+        )
+        return None
+    foundation_result = validate_foundation_objects(
+        category=category,
+        target_date=target_date,
+        target_race=target_race,
+        manifest_bytes=manifest_bytes,
+        race_bytes=foundation_bytes,
+        source_identity=readiness.source_identity,
+        expected_entries=readiness.expected_entries,
+    )
+    evidence = build_market_signal_base_evidence(
+        category=category,
+        target_date=target_date,
+        target_race=target_race,
+        manifest_bytes=manifest_bytes,
+        foundation_bytes=foundation_bytes,
+        foundation_result=foundation_result,
+        source_identity=readiness.source_identity,
+        foundation_identity=foundation_head.identity,
+        manifest_identity=manifest_head.identity,
+    )
+    if evidence is None:
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="evidence-invalid",
+        )
+        return None
+    result = validate_market_signal_foundation(
+        category=category,
+        target_date=target_date,
+        target_race=target_race,
+        artifact_bytes=artifact_bytes,
+        evidence=evidence,
+        expected_odds_snapshot_hash=attestation.odds_snapshot_hash,
+        expected_base_generation_id=attestation.base_generation_id,
+    )
+    if result.rows is None:
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason=result.reason,
+        )
+        debug_log(
+            f"[market-foundation] MISS category={category} target_date={target_date} "
+            f"target_race={target_race} reason={result.reason}"
+        )
+        return None
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        base_fields = [
+            pa.field(field.name, _foundation_arrow_type(field)) for field in evidence.base_schema
+        ]
+        added_fields = [
+            pa.field(
+                name,
+                pa.float64() if name in MARKET_SIGNAL_FLOAT_COLUMNS else pa.int64(),
+            )
+            for name in MARKET_SIGNAL_ADDED_COLUMNS
+            if name in MARKET_SIGNAL_FLOAT_COLUMNS or name in MARKET_SIGNAL_INTEGER_COLUMNS
+        ]
+        if len(added_fields) != len(MARKET_SIGNAL_ADDED_COLUMNS):
+            _log_operational_cache_event(
+                cache="market-signal-foundation",
+                status="miss",
+                category=category,
+                target_date=target_date,
+                target_race=target_race,
+                reason="schema-incomplete",
+            )
+            return None
+        safe_race = f"{venue_code.zfill(2)}-{race_number.zfill(2)}"
+        foundation_dir = WORK_DIR / f"market-foundation-{category}-{target_date}-{safe_race}"
+        final_dir = foundation_dir / "final"
+        shutil.rmtree(foundation_dir, ignore_errors=True)
+        destination = r2_day_base_dest_path(final_dir, target_date)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(
+            list(result.rows), schema=pa.schema(base_fields + added_fields)
+        )
+        pq.write_table(table, destination)
+        if not has_parquet_output(final_dir):
+            _log_operational_cache_event(
+                cache="market-signal-foundation",
+                status="miss",
+                category=category,
+                target_date=target_date,
+                target_race=target_race,
+                reason="materialized-output-missing",
+            )
+            return None
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="hit",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            source="r2",
+            reason="contract-match",
+        )
+        _log_pipeline_progress(
+            f"step=market-foundation status=hit category={category} "
+            f"target_race={target_race} reason=contract-match"
+        )
+        return final_dir
+    except Exception as exc:
+        _log_operational_cache_event(
+            cache="market-signal-foundation",
+            status="miss",
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            reason="materialize-error",
+        )
+        debug_log(
+            f"[market-foundation] materialize failed category={category} "
+            f"target_race={target_race} error={exc}"
         )
         return None
 
@@ -2358,15 +2746,38 @@ def build_upcoming_feature_rows_split(
                 )
             return None
         final_dir = _final_parquet_dir(category)
-        built = build_pipeline_from_day_base(
-            category,
-            target_date,
-            days_ahead,
-            database_url,
-            day_base_dir,
-            final_dir,
-            target_race,
+        market_foundation_dir = (
+            _materialize_r2_market_signal_foundation(
+                category=category,
+                target_date=target_date,
+                target_race=target_race,
+                r2_config=r2_config,
+                readiness=foundation_readiness,
+            )
+            if foundation_hit
+            else None
         )
+        if market_foundation_dir is None:
+            built = build_pipeline_from_day_base(
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                day_base_dir,
+                final_dir,
+                target_race,
+            )
+        else:
+            built = build_pipeline_from_day_base(
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                day_base_dir,
+                final_dir,
+                target_race,
+                market_signal_foundation_dir=market_foundation_dir,
+            )
         if not built:
             if role is PredictContainerRole.RACE_CHAIN:
                 raise DayBaseRequiredError(

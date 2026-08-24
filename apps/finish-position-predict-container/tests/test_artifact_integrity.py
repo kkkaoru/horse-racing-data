@@ -32,10 +32,11 @@ from predict_lib.artifact_integrity import (
     verify_selector_closure,
 )
 from predict_lib.deploy_flags import DeployFlagsValidationError
+from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "bf286a079a9afa0f75bc2d4e10cfdf0a11accdd60a6e1696055c4b3710073879"
+EXPECTED_MANIFEST_ROOT = "f719971a04c88c26465c9fabbece9ff8341a19dda4898532e31a8c95600f4a13"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -79,8 +80,8 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 24
-    assert len(selected) == 24
+    assert len(manifest.artifacts) == 40
+    assert len(selected) == 40
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
@@ -113,6 +114,18 @@ def test_manifest_records_exact_jra_running_style_pair() -> None:
     assert artifacts[JRA_RS_MODEL_KEY].bundle_id != artifacts[JRA_RS_CALIBRATOR_KEY].bundle_id
 
 
+def test_dynamic_market_shadow_bundle_is_selected_and_manifested() -> None:
+    manifest = load_manifest()
+    selected = derive_selected_artifact_keys()
+    manifested = {artifact.serving_key for artifact in manifest.artifacts}
+
+    for version in selected_artifact_versions():
+        for file_name in ("metadata.json", "model.json"):
+            key = f"finish-position/jra/{version}/{file_name}"
+            assert key in selected
+            assert key in manifested
+
+
 def test_manifest_marks_ban_ei_running_style_not_applicable() -> None:
     manifest = load_manifest()
 
@@ -130,7 +143,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 20
+    assert len(selected) == 36
     assert report.status == "MATCH"
     assert len(report.warnings) == 4
     assert report.warnings[0] == (
@@ -951,7 +964,7 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":24,"status":"MATCH","warnings":[]}'
+        '"observed_count":0,"selected_count":40,"status":"MATCH","warnings":[]}'
     )
 
 
@@ -961,7 +974,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 24
+    assert output["selected_count"] == 40
 
 
 def test_main_missing_local_artifacts_fail(
@@ -988,7 +1001,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 24
+    assert output["selected_count"] == 40
 
 
 def test_main_stage_requires_artifact_root_and_system(
@@ -1097,7 +1110,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 20
+    assert output["selected_count"] == 36
 
 
 # ---------------------------------------------------------------------------
@@ -1312,7 +1325,8 @@ def test_nar_transformer_deploy_flags_malformed_fails_closed(tmp_path: Path) -> 
 # particular race would actually trip the gate today).
 # ---------------------------------------------------------------------------
 
-_STAGE1_JRA_KEY_PREFIX = "finish-position/jra/jra-cb-stage1-marketfree235-2013/"
+_STAGE1_JRA_KEY_PREFIX = "finish-position/jra/jra-cb-stage1-marketfree235-iter500-top1swap-2013/"
+_STAGE1_JRA_BASE_KEY_PREFIX = "finish-position/jra/jra-cb-stage1-marketfree235-2013/"
 
 
 def _write_stage1_routing(tmp_path: Path, payload: object) -> Path:
@@ -1327,6 +1341,7 @@ def test_tracked_stage1_routing_is_selected_by_default() -> None:
     selected = derive_selected_artifact_keys()
 
     assert any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
+    assert any(key.startswith(_STAGE1_JRA_BASE_KEY_PREFIX) for key in selected)
 
 
 def test_stage1_routing_path_can_disable_selection(tmp_path: Path) -> None:

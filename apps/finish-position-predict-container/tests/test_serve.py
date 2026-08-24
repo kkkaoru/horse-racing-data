@@ -48,6 +48,7 @@ from predict_lib.serve import (
     CacheMissError,
     CacheValidationError,
     FocusedFullSlotState,
+    MarketSignalFoundationAttestation,
     PredictCategoryFn,
     PredictParams,
     PrewarmParams,
@@ -55,6 +56,7 @@ from predict_lib.serve import (
     RescoreCacheAttestation,
     SleepFn,
     TimeFn,
+    WeightSnapshotGeneration,
     activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
@@ -68,6 +70,7 @@ from predict_lib.serve import (
     build_r2_per_race_feat_cache_key,
     build_r2_running_style_foundation_key,
     build_result_line,
+    current_market_signal_foundation_attestation,
     get_prewarm_run_state,
     has_single_race_scope,
     is_focused_full_request,
@@ -223,6 +226,111 @@ def test_parse_predict_params_force_flag_default_false() -> None:
     assert result.force is False
 
 
+def _market_signal_attestation_query(**overrides: str) -> str:
+    values = {
+        "category": "jra",
+        "runDate": "20260824",
+        "mode": "full",
+        "keibajoCode": "01",
+        "raceBango": "03",
+        "marketSignalFoundationKey": (
+            "feat-racechain-market-signal/catalog-v1/jra/20260824/01/03/foundation.json"
+        ),
+        "marketSignalFoundationEtag": "artifact-etag",
+        "marketSignalFoundationVersion": "",
+        "marketSignalOddsSnapshotHash": "a" * 64,
+        "marketSignalBaseGenerationId": "b" * 64,
+    }
+    values.update(overrides)
+    return "&".join(f"{name}={value}" for name, value in values.items())
+
+
+def test_parse_predict_params_accepts_complete_market_signal_attestation() -> None:
+    result = parse_predict_params(_market_signal_attestation_query())
+    assert isinstance(result, PredictParams)
+    assert result.market_signal_foundation_attestation == MarketSignalFoundationAttestation(
+        base_generation_id="b" * 64,
+        etag="artifact-etag",
+        key="feat-racechain-market-signal/catalog-v1/jra/20260824/01/03/foundation.json",
+        odds_snapshot_hash="a" * 64,
+        version="",
+    )
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            _market_signal_attestation_query(marketSignalFoundationEtag=""),
+            "Etag must be non-empty",
+        ),
+        (
+            _market_signal_attestation_query(marketSignalOddsSnapshotHash="A" * 64),
+            "OddsSnapshotHash must be a lowercase SHA-256",
+        ),
+        (
+            _market_signal_attestation_query(marketSignalBaseGenerationId="short"),
+            "BaseGenerationId must be a lowercase SHA-256",
+        ),
+        (
+            _market_signal_attestation_query(category="nar"),
+            "requires a focused JRA mode=full request",
+        ),
+        (
+            _market_signal_attestation_query(mode="rescore"),
+            "requires a focused JRA mode=full request",
+        ),
+        (
+            _market_signal_attestation_query(marketSignalFoundationVersion="missing").replace(
+                "&marketSignalFoundationEtag=artifact-etag", ""
+            ),
+            "requires all five parameters",
+        ),
+    ],
+)
+def test_parse_predict_params_rejects_invalid_market_signal_attestation(
+    query: str, expected: str
+) -> None:
+    result = parse_predict_params(query)
+    assert isinstance(result, str)
+    assert expected in result
+
+
+def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
+    attestation = MarketSignalFoundationAttestation(
+        base_generation_id="b" * 64,
+        etag="artifact-etag",
+        key="artifact-key",
+        odds_snapshot_hash="a" * 64,
+        version="artifact-version",
+    )
+    observed: list[MarketSignalFoundationAttestation | None] = []
+
+    def predict(
+        _category: str,
+        _run_date: str,
+        _days_ahead: int,
+        _keibajo_code: str | None,
+        _race_bango: str | None,
+        _card_max_race_bango: int | None,
+    ) -> int:
+        observed.append(current_market_signal_foundation_attestation())
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260824",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="01",
+        race_bango="03",
+        market_signal_foundation_attestation=attestation,
+    )
+    list(iter_predict_chunks(params, predict, sleep_fn=_noop_sleep))
+    assert observed == [attestation]
+    assert current_market_signal_foundation_attestation() is None
+
+
 def _attested_query(**overrides: str) -> str:
     values = {
         "category": "jra",
@@ -235,6 +343,10 @@ def _attested_query(**overrides: str) -> str:
         "featureCacheEtag": "etag-123",
         "featureCacheVersion": "",
         "attestationIssuedAtMs": "2000000",
+        "weightSnapshotCount": "2",
+        "weightSnapshotFetchedAt": "2026-08-23T14%3A30%3A00%2B09%3A00",
+        "weightSnapshotHash": "b" * 64,
+        "raceStartAtJst": "2026-08-23T15%3A30%3A00%2B09%3A00",
     }
     values.update(overrides)
     return "&".join(f"{key}={value}" for key, value in values.items())
@@ -263,12 +375,121 @@ def test_parse_predict_params_attestation_absent_preserves_canary_compatibility(
     assert result.rescore_cache_attestation is None
 
 
+def test_parse_predict_params_accepts_exact_weight_snapshot_generation() -> None:
+    result = parse_predict_params(
+        "category=jra&runDate=20260823&mode=rescore&keibajoCode=07&raceBango=03"
+        "&raceStartAtJst=2026-08-23T15%3A30%3A00%2B09%3A00"
+        "&weightSnapshotCount=2&weightSnapshotFetchedAt=2026-08-23T14%3A30%3A00%2B09%3A00"
+        "&weightSnapshotHash=" + "b" * 64
+    )
+
+    assert isinstance(result, PredictParams)
+    assert result.weight_snapshot_generation == WeightSnapshotGeneration(
+        count=2,
+        fetched_at="2026-08-23T14:30:00+09:00",
+        snapshot_hash="b" * 64,
+    )
+
+
+def test_parse_predict_params_accepts_attested_active_and_canceled_runner_sets() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260824&mode=rescore&keibajoCode=35&raceBango=03"
+        "&raceStartAtJst=2026-08-24T12%3A55%3A00%2B09%3A00"
+        "&weightSnapshotCount=2&weightSnapshotFetchedAt=2026-08-24T12%3A03%3A41%2B09%3A00"
+        "&weightSnapshotHash="
+        + "b"
+        * 64
+        + "&activeHorseNumbers=%5B1%2C3%5D&excludedHorseNumbers=%5B2%5D"
+        "&entrySnapshotFetchedAt=2026-08-24T12%3A03%3A41%2B09%3A00"
+        "&entrySnapshotHash=00574dee8f89ae6c93ded1fc8187aa58e1a9d460db315e00c1d782296997e5d7"
+    )
+
+    assert isinstance(result, PredictParams)
+    assert result.weight_snapshot_generation == WeightSnapshotGeneration(
+        count=2,
+        fetched_at="2026-08-24T12:03:41+09:00",
+        snapshot_hash="b" * 64,
+        active_horse_numbers=(1, 3),
+        excluded_horse_numbers=(2,),
+        entry_snapshot_fetched_at="2026-08-24T12:03:41+09:00",
+        entry_snapshot_hash="00574dee8f89ae6c93ded1fc8187aa58e1a9d460db315e00c1d782296997e5d7",
+    )
+
+
+def test_parse_predict_params_rejects_entry_snapshot_hash_mismatch() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260824&mode=rescore&keibajoCode=35&raceBango=03"
+        "&raceStartAtJst=2026-08-24T12%3A55%3A00%2B09%3A00"
+        "&weightSnapshotCount=2&weightSnapshotFetchedAt=2026-08-24T12%3A03%3A41%2B09%3A00"
+        "&weightSnapshotHash="
+        + "b"
+        * 64
+        + "&activeHorseNumbers=%5B1%2C3%5D&excludedHorseNumbers=%5B2%5D"
+        "&entrySnapshotFetchedAt=2026-08-24T12%3A03%3A41%2B09%3A00"
+        "&entrySnapshotHash=" + "c" * 64
+    )
+
+    assert result == "entry snapshot generation hash mismatch"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        ("", "requires all weight snapshot generation parameters"),
+        ("&weightSnapshotCount=0", "requires all weight snapshot generation parameters"),
+        (
+            "&weightSnapshotCount=1&weightSnapshotFetchedAt=not-a-date"
+            "&weightSnapshotHash=" + "b" * 64,
+            "invalid weightSnapshotFetchedAt",
+        ),
+        (
+            "&weightSnapshotCount=1&weightSnapshotFetchedAt=2026-08-23T14%3A30%3A00%2B09%3A00"
+            "&weightSnapshotHash=" + "B" * 64,
+            "invalid weightSnapshotHash",
+        ),
+    ],
+)
+def test_parse_predict_params_rejects_invalid_weight_snapshot_generation(
+    suffix: str,
+    expected: str,
+) -> None:
+    result = parse_predict_params(
+        "category=jra&runDate=20260823&mode=rescore&keibajoCode=07&raceBango=03"
+        "&raceStartAtJst=2026-08-23T15%3A30%3A00%2B09%3A00" + suffix
+    )
+
+    assert isinstance(result, str)
+    assert expected in result
+
+
+@pytest.mark.parametrize(
+    ("race_start_query", "expected"),
+    [
+        ("", "requires raceStartAtJst"),
+        ("&raceStartAtJst=invalid", "invalid raceStartAtJst"),
+        ("&raceStartAtJst=2026-08-23T15%3A30%3A00", "invalid raceStartAtJst"),
+    ],
+)
+def test_parse_predict_params_rejects_missing_or_invalid_race_start(
+    race_start_query: str,
+    expected: str,
+) -> None:
+    result = parse_predict_params(
+        "category=jra&runDate=20260823&mode=rescore&keibajoCode=07&raceBango=03" + race_start_query
+    )
+
+    assert isinstance(result, str)
+    assert expected in result
+
+
 @pytest.mark.parametrize(
     ("query", "expected"),
     [
         (
             "category=jra&runDate=20260823&mode=rescore&keibajoCode=07&raceBango=03"
-            "&entrySetHash=" + "a" * 64,
+            "&raceStartAtJst=2026-08-23T15%3A30%3A00%2B09%3A00"
+            "&weightSnapshotCount=2&weightSnapshotFetchedAt=2026-08-23T14%3A30%3A00%2B09%3A00"
+            "&weightSnapshotHash=" + "b" * 64 + "&entrySetHash=" + "a" * 64,
             "must include all",
         ),
         (_attested_query(mode="full"), "requires mode=rescore"),
@@ -1014,6 +1235,9 @@ def test_predict_params_mode_stored_correctly() -> None:
 def test_parse_predict_params_keibajo_code_parsed() -> None:
     result = parse_predict_params(
         "category=nar&runDate=20260619&mode=rescore&keibajoCode=44&raceBango=01"
+        "&raceStartAtJst=2026-06-19T15%3A30%3A00%2B09%3A00"
+        "&weightSnapshotCount=1&weightSnapshotFetchedAt=2026-06-19T14%3A30%3A00%2B09%3A00"
+        "&weightSnapshotHash=" + "b" * 64
     )
     assert isinstance(result, PredictParams)
     assert result.keibajo_code == "44"
@@ -1022,6 +1246,9 @@ def test_parse_predict_params_keibajo_code_parsed() -> None:
 def test_parse_predict_params_race_bango_parsed() -> None:
     result = parse_predict_params(
         "category=nar&runDate=20260619&mode=rescore&keibajoCode=44&raceBango=01"
+        "&raceStartAtJst=2026-06-19T15%3A30%3A00%2B09%3A00"
+        "&weightSnapshotCount=1&weightSnapshotFetchedAt=2026-06-19T14%3A30%3A00%2B09%3A00"
+        "&weightSnapshotHash=" + "b" * 64
     )
     assert isinstance(result, PredictParams)
     assert result.race_bango == "01"

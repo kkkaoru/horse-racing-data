@@ -24,6 +24,23 @@ explicit NAR transformer metadata in `predict_lib/model_meta.py`.
 | Ban-ei       | `banei-cb-v9-sim-2011`                        | Default.                                                                                      |
 | Ban-ei cell  | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                                    |
 
+### JRA dynamic-market shadow router
+
+`jra-dynamic-market-shadow-loop43-2026` is shadow-only: it never replaces or
+reorders rows written to `race_finish_position_model_predictions`. After the
+served rows are safely persisted, the predictor scores six surface specialists
+(turf/dirt/obstacle × market-aware/market-free) and the fixed upset classifier,
+then best-effort UPSERTs the baseline and counterfactual Top1-Top5 into
+`finish_position_dynamic_market_shadow_predictions`. Load, score, and database
+errors fail open for shadow collection and cannot block served predictions.
+
+The seven model versions and fourteen `model.json`/`metadata.json` files are
+part of the `production-artifacts.json` selector closure. Their training cutoff
+is 2025-12-31. Do not replace these bytes in place: train a new immutable
+router version, add its digests, and re-run the artifact verifier. Shadow
+promotion requires future Top1-Top5 evaluation split into favorite-driven and
+upset outcomes; it is not an alias or model-selector change.
+
 ## Stage-1 Market-Free Gated Fallback (JRA + NAR)
 
 **NAR:** `iter12-nar-xgb-hpo-v8-stage1-marketfree-184` (184 feat = the champion

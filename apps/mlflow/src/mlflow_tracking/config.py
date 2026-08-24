@@ -117,6 +117,11 @@ EXPERIMENT_RS_CELL_EVAL: Final[str] = "running-style/cell-eval"
 # signature, partial/mixed-timestamp writes). See cf_serving_recorder.py's own
 # module docstring for the full data model.
 EXPERIMENT_FP_CF_SERVING: Final[str] = "finish-position/cf-serving"
+# Forward-only evaluation of the 2026 JRA dynamic-market shadow router.  This
+# stays separate from production-usage because the shadow ranking is never
+# served to users; promotion decisions must be based on this experiment's
+# finalized, unseen outcomes rather than retrospective model-selection runs.
+EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW: Final[str] = "finish-position/dynamic-market-shadow"
 # One-shot/manual smoke-test runs (e.g. a throwaway CLI dry-run verifying the
 # log-training-run pipeline end-to-end) route here via that command's own
 # manifest "experiment" override -- kept isolated from every real per-task
@@ -139,6 +144,7 @@ ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_FP_CELL_EVAL,
     EXPERIMENT_RS_CELL_EVAL,
     EXPERIMENT_FP_CF_SERVING,
+    EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW,
     EXPERIMENT_SMOKE_TESTS,
 )
 

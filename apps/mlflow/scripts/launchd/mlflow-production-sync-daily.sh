@@ -31,6 +31,11 @@
 #      REPLACES that day's snapshot in place -- see the module's own
 #      idempotency docstring); this script's once-daily 22:30 JST
 #      invocation is a baseline floor, not the only expected invocation.
+#   1c. `dynamic_market_shadow_eval` over a trailing 90-day JRA window:
+#      joins immutable loop-43 baseline/shadow Top5 predictions to finalized
+#      JVD results and records cumulative Top1-Top5 overall and separately for
+#      favorite-driven/upset outcomes. Re-reading the window repairs late JVD
+#      results through one idempotent run per (date, router version).
 #   2. `eval-champion-cells` for all three categories (default trailing
 #      90-day window as of today), re-scoring each category's CURRENT
 #      champion model at cell granularity against whatever genuinely-served
@@ -150,6 +155,14 @@ echo "--- sync-production --date-from $YESTERDAY_JST --date-to $TODAY_JST --cate
 echo "--- cf_serving_recorder --date-from $YESTERDAY_JST --date-to $TODAY_JST --categories jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cf_serving_recorder \
   --date-from "$YESTERDAY_JST" --date-to "$TODAY_JST" --categories jra,nar,banei
+
+# Revisit a short trailing window because JVD final results/popularity can
+# arrive after the first same-day attempt. The per-(date, router-version) run
+# is updated idempotently, so this repairs late results without duplicate runs.
+SHADOW_DATE_FROM_JST="$(TZ=Asia/Tokyo date -v-90d +%Y%m%d)"
+echo "--- dynamic_market_shadow_eval --date-from $SHADOW_DATE_FROM_JST --date-to $TODAY_JST ---"
+"$UV_BIN" run python -m mlflow_tracking.dynamic_market_shadow_eval \
+  --date-from "$SHADOW_DATE_FROM_JST" --date-to "$TODAY_JST"
 
 echo "--- eval-champion-cells --category jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei

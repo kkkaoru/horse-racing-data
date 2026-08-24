@@ -40,6 +40,7 @@ Units notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import urllib.parse
@@ -72,6 +73,10 @@ _SOURCE_BY_CATEGORY: dict[str, str] = {
     "ban-ei": "nar",
 }
 _DEFAULT_SOURCE: str = "nar"
+
+
+class RealtimeWeightFetchError(RuntimeError):
+    """A post-weight snapshot could not be fetched or parsed safely."""
 
 
 def source_for_category(category: str) -> str:
@@ -283,6 +288,51 @@ def extract_weight_map(response: dict[str, object]) -> dict[int, int]:
     return result
 
 
+def extract_required_weight_map(response: dict[str, object], race_key: str) -> dict[int, int]:
+    """Parse a non-empty, unambiguous horse-weight response for post-weight scoring.
+
+    Unlike :func:`extract_weight_map`, this strict variant never converts an
+    unavailable or malformed response into an empty map. The caller still
+    validates the resulting horse-number set against the exact active runners
+    from the attested per-race cache.
+    """
+    horses = response.get("horses")
+    if not isinstance(horses, list) or not horses:
+        raise RealtimeWeightFetchError(
+            f"post-weight snapshot unavailable: race_key={race_key} reason=empty-horses"
+        )
+
+    result: dict[int, int] = {}
+    for entry in horses:
+        if not isinstance(entry, dict):
+            raise RealtimeWeightFetchError(
+                f"post-weight snapshot invalid: race_key={race_key} reason=malformed-horse"
+            )
+        horse_number = entry.get("horseNumber")
+        weight_value = entry.get("weight")
+        if isinstance(horse_number, bool) or isinstance(weight_value, bool):
+            raise RealtimeWeightFetchError(
+                f"post-weight snapshot invalid: race_key={race_key} reason=malformed-horse"
+            )
+        try:
+            umaban = int(str(horse_number).strip())
+            weight = int(str(weight_value).strip())
+        except (TypeError, ValueError) as exc:
+            raise RealtimeWeightFetchError(
+                f"post-weight snapshot invalid: race_key={race_key} reason=malformed-horse"
+            ) from exc
+        if umaban <= 0 or weight <= 0:
+            raise RealtimeWeightFetchError(
+                f"post-weight snapshot invalid: race_key={race_key} reason=non-positive-value"
+            )
+        if umaban in result:
+            raise RealtimeWeightFetchError(
+                f"post-weight snapshot invalid: race_key={race_key} reason=duplicate-horse-number"
+            )
+        result[umaban] = weight
+    return result
+
+
 def fetch_weight_for_race(
     fetcher: RealtimeOddsFetcher,
     source: str,
@@ -300,6 +350,50 @@ def fetch_weight_for_race(
         debug_log(f"[realtime-weight] fetch failed race_key={race_key} error={exc}")
         return {}
     return extract_weight_map(response)
+
+
+def fetch_required_weight_for_race(
+    fetcher: RealtimeOddsFetcher,
+    source: str,
+    target_date: str,
+    keibajo_code: str,
+    race_bango: str,
+    *,
+    expected_count: int,
+    expected_fetched_at: str,
+    expected_hash: str,
+) -> dict[int, int]:
+    """Fetch and verify the exact required post-weight snapshot generation."""
+    race_key = build_race_key(source, target_date, keibajo_code, race_bango)
+    encoded = encode_race_key(race_key)
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded}"
+    try:
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
+        raise RealtimeWeightFetchError(
+            f"post-weight snapshot unavailable: race_key={race_key} reason=fetch-failed"
+        ) from exc
+    fetched_at = response.get("fetchedAt")
+    if not isinstance(fetched_at, str):
+        raise RealtimeWeightFetchError(
+            f"post-weight snapshot invalid: race_key={race_key} reason=missing-fetched-at"
+        )
+    weight_map = extract_required_weight_map(response, race_key)
+    canonical_rows = [
+        {"horseNumber": horse_number, "weight": weight_map[horse_number]}
+        for horse_number in sorted(weight_map)
+    ]
+    canonical_json = json.dumps(canonical_rows, separators=(",", ":"), ensure_ascii=True)
+    snapshot_hash = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    if (
+        len(canonical_rows) != expected_count
+        or fetched_at != expected_fetched_at
+        or snapshot_hash != expected_hash
+    ):
+        raise RealtimeWeightFetchError(
+            f"post-weight snapshot generation mismatch: race_key={race_key}"
+        )
+    return weight_map
 
 
 def fetch_odds_for_race(

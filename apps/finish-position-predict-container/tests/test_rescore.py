@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.rescore import (
+    PostWeightValidationError,
     RaceFreshSnapshot,
     RaceScope,
     apply_fresh_snapshots,
+    filter_post_weight_active_runners,
     filter_races_by_scope,
     race_matches_scope,
     race_scope_from_target_race,
+    validate_post_weight_snapshots,
 )
 
 # ---------------------------------------------------------------------------
@@ -255,3 +260,88 @@ def test_apply_fresh_snapshots_normalizes_unpadded_race_key() -> None:
     )
     result = apply_fresh_snapshots(races, {("04", "01"): snapshot}, "nar")
     assert result["nar:2026:0619:04:01"][0]["weight_diff_from_avg"] == 8.0
+
+
+def test_validate_post_weight_snapshots_accepts_exact_runner_set() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1), _entry(3)]}
+    snapshots = {
+        ("44", "01"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 447.0, 3: 458.0})
+    }
+    validate_post_weight_snapshots(races, snapshots)
+
+
+def test_filter_post_weight_active_runners_removes_japanese_canceled_runner() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1), _entry(2), _entry(3)]}
+
+    result = filter_post_weight_active_runners(races, (1, 3), (2,))
+
+    assert result == {_RACE_ID_NAR_44_01: [_entry(1), _entry(3)]}
+
+
+def test_filter_post_weight_active_runners_rejects_missing_active_cache_runner() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1), _entry(2)]}
+
+    with pytest.raises(
+        PostWeightValidationError,
+        match=r"post-weight entry snapshot mismatch: race=44:01 missing=\[3\] unexpected=\[\]",
+    ):
+        filter_post_weight_active_runners(races, (1, 3), (2,))
+
+
+def test_filter_post_weight_active_runners_rejects_unclassified_cache_runner() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1), _entry(2), _entry(3)]}
+
+    with pytest.raises(
+        PostWeightValidationError,
+        match=r"post-weight entry snapshot mismatch: race=44:01 missing=\[\] unexpected=\[3\]",
+    ):
+        filter_post_weight_active_runners(races, (1,), (2,))
+
+
+def test_validate_post_weight_snapshots_rejects_missing_runner_weight() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1), _entry(3)]}
+    snapshots = {("44", "01"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 447.0})}
+    with pytest.raises(
+        PostWeightValidationError,
+        match=r"post-weight runner set mismatch: race=44:01 missing=\[3\] unexpected=\[\]",
+    ):
+        validate_post_weight_snapshots(races, snapshots)
+
+
+def test_validate_post_weight_snapshots_rejects_unexpected_runner_weight() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1)]}
+    snapshots = {
+        ("44", "01"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 447.0, 9: 499.0})
+    }
+    with pytest.raises(
+        PostWeightValidationError,
+        match=r"post-weight runner set mismatch: race=44:01 missing=\[\] unexpected=\[9\]",
+    ):
+        validate_post_weight_snapshots(races, snapshots)
+
+
+def test_validate_post_weight_snapshots_rejects_missing_race_snapshot() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1)]}
+    with pytest.raises(PostWeightValidationError, match="post-weight race set mismatch"):
+        validate_post_weight_snapshots(races, {})
+
+
+def test_validate_post_weight_snapshots_rejects_non_positive_weight() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(1)]}
+    snapshots = {("44", "01"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 0.0})}
+    with pytest.raises(PostWeightValidationError, match="post-weight value invalid: race=44:01"):
+        validate_post_weight_snapshots(races, snapshots)
+
+
+def test_validate_post_weight_snapshots_rejects_invalid_cached_umaban() -> None:
+    races = {_RACE_ID_NAR_44_01: [_entry(0)]}
+    with pytest.raises(
+        PostWeightValidationError, match="post-weight runner set invalid: race=44:01"
+    ):
+        validate_post_weight_snapshots(races, {})
+
+
+def test_validate_post_weight_snapshots_rejects_empty_cached_race() -> None:
+    races: dict[str, list[dict[str, object]]] = {_RACE_ID_NAR_44_01: []}
+    with pytest.raises(PostWeightValidationError, match="post-weight runner set empty: race=44:01"):
+        validate_post_weight_snapshots(races, {})

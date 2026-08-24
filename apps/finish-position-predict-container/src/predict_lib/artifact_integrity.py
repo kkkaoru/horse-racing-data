@@ -31,6 +31,7 @@ from typing import Final, Literal, cast
 
 from .cell_router import load_cell_router
 from .deploy_flags import DEPLOY_FLAGS_PATH, load_deploy_flags
+from .dynamic_market_versions import selected_artifact_versions
 from .model_meta import (
     CATEGORIES,
     METADATA_FILE_NAME,
@@ -645,6 +646,20 @@ def derive_selected_artifact_keys(
         selected.add(
             _finish_position_key(category, stage1_config.model_version, METADATA_FILE_NAME)
         )
+        if stage1_config.top1_swap_base_model_version is not None:
+            selected.add(
+                _finish_position_key(
+                    category, stage1_config.top1_swap_base_model_version, MODEL_FILE_NAME
+                )
+            )
+            selected.add(
+                _finish_position_key(
+                    category, stage1_config.top1_swap_base_model_version, METADATA_FILE_NAME
+                )
+            )
+    for model_version in selected_artifact_versions():
+        selected.add(_finish_position_key("jra", model_version, MODEL_FILE_NAME))
+        selected.add(_finish_position_key("jra", model_version, METADATA_FILE_NAME))
     return frozenset(selected)
 
 

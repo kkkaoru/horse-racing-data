@@ -121,6 +121,7 @@ _REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
         "enable_stddev_safety_net",
     }
 )
+_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset({"top1_swap_base_model_version"})
 _ARCHITECTURES: Final[frozenset[str]] = frozenset(get_args(Architecture))
 
 PREDICTED_SCORE_COLUMN_INDEX: Final[int] = INSERT_COLUMNS.index("predicted_score")
@@ -144,6 +145,7 @@ class Stage1CategoryConfig:
     architecture: str
     stddev_threshold: float
     enable_stddev_safety_net: bool
+    top1_swap_base_model_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,13 +191,25 @@ def _require_positive_number(payload: Mapping[str, object], key: str, context: s
     return float(value)
 
 
+def _optional_non_empty_string(
+    payload: Mapping[str, object], key: str, context: str
+) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise Stage1RoutingValidationError(f"{context}.{key} must be null or a non-empty string")
+    return value
+
+
 def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig:
     context = f"stage1_routing.json[{category}]"
     payload = _as_mapping(value, context)
     actual_keys = frozenset(payload)
-    if actual_keys != _REQUIRED_KEYS:
+    allowed_keys = _REQUIRED_KEYS | _OPTIONAL_KEYS
+    if not _REQUIRED_KEYS.issubset(actual_keys) or not actual_keys.issubset(allowed_keys):
         missing = sorted(_REQUIRED_KEYS - actual_keys)
-        unexpected = sorted(actual_keys - _REQUIRED_KEYS)
+        unexpected = sorted(actual_keys - allowed_keys)
         raise Stage1RoutingValidationError(
             f"{context} keys differ: missing={missing}, unexpected={unexpected}"
         )
@@ -211,6 +225,9 @@ def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig
         architecture=architecture,
         stddev_threshold=_require_positive_number(payload, "stddev_threshold", context),
         enable_stddev_safety_net=_require_bool(payload, "enable_stddev_safety_net", context),
+        top1_swap_base_model_version=_optional_non_empty_string(
+            payload, "top1_swap_base_model_version", context
+        ),
     )
 
 

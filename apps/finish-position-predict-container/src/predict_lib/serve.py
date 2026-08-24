@@ -66,6 +66,7 @@ keep the held-response keepalive behaviour.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -76,6 +77,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Final, Literal, TypedDict, final
 from urllib.parse import parse_qs, urlparse
@@ -244,6 +246,19 @@ class RescoreCacheAttestation:
     issued_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class WeightSnapshotGeneration:
+    """Worker-attested identity of one exact realtime horse-weight payload."""
+
+    count: int
+    fetched_at: str
+    snapshot_hash: str
+    active_horse_numbers: tuple[int, ...] | None = None
+    excluded_horse_numbers: tuple[int, ...] | None = None
+    entry_snapshot_fetched_at: str | None = None
+    entry_snapshot_hash: str | None = None
+
+
 _RESCORE_ATTESTATION_QUERY_KEYS: Final[tuple[str, ...]] = (
     "entrySetHash",
     "entryCount",
@@ -251,6 +266,132 @@ _RESCORE_ATTESTATION_QUERY_KEYS: Final[tuple[str, ...]] = (
     "featureCacheVersion",
     "attestationIssuedAtMs",
 )
+
+_WEIGHT_SNAPSHOT_QUERY_KEYS: Final[tuple[str, ...]] = (
+    "weightSnapshotCount",
+    "weightSnapshotFetchedAt",
+    "weightSnapshotHash",
+)
+
+_ENTRY_SNAPSHOT_QUERY_KEYS: Final[tuple[str, ...]] = (
+    "activeHorseNumbers",
+    "excludedHorseNumbers",
+    "entrySnapshotFetchedAt",
+    "entrySnapshotHash",
+)
+
+
+def _parse_horse_number_array(raw: str | None, field: str) -> tuple[int, ...] | str:
+    """Parse one canonical JSON array of sorted, unique positive horse numbers."""
+    if raw is None:
+        return f"invalid {field}: must be a JSON array"
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return f"invalid {field}: must be a JSON array"
+    if not isinstance(values, list):
+        return f"invalid {field}: must be a JSON array"
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+        return f"invalid {field}: horse numbers must be positive integers"
+    numbers = tuple(values)
+    if numbers != tuple(sorted(set(numbers))):
+        return f"invalid {field}: horse numbers must be sorted and unique"
+    return numbers
+
+
+def _parse_weight_snapshot_generation(
+    qs: dict[str, list[str]],
+    *,
+    mode: PredictMode,
+    keibajo_code: str | None,
+    race_bango: str | None,
+) -> WeightSnapshotGeneration | str | None:
+    present = tuple(key for key in _WEIGHT_SNAPSHOT_QUERY_KEYS if key in qs)
+    has_exact_scope = keibajo_code is not None and race_bango is not None
+    if mode == "rescore" and has_exact_scope and len(present) != len(_WEIGHT_SNAPSHOT_QUERY_KEYS):
+        return "mode=rescore requires all weight snapshot generation parameters"
+    if not present:
+        return None
+    if len(present) != len(_WEIGHT_SNAPSHOT_QUERY_KEYS):
+        return "weight snapshot generation must include all required parameters"
+    if mode != "rescore":
+        return "weight snapshot generation requires mode=rescore"
+    if keibajo_code is None or race_bango is None:
+        return "weight snapshot generation requires an exact race scope"
+
+    raw_count = _first_qs(qs, "weightSnapshotCount")
+    try:
+        count = int(raw_count) if raw_count is not None else 0
+    except ValueError:
+        return "invalid weightSnapshotCount: must be a positive integer"
+    if count <= 0:
+        return "invalid weightSnapshotCount: must be a positive integer"
+
+    fetched_at = _first_qs(qs, "weightSnapshotFetchedAt")
+    if fetched_at is None:
+        return "invalid weightSnapshotFetchedAt: must be an ISO timestamp with timezone"
+    try:
+        parsed_fetched_at = datetime.fromisoformat(fetched_at)
+    except ValueError:
+        return "invalid weightSnapshotFetchedAt: must be an ISO timestamp with timezone"
+    if parsed_fetched_at.tzinfo is None:
+        return "invalid weightSnapshotFetchedAt: must be an ISO timestamp with timezone"
+
+    snapshot_hash = _first_qs(qs, "weightSnapshotHash")
+    if snapshot_hash is None or _SHA256_HEX_PATTERN.fullmatch(snapshot_hash) is None:
+        return "invalid weightSnapshotHash: must be 64 lowercase hexadecimal characters"
+
+    entry_present = tuple(key for key in _ENTRY_SNAPSHOT_QUERY_KEYS if key in qs)
+    if entry_present and len(entry_present) != len(_ENTRY_SNAPSHOT_QUERY_KEYS):
+        return "entry snapshot generation must include all required parameters"
+    if not entry_present:
+        return WeightSnapshotGeneration(
+            count=count,
+            fetched_at=fetched_at,
+            snapshot_hash=snapshot_hash,
+        )
+
+    active_horse_numbers = _parse_horse_number_array(
+        _first_qs(qs, "activeHorseNumbers"), "activeHorseNumbers"
+    )
+    if isinstance(active_horse_numbers, str):
+        return active_horse_numbers
+    if not active_horse_numbers:
+        return "invalid activeHorseNumbers: must not be empty"
+    excluded_horse_numbers = _parse_horse_number_array(
+        _first_qs(qs, "excludedHorseNumbers"), "excludedHorseNumbers"
+    )
+    if isinstance(excluded_horse_numbers, str):
+        return excluded_horse_numbers
+    if set(active_horse_numbers) & set(excluded_horse_numbers):
+        return "entry snapshot active and excluded horse numbers must be disjoint"
+    if len(active_horse_numbers) != count:
+        return "entry snapshot active horse count must equal weightSnapshotCount"
+
+    entry_fetched_at = _first_qs(qs, "entrySnapshotFetchedAt")
+    if entry_fetched_at != fetched_at:
+        return "entrySnapshotFetchedAt must equal weightSnapshotFetchedAt"
+    entry_hash = _first_qs(qs, "entrySnapshotHash")
+    if entry_hash is None or _SHA256_HEX_PATTERN.fullmatch(entry_hash) is None:
+        return "invalid entrySnapshotHash: must be 64 lowercase hexadecimal characters"
+    canonical = json.dumps(
+        {
+            "activeHorseNumbers": list(active_horse_numbers),
+            "excludedHorseNumbers": list(excluded_horse_numbers),
+        },
+        separators=(",", ":"),
+    )
+    if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != entry_hash:
+        return "entry snapshot generation hash mismatch"
+    return WeightSnapshotGeneration(
+        count=count,
+        fetched_at=fetched_at,
+        snapshot_hash=snapshot_hash,
+        active_horse_numbers=active_horse_numbers,
+        excluded_horse_numbers=excluded_horse_numbers,
+        entry_snapshot_fetched_at=entry_fetched_at,
+        entry_snapshot_hash=entry_hash,
+    )
 
 
 def _parse_rescore_cache_attestation(
@@ -317,6 +458,68 @@ def _parse_rescore_cache_attestation(
 
 
 @final
+@dataclass(frozen=True, slots=True)
+class MarketSignalFoundationAttestation:
+    """Worker-observed identity binding one request to one odds snapshot artifact."""
+
+    base_generation_id: str
+    etag: str
+    key: str
+    odds_snapshot_hash: str
+    version: str
+
+
+_MARKET_SIGNAL_QUERY_FIELDS: Final[tuple[str, ...]] = (
+    "marketSignalFoundationKey",
+    "marketSignalFoundationEtag",
+    "marketSignalFoundationVersion",
+    "marketSignalOddsSnapshotHash",
+    "marketSignalBaseGenerationId",
+)
+_SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _parse_market_signal_attestation(
+    qs: dict[str, list[str]],
+    *,
+    category: str,
+    mode: PredictMode,
+    keibajo_code: str | None,
+    race_bango: str | None,
+) -> MarketSignalFoundationAttestation | str | None:
+    values = {name: _first_qs(qs, name) for name in _MARKET_SIGNAL_QUERY_FIELDS}
+    present = {name for name, value in values.items() if value is not None}
+    if not present:
+        return None
+    if len(present) != len(_MARKET_SIGNAL_QUERY_FIELDS):
+        return "market signal foundation attestation requires all five parameters"
+    if mode != "full" or category != "jra" or keibajo_code is None or race_bango is None:
+        return "market signal foundation attestation requires a focused JRA mode=full request"
+    key = values["marketSignalFoundationKey"]
+    etag = values["marketSignalFoundationEtag"]
+    version = values["marketSignalFoundationVersion"]
+    snapshot_hash = values["marketSignalOddsSnapshotHash"]
+    generation_id = values["marketSignalBaseGenerationId"]
+    if key is None or not key:
+        return "marketSignalFoundationKey must be non-empty"
+    if etag is None or not etag:
+        return "marketSignalFoundationEtag must be non-empty"
+    if version is None:
+        return "marketSignalFoundationVersion must be present"
+    if snapshot_hash is None or not _SHA256_PATTERN.fullmatch(snapshot_hash):
+        return "marketSignalOddsSnapshotHash must be a lowercase SHA-256"
+    if generation_id is None or not _SHA256_PATTERN.fullmatch(generation_id):
+        return "marketSignalBaseGenerationId must be a lowercase SHA-256"
+    return MarketSignalFoundationAttestation(
+        base_generation_id=generation_id,
+        etag=etag,
+        key=key,
+        odds_snapshot_hash=snapshot_hash,
+        version=version,
+    )
+
+
+@final
 class PredictParams:
     """Parsed + validated query parameters for ``GET /predict``.
 
@@ -340,10 +543,13 @@ class PredictParams:
         "debug_logs",
         "force",
         "keibajo_code",
+        "market_signal_foundation_attestation",
         "mode",
         "race_bango",
+        "race_start_at_jst",
         "rescore_cache_attestation",
         "run_date",
+        "weight_snapshot_generation",
     )
 
     def __init__(
@@ -358,6 +564,9 @@ class PredictParams:
         card_max_race_bango: int | None = None,
         force: bool = False,
         rescore_cache_attestation: RescoreCacheAttestation | None = None,
+        weight_snapshot_generation: WeightSnapshotGeneration | None = None,
+        race_start_at_jst: str | None = None,
+        market_signal_foundation_attestation: MarketSignalFoundationAttestation | None = None,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -368,6 +577,9 @@ class PredictParams:
         self.debug_logs: bool = debug_logs
         self.card_max_race_bango: int | None = card_max_race_bango
         self.rescore_cache_attestation = rescore_cache_attestation
+        self.weight_snapshot_generation = weight_snapshot_generation
+        self.race_start_at_jst: str | None = race_start_at_jst
+        self.market_signal_foundation_attestation = market_signal_foundation_attestation
         # Operator bypass for _focused_full_is_complete's row-count-only
         # completion check (Defect H, apps/pc-keiba-viewer/docs/probes/
         # jra-serving-audit-jun-jul-2026-07-17.md): forwarded from the Worker's
@@ -452,6 +664,16 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
     force = _parse_debug_flag(_first_qs(qs, "force"))
 
+    market_signal_attestation = _parse_market_signal_attestation(
+        qs,
+        category=category,
+        mode=mode,
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+    if isinstance(market_signal_attestation, str):
+        return market_signal_attestation
+
     attestation = _parse_rescore_cache_attestation(
         qs,
         mode=mode,
@@ -460,6 +682,31 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     )
     if isinstance(attestation, str):
         return attestation
+
+    race_start_at_jst = _first_qs(qs, "raceStartAtJst")
+    has_exact_rescore_scope = (
+        mode == "rescore" and keibajo_code is not None and race_bango is not None
+    )
+    if has_exact_rescore_scope and race_start_at_jst is None:
+        return "mode=rescore requires raceStartAtJst for an exact race scope"
+    if race_start_at_jst is not None:
+        if not has_exact_rescore_scope:
+            return "raceStartAtJst requires a single-race mode=rescore request"
+        try:
+            parsed_race_start = datetime.fromisoformat(race_start_at_jst)
+        except ValueError:
+            return "invalid raceStartAtJst: must be an ISO timestamp with timezone"
+        if parsed_race_start.tzinfo is None:
+            return "invalid raceStartAtJst: must be an ISO timestamp with timezone"
+
+    weight_snapshot_generation = _parse_weight_snapshot_generation(
+        qs,
+        mode=mode,
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+    if isinstance(weight_snapshot_generation, str):
+        return weight_snapshot_generation
 
     raw_card_max_race_bango = _first_qs(qs, "cardMaxRaceBango")
     if raw_card_max_race_bango is None:
@@ -483,6 +730,9 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         card_max_race_bango=card_max_race_bango,
         force=force,
         rescore_cache_attestation=attestation,
+        weight_snapshot_generation=weight_snapshot_generation,
+        race_start_at_jst=race_start_at_jst,
+        market_signal_foundation_attestation=market_signal_attestation,
     )
 
 
@@ -1097,6 +1347,26 @@ for the whole body of :func:`_run_predict_fn`, never held across a
 ``thread.join`` or another lock acquisition, so it cannot deadlock.
 """
 
+_current_market_signal_attestation: MarketSignalFoundationAttestation | None = None
+
+
+def current_market_signal_foundation_attestation() -> MarketSignalFoundationAttestation | None:
+    """Return the attestation bound to the serialized prediction currently executing."""
+    return _current_market_signal_attestation
+
+
+@contextmanager
+def _market_signal_foundation_attestation_scope(
+    attestation: MarketSignalFoundationAttestation | None,
+) -> Generator[None]:
+    global _current_market_signal_attestation
+    previous = _current_market_signal_attestation
+    _current_market_signal_attestation = attestation
+    try:
+        yield
+    finally:
+        _current_market_signal_attestation = previous
+
 
 def _run_predict_fn(
     predict_fn: PredictCategoryFn,
@@ -1114,7 +1384,11 @@ def _run_predict_fn(
     The whole body runs under :data:`_PIPELINE_EXEC_LOCK` -- see that lock's
     docstring for why every caller of this function must be serialized.
     """
-    with _PIPELINE_EXEC_LOCK, debug_logs_scope(params.debug_logs):
+    with (
+        _PIPELINE_EXEC_LOCK,
+        debug_logs_scope(params.debug_logs),
+        _market_signal_foundation_attestation_scope(params.market_signal_foundation_attestation),
+    ):
         return predict_fn(
             params.category,
             params.run_date,

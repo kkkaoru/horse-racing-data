@@ -20,6 +20,7 @@ zero-pad-to-2 helper before comparison.  This keeps ``raceBango=1`` and
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -41,6 +42,10 @@ RACE_KEY_PAD_WIDTH: Final[int] = 2
 
 Entry = dict[str, object]
 Races = Mapping[str, list[Entry]]
+
+
+class PostWeightValidationError(RuntimeError):
+    """A post-weight snapshot does not exactly cover the active race runners."""
 
 
 @dataclass(frozen=True)
@@ -178,6 +183,116 @@ def apply_fresh_snapshots(
             for entry in entries
         ]
     return updated
+
+
+def filter_post_weight_active_runners(
+    races: Races,
+    active_horse_numbers: tuple[int, ...],
+    excluded_horse_numbers: tuple[int, ...],
+) -> dict[str, list[Entry]]:
+    """Validate one entry snapshot against cached rows and remove exclusions.
+
+    The weight-trigger entry snapshot is authoritative for late scratches, but
+    the attested feature cache remains authoritative for which runners belong
+    to the race. Requiring the cache set to equal ``active + excluded`` makes a
+    missing active runner, an unknown exclusion, and a stale extra cache row
+    fail closed. Only the explicitly active rows can reach scoring/persistence.
+    """
+    if len(races) != 1:
+        raise PostWeightValidationError(
+            "post-weight entry snapshot validation requires exactly one race"
+        )
+    active = set(active_horse_numbers)
+    excluded = set(excluded_horse_numbers)
+    if not active or active & excluded:
+        raise PostWeightValidationError("post-weight entry snapshot runner set invalid")
+
+    race_id, entries = next(iter(races.items()))
+    parts = parse_race_id(race_id)
+    race_label = (
+        f"{parts.keibajo_code.zfill(RACE_KEY_PAD_WIDTH)}:"
+        f"{parts.race_bango.zfill(RACE_KEY_PAD_WIDTH)}"
+    )
+    cached: set[int] = set()
+    active_entries: list[Entry] = []
+    for entry in entries:
+        umaban = coerce_optional_int(entry.get(UMABAN_FIELD))
+        if umaban is None or umaban <= 0 or umaban in cached:
+            raise PostWeightValidationError(
+                f"post-weight cached runner set invalid: race={race_label}"
+            )
+        cached.add(umaban)
+        if umaban in active:
+            active_entries.append(entry)
+    expected = active | excluded
+    if cached != expected:
+        missing = sorted(expected - cached)
+        unexpected = sorted(cached - expected)
+        raise PostWeightValidationError(
+            f"post-weight entry snapshot mismatch: race={race_label} "
+            f"missing={missing} unexpected={unexpected}"
+        )
+    return {race_id: active_entries}
+
+
+def validate_post_weight_snapshots(
+    races: Races,
+    snapshots_by_race_key: Mapping[tuple[str, str], RaceFreshSnapshot],
+) -> None:
+    """Require exact, positive horse weights for every active cached runner.
+
+    The watermark-attested cache contains only active runners: source rows with
+    JRA/NAR ``ijo_kubun_code`` 1 (scratch) or 2 (exclude) are removed by the
+    feature pipeline and its entry-list gate. Therefore its per-race umaban set
+    is authoritative for post-weight validation, including late scratches.
+    """
+    expected_by_race: dict[tuple[str, str], set[int]] = {}
+    for race_id, entries in races.items():
+        parts = parse_race_id(race_id)
+        race_key = (
+            parts.keibajo_code.zfill(RACE_KEY_PAD_WIDTH),
+            parts.race_bango.zfill(RACE_KEY_PAD_WIDTH),
+        )
+        expected: set[int] = set()
+        for entry in entries:
+            umaban = coerce_optional_int(entry.get(UMABAN_FIELD))
+            if umaban is None or umaban <= 0:
+                raise PostWeightValidationError(
+                    f"post-weight runner set invalid: race={race_key[0]}:{race_key[1]}"
+                )
+            expected.add(umaban)
+        if not expected:
+            raise PostWeightValidationError(
+                f"post-weight runner set empty: race={race_key[0]}:{race_key[1]}"
+            )
+        expected_by_race[race_key] = expected
+
+    expected_race_keys = set(expected_by_race)
+    actual_race_keys = set(snapshots_by_race_key)
+    if actual_race_keys != expected_race_keys:
+        missing = sorted(expected_race_keys - actual_race_keys)
+        unexpected = sorted(actual_race_keys - expected_race_keys)
+        raise PostWeightValidationError(
+            f"post-weight race set mismatch: missing={missing} unexpected={unexpected}"
+        )
+
+    for race_key, expected in expected_by_race.items():
+        weights = snapshots_by_race_key[race_key].bataiju_by_umaban
+        actual = set(weights)
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        if missing or unexpected:
+            raise PostWeightValidationError(
+                f"post-weight runner set mismatch: race={race_key[0]}:{race_key[1]} "
+                f"missing={missing} unexpected={unexpected}"
+            )
+        if any(
+            isinstance(weight, bool) or not math.isfinite(float(weight)) or float(weight) <= 0
+            for weight in weights.values()
+        ):
+            raise PostWeightValidationError(
+                f"post-weight value invalid: race={race_key[0]}:{race_key[1]}"
+            )
 
 
 def _lookup_race_snapshot(

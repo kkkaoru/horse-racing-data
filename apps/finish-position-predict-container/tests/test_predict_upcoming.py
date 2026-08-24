@@ -22,6 +22,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -56,6 +57,7 @@ from predict_lib.serve import (
     PredictParams,
     R2Config,
     RescoreCacheAttestation,
+    WeightSnapshotGeneration,
     activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_race_key,
     iter_predict_chunks,
@@ -114,7 +116,16 @@ _make_prewarm_fn = cast(
 )
 _make_rescore_fn = cast(
     Callable[
-        [str, Path, str, R2Config | None, RaceScope, RescoreCacheAttestation | None],
+        [
+            str,
+            Path,
+            str,
+            R2Config | None,
+            RaceScope,
+            RescoreCacheAttestation | None,
+            WeightSnapshotGeneration | None,
+            str | None,
+        ],
         tuple[PredictCategoryFn, PerRaceParquetPayloadFn],
     ],
     getattr(predict_upcoming, _MAKE_RESCORE_FN_ATTR),
@@ -140,7 +151,7 @@ _ensure_cached_parquet = cast(
 )
 _fetch_fresh_snapshots = cast(
     Callable[
-        [str, str, list[tuple[str, str]]],
+        [str, str, list[tuple[str, str]], WeightSnapshotGeneration],
         dict[tuple[str, str], RaceFreshSnapshot],
     ],
     getattr(predict_upcoming, _FETCH_FRESH_SNAPSHOTS_ATTR),
@@ -459,6 +470,49 @@ def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
     assert fresh_conn.committed >= 1
 
 
+def _shadow_record() -> predict_upcoming.DynamicMarketShadowRecord:
+    return predict_upcoming.DynamicMarketShadowRecord(
+        race_id="jra:2026:0824:01:01",
+        router_version="router",
+        upset_probability=0.8,
+        market_weight=0.96,
+        active=True,
+        reason="surface-dynamic-blend",
+        surface="turf",
+        distance_band="mile",
+        baseline_top5=("H1", "H2", "H3"),
+        shadow_top5=("H2", "H3", "H1"),
+        classifier_version="classifier",
+        market_expert_version="market",
+        market_free_expert_version="free",
+    )
+
+
+def test_flush_dynamic_market_shadow_writes_ddl_and_record() -> None:
+    flush_shadow: Callable[..., int] = vars(predict_upcoming)[
+        "_flush_dynamic_market_shadow"
+    ]
+    connection = _StubConnection()
+    with patch("predict_upcoming._connect", return_value=connection):
+        written = flush_shadow(_DB_URL, [_shadow_record()])
+
+    assert written == 1
+    assert connection.committed == 2
+    assert connection.closed is True
+
+
+def test_flush_dynamic_market_shadow_is_empty_noop_and_failure_open() -> None:
+    flush_shadow: Callable[..., int] = vars(predict_upcoming)[
+        "_flush_dynamic_market_shadow"
+    ]
+    assert flush_shadow(_DB_URL, []) == 0
+
+    connection = _StubConnection(raise_on_execute=RuntimeError("shadow database failed"))
+    with patch("predict_upcoming._connect", return_value=connection):
+        assert flush_shadow(_DB_URL, [_shadow_record()]) == 0
+    assert connection.closed is True
+
+
 # ---------------------------------------------------------------------------
 # make_handler_class — staticmethod binding (regression for 4-arg TypeError)
 # ---------------------------------------------------------------------------
@@ -513,9 +567,11 @@ def _fake_rescore(
 def _fake_rescore_factory(
     scope: RaceScope,
     attestation: RescoreCacheAttestation | None,
+    weight_snapshot_generation: WeightSnapshotGeneration | None,
+    race_start_at_jst: str | None,
 ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
     """Dummy rescore_factory that ignores the scope and returns a fixed fn + payload fn."""
-    del scope, attestation
+    del scope, attestation, weight_snapshot_generation, race_start_at_jst
 
     def _per_race() -> list[dict[str, str]] | None:
         return None
@@ -576,7 +632,7 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     )
     factory = handler_cls.rescore_factory
     assert factory is not None
-    rescore, per_race = factory(RaceScope(), None)
+    rescore, per_race = factory(RaceScope(), None, None, None)
     result = rescore("jra", "20260618", 1, None, None, None)
     assert result == 99
     assert per_race() is None
@@ -657,6 +713,7 @@ def _start_threading_server(
         predict_fn,
         _fake_parquet_payload,
         _fake_per_race_parquet_payload,
+        None,
         None,
         None,
     )
@@ -888,6 +945,7 @@ def _start_server_with_cache_store(
         _fake_predict,
         _fake_parquet_payload,
         _fake_per_race_parquet_payload,
+        None,
         None,
         None,
         focused_full_cache_store=store,
@@ -1474,6 +1532,8 @@ def test_catalog_rescore_whole_category_scope_forces_full_fallback_without_readi
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(),
         None,
+        None,
+        None,
     )
 
     def full_predict(
@@ -1529,6 +1589,8 @@ def test_catalog_rescore_per_race_scope_falls_back_when_watermarked_cache_unavai
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(keibajo_code="05", race_bango="11"),
         None,
+        None,
+        None,
     )
 
     def full_predict(
@@ -1581,7 +1643,13 @@ def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
         return True
 
     monkeypatch.setattr(predict_upcoming, "_fetch_watermarked_per_race_cache", fake_fetch)
-    monkeypatch.setattr(predict_upcoming, "_fetch_fresh_snapshots", lambda *a, **k: {})
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_fetch_fresh_snapshots",
+        lambda *a, **k: {
+            ("05", "11"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 480.0})
+        },
+    )
     monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", lambda *a, **k: 1)
     full_calls: list[object] = []
     rescore_fn, _per_race_payload_fn = _make_rescore_fn(
@@ -1591,6 +1659,12 @@ def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
         R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
         RaceScope(keibajo_code="05", race_bango="11"),
         None,
+        WeightSnapshotGeneration(
+            count=1,
+            fetched_at="2026-07-12T14:30:00+09:00",
+            snapshot_hash="34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        ),
+        "2099-07-12T15:30:00+09:00",
     )
 
     def full_predict(*args: object) -> int:
@@ -1613,6 +1687,94 @@ def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
     assert parsed[-1]["status"] == "success"
 
 
+def test_catalog_rescore_incomplete_weight_set_fails_without_full_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-weight gap is retryable input failure, never a pre-weight success."""
+    import pandas as pd
+
+    from pipeline_runner import RACE_ID_FIELD
+
+    def fake_fetch(final_dir: Path, *_rest: object) -> bool:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        frame = pd.DataFrame(
+            [
+                {
+                    RACE_ID_FIELD: "nar:2026:0824:44:07",
+                    "keibajo_code": "44",
+                    "race_bango": "07",
+                    "umaban": 1,
+                    "ketto_toroku_bango": "H1",
+                },
+                {
+                    RACE_ID_FIELD: "nar:2026:0824:44:07",
+                    "keibajo_code": "44",
+                    "race_bango": "07",
+                    "umaban": 2,
+                    "ketto_toroku_bango": "H2",
+                },
+            ]
+        )
+        frame.to_parquet(final_dir / "features.parquet")
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "_fetch_watermarked_per_race_cache", fake_fetch)
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_fetch_fresh_snapshots",
+        lambda *a, **k: {
+            ("44", "07"): RaceFreshSnapshot(odds_by_umaban={}, bataiju_by_umaban={1: 480.0})
+        },
+    )
+    score_calls: list[bool] = []
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_score_and_flush_races",
+        lambda *a, **k: score_calls.append(True) or 2,
+    )
+    rescore_fn, _per_race_payload_fn = _make_rescore_fn(
+        "postgresql://neon-output/db",
+        tmp_path,
+        "r2-catalog://pc-keiba",
+        R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
+        RaceScope(keibajo_code="44", race_bango="07"),
+        None,
+        WeightSnapshotGeneration(
+            count=1,
+            fetched_at="2026-08-24T14:30:00+09:00",
+            snapshot_hash="34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        ),
+        "2099-08-24T15:30:00+09:00",
+    )
+    full_calls: list[bool] = []
+
+    def full_predict(*args: object) -> int:
+        full_calls.append(True)
+        return 2
+
+    params = PredictParams(
+        category="nar",
+        run_date="20260824",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="44",
+        race_bango="07",
+    )
+    parsed = [
+        json.loads(chunk.decode())
+        for chunk in iter_predict_chunks(params, full_predict, rescore_fn=rescore_fn)
+    ]
+
+    assert score_calls == []
+    assert full_calls == []
+    assert parsed[-1]["status"] == "error"
+    assert parsed[-1]["error"] == (
+        "PostWeightValidationError: post-weight runner set mismatch: "
+        "race=44:07 missing=[2] unexpected=[]"
+    )
+    assert not any(item.get("stage") == "rescore-fallback-to-full" for item in parsed)
+
+
 def test_catalog_rescore_attestation_without_r2_is_retryable_not_cache_miss(
     tmp_path: Path,
 ) -> None:
@@ -1624,6 +1786,8 @@ def test_catalog_rescore_attestation_without_r2_is_retryable_not_cache_miss(
         None,
         RaceScope(keibajo_code="07", race_bango="03"),
         attestation,
+        None,
+        None,
     )
 
     with pytest.raises(CacheValidationError, match="r2-configuration-unavailable"):
@@ -1654,15 +1818,31 @@ def test_fetch_fresh_snapshots_fetches_one_race_odds_and_weight_concurrently(
         run_date: str,
         keibajo_code: str,
         race_bango: str,
+        *,
+        expected_count: int,
+        expected_fetched_at: str,
+        expected_hash: str,
     ) -> dict[int, int]:
         del fetcher, source, run_date, keibajo_code, race_bango
+        assert expected_count == 1
+        assert expected_fetched_at == "2026-08-23T14:30:00+09:00"
+        assert expected_hash == ("34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57")
         started.wait(timeout=1)
         return {1: 480}
 
     monkeypatch.setattr(realtime_odds_fetcher, "fetch_odds_for_race", fake_odds)
-    monkeypatch.setattr(realtime_odds_fetcher, "fetch_weight_for_race", fake_weight)
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_required_weight_for_race", fake_weight)
 
-    result = _fetch_fresh_snapshots("jra", "20260823", [("01", "03")])
+    result = _fetch_fresh_snapshots(
+        "jra",
+        "20260823",
+        [("01", "03")],
+        WeightSnapshotGeneration(
+            count=1,
+            fetched_at="2026-08-23T14:30:00+09:00",
+            snapshot_hash="34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        ),
+    )
 
     assert result == {
         ("01", "03"): RaceFreshSnapshot(
@@ -1672,65 +1852,99 @@ def test_fetch_fresh_snapshots_fetches_one_race_odds_and_weight_concurrently(
     }
 
 
-def test_fetch_fresh_snapshots_bounds_multi_race_outgoing_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import realtime_odds_fetcher
+def test_fetch_fresh_snapshots_rejects_multi_race_generation() -> None:
+    with pytest.raises(
+        ValueError,
+        match="post-weight snapshot verification requires exactly one race",
+    ):
+        _fetch_fresh_snapshots(
+            "jra",
+            "20260823",
+            [("01", "01"), ("01", "02")],
+            WeightSnapshotGeneration(
+                count=2,
+                fetched_at="2026-08-23T14:30:00+09:00",
+                snapshot_hash="0" * 64,
+            ),
+        )
 
-    lock = threading.Lock()
-    four_started = threading.Event()
-    active = 0
-    peak = 0
 
-    def wait_for_bound() -> None:
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-            if active == 4:
-                four_started.set()
-        if not four_started.wait(timeout=1):
-            raise TimeoutError("four snapshot requests did not start")
-        with lock:
-            active -= 1
+def test_score_and_flush_checks_deadline_before_score_and_before_upsert() -> None:
+    score_and_flush: Callable[..., int] = vars(predict_upcoming)["_score_and_flush_races"]
+    before_start = datetime(2099, 8, 24, 5, 59, tzinfo=UTC)
 
-    def fake_odds(
-        fetcher: object,
-        source: str,
-        run_date: str,
-        keibajo_code: str,
-        race_bango: str,
-    ) -> list[tuple[str, str, int, float, int]]:
-        del fetcher, source, run_date
-        wait_for_bound()
-        return [(keibajo_code, race_bango, 1, 2.5, 1)]
+    with (
+        patch("predict_upcoming._utc_now", return_value=before_start) as now_mock,
+        patch("predict_upcoming.score_races", return_value=[]) as score_mock,
+        patch("predict_upcoming._flush_scored", return_value=0) as flush_mock,
+        patch("predict_upcoming.score_dynamic_market_shadow", return_value=[]) as shadow_mock,
+        patch("predict_upcoming._flush_dynamic_market_shadow", return_value=0) as shadow_flush,
+    ):
+        written = score_and_flush(
+            _DB_URL,
+            "jra",
+            Path("/models"),
+            {},
+            race_start_at_jst="2099-08-24T15:00:00+09:00",
+        )
 
-    def fake_weight(
-        fetcher: object,
-        source: str,
-        run_date: str,
-        keibajo_code: str,
-        race_bango: str,
-    ) -> dict[int, int]:
-        del fetcher, source, run_date, keibajo_code, race_bango
-        wait_for_bound()
-        return {1: 500}
+    assert written == 0
+    assert now_mock.call_count == 2
+    score_mock.assert_called_once()
+    flush_mock.assert_called_once()
+    shadow_mock.assert_called_once()
+    shadow_flush.assert_called_once_with(_DB_URL, [])
 
-    monkeypatch.setattr(realtime_odds_fetcher, "fetch_odds_for_race", fake_odds)
-    monkeypatch.setattr(realtime_odds_fetcher, "fetch_weight_for_race", fake_weight)
 
-    result = _fetch_fresh_snapshots(
-        "jra",
-        "20260823",
-        [("01", "01"), ("01", "02"), ("01", "03")],
-    )
+def test_score_and_flush_rejects_when_deadline_passes_during_scoring() -> None:
+    score_and_flush: Callable[..., int] = vars(predict_upcoming)["_score_and_flush_races"]
 
-    assert peak == 4
-    assert result[("01", "01")].bataiju_by_umaban == {1: 500.0}
-    assert result[("01", "02")].odds_by_umaban == {
-        1: OddsSnapshot(tansho_odds=2.5, tansho_ninkijun=1)
-    }
-    assert result[("01", "03")].bataiju_by_umaban == {1: 500.0}
+    with (
+        patch(
+            "predict_upcoming._utc_now",
+            side_effect=[
+                datetime(2099, 8, 24, 5, 59, tzinfo=UTC),
+                datetime(2099, 8, 24, 6, 0, tzinfo=UTC),
+            ],
+        ),
+        patch("predict_upcoming.score_races", return_value=[]) as score_mock,
+        patch("predict_upcoming._flush_scored", return_value=0) as flush_mock,
+        pytest.raises(CacheValidationError, match="post-weight prediction deadline reached"),
+    ):
+        score_and_flush(
+            _DB_URL,
+            "jra",
+            Path("/models"),
+            {},
+            race_start_at_jst="2099-08-24T15:00:00+09:00",
+        )
+
+    score_mock.assert_called_once()
+    flush_mock.assert_not_called()
+
+
+def test_flush_scored_checks_deadline_immediately_before_neon_upsert() -> None:
+    flush_scored: Callable[..., int] = vars(predict_upcoming)["_flush_scored"]
+    connection = _StubConnection()
+
+    with (
+        patch("predict_upcoming._connect", return_value=connection),
+        patch(
+            "predict_upcoming._utc_now",
+            return_value=datetime(2099, 8, 24, 6, 0, tzinfo=UTC),
+        ),
+        patch("predict_upcoming.flush_predictions") as flush_mock,
+        pytest.raises(CacheValidationError, match="post-weight prediction deadline reached"),
+    ):
+        flush_scored(
+            _DB_URL,
+            "jra",
+            [[]],
+            race_start_at_jst="2099-08-24T15:00:00+09:00",
+        )
+
+    flush_mock.assert_not_called()
+    assert connection.closed is True
 
 
 # ---------------------------------------------------------------------------
@@ -2414,6 +2628,101 @@ class _NoRoutingRouter:
     def has_routing(self, category: str) -> bool:
         del category
         return False
+
+
+@final
+class _ShadowClassifier:
+    def predict_proba(
+        self, matrix: Sequence[Sequence[float]]
+    ) -> Sequence[Sequence[float]]:
+        assert len(matrix) == 1
+        assert len(matrix[0]) == 14
+        return [[0.0, 1.0]]
+
+
+def test_score_dynamic_market_shadow_uses_fixed_experts_without_serving_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [
+        {
+            "ketto_toroku_bango": f"H{index}",
+            "umaban": index,
+            "feat": float(index),
+            "tansho_odds_raw": float(2**index),
+            "track_code": "10",
+            "kyori": 1600,
+        }
+        for index in range(1, 4)
+    ]
+    champion = _ScoreByUmaban([3.0, 2.0, 1.0])
+    stage1 = VariantModel(
+        booster=_ScoreByUmaban([1.0, 3.0, 2.0]),
+        feature_names=("feat",),
+        architecture="catboost",
+        model_version="global-stage1",
+    )
+    market_version = "jra-dynamic-market-shadow-loop43-2026-turf-champion"
+    free_version = "jra-dynamic-market-shadow-loop43-2026-turf-stage1"
+    experts = {
+        market_version: VariantModel(
+            booster=_ScoreByUmaban([1.0, 3.0, 2.0]),
+            feature_names=("feat",),
+            architecture="catboost",
+            model_version=market_version,
+        ),
+        free_version: VariantModel(
+            booster=_ScoreByUmaban([3.0, 1.0, 2.0]),
+            feature_names=("feat",),
+            architecture="catboost",
+            model_version=free_version,
+        ),
+    }
+    shadow_models = predict_upcoming.DynamicMarketShadowModels(
+        classifier=_ShadowClassifier(),
+        classifier_version=("jra-dynamic-market-shadow-loop43-2026-upset-classifier"),
+        experts=experts,
+    )
+    bundle = SimpleNamespace(
+        dynamic_market_shadow=shadow_models,
+        stage1_model=stage1,
+        feature_names=("feat",),
+        fallback_booster=champion,
+    )
+    monkeypatch.setattr(predict_upcoming, "_get_model_bundle", lambda *args: bundle)
+    monkeypatch.setattr(predict_upcoming, "is_degenerate_feature_matrix", lambda *args: False)
+
+    records = predict_upcoming.score_dynamic_market_shadow(
+        {"jra:2026:0824:01:01": entries}, "jra", Path("/models")
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.baseline_top5 == ("H1", "H2", "H3")
+    assert record.shadow_top5 == ("H2", "H3", "H1")
+    assert record.market_weight == pytest.approx(0.95)
+    assert record.active is True
+
+
+def test_score_dynamic_market_shadow_skips_absent_bundle_and_race_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    absent = SimpleNamespace(dynamic_market_shadow=None, stage1_model=None)
+    monkeypatch.setattr(predict_upcoming, "_get_model_bundle", lambda *args: absent)
+    assert predict_upcoming.score_dynamic_market_shadow({}, "jra", Path("/models")) == []
+
+    broken = SimpleNamespace(
+        dynamic_market_shadow=SimpleNamespace(),
+        stage1_model=SimpleNamespace(),
+    )
+    monkeypatch.setattr(predict_upcoming, "_get_model_bundle", lambda *args: broken)
+    assert (
+        predict_upcoming.score_dynamic_market_shadow(
+            {"jra:2026:0824:01:01": [{"track_code": "10"}]},
+            "jra",
+            Path("/models"),
+        )
+        == []
+    )
 
 
 def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
@@ -3204,6 +3513,29 @@ def test_load_stage1_model_accepts_clean_artifact(tmp_path: Path) -> None:
     assert loaded.model_version == _STAGE1_TEST_CONFIG.model_version
 
 
+def test_load_stage1_model_loads_top1_swap_base_and_companion(tmp_path: Path) -> None:
+    companion_version = "jra-cb-stage1-marketfree235-iter500-top1swap-2013"
+    config = replace(
+        _STAGE1_TEST_CONFIG,
+        model_version=companion_version,
+        top1_swap_base_model_version=_STAGE1_TEST_CONFIG.model_version,
+    )
+    _write_variant_metadata(tmp_path, "jra", companion_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    companion = _ScoreByUmaban([0.1])
+    base = _ScoreByUmaban([0.2])
+
+    with patch("predict_upcoming._load_booster_by_arch", side_effect=[companion, base]):
+        loaded = _load_stage1_model(tmp_path, "jra", config)
+
+    assert loaded is not None
+    assert loaded.booster is companion
+    assert loaded.model_version == companion_version
+    assert loaded.top1_swap_base is not None
+    assert loaded.top1_swap_base.booster is base
+    assert loaded.top1_swap_base.model_version == _STAGE1_TEST_CONFIG.model_version
+
+
 def test_score_races_stage1_gate_routes_to_stage1_when_odds_missing(tmp_path: Path) -> None:
     """Every entry lacking a real tansho_ninkijun -- the freshness gate fails
     closed to Stage-1 regardless of how healthy the champion's own scores
@@ -3223,6 +3555,39 @@ def test_score_races_stage1_gate_routes_to_stage1_when_odds_missing(tmp_path: Pa
 
     rows = scored[0]
     assert all(row[0] == _STAGE1_TEST_CONFIG.model_version for row in rows)
+
+
+def test_score_races_stage1_top1_swap_preserves_base_order_below_winner(
+    tmp_path: Path,
+) -> None:
+    companion_version = "jra-cb-stage1-marketfree235-iter500-top1swap-2013"
+    config = replace(
+        _STAGE1_TEST_CONFIG,
+        model_version=companion_version,
+        top1_swap_base_model_version=_STAGE1_TEST_CONFIG.model_version,
+    )
+    _write_variant_metadata(tmp_path, "jra", companion_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    entries = _jra_entries_with_ninkijun({1: None, 2: None, 3: None})
+    champion = _ScoreByUmaban([9.0, 8.0, 7.0])
+    companion = _ScoreByUmaban([0.0, 3.0, 1.0])
+    base = _ScoreByUmaban([3.0, 2.0, 1.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": config}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=[companion, base]),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert [(row[6], row[8], row[9]) for row in rows] == [
+        ("H2", 3.0, 1),
+        ("H1", 2.0, 2),
+        ("H3", 1.0, 3),
+    ]
+    assert all(row[0] == companion_version for row in rows)
 
 
 def test_score_races_stage1_gate_keeps_champion_when_odds_fresh_and_spread_healthy(
@@ -3981,12 +4346,16 @@ def test_populate_focused_full_cache_noop_when_store_not_provided(
 def test_populate_focused_full_cache_stores_payload_for_this_race(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import pandas as pd
+
     import pipeline_runner
 
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
     final_dir = tmp_path / "feat-jra-v7-final"
     final_dir.mkdir()
-    (final_dir / "features.parquet").write_bytes(b"not-real-parquet-bytes")
+    pd.DataFrame(
+        {"race_id": ["jra:2026:0712:05:09", "jra:2026:0712:05:09"], "umaban": [1, 2]}
+    ).to_parquet(final_dir / "features.parquet")
 
     store = FocusedFullCacheStore()
     _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
@@ -4002,11 +4371,126 @@ def test_populate_focused_full_cache_stores_payload_for_this_race(
     # single-race parquet. Seed the per-race object so scoped rescore can hit it.
     assert payload.parquet_base64 is None
     assert payload.parquet_key is None
-    assert payload.per_race_parquets == [
+    assert payload.per_race_parquets is not None
+    assert len(payload.per_race_parquets) == 1
+    cached = payload.per_race_parquets[0]
+    assert cached["parquetKey"] == "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet"
+    cached_path = tmp_path / "cached-jra.parquet"
+    cached_path.write_bytes(base64.b64decode(cached["parquetBase64"]))
+    assert pd.read_parquet(cached_path).to_dict(orient="records") == [
+        {"race_id": "jra:2026:0712:05:09", "umaban": 1},
+        {"race_id": "jra:2026:0712:05:09", "umaban": 2},
+    ]
+
+
+def test_populate_focused_full_cache_stores_nothing_for_unreadable_parquet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    final_dir.mkdir()
+    (final_dir / "features.parquet").write_bytes(b"not-real-parquet-bytes")
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    params = PredictParams(
+        category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
+    )
+
+    populate_fn(params)
+
+    assert store.pop(build_focused_full_race_key(params)) is None
+
+
+def test_populate_focused_full_cache_stores_nothing_when_expected_banei_race_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never relabel races 01-11 or an out-of-scope race as focused race 12."""
+    import pandas as pd
+
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    final_dir = tmp_path / "feat-ban-ei-v7-final"
+    final_dir.mkdir()
+    pd.DataFrame(
         {
-            "parquetBase64": base64.b64encode(b"not-real-parquet-bytes").decode("ascii"),
-            "parquetKey": "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet",
+            "race_id": [
+                "nar:2026:0824:83:01",
+                "nar:2026:0824:83:02",
+                "nar:2026:0824:83:03",
+                "nar:2026:0824:83:04",
+                "nar:2026:0824:83:05",
+                "nar:2026:0824:83:06",
+                "nar:2026:0824:83:07",
+                "nar:2026:0824:83:08",
+                "nar:2026:0824:83:09",
+                "nar:2026:0824:83:10",
+                "nar:2026:0824:83:11",
+                "nar:2026:0823:83:12",
+                "jra:2026:0824:83:12",
+                "nar:2026:0824:83:12:extra",
+            ],
+            "umaban": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         }
+    ).to_parquet(final_dir / "features.parquet")
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    params = PredictParams(
+        category="ban-ei",
+        run_date="20260824",
+        days_ahead=0,
+        keibajo_code="83",
+        race_bango="12",
+    )
+
+    populate_fn(params)
+
+    assert store.pop(build_focused_full_race_key(params)) is None
+
+
+def test_populate_focused_full_cache_stores_valid_banei_race_with_nar_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pandas as pd
+
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    final_dir = tmp_path / "feat-ban-ei-v7-final"
+    final_dir.mkdir()
+    pd.DataFrame(
+        {
+            "race_id": ["nar:2026:0824:83:11", "nar:2026:0824:83:12"],
+            "umaban": [1, 2],
+        }
+    ).to_parquet(final_dir / "features.parquet")
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    params = PredictParams(
+        category="ban-ei",
+        run_date="20260824",
+        days_ahead=0,
+        keibajo_code="83",
+        race_bango="12",
+    )
+
+    populate_fn(params)
+
+    payload = store.pop(build_focused_full_race_key(params))
+    assert payload is not None
+    assert payload.per_race_parquets is not None
+    assert len(payload.per_race_parquets) == 1
+    cached = payload.per_race_parquets[0]
+    assert cached["parquetKey"] == "feat-cache/catalog-v1/ban-ei/20260824/83/12/features.parquet"
+    cached_path = tmp_path / "cached-ban-ei.parquet"
+    cached_path.write_bytes(base64.b64decode(cached["parquetBase64"]))
+    assert pd.read_parquet(cached_path).to_dict(orient="records") == [
+        {"race_id": "nar:2026:0824:83:12", "umaban": 2}
     ]
 
 
@@ -4034,15 +4518,21 @@ def test_populate_focused_full_cache_two_races_do_not_cross_contaminate(
     """Regression test for the _last_run shared-state race this design avoids
     by construction: two different (category, run_date) runs must each land
     under their OWN race key with their OWN bytes, never swapped."""
+    import pandas as pd
+
     import pipeline_runner
 
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
     jra_dir = tmp_path / "feat-jra-v7-final"
     jra_dir.mkdir()
-    (jra_dir / "features.parquet").write_bytes(b"jra-bytes")
+    pd.DataFrame({"race_id": ["jra:2026:0712:05:09"], "umaban": [1]}).to_parquet(
+        jra_dir / "features.parquet"
+    )
     nar_dir = tmp_path / "feat-nar-v7-final"
     nar_dir.mkdir()
-    (nar_dir / "features.parquet").write_bytes(b"nar-bytes")
+    pd.DataFrame({"race_id": ["nar:2026:0712:44:02"], "umaban": [2]}).to_parquet(
+        nar_dir / "features.parquet"
+    )
 
     store = FocusedFullCacheStore()
     _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
@@ -4060,17 +4550,23 @@ def test_populate_focused_full_cache_two_races_do_not_cross_contaminate(
     nar_payload = store.pop(build_focused_full_race_key(nar_params))
     assert jra_payload is not None
     assert nar_payload is not None
-    assert jra_payload.per_race_parquets == [
-        {
-            "parquetBase64": base64.b64encode(b"jra-bytes").decode("ascii"),
-            "parquetKey": "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet",
-        }
+    assert jra_payload.per_race_parquets is not None
+    assert nar_payload.per_race_parquets is not None
+    assert len(jra_payload.per_race_parquets) == 1
+    assert len(nar_payload.per_race_parquets) == 1
+    jra_cached = jra_payload.per_race_parquets[0]
+    nar_cached = nar_payload.per_race_parquets[0]
+    assert jra_cached["parquetKey"] == "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet"
+    assert nar_cached["parquetKey"] == "feat-cache/catalog-v1/nar/20260712/44/02/features.parquet"
+    jra_cached_path = tmp_path / "jra-cached.parquet"
+    nar_cached_path = tmp_path / "nar-cached.parquet"
+    jra_cached_path.write_bytes(base64.b64decode(jra_cached["parquetBase64"]))
+    nar_cached_path.write_bytes(base64.b64decode(nar_cached["parquetBase64"]))
+    assert pd.read_parquet(jra_cached_path).to_dict(orient="records") == [
+        {"race_id": "jra:2026:0712:05:09", "umaban": 1}
     ]
-    assert nar_payload.per_race_parquets == [
-        {
-            "parquetBase64": base64.b64encode(b"nar-bytes").decode("ascii"),
-            "parquetKey": "feat-cache/catalog-v1/nar/20260712/44/02/features.parquet",
-        }
+    assert pd.read_parquet(nar_cached_path).to_dict(orient="records") == [
+        {"race_id": "nar:2026:0712:44:02", "umaban": 2}
     ]
 
 

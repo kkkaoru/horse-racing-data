@@ -11,6 +11,7 @@ becomes diagnosable instead of an opaque ``CalledProcessError``).
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -31,6 +32,7 @@ from pipeline_runner import (
     r2_day_base_dest_path,
     run_with_stderr_capture,
 )
+from predict_lib.serve import R2Config
 
 _TIMEOUT_SECONDS_ATTR = "_pipeline_subprocess_timeout_seconds"
 _pipeline_subprocess_timeout_seconds = cast(
@@ -1246,7 +1248,7 @@ def test_build_day_base_commits_running_style_foundation_before_day_layers(
     assert events == ["base", "foundation", "layer"]
 
 
-def test_build_day_base_keeps_building_when_foundation_commit_fails(
+def test_build_day_base_raises_when_foundation_commit_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
@@ -1274,15 +1276,17 @@ def test_build_day_base_keeps_building_when_foundation_commit_fails(
     def fail_commit(*_args: object) -> None:
         raise RuntimeError("R2 handoff failed")
 
-    result = pipeline_runner.build_day_base(
-        "jra",
-        "20260822",
-        0,
-        "r2-catalog://pc-keiba",
-        running_style_foundation_commit_fn=fail_commit,
-    )
+    with pytest.raises(RuntimeError, match="running-style foundation commit failed") as exc_info:
+        pipeline_runner.build_day_base(
+            "jra",
+            "20260822",
+            0,
+            "r2-catalog://pc-keiba",
+            running_style_foundation_commit_fn=fail_commit,
+        )
 
-    assert result is not None
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert str(exc_info.value.__cause__) == "R2 handoff failed"
 
 
 def test_build_day_base_resets_stale_day_dir_before_building(
@@ -1353,18 +1357,23 @@ def test_build_day_base_writes_watermark_for_catalog_source(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
     )
 
-    result = pipeline_runner.build_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba")
+    result = pipeline_runner.build_day_base(
+        "jra",
+        "20260712",
+        0,
+        "r2-catalog://pc-keiba",
+        running_style_foundation_commit_fn=lambda *_args: None,
+    )
 
     assert result is not None
     day_dir = _day_base_dir("jra", "20260712")
     assert _read_watermark(day_dir) == ("20260712", 1200, "none", 0)
 
 
-def test_build_day_base_skips_watermark_when_source_count_is_zero(
+def test_build_day_base_raises_when_foundation_source_watermark_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """A 0-row concat query is fail-closed: parquet may exist, but no sidecar
-    is written. A frozen empty pair would hide later SE corrections."""
+    """A catalog build cannot succeed without publishing a verifiable foundation."""
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
@@ -1390,12 +1399,24 @@ def test_build_day_base_skips_watermark_when_source_count_is_zero(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
     )
 
-    result = pipeline_runner.build_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba")
+    progress: list[str] = []
+    with (
+        pipeline_execution_scope(progress_fn=progress.append),
+        pytest.raises(RuntimeError, match=r"source watermark unavailable.*watermark count is 0"),
+    ):
+        pipeline_runner.build_day_base(
+            "ban-ei",
+            "20260816",
+            0,
+            "r2-catalog://pc-keiba",
+            running_style_foundation_commit_fn=lambda *_args: None,
+        )
 
-    assert result is not None
-    day_dir = _day_base_dir("ban-ei", "20260816")
-    assert _read_watermark(day_dir) is None
-    assert _read_watermark_reason(day_dir) == "watermark count is 0"
+    assert progress[-1] == (
+        "step=running-style-foundation status=failed category=ban-ei "
+        "target_date=20260816 reason=source-watermark-unavailable "
+        "detail=watermark count is 0"
+    )
 
 
 def test_build_day_base_watermark_reason_silent_without_debug(
@@ -1427,7 +1448,14 @@ def test_build_day_base_watermark_reason_silent_without_debug(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
     )
 
-    pipeline_runner.build_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba")
+    with pytest.raises(RuntimeError, match="source watermark unavailable"):
+        pipeline_runner.build_day_base(
+            "ban-ei",
+            "20260816",
+            0,
+            "r2-catalog://pc-keiba",
+            running_style_foundation_commit_fn=lambda *_args: None,
+        )
 
     assert capsys.readouterr().err == ""
 
@@ -1461,12 +1489,45 @@ def test_build_day_base_watermark_reason_logs_when_debug_enabled(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
     )
 
-    pipeline_runner.build_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba")
+    with pytest.raises(RuntimeError, match="source watermark unavailable"):
+        pipeline_runner.build_day_base(
+            "ban-ei",
+            "20260816",
+            0,
+            "r2-catalog://pc-keiba",
+            running_style_foundation_commit_fn=lambda *_args: None,
+        )
 
     assert (
-        "[day-base] watermark absent category=ban-ei target_date=20260816 "
-        "reason=watermark count is 0" in capsys.readouterr().err
+        "[pipeline] step=running-style-foundation status=failed category=ban-ei "
+        "target_date=20260816 reason=source-watermark-unavailable "
+        "detail=watermark count is 0" in capsys.readouterr().err
     )
+
+
+def test_build_day_base_raises_when_foundation_commit_callback_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ())
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "build_base_argv", lambda *args, **_kwargs: ["base", str(args[5])]
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "run_with_stderr_capture",
+        lambda args: Path(args[-1]).mkdir(parents=True, exist_ok=True),
+    )
+
+    with pytest.raises(RuntimeError, match=r"commit callback missing.*category=nar"):
+        pipeline_runner.build_day_base("nar", "20260822", 0, "r2-catalog://pc-keiba")
 
 
 def test_build_day_base_propagates_base_build_failure_and_records_status(
@@ -1715,6 +1776,100 @@ def test_compute_rs_watermark_jra_without_r2_returns_none():
     assert result is None
 
 
+def test_compute_rs_watermark_nar_excludes_banei_rows_from_mixed_shard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    executed: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeConnection:
+            executed.append((sql, params))
+            return self
+
+        def fetchone(self) -> tuple[object, ...]:
+            return ("2026-08-23T19:01:42.459Z", 479)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(duckdb, "connect", lambda _database: FakeConnection())
+
+    result = _compute_rs_watermark(
+        "nar",
+        "20260824",
+        R2Config(
+            account_id="account",
+            access_key_id="access-key",
+            secret_access_key="secret-key",
+            bucket="pc-keiba",
+        ),
+    )
+
+    assert result == ("2026-08-23T19:01:42.459Z", 479)
+    assert executed[2] == (
+        "select max(predicted_at), count(*) from read_parquet(?) where keibajo_code <> ?",
+        (
+            "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/"
+            "2026/08/24/nar/*.parquet",
+            "83",
+        ),
+    )
+
+
+def test_compute_rs_watermark_jra_includes_only_jra_venue_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    executed: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeConnection:
+            executed.append((sql, params))
+            return self
+
+        def fetchone(self) -> tuple[object, ...]:
+            return ("2026-08-23T20:00:00Z", 312)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(duckdb, "connect", lambda _database: FakeConnection())
+
+    result = _compute_rs_watermark(
+        "jra",
+        "20260824",
+        R2Config(
+            account_id="account",
+            access_key_id="access-key",
+            secret_access_key="secret-key",
+            bucket="pc-keiba",
+        ),
+    )
+
+    assert result == ("2026-08-23T20:00:00Z", 312)
+    assert executed[2] == (
+        "select max(predicted_at), count(*) from read_parquet(?) where "
+        "keibajo_code in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/"
+            "2026/08/24/jra/*.parquet",
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+        ),
+    )
+
+
 def test_write_then_read_watermark_round_trips(tmp_path: Path):
     day_dir = tmp_path / "daybase-jra-20260712"
     day_dir.mkdir(parents=True)
@@ -1864,7 +2019,7 @@ def test_ensure_day_base_catalog_source_zero_count_returns_none(
     assert result is None
 
 
-def test_ensure_day_base_hit_local_silent_without_debug(
+def test_ensure_day_base_hit_local_emits_operational_event_without_debug(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
@@ -1888,7 +2043,16 @@ def test_ensure_day_base_hit_local_silent_without_debug(
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
 
     assert result == final_dir
-    assert capsys.readouterr().err == ""
+    event = json.loads(capsys.readouterr().err)
+    assert event == {
+        "cache": "daybase",
+        "category": "jra",
+        "event": "prediction-cache",
+        "reason": "watermark-match",
+        "source": "local",
+        "status": "hit",
+        "target_date": "20260712",
+    }
 
 
 def test_ensure_day_base_hit_local_logs_when_debug_enabled(
@@ -1979,7 +2143,7 @@ def test_ensure_day_base_miss_records_daybase_miss_step(
     ]
 
 
-def test_ensure_day_base_hit_silent_step_queue_without_debug(
+def test_ensure_day_base_hit_step_queue_stays_silent_without_debug(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from predict_lib.debug_log import drain_debug_progress
@@ -2040,7 +2204,7 @@ def test_ensure_day_base_zero_count_logs_miss_not_hit_when_debug_enabled(
     assert "HIT" not in captured.err
 
 
-def test_ensure_day_base_zero_count_silent_without_debug(
+def test_ensure_day_base_zero_count_emits_operational_event_without_debug(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
@@ -2063,7 +2227,15 @@ def test_ensure_day_base_zero_count_silent_without_debug(
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
 
     assert result is None
-    assert capsys.readouterr().err == ""
+    event = json.loads(capsys.readouterr().err)
+    assert event == {
+        "cache": "daybase",
+        "category": "ban-ei",
+        "event": "prediction-cache",
+        "reason": "rs watermark unavailable",
+        "status": "miss",
+        "target_date": "20260816",
+    }
 
 
 def test_presence_guard_logs_when_debug_enabled(
@@ -2508,7 +2680,10 @@ def test_ensure_day_base_catalog_source_r2_head_exception_returns_none(
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", r2)
 
     assert result is None
-    assert capsys.readouterr().err == ""
+    event = json.loads(capsys.readouterr().err)
+    assert event["cache"] == "daybase"
+    assert event["status"] == "miss"
+    assert event["reason"] == "r2-watermark-fetch-failed"
 
 
 def test_ensure_day_base_catalog_source_no_r2_config_skips_r2_branch_returns_none(
@@ -2604,8 +2779,10 @@ def test_ensure_day_base_r2_exception_returns_none(
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "postgresql://u:p@h/db", r2)
 
     assert result is None
-    captured = capsys.readouterr()
-    assert captured.err == ""
+    event = json.loads(capsys.readouterr().err)
+    assert event["cache"] == "daybase"
+    assert event["status"] == "miss"
+    assert event["reason"] == "r2-fetch-failed"
 
 
 def test_ensure_day_base_r2_get_true_without_hive_file_is_miss(
@@ -3115,6 +3292,68 @@ def test_build_pipeline_from_day_base_records_racechain_layer_step(
     assert "step=daybase-base" not in messages[2]
 
 
+def test_build_pipeline_from_day_base_skips_only_attested_market_layer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_race_chain_for_day_base",
+        lambda *_args: (
+            "add-market-signal-features.py",
+            "add-near-miss-features.py",
+            "add-jra-jockey-pedigree-cell-features.py",
+        ),
+    )
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    inputs: list[Path] = []
+    scripts: list[str] = []
+
+    def fake_layer_argv(
+        script: str,
+        _category: str,
+        _layer_dir: Path,
+        input_dir: Path,
+        output_dir: Path,
+        _database_url: str,
+        **_kwargs: object,
+    ) -> list[str]:
+        scripts.append(script)
+        inputs.append(input_dir)
+        return ["layer", str(output_dir)]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True)
+
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+    day_base_dir = tmp_path / "day-base"
+    market_dir = tmp_path / "market-foundation"
+    day_base_dir.mkdir()
+    market_dir.mkdir()
+    final_dir = work_dir / "feat-jra-v7-final"
+
+    result = pipeline_runner.build_pipeline_from_day_base(
+        "jra",
+        "20260824",
+        0,
+        "r2-catalog://pc-keiba",
+        day_base_dir,
+        final_dir,
+        "01:03",
+        market_signal_foundation_dir=market_dir,
+    )
+
+    assert result is True
+    assert scripts == [
+        "add-near-miss-features.py",
+        "add-jra-jockey-pedigree-cell-features.py",
+    ]
+    assert inputs == [market_dir, work_dir / "feat-jra-layer-0"]
+
+
 def test_day_base_baba_contract_accepts_complete_schema(tmp_path: Path) -> None:
     import pandas as pd
 
@@ -3322,6 +3561,128 @@ def test_materialize_r2_race_foundation_preserves_all_null_column_type(
     assert pq.read_schema(parquet).field("all_null").type == arrow_type(schema[-1])
 
 
+def test_materialize_market_signal_foundation_writes_typed_non_final_parquet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import pyarrow.parquet as pq
+
+    from predict_lib.foundation_cache import (
+        FoundationFeatureField,
+        FoundationLoadResult,
+        FoundationRow,
+    )
+    from predict_lib.market_signal_foundation import (
+        MARKET_SIGNAL_ADDED_COLUMNS,
+        MarketSignalBaseEvidence,
+        MarketSignalLoadResult,
+    )
+    from predict_lib.r2_client import R2ObjectHead, R2ObjectIdentity
+    from predict_lib.serve import MarketSignalFoundationAttestation, R2Config
+
+    monkeypatch.setenv("WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED", "1")
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    source_identity = R2ObjectIdentity("source-etag", "source-version")
+    foundation_identity = R2ObjectIdentity("foundation-etag", "foundation-version")
+    manifest_identity = R2ObjectIdentity("manifest-etag", "manifest-version")
+    artifact_identity = R2ObjectIdentity("artifact-etag", "artifact-version")
+    readiness = pipeline_runner.FoundationReadinessSnapshot(
+        expected_entries=frozenset({"H1:1"}),
+        live_watermark=("20260824", 1, "none", 0),
+        source_identity=source_identity,
+    )
+    schema = (
+        FoundationFeatureField("UTF8", "race_id", "BYTE_ARRAY", None, None, None),
+        FoundationFeatureField("UTF8", "ketto_toroku_bango", "BYTE_ARRAY", None, None, None),
+        FoundationFeatureField(None, "umaban", "INT64", None, None, None),
+    )
+    base_rows: tuple[FoundationRow, ...] = (
+        {
+            "race_id": "jra:2026:0824:01:03",
+            "ketto_toroku_bango": "H1",
+            "umaban": 1,
+        },
+    )
+    evidence = MarketSignalBaseEvidence(
+        base_rows=base_rows,
+        base_schema=schema,
+        entry_set_hash="entry-hash",
+        foundation_identity=foundation_identity,
+        foundation_key="foundation-key",
+        generation_id="generation",
+        manifest_identity=manifest_identity,
+        manifest_key="manifest-key",
+        source_identity=source_identity,
+        source_key="source-key",
+    )
+    output_row: FoundationRow = dict(base_rows[0])
+    output_row.update(
+        {
+            name: index if "rank" in name or name == "tansho_ninkijun_raw" else float(index)
+            for index, name in enumerate(MARKET_SIGNAL_ADDED_COLUMNS, start=1)
+        }
+    )
+    monkeypatch.setattr(pipeline_runner, "r2_get_bytes", lambda *_args: b"{}")
+    monkeypatch.setattr(
+        pipeline_runner,
+        "current_market_signal_foundation_attestation",
+        lambda: MarketSignalFoundationAttestation(
+            base_generation_id="generation",
+            etag="artifact-etag",
+            key=("feat-racechain-market-signal/catalog-v1/jra/20260824/01/03/foundation.json"),
+            odds_snapshot_hash="snapshot-hash",
+            version="artifact-version",
+        ),
+    )
+
+    def head(_r2: R2Config, key: str) -> R2ObjectHead:
+        if key.startswith("feat-racechain-market-signal/"):
+            identity = artifact_identity
+        elif key.endswith("manifest.json"):
+            identity = manifest_identity
+        else:
+            identity = foundation_identity
+        return R2ObjectHead(identity=identity, watermark=None)
+
+    monkeypatch.setattr(pipeline_runner, "r2_head_object", head)
+    monkeypatch.setattr(
+        pipeline_runner,
+        "validate_foundation_objects",
+        lambda **_kwargs: FoundationLoadResult("hit", base_rows, schema),
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "build_market_signal_base_evidence",
+        lambda **_kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "validate_market_signal_foundation",
+        lambda **_kwargs: MarketSignalLoadResult("hit", (output_row,)),
+    )
+    materialize_attr = "_materialize_r2_market_signal_foundation"
+    materialize = cast(
+        Callable[..., Path | None],
+        getattr(pipeline_runner, materialize_attr),
+    )
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = materialize(
+        category="jra",
+        target_date="20260824",
+        target_race="01:03",
+        r2_config=r2,
+        readiness=readiness,
+    )
+
+    assert result is not None
+    assert "market-foundation-jra-20260824-01-03" in str(result)
+    parquet = result / "race_year=2026" / "features.parquet"
+    written = pq.read_table(parquet)
+    assert written.num_rows == 1
+    assert str(written.schema.field("tansho_odds_raw").type) == "double"
+    assert str(written.schema.field("tansho_ninkijun_raw").type) == "int64"
+
+
 def test_catalog_foundation_readiness_returns_watermark_and_exact_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3435,10 +3796,17 @@ def test_build_upcoming_feature_rows_split_prefers_foundation_over_whole_day(
     from predict_lib.r2_client import R2ObjectIdentity
 
     foundation_dir = tmp_path / "foundation"
+    market_foundation_dir = tmp_path / "market-foundation"
     foundation_dir.mkdir()
+    market_foundation_dir.mkdir()
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
     monkeypatch.setattr(
         pipeline_runner, "_materialize_r2_race_foundation", lambda **_kwargs: foundation_dir
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_materialize_r2_market_signal_foundation",
+        lambda **_kwargs: market_foundation_dir,
     )
     readiness = pipeline_runner.FoundationReadinessSnapshot(
         expected_entries=frozenset({"H1:1"}),
@@ -3465,8 +3833,10 @@ def test_build_upcoming_feature_rows_split_prefers_foundation_over_whole_day(
         _target_race: str,
         _realtime_odds_path: Path | None = None,
         _venue_weather_dir: Path | None = None,
+        market_signal_foundation_dir: Path | None = None,
     ) -> bool:
         assert day_base_dir == foundation_dir
+        assert market_signal_foundation_dir == tmp_path / "market-foundation"
         final_dir.mkdir(parents=True)
         pd.DataFrame({"race_id": ["jra:2026:0823:01:02"], "umaban": [1]}).to_parquet(
             final_dir / "data.parquet"

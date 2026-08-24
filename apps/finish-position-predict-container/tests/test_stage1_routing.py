@@ -56,11 +56,12 @@ def test_tracked_stage1_routing_loads_live_jra_config() -> None:
 
     assert routing["jra"] == Stage1CategoryConfig(
         enabled=True,
-        model_version="jra-cb-stage1-marketfree235-2013",
+        model_version="jra-cb-stage1-marketfree235-iter500-top1swap-2013",
         feature_count=235,
         architecture="catboost",
         stddev_threshold=0.4,
         enable_stddev_safety_net=True,
+        top1_swap_base_model_version="jra-cb-stage1-marketfree235-2013",
     )
 
 
@@ -100,6 +101,27 @@ def test_load_stage1_routing_parses_full_shape(tmp_path: Path) -> None:
             enable_stddev_safety_net=True,
         )
     }
+
+
+def test_load_stage1_routing_parses_optional_top1_swap_base(tmp_path: Path) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["top1_swap_base_model_version"] = "jra-cb-stage1-marketfree235-2013"
+    path = _write(tmp_path, {"jra": config})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].top1_swap_base_model_version == (
+        "jra-cb-stage1-marketfree235-2013"
+    )
+
+
+def test_load_stage1_routing_rejects_empty_top1_swap_base(tmp_path: Path) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["top1_swap_base_model_version"] = ""
+    path = _write(tmp_path, {"jra": config})
+
+    with pytest.raises(Stage1RoutingValidationError, match="top1_swap_base_model_version"):
+        load_stage1_routing(path)
 
 
 def test_load_stage1_routing_empty_object_means_no_category_configured(tmp_path: Path) -> None:

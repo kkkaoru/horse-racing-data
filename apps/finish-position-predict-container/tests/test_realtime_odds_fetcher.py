@@ -13,20 +13,25 @@ from pathlib import Path
 from typing import cast, final
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from realtime_odds_fetcher import (
     HOT_WORKER_BASE_URL,
     WEIGHT_WORKER_BASE_URL,
     RealtimeOddsFetcher,
+    RealtimeWeightFetchError,
     build_race_key,
     encode_race_key,
+    extract_required_weight_map,
     extract_rows,
     extract_sanrenpuku_p3,
     extract_weight_map,
     fetch_odds_and_sanrenpuku_for_race,
     fetch_odds_for_race,
     fetch_realtime_odds_parquet,
+    fetch_required_weight_for_race,
     fetch_weight_for_race,
     fetch_with_retry,
     merge_weight_into_rows,
@@ -362,10 +367,20 @@ def testextract_weight_map_returns_correct_map() -> None:
     response: dict[str, object] = {
         "fetchedAt": "2026-06-10T14:00:00+09:00",
         "horses": [
-            {"horseNumber": 1, "horseName": "TestHorse", "weight": 447,
-             "changeSign": "+", "changeAmount": 2},
-            {"horseNumber": 2, "horseName": "OtherHorse", "weight": 500,
-             "changeSign": "0", "changeAmount": 0},
+            {
+                "horseNumber": 1,
+                "horseName": "TestHorse",
+                "weight": 447,
+                "changeSign": "+",
+                "changeAmount": 2,
+            },
+            {
+                "horseNumber": 2,
+                "horseName": "OtherHorse",
+                "weight": 500,
+                "changeSign": "0",
+                "changeAmount": 0,
+            },
         ],
     }
     result = extract_weight_map(response)
@@ -395,9 +410,7 @@ def testextract_weight_map_skips_entries_with_missing_fields() -> None:
 
 
 def testextract_weight_map_skips_non_dict_entries() -> None:
-    response: dict[str, object] = {
-        "horses": [None, "bad", {"horseNumber": 1, "weight": 450}]
-    }
+    response: dict[str, object] = {"horses": [None, "bad", {"horseNumber": 1, "weight": 450}]}
     result = extract_weight_map(response)
     assert result == {1: 450}
 
@@ -444,9 +457,7 @@ def testextract_weight_map_skips_unconvertible_fields() -> None:
 def testfetch_weight_for_race_calls_correct_url() -> None:
     encoded_key = "nar%3A2026%3A0610%3A44%3A01"
     expected_url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
-    stub = _StubFetcher(
-        {expected_url: {"horses": [{"horseNumber": 1, "weight": 447}]}}
-    )
+    stub = _StubFetcher({expected_url: {"horses": [{"horseNumber": 1, "weight": 447}]}})
     result = fetch_weight_for_race(stub, "nar", "20260610", "44", "01")
     assert stub.calls == [expected_url]
     assert result == {1: 447}
@@ -467,6 +478,185 @@ def testfetch_weight_for_race_returns_empty_when_no_horses() -> None:
     stub = _StubFetcher({url: {}})  # response has no "horses" key
     result = fetch_weight_for_race(stub, "nar", "20260610", "44", "02")
     assert result == {}
+
+
+def test_extract_required_weight_map_accepts_complete_positive_rows() -> None:
+    result = extract_required_weight_map(
+        {
+            "horses": [
+                {"horseNumber": "1", "weight": "447"},
+                {"horseNumber": 2, "weight": 500},
+            ]
+        },
+        "nar:2026:0610:44:01",
+    )
+    assert result == {1: 447, 2: 500}
+
+
+def test_extract_required_weight_map_rejects_empty_response() -> None:
+    with pytest.raises(
+        RealtimeWeightFetchError,
+        match=(
+            "post-weight snapshot unavailable: race_key=nar:2026:0610:44:01 reason=empty-horses"
+        ),
+    ):
+        extract_required_weight_map({}, "nar:2026:0610:44:01")
+
+
+def test_extract_required_weight_map_rejects_malformed_row() -> None:
+    with pytest.raises(RealtimeWeightFetchError, match="reason=malformed-horse"):
+        extract_required_weight_map(
+            {"horses": [{"horseNumber": 1, "weight": "invalid"}]},
+            "nar:2026:0610:44:01",
+        )
+
+
+def test_extract_required_weight_map_rejects_boolean_row() -> None:
+    with pytest.raises(RealtimeWeightFetchError, match="reason=malformed-horse"):
+        extract_required_weight_map(
+            {"horses": [{"horseNumber": True, "weight": 447}]},
+            "nar:2026:0610:44:01",
+        )
+
+
+def test_extract_required_weight_map_rejects_non_positive_value() -> None:
+    with pytest.raises(RealtimeWeightFetchError, match="reason=non-positive-value"):
+        extract_required_weight_map(
+            {"horses": [{"horseNumber": 1, "weight": 0}]},
+            "nar:2026:0610:44:01",
+        )
+
+
+def test_extract_required_weight_map_rejects_duplicate_horse_number() -> None:
+    with pytest.raises(RealtimeWeightFetchError, match="reason=duplicate-horse-number"):
+        extract_required_weight_map(
+            {
+                "horses": [
+                    {"horseNumber": 1, "weight": 447},
+                    {"horseNumber": "1", "weight": 448},
+                ]
+            },
+            "nar:2026:0610:44:01",
+        )
+
+
+def test_fetch_required_weight_for_race_propagates_stable_fetch_error() -> None:
+    class _ErrorFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise OSError("connection refused")
+
+    with (
+        patch("realtime_odds_fetcher.time.sleep"),
+        pytest.raises(
+            RealtimeWeightFetchError,
+            match=(
+                "post-weight snapshot unavailable: race_key=nar:2026:0610:44:01 reason=fetch-failed"
+            ),
+        ) as exc_info,
+    ):
+        fetch_required_weight_for_race(
+            _ErrorFetcher(),
+            "nar",
+            "20260610",
+            "44",
+            "01",
+            expected_count=1,
+            expected_fetched_at="2026-06-10T14:30:00+09:00",
+            expected_hash="34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        )
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_fetch_required_weight_for_race_accepts_exact_generation() -> None:
+    encoded_key = "nar%3A2026%3A0610%3A44%3A01"
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher(
+        {
+            url: {
+                "fetchedAt": "2026-06-10T14:30:00+09:00",
+                "horses": [
+                    {"horseNumber": 2, "weight": 490},
+                    {"horseNumber": 1, "weight": 480},
+                ],
+            }
+        }
+    )
+
+    result = fetch_required_weight_for_race(
+        stub,
+        "nar",
+        "20260610",
+        "44",
+        "01",
+        expected_count=2,
+        expected_fetched_at="2026-06-10T14:30:00+09:00",
+        expected_hash="c74635426c9344e2fc1681f2e5c0e06a1f71d61d2dfa7d72324b24ad32c5c73b",
+    )
+
+    assert result == {2: 490, 1: 480}
+
+
+def test_fetch_required_weight_for_race_rejects_missing_fetched_at() -> None:
+    encoded_key = "nar%3A2026%3A0610%3A44%3A01"
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher({url: {"horses": [{"horseNumber": 1, "weight": 480}]}})
+
+    with pytest.raises(RealtimeWeightFetchError, match="reason=missing-fetched-at"):
+        fetch_required_weight_for_race(
+            stub,
+            "nar",
+            "20260610",
+            "44",
+            "01",
+            expected_count=1,
+            expected_fetched_at="2026-06-10T14:30:00+09:00",
+            expected_hash="34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        )
+
+
+@pytest.mark.parametrize(
+    ("expected_count", "expected_fetched_at", "expected_hash"),
+    [
+        (
+            2,
+            "2026-06-10T14:30:00+09:00",
+            "34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        ),
+        (
+            1,
+            "2026-06-10T14:29:00+09:00",
+            "34ccadd1aba2f53450dfcc8b7614e1934d6ca4296a24aa90beef2825ac765a57",
+        ),
+        (1, "2026-06-10T14:30:00+09:00", "0" * 64),
+    ],
+)
+def test_fetch_required_weight_for_race_rejects_generation_mismatch(
+    expected_count: int,
+    expected_fetched_at: str,
+    expected_hash: str,
+) -> None:
+    encoded_key = "nar%3A2026%3A0610%3A44%3A01"
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher(
+        {
+            url: {
+                "fetchedAt": "2026-06-10T14:30:00+09:00",
+                "horses": [{"horseNumber": 1, "weight": 480}],
+            }
+        }
+    )
+
+    with pytest.raises(RealtimeWeightFetchError, match="snapshot generation mismatch"):
+        fetch_required_weight_for_race(
+            stub,
+            "nar",
+            "20260610",
+            "44",
+            "01",
+            expected_count=expected_count,
+            expected_fetched_at=expected_fetched_at,
+            expected_hash=expected_hash,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -524,12 +714,14 @@ def test_fetch_realtime_odds_parquet_includes_bataiju_realtime_when_weight_avail
 
     def _make_odds_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{HOT_WORKER_BASE_URL}/{encoded}"
 
     def _make_weight_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{WEIGHT_WORKER_BASE_URL}/{encoded}"
@@ -542,9 +734,7 @@ def test_fetch_realtime_odds_parquet_includes_bataiju_realtime_when_weight_avail
                 ]
             }
         },
-        _make_weight_url("44", "01"): {
-            "horses": [{"horseNumber": 1, "weight": 447}]
-        },
+        _make_weight_url("44", "01"): {"horses": [{"horseNumber": 1, "weight": 447}]},
     }
     stub = _StubFetcher(responses)
 
@@ -570,6 +760,7 @@ def test_fetch_realtime_odds_parquet_bataiju_is_none_when_weight_fetch_fails(
 
     def _make_odds_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{HOT_WORKER_BASE_URL}/{encoded}"
@@ -810,9 +1001,9 @@ def testextract_sanrenpuku_p3_skips_malformed_combination() -> None:
     response: dict[str, object] = {
         "latest": {
             "3renpuku": [
-                {"combination": "1-2", "odds": 10.0},        # only 2 parts
-                {"combination": "1-2-3-4", "odds": 10.0},    # 4 parts
-                {"combination": "1-2-3", "odds": 5.0},       # valid
+                {"combination": "1-2", "odds": 10.0},  # only 2 parts
+                {"combination": "1-2-3-4", "odds": 10.0},  # 4 parts
+                {"combination": "1-2-3", "odds": 5.0},  # valid
             ]
         }
     }
@@ -827,8 +1018,8 @@ def testextract_sanrenpuku_p3_skips_non_numeric_horses() -> None:
     response: dict[str, object] = {
         "latest": {
             "3renpuku": [
-                {"combination": "1-X-3", "odds": 10.0},    # bad horse
-                {"combination": "1-2-3", "odds": 8.0},     # valid
+                {"combination": "1-X-3", "odds": 10.0},  # bad horse
+                {"combination": "1-2-3", "odds": 8.0},  # valid
             ]
         }
     }
@@ -868,8 +1059,8 @@ def testextract_sanrenpuku_p3_skips_entries_missing_fields() -> None:
     response: dict[str, object] = {
         "latest": {
             "3renpuku": [
-                {"combination": "1-2-3"},             # missing odds
-                {"odds": 10.0},                        # missing combination
+                {"combination": "1-2-3"},  # missing odds
+                {"odds": 10.0},  # missing combination
                 {"combination": "4-5-6", "odds": 8.0},  # valid
             ]
         }
@@ -929,9 +1120,7 @@ def testfetch_odds_and_sanrenpuku_returns_both_on_success() -> None:
             }
         }
     )
-    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
-        stub, "nar", "20260610", "44", "01"
-    )
+    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(stub, "nar", "20260610", "44", "01")
     assert rows == [("44", "01", 1, 7.3, 1)]
     assert set(sanrenpuku_map.keys()) == {1, 2, 3}
     assert abs(sum(sanrenpuku_map.values()) - 1.0) < 1e-9
@@ -964,9 +1153,7 @@ def testfetch_odds_and_sanrenpuku_returns_empty_map_when_sanrenpuku_absent() -> 
             }
         }
     )
-    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
-        stub, "nar", "20260610", "44", "02"
-    )
+    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(stub, "nar", "20260610", "44", "02")
     assert rows == [("44", "02", 1, 5.0, 1)]
     assert sanrenpuku_map == {}
 
@@ -993,6 +1180,7 @@ def test_fetch_realtime_odds_parquet_has_exotic_sanrenpuku_column(
 
     def _make_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{HOT_WORKER_BASE_URL}/{encoded}"
@@ -1034,6 +1222,7 @@ def test_fetch_realtime_odds_parquet_exotic_column_none_when_no_sanrenpuku(
 
     def _make_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{HOT_WORKER_BASE_URL}/{encoded}"
@@ -1072,6 +1261,7 @@ def test_fetch_realtime_odds_parquet_exotic_column_populated_for_known_horses(
 
     def _make_url(keibajo: str, race: str) -> str:
         import urllib.parse
+
         key = f"nar:2026:0610:{keibajo}:{race}"
         encoded = urllib.parse.quote(key, safe="")
         return f"{HOT_WORKER_BASE_URL}/{encoded}"

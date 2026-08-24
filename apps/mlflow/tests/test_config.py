@@ -263,9 +263,7 @@ def test_load_repo_root_env_fallback_honors_env_file_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     override_file = tmp_path / "custom-root.env"
-    override_file.write_text(
-        "MLFLOW_TEST_ROOT_FALLBACK_OVERRIDE=from-override\n", encoding="utf-8"
-    )
+    override_file.write_text("MLFLOW_TEST_ROOT_FALLBACK_OVERRIDE=from-override\n", encoding="utf-8")
     monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(override_file))
     config.load_repo_root_env_fallback()
     assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_OVERRIDE"] == "from-override"
@@ -275,14 +273,10 @@ def test_load_repo_root_env_fallback_explicit_arg_wins_over_env_file_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     override_file = tmp_path / "should-not-be-used.env"
-    override_file.write_text(
-        "MLFLOW_TEST_ROOT_FALLBACK_SHOULD_NOT_LOAD=bad\n", encoding="utf-8"
-    )
+    override_file.write_text("MLFLOW_TEST_ROOT_FALLBACK_SHOULD_NOT_LOAD=bad\n", encoding="utf-8")
     monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(override_file))
     explicit_file = tmp_path / "explicit-root.env"
-    explicit_file.write_text(
-        "MLFLOW_TEST_ROOT_FALLBACK_EXPLICIT_WINS=good\n", encoding="utf-8"
-    )
+    explicit_file.write_text("MLFLOW_TEST_ROOT_FALLBACK_EXPLICIT_WINS=good\n", encoding="utf-8")
     config.load_repo_root_env_fallback(explicit_file)
     assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_EXPLICIT_WINS"] == "good"
     assert "MLFLOW_TEST_ROOT_FALLBACK_SHOULD_NOT_LOAD" not in os.environ
@@ -675,6 +669,11 @@ def test_smoke_tests_experiment_name_is_included_in_all_experiment_names() -> No
 def test_cf_serving_experiment_name_is_included_in_all_experiment_names() -> None:
     assert config.EXPERIMENT_FP_CF_SERVING == "finish-position/cf-serving"
     assert config.EXPERIMENT_FP_CF_SERVING in config.ALL_EXPERIMENT_NAMES
+
+
+def test_dynamic_market_shadow_experiment_is_canonical() -> None:
+    assert config.EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW == "finish-position/dynamic-market-shadow"
+    assert config.EXPERIMENT_FP_DYNAMIC_MARKET_SHADOW in config.ALL_EXPERIMENT_NAMES
 
 
 def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(

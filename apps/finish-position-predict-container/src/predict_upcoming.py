@@ -54,6 +54,7 @@ import traceback
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, cast, final, get_args, override
@@ -80,6 +81,17 @@ from predict_lib.cell_router import (
 from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
 from predict_lib.debug_log import debug_log, query_debug_enabled
 from predict_lib.dedupe import dedupe_batch
+from predict_lib.dynamic_market_shadow import (
+    UPSET_FEATURE_NAMES,
+    DynamicMarketShadowRecord,
+    ProbabilityModel,
+    build_shadow_record,
+    build_shadow_table_ddl,
+    build_shadow_upsert_sql,
+    classifier_version,
+    shadow_params,
+    surface_expert_version,
+)
 from predict_lib.ensemble_routing import catboost_model_feature_names, member_feature_order_matches
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
 from predict_lib.feature_guard import is_degenerate_feature_matrix
@@ -122,8 +134,10 @@ from predict_lib.rescore import (
     RaceFreshSnapshot,
     RaceScope,
     apply_fresh_snapshots,
+    filter_post_weight_active_runners,
     filter_races_by_scope,
     race_scope_from_target_race,
+    validate_post_weight_snapshots,
 )
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
@@ -144,6 +158,7 @@ from predict_lib.serve import (
     PrewarmParquetPayloadFn,
     R2Config,
     RescoreCacheAttestation,
+    WeightSnapshotGeneration,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
     build_focused_full_status_response_body,
@@ -171,6 +186,8 @@ from predict_lib.stage1_routing import (
     load_stage1_routing,
     resolve_stage1_gate,
 )
+from predict_lib.stage1_top1_swap import apply_top1_score_swap
+from predict_lib.subgroup import classify_surface
 from predict_lib.transformer_scorer import (
     TransformerScorer,
     fuse_ensemble_transformer,
@@ -650,6 +667,16 @@ class VariantModel:
     feature_names: Sequence[str]
     architecture: Architecture
     model_version: str
+    top1_swap_base: VariantModel | None = None
+
+
+@dataclass(frozen=True)
+class DynamicMarketShadowModels:
+    """Complete shadow-only classifier and surface-expert runtime bundle."""
+
+    classifier: ProbabilityModel
+    classifier_version: str
+    experts: Mapping[str, VariantModel]
 
 
 @dataclass(frozen=True)
@@ -657,6 +684,7 @@ class ModelBundle:
     """Immutable category scoring runtime shared within one Container process."""
 
     cell_router: CellRouter
+    dynamic_market_shadow: DynamicMarketShadowModels | None
     fallback_booster: BoosterLike
     feature_names: tuple[str, ...]
     nar_transformer: TransformerScorer | None
@@ -722,6 +750,73 @@ def _model_bundle_cache_key(
         ),
         models_dir=str(resolved),
     )
+
+
+def _load_shadow_metadata(path: Path, expected_version: str) -> tuple[str, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("model_version") != expected_version:
+        raise ValueError(f"dynamic-market shadow metadata identity mismatch: {path}")
+    raw_names = payload.get("feature_names")
+    if not isinstance(raw_names, list) or not raw_names or not all(
+        isinstance(name, str) for name in raw_names
+    ):
+        raise ValueError(f"dynamic-market shadow feature_names invalid: {path}")
+    feature_names = tuple(raw_names)
+    if payload.get("feature_count") != len(feature_names) or payload.get("shadow_only") is not True:
+        raise ValueError(f"dynamic-market shadow metadata contract invalid: {path}")
+    return feature_names
+
+
+def _load_dynamic_market_shadow_models(
+    models_dir: Path, category: Category
+) -> DynamicMarketShadowModels | None:
+    """Load the complete JRA loop-43 shadow bundle, or fail closed to no shadow."""
+    if category != "jra":
+        return None
+    try:
+        classifier_model_version = classifier_version()
+        classifier_dir = models_dir / "finish-position" / "jra" / classifier_model_version
+        classifier_features = _load_shadow_metadata(
+            classifier_dir / METADATA_FILE_NAME, classifier_model_version
+        )
+        if classifier_features != UPSET_FEATURE_NAMES:
+            raise ValueError("dynamic-market classifier feature order mismatch")
+        from catboost_adapter import load_catboost_probability_model
+
+        classifier = load_catboost_probability_model(str(classifier_dir / MODEL_FILE_NAME))
+        experts: dict[str, VariantModel] = {}
+        for surface in ("turf", "dirt", "obstacle"):
+            for market_free in (False, True):
+                model_version = surface_expert_version(surface, market_free=market_free)
+                artifact_dir = models_dir / "finish-position" / "jra" / model_version
+                expert_features = _load_shadow_metadata(
+                    artifact_dir / METADATA_FILE_NAME, model_version
+                )
+                assert_no_within_race_leak_columns(
+                    expert_features,
+                    context=f"dynamic-market shadow expert={model_version}",
+                )
+                booster = _load_booster_by_arch(artifact_dir / MODEL_FILE_NAME, "catboost")
+                if not _variant_booster_feature_order_matches(
+                    booster, "catboost", expert_features
+                ):
+                    raise ValueError(
+                        f"dynamic-market shadow booster feature order mismatch: {model_version}"
+                    )
+                experts[model_version] = VariantModel(
+                    booster=booster,
+                    feature_names=expert_features,
+                    architecture="catboost",
+                    model_version=model_version,
+                )
+        return DynamicMarketShadowModels(
+            classifier=classifier,
+            classifier_version=classifier_model_version,
+            experts=MappingProxyType(experts),
+        )
+    except BaseException as load_error:
+        debug_log(f"[dynamic-market-shadow] bundle unavailable -> disabled: {load_error}")
+        return None
 
 
 def _load_model_bundle(
@@ -803,8 +898,10 @@ def _load_model_bundle(
         if stage1_config is not None and stage1_config.enabled
         else None
     )
+    dynamic_market_shadow = _load_dynamic_market_shadow_models(models_dir, category)
     return ModelBundle(
         cell_router=cell_router,
+        dynamic_market_shadow=dynamic_market_shadow,
         fallback_booster=fallback_booster,
         feature_names=feature_names,
         nar_transformer=nar_transformer,
@@ -970,17 +1067,98 @@ def score_races(
                     f"[stage1-gate] race={race_id} category={category} "
                     f"reason={gate.reason} stddev={gate.stddev} -> {stage1_model.model_version}"
                 )
-                rows = _score_one_race_direct(
-                    stage1_model.booster,
-                    race_id,
-                    category,
-                    entries,
-                    stage1_model.feature_names,
-                    stage1_model.architecture,
-                    stage1_model.model_version,
+                rows = (
+                    _score_one_race_direct(
+                        stage1_model.booster,
+                        race_id,
+                        category,
+                        entries,
+                        stage1_model.feature_names,
+                        stage1_model.architecture,
+                        stage1_model.model_version,
+                    )
+                    if stage1_model.top1_swap_base is None
+                    else _score_one_race_stage1_top1_swap(stage1_model, race_id, category, entries)
                 )
         scored.append(rows)
     return scored
+
+
+def score_dynamic_market_shadow(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+    category: Category,
+    models_dir: Path,
+) -> list[DynamicMarketShadowRecord]:
+    """Score JRA loop-43 counterfactuals without changing any served row."""
+    bundle = _get_model_bundle(models_dir, category)
+    shadow = bundle.dynamic_market_shadow
+    stage1_model = bundle.stage1_model
+    if category != "jra" or shadow is None or stage1_model is None:
+        return []
+    records: list[DynamicMarketShadowRecord] = []
+    for race_id, entries in races.items():
+        try:
+            representative = _representative_entry(entries)
+            if representative is None:
+                continue
+            raw_track_code = representative.get("track_code")
+            surface = classify_surface(
+                None if raw_track_code is None else str(raw_track_code)
+            )
+            if surface is None:
+                continue
+            market_version = surface_expert_version(surface, market_free=False)
+            market_free_version = surface_expert_version(surface, market_free=True)
+            market_expert = shadow.experts[market_version]
+            market_free_expert = shadow.experts[market_free_version]
+            required_contracts = (
+                bundle.feature_names,
+                stage1_model.feature_names,
+                market_expert.feature_names,
+                market_free_expert.feature_names,
+            )
+            if any(is_degenerate_feature_matrix(entries, names) for names in required_contracts):
+                debug_log(
+                    f"[dynamic-market-shadow] race={race_id} skipped: degenerate features"
+                )
+                continue
+            champion_scores = score_matrix(
+                bundle.fallback_booster,
+                build_feature_matrix(entries, bundle.feature_names, "catboost"),
+            )
+            market_free_scores = score_matrix(
+                stage1_model.booster,
+                build_feature_matrix(
+                    entries, stage1_model.feature_names, stage1_model.architecture
+                ),
+            )
+            surface_market_scores = score_matrix(
+                market_expert.booster,
+                build_feature_matrix(entries, market_expert.feature_names, "catboost"),
+            )
+            surface_market_free_scores = score_matrix(
+                market_free_expert.booster,
+                build_feature_matrix(entries, market_free_expert.feature_names, "catboost"),
+            )
+            record = build_shadow_record(
+                race_id=race_id,
+                entries=entries,
+                champion_scores=champion_scores,
+                market_free_scores=market_free_scores,
+                surface_market_scores=surface_market_scores,
+                surface_market_free_scores=surface_market_free_scores,
+                classifier=shadow.classifier,
+                classifier_model_version=shadow.classifier_version,
+                market_expert_version=market_version,
+                market_free_expert_version=market_free_version,
+            )
+            if record is not None:
+                records.append(record)
+        except BaseException as shadow_error:
+            debug_log(
+                f"[dynamic-market-shadow] race={race_id} failed closed: {shadow_error}"
+            )
+    return records
 
 
 def _score_one_race_direct(
@@ -1007,6 +1185,46 @@ def _score_one_race_direct(
         category,
         ranked,
         model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _score_one_race_stage1_top1_swap(
+    companion: VariantModel,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+) -> list[list[object]]:
+    """Score Stage-1 base + companion and exchange only their top horses."""
+    base = companion.top1_swap_base
+    if base is None:
+        raise ValueError("Stage-1 top1 swap requires a base model")
+    if is_degenerate_feature_matrix(entries, base.feature_names) or is_degenerate_feature_matrix(
+        entries, companion.feature_names
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category={category} "
+            f"model_version={companion.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(
+        base.booster,
+        build_feature_matrix(entries, base.feature_names, base.architecture),
+    )
+    companion_scores = score_matrix(
+        companion.booster,
+        build_feature_matrix(entries, companion.feature_names, companion.architecture),
+    )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    adjusted_scores = apply_top1_score_swap(horse_ids, base_scores, companion_scores)
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        category,
+        ranked,
+        companion.model_version,
         _representative_entry(entries),
         entries=entries,
     )
@@ -1111,6 +1329,7 @@ def _flush_scored(
     database_url: str,
     category: Category,
     scored: Sequence[Sequence[Sequence[object]]],
+    race_start_at_jst: str | None = None,
 ) -> int:
     """Open a fresh Neon connection, UPSERT every scored race, return rows written.
 
@@ -1122,6 +1341,8 @@ def _flush_scored(
     try:
         written = 0
         for rows in scored:
+            if race_start_at_jst is not None:
+                _assert_before_race_start(race_start_at_jst)
             rows_written, connection = flush_predictions(connection, rows, database_url)
             written += rows_written
     finally:
@@ -1134,12 +1355,59 @@ def _flush_scored(
     return written
 
 
+def _flush_dynamic_market_shadow(
+    database_url: str,
+    records: Sequence[DynamicMarketShadowRecord],
+) -> int:
+    """Best-effort shadow persistence that can never fail served predictions."""
+    if not records:
+        return 0
+    connection: ConnectionLike | None = None
+    try:
+        connection = _connect(database_url)
+        connection = execute(connection, build_shadow_table_ddl(), [], database_url)
+        written = 0
+        upsert_sql = build_shadow_upsert_sql()
+        for record in records:
+            connection = execute(connection, upsert_sql, shadow_params(record), database_url)
+            written += 1
+        return written
+    except BaseException as shadow_error:
+        debug_log(f"[dynamic-market-shadow] persistence failed open: {shadow_error}")
+        return 0
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except BaseException as close_error:
+                debug_log(f"[dynamic-market-shadow] connection close failed: {close_error}")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _assert_before_race_start(race_start_at_jst: str) -> None:
+    """Reject scoring or persistence once the attested race start is reached."""
+    try:
+        race_start = datetime.fromisoformat(race_start_at_jst)
+    except ValueError as exc:
+        raise CacheValidationError("invalid raceStartAtJst deadline") from exc
+    if race_start.tzinfo is None:
+        raise CacheValidationError("invalid raceStartAtJst deadline")
+    if _utc_now() >= race_start:
+        raise CacheValidationError(
+            f"post-weight prediction deadline reached: raceStartAtJst={race_start_at_jst}"
+        )
+
+
 def _score_and_flush_races(
     database_url: str,
     category: Category,
     models_dir: Path,
     races: Mapping[str, Sequence[Mapping[str, object]]],
     card_max_race_bango: int | None = None,
+    race_start_at_jst: str | None = None,
 ) -> int:
     """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
 
@@ -1149,6 +1417,8 @@ def _score_and_flush_races(
     is forwarded to :func:`score_races` untouched -- see that function's
     docstring for the whole-category-vs-single-race sourcing split.
     """
+    if race_start_at_jst is not None:
+        _assert_before_race_start(race_start_at_jst)
     scored = score_races(
         races,
         category,
@@ -1156,7 +1426,27 @@ def _score_and_flush_races(
         None,
         card_max_race_bango=card_max_race_bango,
     )
-    return _flush_scored(database_url, category, scored)
+    if race_start_at_jst is not None:
+        _assert_before_race_start(race_start_at_jst)
+        written = _flush_scored(
+            database_url,
+            category,
+            scored,
+            race_start_at_jst=race_start_at_jst,
+        )
+    else:
+        written = _flush_scored(database_url, category, scored)
+    try:
+        shadow_records = score_dynamic_market_shadow(races, category, models_dir)
+    except BaseException as shadow_error:
+        debug_log(f"[dynamic-market-shadow] scoring failed open: {shadow_error}")
+        shadow_records = []
+    shadow_written = _flush_dynamic_market_shadow(database_url, shadow_records)
+    if shadow_written:
+        debug_log(
+            f"[dynamic-market-shadow] category={category} records_written={shadow_written}"
+        )
+    return written
 
 
 def predict_category(
@@ -1242,6 +1532,35 @@ def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
     return load_xgboost_booster(str(model_path))
 
 
+def _load_stage1_variant_artifact(
+    models_dir: Path,
+    category: Category,
+    model_version: str,
+    feature_count: int,
+    architecture: Architecture,
+    context: str,
+) -> VariantModel:
+    assert_production_model_version_allowed(model_version, context=context)
+    model_path = models_dir / build_base_model_r2_key(category, model_version, MODEL_FILE_NAME)
+    booster = _load_booster_by_arch(model_path, architecture)
+    meta_path = models_dir / build_base_model_r2_key(category, model_version, METADATA_FILE_NAME)
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    feature_names = [str(name) for name in metadata["feature_names"]]
+    assert_no_within_race_leak_columns(feature_names, context=context)
+    assert_feature_count(feature_names, feature_count)
+    if not _variant_booster_feature_order_matches(booster, architecture, feature_names):
+        raise ValueError(
+            f"{context} version={model_version} booster's own trained column order "
+            "disagrees with metadata.json"
+        )
+    return VariantModel(
+        booster=booster,
+        feature_names=feature_names,
+        architecture=architecture,
+        model_version=model_version,
+    )
+
+
 def _load_stage1_model(
     models_dir: Path, category: Category, config: Stage1CategoryConfig
 ) -> VariantModel | None:
@@ -1255,25 +1574,30 @@ def _load_stage1_model(
     broken fallback artifact must never block or degrade ordinary serving.
     """
     try:
-        assert_production_model_version_allowed(
-            config.model_version, context=f"stage1 fallback category={category}"
-        )
         architecture = _as_architecture(config.architecture)
-        model_path = models_dir / build_base_model_r2_key(
-            category, config.model_version, MODEL_FILE_NAME
+        companion = _load_stage1_variant_artifact(
+            models_dir,
+            category,
+            config.model_version,
+            config.feature_count,
+            architecture,
+            f"stage1 fallback category={category}",
         )
-        booster = _load_booster_by_arch(model_path, architecture)
-        meta_path = models_dir / build_base_model_r2_key(
-            category, config.model_version, METADATA_FILE_NAME
-        )
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-        fnames = [str(name) for name in metadata["feature_names"]]
-        assert_no_within_race_leak_columns(fnames, context=f"stage1 fallback category={category}")
-        assert_feature_count(fnames, config.feature_count)
-        if not _variant_booster_feature_order_matches(booster, architecture, fnames):
-            raise ValueError(
-                f"stage1 fallback category={category} version={config.model_version} "
-                "booster's own trained column order disagrees with metadata.json"
+        if config.top1_swap_base_model_version is not None:
+            base = _load_stage1_variant_artifact(
+                models_dir,
+                category,
+                config.top1_swap_base_model_version,
+                config.feature_count,
+                architecture,
+                f"stage1 top1-swap base category={category}",
+            )
+            companion = VariantModel(
+                booster=companion.booster,
+                feature_names=companion.feature_names,
+                architecture=companion.architecture,
+                model_version=companion.model_version,
+                top1_swap_base=base,
             )
     except BaseException as load_error:
         debug_log(
@@ -1285,12 +1609,7 @@ def _load_stage1_model(
         f"[stage1-gate] loaded category={category} version={config.model_version} "
         f"features={config.feature_count}"
     )
-    return VariantModel(
-        booster=booster,
-        feature_names=fnames,
-        architecture=architecture,
-        model_version=config.model_version,
-    )
+    return companion
 
 
 def _build_feature_rows(
@@ -1444,7 +1763,7 @@ def _load_r2_config() -> R2Config | None:
 
 RACE_ID_KEIBAJO_INDEX: int = 3
 RACE_ID_BANGO_INDEX: int = 4
-RACE_ID_MIN_PARTS: int = 5
+RACE_ID_PART_COUNT: int = 5
 
 
 def _split_parquet_by_race(
@@ -1460,7 +1779,7 @@ def _split_parquet_by_race(
     ``source:nen:tsukihi:keibajo_code:race_bango``; the keibajo / bango parts are
     extracted by a plain ``:`` split. Each per-race parquet is base64-encoded and
     paired with its per-race R2 key from :func:`build_r2_per_race_feat_cache_key`.
-    Races whose ``race_id`` does not split into at least 5 parts are skipped.
+    Races whose ``race_id`` does not split into exactly 5 parts are skipped.
     """
     import tempfile
 
@@ -1478,18 +1797,28 @@ def _split_parquet_by_race(
             ).fetchall()
         ]
         with tempfile.TemporaryDirectory() as tmp_dir:
+            expected_source = "jra" if category_str == "jra" else "nar"
             for race_id in race_ids:
                 parts = race_id.split(":")
-                if len(parts) < RACE_ID_MIN_PARTS:
+                if len(parts) != RACE_ID_PART_COUNT:
                     debug_log(f"[predict-serve] per_race_parquet skip malformed race_id={race_id}")
+                    continue
+                race_run_date = f"{parts[1]}{parts[2]}"
+                if parts[0] != expected_source or race_run_date != run_date:
+                    debug_log(
+                        "[predict-serve] per_race_parquet skip out-of-scope "
+                        f"race_id={race_id} category={category_str} run_date={run_date}"
+                    )
                     continue
                 keibajo_code = parts[RACE_ID_KEIBAJO_INDEX]
                 race_bango = parts[RACE_ID_BANGO_INDEX]
                 out_path = Path(tmp_dir) / f"{keibajo_code}_{race_bango}.parquet"
+                # DuckDB binds COPY's destination placeholder before the
+                # placeholders inside its SELECT, irrespective of text order.
                 con.execute(
                     "COPY (SELECT * FROM read_parquet(?, hive_partitioning = false) "
                     "WHERE race_id = ?) TO ? (FORMAT PARQUET)",
-                    [glob_path, race_id, str(out_path)],
+                    [str(out_path), glob_path, race_id],
                 )
                 data = out_path.read_bytes()
                 encoded = base64.b64encode(data).decode("ascii")
@@ -1517,35 +1846,34 @@ def _seed_focused_full_per_race_payloads(
     A focused-full run must seed
     ``feat-cache/catalog-v1/{category}/{runDate}/{keibajo}/{race}/features.parquet``
     so the next scoped ``mode=rescore`` can watermark-read it instead of
-    CacheMissing into a full rebuild. Prefer a DuckDB ``race_id`` split when
-    the local parquet is readable (drops any extra races that leaked into the
-    category work dir); fall back to the whole local file as this race's
-    object when the split fails (dummy / unreadable bytes must still seed).
+    CacheMissing into a full rebuild. A DuckDB ``race_id`` split both isolates
+    and verifies the requested race. If the parquet is unreadable or the
+    requested race is absent, fail closed and return no payload; attributing
+    unverified bytes to the requested key would poison the scoped cache.
     Never writes the day-level ``feat-cache/.../{runDate}/features.parquet``
     key -- a single-race parquet must not overwrite the whole-day cache.
     """
     from pipeline_runner import WORK_DIR  # bundled in image
 
     final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
-    parquet_files = list(final_dir.rglob("*.parquet"))
-    if not parquet_files:
+    if next(final_dir.rglob("*.parquet"), None) is None:
         return None
     expected_key = build_r2_per_race_feat_cache_key(
         category_str, run_date, keibajo_code, race_bango
     )
     try:
         split = _split_parquet_by_race(final_dir, category_str, run_date)
-    except BaseException as split_error:
+    except Exception as split_error:
         debug_log(f"[predict-serve] focused-full per-race split failed: {split_error}")
-        split = None
-    if split:
-        matched = [item for item in split if item["parquetKey"] == expected_key]
-        if matched:
-            return matched
-    data = parquet_files[0].read_bytes()
-    encoded = base64.b64encode(data).decode("ascii")
-    debug_log(f"[predict-serve] focused-full per-race seed key={expected_key} bytes={len(data)}")
-    return [{"parquetBase64": encoded, "parquetKey": expected_key}]
+        return None
+    matched = [item for item in split if item["parquetKey"] == expected_key]
+    if not matched:
+        debug_log(
+            "[predict-serve] focused-full per-race seed skipped: "
+            f"expected race absent key={expected_key}"
+        )
+        return None
+    return matched
 
 
 def _write_refreshed_to_parquet(
@@ -1744,12 +2072,14 @@ def _make_predict_fn(
             return
         category_str = params.category
         run_date = params.run_date
-        per_race: list[dict[str, str]] | None = None
-        if params.keibajo_code is not None and params.race_bango is not None:
+        per_race: list[dict[str, str]] | None
+        if params.keibajo_code is not None or params.race_bango is not None:
+            if params.keibajo_code is None or params.race_bango is None:
+                return
             per_race = _seed_focused_full_per_race_payloads(
                 category_str, run_date, params.keibajo_code, params.race_bango
             )
-        if per_race is None:
+        else:
             per_race = _build_per_race_payloads(category_str, run_date)
         if per_race is None:
             return
@@ -2264,21 +2594,24 @@ def _fetch_fresh_snapshots(
     category_str: str,
     run_date: str,
     race_keys: list[tuple[str, str]],
+    generation: WeightSnapshotGeneration,
 ) -> dict[tuple[str, str], RaceFreshSnapshot]:
     """Fetch the latest odds + bataiju per race and build per-race snapshots.
 
     All HTTP I/O happens here (the only side effect on the rescore path); the
-    returned snapshots feed the pure :func:`apply_fresh_snapshots`.  Failures for
-    an individual race are swallowed by the fetcher (returns empty), leaving that
-    race on the builder's median / NULL fallback.
+    returned snapshots feed the pure :func:`apply_fresh_snapshots`. Odds remain
+    optional, but a horse-weight fetch or parse failure propagates so post-weight
+    scoring cannot silently succeed with the pre-weight NULL fallback.
     """
     from realtime_odds_fetcher import (  # bundled in image
         HttpRealtimeOddsFetcher,
         fetch_odds_for_race,
-        fetch_weight_for_race,
+        fetch_required_weight_for_race,
         source_for_category,
     )
 
+    if len(race_keys) != 1:
+        raise ValueError("post-weight snapshot verification requires exactly one race")
     fetcher = HttpRealtimeOddsFetcher()
     source = source_for_category(category_str)
     odds_futures: dict[tuple[str, str], Future[list[tuple[str, str, int, float, int]]]] = {}
@@ -2295,12 +2628,15 @@ def _fetch_fresh_snapshots(
                 race_bango,
             )
             weight_futures[race_key] = executor.submit(
-                fetch_weight_for_race,
+                fetch_required_weight_for_race,
                 fetcher,
                 source,
                 run_date,
                 keibajo_code,
                 race_bango,
+                expected_count=generation.count,
+                expected_fetched_at=generation.fetched_at,
+                expected_hash=generation.snapshot_hash,
             )
 
         snapshots: dict[tuple[str, str], RaceFreshSnapshot] = {}
@@ -2320,7 +2656,7 @@ def _fetch_fresh_snapshots(
 
 
 RescoreFactory = Callable[
-    [RaceScope, RescoreCacheAttestation | None],
+    [RaceScope, RescoreCacheAttestation | None, WeightSnapshotGeneration | None, str | None],
     tuple[PredictCategoryFn, PerRaceParquetPayloadFn],
 ]
 """Builds a scope-bound rescore ``PredictCategoryFn`` + per-race payload fn for a request."""
@@ -2332,7 +2668,9 @@ def _make_rescore_fn(
     source_url: str,
     r2: R2Config | None,
     scope: RaceScope,
-    attestation: RescoreCacheAttestation | None = None,
+    attestation: RescoreCacheAttestation | None,
+    weight_snapshot_generation: WeightSnapshotGeneration | None,
+    race_start_at_jst: str | None,
 ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
     """Build the rescore-path ``rescore_fn`` + per-race parquet payload fn.
 
@@ -2430,16 +2768,37 @@ def _make_rescore_fn(
 
         races = _as_entry_map(_load_cached_races(final_dir))
         race_keys = _scope_race_keys(races, scope)
-        snapshots = _fetch_fresh_snapshots(category_str, run_date, race_keys)
-        refreshed = apply_fresh_snapshots(races, snapshots, category)
+        if weight_snapshot_generation is None:
+            raise CacheValidationError("post-weight snapshot generation unavailable")
+        if race_start_at_jst is None:
+            raise CacheValidationError("post-weight race deadline unavailable")
+        snapshots = _fetch_fresh_snapshots(
+            category_str, run_date, race_keys, weight_snapshot_generation
+        )
+        scoped_races = filter_races_by_scope(races, scope)
+        if weight_snapshot_generation.active_horse_numbers is not None:
+            excluded = weight_snapshot_generation.excluded_horse_numbers
+            if excluded is None:
+                raise CacheValidationError("post-weight entry snapshot generation incomplete")
+            scoped_races = filter_post_weight_active_runners(
+                scoped_races,
+                weight_snapshot_generation.active_horse_numbers,
+                excluded,
+            )
+        validate_post_weight_snapshots(scoped_races, snapshots)
+        refreshed = apply_fresh_snapshots(scoped_races, snapshots, category)
 
         _write_refreshed_to_parquet(final_dir, refreshed)
         _last.clear()
         _last.append((category_str, run_date))
 
-        scoped = filter_races_by_scope(refreshed, scope)
         return _score_and_flush_races(
-            database_url, category, models_dir, scoped, card_max_race_bango=card_max_race_bango
+            database_url,
+            category,
+            models_dir,
+            refreshed,
+            card_max_race_bango=card_max_race_bango,
+            race_start_at_jst=race_start_at_jst,
         )
 
     def _per_race_payloads() -> list[dict[str, str]] | None:
@@ -2472,9 +2831,21 @@ def _make_rescore_factory(
     """
 
     def _factory(
-        scope: RaceScope, attestation: RescoreCacheAttestation | None
+        scope: RaceScope,
+        attestation: RescoreCacheAttestation | None,
+        weight_snapshot_generation: WeightSnapshotGeneration | None,
+        race_start_at_jst: str | None,
     ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
-        return _make_rescore_fn(database_url, models_dir, source_url, r2, scope, attestation)
+        return _make_rescore_fn(
+            database_url,
+            models_dir,
+            source_url,
+            r2,
+            scope,
+            attestation,
+            weight_snapshot_generation,
+            race_start_at_jst,
+        )
 
     return _factory
 
@@ -2715,9 +3086,12 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             # rescore fn so each per-race rescore request only touches its races.
             rescore_fn: PredictCategoryFn | None = None
             rescore_per_race_fn: PerRaceParquetPayloadFn | None = None
-            if self.rescore_factory is not None:
+            if result.mode == "rescore" and self.rescore_factory is not None:
                 rescore_fn, rescore_per_race_fn = self.rescore_factory(
-                    _scope_from_params(result), result.rescore_cache_attestation
+                    _scope_from_params(result),
+                    result.rescore_cache_attestation,
+                    result.weight_snapshot_generation,
+                    result.race_start_at_jst,
                 )
             effective_per_race_fn: PerRaceParquetPayloadFn | None = (
                 rescore_per_race_fn
