@@ -244,6 +244,8 @@ it("keeps normal finish prediction input writes deferred through waitUntil", asy
 });
 
 it("reads the global KV input snapshot before a stale colo Cache API copy", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime("2026-08-24T12:00:00+09:00");
   const cache = buildCacheStub();
   cache.match.mockResolvedValue(new Response("stale", { status: 200 }));
   const kv = buildKvStub();

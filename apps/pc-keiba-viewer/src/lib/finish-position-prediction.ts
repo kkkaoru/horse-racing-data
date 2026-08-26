@@ -1,5 +1,5 @@
 import type { RaceSource } from "./codes";
-import { cleanText, formatIsoTimestampAsJstDate } from "./format";
+import { cleanText, formatIsoTimestampAsJstDateTime } from "./format";
 import { isSameJockeyName } from "./jockey-name";
 import type {
   FinishPositionModelPredictionFeature,
@@ -115,10 +115,10 @@ export const formatFinishPredictionGeneratedAtLabel = (
   if (generatedAt === null) {
     return FINISH_PREDICTION_GENERATED_WITHOUT_DATE_LABEL;
   }
-  const dateLabel = formatIsoTimestampAsJstDate(generatedAt);
-  return dateLabel === null
+  const dateTimeLabel = formatIsoTimestampAsJstDateTime(generatedAt);
+  return dateTimeLabel === null
     ? FINISH_PREDICTION_GENERATED_WITHOUT_DATE_LABEL
-    : `予測生成日: ${dateLabel}`;
+    : `予測生成日時: ${dateTimeLabel}`;
 };
 
 export const buildFinishPredictionMarketOverrides = (

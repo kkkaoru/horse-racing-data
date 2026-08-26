@@ -12,6 +12,7 @@ import {
   resolveCellRoutingModelVersionForConfig,
   resolveDimension,
   resolveFinishPositionCellRoutingModelVersion,
+  resolveFinishPositionDisplayPriorityModelVersion,
 } from "./finish-position-cell-routing";
 import type { CellRoutingConfig } from "./finish-position-cell-routing";
 import type { RaceDetail } from "./race-types";
@@ -183,16 +184,16 @@ it("resolveDimension resolves season to winter for December-February", () => {
   expect(value).toBe("winter");
 });
 
-it("resolveDimension resolves class to null when gradeCode is null", () => {
-  const race: RaceDetail = { ...BASE_RACE, gradeCode: null };
-  const value = resolveDimension({ category: "jra", dimension: "class", race });
-  expect(value).toBe(null);
-});
-
-it("resolveDimension resolves class to unknown when gradeCode is blank", () => {
-  const race: RaceDetail = { ...BASE_RACE, gradeCode: "  " };
+it("resolveDimension resolves class to unknown when gradeCode and condition are null", () => {
+  const race: RaceDetail = { ...BASE_RACE, gradeCode: null, kyosoJokenCode: null };
   const value = resolveDimension({ category: "jra", dimension: "class", race });
   expect(value).toBe("unknown");
+});
+
+it("resolveDimension resolves class from condition when gradeCode is blank", () => {
+  const race: RaceDetail = { ...BASE_RACE, gradeCode: "  ", kyosoJokenCode: "703" };
+  const value = resolveDimension({ category: "jra", dimension: "class", race });
+  expect(value).toBe("joken-703");
 });
 
 it("resolveDimension resolves class to the trimmed gradeCode when present", () => {
@@ -308,6 +309,144 @@ it("resolveDimension resolves an unknown dimension name to null", () => {
   expect(value).toBe(null);
 });
 
+it("resolveDimension resolves canonical distance boundaries", () => {
+  const sprint = resolveDimension({
+    category: "nar",
+    dimension: "canonical_distance_band",
+    race: { ...BASE_RACE, kyori: "1400" },
+  });
+  const mile = resolveDimension({
+    category: "nar",
+    dimension: "canonical_distance_band",
+    race: { ...BASE_RACE, kyori: "1800" },
+  });
+  const intermediate = resolveDimension({
+    category: "nar",
+    dimension: "canonical_distance_band",
+    race: { ...BASE_RACE, kyori: "2200" },
+  });
+  const long = resolveDimension({
+    category: "nar",
+    dimension: "canonical_distance_band",
+    race: { ...BASE_RACE, kyori: "2800" },
+  });
+  const extended = resolveDimension({
+    category: "nar",
+    dimension: "canonical_distance_band",
+    race: { ...BASE_RACE, kyori: "2801" },
+  });
+  expect([sprint, mile, intermediate, long, extended]).toStrictEqual([
+    "sprint",
+    "mile",
+    "intermediate",
+    "long",
+    "extended",
+  ]);
+});
+
+it("resolveDimension resolves canonical field-size boundaries", () => {
+  const small = resolveDimension({
+    category: "nar",
+    dimension: "canonical_field_size_band",
+    race: { ...BASE_RACE, shussoTosu: "8" },
+  });
+  const medium = resolveDimension({
+    category: "nar",
+    dimension: "canonical_field_size_band",
+    race: { ...BASE_RACE, shussoTosu: "14" },
+  });
+  const large = resolveDimension({
+    category: "nar",
+    dimension: "canonical_field_size_band",
+    race: { ...BASE_RACE, shussoTosu: "15" },
+  });
+  const missing = resolveDimension({
+    category: "nar",
+    dimension: "canonical_field_size_band",
+    race: { ...BASE_RACE, shussoTosu: null },
+  });
+  expect([small, medium, large, missing]).toStrictEqual(["small", "medium", "large", null]);
+});
+
+it("resolveDimension derives NAR subclasses and current condition", () => {
+  const mukatsu = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "未勝利", source: "nar" },
+  });
+  const condition = resolveDimension({
+    category: "nar",
+    dimension: "current_baba_condition",
+    race: { ...BASE_RACE, babajotaiCodeDirt: "2", source: "nar" },
+  });
+  expect([mukatsu, condition]).toStrictEqual(["MUKATSU", "2"]);
+});
+
+it("resolveDimension derives every remaining NAR subclass branch", () => {
+  const op = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "ＯＰ", source: "nar" },
+  });
+  const newcomer = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "新馬", source: "nar" },
+  });
+  const twoYear = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "2歳", source: "nar" },
+  });
+  const threeYear = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "３歳", source: "nar" },
+  });
+  const a = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "Ａ級", source: "nar" },
+  });
+  const b = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "Ｂ級", source: "nar" },
+  });
+  const c = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "Ｃ級", source: "nar" },
+  });
+  const other = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: null, source: "nar" },
+  });
+  const jra = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, kyosoJokenMeisho: "Ｃ級", source: "jra" },
+  });
+  const banei = resolveDimension({
+    category: "nar",
+    dimension: "nar_subclass",
+    race: { ...BASE_RACE, keibajoCode: "83", kyosoJokenMeisho: "Ｃ級", source: "nar" },
+  });
+  expect([op, newcomer, twoYear, threeYear, a, b, c, other, jra, banei]).toStrictEqual([
+    "OP",
+    "NEW",
+    "2YO",
+    "3YO",
+    "A",
+    "B",
+    "C",
+    "other",
+    null,
+    null,
+  ]);
+});
+
 // --- resolveFinishPositionCellRoutingModelVersion -------------------------
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a category with no routing config", () => {
@@ -316,13 +455,13 @@ it("resolveFinishPositionCellRoutingModelVersion returns null for a category wit
   expect(value).toBe(null);
 });
 
-it("resolveFinishPositionCellRoutingModelVersion routes JRA class-703 races to jockey-pedigree269", () => {
+it("resolveFinishPositionCellRoutingModelVersion routes ungraded JRA class-703 races to the matching gated model", () => {
   const race: RaceDetail = { ...BASE_RACE, keibajoCode: "05", kyosoJokenCode: "703" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1");
 });
 
-it("resolveFinishPositionCellRoutingModelVersion routes dirt small-field class-005 races to prior-corner274", () => {
+it("resolveFinishPositionCellRoutingModelVersion routes ungraded class-005 races to the matching gated model", () => {
   const race: RaceDetail = {
     ...BASE_RACE,
     keibajoCode: "05",
@@ -331,17 +470,17 @@ it("resolveFinishPositionCellRoutingModelVersion routes dirt small-field class-0
     trackCode: "20",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-cb-v10-prior-corner274-2013");
+  expect(value).toBe("jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1");
 });
 
-it("resolveFinishPositionCellRoutingModelVersion routes Hakodate venue-02 races to jockey-pedigree269", () => {
+it("resolveFinishPositionCellRoutingModelVersion prioritizes the gated class model over Hakodate venue", () => {
   const race: RaceDetail = { ...BASE_RACE, keibajoCode: "02", kyosoJokenCode: "010" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(value).toBe("jra-joken-010-dirt-intermediate-yeti-gated-v1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race matching no rule", () => {
-  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "05", kyosoJokenCode: "010" };
+  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "05", kyosoJokenCode: "000" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
   expect(value).toBe(null);
 });
@@ -356,6 +495,75 @@ it("resolveFinishPositionCellRoutingModelVersion returns null for a non-E Ban-ei
   const race: RaceDetail = { ...BASE_RACE, gradeCode: "A", keibajoCode: "83", source: "nar" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "ban-ei", race });
   expect(value).toBe(null);
+});
+
+it("resolveFinishPositionCellRoutingModelVersion routes promoted NAR canonical cells", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "1",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0711",
+    keibajoCode: "30",
+    kyori: "1200",
+    kyosoJokenMeisho: "未勝利",
+    shussoTosu: "10",
+    source: "nar",
+    trackCode: "23",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
+  expect(value).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1");
+});
+
+it("resolveFinishPositionCellRoutingModelVersion enforces effective date and medium field", () => {
+  const common: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "2",
+    kaisaiNen: "2026",
+    keibajoCode: "30",
+    kyori: "1200",
+    kyosoJokenMeisho: "Ｃ級",
+    shussoTosu: "9",
+    source: "nar",
+    trackCode: "23",
+  };
+  const before = resolveFinishPositionCellRoutingModelVersion({
+    category: "nar",
+    race: { ...common, kaisaiTsukihi: "0630" },
+  });
+  const after = resolveFinishPositionCellRoutingModelVersion({
+    category: "nar",
+    race: { ...common, kaisaiTsukihi: "0701" },
+  });
+  const small = resolveFinishPositionCellRoutingModelVersion({
+    category: "nar",
+    race: { ...common, kaisaiTsukihi: "0701", shussoTosu: "8" },
+  });
+  expect([before, after, small]).toStrictEqual([
+    null,
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+    null,
+  ]);
+});
+
+it("resolveFinishPositionDisplayPriorityModelVersion prefers NAR cell then transformer", () => {
+  const matched: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "1",
+    kaisaiTsukihi: "0711",
+    keibajoCode: "42",
+    kyori: "1400",
+    kyosoJokenMeisho: "Ｃ級",
+    shussoTosu: "14",
+    source: "nar",
+    trackCode: "23",
+  };
+  const unmatched: RaceDetail = { ...matched, shussoTosu: "8" };
+  expect(resolveFinishPositionDisplayPriorityModelVersion({ category: "nar", race: matched })).toBe(
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+  );
+  expect(
+    resolveFinishPositionDisplayPriorityModelVersion({ category: "nar", race: unmatched }),
+  ).toBe("iter40-nar-settransformer-blend-v1");
 });
 
 // --- resolveCellRoutingModelVersionForConfig: malformed-config guard -------
@@ -460,7 +668,7 @@ it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango throug
     category: "jra",
     race,
   });
-  expect(value).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1");
 });
 
 // --- getAllFinishPositionCellRoutingModelVersions --------------------------
@@ -468,11 +676,50 @@ it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango throug
 it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant model_version", () => {
   const versions = getAllFinishPositionCellRoutingModelVersions();
   expect(versions).toStrictEqual([
-    "banei-cb-v8-window2011-wf-15y",
-    "banei-cb-v9-sim-2011",
+    "jra-cb-v9-sim-2013-clean",
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
     "jra-cb-v10-prior-corner274-2013",
-    "jra-cb-v9-sim-2013-clean",
+    "jra-joken-005-pooled-yetirank-v2",
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+    "jra-joken-005-turf-mile-yeti-gated-v1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+    "jra-joken-010-pooled-yetirank-v2",
+    "jra-joken-016-pooled-yetirank-v2",
+    "jra-joken-701-pooled-yetirank-v2",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+    "jra-joken-701-turf-mile-qsm-gated-v1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1",
+    "jra-joken-701-turf-long-qsm-gated-v1",
+    "jra-joken-703-pooled-yetirank-v2",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1",
+    "jra-joken-703-other-extended-qsm-gated-v1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+    "jra-joken-703-querysoftmax-maxrange-v1",
+    "jra-joken-999-pooled-yetirank-v2",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+    "jra-joken-703-turf-1400-qsm-gated-v1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+    "banei-cb-v9-sim-2011",
+    "banei-cb-v8-window2011-wf-15y",
+    "iter12-nar-xgb-hpo-v8-clean188",
+    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+    "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
   ]);
 });
 
@@ -481,9 +728,47 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
 it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each category's default variant", () => {
   const versions = getAllFinishPositionCellRoutingOffLabelVariantModelVersions();
   expect(versions).toStrictEqual([
-    "banei-cb-v8-window2011-wf-15y",
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
     "jra-cb-v10-prior-corner274-2013",
+    "jra-joken-005-pooled-yetirank-v2",
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+    "jra-joken-005-turf-mile-yeti-gated-v1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+    "jra-joken-010-pooled-yetirank-v2",
+    "jra-joken-016-pooled-yetirank-v2",
+    "jra-joken-701-pooled-yetirank-v2",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+    "jra-joken-701-turf-mile-qsm-gated-v1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1",
+    "jra-joken-701-turf-long-qsm-gated-v1",
+    "jra-joken-703-pooled-yetirank-v2",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1",
+    "jra-joken-703-other-extended-qsm-gated-v1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+    "jra-joken-703-querysoftmax-maxrange-v1",
+    "jra-joken-999-pooled-yetirank-v2",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+    "jra-joken-703-turf-1400-qsm-gated-v1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+    "banei-cb-v8-window2011-wf-15y",
+    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+    "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
   ]);
 });
 

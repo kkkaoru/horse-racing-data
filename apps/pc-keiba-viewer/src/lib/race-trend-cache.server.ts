@@ -29,18 +29,7 @@ const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-trend-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
-// In-flight gate for KV PUT. When concurrent rebuilds finish at the same
-// time (race-detail notify-storm) we previously sent N identical PUTs to
-// DETAIL_SECTION_CACHE_KV, which 429-throttled the namespace. The gate is
-// stored in KV itself so it spans Worker isolates. 60s is the KV
-// expirationTtl minimum; a stale gate self-clears within that window.
-const KV_PUT_IN_FLIGHT_PREFIX = "race-trend-kv-put-in-flight:";
-const KV_PUT_IN_FLIGHT_TTL_SECONDS = 60;
-const KV_PUT_IN_FLIGHT_VALUE = "1";
-
 type CacheSource = "cache-api" | "kv";
-
-const memoryCache = new Map<string, { body: string; expiresAt: number }>();
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -55,7 +44,7 @@ const getConfiguredAfterStartSeconds = (env: CloudflareEnv | null): number => {
     : RACE_TREND_CACHE_AFTER_START_SECONDS;
 };
 
-const buildCachedResponse = (body: string, source: CacheSource | "memory"): Response =>
+const buildCachedResponse = (body: string, source: CacheSource): Response =>
   new Response(body, {
     headers: {
       "Cache-Control": "public, max-age=60",
@@ -78,14 +67,6 @@ export const buildRaceTrendCacheKeyForRequest = ({
 }): string => buildRaceTrendCacheKey({ keibajoCode, options, raceBango: raceNumber });
 
 export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Response | null> => {
-  const cachedMemory = memoryCache.get(cacheKey);
-  if (cachedMemory) {
-    if (cachedMemory.expiresAt > Date.now()) {
-      return buildCachedResponse(cachedMemory.body, "memory");
-    }
-    memoryCache.delete(cacheKey);
-  }
-
   const defaultCache = getDefaultCache();
   const cacheRequest = getCacheRequest(cacheKey);
   const cachedResponse = await defaultCache?.match(cacheRequest);
@@ -114,44 +95,6 @@ export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Resp
   return buildCachedResponse(kvBody, "kv");
 };
 
-const getKvPutInFlightKey = (cacheKey: string): string => `${KV_PUT_IN_FLIGHT_PREFIX}${cacheKey}`;
-
-const isKvPutInFlight = async (kv: PcKeibaKvNamespace, cacheKey: string): Promise<boolean> => {
-  try {
-    return (await kv.get(getKvPutInFlightKey(cacheKey))) === KV_PUT_IN_FLIGHT_VALUE;
-  } catch {
-    return false;
-  }
-};
-
-const markKvPutInFlight = async (kv: PcKeibaKvNamespace, cacheKey: string): Promise<void> => {
-  try {
-    await kv.put(getKvPutInFlightKey(cacheKey), KV_PUT_IN_FLIGHT_VALUE, {
-      expirationTtl: KV_PUT_IN_FLIGHT_TTL_SECONDS,
-    });
-  } catch {
-    // Gate-mark failure is non-fatal; the main PUT below will still attempt.
-  }
-};
-
-const putKvIfNotInFlight = async ({
-  body,
-  cacheKey,
-  kv,
-  ttlSeconds,
-}: {
-  body: string;
-  cacheKey: string;
-  kv: PcKeibaKvNamespace;
-  ttlSeconds: number;
-}): Promise<void> => {
-  if (await isKvPutInFlight(kv, cacheKey)) {
-    return;
-  }
-  await markKvPutInFlight(kv, cacheKey);
-  await kv.put(cacheKey, body, { expirationTtl: ttlSeconds });
-};
-
 export const putRaceTrendCache = async ({
   body,
   cacheKey,
@@ -176,11 +119,6 @@ export const putRaceTrendCache = async ({
   if (ttlSeconds <= 0) {
     return;
   }
-  memoryCache.set(cacheKey, {
-    body,
-    expiresAt: Date.now() + ttlSeconds * 1000,
-  });
-
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   const kv = env?.DETAIL_SECTION_CACHE_KV;
   await Promise.all([
@@ -193,7 +131,7 @@ export const putRaceTrendCache = async ({
         },
       }),
     ),
-    kv ? putKvIfNotInFlight({ body, cacheKey, kv, ttlSeconds }) : undefined,
+    kv?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
   ]);
 };
 
@@ -273,7 +211,6 @@ const deleteSingleCache = async (
   defaultCache: Cache | null,
   env: CloudflareEnv | null,
 ): Promise<void> => {
-  memoryCache.delete(entry.key);
   await Promise.all([
     defaultCache?.delete(new Request(`${entry.urlBase}${encodeURIComponent(entry.key)}`)),
     env?.DETAIL_SECTION_CACHE_KV?.delete(entry.key),

@@ -1978,7 +1978,7 @@ it("getFinishPositionLambdarankPredictions gates priority 0 to false for a JRA r
   const unroutedJraRace: RaceDetail = {
     ...PERCLASS_703_RACE,
     keibajoCode: "05",
-    kyosoJokenCode: "010",
+    kyosoJokenCode: "000",
   };
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(unroutedJraRace, PERCLASS_703_RUNNERS);
@@ -2004,7 +2004,7 @@ it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch 
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(
-    /where p0\.model_version = 'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u,
+    /where p0\.model_version = 'jra-joken-703-turf-intermediate-qsm-gated-v1'/u,
   );
   expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u);
   expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013'/u);

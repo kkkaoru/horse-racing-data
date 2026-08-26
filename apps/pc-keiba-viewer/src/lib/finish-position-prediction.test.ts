@@ -1475,7 +1475,7 @@ it("labels missing model predictions as not generated", () => {
   );
 });
 
-it("labels generated predictions with the latest JST date", () => {
+it("labels generated predictions with the latest JST date and time", () => {
   expect(
     hasFinishPredictionModelOutput([
       {
@@ -1519,7 +1519,7 @@ it("labels generated predictions with the latest JST date", () => {
         winProbability: null,
       },
     ]),
-  ).toBe("予測生成日: 2026年8月22日");
+  ).toBe("予測生成日時: 2026年8月22日 01:00:00");
 });
 
 it("keeps a generated label when the timestamp is missing or invalid", () => {

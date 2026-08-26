@@ -496,12 +496,15 @@ it("POST enqueues immediate changed-hash rebuilds only for scoped affected races
   get.mockResolvedValueOnce("4").mockResolvedValueOnce(null);
   get.mockResolvedValueOnce("5").mockResolvedValueOnce(null);
   const send = vi.fn<(body: unknown) => Promise<void>>().mockResolvedValue(undefined);
+  const sendBatch = vi
+    .fn<(messages: Array<{ body: unknown }>) => Promise<void>>()
+    .mockResolvedValue(undefined);
   safeGetCloudflareEnvMock.mockResolvedValue({
     DETAIL_SECTION_CACHE_KV: {
       get,
       put: vi.fn<(key: string, value: string) => Promise<void>>(),
     },
-    DETAIL_SECTION_CACHE_QUEUE: { send },
+    DETAIL_SECTION_CACHE_QUEUE: { send, sendBatch },
   });
   await POST(
     buildAuthedRequest({
@@ -519,6 +522,23 @@ it("POST enqueues immediate changed-hash rebuilds only for scoped affected races
   expect(send).toHaveBeenNthCalledWith(
     2,
     expect.objectContaining({ cacheGeneration: "5", keibajoCode: "05", raceNumber: "08" }),
+  );
+  expect(sendBatch).toHaveBeenCalledOnce();
+  const queuedBodies = sendBatch.mock.calls[0]?.[0].map((message) => message.body) ?? [];
+  expect(queuedBodies).toHaveLength(18);
+  expect(queuedBodies).toContainEqual(
+    expect.objectContaining({
+      keibajoCode: "05",
+      raceNumber: "07",
+      section: "time-score",
+    }),
+  );
+  expect(queuedBodies).toContainEqual(
+    expect.objectContaining({
+      keibajoCode: "05",
+      kind: "race-detail-ssr",
+      raceNumber: "08",
+    }),
   );
 });
 

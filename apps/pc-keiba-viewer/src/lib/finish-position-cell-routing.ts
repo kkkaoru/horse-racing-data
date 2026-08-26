@@ -41,6 +41,7 @@ export interface CellRoutingCondition {
 export interface CellRoutingRule {
   conditions: CellRoutingCondition[];
   variant: string;
+  effective_after?: string;
 }
 
 export interface CellRoutingVariant {
@@ -48,6 +49,13 @@ export interface CellRoutingVariant {
   feature_count: number;
   architecture: string;
   feature_set_hash?: string;
+  routing_mode?: string;
+  base_variant?: string;
+  maximum_candidate_v2_rank?: number;
+  minimum_candidate_margin?: number;
+  minimum_candidate_top_z?: number;
+  consensus_variants?: string[];
+  consensus_required_votes?: number;
 }
 
 export interface CellRoutingCategoryConfig {
@@ -85,6 +93,12 @@ const LONG_MAX_KYORI = 2400;
 const SMALL_FIELD_MAX_SHUSSO_TOSU = 10;
 const MEDIUM_FIELD_MAX_SHUSSO_TOSU = 13;
 const LARGE_FIELD_MAX_SHUSSO_TOSU = 15;
+const CANONICAL_SPRINT_MAX_KYORI = 1400;
+const CANONICAL_MILE_MAX_KYORI = 1800;
+const CANONICAL_INTERMEDIATE_MAX_KYORI = 2200;
+const CANONICAL_LONG_MAX_KYORI = 2800;
+const CANONICAL_SMALL_FIELD_MAX = 8;
+const CANONICAL_MEDIUM_FIELD_MAX = 14;
 const MONTH_PREFIX_LENGTH = 2;
 const MONTH_PATTERN = /^\d{2}$/u;
 const SPRING_MONTHS = new Set([3, 4, 5]);
@@ -96,66 +110,1147 @@ const AUTUMN_MONTHS = new Set([9, 10, 11]);
 // a runtime import, and finish-position-cell-routing.test.ts for the parity
 // guard that keeps it honest.
 const FINISH_POSITION_CELL_ROUTING_CONFIG: CellRoutingConfig = {
-  "ban-ei": {
-    default_variant: "sim",
-    rules: [
-      {
-        conditions: [{ dimension: "grade_code", values: ["E"] }],
-        variant: "base",
-      },
-    ],
-    variants: {
-      base: {
-        architecture: "catboost",
-        feature_count: 111,
-        model_version: "banei-cb-v8-window2011-wf-15y",
-      },
-      sim: {
-        architecture: "catboost",
-        feature_count: 130,
-        model_version: "banei-cb-v9-sim-2011",
-      },
-    },
-  },
   jra: {
     default_variant: "sim",
+    variants: {
+      sim: {
+        model_version: "jra-cb-v9-sim-2013-clean",
+        feature_count: 250,
+        architecture: "catboost",
+      },
+      jockey_pedigree_703: {
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        feature_count: 269,
+        architecture: "catboost",
+        feature_set_hash: "1f70d678d48b485d4fcf593de786880c8fcf748e464174279f1dfe1251c9ef07",
+      },
+      prior_corner_dirt_smallfield_005: {
+        model_version: "jra-cb-v10-prior-corner274-2013",
+        feature_count: 274,
+        architecture: "catboost",
+        feature_set_hash: "0b90ab1c7e19ef8d61c2b5419bd034bf277600c73b3f4a05e3b1ff1d99bbbb22",
+      },
+      joken_005: {
+        model_version: "jra-joken-005-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_005_dirt_mile_autumn_yeti_gated_top1: {
+        model_version: "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.05,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_turf_mile_yeti_gated_top1: {
+        model_version: "jra-joken-005-turf-mile-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.1,
+        minimum_candidate_top_z: 1.25,
+      },
+      joken_005_turf_long_yeti_gated_top1: {
+        model_version: "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.3,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_010: {
+        model_version: "jra-joken-010-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_016: {
+        model_version: "jra-joken-016-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_701: {
+        model_version: "jra-joken-701-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_010_dirt_intermediate_yeti_gated_top1: {
+        model_version: "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_010",
+        minimum_candidate_margin: 0.2,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_701_turf_mile_qsm_gated_top1: {
+        model_version: "jra-joken-701-turf-mile-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_701",
+        minimum_candidate_margin: 0.5,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_701_turf_intermediate_qsm_gated_top1: {
+        model_version: "jra-joken-701-turf-intermediate-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_701",
+        minimum_candidate_margin: 0.5,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_701_turf_long_qsm_gated_top1: {
+        model_version: "jra-joken-701-turf-long-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_701",
+        minimum_candidate_margin: 0.5,
+        minimum_candidate_top_z: 1.5,
+      },
+      joken_703: {
+        model_version: "jra-joken-703-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_703_turf_long_spring_qsm_gated_top1: {
+        model_version: "jra-joken-703-turf-long-spring-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.1,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 2,
+      },
+      joken_703_turf_intermediate_qsm_gated_top1: {
+        model_version: "jra-joken-703-turf-intermediate-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.05,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 2,
+      },
+      joken_703_other_extended_qsm_gated_top1: {
+        model_version: "jra-joken-703-other-extended-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.15,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 2,
+      },
+      joken_703_dirt_sprint_yeti_gated_top1: {
+        model_version: "jra-joken-703-dirt-sprint-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.02,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_703_dirt_intermediate_qsm_gated_top1: {
+        model_version: "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.01,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 2,
+      },
+      joken_703_dirt_mile_summer_qsm_top1: {
+        model_version: "jra-joken-703-querysoftmax-maxrange-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+      },
+      joken_999: {
+        model_version: "jra-joken-999-pooled-yetirank-v2",
+        feature_count: 113,
+        architecture: "catboost",
+      },
+      joken_005_turf_intermediate_spring_qsm_gated_top1: {
+        model_version: "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.0,
+        minimum_candidate_top_z: 1.0,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_dirt_mile_spring_qsm_gated_top1: {
+        model_version: "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.02,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_dirt_intermediate_autumn_yeti_gated_top1: {
+        model_version: "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.2,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_703_turf_long_summer_yeti_gated_top1: {
+        model_version: "jra-joken-703-turf-long-summer-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.2,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_dirt_1700_summer_qsm_gated_top1: {
+        model_version: "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.2,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_dirt_1200_winter_summer_qsm_gated_top1: {
+        model_version: "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.15,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_703_turf_1400_qsm_gated_top1: {
+        model_version: "jra-joken-703-turf-1400-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.1,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+      joken_005_dirt_1800_nonautumn_qsm_gated_top1: {
+        model_version: "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_005",
+        minimum_candidate_margin: 0.2,
+        minimum_candidate_top_z: 1.25,
+        maximum_candidate_v2_rank: 2,
+      },
+      joken_703_turf_1200_largefield_yeti_gated_top1: {
+        model_version: "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+        feature_count: 113,
+        architecture: "catboost",
+        routing_mode: "jra_variant_top1_swap",
+        base_variant: "joken_703",
+        minimum_candidate_margin: 0.15,
+        minimum_candidate_top_z: 1.5,
+        maximum_candidate_v2_rank: 20,
+      },
+    },
     rules: [
       {
-        conditions: [{ dimension: "kyoso_joken_code", values: ["703"] }],
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["mile"],
+          },
+          {
+            dimension: "season",
+            values: ["autumn"],
+          },
+        ],
+        variant: "joken_005_dirt_mile_autumn_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["mile"],
+          },
+        ],
+        variant: "joken_005_turf_mile_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["long"],
+          },
+        ],
+        variant: "joken_005_turf_long_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-010"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+        ],
+        variant: "joken_010_dirt_intermediate_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-701"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["long"],
+          },
+        ],
+        variant: "joken_701_turf_long_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-701"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["mile"],
+          },
+        ],
+        variant: "joken_701_turf_mile_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-701"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+        ],
+        variant: "joken_701_turf_intermediate_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["long"],
+          },
+          {
+            dimension: "season",
+            values: ["spring"],
+          },
+        ],
+        variant: "joken_703_turf_long_spring_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+        ],
+        variant: "joken_703_turf_intermediate_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["other"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["extended"],
+          },
+        ],
+        variant: "joken_703_other_extended_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["sprint"],
+          },
+        ],
+        variant: "joken_703_dirt_sprint_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+        ],
+        variant: "joken_703_dirt_intermediate_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["mile"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+        ],
+        variant: "joken_703_dirt_mile_summer_qsm_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+          {
+            dimension: "season",
+            values: ["spring"],
+          },
+        ],
+        variant: "joken_005_turf_intermediate_spring_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["mile"],
+          },
+          {
+            dimension: "season",
+            values: ["spring"],
+          },
+        ],
+        variant: "joken_005_dirt_mile_spring_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["intermediate"],
+          },
+          {
+            dimension: "season",
+            values: ["autumn"],
+          },
+        ],
+        variant: "joken_005_dirt_intermediate_autumn_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "distance_band",
+            values: ["long"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+        ],
+        variant: "joken_703_turf_long_summer_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "kyori",
+            values: ["1700"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+        ],
+        variant: "joken_005_dirt_1700_summer_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "kyori",
+            values: ["1200"],
+          },
+          {
+            dimension: "season",
+            values: ["winter", "summer"],
+          },
+        ],
+        variant: "joken_005_dirt_1200_winter_summer_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "kyori",
+            values: ["1400"],
+          },
+        ],
+        variant: "joken_703_turf_1400_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "kyori",
+            values: ["1800"],
+          },
+          {
+            dimension: "season",
+            values: ["winter", "spring", "summer"],
+          },
+        ],
+        variant: "joken_005_dirt_1800_nonautumn_qsm_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+          {
+            dimension: "surface",
+            values: ["turf"],
+          },
+          {
+            dimension: "kyori",
+            values: ["1200"],
+          },
+          {
+            dimension: "field_band",
+            values: ["f14_15", "f16p"],
+          },
+        ],
+        variant: "joken_703_turf_1200_largefield_yeti_gated_top1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-005"],
+          },
+        ],
+        variant: "joken_005",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-010"],
+          },
+        ],
+        variant: "joken_010",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-016"],
+          },
+        ],
+        variant: "joken_016",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-701"],
+          },
+        ],
+        variant: "joken_701",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-703"],
+          },
+        ],
+        variant: "joken_703",
+      },
+      {
+        conditions: [
+          {
+            dimension: "class",
+            values: ["joken-999"],
+          },
+        ],
+        variant: "joken_999",
+      },
+      {
+        conditions: [
+          {
+            dimension: "kyoso_joken_code",
+            values: ["703"],
+          },
+        ],
         variant: "jockey_pedigree_703",
       },
       {
         conditions: [
-          { dimension: "surface", values: ["dirt"] },
-          { dimension: "field_band", values: ["f_le10"] },
-          { dimension: "kyoso_joken_code", values: ["005"] },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "field_band",
+            values: ["f_le10"],
+          },
+          {
+            dimension: "kyoso_joken_code",
+            values: ["005"],
+          },
         ],
         variant: "prior_corner_dirt_smallfield_005",
       },
       {
-        conditions: [{ dimension: "venue", values: ["02"] }],
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["02"],
+          },
+        ],
         variant: "jockey_pedigree_703",
       },
     ],
+  },
+  "ban-ei": {
+    default_variant: "sim",
     variants: {
-      jockey_pedigree_703: {
-        architecture: "catboost",
-        feature_count: 269,
-        feature_set_hash: "1f70d678d48b485d4fcf593de786880c8fcf748e464174279f1dfe1251c9ef07",
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-      },
-      prior_corner_dirt_smallfield_005: {
-        architecture: "catboost",
-        feature_count: 274,
-        feature_set_hash: "0b90ab1c7e19ef8d61c2b5419bd034bf277600c73b3f4a05e3b1ff1d99bbbb22",
-        model_version: "jra-cb-v10-prior-corner274-2013",
-      },
       sim: {
+        model_version: "banei-cb-v9-sim-2011",
+        feature_count: 130,
         architecture: "catboost",
-        feature_count: 250,
-        model_version: "jra-cb-v9-sim-2013-clean",
+      },
+      base: {
+        model_version: "banei-cb-v8-window2011-wf-15y",
+        feature_count: 111,
+        architecture: "catboost",
       },
     },
+    rules: [
+      {
+        conditions: [
+          {
+            dimension: "grade_code",
+            values: ["E"],
+          },
+        ],
+        variant: "base",
+      },
+    ],
+  },
+  nar: {
+    default_variant: "sim",
+    variants: {
+      sim: {
+        model_version: "iter12-nar-xgb-hpo-v8-clean188",
+        feature_count: 188,
+        architecture: "xgboost",
+      },
+      mukatsu30: {
+        model_version: "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+        feature_count: 67,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      mukatsu30_tc2_top2: {
+        model_version: "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+        feature_count: 67,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top2_swap",
+        minimum_candidate_margin: 0.2,
+      },
+      c50_tc2_consensus_market: {
+        model_version: "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+        feature_count: 10,
+        architecture: "xgboost",
+      },
+      c50_tc2_consensus_pedigree: {
+        model_version: "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+        feature_count: 15,
+        architecture: "xgboost",
+      },
+      c50_tc2_consensus: {
+        model_version: "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
+        feature_count: 12,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top2_consensus_swap",
+        consensus_variants: ["c50_tc2_consensus_market", "c50_tc2_consensus_pedigree"],
+        consensus_required_votes: 2,
+      },
+      c42_tc1: {
+        model_version: "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+        feature_count: 67,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      c30_tc1: {
+        model_version: "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+        feature_count: 35,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      c30_tc2_adaptive: {
+        model_version: "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+        feature_count: 67,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      c50_tc1_rolling: {
+        model_version: "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+        feature_count: 16,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      c43_tc1_rolling: {
+        model_version: "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+        feature_count: 16,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+    },
+    rules: [
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["30"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["MUKATSU"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "mukatsu30",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["30"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["MUKATSU"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["2"],
+          },
+        ],
+        variant: "mukatsu30_tc2_top2",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["50"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["2"],
+          },
+        ],
+        variant: "c50_tc2_consensus",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["42"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c42_tc1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["30"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c30_tc1",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["30"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["2"],
+          },
+        ],
+        variant: "c30_tc2_adaptive",
+        effective_after: "2026-06-30",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["50"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c50_tc1_rolling",
+        effective_after: "2026-08-23",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["43"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["sprint"],
+          },
+          {
+            dimension: "season",
+            values: ["winter"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c43_tc1_rolling",
+        effective_after: "2026-08-23",
+      },
+    ],
   },
 };
 
@@ -165,8 +1260,11 @@ const parseIntOrNull = (value: string | null): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const trimmedOrNull = (value: string | null): string | null =>
-  value === null ? null : value.trim();
+const trimmedOrNull = (value: string | null): string | null => {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+};
 
 const resolveDistanceBand = (kyori: string | null): string | null => {
   const parsed = parseIntOrNull(kyori);
@@ -176,6 +1274,24 @@ const resolveDistanceBand = (kyori: string | null): string | null => {
   if (parsed < INTERMEDIATE_MAX_KYORI) return "intermediate";
   if (parsed < LONG_MAX_KYORI) return "long";
   return "extended";
+};
+
+const resolveCanonicalDistanceBand = (kyori: string | null): string | null => {
+  const parsed = parseIntOrNull(kyori);
+  if (parsed === null) return null;
+  if (parsed <= CANONICAL_SPRINT_MAX_KYORI) return "sprint";
+  if (parsed <= CANONICAL_MILE_MAX_KYORI) return "mile";
+  if (parsed <= CANONICAL_INTERMEDIATE_MAX_KYORI) return "intermediate";
+  if (parsed <= CANONICAL_LONG_MAX_KYORI) return "long";
+  return "extended";
+};
+
+const resolveCanonicalFieldSizeBand = (shussoTosu: string | null): string | null => {
+  const parsed = parseIntOrNull(shussoTosu);
+  if (parsed === null) return null;
+  if (parsed <= CANONICAL_SMALL_FIELD_MAX) return "small";
+  if (parsed <= CANONICAL_MEDIUM_FIELD_MAX) return "medium";
+  return "large";
 };
 
 const resolveFieldBand = (shussoTosu: string | null): string | null => {
@@ -210,10 +1326,25 @@ const resolveSeason = (kaisaiTsukihi: string): string | null => {
     : null;
 };
 
-const resolveClass = (gradeCode: string | null): string | null => {
-  if (gradeCode === null) return null;
-  const trimmed = gradeCode.trim();
-  return trimmed === "" ? "unknown" : trimmed;
+const resolveClass = (race: RaceDetail): string | null => {
+  const gradeCode = trimmedOrNull(race.gradeCode);
+  if (gradeCode !== null) return gradeCode;
+  const conditionCode = trimmedOrNull(race.kyosoJokenCode);
+  return conditionCode === null ? "unknown" : `joken-${conditionCode}`;
+};
+
+const resolveNarSubclass = (race: RaceDetail): string | null => {
+  if (race.source !== "nar" || race.keibajoCode === "83") return null;
+  const name = race.kyosoJokenMeisho ?? "";
+  if (/ＯＰ/u.test(name)) return "OP";
+  if (/新馬/u.test(name)) return "NEW";
+  if (/未勝利|未出走/u.test(name)) return "MUKATSU";
+  if (/２歳|2歳/u.test(name)) return "2YO";
+  if (/３歳|3歳/u.test(name)) return "3YO";
+  if (/Ａ/u.test(name)) return "A";
+  if (/Ｂ/u.test(name)) return "B";
+  if (/Ｃ/u.test(name)) return "C";
+  return "other";
 };
 
 // A single race can never answer "is this the day's last race" from its own
@@ -241,9 +1372,12 @@ const SPECIAL_DIMENSION_RESOLVERS = new Map<
   ["venue", (race) => trimmedOrNull(race.keibajoCode)],
   ["surface", (race, category) => resolveSurface(race, category)],
   ["distance_band", (race) => resolveDistanceBand(race.kyori)],
+  ["canonical_distance_band", (race) => resolveCanonicalDistanceBand(race.kyori)],
   ["field_band", (race) => resolveFieldBand(race.shussoTosu)],
+  ["canonical_field_size_band", (race) => resolveCanonicalFieldSizeBand(race.shussoTosu)],
   ["season", (race) => resolveSeason(race.kaisaiTsukihi)],
-  ["class", (race) => resolveClass(race.gradeCode)],
+  ["class", (race) => resolveClass(race)],
+  ["nar_subclass", (race) => resolveNarSubclass(race)],
   [
     "is_final_race",
     (race, _category, cardMaxRaceBango) => resolveIsFinalRace(race.raceBango, cardMaxRaceBango),
@@ -258,6 +1392,7 @@ const SPECIAL_DIMENSION_RESOLVERS = new Map<
 // throwing) -- the parity test flags this loudly by failing on divergence
 // before it can reach production silently.
 const RAW_DIMENSION_ACCESSORS = new Map<string, (race: RaceDetail) => string | null>([
+  ["current_baba_condition", (race) => trimmedOrNull(race.babajotaiCodeDirt)],
   ["grade_code", (race) => trimmedOrNull(race.gradeCode)],
   ["kaisai_tsukihi", (race) => race.kaisaiTsukihi.trim()],
   ["keibajo_code", (race) => trimmedOrNull(race.keibajoCode)],
@@ -289,17 +1424,26 @@ const allConditionsMatch = (params: AllConditionsMatchParams): boolean =>
     return value !== null && condition.values.includes(value);
   });
 
+const isRuleEffective = (race: RaceDetail, rule: CellRoutingRule): boolean => {
+  if (rule.effective_after === undefined) return true;
+  const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+  const threshold = rule.effective_after.replaceAll("-", "");
+  return raceDate.length === 8 && threshold.length === 8 && raceDate > threshold;
+};
+
 const findMatchingRule = (
   params: ResolveCellRoutingParams,
   rules: CellRoutingRule[],
 ): CellRoutingRule | undefined =>
-  rules.find((rule) =>
-    allConditionsMatch({
-      cardMaxRaceBango: params.cardMaxRaceBango,
-      category: params.category,
-      conditions: rule.conditions,
-      race: params.race,
-    }),
+  rules.find(
+    (rule) =>
+      isRuleEffective(params.race, rule) &&
+      allConditionsMatch({
+        cardMaxRaceBango: params.cardMaxRaceBango,
+        category: params.category,
+        conditions: rule.conditions,
+        race: params.race,
+      }),
   );
 
 export interface ResolveCellRoutingForConfigParams extends ResolveCellRoutingParams {
@@ -353,9 +1497,8 @@ export const resolveFinishPositionCellRoutingModelVersion = (
 export const resolveFinishPositionDisplayPriorityModelVersion = (
   params: ResolveCellRoutingParams,
 ): string | null =>
-  params.category === "nar"
-    ? NAR_TRANSFORMER_BLEND_MODEL_VERSION
-    : resolveFinishPositionCellRoutingModelVersion(params);
+  resolveFinishPositionCellRoutingModelVersion(params) ??
+  (params.category === "nar" ? NAR_TRANSFORMER_BLEND_MODEL_VERSION : null);
 
 /**
  * Every distinct model_version referenced by any category's variants,

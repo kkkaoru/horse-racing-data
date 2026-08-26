@@ -20,6 +20,17 @@ export const formatDisplayDate = (year: string, monthDay: string): string => {
 };
 
 const JST_YMD_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const JST_DATE_TIME_PREFIX_PATTERN = /^(\d{4})\/(\d+)\/(\d+) /u;
+const JST_DATE_TIME_FORMATTER: Intl.DateTimeFormat = new Intl.DateTimeFormat("ja-JP", {
+  day: "numeric",
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  month: "numeric",
+  second: "2-digit",
+  timeZone: "Asia/Tokyo",
+  year: "numeric",
+});
 
 export const formatIsoTimestampAsJstDate = (value: string): string | null => {
   const ymdMatch = JST_YMD_PATTERN.exec(value);
@@ -41,6 +52,17 @@ export const formatIsoTimestampAsJstDate = (value: string): string | null => {
     return null;
   }
   return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`;
+};
+
+export const formatIsoTimestampAsJstDateTime = (value: string): string | null => {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return JST_DATE_TIME_FORMATTER.format(new Date(parsed)).replace(
+    JST_DATE_TIME_PREFIX_PATTERN,
+    "$1年$2月$3日 ",
+  );
 };
 
 export const formatTime = (hhmm: string | null | undefined): string => {

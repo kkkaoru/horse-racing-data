@@ -15,6 +15,11 @@ import type { RaceSource } from "../../../../lib/codes";
 import { bustRaceCachesForRace } from "../../../../lib/race-cache-bust.server";
 import { readRaceCacheWarmGeneration } from "../../../../lib/race-cache-warm-generation";
 import {
+  DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS,
+  type DetailSectionCacheWarmMessage,
+  type RaceDetailSsrCacheWarmMessage,
+} from "../../../../lib/race-detail-section-cache";
+import {
   buildDefaultRaceTrendCacheOptions,
   type RaceTrendCacheWarmMessage,
 } from "../../../../lib/race-trend-cache";
@@ -187,6 +192,45 @@ const enqueueAffectedTrendWarms = async ({
   );
 };
 
+const QUEUE_BATCH_LIMIT = 100;
+
+const enqueueAffectedDetailWarms = async ({
+  races,
+  source,
+  targetYmd,
+}: EnqueueAffectedTrendWarmsParams): Promise<void> => {
+  const env = await safeGetCloudflareEnv();
+  const queue = env?.DETAIL_SECTION_CACHE_QUEUE;
+  if (!queue) return;
+  const parts = splitYmd(targetYmd);
+  const messages: Array<DetailSectionCacheWarmMessage | RaceDetailSsrCacheWarmMessage> =
+    races.flatMap((race) => [
+      ...DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS.map((section) => ({
+        day: parts.day,
+        keibajoCode: race.keibajoCode,
+        month: parts.month,
+        raceNumber: race.raceBango,
+        section,
+        source,
+        year: parts.year,
+      })),
+      {
+        day: parts.day,
+        keibajoCode: race.keibajoCode,
+        kind: "race-detail-ssr" as const,
+        month: parts.month,
+        raceNumber: race.raceBango,
+        source,
+        year: parts.year,
+      },
+    ]);
+  const batches = Array.from(
+    { length: Math.ceil(messages.length / QUEUE_BATCH_LIMIT) },
+    (_, index) => messages.slice(index * QUEUE_BATCH_LIMIT, (index + 1) * QUEUE_BATCH_LIMIT),
+  );
+  await Promise.all(batches.map((batch) => queue.sendBatch(batch.map((body) => ({ body })))));
+};
+
 interface TrendCacheBustResult {
   keys: string[];
   notified: number;
@@ -206,7 +250,10 @@ const runTrendCacheBust = async (body: BustRequestBody): Promise<TrendCacheBustR
     source: body.source,
     targetYmd: body.targetYmd,
   });
-  await enqueueAffectedTrendWarms({ races, source: body.source, targetYmd: body.targetYmd });
+  await Promise.all([
+    enqueueAffectedTrendWarms({ races, source: body.source, targetYmd: body.targetYmd }),
+    enqueueAffectedDetailWarms({ races, source: body.source, targetYmd: body.targetYmd }),
+  ]);
   // The subsequent generation-bound warm rebuild calls
   // notifyRaceTrendRoomIfChanged with the actual payload hash. Do not wake
   // every DO room before fresh bytes exist.

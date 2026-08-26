@@ -9,7 +9,10 @@ import {
   readMcpAuthToken,
   readMcpOauthSigningKey,
 } from "./lib/mcp-request";
-import type { DetailSectionCacheWarmMessage } from "./lib/race-detail-section-cache";
+import type {
+  DetailSectionCacheWarmMessage,
+  RaceDetailSsrCacheWarmMessage,
+} from "./lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
 import { routeWebSocketUpgradeToDurableObject } from "./lib/websocket-do-router";
 import { formatTodayJstDate, formatTomorrowJstDate } from "./worker/jst-date";
@@ -61,7 +64,9 @@ export default {
     );
   },
   queue(
-    batch: PcKeibaMessageBatch<DetailSectionCacheWarmMessage | RaceTrendCacheWarmMessage>,
+    batch: PcKeibaMessageBatch<
+      DetailSectionCacheWarmMessage | RaceDetailSsrCacheWarmMessage | RaceTrendCacheWarmMessage
+    >,
     env: CloudflareEnv,
     ctx: PcKeibaExecutionContext,
   ) {

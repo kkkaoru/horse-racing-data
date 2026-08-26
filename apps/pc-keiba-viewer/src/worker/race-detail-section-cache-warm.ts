@@ -7,6 +7,7 @@ import {
   DETAIL_SECTION_CACHE_WARM_PARAM,
   buildDetailSectionApiPath,
   type DetailSectionCacheWarmMessage,
+  type RaceDetailSsrCacheWarmMessage,
 } from "../lib/race-detail-section-cache";
 import { buildRaceTrendApiPath, type RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
 
@@ -18,7 +19,10 @@ const WARM_IN_BATCH_CONCURRENCY = 2;
 const HEATMAP_WARM_CONCURRENCY = 1;
 const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
 
-type CacheWarmMessage = DetailSectionCacheWarmMessage | RaceTrendCacheWarmMessage;
+type CacheWarmMessage =
+  | DetailSectionCacheWarmMessage
+  | RaceDetailSsrCacheWarmMessage
+  | RaceTrendCacheWarmMessage;
 
 interface QueueWarmItem {
   ack(): void;
@@ -180,12 +184,43 @@ const warmRaceTrend = async (
   }
 };
 
+const warmRaceDetailSsr = async (
+  openNextWorker: OpenNextWorker,
+  message: RaceDetailSsrCacheWarmMessage,
+  env: CloudflareEnv,
+  ctx: PcKeibaExecutionContext,
+): Promise<void> => {
+  const url = new URL(RACE_DETAIL_SSR_SCHEDULE_PATH, INTERNAL_ORIGIN);
+  url.searchParams.set("date", `${message.year}-${message.month}-${message.day}`);
+  url.searchParams.set("keibajo", message.keibajoCode);
+  url.searchParams.set("race", message.raceNumber);
+  const response = await fetchSelf(
+    openNextWorker,
+    new Request(url, {
+      headers: { "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+    env,
+    ctx,
+  ).then(drainResponseBody);
+  if (!response.ok) {
+    throw new Error(`race detail SSR cache warm failed: ${response.status} ${url.pathname}`);
+  }
+};
+
 const isRaceTrendCacheWarmMessage = (
   message: CacheWarmMessage,
 ): message is RaceTrendCacheWarmMessage => "kind" in message && message.kind === "race-trend";
 
+const isRaceDetailSsrCacheWarmMessage = (
+  message: CacheWarmMessage,
+): message is RaceDetailSsrCacheWarmMessage =>
+  "kind" in message && message.kind === "race-detail-ssr";
+
 const isHeatmapWarmMessage = (message: CacheWarmMessage): boolean =>
-  !isRaceTrendCacheWarmMessage(message) && message.section === "win-rate-heatmap";
+  !isRaceTrendCacheWarmMessage(message) &&
+  !isRaceDetailSsrCacheWarmMessage(message) &&
+  message.section === "win-rate-heatmap";
 
 const assertHeatmapCacheStored = (response: Response): void => {
   const header = response.headers.get("X-Win-Rate-Heatmap-Cache");
@@ -214,6 +249,36 @@ const warmQueueMessage = async (
   ctx: PcKeibaExecutionContext,
 ): Promise<void> => {
   try {
+    if (isRaceDetailSsrCacheWarmMessage(message.body)) {
+      const race = {
+        keibajoCode: message.body.keibajoCode,
+        mmdd: `${message.body.month}${message.body.day}`,
+        raceBango: message.body.raceNumber,
+        source: message.body.source,
+        year: message.body.year,
+      };
+      const state = await readRaceCacheWarmGeneration({
+        kind: "race-detail-ssr",
+        kv: env.DETAIL_SECTION_CACHE_KV,
+        race,
+      });
+      if (state?.valid) {
+        message.ack();
+        return;
+      }
+      await warmRaceDetailSsr(openNextWorker, message.body, env, ctx);
+      const marked = await markRaceCacheWarmGeneration({
+        generation: state?.generation ?? "0",
+        kind: "race-detail-ssr",
+        kv: env.DETAIL_SECTION_CACHE_KV,
+        race,
+      });
+      if (state !== null && !marked) {
+        throw new Error("race detail SSR cache generation changed during warm");
+      }
+      message.ack();
+      return;
+    }
     if (isRaceTrendCacheWarmMessage(message.body)) {
       const race = {
         keibajoCode: message.body.keibajoCode,

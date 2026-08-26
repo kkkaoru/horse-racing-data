@@ -115,6 +115,16 @@ export interface DetailSectionCacheWarmMessage {
   year: string;
 }
 
+export interface RaceDetailSsrCacheWarmMessage {
+  day: string;
+  keibajoCode: string;
+  kind: "race-detail-ssr";
+  month: string;
+  raceNumber: string;
+  source: RaceSource;
+  year: string;
+}
+
 export const isDetailSectionCacheableSection = (
   value: string,
 ): value is DetailSectionCacheableSection =>

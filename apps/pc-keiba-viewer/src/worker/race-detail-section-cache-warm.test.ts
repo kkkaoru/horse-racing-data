@@ -2,6 +2,7 @@
 // @vitest-environment node
 import { expect, it, vi } from "vitest";
 
+import type { RaceDetailSsrCacheWarmMessage } from "../lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
 import {
   handleRaceDetailSectionCacheQueue,
@@ -220,6 +221,90 @@ it("schedule-ssr-warm-throws-on-non-ok-response", async () => {
   await expect(
     scheduleRaceDetailSsrCacheWarm(worker, env, ctx, { date: "2026-06-01" }),
   ).rejects.toThrowError("race detail SSR cache warm failed: 504");
+});
+
+it("warms an invalidated SSR snapshot and records its generation", async () => {
+  const response = new Response('{"ok":true}', { status: 200 });
+  const worker = buildOpenNextWorker(response);
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("3").mockResolvedValueOnce(null).mockResolvedValueOnce("3");
+  const put = vi.fn<(key: string, value: string) => Promise<void>>().mockResolvedValue(undefined);
+  const message = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "27",
+      keibajoCode: "43",
+      kind: "race-detail-ssr",
+      month: "08",
+      raceNumber: "09",
+      source: "nar",
+      year: "2026",
+    },
+  } satisfies PcKeibaMessage<RaceDetailSsrCacheWarmMessage>;
+  const env: CloudflareEnv = {
+    DETAIL_SECTION_CACHE_KV: {
+      delete: vi.fn<(key: string) => Promise<void>>(),
+      get,
+      list: vi.fn<() => Promise<PcKeibaKvListResult>>().mockResolvedValue({
+        keys: [],
+        list_complete: true,
+      }),
+      put,
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [message], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    buildCtx(),
+  );
+  expect(message.ack).toHaveBeenCalledOnce();
+  expect(message.retry).not.toHaveBeenCalled();
+  expect(getFirstRequest(worker).url).toBe(
+    "https://pc-keiba-viewer.local/api/cache-warm/race-detail-ssr?date=2026-08-27&keibajo=43&race=09",
+  );
+  expect(response.bodyUsed).toBe(true);
+  expect(put).toHaveBeenCalledOnce();
+});
+
+it("acks an already warm SSR generation without recomputing it", async () => {
+  const worker = buildOpenNextWorker(new Response("unused", { status: 200 }));
+  const get = vi.fn<(key: string) => Promise<string | null>>();
+  get.mockResolvedValueOnce("3").mockResolvedValueOnce("3");
+  const message = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "27",
+      keibajoCode: "43",
+      kind: "race-detail-ssr",
+      month: "08",
+      raceNumber: "09",
+      source: "nar",
+      year: "2026",
+    },
+  } satisfies PcKeibaMessage<RaceDetailSsrCacheWarmMessage>;
+  const env: CloudflareEnv = {
+    DETAIL_SECTION_CACHE_KV: {
+      delete: vi.fn<(key: string) => Promise<void>>(),
+      get,
+      list: vi.fn<() => Promise<PcKeibaKvListResult>>().mockResolvedValue({
+        keys: [],
+        list_complete: true,
+      }),
+      put: vi.fn<(key: string, value: string) => Promise<void>>(),
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [message], queue: "pc-keiba-detail-section-cache-warm" },
+    env,
+    buildCtx(),
+  );
+  expect(message.ack).toHaveBeenCalledOnce();
+  expect(message.retry).not.toHaveBeenCalled();
+  expect(worker.fetch).not.toHaveBeenCalled();
 });
 
 it("warms a trend once, drains the response, and records its generation", async () => {

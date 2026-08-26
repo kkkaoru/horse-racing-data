@@ -506,7 +506,7 @@ test("FinishPositionPredictionTable shows that predictions have not been generat
   expect(document.querySelector(".finish-prediction-generated-missing")).toBeTruthy();
 });
 
-test("FinishPositionPredictionTable shows the generated date immediately before the ranking table", () => {
+test("FinishPositionPredictionTable shows the generated date and time immediately before the ranking table", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
     getItem: vi.fn<(key: string) => string | null>(() => null),
@@ -531,7 +531,7 @@ test("FinishPositionPredictionTable shows the generated date immediately before 
       realtimeRequest={sampleRequest}
     />,
   );
-  const notice = screen.getByText("予測生成日: 2026年8月22日");
+  const notice = screen.getByText("予測生成日時: 2026年8月22日 01:00:00");
   expect(notice.className).toBe("finish-prediction-generated-at");
   expect(notice.nextElementSibling?.className).toBe("stats-table-wrap");
 });

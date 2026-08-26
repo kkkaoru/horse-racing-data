@@ -167,56 +167,19 @@ const buildRaceDetail = (overrides: Partial<RaceDetail> = {}): RaceDetail => ({
   ...overrides,
 });
 
-it("putRaceTrendCache skips KV PUT when an in-flight gate marker is present", async () => {
+it("putRaceTrendCache always writes the newest body to KV", async () => {
   const kv = buildKvStub();
-  kv.get.mockResolvedValue("1");
-  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
-  await putRaceTrendCache({ body: "{}", cacheKey: "race-trend-key-A", race: buildRaceDetail() });
-  expect(kv.put).not.toHaveBeenCalled();
-});
-
-it("putRaceTrendCache writes the in-flight marker then the body when no gate is present", async () => {
-  const kv = buildKvStub();
-  kv.get.mockResolvedValue(null);
   getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
   await putRaceTrendCache({
     body: '{"k":1}',
     cacheKey: "race-trend-key-B",
     race: buildRaceDetail(),
   });
-  expect(kv.put).toHaveBeenCalledTimes(2);
-  expect(kv.put.mock.calls[0]?.[0]).toBe("race-trend-kv-put-in-flight:race-trend-key-B");
-  expect(kv.put.mock.calls[1]?.[0]).toBe("race-trend-key-B");
-});
-
-it("putRaceTrendCache treats KV gate get failure as no-gate and still writes the body", async () => {
-  const kv = buildKvStub();
-  kv.get.mockRejectedValue(new Error("kv get boom"));
-  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
-  await putRaceTrendCache({
-    body: '{"k":2}',
-    cacheKey: "race-trend-key-C",
-    race: buildRaceDetail(),
+  expect(kv.get).not.toHaveBeenCalled();
+  expect(kv.put).toHaveBeenCalledOnce();
+  expect(kv.put).toHaveBeenCalledWith("race-trend-key-B", '{"k":1}', {
+    expirationTtl: expect.any(Number),
   });
-  const putCalls = kv.put.mock.calls.map((call) => String(call[0]));
-  expect(putCalls).toStrictEqual([
-    "race-trend-kv-put-in-flight:race-trend-key-C",
-    "race-trend-key-C",
-  ]);
-});
-
-it("putRaceTrendCache still writes body when in-flight marker put fails", async () => {
-  const kv = buildKvStub();
-  kv.get.mockResolvedValue(null);
-  kv.put.mockRejectedValueOnce(new Error("marker put boom")).mockResolvedValueOnce(undefined);
-  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
-  await putRaceTrendCache({
-    body: '{"k":3}',
-    cacheKey: "race-trend-key-D",
-    race: buildRaceDetail(),
-  });
-  expect(kv.put).toHaveBeenCalledTimes(2);
-  expect(kv.put.mock.calls[1]?.[0]).toBe("race-trend-key-D");
 });
 
 it("putRaceTrendCache is a no-op when ttlSeconds is zero (hassoJikoku unparseable)", async () => {
@@ -240,7 +203,7 @@ it("putRaceTrendCache uses the full final-result TTL when isTrendPayloadComplete
     isTrendPayloadComplete: true,
     race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
   });
-  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 86400 });
+  expect(kv.put.mock.calls[0]?.[2]).toStrictEqual({ expirationTtl: 86400 });
 });
 
 it("putRaceTrendCache uses the short self-healing TTL when isTrendPayloadComplete is false", async () => {
@@ -252,7 +215,7 @@ it("putRaceTrendCache uses the short self-healing TTL when isTrendPayloadComplet
     isTrendPayloadComplete: false,
     race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
   });
-  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 600 });
+  expect(kv.put.mock.calls[0]?.[2]).toStrictEqual({ expirationTtl: 600 });
 });
 
 it("putRaceTrendCache defaults to the full final-result TTL when isTrendPayloadComplete is omitted", async () => {
@@ -263,5 +226,5 @@ it("putRaceTrendCache defaults to the full final-result TTL when isTrendPayloadC
     cacheKey: "race-trend-key-H",
     race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
   });
-  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 86400 });
+  expect(kv.put.mock.calls[0]?.[2]).toStrictEqual({ expirationTtl: 86400 });
 });
