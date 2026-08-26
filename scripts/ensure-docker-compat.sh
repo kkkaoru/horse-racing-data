@@ -3,13 +3,23 @@
 # ONLY for tools that speak the Docker API (wrangler Containers deploy/dev).
 # Local PG / predict batch / local image rebuild must use Apple Container CLI.
 #
-# `ensure-docker-compat.sh` without arguments is a backward-compatible
-# preflight that leaves the daemon running. Pass `-- command ...` to own the
-# Colima lifecycle and stop it automatically when that command exits.
+# A command is mandatory so this script always owns a bounded Colima lease and
+# stops a VM it started. A preflight-only mode previously left Colima resident
+# indefinitely and is intentionally unsupported.
 set -euo pipefail
 
 SHADOW_PG_NAME="horse-racing-local-postgresql"
 COLIMA_STARTED_BY_SCRIPT=0
+CHILD_PID=""
+COLIMA_MEMORY_GIB="${COLIMA_MEMORY_GIB:-4}"
+
+validate_colima_memory() {
+  if [[ ! "$COLIMA_MEMORY_GIB" =~ ^[0-9]+$ ]] \
+    || ((COLIMA_MEMORY_GIB < 2 || COLIMA_MEMORY_GIB > 8)); then
+    echo "COLIMA_MEMORY_GIB must be an integer from 2 through 8." >&2
+    return 1
+  fi
+}
 
 docker_info_ok() {
   docker info >/dev/null 2>&1
@@ -27,6 +37,9 @@ stop_local_pg_shadow() {
 }
 
 ensure_docker_compat() {
+  if ! validate_colima_memory; then
+    return 1
+  fi
   if ! command -v docker >/dev/null 2>&1; then
     echo "docker CLI is required for wrangler Containers. Install docker + colima." >&2
     return 1
@@ -47,11 +60,12 @@ ensure_docker_compat() {
     echo "Colima is already running but Docker is not ready; waiting for Docker..." >&2
   else
     echo "Docker daemon not reachable; starting colima for wrangler Containers..." >&2
-    # 4 CPU / 8 GiB: enough for wrangler Containers image builds, without
-    # competing with Apple Container's local PostgreSQL on a 48 GiB host.
-    # Do not raise this back to 16 GiB; that VM shows ~25 GiB host RSS.
+    # VZ backs guest pages on demand, while this value is the guest ceiling.
+    # Four GiB is the default for the current Wrangler image build;
+    # bounded 2-8 GiB overrides support future workloads without reviving the
+    # old 16-20+ GiB resident-VM failure mode.
     COLIMA_STARTED_BY_SCRIPT=1
-    colima start --cpus 4 --memory 8
+    colima start --cpus 4 --memory "$COLIMA_MEMORY_GIB"
   fi
 
   local retries=24
@@ -98,19 +112,36 @@ cleanup_colima() {
   exit "$exit_code"
 }
 
+forward_signal_and_exit() {
+  local signal="$1"
+  local exit_code="$2"
+  if [[ -n "$CHILD_PID" ]] && kill -0 "$CHILD_PID" >/dev/null 2>&1; then
+    kill -"$signal" "$CHILD_PID" >/dev/null 2>&1 || true
+    wait "$CHILD_PID" >/dev/null 2>&1 || true
+  fi
+  exit "$exit_code"
+}
+
 run_with_docker_compat() {
   trap cleanup_colima EXIT
+  trap 'forward_signal_and_exit HUP 129' HUP
+  trap 'forward_signal_and_exit INT 130' INT
+  trap 'forward_signal_and_exit TERM 143' TERM
   if ! ensure_docker_compat; then
     return 1
   fi
-  "$@"
+  "$@" &
+  CHILD_PID=$!
+  local command_exit=0
+  wait "$CHILD_PID" || command_exit=$?
+  CHILD_PID=""
+  return "$command_exit"
 }
 
 if [[ "$#" -eq 0 ]]; then
-  # Backward-compatible preflight mode. Callers that need lifecycle cleanup
-  # must pass the command after `--`.
-  ensure_docker_compat
-  exit $?
+  echo "Usage: $0 [--] command [args...]" >&2
+  echo "A bounded command is required; preflight-only mode would leak Colima RAM." >&2
+  exit 2
 fi
 
 if [[ "$1" == "--" ]]; then

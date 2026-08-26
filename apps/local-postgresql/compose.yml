@@ -20,15 +20,15 @@ services:
       - max_wal_senders=10
       - -c
       - max_replication_slots=10
-      # === Memory tuning (host / Apple container = 24 GiB class) ===
+      # === Memory tuning (bounded 14 GiB legacy reference) ===
       - -c
-      - shared_buffers=6GB
+      - shared_buffers=3GB
       - -c
-      - effective_cache_size=18GB
+      - effective_cache_size=10GB
       - -c
-      - work_mem=64MB
+      - work_mem=32MB
       - -c
-      - maintenance_work_mem=1GB
+      - maintenance_work_mem=512MB
       - -c
       - wal_buffers=16MB
       # === Storage / I/O (NVMe SSD) ===
@@ -47,15 +47,15 @@ services:
       - checkpoint_completion_target=0.9
       - -c
       - wal_compression=lz4
-      # === Parallel query (Apple container 12 CPU) ===
+      # === Parallel query (8 CPU ceiling) ===
       - -c
-      - max_worker_processes=16
+      - max_worker_processes=8
       - -c
-      - max_parallel_workers=12
+      - max_parallel_workers=6
       - -c
-      - max_parallel_workers_per_gather=8
+      - max_parallel_workers_per_gather=3
       - -c
-      - max_parallel_maintenance_workers=4
+      - max_parallel_maintenance_workers=2
       # === Misc OLAP tuning ===
       - -c
       - jit=on
@@ -77,9 +77,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 20g
+          memory: 14g
         reservations:
-          memory: 8g
+          memory: 4g
     ports:
       - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_PORT:-5432}:${PGPORT:-5432}"
     volumes:

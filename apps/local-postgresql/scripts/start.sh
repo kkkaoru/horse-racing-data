@@ -45,6 +45,12 @@ load_env() {
 
 load_env
 
+# Keep the Apple Container VM below the old 20 GiB ceiling. The 14 GiB cap is
+# the measured two-reader peak (10.98 GiB) plus 25% safety headroom.
+# The TypeScript source is unit-tested and is also the operator-visible source
+# of truth for these coupled container/PostgreSQL settings.
+eval "$(bun run "$APP_DIR/scripts/postgres-resource-config.ts")"
+
 POSTGRES_HOST_BIND="${POSTGRES_HOST_BIND:-0.0.0.0}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 PGPORT="${PGPORT:-5432}"
@@ -85,6 +91,20 @@ wait_for_healthy() {
   echo "postgres did not become healthy within $((retries * 5))s." >&2
   show_container_diagnostics
   return 1
+}
+
+apply_role_resource_limits() {
+  # Historical ALTER ROLE tuning survives container recreation because PGDATA
+  # is bind-mounted. Re-assert the bounded values so role-level settings cannot
+  # silently override the 14 GiB container budget on new connections.
+  container exec "$CONTAINER_NAME" psql \
+    -U "$POSTGRES_USER" \
+    -d "$POSTGRES_DB" \
+    -v ON_ERROR_STOP=1 \
+    -c "ALTER ROLE CURRENT_USER SET work_mem = '$POSTGRES_WORK_MEM';" \
+    -c "ALTER ROLE CURRENT_USER SET effective_cache_size = '$POSTGRES_EFFECTIVE_CACHE_SIZE';" \
+    -c "ALTER ROLE CURRENT_USER SET max_parallel_workers_per_gather = '$POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER';" \
+    >/dev/null
 }
 
 delete_existing_container() {
@@ -130,8 +150,8 @@ run_new_container() {
     -v "$APP_DIR/data/postgres:/var/lib/postgresql/data" \
     -v "$APP_DIR/initdb:/docker-entrypoint-initdb.d" \
     -p "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${PGPORT}" \
-    -m 20G \
-    -c 12 \
+    -m "$POSTGRES_CONTAINER_MEMORY" \
+    -c "$POSTGRES_CONTAINER_CPUS" \
     --env-file "$APP_DIR/.env" \
     -e "PGDATA=/var/lib/postgresql/data" \
     "$IMAGE" \
@@ -139,10 +159,10 @@ run_new_container() {
       -c wal_level=logical \
       -c max_wal_senders=10 \
       -c max_replication_slots=10 \
-      -c shared_buffers=6GB \
-      -c effective_cache_size=18GB \
-      -c work_mem=64MB \
-      -c maintenance_work_mem=1GB \
+      -c "shared_buffers=$POSTGRES_SHARED_BUFFERS" \
+      -c "effective_cache_size=$POSTGRES_EFFECTIVE_CACHE_SIZE" \
+      -c "work_mem=$POSTGRES_WORK_MEM" \
+      -c "maintenance_work_mem=$POSTGRES_MAINTENANCE_WORK_MEM" \
       -c wal_buffers=16MB \
       -c random_page_cost=1.1 \
       -c effective_io_concurrency=256 \
@@ -151,10 +171,10 @@ run_new_container() {
       -c checkpoint_timeout=15min \
       -c checkpoint_completion_target=0.9 \
       -c wal_compression=lz4 \
-      -c max_worker_processes=16 \
-      -c max_parallel_workers=12 \
-      -c max_parallel_workers_per_gather=8 \
-      -c max_parallel_maintenance_workers=4 \
+      -c "max_worker_processes=$POSTGRES_MAX_WORKER_PROCESSES" \
+      -c "max_parallel_workers=$POSTGRES_MAX_PARALLEL_WORKERS" \
+      -c "max_parallel_workers_per_gather=$POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER" \
+      -c "max_parallel_maintenance_workers=$POSTGRES_MAX_PARALLEL_MAINTENANCE_WORKERS" \
       -c jit=on \
       -c default_statistics_target=200 \
       -c fsync=on \
@@ -168,6 +188,14 @@ run_new_container() {
 }
 
 run_index_health_repair() {
+  # amcheck intentionally reads every btree and can fill almost the entire
+  # Apple Container page cache (~13.4/14 GiB on the 2026-08-25 measurement).
+  # Starting an already-healthy database must stay cheap; run the full check
+  # only as an explicit maintenance action.
+  if [[ "${POSTGRES_RUN_INDEX_HEALTH_REPAIR:-0}" != "1" ]]; then
+    echo "Skipping index-health repair (set POSTGRES_RUN_INDEX_HEALTH_REPAIR=1 for maintenance)."
+    return 0
+  fi
   if ! command -v bun >/dev/null 2>&1; then
     echo "bun not found; skipping index-health repair. Install bun or run: bun --cwd $APP_DIR indexes:repair:quick" >&2
     return 0
@@ -182,6 +210,7 @@ run_index_health_repair() {
 ensure_container_system
 
 if start_existing_container_if_possible; then
+  apply_role_resource_limits
   run_index_health_repair
   container list
   exit 0
@@ -189,5 +218,6 @@ fi
 
 delete_existing_container
 run_new_container
+apply_role_resource_limits
 run_index_health_repair
 container list
