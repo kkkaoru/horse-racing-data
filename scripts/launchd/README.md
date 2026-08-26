@@ -75,9 +75,10 @@ Worker / Container and `sync-realtime-data` coordination.
 - `../ensure-apple-container.sh` — start Apple Container CLI for local PG /
   predict batch / local image rebuild.
 - `../ensure-docker-compat.sh` — start colima only when wrangler Containers
-  need a Docker API. When invoked with `-- command`, it stops only the Colima
-  VM started by that command after the command exits. It also stops any docker
-  shadow of local PG on `:15432`.
+  need a Docker API. A bounded command is mandatory; the wrapper stops only the
+  Colima VM it started after normal completion or HUP/INT/TERM. The default VM
+  ceiling is 4 GiB and `COLIMA_MEMORY_GIB` accepts only 2-8 GiB. It also stops
+  any docker shadow of local PG on `:15432`.
 - `com.kkk4oru.finish-position-predict.plist` — LaunchAgent definition.
 - `finish-position-predict-daily.sh` — wrapper script that runs the legacy
   local Apple container pipeline (`finish-position-predict-local:split2`) once. Reads
@@ -331,3 +332,31 @@ exists for launchd plists). This plist assumes the Mac is configured to
 integer in the plist accordingly. The wrapper computes `TARGET_DATE` from
 UTC+9 directly (`date -u -v+9H`), so the _which-day-to-guard_ logic is
 robust to TZ drift; only the _when-to-fire_ depends on the system TZ.
+
+## Venue weather Cloudflare-to-local sync
+
+`com.kkk4oru.racing-venue-weather-daily` runs at 06:00 JST, after the
+Cloudflare Worker 01:30 forecast cron. It reads the R2 SQL token from the
+repository-root `.env` and synchronizes a bounded seven-day window for both the
+stable v1 and additive v2 Pipeline tables into `apps/venue-weather/data/`.
+The lookback makes late actual observations update existing forecast rows while
+unchanged rows remain idempotent.
+
+Install or reload:
+
+```sh
+launchctl bootout gui/$(id -u)/com.kkk4oru.racing-venue-weather-daily 2>/dev/null || true
+cp scripts/launchd/com.kkk4oru.racing-venue-weather-daily.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.racing-venue-weather-daily.plist
+```
+
+Manual verification:
+
+```sh
+bash scripts/launchd/racing-venue-weather-daily.sh
+```
+
+The wrapper must pass `--data-dir data`, because `bun run --filter
+venue-weather` executes the package script with `apps/venue-weather` as its
+working directory. Passing the repository-relative
+`apps/venue-weather/data` would create an incorrect nested directory.

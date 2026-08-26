@@ -1,6 +1,10 @@
 // Run with bun.
 import { fetchVenueWeather } from "./weather-api";
 import { upsertVenueWeather } from "./weather-r2-store";
+import {
+  putVenueWeatherV2RuntimeObjects,
+  sendVenueWeatherV2CatalogEvents,
+} from "./weather-v2-store";
 import { deleteWeatherFromKv } from "./weather-kv";
 import { VENUE_COORDS } from "./venue-coords";
 import type { Env, WeatherJob } from "./types";
@@ -27,6 +31,26 @@ export const processWeatherJob = async (job: WeatherJob, env: Env): Promise<void
     rows,
     fetchedAt,
   });
+  await Promise.all([
+    putVenueWeatherV2RuntimeObjects({
+      archive: env.WEATHER_ARCHIVE,
+      keibajoCode: job.keibajoCode,
+      raceDate: job.raceDate,
+      weatherType: job.type,
+      venue,
+      rows,
+      fetchedAt,
+    }),
+    sendVenueWeatherV2CatalogEvents({
+      catalogStream: env.WEATHER_CATALOG_STREAM_V2,
+      keibajoCode: job.keibajoCode,
+      raceDate: job.raceDate,
+      weatherType: job.type,
+      venue,
+      rows,
+      fetchedAt,
+    }),
+  ]);
   // Invalidate KV cache so the next read reflects the fresh R2 data.
   await deleteWeatherFromKv(env.WEATHER_KV, job.raceDate);
 };

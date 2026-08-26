@@ -13,13 +13,17 @@ const TOKYO_VENUE = { name: "東京", lat: 35.6622, lon: 139.4856 };
 const completeHourlyResponse = (raceDate: string): string =>
   JSON.stringify({
     hourly: {
+      dew_point_2m: Array.from({ length: 24 }, () => 16),
       precipitation: Array.from({ length: 24 }, () => 0),
+      relative_humidity_2m: Array.from({ length: 24 }, () => 70),
+      shortwave_radiation: Array.from({ length: 24 }, () => 100),
       temperature_2m: Array.from({ length: 24 }, () => 22),
       time: Array.from(
         { length: 24 },
         (_, hour) => `${raceDate}T${String(hour).padStart(2, "0")}:00`,
       ),
       weather_code: Array.from({ length: 24 }, () => 1),
+      wet_bulb_temperature_2m: Array.from({ length: 24 }, () => 18),
       wind_gusts_10m: Array.from({ length: 24 }, () => 5),
       wind_speed_10m: Array.from({ length: 24 }, () => 3),
     },
@@ -92,7 +96,7 @@ describe("buildWeatherUrl", () => {
     expect(url).toContain("start_date=2026-06-22");
     expect(url).toContain("end_date=2026-06-22");
     expect(url).toContain(
-      "hourly=weather_code%2Ctemperature_2m%2Cprecipitation%2Cwind_speed_10m%2Cwind_gusts_10m",
+      "hourly=weather_code%2Ctemperature_2m%2Cprecipitation%2Cwind_speed_10m%2Cwind_gusts_10m%2Crelative_humidity_2m%2Cdew_point_2m%2Cwet_bulb_temperature_2m%2Cshortwave_radiation",
     );
   });
 });
@@ -180,6 +184,10 @@ describe("parseWeatherResponse", () => {
         precipitation: [0.0, 0.1],
         wind_speed_10m: [5.2, 4.8],
         wind_gusts_10m: [8.1, 7.5],
+        relative_humidity_2m: [70, 72],
+        dew_point_2m: [15, 14.5],
+        wet_bulb_temperature_2m: [17, 16.8],
+        shortwave_radiation: [0, 12],
       },
     });
 
@@ -193,6 +201,10 @@ describe("parseWeatherResponse", () => {
       precipitation: 0.0,
       windSpeed: 5.2,
       windGusts: 8.1,
+      relativeHumidity: 70,
+      dewPoint: 15,
+      wetBulbTemperature: 17,
+      shortwaveRadiation: 0,
     });
     expect(rows[1]).toStrictEqual({
       date: "2026-06-22",
@@ -202,6 +214,10 @@ describe("parseWeatherResponse", () => {
       precipitation: 0.1,
       windSpeed: 4.8,
       windGusts: 7.5,
+      relativeHumidity: 72,
+      dewPoint: 14.5,
+      wetBulbTemperature: 16.8,
+      shortwaveRadiation: 12,
     });
   });
 
@@ -237,6 +253,10 @@ describe("parseWeatherResponse", () => {
       precipitation: null,
       windSpeed: null,
       windGusts: null,
+      relativeHumidity: null,
+      dewPoint: null,
+      wetBulbTemperature: null,
+      shortwaveRadiation: null,
     });
   });
 });
@@ -268,6 +288,10 @@ describe("fetchVenueWeather", () => {
       precipitation: 0.0,
       windSpeed: 3.0,
       windGusts: 5.0,
+      relativeHumidity: 70,
+      dewPoint: 16,
+      wetBulbTemperature: 18,
+      shortwaveRadiation: 100,
     });
   });
 

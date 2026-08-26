@@ -19,8 +19,17 @@ vi.mock("./weather-r2-store", () => ({
   upsertVenueWeather: vi.fn().mockResolvedValue(1),
 }));
 
+vi.mock("./weather-v2-store", () => ({
+  putVenueWeatherV2RuntimeObjects: vi.fn().mockResolvedValue(0),
+  sendVenueWeatherV2CatalogEvents: vi.fn().mockResolvedValue(0),
+}));
+
 import { fetchVenueWeather } from "./weather-api";
 import { upsertVenueWeather } from "./weather-r2-store";
+import {
+  putVenueWeatherV2RuntimeObjects,
+  sendVenueWeatherV2CatalogEvents,
+} from "./weather-v2-store";
 
 const mockArchive = {} as unknown as R2Bucket;
 const mockCatalogStream = { send: vi.fn().mockResolvedValue(undefined) };
@@ -55,6 +64,16 @@ it("processWeatherJob invalidates KV after upsert", async () => {
   expect(mockKvDelete).toHaveBeenCalledWith("weather:2026-06-22");
 });
 
+it("processWeatherJob propagates a v2 runtime failure for queue retry", async () => {
+  vi.mocked(putVenueWeatherV2RuntimeObjects).mockRejectedValueOnce(new Error("v2 unavailable"));
+
+  await expect(
+    processWeatherJob({ type: "forecast", keibajoCode: "05", raceDate: "2026-06-22" }, mockEnv),
+  ).rejects.toThrow("v2 unavailable");
+
+  expect(mockKvDelete).not.toHaveBeenCalled();
+});
+
 it("processWeatherJob calls fetchVenueWeather and upsertVenueWeather for known venue", async () => {
   await processWeatherJob({ type: "forecast", keibajoCode: "05", raceDate: "2026-06-22" }, mockEnv);
 
@@ -65,6 +84,8 @@ it("processWeatherJob calls fetchVenueWeather and upsertVenueWeather for known v
     weatherType: "forecast",
   });
   expect(upsertVenueWeather).toHaveBeenCalledTimes(1);
+  expect(putVenueWeatherV2RuntimeObjects).toHaveBeenCalledTimes(1);
+  expect(sendVenueWeatherV2CatalogEvents).toHaveBeenCalledTimes(1);
 });
 
 it("processWeatherJob passes correct params to upsertVenueWeather", async () => {
@@ -133,4 +154,23 @@ it("handleWeatherBatch leaves a failed message unacked for queue retry", async (
   await expect(handleWeatherBatch(batch, mockEnv)).rejects.toThrow("incomplete weather");
   expect(ack).not.toHaveBeenCalled();
   expect(upsertVenueWeather).not.toHaveBeenCalled();
+});
+
+it("handleWeatherBatch leaves a v2 catalog failure unacked for queue retry", async () => {
+  vi.mocked(sendVenueWeatherV2CatalogEvents).mockRejectedValueOnce(
+    new Error("v2 catalog unavailable"),
+  );
+  const ack = vi.fn();
+  const batch = {
+    messages: [
+      {
+        ack,
+        body: { keibajoCode: "05", raceDate: "2026-06-22", type: "forecast" },
+      },
+    ],
+  } as unknown as MessageBatch<import("./types").WeatherJob>;
+
+  await expect(handleWeatherBatch(batch, mockEnv)).rejects.toThrow("v2 catalog unavailable");
+  expect(ack).not.toHaveBeenCalled();
+  expect(mockKvDelete).not.toHaveBeenCalled();
 });

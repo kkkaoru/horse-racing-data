@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "backfill:r2-catalog": "uv run --with duckdb python scripts/backfill-r2-catalog.py",
+    "backfill:r2-catalog:v2": "uv run --with duckdb python scripts/backfill_r2_catalog_v2.py",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "format": "oxfmt --write src scripts package.json tsconfig.json vitest.config.ts wrangler.jsonc",

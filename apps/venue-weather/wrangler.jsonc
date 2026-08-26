@@ -33,6 +33,10 @@
       "binding": "WEATHER_CATALOG_STREAM",
       "stream": "9171219290d34ec1b67e17371a726ff0",
     },
+    {
+      "binding": "WEATHER_CATALOG_STREAM_V2",
+      "stream": "e031c664c15249f7ba1d8d3bf0376290",
+    },
   ],
   "kv_namespaces": [
     {

@@ -4,7 +4,8 @@ import type { VenueCoord, WeatherRow, WeatherType } from "./types";
 // Constants at top
 const OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 const OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
-const HOURLY_VARS = "weather_code,temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m";
+const HOURLY_VARS =
+  "weather_code,temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m,relative_humidity_2m,dew_point_2m,wet_bulb_temperature_2m,shortwave_radiation";
 const TIMEZONE = "Asia/Tokyo";
 const CACHE_URL_BASE = "https://venue-weather.local/open-meteo/";
 const FORECAST_CACHE_TTL_SECONDS = 1800;
@@ -24,6 +25,10 @@ interface OpenMeteoHourly {
   precipitation: (number | null)[];
   wind_speed_10m: (number | null)[];
   wind_gusts_10m: (number | null)[];
+  relative_humidity_2m?: (number | null)[];
+  dew_point_2m?: (number | null)[];
+  wet_bulb_temperature_2m?: (number | null)[];
+  shortwave_radiation?: (number | null)[];
 }
 
 interface OpenMeteoResponse {
@@ -98,6 +103,10 @@ export const parseWeatherResponse = (raw: string): WeatherRow[] => {
     precipitation: hourly.precipitation[i] ?? null,
     windSpeed: hourly.wind_speed_10m[i] ?? null,
     windGusts: hourly.wind_gusts_10m[i] ?? null,
+    relativeHumidity: hourly.relative_humidity_2m?.[i] ?? null,
+    dewPoint: hourly.dew_point_2m?.[i] ?? null,
+    wetBulbTemperature: hourly.wet_bulb_temperature_2m?.[i] ?? null,
+    shortwaveRadiation: hourly.shortwave_radiation?.[i] ?? null,
   }));
 };
 

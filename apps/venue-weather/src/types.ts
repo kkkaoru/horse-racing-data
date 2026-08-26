@@ -15,6 +15,10 @@ export interface WeatherRow {
   precipitation: number | null;
   windSpeed: number | null;
   windGusts: number | null;
+  relativeHumidity?: number | null;
+  dewPoint?: number | null;
+  wetBulbTemperature?: number | null;
+  shortwaveRadiation?: number | null;
 }
 
 export interface VenueCoord {
@@ -52,7 +56,9 @@ export interface PipelineBinding {
 export interface Env {
   WEATHER_ARCHIVE: R2Bucket;
   WEATHER_CATALOG_STREAM?: PipelineBinding;
+  WEATHER_CATALOG_STREAM_V2?: PipelineBinding;
   WEATHER_JOBS: Queue<WeatherJob>;
   WEATHER_KV: KVNamespace;
   VENUE_WEATHER_INTERNAL_TOKEN?: string;
+  VENUE_WEATHER_V2_BACKFILL_TOKEN?: string;
 }
