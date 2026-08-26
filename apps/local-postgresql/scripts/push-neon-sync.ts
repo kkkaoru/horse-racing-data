@@ -643,6 +643,27 @@ function runCommand(
   });
 }
 
+const BROKEN_PIPE_ERROR = /exited with code 141\b/u;
+
+async function runReadOnlyContainerCommand(
+  command: string,
+  args: string[],
+  options: RunCommandOptions = {},
+): Promise<CommandResult> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runCommand(command, args, options);
+    } catch (error) {
+      if (!(error instanceof Error) || !BROKEN_PIPE_ERROR.test(error.message) || attempt >= 3) {
+        throw error;
+      }
+      writeLine(
+        `[${formatNow()}] ↻ read-only container query exited with broken pipe (141); retry ${attempt}/2`,
+      );
+    }
+  }
+}
+
 interface RunCopyPipelineOptions {
   env: Record<string, string | undefined>;
   localCopySql: string;
@@ -731,7 +752,7 @@ async function loadTableMetadata(
 ): Promise<TableMetadata[]> {
   const config = buildConfig(env);
   const sql = buildMetadataSql(config.selectedTables);
-  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
+  const { stdout } = await runReadOnlyContainerCommand("container", containerExecArgs(env, sql));
   return parseTableMetadata(stdout);
 }
 
@@ -900,8 +921,8 @@ async function loadTableChecksum(
   const sql = buildTableChecksumSql(table);
   const result =
     target === "local"
-      ? await runCommand("container", containerExecArgs(env, sql))
-      : await runCommand(
+      ? await runReadOnlyContainerCommand("container", containerExecArgs(env, sql))
+      : await runReadOnlyContainerCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
           {
@@ -929,7 +950,7 @@ async function loadDependencyEdges(
 ): Promise<DependencyEdge[]> {
   const config = buildConfig(env);
   const sql = buildDependencySql(config.selectedTables);
-  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
+  const { stdout } = await runReadOnlyContainerCommand("container", containerExecArgs(env, sql));
   return parseDependencyEdges(stdout);
 }
 
@@ -938,7 +959,7 @@ async function loadTableProfileMap(
   config: PushSyncConfig,
 ): Promise<Map<string, TableProfile>> {
   const sql = buildTableProfileSql(config.selectedTables);
-  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
+  const { stdout } = await runReadOnlyContainerCommand("container", containerExecArgs(env, sql));
   const profiles = parseTableProfiles(stdout, config.strategyThresholds, config.strategyMode);
   return new Map(profiles.map((profile) => [profile.tableName, profile]));
 }
@@ -953,8 +974,8 @@ async function loadFingerprint(
     tsColumn === null ? buildFingerprintSql(table) : buildTimestampFingerprintSql(table, tsColumn);
   const result =
     target === "local"
-      ? await runCommand("container", containerExecArgs(env, sql))
-      : await runCommand(
+      ? await runReadOnlyContainerCommand("container", containerExecArgs(env, sql))
+      : await runReadOnlyContainerCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
           {
@@ -973,8 +994,8 @@ async function loadTimestampCounts(
   const sql = buildTimestampCountSql(table, tsColumn);
   const result =
     target === "local"
-      ? await runCommand("container", containerExecArgs(env, sql))
-      : await runCommand(
+      ? await runReadOnlyContainerCommand("container", containerExecArgs(env, sql))
+      : await runReadOnlyContainerCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
           {
@@ -1004,7 +1025,7 @@ async function loadLocalTimestampRangeCount(
 ): Promise<number> {
   const predicate = buildTimestampRangePredicate(tsColumn, marker);
   const sql = `select count(*) from public.${quoteIdentifier(table.tableName)} where ${predicate}`;
-  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
+  const { stdout } = await runReadOnlyContainerCommand("container", containerExecArgs(env, sql));
   return Number(stdout.trim());
 }
 
@@ -1303,7 +1324,7 @@ async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<v
   });
 
   try {
-    const { stdout: countOutput } = await runCommand(
+    const { stdout: countOutput } = await runReadOnlyContainerCommand(
       "container",
       containerExecArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
       { tableName: table.tableName },

@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import {
   parseParallelsVmStatus,
+  resolveFeatureBuildDateRange,
   runPcKeibaUpdateAndSync,
   type CommandRunner,
 } from "./run-pc-keiba-update-and-sync";
@@ -18,6 +19,13 @@ it("rejects an unknown Parallels VM status", () => {
   );
 });
 
+it("resolves a JST update window covering the upcoming publication horizon", () => {
+  expect(resolveFeatureBuildDateRange(new Date("2026-08-25T15:00:00.000Z"))).toStrictEqual({
+    fromDate: "20260826",
+    toDate: "20260902",
+  });
+});
+
 it("updates PC-KEIBA, verifies the stopped VM, then syncs replicas", async () => {
   const runCommand = vi
     .fn<CommandRunner>()
@@ -28,45 +36,88 @@ it("updates PC-KEIBA, verifies the stopped VM, then syncs replicas", async () =>
       stdout: "VM Windows 11 exist stopped\n",
     })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
   const log = vi.fn<(message: string) => void>();
   const triggerRealtimeDiscovery = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const attestFinishPosition = vi
+    .fn<(runYmd: string) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const stateStore = {
+    clearCheckpoint: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    loadCheckpoint: vi.fn().mockResolvedValue(null),
+    recordCompletion: vi.fn().mockResolvedValue(undefined),
+    saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+  };
 
   await runPcKeibaUpdateAndSync({
     appDir: "/repo/apps/local-postgresql",
+    attestFinishPosition,
     bunExecutable: "/usr/local/bin/bun",
     log,
+    now: () => new Date("2026-08-25T09:00:00.000Z"),
     runCommand,
+    stateStore,
     triggerRealtimeDiscovery,
     vmName: "Windows 11",
   });
 
-  expect(runCommand.mock.calls).toStrictEqual([
-    [
-      ["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "pc-keiba:update"],
-      { env: { PARALLELS_STOP_AFTER_SUCCESS: "1" } },
-    ],
-    [["prlctl", "status", "Windows 11"], { captureOutput: true }],
-    [
-      [
-        "/usr/local/bin/bun",
-        "run",
-        "--cwd",
-        "/repo/apps/local-postgresql",
-        "scrape:netkeiba-training",
-      ],
-    ],
-    [["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "replica:push"]],
+  expect(runCommand.mock.calls[0]).toStrictEqual([
+    ["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "pc-keiba:update"],
+    { env: { PARALLELS_STOP_AFTER_SUCCESS: "1" } },
   ]);
-  expect(log.mock.calls).toStrictEqual([
-    ["Step 1/5: updating PC-KEIBA data through the Parallels Windows VM..."],
-    ["Step 2/5: verifying that the Windows VM stopped after the update..."],
-    ["Step 3/5: importing JRA training workouts from netkeiba as backup..."],
-    ["Step 4/5: syncing local PostgreSQL to R2 Catalog and Neon..."],
-    ["Step 5/5: discovering synced races and planning premium fetches..."],
-    ["PC-KEIBA update, R2 Catalog/Neon sync, and realtime discovery completed successfully."],
+  expect(runCommand.mock.calls[1]).toStrictEqual([
+    ["prlctl", "status", "Windows 11"],
+    { captureOutput: true },
+  ]);
+  expect(runCommand.mock.calls[2]?.[0]).toEqual([
+    "/usr/local/bin/bun",
+    "run",
+    "--cwd",
+    "/repo/apps/pc-keiba-viewer",
+    "dev:build-corner-features",
+    "--",
+    "--target",
+    "local",
+    "--source-scope",
+    "all",
+    "--from-date",
+    expect.any(String),
+    "--to-date",
+    expect.any(String),
+  ]);
+  expect(runCommand.mock.calls[3]?.[0]).toStrictEqual([
+    "/usr/local/bin/bun",
+    "run",
+    "--cwd",
+    "/repo/apps/local-postgresql",
+    "scrape:netkeiba-training",
+  ]);
+  expect(runCommand.mock.calls[4]?.[0]).toStrictEqual([
+    "/usr/local/bin/bun",
+    "run",
+    "--cwd",
+    "/repo/apps/local-postgresql",
+    "replica:push",
+  ]);
+  expect(log.mock.calls.map(([message]) => message)).toEqual([
+    "Step 1/7: updating PC-KEIBA data through the Parallels Windows VM...",
+    "Step 2/7: verifying that the Windows VM stopped after the update...",
+    expect.stringMatching(/^Step 3\/7: materializing local corner features/),
+    "Step 4/7: importing JRA training workouts from netkeiba as backup...",
+    "Step 5/7: syncing local PostgreSQL to R2 Catalog and Neon...",
+    "Step 6/7: discovering synced races and planning premium fetches...",
+    "Step 7/7: attesting pre-weight prediction and KV readiness for upcoming 20260825 races...",
+    "PC-KEIBA update, R2 Catalog/Neon sync, realtime discovery, and prediction readiness attestation completed successfully.",
   ]);
   expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
+  expect(attestFinishPosition).toHaveBeenCalledWith("20260825");
+  expect(stateStore.recordCompletion).toHaveBeenCalledWith({
+    completedAt: "2026-08-25T09:00:00.000Z",
+    runYmd: "20260825",
+    version: 1,
+  });
+  expect(stateStore.clearCheckpoint).toHaveBeenCalledOnce();
 });
 
 it("does not inspect the VM or sync when the PC-KEIBA update fails", async () => {
@@ -79,9 +130,17 @@ it("does not inspect the VM or sync when the PC-KEIBA update fails", async () =>
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
       vmName: "Windows 11",
     }),
@@ -98,9 +157,17 @@ it("does not sync when the VM status command fails", async () => {
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
       vmName: "Windows 11",
     }),
@@ -121,9 +188,17 @@ it("does not sync while the VM is still running", async () => {
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
       vmName: "Windows 11",
     }),
@@ -143,21 +218,69 @@ it("reports a replica sync failure without re-running the update", async () => {
       stdout: "VM Windows 11 exist stopped\n",
     })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 9, stderr: "", stdout: "" });
 
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
       vmName: "Windows 11",
     }),
   ).rejects.toThrow(
     "Command failed (9): /usr/local/bin/bun run --cwd /repo/apps/local-postgresql replica:push",
   );
-  expect(runCommand).toHaveBeenCalledTimes(4);
+  expect(runCommand).toHaveBeenCalledTimes(5);
+});
+
+it("retries a replica sync broken-pipe exit without re-running the update", async () => {
+  const runCommand = vi
+    .fn<CommandRunner>()
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({
+      exitCode: 0,
+      stderr: "",
+      stdout: "VM Windows 11 exist stopped\n",
+    })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 141, stderr: "broken pipe", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
+  const log = vi.fn<(message: string) => void>();
+
+  await runPcKeibaUpdateAndSync({
+    appDir: "/repo/apps/local-postgresql",
+    attestFinishPosition: vi.fn().mockResolvedValue(undefined),
+    bunExecutable: "/usr/local/bin/bun",
+    log,
+    now: () => new Date("2026-08-25T09:00:00.000Z"),
+    runCommand,
+    stateStore: {
+      clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+      loadCheckpoint: vi.fn().mockResolvedValue(null),
+      recordCompletion: vi.fn().mockResolvedValue(undefined),
+      saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+    },
+    triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
+    vmName: "Windows 11",
+  });
+
+  expect(runCommand).toHaveBeenCalledTimes(6);
+  expect(runCommand.mock.calls[4]?.[0]).toEqual(runCommand.mock.calls[5]?.[0]);
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining("broken pipe (141); retrying without repeating PC-KEIBA update"),
+  );
 });
 
 it("fails closed when realtime discovery fails after a successful replica sync", async () => {
@@ -170,6 +293,7 @@ it("fails closed when realtime discovery fails after a successful replica sync",
       stdout: "VM Windows 11 exist stopped\n",
     })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
   const triggerRealtimeDiscovery = vi
     .fn<() => Promise<void>>()
@@ -179,21 +303,30 @@ it("fails closed when realtime discovery fails after a successful replica sync",
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log,
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery,
       vmName: "Windows 11",
     }),
   ).rejects.toThrow("inline discovery failed");
-  expect(runCommand).toHaveBeenCalledTimes(4);
+  expect(runCommand).toHaveBeenCalledTimes(5);
   expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
   expect(log.mock.calls).toStrictEqual([
-    ["Step 1/5: updating PC-KEIBA data through the Parallels Windows VM..."],
-    ["Step 2/5: verifying that the Windows VM stopped after the update..."],
-    ["Step 3/5: importing JRA training workouts from netkeiba as backup..."],
-    ["Step 4/5: syncing local PostgreSQL to R2 Catalog and Neon..."],
-    ["Step 5/5: discovering synced races and planning premium fetches..."],
+    ["Step 1/7: updating PC-KEIBA data through the Parallels Windows VM..."],
+    ["Step 2/7: verifying that the Windows VM stopped after the update..."],
+    [expect.stringMatching(/^Step 3\/7: materializing local corner features/)],
+    ["Step 4/7: importing JRA training workouts from netkeiba as backup..."],
+    ["Step 5/7: syncing local PostgreSQL to R2 Catalog and Neon..."],
+    ["Step 6/7: discovering synced races and planning premium fetches..."],
   ]);
 });
 
@@ -206,19 +339,239 @@ it("does not start replica sync when the independent training import fails", asy
       stderr: "",
       stdout: "VM Windows 11 exist stopped\n",
     })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 6, stderr: "training API forbidden", stdout: "" });
   const triggerRealtimeDiscovery = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 
   await expect(
     runPcKeibaUpdateAndSync({
       appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
       bunExecutable: "/usr/local/bin/bun",
       log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
       runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
       triggerRealtimeDiscovery,
       vmName: "Windows 11",
     }),
   ).rejects.toThrow("training API forbidden");
-  expect(runCommand).toHaveBeenCalledTimes(3);
+  expect(runCommand).toHaveBeenCalledTimes(4);
   expect(triggerRealtimeDiscovery).not.toHaveBeenCalled();
+});
+
+it("resumes a failed same-day run at replica sync without repeating completed data acquisition", async () => {
+  const runCommand = vi.fn<CommandRunner>().mockResolvedValue({
+    exitCode: 0,
+    stderr: "",
+    stdout: "",
+  });
+  const triggerRealtimeDiscovery = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const attestFinishPosition = vi
+    .fn<(runYmd: string) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const saveCheckpoint = vi.fn().mockResolvedValue(undefined);
+  const clearCheckpoint = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const log = vi.fn<(message: string) => void>();
+
+  await runPcKeibaUpdateAndSync({
+    appDir: "/repo/apps/local-postgresql",
+    attestFinishPosition,
+    bunExecutable: "/usr/local/bin/bun",
+    log,
+    now: () => new Date("2026-08-25T09:00:00.000Z"),
+    runCommand,
+    stateStore: {
+      clearCheckpoint,
+      loadCheckpoint: vi.fn().mockResolvedValue({
+        nextStep: "sync",
+        runYmd: "20260825",
+        updatedAt: "2026-08-25T08:00:00.000Z",
+        version: 1,
+      }),
+      recordCompletion: vi.fn().mockResolvedValue(undefined),
+      saveCheckpoint,
+    },
+    triggerRealtimeDiscovery,
+    vmName: "Windows 11",
+  });
+
+  expect(runCommand.mock.calls).toStrictEqual([
+    [["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "replica:push"]],
+  ]);
+  expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
+  expect(attestFinishPosition).toHaveBeenCalledWith("20260825");
+  expect(saveCheckpoint.mock.calls).toStrictEqual([
+    [
+      {
+        nextStep: "discovery",
+        runYmd: "20260825",
+        updatedAt: "2026-08-25T09:00:00.000Z",
+        version: 1,
+      },
+    ],
+    [
+      {
+        nextStep: "readiness",
+        runYmd: "20260825",
+        updatedAt: "2026-08-25T09:00:00.000Z",
+        version: 1,
+      },
+    ],
+  ]);
+  expect(clearCheckpoint).toHaveBeenCalledOnce();
+  expect(log).toHaveBeenCalledWith("Resuming update-and-sync run 20260825 from step 'sync'.");
+});
+
+it("does not use a stale prior-day checkpoint to skip a new PC-KEIBA update", async () => {
+  const runCommand = vi
+    .fn<CommandRunner>()
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({
+      exitCode: 0,
+      stderr: "",
+      stdout: "VM Windows 11 exist stopped\n",
+    })
+    .mockResolvedValue({ exitCode: 0, stderr: "", stdout: "" });
+  const log = vi.fn<(message: string) => void>();
+
+  await runPcKeibaUpdateAndSync({
+    appDir: "/repo/apps/local-postgresql",
+    attestFinishPosition: vi.fn().mockResolvedValue(undefined),
+    bunExecutable: "/usr/local/bin/bun",
+    log,
+    now: () => new Date("2026-08-25T09:00:00.000Z"),
+    runCommand,
+    stateStore: {
+      clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+      loadCheckpoint: vi.fn().mockResolvedValue({
+        nextStep: "readiness",
+        runYmd: "20260824",
+        updatedAt: "2026-08-24T09:00:00.000Z",
+        version: 1,
+      }),
+      recordCompletion: vi.fn().mockResolvedValue(undefined),
+      saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+    },
+    triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
+    vmName: "Windows 11",
+  });
+
+  expect(runCommand.mock.calls[0]).toStrictEqual([
+    ["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "pc-keiba:update"],
+    { env: { PARALLELS_STOP_AFTER_SUCCESS: "1" } },
+  ]);
+  expect(log).toHaveBeenCalledWith(
+    "Ignoring stale update-and-sync checkpoint for 20260824; starting 20260825 from the PC-KEIBA update.",
+  );
+});
+
+it("does not advance the update checkpoint when PC-KEIBA reports a failure", async () => {
+  const saveCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+  await expect(
+    runPcKeibaUpdateAndSync({
+      appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
+      bunExecutable: "/usr/local/bin/bun",
+      log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
+      runCommand: vi.fn<CommandRunner>().mockResolvedValue({
+        exitCode: 7,
+        stderr: "guest update failed",
+        stdout: "",
+      }),
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint,
+      },
+      triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
+      vmName: "Windows 11",
+    }),
+  ).rejects.toThrow("guest update failed");
+  expect(saveCheckpoint).not.toHaveBeenCalled();
+});
+
+it("persists verify-vm only after the PC-KEIBA update command succeeds", async () => {
+  const runCommand = vi
+    .fn<CommandRunner>()
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 4, stderr: "status unavailable", stdout: "" });
+  const saveCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+  await expect(
+    runPcKeibaUpdateAndSync({
+      appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
+      bunExecutable: "/usr/local/bin/bun",
+      log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
+      runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint,
+      },
+      triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
+      vmName: "Windows 11",
+    }),
+  ).rejects.toThrow("status unavailable");
+
+  expect(saveCheckpoint.mock.calls).toStrictEqual([
+    [
+      {
+        nextStep: "verify-vm",
+        runYmd: "20260825",
+        updatedAt: "2026-08-25T09:00:00.000Z",
+        version: 1,
+      },
+    ],
+  ]);
+  const updateInvocation = runCommand.mock.invocationCallOrder[0];
+  const checkpointInvocation = saveCheckpoint.mock.invocationCallOrder[0];
+  expect(updateInvocation).toBeDefined();
+  expect(checkpointInvocation).toBeDefined();
+  if (updateInvocation === undefined || checkpointInvocation === undefined) {
+    throw new Error("Expected update and checkpoint invocations");
+  }
+  expect(updateInvocation).toBeLessThan(checkpointInvocation);
+});
+
+it("keeps a readiness checkpoint and withholds completion when production attestation fails", async () => {
+  const clearCheckpoint = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const recordCompletion = vi.fn().mockResolvedValue(undefined);
+
+  await expect(
+    runPcKeibaUpdateAndSync({
+      appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockRejectedValue(new Error("predictions incomplete")),
+      bunExecutable: "/usr/local/bin/bun",
+      log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
+      runCommand: vi.fn(),
+      stateStore: {
+        clearCheckpoint,
+        loadCheckpoint: vi.fn().mockResolvedValue({
+          nextStep: "readiness",
+          runYmd: "20260825",
+          updatedAt: "2026-08-25T08:00:00.000Z",
+          version: 1,
+        }),
+        recordCompletion,
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
+      triggerRealtimeDiscovery: vi.fn().mockResolvedValue(undefined),
+      vmName: "Windows 11",
+    }),
+  ).rejects.toThrow("predictions incomplete");
+  expect(recordCompletion).not.toHaveBeenCalled();
+  expect(clearCheckpoint).not.toHaveBeenCalled();
 });
