@@ -87,26 +87,69 @@ CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
 MODEL_META_JSON_PATH: Final[Path] = Path(__file__).parent / "model_meta.json"
 
-WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset({
-    "target_corner_1_norm",
-    "target_corner_2_norm",
-    "target_corner_3_norm",
-    "target_corner_4_norm",
-    "target_running_style_class",
-})
+WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "target_corner_1_norm",
+        "target_corner_2_norm",
+        "target_corner_3_norm",
+        "target_corner_4_norm",
+        "target_running_style_class",
+    }
+)
 
-PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
-    "jra-cb-v9-sim-2013-clean",
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-    "jra-cb-v10-prior-corner274-2013",
-    "jra-cb-stage1-marketfree235-2013",
-    "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
-    "iter12-nar-xgb-hpo-v8-clean188",
-    "iter40-nar-settransformer-blend-v1",
-    "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
-    "banei-cb-v9-sim-2011",
-    "banei-cb-v8-window2011-wf-15y",
-})
+PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "jra-cb-v9-sim-2013-clean",
+        "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        "jra-cb-v10-prior-corner274-2013",
+        "jra-cb-stage1-marketfree235-2013",
+        "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
+        "jra-dirt-small-005-hybrid-v1",
+        "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+        "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+        "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+        "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+        "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+        "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+        "jra-joken-005-pooled-yetirank-v2",
+        "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+        "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+        "jra-joken-005-turf-mile-yeti-gated-v1",
+        "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+        "jra-joken-010-pooled-yetirank-v2",
+        "jra-joken-016-pooled-yetirank-v2",
+        "jra-joken-701-pooled-yetirank-v2",
+        "jra-joken-701-turf-intermediate-qsm-gated-v1",
+        "jra-joken-701-turf-long-qsm-gated-v1",
+        "jra-joken-701-turf-mile-qsm-gated-v1",
+        "jra-joken-703-pooled-yetirank-v2",
+        "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+        "jra-joken-703-dirt-sprint-yeti-gated-v1",
+        "jra-joken-703-other-extended-qsm-gated-v1",
+        "jra-joken-703-querysoftmax-maxrange-v1",
+        "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+        "jra-joken-703-turf-1400-qsm-gated-v1",
+        "jra-joken-703-turf-intermediate-qsm-gated-v1",
+        "jra-joken-703-turf-long-spring-qsm-gated-v1",
+        "jra-joken-703-turf-long-summer-yeti-gated-v1",
+        "jra-joken-999-pooled-yetirank-v2",
+        "iter12-nar-xgb-hpo-v8-clean188",
+        "iter40-nar-settransformer-blend-v1",
+        "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+        "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+        "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
+        "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+        "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+        "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+        "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+        "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+        "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+        "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+        "banei-cb-v9-sim-2011",
+        "banei-cb-v8-window2011-wf-15y",
+    }
+)
 
 
 def leak_columns_in(feature_names: Iterable[str]) -> frozenset[str]:
@@ -114,9 +157,7 @@ def leak_columns_in(feature_names: Iterable[str]) -> frozenset[str]:
     return WITHIN_RACE_LEAK_COLUMNS.intersection(feature_names)
 
 
-def assert_no_within_race_leak_columns(
-    feature_names: Iterable[str], *, context: str
-) -> None:
+def assert_no_within_race_leak_columns(feature_names: Iterable[str], *, context: str) -> None:
     """Fail closed when a model artifact still carries within-race leak columns."""
     leaks = leak_columns_in(feature_names)
     if leaks:
@@ -412,6 +453,15 @@ NAR_TRANSFORMER_MODEL_VERSION: Final[str] = "iter40-nar-settransformer-blend-v1"
 
 # Fusion weight on the transformer seed-rank-mean (1 - w on the base rank).
 NAR_TRANSFORMER_BLEND_WEIGHT: Final[float] = 0.5
+
+
+JRA_DIRT_HYBRID_ENABLED: Final[bool] = _env_flag("JRA_DIRT_HYBRID_ENABLED", default=True)
+JRA_DIRT_HYBRID_MODEL_VERSION: Final[str] = "jra-dirt-small-005-hybrid-v1"
+
+
+def build_r2_jra_dirt_hybrid_key(file_name: str) -> str:
+    """Build the R2 object key for the JRA dirt-small-005 companion artifact."""
+    return f"{R2_KEY_PREFIX}/jra/{JRA_DIRT_HYBRID_MODEL_VERSION}/{file_name}"
 
 
 def build_r2_nar_transformer_key(file_name: str) -> str:

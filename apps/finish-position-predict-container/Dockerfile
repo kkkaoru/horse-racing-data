@@ -43,6 +43,7 @@ RUN uv pip install --system --no-cache \
     "pandas>=2.2.0" \
     "psycopg[binary]>=3.2.0" \
     "pyarrow>=17.0.0" \
+    "scipy>=1.13.0" \
     "xgboost-cpu==3.2.0"
 
 # Pre-install the DuckDB source extensions into the image so every per-race
@@ -78,6 +79,11 @@ RUN python -m predict_lib.artifact_integrity \
         --system finish-position
 
 FROM runtime-base AS runtime
+
+# Bump when runtime orchestration changes so a remote Wrangler build cannot
+# reuse a stale source-copy layer from a previous container rollout.
+ARG SOURCE_CACHE_BUSTER=20260825-prewarm-deadline-v1
+RUN echo "source-cache-buster=${SOURCE_CACHE_BUSTER}"
 
 # Copy only installed runtime packages and pre-installed DuckDB extensions.
 # The uv executables and dependency download/cache layers remain in
@@ -148,4 +154,7 @@ ENV PREDICT_SERVE_MODE=http
 
 # Default entrypoint is the daily predictor. The Worker overrides entrypoint /
 # envVars per start() call when needed.
+ARG ARTIFACT_ROLLOUT_REV=unversioned
+LABEL horse-racing-data.artifact-rollout-rev="${ARTIFACT_ROLLOUT_REV}"
+
 ENTRYPOINT ["python", "/app/src/predict_upcoming.py"]

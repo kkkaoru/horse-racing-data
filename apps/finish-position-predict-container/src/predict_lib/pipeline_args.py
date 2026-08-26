@@ -401,6 +401,7 @@ def build_base_argv(
     venue_weather_dir: Path | None = None,
     target_race: str | None = None,
     temp_dir: Path | None = None,
+    source_watermark_file: Path | None = None,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
@@ -427,6 +428,10 @@ def build_base_argv(
     When ``temp_dir`` is provided the ``--temp-dir`` flag is appended so DuckDB
     spill files stay isolated to this pipeline run instead of using the shared
     builder default.
+
+    When ``source_watermark_file`` is provided the base builder writes the
+    target entrant watermark using its already attached source connection.
+    This avoids a second Catalog attach on the day-base critical path.
     """
     argv = [
         PYTHON_BIN,
@@ -451,6 +456,8 @@ def build_base_argv(
         argv += ["--target-race", target_race]
     if temp_dir is not None:
         argv += ["--temp-dir", str(temp_dir)]
+    if source_watermark_file is not None:
+        argv += ["--source-watermark-file", str(source_watermark_file)]
     return argv
 
 
@@ -552,6 +559,20 @@ def _target_race_scope_args(script: str, target_race: str | None) -> list[str]:
     return []
 
 
+def _near_miss_target_date_args(
+    script: str, target_date: str | None, target_to_date: str | None
+) -> list[str]:
+    """Bound near-miss PG staging for non-focused upcoming builds."""
+    if script != NEAR_MISS_SCRIPT or target_date is None:
+        return []
+    return [
+        "--target-from-date",
+        target_date,
+        "--target-to-date",
+        target_to_date or target_date,
+    ]
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -561,6 +582,7 @@ def build_layer_argv(
     database_url: str,
     target_date: str | None = None,
     target_race: str | None = None,
+    target_to_date: str | None = None,
 ) -> list[str]:
     """Argv for one layer script (input/output dirs + only its declared flags).
 
@@ -602,6 +624,7 @@ def build_layer_argv(
         + _similar_race_args(script, category)
         + _sire_venue_bias_category_args(script, category)
         + _target_race_scope_args(script, target_race)
+        + _near_miss_target_date_args(script, target_date, target_to_date)
     )
 
 

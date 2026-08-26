@@ -82,7 +82,13 @@ from pathlib import Path
 from typing import Final, Literal, TypedDict, final
 from urllib.parse import parse_qs, urlparse
 
-from .debug_log import debug_log, debug_logs_scope, drain_debug_progress, parse_debug_flag
+from .debug_log import (
+    debug_log,
+    debug_logs_scope,
+    drain_debug_progress,
+    drain_operational_progress,
+    parse_debug_flag,
+)
 from .focused_full_cache import FocusedFullCachePayload
 
 # ---------------------------------------------------------------------------
@@ -170,17 +176,21 @@ PREWARM_WATERMARK_MISSING_ERROR: Final[str] = (
 
 PIPELINE_TOTAL_TIMEOUT_ENV: Final[str] = "PIPELINE_TOTAL_TIMEOUT_SECONDS"
 DEFAULT_PIPELINE_TOTAL_TIMEOUT_SECONDS: Final[float] = 30 * 60
-"""Absolute end-to-end ceiling for one focused full pipeline.
+"""Absolute end-to-end ceiling for one focused full or day-base pipeline.
 
 The older subprocess timeout applied independently to every base/layer child,
 allowing a chain of individually bounded children to run for hours.  This
 deadline is shared by the detached status record and ``pipeline_runner`` so
 pollers can distinguish genuine progress from a dead pipeline without
-extending the run merely because a Queue message was redelivered.
+extending the run merely because a Queue message was redelivered. Production
+The day-base history layers are target-scoped so normal builds must fit this
+bound. Extending it to accommodate an unscoped all-history scan only retains a
+standard-4 longer and hides the query regression instead of fixing it.
 """
 
 FOCUSED_FULL_STATE_MAX_ENTRIES: Final[int] = 256
 FOCUSED_FULL_ERROR_MAX_LENGTH: Final[int] = 2000
+FOCUSED_FULL_PROGRESS_HEARTBEAT_SECONDS: Final[float] = 30.0
 
 RESCORE_ATTESTATION_TTL_MS: Final[int] = 2 * 60 * 1000
 """Maximum age of Worker-observed cache evidence accepted by the Container."""
@@ -741,30 +751,41 @@ class PrewarmParams:
     """Parsed + validated query parameters for ``GET /prewarm-day-base``.
 
     Deliberately a narrower parameter set than :class:`PredictParams`
-    (category / runDate / daysAhead only, no mode / keibajoCode / raceBango):
+    (category / runDate / daysAhead / force / rebuild only, no mode / keibajoCode / raceBango):
     the day-base build is always whole-day scope (see
     ``pipeline_runner.build_day_base``), never a single race.
     """
 
-    __slots__ = ("category", "days_ahead", "debug_logs", "run_date")
+    __slots__ = ("category", "days_ahead", "debug_logs", "force", "rebuild", "run_date")
 
     def __init__(
-        self, category: str, run_date: str, days_ahead: int, debug_logs: bool = False
+        self,
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        debug_logs: bool = False,
+        force: bool = False,
+        rebuild: bool = False,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
         self.days_ahead: int = days_ahead
         self.debug_logs: bool = debug_logs
+        self.force: bool = force
+        self.rebuild: bool = rebuild
 
 
 def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
-    """Parse ``?category=...&runDate=...&daysAhead=...`` into :class:`PrewarmParams`.
+    """Parse ``?category=...&runDate=...&daysAhead=...&force=...&rebuild=...``.
 
     Returns a :class:`PrewarmParams` on success or a human-readable error
     string on validation failure -- mirrors :func:`parse_predict_params`'s
     validation style (same ``category`` / ``runDate`` / ``daysAhead`` rules),
     minus the ``mode`` / ``keibajoCode`` / ``raceBango`` parameters that only
-    apply to the per-race ``/predict`` request shape.
+    apply to the per-race ``/predict`` request shape. ``force`` and the internal
+    Worker-issued ``rebuild`` attestation are optional and accept only ``0`` or
+    ``1``. They are mutually exclusive so operator intent stays distinct from a
+    verified Worker cache miss.
     """
     qs = parse_qs(query_string, keep_blank_values=True)
 
@@ -791,9 +812,23 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
         if days_ahead < 0:
             return f"invalid daysAhead: {days_ahead}; must be non-negative"
 
+    raw_force = _first_qs(qs, "force")
+    if raw_force is not None and raw_force not in ("0", "1"):
+        return f"invalid force: {raw_force!r}; must be 0 or 1"
+    raw_rebuild = _first_qs(qs, "rebuild")
+    if raw_rebuild is not None and raw_rebuild not in ("0", "1"):
+        return f"invalid rebuild: {raw_rebuild!r}; must be 0 or 1"
+    if raw_force == "1" and raw_rebuild == "1":
+        return "force and rebuild cannot both be enabled"
+
     debug_logs = parse_debug_flag(_first_qs(qs, "debug"))
     return PrewarmParams(
-        category=category, run_date=run_date, days_ahead=days_ahead, debug_logs=debug_logs
+        category=category,
+        run_date=run_date,
+        days_ahead=days_ahead,
+        debug_logs=debug_logs,
+        force=raw_force == "1",
+        rebuild=raw_rebuild == "1",
     )
 
 
@@ -1445,6 +1480,14 @@ def _debug_progress_chunks(
         yield build_progress_line(message, elapsed_fn())
 
 
+def _operational_progress_chunks(
+    elapsed_fn: Callable[[], float],
+) -> Generator[bytes, None, None]:
+    """Yield bounded production telemetry over the existing NDJSON stream."""
+    for message in drain_operational_progress():
+        yield build_progress_line(message, elapsed_fn())
+
+
 def _result_debug_step(debug_logs: bool, debug_steps: list[str]) -> str | None:
     """Last drained debug step for the result line, or None when debug is off."""
     if not debug_logs or not debug_steps:
@@ -1462,6 +1505,7 @@ def _iter_keepalive[T](
     elapsed_fn: Callable[[], float],
     last_progress: float,
     debug_steps: list[str] | None = None,
+    operational_progress: bool = False,
 ) -> Generator[bytes, None, tuple[T | None, BaseException | None, float]]:
     """Run *fn* in a background daemon thread, yielding keepalive progress lines.
 
@@ -1493,6 +1537,12 @@ def _iter_keepalive[T](
     thread, result_box, error_box = _run_in_thread(fn)
     while thread.is_alive():
         sleep_fn(_POLL_INTERVAL_S)
+        operational_chunks = (
+            list(_operational_progress_chunks(elapsed_fn)) if operational_progress else []
+        )
+        if operational_chunks:
+            yield from operational_chunks
+            last_progress = time_fn()
         debug_chunks = list(_debug_progress_chunks(elapsed_fn, collected))
         if debug_chunks:
             yield from debug_chunks
@@ -1502,6 +1552,8 @@ def _iter_keepalive[T](
             yield build_progress_line(stage, elapsed_fn())
             last_progress = now
     thread.join()
+    if operational_progress:
+        yield from _operational_progress_chunks(elapsed_fn)
     yield from _debug_progress_chunks(elapsed_fn, collected)
     if error_box:
         return None, error_box[0], last_progress
@@ -1603,10 +1655,10 @@ lock plus the single focused-full slot together guarantee no other pipeline
 run can complete during this window, so there is no possibility of storing a
 different race's payload under this race's key.
 
-Must not raise -- any exception is caught by the caller and logged, never
-propagated, matching the non-blocking convention of :data:`ParquetPayloadFn`.
-A missed or failed populate degrades to "no cache entry for this race" and
-must never fail the underlying prediction run.
+Must raise when the payload cannot be produced. A focused-full run is only
+semantically complete after the exact per-race feature cache is available;
+the detached runner records such failures as ``error`` so the Worker can
+repair and retry instead of reporting a cache-less success.
 """
 
 _FOCUSED_FULL_LOCK: Final[threading.Lock] = threading.Lock()
@@ -1815,8 +1867,18 @@ def _log_focused_full_lifecycle(
     print(json.dumps(payload, separators=(",", ":")), file=sys.stderr, flush=True)
 
 
-def _run_detached_focused_full(fn: Callable[[], int]) -> None:
-    """Run *fn* in a background thread independent of the HTTP response."""
+def _run_detached_focused_full(
+    fn: Callable[[], int], heartbeat_fn: Callable[[], None] | None = None
+) -> None:
+    """Run *fn* in a non-daemon thread independent of the HTTP response.
+
+    Focused-full is deliberately acknowledged before the feature pipeline
+    finishes.  A daemon thread can be discarded when the serving process is
+    quiesced after that response, leaving the Worker watcher in ``accepted``
+    forever with no cache payload.  Keep the same lifecycle guarantee as the
+    day-base prewarm thread: the process remains alive until the detached
+    pipeline reaches its terminal state and releases its slot.
+    """
 
     def _target() -> None:
         try:
@@ -1832,7 +1894,26 @@ def _run_detached_focused_full(fn: Callable[[], int]) -> None:
                     if thread is not current_thread and thread.is_alive()
                 ]
 
-    thread = threading.Thread(target=_target, daemon=True)
+    heartbeat_done = threading.Event()
+
+    def _heartbeat() -> None:
+        while not heartbeat_done.wait(FOCUSED_FULL_PROGRESS_HEARTBEAT_SECONDS):
+            if heartbeat_fn is None:
+                return
+            try:
+                heartbeat_fn()
+            except BaseException as exc:
+                debug_log(f"[focused-full] heartbeat failed: {type(exc).__name__}: {exc}")
+
+    def _target_with_heartbeat() -> None:
+        try:
+            _target()
+        finally:
+            heartbeat_done.set()
+
+    if heartbeat_fn is not None:
+        threading.Thread(target=_heartbeat, name="focused-full-heartbeat", daemon=True).start()
+    thread = threading.Thread(target=_target_with_heartbeat, daemon=False)
     with _FOCUSED_FULL_LOCK:
         _DETACHED_FOCUSED_FULL_THREADS.append(thread)
     thread.start()
@@ -1983,13 +2064,15 @@ def iter_predict_chunks(
 
     Mode dispatch:
     - ``mode=full`` (default) -- always calls *predict_fn*.
-    - ``mode=rescore`` with *rescore_fn* provided -- calls *rescore_fn* first;
-      on ``CacheMissError`` falls back to *predict_fn* after emitting a
-      ``rescore-fallback-to-full`` progress line. When the rescore request
-      already carried a single-race scope, the fallback runs under
-      :func:`activate_scoped_rescore_cache_miss_fallback` so the full path
-      rebuilds only that race (target-race ``LAYER_CHAIN``) instead of
-      inline-building a whole-day day-base.
+    - ``mode=rescore`` with *rescore_fn* provided -- calls *rescore_fn* first.
+      An unattested ``CacheMissError`` falls back to *predict_fn* after emitting
+      a ``rescore-fallback-to-full`` progress line. A Worker-attested request
+      fails closed instead: rebuilding after Worker proved an exact R2 HIT
+      would hide an identity race and make normal operation silently expensive.
+      When an unattested request already carried a single-race scope, the
+      fallback runs under :func:`activate_scoped_rescore_cache_miss_fallback`
+      so the full path rebuilds only that race (target-race ``LAYER_CHAIN``)
+      instead of inline-building a whole-day day-base.
     - ``mode=rescore`` without *rescore_fn* -- falls back to *predict_fn*
       immediately (same as ``mode=full``; emits fallback progress line).
 
@@ -2075,7 +2158,7 @@ def iter_predict_chunks(
                              focused-full pipeline succeeds and before the
                              slot is released. See
                              :data:`FocusedFullCachePopulateFn` for why this
-                             exists and its non-blocking contract. Not called
+                             exists and its required completion contract. Not called
                              on pipeline error, and not called for non-focused
                              requests.
         time_fn:             Monotonic clock (injectable for deterministic tests).
@@ -2172,28 +2255,16 @@ def iter_predict_chunks(
 
         unguarded_first_call = first_call
 
-        def _populate_cache_best_effort() -> None:
+        def _populate_cache_required() -> None:
             if focused_full_cache_populate_fn is None:
                 return
-            try:
-                focused_full_cache_populate_fn(params)
-            except BaseException as cache_err:
-                debug_log(
-                    f"[focused-full] cache populate failed race={focused_race_key}: "
-                    f"{type(cache_err).__name__}: {cache_err}"
-                )
+            focused_full_cache_populate_fn(params)
 
         def _call_focused_and_release() -> int:
             try:
                 result = unguarded_first_call()
-                _populate_cache_best_effort()
+                _populate_cache_required()
                 finished_at_ms = _wall_time_ms()
-                _FOCUSED_FULL_STATES.finish(
-                    focused_race_key,
-                    "success",
-                    finished_at_ms,
-                    None,
-                )
                 if not params.debug_logs:
                     _log_focused_full_lifecycle(
                         params=params,
@@ -2201,18 +2272,18 @@ def iter_predict_chunks(
                         status="success",
                         elapsed_ms=finished_at_ms - focused_run_state.started_at_ms,
                     )
+                _FOCUSED_FULL_STATES.finish(
+                    focused_race_key,
+                    "success",
+                    finished_at_ms,
+                    None,
+                )
                 return result
             except BaseException as focused_error:
                 safe_error = mask_error_message(f"{type(focused_error).__name__}: {focused_error}")[
                     :FOCUSED_FULL_ERROR_MAX_LENGTH
                 ]
                 finished_at_ms = _wall_time_ms()
-                _FOCUSED_FULL_STATES.finish(
-                    focused_race_key,
-                    "error",
-                    finished_at_ms,
-                    safe_error,
-                )
                 if not params.debug_logs:
                     _log_focused_full_lifecycle(
                         params=params,
@@ -2221,6 +2292,12 @@ def iter_predict_chunks(
                         elapsed_ms=finished_at_ms - focused_run_state.started_at_ms,
                         error=safe_error,
                     )
+                _FOCUSED_FULL_STATES.finish(
+                    focused_race_key,
+                    "error",
+                    finished_at_ms,
+                    safe_error,
+                )
                 raise
             finally:
                 release_fn(focused_race_key)
@@ -2232,7 +2309,10 @@ def iter_predict_chunks(
                 status="accepted",
                 elapsed_ms=0,
             )
-            _run_detached_focused_full(_call_focused_and_release)
+            _run_detached_focused_full(
+                _call_focused_and_release,
+                heartbeat_fn=lambda: mark_focused_full_progress(focused_race_key),
+            )
             yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
             return
         # debug=1: hold the HTTP stream so Worker ``Predict progress`` can
@@ -2257,8 +2337,17 @@ def iter_predict_chunks(
     if thread_error is not None:
         first_exc = thread_error
 
-        # If rescore raised CacheMissError, fall back to the full pipeline.
-        if use_rescore_first and isinstance(first_exc, CacheMissError):
+        # Worker-attested production rescore is HIT-only. If the exact object
+        # disappears or changes after attestation, surface the miss so Queue
+        # can attest/warm again; do not turn that identity race into an
+        # unbounded Container rebuild. Unattested manual/legacy requests keep
+        # the compatibility fallback.
+        attested_cache_miss = (
+            use_rescore_first
+            and isinstance(first_exc, CacheMissError)
+            and params.rescore_cache_attestation is not None
+        )
+        if use_rescore_first and isinstance(first_exc, CacheMissError) and not attested_cache_miss:
             yield build_progress_line("rescore-fallback-to-full", _elapsed())
             last_progress = time_fn()
 
@@ -2776,6 +2865,7 @@ def iter_prewarm_chunks(
     """
     started = time_fn()
     drain_debug_progress()
+    drain_operational_progress()
 
     def _elapsed() -> float:
         return time_fn() - started
@@ -2783,7 +2873,11 @@ def iter_prewarm_chunks(
     yield build_progress_line("starting", _elapsed())
     last_progress = time_fn()
 
-    existing_key = _lookup_existing_prewarm_key(params, existing_object_fn)
+    existing_key = (
+        None
+        if params.force or params.rebuild
+        else _lookup_existing_prewarm_key(params, existing_object_fn)
+    )
     if existing_key is not None:
         flight_key = _prewarm_flight_key(params.category, params.run_date)
         current_state = _PREWARM_STATES.get(flight_key)
@@ -2912,6 +3006,7 @@ def iter_prewarm_chunks(
         progress_interval_s=progress_interval_s,
         elapsed_fn=_elapsed,
         last_progress=last_progress,
+        operational_progress=True,
     )
 
     if error is not None:

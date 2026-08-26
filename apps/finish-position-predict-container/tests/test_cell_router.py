@@ -15,6 +15,8 @@ from predict_lib.cell_router import (
     build_base_metadata_r2_key,
     build_base_model_r2_key,
     card_max_race_bango_for_race_id,
+    derive_canonical_distance_band,
+    derive_canonical_field_size_band,
     derive_card_max_race_bango_by_card,
     derive_class,
     derive_distance_band,
@@ -23,6 +25,7 @@ from predict_lib.cell_router import (
     derive_surface,
     load_cell_router,
     resolve_dimension,
+    rule_is_effective,
 )
 
 
@@ -151,8 +154,679 @@ def test_load_cell_router_real_config_has_jra_703_routing() -> None:
         routing.variants["jockey_pedigree_703"].feature_set_hash
         == "1f70d678d48b485d4fcf593de786880c8fcf748e464174279f1dfe1251c9ef07"
     )
-    assert router.resolve_variant("jra", [{"kyoso_joken_code": "703"}]) == "jockey_pedigree_703"
-    assert router.resolve_variant("jra", [{"kyoso_joken_code": "701"}]) == "sim"
+    assert (
+        router.resolve_variant("jra", [{"grade_code": "", "kyoso_joken_code": "703"}])
+        == "joken_703"
+    )
+    assert (
+        router.resolve_variant("jra", [{"grade_code": "E", "kyoso_joken_code": "703"}])
+        == "jockey_pedigree_703"
+    )
+
+
+def test_load_cell_router_real_config_prioritizes_703_dirt_mile_summer() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_dirt_mile_summer_qsm_top1"]
+    assert specialist.model_version == "jra-joken-703-querysoftmax-maxrange-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    summer_dirt_mile = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "23",
+        "kyori": 1400,
+        "race_date": "20260712",
+    }
+    spring_dirt_mile = {**summer_dirt_mile, "race_date": "20260412"}
+    summer_turf_mile = {**summer_dirt_mile, "track_code": "10"}
+    summer_dirt_intermediate = {**summer_dirt_mile, "kyori": 1800}
+    graded_summer_dirt_mile = {**summer_dirt_mile, "grade_code": "E"}
+
+    assert (
+        router.resolve_variant("jra", [summer_dirt_mile]) == "joken_703_dirt_mile_summer_qsm_top1"
+    )
+    assert router.resolve_variant("jra", [spring_dirt_mile]) == "joken_703"
+    assert router.resolve_variant("jra", [summer_turf_mile]) == "joken_703_turf_1400_qsm_gated_top1"
+    assert (
+        router.resolve_variant("jra", [summer_dirt_intermediate])
+        == "joken_703_dirt_intermediate_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [graded_summer_dirt_mile]) == "jockey_pedigree_703"
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_mile_autumn_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_005_dirt_mile_autumn_yeti_gated_top1"]
+    assert specialist.model_version == "jra-joken-005-dirt-mile-autumn-yeti-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_005"
+    assert specialist.minimum_candidate_margin == 0.05
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    dirt_mile_autumn = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1400,
+        "race_date": "20261012",
+    }
+
+    assert (
+        router.resolve_variant("jra", [dirt_mile_autumn])
+        == "joken_005_dirt_mile_autumn_yeti_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_mile_autumn, "grade_code": "E"}])
+        == "prior_corner_dirt_smallfield_005"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_mile_autumn, "track_code": "10"}])
+        == "joken_005_turf_mile_yeti_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_mile_autumn, "kyori": 1600}])
+        == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": "20260712"}])
+        == "joken_005"
+    )
+    assert router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_mile_spring_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_005_dirt_mile_spring_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-005-dirt-mile-spring-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_005"
+    assert specialist.minimum_candidate_margin == 0.02
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 20
+    spring = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1400,
+        "race_date": "20260412",
+    }
+
+    assert router.resolve_variant("jra", [spring]) == "joken_005_dirt_mile_spring_qsm_gated_top1"
+    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "joken_005"
+    assert (
+        router.resolve_variant("jra", [{**spring, "race_date": "20261012"}])
+        == "joken_005_dirt_mile_autumn_yeti_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**spring, "grade_code": "E"}])
+        == "prior_corner_dirt_smallfield_005"
+    )
+    assert (
+        router.resolve_variant("jra", [{**spring, "track_code": "10"}])
+        == "joken_005_turf_mile_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_intermediate_autumn_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants[
+        "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
+    ]
+    assert specialist.model_version == "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.2
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 20
+    autumn = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1800,
+        "race_date": "20261012",
+    }
+    assert (
+        router.resolve_variant("jra", [autumn])
+        == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**autumn, "race_date": "20260712"}])
+        == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**autumn, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**autumn, "track_code": "10"}]) == "joken_005"
+    assert (
+        router.resolve_variant("jra", [{**autumn, "grade_code": "E"}])
+        == "prior_corner_dirt_smallfield_005"
+    )
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_1700_summer_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_005_dirt_1700_summer_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-005-dirt-1700-summer-qsm-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.2
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 20
+    summer = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1700,
+        "race_date": "20260712",
+    }
+    assert router.resolve_variant("jra", [summer]) == "joken_005_dirt_1700_summer_qsm_gated_top1"
+    assert (
+        router.resolve_variant("jra", [{**summer, "kyori": 1800}])
+        == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**summer, "race_date": "20261012"}])
+        == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "joken_005"
+    assert (
+        router.resolve_variant("jra", [{**summer, "grade_code": "E"}])
+        == "prior_corner_dirt_smallfield_005"
+    )
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_1200_winter_summer_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants[
+        "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
+    ]
+    assert specialist.model_version == "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.15
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 20
+    winter = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1200,
+        "race_date": "20260212",
+    }
+    assert (
+        router.resolve_variant("jra", [winter])
+        == "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**winter, "race_date": "20260712"}])
+        == "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**winter, "race_date": "20260412"}])
+        == "joken_005_dirt_mile_spring_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**winter, "race_date": "20261012"}])
+        == "joken_005_dirt_mile_autumn_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**winter, "kyori": 1300}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**winter, "race_date": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_005_dirt_1800_nonautumn_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_005_dirt_1800_nonautumn_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.2
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 2
+    spring = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "kyori": 1800,
+        "race_date": "20260412",
+    }
+    assert router.resolve_variant("jra", [spring]) == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
+    assert (
+        router.resolve_variant("jra", [{**spring, "race_date": "20260712"}])
+        == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**spring, "race_date": "20261012"}])
+        == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**spring, "kyori": 1900}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_005_turf_intermediate_spring_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants[
+        "joken_005_turf_intermediate_spring_qsm_gated_top1"
+    ]
+    assert specialist.model_version == "jra-joken-005-turf-intermediate-spring-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_005"
+    assert specialist.minimum_candidate_margin == 0.0
+    assert specialist.minimum_candidate_top_z == 1.0
+    assert specialist.maximum_candidate_v2_rank == 20
+    spring = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "10",
+        "kyori": 1800,
+        "race_date": "20260412",
+    }
+
+    assert (
+        router.resolve_variant("jra", [spring])
+        == "joken_005_turf_intermediate_spring_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "grade_code": "E"}]) == "sim"
+    assert (
+        router.resolve_variant("jra", [{**spring, "track_code": "23"}])
+        == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**spring, "kyori": 2000}])
+        == "joken_005_turf_long_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_005_turf_cells_with_confidence_gates() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("jra")
+    mile_specialist = routing.variants["joken_005_turf_mile_yeti_gated_top1"]
+    assert mile_specialist.model_version == "jra-joken-005-turf-mile-yeti-gated-v1"
+    assert mile_specialist.routing_mode == "jra_variant_top1_swap"
+    assert mile_specialist.base_variant == "joken_005"
+    assert mile_specialist.minimum_candidate_margin == 0.1
+    assert mile_specialist.minimum_candidate_top_z == 1.25
+    specialist = routing.variants["joken_005_turf_long_yeti_gated_top1"]
+    assert specialist.model_version == "jra-joken-005-turf-long-hierarchical-qsm-gated-v2"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_005"
+    assert specialist.minimum_candidate_margin == 0.3
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    turf_long = {
+        "grade_code": None,
+        "kyoso_joken_code": "005",
+        "track_code": "10",
+        "kyori": 2200,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [{**turf_long, "kyori": 1400}])
+        == "joken_005_turf_mile_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [turf_long]) == "joken_005_turf_long_yeti_gated_top1"
+    assert router.resolve_variant("jra", [{**turf_long, "grade_code": "E"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": "23"}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**turf_long, "kyori": 1800}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**turf_long, "kyori": None}]) == "joken_005"
+
+
+def test_load_cell_router_real_config_prioritizes_010_dirt_intermediate_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_010_dirt_intermediate_yeti_gated_top1"]
+    assert specialist.model_version == "jra-joken-010-dirt-intermediate-yeti-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_010"
+    assert specialist.minimum_candidate_margin == 0.2
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    dirt_intermediate = {
+        "grade_code": None,
+        "kyoso_joken_code": "010",
+        "track_code": "23",
+        "kyori": 1800,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [dirt_intermediate])
+        == "joken_010_dirt_intermediate_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "grade_code": "E"}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "track_code": "10"}]) == "joken_010"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": 2000}]) == "joken_010"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "track_code": None}]) == "joken_010"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": None}]) == "joken_010"
+
+
+def test_load_cell_router_real_config_prioritizes_701_turf_long_confidence_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_701_turf_long_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-701-turf-long-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_701"
+    assert specialist.minimum_candidate_margin == 0.5
+    assert specialist.minimum_candidate_top_z == 1.5
+    turf_long = {
+        "grade_code": None,
+        "kyoso_joken_code": "701",
+        "track_code": "10",
+        "kyori": 2200,
+        "race_date": "20260712",
+    }
+
+    assert router.resolve_variant("jra", [turf_long]) == "joken_701_turf_long_qsm_gated_top1"
+    assert router.resolve_variant("jra", [{**turf_long, "grade_code": "E"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": "23"}]) == "joken_701"
+    assert (
+        router.resolve_variant("jra", [{**turf_long, "kyori": 1800}])
+        == "joken_701_turf_intermediate_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": None}]) == "joken_701"
+    assert router.resolve_variant("jra", [{**turf_long, "kyori": None}]) == "joken_701"
+
+
+def test_load_cell_router_real_config_prioritizes_703_dirt_intermediate_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_dirt_intermediate_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-dirt-intermediate-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    assert specialist.minimum_candidate_margin == 0.01
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 2
+    dirt_intermediate = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "23",
+        "kyori": 1800,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [dirt_intermediate])
+        == "joken_703_dirt_intermediate_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_intermediate, "grade_code": "E"}])
+        == "jockey_pedigree_703"
+    )
+    assert (
+        router.resolve_variant("jra", [{**dirt_intermediate, "track_code": "10"}])
+        == "joken_703_turf_intermediate_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": 2200}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "track_code": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": None}]) == "joken_703"
+
+
+def test_load_cell_router_real_config_prioritizes_701_turf_mile_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_701_turf_mile_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-701-turf-mile-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_701"
+    assert specialist.minimum_candidate_margin == 0.5
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    turf_mile = {
+        "grade_code": None,
+        "kyoso_joken_code": "701",
+        "track_code": "10",
+        "kyori": 1400,
+        "race_date": "20260712",
+    }
+
+    assert router.resolve_variant("jra", [turf_mile]) == "joken_701_turf_mile_qsm_gated_top1"
+    assert router.resolve_variant("jra", [{**turf_mile, "grade_code": "E"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_mile, "track_code": "23"}]) == "joken_701"
+    assert (
+        router.resolve_variant("jra", [{**turf_mile, "kyori": 1600}])
+        == "joken_701_turf_intermediate_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_mile, "track_code": None}]) == "joken_701"
+    assert router.resolve_variant("jra", [{**turf_mile, "kyori": None}]) == "joken_701"
+
+
+def test_load_cell_router_real_config_prioritizes_701_turf_intermediate_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_701_turf_intermediate_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-701-turf-intermediate-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_701"
+    assert specialist.minimum_candidate_margin == 0.5
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    turf_intermediate = {
+        "grade_code": None,
+        "kyoso_joken_code": "701",
+        "track_code": "10",
+        "kyori": 1800,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [turf_intermediate])
+        == "joken_701_turf_intermediate_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_intermediate, "grade_code": "E"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_intermediate, "track_code": "23"}]) == "joken_701"
+    assert (
+        router.resolve_variant("jra", [{**turf_intermediate, "kyori": 2000}])
+        == "joken_701_turf_long_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_intermediate, "track_code": None}]) == "joken_701"
+    assert router.resolve_variant("jra", [{**turf_intermediate, "kyori": None}]) == "joken_701"
+
+
+def test_load_cell_router_real_config_prioritizes_703_turf_1200_largefield_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants[
+        "joken_703_turf_1200_largefield_yeti_gated_top1"
+    ]
+    assert specialist.model_version == "jra-joken-703-turf-1200-largefield-yeti-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.15
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    entry = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "10",
+        "kyori": 1200,
+        "race_date": "20260712",
+    }
+    assert (
+        router.resolve_variant("jra", [entry] * 14)
+        == "joken_703_turf_1200_largefield_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [entry] * 13) == "joken_703"
+    assert (
+        router.resolve_variant("jra", [{**entry, "kyori": 1400}] * 14)
+        == "joken_703_turf_1400_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**entry, "grade_code": "E"}] * 14) == "jockey_pedigree_703"
+    )
+
+
+def test_load_cell_router_real_config_prioritizes_703_turf_1400_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_turf_1400_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-turf-1400-qsm-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.1
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    entry = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "10",
+        "kyori": 1400,
+        "race_date": "20260712",
+    }
+    assert router.resolve_variant("jra", [entry]) == "joken_703_turf_1400_qsm_gated_top1"
+    assert router.resolve_variant("jra", [{**entry, "kyori": 1500}]) == "joken_703"
+    assert (
+        router.resolve_variant("jra", [{**entry, "track_code": "23"}])
+        == "joken_703_dirt_mile_summer_qsm_top1"
+    )
+    assert router.resolve_variant("jra", [{**entry, "grade_code": "E"}]) == "jockey_pedigree_703"
+
+
+def test_load_cell_router_real_config_prioritizes_703_turf_long_summer_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_turf_long_summer_yeti_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-turf-long-summer-yeti-gated-v1"
+    assert specialist.minimum_candidate_margin == 0.2
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    summer = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "10",
+        "kyori": 2200,
+        "race_date": "20260712",
+    }
+    assert router.resolve_variant("jra", [summer]) == "joken_703_turf_long_summer_yeti_gated_top1"
+    assert (
+        router.resolve_variant("jra", [{**summer, "race_date": "20260412"}])
+        == "joken_703_turf_long_spring_qsm_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**summer, "race_date": "20261012"}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**summer, "grade_code": "E"}]) == "jockey_pedigree_703"
+
+
+def test_load_cell_router_real_config_prioritizes_703_turf_long_spring_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_turf_long_spring_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-turf-long-spring-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    assert specialist.minimum_candidate_margin == 0.1
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 2
+    turf_long_spring = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "10",
+        "kyori": 2200,
+        "race_date": "20260412",
+    }
+
+    assert (
+        router.resolve_variant("jra", [turf_long_spring])
+        == "joken_703_turf_long_spring_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**turf_long_spring, "grade_code": "E"}])
+        == "jockey_pedigree_703"
+    )
+    assert router.resolve_variant("jra", [{**turf_long_spring, "track_code": "23"}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**turf_long_spring, "kyori": 2400}]) == "joken_703"
+    assert (
+        router.resolve_variant("jra", [{**turf_long_spring, "race_date": "20260712"}])
+        == "joken_703_turf_long_summer_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_long_spring, "race_date": None}]) == "joken_703"
+
+
+def test_load_cell_router_real_config_prioritizes_703_turf_intermediate_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_turf_intermediate_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-turf-intermediate-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    assert specialist.minimum_candidate_margin == 0.05
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 2
+    turf_intermediate = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "10",
+        "kyori": 1800,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [turf_intermediate])
+        == "joken_703_turf_intermediate_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**turf_intermediate, "grade_code": "E"}])
+        == "jockey_pedigree_703"
+    )
+    assert (
+        router.resolve_variant("jra", [{**turf_intermediate, "track_code": "23"}])
+        == "joken_703_dirt_intermediate_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**turf_intermediate, "kyori": 2000}])
+        == "joken_703_turf_long_summer_yeti_gated_top1"
+    )
+    assert router.resolve_variant("jra", [{**turf_intermediate, "track_code": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**turf_intermediate, "kyori": None}]) == "joken_703"
+
+
+def test_load_cell_router_real_config_prioritizes_703_other_extended_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_other_extended_qsm_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-other-extended-qsm-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    assert specialist.minimum_candidate_margin == 0.15
+    assert specialist.minimum_candidate_top_z == 1.25
+    assert specialist.maximum_candidate_v2_rank == 2
+    other_extended = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "51",
+        "kyori": 3000,
+        "race_date": "20260712",
+    }
+
+    assert (
+        router.resolve_variant("jra", [other_extended]) == "joken_703_other_extended_qsm_gated_top1"
+    )
+    assert (
+        router.resolve_variant("jra", [{**other_extended, "grade_code": "E"}])
+        == "jockey_pedigree_703"
+    )
+    assert router.resolve_variant("jra", [{**other_extended, "track_code": "10"}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**other_extended, "kyori": 2200}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**other_extended, "track_code": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**other_extended, "kyori": None}]) == "joken_703"
+
+
+def test_load_cell_router_real_config_prioritizes_703_dirt_sprint_gate() -> None:
+    router = load_cell_router()
+    specialist = router.routing_for("jra").variants["joken_703_dirt_sprint_yeti_gated_top1"]
+    assert specialist.model_version == "jra-joken-703-dirt-sprint-yeti-gated-v1"
+    assert specialist.routing_mode == "jra_variant_top1_swap"
+    assert specialist.base_variant == "joken_703"
+    assert specialist.minimum_candidate_margin == 0.02
+    assert specialist.minimum_candidate_top_z == 1.5
+    assert specialist.maximum_candidate_v2_rank == 20
+    dirt_sprint = {
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "track_code": "23",
+        "kyori": 1000,
+        "race_date": "20260112",
+    }
+
+    assert router.resolve_variant("jra", [dirt_sprint]) == "joken_703_dirt_sprint_yeti_gated_top1"
+    assert (
+        router.resolve_variant("jra", [{**dirt_sprint, "grade_code": "E"}]) == "jockey_pedigree_703"
+    )
+    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": "10"}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": 1200}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": None}]) == "joken_703"
+
+
+def test_load_cell_router_real_config_routes_every_ungraded_joken_code() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("jra")
+    for code in ("005", "010", "016", "701", "703", "999"):
+        variant = f"joken_{code}"
+        assert routing.variants[variant].model_version == f"jra-joken-{code}-pooled-yetirank-v2"
+        assert routing.variants[variant].feature_count == 113
+        entry = {"grade_code": None, "kyoso_joken_code": code}
+        assert router.resolve_variant("jra", [entry]) == variant
 
 
 def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
@@ -178,15 +852,15 @@ def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
     miss_field_entries = [hit_row] * 11  # 11 -> field_band f11_13, doesn't match.
     miss_class_row = {**hit_row, "kyoso_joken_code": "703"}
     miss_class_entries = [miss_class_row] * 10
-    assert router.resolve_variant("jra", hit_entries) == "prior_corner_dirt_smallfield_005"
-    assert router.resolve_variant("jra", miss_field_entries) == "sim"
-    assert router.resolve_variant("jra", miss_class_entries) == "jockey_pedigree_703"
+    assert router.resolve_variant("jra", hit_entries) == "joken_005"
+    assert router.resolve_variant("jra", miss_field_entries) == "joken_005"
+    assert router.resolve_variant("jra", miss_class_entries) == "joken_703"
 
 
 def test_load_cell_router_real_config_has_jra_hakodate_venue_routing() -> None:
     router = load_cell_router()
     routing = router.routing_for("jra")
-    assert len(routing.rules) == 3
+    assert len(routing.rules) == 31
     hakodate = {"keibajo_code": "02"}
     assert router.resolve_variant("jra", [hakodate]) == "jockey_pedigree_703"
     non_hakodate = {"keibajo_code": "05"}
@@ -202,12 +876,17 @@ def test_load_cell_router_real_config_jra_rule_precedence_at_hakodate() -> None:
 
     # 703-class race at Hakodate: rule 1 wins (same variant as rule 3 would
     # give, but the precedence is what this test documents).
-    class_703_at_hakodate = {"kyoso_joken_code": "703", "keibajo_code": "02"}
+    class_703_at_hakodate = {
+        "grade_code": "E",
+        "kyoso_joken_code": "703",
+        "keibajo_code": "02",
+    }
     assert router.resolve_variant("jra", [class_703_at_hakodate]) == "jockey_pedigree_703"
 
     # dirt / f_le10 / kyoso_joken_code=005 at a non-Hakodate venue (Kokura,
     # 10) still routes to the prior-corner variant via rule 2.
     prior_corner_at_kokura = {
+        "grade_code": "E",
         "kyoso_joken_code": "005",
         "track_code": "23",
         "shusso_tosu": 10,
@@ -231,19 +910,24 @@ def test_load_cell_router_real_config_jra_hakodate_falls_through_to_venue_rule()
     # A Hakodate race that matches neither rule 1 nor rule 2 falls through to
     # rule 3 (venue) and gets jockey_pedigree_703, not the category default.
     router = load_cell_router()
-    hakodate_generic = {"keibajo_code": "02", "kyoso_joken_code": "701"}
+    hakodate_generic = {
+        "grade_code": "E",
+        "keibajo_code": "02",
+        "kyoso_joken_code": "701",
+    }
     assert router.resolve_variant("jra", [hakodate_generic]) == "jockey_pedigree_703"
 
-    non_hakodate_generic = {"keibajo_code": "05", "kyoso_joken_code": "701"}
+    non_hakodate_generic = {
+        "grade_code": "E",
+        "keibajo_code": "05",
+        "kyoso_joken_code": "701",
+    }
     assert router.resolve_variant("jra", [non_hakodate_generic]) == "sim"
 
 
-def test_load_cell_router_real_config_has_no_nar_routing() -> None:
-    # The nar-xgb-cell-a957d8b4-v1 route was reverted 2026-07-03 (adopted on
-    # broken cell_training_evaluations data). NAR must carry no cell routing so
-    # every race falls through to the category default path.
+def test_load_cell_router_real_config_unmatched_nar_race_uses_default() -> None:
     router = load_cell_router()
-    assert router.has_routing("nar") is False
+    assert router.has_routing("nar") is True
     former_cell_entry = {
         "grade_code": "E",
         "keibajo_code": "54",
@@ -885,6 +1569,11 @@ def test_derived_class_empty_is_unknown() -> None:
     assert derive_class("") == "unknown"
 
 
+def test_derived_class_empty_grade_uses_kyoso_joken_code() -> None:
+    assert derive_class("", "703") == "joken-703"
+    assert derive_class("  ", " 005 ") == "joken-005"
+
+
 def testresolve_dimension_venue() -> None:
     assert resolve_dimension({"keibajo_code": "03"}, "venue", "jra") == "03"
 
@@ -977,6 +1666,11 @@ def testresolve_dimension_class() -> None:
 
 def testresolve_dimension_class_none() -> None:
     assert resolve_dimension({}, "class", "jra") is None
+
+
+def testresolve_dimension_class_uses_kyoso_joken_code_when_grade_is_missing() -> None:
+    entry = {"grade_code": None, "kyoso_joken_code": "703"}
+    assert resolve_dimension(entry, "class", "jra") == "joken-703"
 
 
 def testresolve_dimension_is_final_race_true() -> None:
@@ -1152,3 +1846,103 @@ def test_resolve_variant_kochi_final_rule_does_not_fire_at_other_venues() -> Non
     router = _kochi_final_shaped_router()
     entries = [{"keibajo_code": "30", "race_id": "nar:2026:0712:30:10"}]
     assert router.resolve_variant("nar", entries, card_max_race_bango=10) == "sim"
+
+
+def test_canonical_cell_boundaries() -> None:
+    assert derive_canonical_distance_band(1400) == "sprint"
+    assert derive_canonical_distance_band(1401) == "mile"
+    assert derive_canonical_distance_band(1800) == "mile"
+    assert derive_canonical_distance_band(1801) == "intermediate"
+    assert derive_canonical_distance_band(2201) == "long"
+    assert derive_canonical_distance_band(2801) == "extended"
+    assert derive_canonical_field_size_band(8) == "small"
+    assert derive_canonical_field_size_band(9) == "medium"
+    assert derive_canonical_field_size_band(14) == "medium"
+    assert derive_canonical_field_size_band(15) == "large"
+
+
+def test_resolve_canonical_dimensions_uses_live_field_size() -> None:
+    entry = {"kyori": 1400, "shusso_tosu": None}
+    assert resolve_dimension(entry, "canonical_distance_band", "nar") == "sprint"
+    assert resolve_dimension(entry, "canonical_field_size_band", "nar", field_size=9) == "medium"
+    assert resolve_dimension(entry, "canonical_field_size_band", "nar") is None
+
+
+@pytest.mark.parametrize(
+    ("entry", "effective_after", "expected"),
+    [
+        ({"kaisai_nen": "2026", "kaisai_tsukihi": "0701"}, "2026-06-30", True),
+        ({"kaisai_nen": "2026", "kaisai_tsukihi": "0630"}, "2026-06-30", False),
+        ({"race_id": "nar:2026:0701:30:01"}, "2026-06-30", True),
+        ({"race_id": "bad"}, "2026-06-30", False),
+        ({}, "bad", False),
+        ({}, None, True),
+    ],
+)
+def test_rule_is_effective(
+    entry: dict[str, object], effective_after: str | None, expected: bool
+) -> None:
+    assert rule_is_effective(entry, effective_after) is expected
+
+
+def test_real_nar_mukatsu_condition2_routes_to_top2_specialist() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("nar")
+    specialist = routing.variants["mukatsu30_tc2_top2"]
+    assert specialist.routing_mode == "nar_transformer_top2_swap"
+    assert specialist.minimum_candidate_margin == 0.2
+    common = {
+        "keibajo_code": "30",
+        "nar_subclass": "MUKATSU",
+        "kyori": 1200,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "0827",
+        "track_code": "23",
+        "current_baba_condition": "2",
+    }
+    medium = [common for _ in range(9)]
+    assert router.resolve_variant("nar", medium) == "mukatsu30_tc2_top2"
+    assert router.resolve_variant("nar", medium[:8]) == "sim"
+
+
+def test_real_nar_sonoda_condition2_routes_to_top2_consensus() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("nar")
+    specialist = routing.variants["c50_tc2_consensus"]
+    assert specialist.routing_mode == "nar_transformer_top2_consensus_swap"
+    assert specialist.consensus_variants == (
+        "c50_tc2_consensus_market",
+        "c50_tc2_consensus_pedigree",
+    )
+    assert specialist.consensus_required_votes == 2
+    common = {
+        "keibajo_code": "50",
+        "nar_subclass": "C",
+        "kyori": 1200,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "0827",
+        "track_code": "23",
+        "current_baba_condition": "2",
+    }
+    medium = [common for _ in range(9)]
+    assert router.resolve_variant("nar", medium) == "c50_tc2_consensus"
+    assert router.resolve_variant("nar", medium[:8]) == "sim"
+
+
+def test_real_nar_top1_routes_are_date_and_cell_gated() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("nar")
+    assert routing.variants["c30_tc2_adaptive"].routing_mode == "nar_transformer_top1_swap"
+    common = {
+        "keibajo_code": "30",
+        "nar_subclass": "C",
+        "kyori": 1200,
+        "kaisai_nen": "2026",
+        "track_code": "23",
+        "current_baba_condition": "2",
+    }
+    before = [{**common, "kaisai_tsukihi": "0630"} for _ in range(9)]
+    after = [{**common, "kaisai_tsukihi": "0701"} for _ in range(9)]
+    assert router.resolve_variant("nar", before) == "sim"
+    assert router.resolve_variant("nar", after) == "c30_tc2_adaptive"
+    assert router.resolve_variant("nar", after[:8]) == "sim"

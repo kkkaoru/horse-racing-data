@@ -34,6 +34,7 @@ from .deploy_flags import DEPLOY_FLAGS_PATH, load_deploy_flags
 from .dynamic_market_versions import selected_artifact_versions
 from .model_meta import (
     CATEGORIES,
+    JRA_DIRT_HYBRID_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
     MODEL_META_JSON_PATH,
@@ -63,6 +64,12 @@ FINISH_POSITION_PREFIX: Final[str] = "finish-position"
 RUNNING_STYLE_PREFIX: Final[str] = "running-style/models"
 RUNNING_STYLE_LATEST_FILE_NAME: Final[str] = "latest.flatbin"
 RUNNING_STYLE_CALIBRATOR_FILE_NAME: Final[str] = "calibrators.json"
+JRA_DIRT_HYBRID_FILE_NAMES: Final[tuple[str, ...]] = (
+    "manifest.json",
+    "weights_seed1.npz",
+    "weights_seed2.npz",
+    "weights_seed3.npz",
+)
 NAR_TRANSFORMER_FILE_NAMES: Final[tuple[str, ...]] = (
     "norm.json",
     "weights_s1.npz",
@@ -104,6 +111,7 @@ FINISH_POSITION_MODEL_ROLES: Final[frozenset[str]] = frozenset({"metadata", "mod
 NAR_TRANSFORMER_ROLES: Final[frozenset[str]] = frozenset(
     {"normalization", "weights-s1", "weights-s2", "weights-s3"}
 )
+JRA_DIRT_HYBRID_ROLES: Final[frozenset[str]] = NAR_TRANSFORMER_ROLES
 RUNNING_STYLE_ROLES: Final[frozenset[str]] = frozenset({"calibrator", "model"})
 RUNNING_STYLE_CALIBRATABLE_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "nar"})
 MANIFEST_KEYS: Final[frozenset[str]] = frozenset({"schema_version", "artifacts", "not_applicable"})
@@ -451,9 +459,13 @@ def _validate_bundles(manifest: ProductionArtifactManifest) -> None:
                     "category/source, not per bundle"
                 )
             continue
+        companion_versions = {
+            NAR_TRANSFORMER_MODEL_VERSION,
+            JRA_DIRT_HYBRID_MODEL_VERSION,
+        }
         expected_finish_roles = (
-            NAR_TRANSFORMER_ROLES
-            if artifacts[0].model_version == NAR_TRANSFORMER_MODEL_VERSION
+            JRA_DIRT_HYBRID_ROLES
+            if artifacts[0].model_version in companion_versions
             else FINISH_POSITION_MODEL_ROLES
         )
         if roles != expected_finish_roles:
@@ -630,6 +642,10 @@ def derive_selected_artifact_keys(
         load_deploy_flags(deploy_flags_path).nar_transformer_blend_enabled
         if nar_transformer_enabled is None
         else nar_transformer_enabled
+    )
+    selected.update(
+        _finish_position_key("jra", JRA_DIRT_HYBRID_MODEL_VERSION, file_name)
+        for file_name in JRA_DIRT_HYBRID_FILE_NAMES
     )
     if transformer_enabled:
         selected.update(

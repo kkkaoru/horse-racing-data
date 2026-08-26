@@ -32,6 +32,7 @@ from pipeline_runner import (
     r2_day_base_dest_path,
     run_with_stderr_capture,
 )
+from predict_lib.debug_log import drain_operational_progress
 from predict_lib.serve import R2Config
 
 _TIMEOUT_SECONDS_ATTR = "_pipeline_subprocess_timeout_seconds"
@@ -59,6 +60,7 @@ _reset_category_work_dirs = cast(
 _COMPUTE_SOURCE_WATERMARK_ATTR = "_compute_source_watermark"
 _COMPUTE_SOURCE_WATERMARK_OUTCOME_ATTR = "_compute_source_watermark_outcome"
 _COMPUTE_RS_WATERMARK_ATTR = "_compute_rs_watermark"
+_READ_SOURCE_WATERMARK_SIDECAR_ATTR = "_read_source_watermark_sidecar"
 _WRITE_WATERMARK_ATTR = "_write_watermark"
 _READ_WATERMARK_ATTR = "_read_watermark"
 _READ_WATERMARK_REASON_ATTR = "_read_watermark_reason"
@@ -78,6 +80,10 @@ _compute_rs_watermark = cast(
     "Callable[[str, str, object], tuple[str, int] | None]",
     getattr(pipeline_runner, _COMPUTE_RS_WATERMARK_ATTR),
 )
+_read_source_watermark_sidecar = cast(
+    "Callable[[Path, str, str], SourceWatermarkOutcome]",
+    getattr(pipeline_runner, _READ_SOURCE_WATERMARK_SIDECAR_ATTR),
+)
 _write_watermark = cast(
     "Callable[[Path, tuple[str, int, str, int]], None]",
     getattr(pipeline_runner, _WRITE_WATERMARK_ATTR),
@@ -88,6 +94,7 @@ _read_watermark = cast(
 )
 _DAY_BASE_HAS_BABA_FEATURES_ATTR = "_day_base_has_baba_features"
 _RACE_CHAIN_FOR_DAY_BASE_ATTR = "_race_chain_for_day_base"
+_LOG_PIPELINE_PROGRESS_ATTR = "_log_pipeline_progress"
 _day_base_has_baba_features = cast(
     "Callable[[Path], bool]",
     getattr(pipeline_runner, _DAY_BASE_HAS_BABA_FEATURES_ATTR),
@@ -95,6 +102,9 @@ _day_base_has_baba_features = cast(
 _race_chain_for_day_base = cast(
     "Callable[[str, Path], Sequence[str]]",
     getattr(pipeline_runner, _RACE_CHAIN_FOR_DAY_BASE_ATTR),
+)
+_log_pipeline_progress = cast(
+    "Callable[[str], None]", getattr(pipeline_runner, _LOG_PIPELINE_PROGRESS_ATTR)
 )
 
 
@@ -144,6 +154,41 @@ def test_run_suppresses_child_stderr_without_debug(
     )
     captured = capfd.readouterr()
     assert "child-progress-log" not in captured.err
+
+
+def test_run_forwards_base_builder_stage_timing_without_debug(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", Path("-c"))
+    drain_operational_progress()
+    run_with_stderr_capture(
+        [
+            "python",
+            "-c",
+            (
+                "import json; "
+                "print(json.dumps({'stage':'source.rec','status':'done',"
+                "'elapsed_seconds':12.34,'rows':44142})); "
+                "print('not-operational')"
+            ),
+        ]
+    )
+
+    lines = capfd.readouterr().err.splitlines()
+    assert [json.loads(line) for line in lines] == [
+        {
+            "elapsed_seconds": 12.34,
+            "event": "finish-feature-timing",
+            "rows": 44142,
+            "stage": "source.rec",
+            "status": "done",
+        }
+    ]
+    assert drain_operational_progress() == [
+        "step=daybase-base-stage stage=source.rec status=done elapsed_seconds=12.34"
+    ]
 
 
 def test_run_streams_child_output_when_debug_enabled(
@@ -917,6 +962,39 @@ def test_record_layer_timing_row_debug_disabled_skips_connect(
     assert captured.err == ""
 
 
+def test_daybase_layer_timing_is_operational_without_debug(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+
+    _log_pipeline_progress(
+        "step=daybase-layer index=3/8 status=done category=nar "
+        "script=add-head-to-head-features.py elapsed_seconds=12.345"
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err)
+    assert payload == {
+        "event": "daybase-pipeline-timing",
+        "detail": (
+            "step=daybase-layer index=3/8 status=done category=nar "
+            "script=add-head-to-head-features.py elapsed_seconds=12.345"
+        ),
+    }
+
+
+def test_non_daybase_progress_stays_quiet_without_debug(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+
+    _log_pipeline_progress("step=racechain-layer status=done category=nar")
+
+    assert capsys.readouterr().err == ""
+
+
 def test_record_layer_timing_row_logs_connect_error_when_debug_enabled(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1210,7 +1288,9 @@ def test_build_day_base_commits_running_style_foundation_before_day_layers(
     monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260822", 477), None),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1259,7 +1339,9 @@ def test_build_day_base_raises_when_foundation_commit_fails(
     monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260822", 477), None),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1351,7 +1433,9 @@ def test_build_day_base_writes_watermark_for_catalog_source(
         lambda a: Path(a[-1]).mkdir(parents=True, exist_ok=True),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260712", 1200)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260712", 1200), None),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1393,7 +1477,11 @@ def test_build_day_base_raises_when_foundation_source_watermark_is_missing(
         lambda a: Path(a[-1]).mkdir(parents=True, exist_ok=True),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [(None, 0)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(
+            None, "watermark count is 0"
+        ),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1419,7 +1507,7 @@ def test_build_day_base_raises_when_foundation_source_watermark_is_missing(
     )
 
 
-def test_build_day_base_watermark_reason_silent_without_debug(
+def test_build_day_base_emits_only_operational_timings_without_debug(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
@@ -1442,7 +1530,11 @@ def test_build_day_base_watermark_reason_silent_without_debug(
         lambda a: Path(a[-1]).mkdir(parents=True, exist_ok=True),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [(None, 0)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(
+            None, "watermark count is 0"
+        ),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1457,7 +1549,15 @@ def test_build_day_base_watermark_reason_silent_without_debug(
             running_style_foundation_commit_fn=lambda *_args: None,
         )
 
-    assert capsys.readouterr().err == ""
+    lines = capsys.readouterr().err.splitlines()
+    assert [json.loads(line)["event"] for line in lines] == [
+        "daybase-pipeline-timing",
+        "daybase-pipeline-timing",
+        "daybase-pipeline-timing",
+    ]
+    assert "status=start" in json.loads(lines[0])["detail"]
+    assert "status=done" in json.loads(lines[1])["detail"]
+    assert "source=base-sidecar" in json.loads(lines[2])["detail"]
 
 
 def test_build_day_base_watermark_reason_logs_when_debug_enabled(
@@ -1483,7 +1583,11 @@ def test_build_day_base_watermark_reason_logs_when_debug_enabled(
         lambda a: Path(a[-1]).mkdir(parents=True, exist_ok=True),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [(None, 0)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(
+            None, "watermark count is 0"
+        ),
     )
     monkeypatch.setattr(
         pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
@@ -1515,7 +1619,9 @@ def test_build_day_base_raises_when_foundation_commit_callback_is_missing(
     monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
     monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260822", 477)]
+        pipeline_runner,
+        "_read_source_watermark_sidecar",
+        lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260822", 477), None),
     )
     monkeypatch.setattr(
         pipeline_runner, "build_base_argv", lambda *args, **_kwargs: ["base", str(args[5])]
@@ -1571,6 +1677,133 @@ def test_build_day_base_signature_accepts_realtime_and_weather():
 # ---------------------------------------------------------------------------
 # _compute_source_watermark / _write_watermark / _read_watermark
 # ---------------------------------------------------------------------------
+
+
+def test_read_source_watermark_sidecar_returns_scoped_value(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "nar",
+                "max_data_sakusei_nengappi": "20260826094500",
+                "row_count": 132,
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "nar", "20260826")
+
+    assert result == SourceWatermarkOutcome(("20260826094500", 132), None)
+
+
+def test_read_source_watermark_sidecar_rejects_scope_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "jra",
+                "max_data_sakusei_nengappi": "20260826094500",
+                "row_count": 132,
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "nar", "20260826")
+
+    assert result.value is None
+    assert result.reason == "watermark query failed: watermark sidecar scope mismatch"
+
+
+def test_read_source_watermark_sidecar_zero_count_is_fail_closed(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "ban-ei",
+                "max_data_sakusei_nengappi": None,
+                "row_count": 0,
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "ban-ei", "20260826")
+
+    assert result == SourceWatermarkOutcome(None, "watermark count is 0")
+
+
+def test_read_source_watermark_sidecar_null_token_is_stable(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "jra",
+                "max_data_sakusei_nengappi": None,
+                "row_count": 80,
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "jra", "20260826")
+
+    assert result == SourceWatermarkOutcome(("none", 80), None)
+
+
+def test_read_source_watermark_sidecar_missing_file_is_fail_closed(tmp_path: Path) -> None:
+    result = _read_source_watermark_sidecar(tmp_path / "missing.json", "jra", "20260826")
+
+    assert result.value is None
+    assert result.reason is not None
+    assert result.reason.startswith("watermark query failed: ")
+
+
+def test_read_source_watermark_sidecar_rejects_non_integer_count(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "nar",
+                "max_data_sakusei_nengappi": "20260826094500",
+                "row_count": "132",
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "nar", "20260826")
+
+    assert result == SourceWatermarkOutcome(
+        None, "watermark query failed: watermark row_count must be an integer"
+    )
+
+
+def test_read_source_watermark_sidecar_rejects_non_string_max_token(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    path.write_text(
+        json.dumps(
+            {
+                "category": "nar",
+                "max_data_sakusei_nengappi": ["20260826094500"],
+                "row_count": 132,
+                "target_date": "20260826",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _read_source_watermark_sidecar(path, "nar", "20260826")
+
+    assert result == SourceWatermarkOutcome(
+        None, "watermark query failed: watermark max token must be a string or null"
+    )
 
 
 def test_compute_source_watermark_returns_max_updated_and_row_count(
@@ -3958,62 +4191,19 @@ def test_build_upcoming_feature_rows_split_success_reads_grouped_rows(
     assert len(result["jra:2026:0712:05:11"]) == 2
 
 
-def test_build_upcoming_feature_rows_split_falls_back_to_inline_build_day_base(
+def test_build_upcoming_feature_rows_split_does_not_build_day_base_inline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    import pandas as pd
-
     monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "unknown-role")
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
-    day_base_dir = tmp_path / "daybase-final"
-    day_base_dir.mkdir()
     monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: None)
-
-    called: list[tuple[object, ...]] = []
-
-    def fake_build_day_base(
-        category: str,
-        target_date: str,
-        days_ahead: int,
-        database_url: str,
-        realtime_odds_path: Path | None = None,
-        venue_weather_dir: Path | None = None,
-        r2_config: object | None = None,
-    ) -> Path:
-        called.append((category, target_date, days_ahead, database_url, r2_config))
-        return day_base_dir
-
-    monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
-    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
-
-    def fake_build_pipeline_from_day_base(
-        category: str,
-        target_date: str,
-        days_ahead: int,
-        database_url: str,
-        day_base_dir_arg: Path,
-        final_dir: Path,
-        target_race: str,
-        realtime_odds_path: Path | None = None,
-        venue_weather_dir: Path | None = None,
-    ) -> bool:
-        final_dir.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({"race_id": ["jra:2026:0712:05:11"], "umaban": [1]}).to_parquet(
-            final_dir / "data.parquet"
-        )
-        return True
-
-    monkeypatch.setattr(
-        pipeline_runner, "build_pipeline_from_day_base", fake_build_pipeline_from_day_base
-    )
 
     result = pipeline_runner.build_upcoming_feature_rows_split(
         "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
     )
 
-    assert result is not None
-    assert called == [("jra", "20260712", 0, "postgresql://u:p@h/db", None)]
+    assert result is None
 
 
 def test_build_upcoming_feature_rows_split_race_chain_miss_requires_day_base_without_building(
@@ -4083,11 +4273,9 @@ def test_build_upcoming_feature_rows_split_race_chain_hit_matches_legacy_rows(
     assert result == {"jra:2026:0712:05:11": [{"race_id": "jra:2026:0712:05:11", "umaban": 1}]}
 
 
-def test_build_upcoming_feature_rows_split_race_chain_wraps_unexpected_error(
+def test_build_upcoming_feature_rows_split_race_chain_preserves_execution_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from predict_lib.container_role import DayBaseRequiredError
-
     monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
 
@@ -4096,20 +4284,12 @@ def test_build_upcoming_feature_rows_split_race_chain_wraps_unexpected_error(
 
     monkeypatch.setattr(pipeline_runner, "ensure_day_base", raiser)
 
-    with pytest.raises(
-        DayBaseRequiredError,
-        match=(
-            "DAY_BASE_REQUIRED: race-chain error category=jra target_date=20260712 "
-            "target_race=05:11: RuntimeError: boom"
-        ),
-    ) as error_info:
+    with pytest.raises(RuntimeError, match="boom") as error_info:
         pipeline_runner.build_upcoming_feature_rows_split(
             "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
         )
 
-    assert isinstance(error_info.value.__cause__, RuntimeError)
-    assert "origin=test_pipeline_runner.py" in str(error_info.value)
-    assert ":raiser" in str(error_info.value)
+    assert error_info.value.__cause__ is None
 
 
 def test_build_upcoming_feature_rows_split_returns_none_on_exception(

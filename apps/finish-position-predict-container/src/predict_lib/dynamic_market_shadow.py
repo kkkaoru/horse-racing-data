@@ -14,6 +14,12 @@ from .dynamic_market_router import (
     DynamicMarketRouterConfig,
     route_dynamic_market_scores,
 )
+from .jra_joint_alternate_scorer import (
+    MODEL_VERSION as JOINT_ALTERNATE_MODEL_VERSION,
+)
+from .jra_joint_alternate_scorer import (
+    JointAlternateCandidate,
+)
 from .rank import ScoredHorse, rank_within_race
 from .subgroup import classify_distance_band, classify_surface
 
@@ -21,6 +27,7 @@ SHADOW_ROUTER_VERSION: Final[str] = _versions.SHADOW_ROUTER_VERSION
 SHADOW_TABLE: Final[str] = "finish_position_dynamic_market_shadow_predictions"
 COMPARISON_CONTRACT: Final[str] = "served-same-snapshot/v1"
 SHADOW_BATCH_SIZE: Final[int] = 500
+JOINT_ALTERNATE_ROUTER_VERSION: Final[str] = JOINT_ALTERNATE_MODEL_VERSION
 UPSET_FEATURE_NAMES: Final[tuple[str, ...]] = (
     "field_size",
     "favorite_odds",
@@ -103,6 +110,14 @@ def selected_artifact_versions() -> tuple[str, ...]:
     return _versions.selected_artifact_versions()
 
 
+def additional_top5_candidates(
+    baseline_top5: Sequence[str], shadow_top5: Sequence[str]
+) -> tuple[str, ...]:
+    """Return shadow candidates outside the served Top5 without changing served ranks."""
+    baseline = frozenset(baseline_top5)
+    return tuple(horse_id for horse_id in shadow_top5 if horse_id not in baseline)
+
+
 class ProbabilityModel(Protocol):
     """Minimal classifier interface needed by the pure shadow scorer."""
 
@@ -128,6 +143,7 @@ class DynamicMarketShadowRecord:
     distance_band: str | None
     baseline_top5: tuple[str, ...]
     shadow_top5: tuple[str, ...]
+    additional_top5_candidates: tuple[str, ...]
     classifier_version: str
     market_expert_version: str
     market_free_expert_version: str
@@ -389,6 +405,44 @@ def served_baseline_from_rows(rows: Sequence[Sequence[object]]) -> ServedBaselin
     )
 
 
+def build_joint_additional_candidate_record(
+    *,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    candidate: JointAlternateCandidate,
+    specialist_model_version: str,
+    champion_model_version: str,
+    served_baseline: ServedBaseline,
+) -> DynamicMarketShadowRecord:
+    """Build one auditable record that leaves served Top5 structurally unchanged."""
+    representative = entries[0] if entries else {}
+    raw_track_code = representative.get("track_code")
+    surface = classify_surface(None if raw_track_code is None else str(raw_track_code))
+    raw_distance = _finite_float(representative.get("kyori"))
+    distance_band = classify_distance_band(None if raw_distance is None else int(raw_distance))
+    margin = candidate.margin
+    stored_margin = 0.0 if margin is None else margin if math.isfinite(margin) else 1e9
+    return DynamicMarketShadowRecord(
+        race_id=race_id,
+        router_version=JOINT_ALTERNATE_ROUTER_VERSION,
+        upset_probability=candidate.defer_probability,
+        market_weight=stored_margin,
+        active=candidate.emitted,
+        reason=candidate.reason,
+        surface=surface,
+        distance_band=distance_band,
+        baseline_top5=served_baseline.top5,
+        shadow_top5=served_baseline.top5,
+        additional_top5_candidates=(candidate.horse_id,) if candidate.horse_id else (),
+        classifier_version=JOINT_ALTERNATE_MODEL_VERSION,
+        market_expert_version=specialist_model_version,
+        market_free_expert_version=champion_model_version,
+        comparison_contract=COMPARISON_CONTRACT,
+        served_model_version=served_baseline.model_version,
+        feature_snapshot_sha256=feature_snapshot_sha256(entries),
+    )
+
+
 def build_shadow_record(
     *,
     race_id: str,
@@ -490,6 +544,7 @@ def _build_shadow_records(
             distance_band=distance_band,
             config=hypothesis.config,
         )
+        shadow_top5 = _top5_ids(entries, decision.routed_scores)
         records.append(
             DynamicMarketShadowRecord(
                 race_id=race_id,
@@ -501,7 +556,10 @@ def _build_shadow_records(
                 surface=surface,
                 distance_band=distance_band,
                 baseline_top5=served_baseline.top5,
-                shadow_top5=_top5_ids(entries, decision.routed_scores),
+                shadow_top5=shadow_top5,
+                additional_top5_candidates=additional_top5_candidates(
+                    served_baseline.top5, shadow_top5
+                ),
                 classifier_version=classifier_model_version,
                 market_expert_version=market_expert_version,
                 market_free_expert_version=market_free_expert_version,
@@ -524,6 +582,7 @@ SHADOW_COLUMNS: Final[tuple[str, ...]] = (
     "distance_band",
     "baseline_top5",
     "shadow_top5",
+    "additional_top5_candidates",
     "classifier_version",
     "market_expert_version",
     "market_free_expert_version",
@@ -546,6 +605,7 @@ create table if not exists {SHADOW_TABLE} (
   distance_band text,
   baseline_top5 text[] not null,
   shadow_top5 text[] not null,
+  additional_top5_candidates text[] not null default '{{}}',
   classifier_version text not null,
   market_expert_version text not null,
   market_free_expert_version text not null,
@@ -564,6 +624,8 @@ def build_shadow_migration_sql() -> tuple[str, ...]:
         f"alter table {SHADOW_TABLE} add column if not exists comparison_contract text",
         f"alter table {SHADOW_TABLE} add column if not exists served_model_version text",
         f"alter table {SHADOW_TABLE} add column if not exists feature_snapshot_sha256 text",
+        f"alter table {SHADOW_TABLE} add column if not exists "
+        "additional_top5_candidates text[] not null default '{}'",
     )
 
 
@@ -598,6 +660,7 @@ def shadow_params(record: DynamicMarketShadowRecord) -> list[object]:
         record.distance_band,
         list(record.baseline_top5),
         list(record.shadow_top5),
+        list(record.additional_top5_candidates),
         record.classifier_version,
         record.market_expert_version,
         record.market_free_expert_version,

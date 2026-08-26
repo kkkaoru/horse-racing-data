@@ -177,6 +177,63 @@ def test_write_weather_duckdb_success(tmp_path: Path) -> None:
     assert inserted_params[0][1] == "2026-06-24"
 
 
+def test_write_weather_duckdb_writes_complete_v2_sidecar(tmp_path: Path) -> None:
+    fake_duckdb = MagicMock()
+    fake_duckdb.Error = RuntimeError
+    v1_con = MagicMock()
+    v2_con = MagicMock()
+    fake_duckdb.connect.side_effect = [v1_con, v2_con]
+    row = {
+        **_ONE_ROW,
+        "relative_humidity": 80.0,
+        "dew_point": 18.0,
+        "wet_bulb_temperature": 20.0,
+        "shortwave_radiation": 300.0,
+    }
+    with patch.dict(sys.modules, {"duckdb": fake_duckdb}):
+        result = write_weather_duckdb([row], "20260624", tmp_path)
+    assert result == tmp_path / "venue-weather"
+    assert fake_duckdb.connect.call_count == 2
+    assert (
+        fake_duckdb.connect.call_args_list[1]
+        .args[0]
+        .endswith("venue-weather/venue_weather_v2_2026.duckdb")
+    )
+    assert v2_con.executemany.call_args.args[0] == (
+        "insert or replace into venue_weather_v2 values (?,?,?,?,?,?,?,?)"
+    )
+    assert v2_con.executemany.call_args.args[1][0] == (
+        "01",
+        "2026-06-24",
+        9,
+        20.5,
+        80.0,
+        18.0,
+        20.0,
+        300.0,
+    )
+
+
+def test_write_weather_duckdb_keeps_v1_when_optional_v2_write_fails(
+    tmp_path: Path,
+) -> None:
+    fake_duckdb = MagicMock()
+    fake_duckdb.Error = RuntimeError
+    v1_con = MagicMock()
+    fake_duckdb.connect.side_effect = [v1_con, RuntimeError("v2 disk full")]
+    row = {
+        **_ONE_ROW,
+        "relative_humidity": 80.0,
+        "dew_point": 18.0,
+        "wet_bulb_temperature": 20.0,
+        "shortwave_radiation": 300.0,
+    }
+    with patch.dict(sys.modules, {"duckdb": fake_duckdb}):
+        result = write_weather_duckdb([row], "20260624", tmp_path)
+    assert result == tmp_path / "venue-weather"
+    assert fake_duckdb.connect.call_count == 2
+
+
 def test_write_weather_duckdb_rows_all_filtered_returns_none(tmp_path: Path) -> None:
     fake_duckdb = MagicMock()
     fake_duckdb.Error = RuntimeError

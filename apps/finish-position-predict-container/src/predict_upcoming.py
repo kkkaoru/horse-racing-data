@@ -44,6 +44,7 @@ import contextlib
 import hashlib
 import http.server
 import json
+import math
 import os
 import shutil
 import socket
@@ -86,6 +87,7 @@ from predict_lib.dynamic_market_shadow import (
     UPSET_FEATURE_NAMES,
     DynamicMarketShadowRecord,
     ProbabilityModel,
+    build_joint_additional_candidate_record,
     build_shadow_batch_upsert_sql,
     build_shadow_migration_sql,
     build_shadow_records,
@@ -99,9 +101,27 @@ from predict_lib.ensemble_routing import catboost_model_feature_names, member_fe
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
 from predict_lib.feature_guard import is_degenerate_feature_matrix
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
+from predict_lib.jra_hybrid_scorer import (
+    JraHybridScorer,
+    fuse_jra_hybrid_scores,
+)
+from predict_lib.jra_joint_alternate_scorer import (
+    CHAMPION_MODEL_VERSION as JOINT_CHAMPION_MODEL_VERSION,
+)
+from predict_lib.jra_joint_alternate_scorer import (
+    MODEL_VERSION as JOINT_ALTERNATE_MODEL_VERSION,
+)
+from predict_lib.jra_joint_alternate_scorer import (
+    SPECIALIST_MODEL_VERSION as JOINT_SPECIALIST_MODEL_VERSION,
+)
+from predict_lib.jra_joint_alternate_scorer import (
+    JraJointAlternateScorer,
+)
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
     CATEGORIES,
+    JRA_DIRT_HYBRID_ENABLED,
+    JRA_DIRT_HYBRID_MODEL_VERSION,
     JRA_ETOP2_ENABLED,
     JRA_ETOP2_MODEL_VERSION,
     JRA_ETOP2_XGB_MODEL_VERSION,
@@ -117,6 +137,7 @@ from predict_lib.model_meta import (
     architecture_for,
     assert_no_within_race_leak_columns,
     assert_production_model_version_allowed,
+    build_r2_jra_dirt_hybrid_key,
     build_r2_nar_transformer_key,
     build_r2_object_key,
     build_r2_xgb_etop2_key,
@@ -672,15 +693,24 @@ class VariantModel:
     architecture: Architecture
     model_version: str
     top1_swap_base: VariantModel | None = None
+    routing_mode: str = "direct"
+    minimum_candidate_margin: float | None = None
+    minimum_candidate_top_z: float | None = None
+    maximum_candidate_v2_rank: int | None = None
+    consensus_members: tuple[VariantModel, ...] = ()
+    consensus_required_votes: int | None = None
 
 
 @dataclass(frozen=True)
 class DynamicMarketShadowModels:
-    """Complete shadow-only classifier and surface-expert runtime bundle."""
+    """Complete shadow-only classifier, experts, and joint candidate bundle."""
 
     classifier: ProbabilityModel
     classifier_version: str
     experts: Mapping[str, VariantModel]
+    joint_alternate: JraJointAlternateScorer
+    joint_champion: VariantModel
+    joint_specialist: VariantModel
 
 
 @dataclass(frozen=True)
@@ -691,6 +721,7 @@ class ModelBundle:
     dynamic_market_shadow: DynamicMarketShadowModels | None
     fallback_booster: BoosterLike
     feature_names: tuple[str, ...]
+    jra_dirt_hybrid: JraHybridScorer | None
     nar_transformer: TransformerScorer | None
     stage1_config: Stage1CategoryConfig | None
     stage1_model: VariantModel | None
@@ -756,21 +787,29 @@ def _model_bundle_cache_key(
     )
 
 
-def _load_shadow_metadata(path: Path, expected_version: str) -> tuple[str, ...]:
+def _load_named_model_metadata(
+    path: Path, expected_version: str, *, require_shadow_only: bool
+) -> tuple[str, ...]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("model_version") != expected_version:
-        raise ValueError(f"dynamic-market shadow metadata identity mismatch: {path}")
+        raise ValueError(f"named model metadata identity mismatch: {path}")
     raw_names = payload.get("feature_names")
     if (
         not isinstance(raw_names, list)
         or not raw_names
         or not all(isinstance(name, str) for name in raw_names)
     ):
-        raise ValueError(f"dynamic-market shadow feature_names invalid: {path}")
+        raise ValueError(f"named model feature_names invalid: {path}")
     feature_names = tuple(raw_names)
-    if payload.get("feature_count") != len(feature_names) or payload.get("shadow_only") is not True:
-        raise ValueError(f"dynamic-market shadow metadata contract invalid: {path}")
+    if payload.get("feature_count") != len(feature_names) or (
+        require_shadow_only and payload.get("shadow_only") is not True
+    ):
+        raise ValueError(f"named model metadata contract invalid: {path}")
     return feature_names
+
+
+def _load_shadow_metadata(path: Path, expected_version: str) -> tuple[str, ...]:
+    return _load_named_model_metadata(path, expected_version, require_shadow_only=True)
 
 
 def _load_dynamic_market_shadow_models(
@@ -813,10 +852,45 @@ def _load_dynamic_market_shadow_models(
                     architecture="catboost",
                     model_version=model_version,
                 )
+        joint_dir = models_dir / "finish-position" / "jra" / JOINT_ALTERNATE_MODEL_VERSION
+        joint_alternate = JraJointAlternateScorer.load(joint_dir)
+        champion_dir = models_dir / "finish-position" / "jra" / JOINT_CHAMPION_MODEL_VERSION
+        champion_features = _load_named_model_metadata(
+            champion_dir / METADATA_FILE_NAME,
+            JOINT_CHAMPION_MODEL_VERSION,
+            require_shadow_only=False,
+        )
+        champion_booster = _load_booster_by_arch(champion_dir / MODEL_FILE_NAME, "catboost")
+        if not _variant_booster_feature_order_matches(
+            champion_booster, "catboost", champion_features
+        ):
+            raise ValueError("joint alternate champion feature order mismatch")
+        specialist_dir = models_dir / "finish-position" / "jra" / JOINT_SPECIALIST_MODEL_VERSION
+        specialist_features = _load_shadow_metadata(
+            specialist_dir / METADATA_FILE_NAME, JOINT_SPECIALIST_MODEL_VERSION
+        )
+        specialist_booster = _load_booster_by_arch(specialist_dir / MODEL_FILE_NAME, "catboost")
+        if not _variant_booster_feature_order_matches(
+            specialist_booster, "catboost", specialist_features
+        ):
+            raise ValueError("joint alternate specialist feature order mismatch")
         return DynamicMarketShadowModels(
             classifier=classifier,
             classifier_version=classifier_model_version,
             experts=MappingProxyType(experts),
+            joint_alternate=joint_alternate,
+            joint_champion=VariantModel(
+                booster=champion_booster,
+                feature_names=champion_features,
+                architecture="catboost",
+                model_version=JOINT_CHAMPION_MODEL_VERSION,
+            ),
+            joint_specialist=VariantModel(
+                booster=specialist_booster,
+                feature_names=specialist_features,
+                architecture="catboost",
+                model_version=JOINT_SPECIALIST_MODEL_VERSION,
+            ),
         )
     except BaseException as load_error:
         debug_log(f"[dynamic-market-shadow] bundle unavailable -> disabled: {load_error}")
@@ -878,11 +952,51 @@ def _load_model_bundle(
                     "metadata.json -> not loaded, races fall back to category default"
                 )
                 continue
+            routing_mode = getattr(variant_spec, "routing_mode", "direct")
+            if routing_mode not in {
+                "direct",
+                "jra_variant_top1_swap",
+                "nar_transformer_top1_swap",
+                "nar_transformer_top2_swap",
+                "nar_transformer_top2_consensus_swap",
+            }:
+                debug_log(
+                    f"[cell-routing] variant={variant_name} category={category} "
+                    f"unsupported routing_mode={routing_mode} -> not loaded"
+                )
+                continue
+            top1_swap_base: VariantModel | None = None
+            if routing_mode == "jra_variant_top1_swap":
+                base_variant = getattr(variant_spec, "base_variant", None)
+                if category != "jra" or base_variant is None or base_variant not in variant_pool:
+                    debug_log(
+                        f"[cell-routing] variant={variant_name} category={category} "
+                        f"missing top1-swap base_variant={base_variant} -> not loaded"
+                    )
+                    continue
+                top1_swap_base = variant_pool[base_variant]
+            consensus_members: tuple[VariantModel, ...] = ()
+            if routing_mode == "nar_transformer_top2_consensus_swap":
+                consensus_names = getattr(variant_spec, "consensus_variants", ())
+                if category != "nar" or any(name not in variant_pool for name in consensus_names):
+                    debug_log(
+                        f"[cell-routing] variant={variant_name} category={category} "
+                        f"missing consensus_variants={consensus_names} -> not loaded"
+                    )
+                    continue
+                consensus_members = tuple(variant_pool[name] for name in consensus_names)
             variant_pool[variant_name] = VariantModel(
                 booster=booster,
                 feature_names=variant_feature_names,
                 architecture=architecture,
                 model_version=variant_spec.model_version,
+                routing_mode=routing_mode,
+                top1_swap_base=top1_swap_base,
+                minimum_candidate_margin=getattr(variant_spec, "minimum_candidate_margin", None),
+                minimum_candidate_top_z=getattr(variant_spec, "minimum_candidate_top_z", None),
+                maximum_candidate_v2_rank=getattr(variant_spec, "maximum_candidate_v2_rank", None),
+                consensus_members=consensus_members,
+                consensus_required_votes=getattr(variant_spec, "consensus_required_votes", None),
             )
             debug_log(
                 f"[cell-routing] loaded variant={variant_name} category={category} "
@@ -890,6 +1004,11 @@ def _load_model_bundle(
             )
     xgb_etop2_booster = (
         _load_xgb_etop2_booster(models_dir) if JRA_ETOP2_ENABLED and category == "jra" else None
+    )
+    jra_dirt_hybrid = (
+        _load_jra_dirt_hybrid(models_dir, feature_names)
+        if JRA_DIRT_HYBRID_ENABLED and category == "jra"
+        else None
     )
     nar_transformer = (
         _load_nar_transformer(models_dir, feature_names)
@@ -908,6 +1027,7 @@ def _load_model_bundle(
         dynamic_market_shadow=dynamic_market_shadow,
         fallback_booster=fallback_booster,
         feature_names=feature_names,
+        jra_dirt_hybrid=jra_dirt_hybrid,
         nar_transformer=nar_transformer,
         stage1_config=stage1_config,
         stage1_model=stage1_model,
@@ -985,6 +1105,7 @@ def score_races(
     resolved_feature_names = bundle.feature_names
     variant_pool = bundle.variant_pool
     xgb_etop2_booster = bundle.xgb_etop2_booster
+    jra_dirt_hybrid = bundle.jra_dirt_hybrid
     nar_transformer = bundle.nar_transformer
     stage1_config = bundle.stage1_config
     stage1_model = bundle.stage1_model
@@ -1003,6 +1124,7 @@ def score_races(
         effective_feature_names = resolved_feature_names
         effective_architecture = architecture_for(category)
         cell_variant_model: VariantModel | None = None
+        resolved_variant: str | None = None
         if variant_pool:
             effective_card_max_race_bango = (
                 card_max_race_bango
@@ -1012,6 +1134,7 @@ def score_races(
             variant = cell_router.resolve_variant(
                 category, entries, card_max_race_bango=effective_card_max_race_bango
             )
+            resolved_variant = variant
             if variant in variant_pool:
                 vm = variant_pool[variant]
                 effective_booster = vm.booster
@@ -1025,15 +1148,71 @@ def score_races(
                     f"resolved missing variant={variant}; using default"
                 )
         if cell_variant_model is not None:
-            rows = _score_one_race_direct(
-                effective_booster,
-                race_id,
-                category,
-                entries,
-                effective_feature_names,
-                effective_architecture,
-                cell_variant_model.model_version,
-            )
+            if category == "jra" and cell_variant_model.routing_mode == "jra_variant_top1_swap":
+                rows = _score_one_race_variant_top1_swap(
+                    cell_variant_model,
+                    race_id,
+                    category,
+                    entries,
+                )
+            elif (
+                category == "nar" and cell_variant_model.routing_mode == "nar_transformer_top1_swap"
+            ):
+                rows = _score_one_race_nar_top1_swap(
+                    fallback_booster,
+                    nar_transformer,
+                    cell_variant_model,
+                    race_id,
+                    entries,
+                    resolved_feature_names,
+                )
+            elif (
+                category == "nar"
+                and cell_variant_model.routing_mode == "nar_transformer_top2_consensus_swap"
+            ):
+                rows = _score_one_race_nar_top2_consensus_swap(
+                    fallback_booster,
+                    nar_transformer,
+                    cell_variant_model,
+                    race_id,
+                    entries,
+                    resolved_feature_names,
+                )
+            elif (
+                category == "nar" and cell_variant_model.routing_mode == "nar_transformer_top2_swap"
+            ):
+                rows = _score_one_race_nar_top2_swap(
+                    fallback_booster,
+                    nar_transformer,
+                    cell_variant_model,
+                    race_id,
+                    entries,
+                    resolved_feature_names,
+                )
+            elif (
+                category == "jra"
+                and resolved_variant == "prior_corner_dirt_smallfield_005"
+                and jra_dirt_hybrid is not None
+            ):
+                rows = _score_one_race_jra_dirt_hybrid(
+                    effective_booster,
+                    jra_dirt_hybrid,
+                    race_id,
+                    entries,
+                    effective_feature_names,
+                    effective_architecture,
+                    cell_variant_model.model_version,
+                )
+            else:
+                rows = _score_one_race_direct(
+                    effective_booster,
+                    race_id,
+                    category,
+                    entries,
+                    effective_feature_names,
+                    effective_architecture,
+                    cell_variant_model.model_version,
+                )
         elif xgb_etop2_booster is not None:
             rows = _score_one_race_etop2(
                 effective_booster,
@@ -1129,6 +1308,9 @@ def score_dynamic_market_shadow(
                 stage1_model.feature_names,
                 market_expert.feature_names,
                 market_free_expert.feature_names,
+                shadow.joint_alternate.feature_names,
+                shadow.joint_champion.feature_names,
+                shadow.joint_specialist.feature_names,
             )
             if any(is_degenerate_feature_matrix(entries, names) for names in required_contracts):
                 debug_log(f"[dynamic-market-shadow] race={race_id} skipped: degenerate features")
@@ -1165,6 +1347,39 @@ def score_dynamic_market_shadow(
                 served_baseline=served_baseline,
             )
             records.extend(race_records)
+            if race_records:
+                joint_champion_scores = score_matrix(
+                    shadow.joint_champion.booster,
+                    build_feature_matrix(
+                        entries,
+                        shadow.joint_champion.feature_names,
+                        shadow.joint_champion.architecture,
+                    ),
+                )
+                joint_specialist_scores = score_matrix(
+                    shadow.joint_specialist.booster,
+                    build_feature_matrix(
+                        entries,
+                        shadow.joint_specialist.feature_names,
+                        shadow.joint_specialist.architecture,
+                    ),
+                )
+                candidate = shadow.joint_alternate.select_candidate(
+                    entries,
+                    joint_champion_scores,
+                    joint_specialist_scores,
+                    served_baseline.top5,
+                )
+                records.append(
+                    build_joint_additional_candidate_record(
+                        race_id=race_id,
+                        entries=entries,
+                        candidate=candidate,
+                        specialist_model_version=shadow.joint_specialist.model_version,
+                        champion_model_version=shadow.joint_champion.model_version,
+                        served_baseline=served_baseline,
+                    )
+                )
         except BaseException as shadow_error:
             debug_log(f"[dynamic-market-shadow] race={race_id} failed closed: {shadow_error}")
     return records
@@ -1196,6 +1411,87 @@ def _score_one_race_direct(
         model_version,
         _representative_entry(entries),
         entries=entries,
+    )
+
+
+def _score_one_race_variant_top1_swap(
+    companion: VariantModel,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+) -> list[list[object]]:
+    """Score a routed base + companion and exchange only their top horses."""
+    base = companion.top1_swap_base
+    if base is None:
+        raise ValueError("Cell variant top1 swap requires a base model")
+    if is_degenerate_feature_matrix(entries, base.feature_names) or is_degenerate_feature_matrix(
+        entries, companion.feature_names
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category={category} "
+            f"model_version={companion.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(
+        base.booster,
+        build_feature_matrix(entries, base.feature_names, base.architecture),
+    )
+    companion_scores = score_matrix(
+        companion.booster,
+        build_feature_matrix(entries, companion.feature_names, companion.architecture),
+    )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    should_swap = _passes_variant_top1_confidence_gate(companion, base_scores, companion_scores)
+    adjusted_scores = (
+        apply_top1_score_swap(horse_ids, base_scores, companion_scores)
+        if should_swap
+        else list(base_scores)
+    )
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        category,
+        ranked,
+        companion.model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _passes_variant_top1_confidence_gate(
+    companion: VariantModel,
+    base_scores: Sequence[float],
+    companion_scores: Sequence[float],
+) -> bool:
+    """Fail closed unless optional companion confidence thresholds are met."""
+    minimum_margin = companion.minimum_candidate_margin
+    minimum_top_z = companion.minimum_candidate_top_z
+    maximum_v2_rank = companion.maximum_candidate_v2_rank
+    if minimum_margin is None and minimum_top_z is None and maximum_v2_rank is None:
+        return True
+    if (
+        len(companion_scores) < 2
+        or len(base_scores) != len(companion_scores)
+        or any(not math.isfinite(score) for score in companion_scores)
+        or any(not math.isfinite(score) for score in base_scores)
+    ):
+        return False
+    descending = sorted(companion_scores, reverse=True)
+    margin = descending[0] - descending[1]
+    mean = sum(companion_scores) / len(companion_scores)
+    variance = sum((score - mean) ** 2 for score in companion_scores) / (len(companion_scores) - 1)
+    standard_deviation = math.sqrt(variance)
+    if not math.isfinite(standard_deviation) or standard_deviation <= 0.0:
+        return False
+    top_z = (descending[0] - mean) / standard_deviation
+    companion_top_index = max(range(len(companion_scores)), key=companion_scores.__getitem__)
+    base_order = sorted(range(len(base_scores)), key=base_scores.__getitem__, reverse=True)
+    candidate_v2_rank = base_order.index(companion_top_index) + 1
+    return (
+        (minimum_margin is None or margin >= minimum_margin)
+        and (minimum_top_z is None or top_z >= minimum_top_z)
+        and (maximum_v2_rank is None or candidate_v2_rank <= maximum_v2_rank)
     )
 
 
@@ -1254,6 +1550,32 @@ def _score_one_race_stage1_top1_swap(
     )
 
 
+def _load_jra_dirt_hybrid(models_dir: Path, feature_names: Sequence[str]) -> JraHybridScorer | None:
+    """Load the JRA dirt-small-005 artifact, failing closed to prior-corner only."""
+    artifact_dir = (models_dir / build_r2_jra_dirt_hybrid_key("manifest.json")).parent
+    try:
+        scorer = JraHybridScorer.load(artifact_dir)
+        assert_no_within_race_leak_columns(
+            scorer.feature_order,
+            context=f"JRA hybrid model_version={JRA_DIRT_HYBRID_MODEL_VERSION}",
+        )
+    except BaseException as load_error:
+        debug_log(f"[jra-dirt-hybrid] load failed -> prior-corner-only: {load_error}")
+        return None
+    missing = [name for name in scorer.feature_order if name not in set(feature_names)]
+    if missing:
+        debug_log(
+            f"[jra-dirt-hybrid] feature-contract gap ({len(missing)}) "
+            f"-> prior-corner-only: {missing[:5]}"
+        )
+        return None
+    debug_log(
+        f"[jra-dirt-hybrid] loaded seeds={len(scorer.seeds)} "
+        f"features={len(scorer.feature_order)} version={JRA_DIRT_HYBRID_MODEL_VERSION}"
+    )
+    return scorer
+
+
 def _load_nar_transformer(
     models_dir: Path, feature_names: Sequence[str]
 ) -> TransformerScorer | None:
@@ -1293,6 +1615,247 @@ def _load_nar_transformer(
         f"version={NAR_TRANSFORMER_MODEL_VERSION}"
     )
     return transformer
+
+
+def _score_one_race_jra_dirt_hybrid(
+    booster: BoosterLike,
+    hybrid: JraHybridScorer,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+    architecture: Architecture,
+    fallback_model_version: str,
+) -> list[list[object]]:
+    """Fuse the prior-corner cell model with the weighted three-seed companion."""
+    if is_degenerate_feature_matrix(entries, feature_names):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category=jra "
+            "rejected: feature matrix mostly missing -> skipping write "
+            "(self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(booster, build_feature_matrix(entries, feature_names, architecture))
+    scores: Sequence[float] = base_scores
+    model_version = fallback_model_version
+    if len(entries) >= 2 and not hybrid.missing_feature_keys(entries):
+        try:
+            companion_scores = hybrid.companion_scores(entries)
+            scores = fuse_jra_hybrid_scores(
+                base_scores,
+                companion_scores,
+                companion_weight=hybrid.companion_weight,
+            )
+            model_version = JRA_DIRT_HYBRID_MODEL_VERSION
+        except BaseException as blend_error:
+            debug_log(
+                f"[jra-dirt-hybrid] race fail -> prior-corner-only race_id={race_id}: {blend_error}"
+            )
+    ranked = rank_race_entries(entries, scores)
+    return build_prediction_rows(
+        race_id,
+        "jra",
+        ranked,
+        model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _score_one_race_nar_top1_swap(
+    fallback_booster: BoosterLike,
+    transformer: TransformerScorer | None,
+    companion: VariantModel,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Swap only production NAR top-1 with a routed specialist's top horse."""
+    if is_degenerate_feature_matrix(entries, feature_names) or is_degenerate_feature_matrix(
+        entries, companion.feature_names
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category=nar "
+            f"model_version={companion.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(
+        fallback_booster,
+        build_feature_matrix(entries, feature_names, "xgboost"),
+    )
+    production_scores: Sequence[float] = base_scores
+    if (
+        transformer is not None
+        and len(entries) >= 2
+        and not transformer.missing_feature_keys(entries)
+    ):
+        try:
+            production_scores = fuse_ensemble_transformer(
+                base_scores,
+                transformer.seed_score_mean(entries),
+                NAR_TRANSFORMER_BLEND_WEIGHT,
+            )
+        except BaseException as blend_error:
+            debug_log(
+                f"[nar-top1-routing] transformer fail -> ensemble-only "
+                f"race_id={race_id}: {blend_error}"
+            )
+    companion_scores = score_matrix(
+        companion.booster,
+        build_feature_matrix(entries, companion.feature_names, companion.architecture),
+    )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    adjusted_scores = apply_top1_score_swap(horse_ids, production_scores, companion_scores)
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        "nar",
+        ranked,
+        companion.model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _score_one_race_nar_top2_swap(
+    fallback_booster: BoosterLike,
+    transformer: TransformerScorer | None,
+    companion: VariantModel,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Conditionally swap production NAR ranks two and three using a Top2 head."""
+    if is_degenerate_feature_matrix(entries, feature_names) or is_degenerate_feature_matrix(
+        entries, companion.feature_names
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category=nar "
+            f"model_version={companion.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(
+        fallback_booster,
+        build_feature_matrix(entries, feature_names, "xgboost"),
+    )
+    production_scores: Sequence[float] = base_scores
+    if (
+        transformer is not None
+        and len(entries) >= 2
+        and not transformer.missing_feature_keys(entries)
+    ):
+        try:
+            production_scores = fuse_ensemble_transformer(
+                base_scores,
+                transformer.seed_score_mean(entries),
+                NAR_TRANSFORMER_BLEND_WEIGHT,
+            )
+        except BaseException as blend_error:
+            debug_log(
+                f"[nar-top2-routing] transformer fail -> ensemble-only "
+                f"race_id={race_id}: {blend_error}"
+            )
+    companion_scores = score_matrix(
+        companion.booster,
+        build_feature_matrix(entries, companion.feature_names, companion.architecture),
+    )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    production_order = sorted(
+        range(len(entries)), key=lambda index: (-float(production_scores[index]), horse_ids[index])
+    )
+    adjusted_scores = list(production_scores)
+    if len(production_order) >= 3:
+        rank2_index, rank3_index = production_order[1:3]
+        minimum_margin = companion.minimum_candidate_margin
+        threshold = 0.0 if minimum_margin is None else minimum_margin
+        if float(companion_scores[rank3_index]) > float(companion_scores[rank2_index]) + threshold:
+            adjusted_scores[rank2_index], adjusted_scores[rank3_index] = (
+                adjusted_scores[rank3_index],
+                adjusted_scores[rank2_index],
+            )
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        "nar",
+        ranked,
+        companion.model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _score_one_race_nar_top2_consensus_swap(
+    fallback_booster: BoosterLike,
+    transformer: TransformerScorer | None,
+    companion: VariantModel,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Swap production ranks two and three only when enough panel heads agree."""
+    members = (companion, *companion.consensus_members)
+    if is_degenerate_feature_matrix(entries, feature_names) or any(
+        is_degenerate_feature_matrix(entries, member.feature_names) for member in members
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category=nar "
+            f"model_version={companion.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    base_scores = score_matrix(
+        fallback_booster,
+        build_feature_matrix(entries, feature_names, "xgboost"),
+    )
+    production_scores: Sequence[float] = base_scores
+    if (
+        transformer is not None
+        and len(entries) >= 2
+        and not transformer.missing_feature_keys(entries)
+    ):
+        try:
+            production_scores = fuse_ensemble_transformer(
+                base_scores,
+                transformer.seed_score_mean(entries),
+                NAR_TRANSFORMER_BLEND_WEIGHT,
+            )
+        except BaseException as blend_error:
+            debug_log(
+                f"[nar-top2-consensus-routing] transformer fail -> ensemble-only "
+                f"race_id={race_id}: {blend_error}"
+            )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    production_order = sorted(
+        range(len(entries)), key=lambda index: (-float(production_scores[index]), horse_ids[index])
+    )
+    adjusted_scores = list(production_scores)
+    if len(production_order) >= 3:
+        rank2_index, rank3_index = production_order[1:3]
+        votes = 0
+        for member in members:
+            scores = score_matrix(
+                member.booster,
+                build_feature_matrix(entries, member.feature_names, member.architecture),
+            )
+            if float(scores[rank3_index]) > float(scores[rank2_index]):
+                votes += 1
+        required_votes = companion.consensus_required_votes
+        threshold = len(members) if required_votes is None else required_votes
+        if votes >= threshold:
+            adjusted_scores[rank2_index], adjusted_scores[rank3_index] = (
+                adjusted_scores[rank3_index],
+                adjusted_scores[rank2_index],
+            )
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        "nar",
+        ranked,
+        companion.model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
 
 
 def _score_one_race_nar_blend(
@@ -2064,8 +2627,8 @@ def _make_predict_fn(
 
         Same explicit-args / no-shared-state shape as
         :func:`_build_parquet_payload`, for the same reason. Returns ``None``
-        (non-blocking) when there is no parquet on disk or the split fails for
-        any reason — a missing per-race cache must never fail predictions.
+        when there is no parquet on disk or the split fails; the focused-full
+        completion hook converts that absence into a retryable terminal error.
         """
         from pipeline_runner import WORK_DIR  # bundled in image
 
@@ -2095,23 +2658,23 @@ def _make_predict_fn(
         the exact ``(category, run_date)`` this run was for, so there is no
         shared-state read to race against a subsequent request's write. See
         :data:`predict_lib.serve.FocusedFullCachePopulateFn` for the calling
-        contract (best-effort, called before the slot is released).
+        contract (required for semantic success, called before slot release).
         """
         if focused_full_cache_store is None:
-            return
+            raise RuntimeError("focused-full cache store is unavailable")
         category_str = params.category
         run_date = params.run_date
         per_race: list[dict[str, str]] | None
         if params.keibajo_code is not None or params.race_bango is not None:
             if params.keibajo_code is None or params.race_bango is None:
-                return
+                raise RuntimeError("focused-full cache race scope is incomplete")
             per_race = _seed_focused_full_per_race_payloads(
                 category_str, run_date, params.keibajo_code, params.race_bango
             )
         else:
             per_race = _build_per_race_payloads(category_str, run_date)
         if per_race is None:
-            return
+            raise RuntimeError("focused-full cache payload is unavailable")
         race_key = build_focused_full_race_key(params)
         focused_full_cache_store.put(
             race_key,
@@ -2147,7 +2710,7 @@ def _make_prewarm_fn(
     """
 
     def _prewarm(category_str: str, run_date: str, days_ahead: int) -> Path | None:
-        from pipeline_runner import build_day_base  # bundled in image
+        from pipeline_runner import build_day_base, pipeline_execution_scope  # bundled in image
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
@@ -2176,14 +2739,30 @@ def _make_prewarm_fn(
                 None,
             )
 
-        return build_day_base(
-            category,
-            run_date,
-            days_ahead,
-            database_url,
-            r2_config=r2_config,
-            running_style_foundation_commit_fn=_commit_running_style_foundation,
-        )
+        # Detached prewarm runs outside the HTTP prediction scope.  Apply the
+        # same immutable end-to-end deadline here; otherwise a DuckDB child
+        # can outlive the pickup lease indefinitely, keep the liveness socket
+        # active, and leave a billable Container running without ever landing
+        # the day-base object.
+        with pipeline_execution_scope():
+            final_dir = build_day_base(
+                category,
+                run_date,
+                days_ahead,
+                database_url,
+                r2_config=r2_config,
+                running_style_foundation_commit_fn=_commit_running_style_foundation,
+            )
+        # Commit the terminal payload from the pipeline thread itself. The
+        # Worker-to-Container response can be severed while the long-running
+        # DuckDB chain is still healthy; relying on the response generator to
+        # perform this commit loses a completed day-base in that case.
+        if final_dir is not None and prewarm_commit_fn is not None:
+            payload = _prewarm_parquet_payload(category, run_date, final_dir)
+            if payload is not None:
+                encoded, parquet_key, watermark, watermark_error = payload
+                prewarm_commit_fn(parquet_key, encoded, watermark, watermark_error)
+        return final_dir
 
     return _prewarm
 
@@ -2906,7 +3485,7 @@ def _expected_model_version_for_entries(
             category, entries, card_max_race_bango=card_max_race_bango
         )
         spec = routing.variants.get(variant)
-        if spec is not None:
+        if variant != routing.default_variant and spec is not None:
             return spec.model_version
     if category == "nar" and NAR_TRANSFORMER_BLEND_ENABLED:
         return NAR_TRANSFORMER_MODEL_VERSION

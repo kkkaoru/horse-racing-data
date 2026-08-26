@@ -48,6 +48,7 @@ class CellCondition:
 class CellRouteRule:
     conditions: tuple[CellCondition, ...]
     variant: str
+    effective_after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,13 @@ class VariantSpec:
     architecture: str
     feature_set_hash: str | None = None
     feature_names: tuple[str, ...] | None = None
+    routing_mode: str = "direct"
+    base_variant: str | None = None
+    minimum_candidate_margin: float | None = None
+    minimum_candidate_top_z: float | None = None
+    maximum_candidate_v2_rank: int | None = None
+    consensus_variants: tuple[str, ...] = ()
+    consensus_required_votes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +142,26 @@ def derive_field_band(shusso_tosu: int) -> str:
     return "f16p"
 
 
+def derive_canonical_distance_band(kyori: int) -> str:
+    if kyori <= 1400:
+        return "sprint"
+    if kyori <= 1800:
+        return "mile"
+    if kyori <= 2200:
+        return "intermediate"
+    if kyori <= 2800:
+        return "long"
+    return "extended"
+
+
+def derive_canonical_field_size_band(field_size: int) -> str:
+    if field_size <= 8:
+        return "small"
+    if field_size <= 14:
+        return "medium"
+    return "large"
+
+
 def derive_season(month: int) -> str:
     if month in {3, 4, 5}:
         return "spring"
@@ -144,8 +172,14 @@ def derive_season(month: int) -> str:
     return "winter"
 
 
-def derive_class(grade_code: str) -> str:
-    return grade_code if grade_code else "unknown"
+def derive_class(grade_code: str, kyoso_joken_code: str = "") -> str:
+    cleaned_grade = grade_code.strip()
+    if cleaned_grade:
+        return cleaned_grade
+    cleaned_condition = kyoso_joken_code.strip()
+    if cleaned_condition:
+        return f"joken-{cleaned_condition}"
+    return "unknown"
 
 
 def resolve_dimension(
@@ -168,6 +202,16 @@ def resolve_dimension(
         if kyori is None:
             return None
         return derive_distance_band(int(float(str(kyori))))
+    if dimension == "canonical_distance_band":
+        kyori = entry.get("kyori")
+        if kyori is None:
+            return None
+        return derive_canonical_distance_band(int(float(str(kyori))))
+    if dimension == "canonical_field_size_band":
+        resolved_field_size = field_size if field_size is not None else entry.get("shusso_tosu")
+        if resolved_field_size is None:
+            return None
+        return derive_canonical_field_size_band(int(float(str(resolved_field_size))))
     if dimension == "field_band":
         # entry["shusso_tosu"] is unconditionally NULL on every row that
         # passes through the near-miss layer (add-near-miss-features.py's
@@ -203,6 +247,11 @@ def resolve_dimension(
             month_str = str(tsukihi).strip()[:2]
             if month_str.isdigit():
                 return derive_season(int(month_str))
+        race_date = entry.get("race_date")
+        if race_date is not None:
+            date_str = str(race_date).strip().replace("-", "")
+            if len(date_str) >= 6 and date_str[4:6].isdigit():
+                return derive_season(int(date_str[4:6]))
         race_id = entry.get("race_id")
         if race_id is not None:
             parts = str(race_id).split(":")
@@ -213,9 +262,13 @@ def resolve_dimension(
         return None
     if dimension == "class":
         grade_code = entry.get("grade_code")
-        if grade_code is None:
+        condition_code = entry.get("kyoso_joken_code")
+        if grade_code is None and condition_code is None:
             return None
-        return derive_class(str(grade_code).strip())
+        return derive_class(
+            "" if grade_code is None else str(grade_code),
+            "" if condition_code is None else str(condition_code),
+        )
     if dimension == "is_final_race":
         # A single race's own entries can never answer "is this the day's
         # last race" -- that requires knowing every race_bango registered for
@@ -246,6 +299,28 @@ def resolve_dimension(
         return "true" if int(race_bango) == card_max_race_bango else "false"
     raw = entry.get(dimension)
     return str(raw).strip() if raw is not None else None
+
+
+def rule_is_effective(entry: Mapping[str, object], effective_after: str | None) -> bool:
+    if effective_after is None:
+        return True
+    threshold = effective_after.replace("-", "")
+    if len(threshold) != 8 or not threshold.isdigit():
+        return False
+    year = entry.get("kaisai_nen")
+    month_day = entry.get("kaisai_tsukihi")
+    if year is not None and month_day is not None:
+        date = f"{str(year).strip():0>4}{str(month_day).strip():0>4}"
+        return len(date) == 8 and date.isdigit() and date > threshold
+    race_id = entry.get("race_id")
+    if race_id is None:
+        return False
+    try:
+        parts = parse_race_id(str(race_id))
+    except ValueError:
+        return False
+    date = f"{parts.kaisai_nen}{parts.kaisai_tsukihi}"
+    return len(date) == 8 and date.isdigit() and date > threshold
 
 
 def all_conditions_match(
@@ -303,6 +378,8 @@ class CellRouter:
         # for whichever caller has whole-card context. Omitting it (the
         # default) fails every is_final_race condition closed to None.
         for rule in routing.rules:
+            if not rule_is_effective(first, rule.effective_after):
+                continue
             if all_conditions_match(
                 first,
                 rule.conditions,
@@ -393,7 +470,11 @@ def _parse_rule(value: object) -> CellRouteRule:
     conditions = tuple(
         _parse_condition(condition) for condition in _as_sequence(rule["conditions"], "conditions")
     )
-    return CellRouteRule(conditions=conditions, variant=str(rule["variant"]))
+    return CellRouteRule(
+        conditions=conditions,
+        variant=str(rule["variant"]),
+        effective_after=(str(rule["effective_after"]) if "effective_after" in rule else None),
+    )
 
 
 def _parse_variant_spec(value: object) -> VariantSpec:
@@ -409,6 +490,36 @@ def _parse_variant_spec(value: object) -> VariantSpec:
         architecture=str(spec["architecture"]),
         feature_set_hash=(str(spec["feature_set_hash"]) if "feature_set_hash" in spec else None),
         feature_names=feature_names,
+        routing_mode=str(spec.get("routing_mode", "direct")),
+        base_variant=(str(spec["base_variant"]) if "base_variant" in spec else None),
+        minimum_candidate_margin=(
+            float(str(spec["minimum_candidate_margin"]))
+            if "minimum_candidate_margin" in spec
+            else None
+        ),
+        minimum_candidate_top_z=(
+            float(str(spec["minimum_candidate_top_z"]))
+            if "minimum_candidate_top_z" in spec
+            else None
+        ),
+        maximum_candidate_v2_rank=(
+            int(str(spec["maximum_candidate_v2_rank"]))
+            if "maximum_candidate_v2_rank" in spec
+            else None
+        ),
+        consensus_variants=(
+            tuple(
+                str(name)
+                for name in _as_sequence(spec["consensus_variants"], "consensus_variants")
+            )
+            if "consensus_variants" in spec
+            else ()
+        ),
+        consensus_required_votes=(
+            int(str(spec["consensus_required_votes"]))
+            if "consensus_required_votes" in spec
+            else None
+        ),
     )
 
 

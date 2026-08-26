@@ -11,10 +11,22 @@ from predict_lib.debug_log import (
     debug_logs_enabled,
     debug_logs_scope,
     drain_debug_progress,
+    drain_operational_progress,
     parse_debug_flag,
     query_debug_enabled,
     record_debug_progress,
+    record_operational_progress,
 )
+
+
+def test_operational_progress_is_available_without_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PREDICT_DEBUG_LOGS", raising=False)
+    drain_operational_progress()
+    record_operational_progress("step=daybase-layer status=done")
+    assert drain_operational_progress() == ["step=daybase-layer status=done"]
+    assert drain_operational_progress() == []
 
 
 def test_parse_debug_flag_missing_is_off() -> None:

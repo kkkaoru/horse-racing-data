@@ -16,6 +16,8 @@ from predict_lib.dynamic_market_shadow import (
     UPSET_FEATURE_NAMES,
     DynamicMarketShadowOutcome,
     ServedBaseline,
+    additional_top5_candidates,
+    build_joint_additional_candidate_record,
     build_shadow_batch_upsert_sql,
     build_shadow_migration_sql,
     build_shadow_record,
@@ -33,8 +35,16 @@ from predict_lib.dynamic_market_shadow import (
     shadow_params,
     surface_expert_version,
 )
+from predict_lib.jra_joint_alternate_scorer import JointAlternateCandidate
 
 _SERVED_BASELINE = ServedBaseline("served-model", ("horse-c", "horse-a", "horse-b"))
+
+
+def test_additional_top5_candidates_preserves_shadow_order() -> None:
+    assert additional_top5_candidates(
+        ("horse-a", "horse-b", "horse-c", "horse-d", "horse-e"),
+        ("horse-b", "horse-f", "horse-a", "horse-g", "horse-c"),
+    ) == ("horse-f", "horse-g")
 
 
 @final
@@ -88,10 +98,30 @@ def test_artifact_versions_are_fixed_complete_and_reject_unknown_surface() -> No
         f"{SHADOW_ROUTER_VERSION}-obstacle-champion",
         f"{SHADOW_ROUTER_VERSION}-obstacle-stage1",
         f"{SHADOW_ROUTER_VERSION}-upset-classifier",
+        "jra-joint-group-dro-alternate-top5-v1",
+        "jra-cb-high-payout-specialist235-2026-v1",
     )
     assert surface_expert_version("turf", market_free=False).endswith("turf-champion")
     with pytest.raises(ValueError, match="unsupported shadow surface"):
         surface_expert_version("synthetic", market_free=False)
+
+
+def test_joint_additional_candidate_record_preserves_served_top5() -> None:
+    record = build_joint_additional_candidate_record(
+        race_id="jra:2026:0825:01:01",
+        entries=_entries(),
+        candidate=JointAlternateCandidate("horse-a", 1.2, 0.3, 0.7, "joint-margin-pass"),
+        specialist_model_version="specialist",
+        champion_model_version="champion",
+        served_baseline=_SERVED_BASELINE,
+    )
+
+    assert record.router_version == "jra-joint-group-dro-alternate-top5-v1"
+    assert record.baseline_top5 == record.shadow_top5 == _SERVED_BASELINE.top5
+    assert record.additional_top5_candidates == ("horse-a",)
+    assert record.market_weight == pytest.approx(0.3)
+    assert record.upset_probability == pytest.approx(0.7)
+    assert record.active is True
 
 
 def test_forward_sweep_has_exactly_50_fixed_hypotheses_and_loop43_contract() -> None:
@@ -237,6 +267,7 @@ def test_shadow_record_routes_high_upset_turf_and_keeps_top5_auditable() -> None
     assert record.distance_band == "mile"
     assert record.baseline_top5 == ("horse-c", "horse-a", "horse-b")
     assert record.shadow_top5 == ("horse-b", "horse-c", "horse-a")
+    assert record.additional_top5_candidates == ()
 
 
 def test_shadow_sweep_reuses_one_classifier_inference_for_all_50_records() -> None:
@@ -348,17 +379,19 @@ def test_shadow_sql_and_params_cover_fixed_top5_contract() -> None:
     assert "primary key (race_id, router_version)" in ddl
     assert f"insert into {SHADOW_TABLE}" in upsert
     assert "on conflict (race_id, router_version) do update" in upsert
-    assert upsert.count("%s") == len(params) == 16
+    assert upsert.count("%s") == len(params) == 17
     assert params[8] == ["horse-c", "horse-a", "horse-b"]
     assert params[9] == ["horse-b", "horse-c", "horse-a"]
-    assert params[13] == COMPARISON_CONTRACT
-    assert params[14] == "served-model"
-    assert params[15] == feature_snapshot_sha256(_entries())
+    assert params[10] == []
+    assert params[14] == COMPARISON_CONTRACT
+    assert params[15] == "served-model"
+    assert params[16] == feature_snapshot_sha256(_entries())
     assert "comparison_contract text not null" in ddl
-    assert len(build_shadow_migration_sql()) == 3
+    assert "additional_top5_candidates text[] not null default '{}'" in ddl
+    assert len(build_shadow_migration_sql()) == 4
     batch_sql = build_shadow_batch_upsert_sql(2)
-    assert batch_sql.count("%s") == 32
-    assert len(shadow_batch_params((record, record))) == 32
+    assert batch_sql.count("%s") == 34
+    assert len(shadow_batch_params((record, record))) == 34
     with pytest.raises(ValueError, match="record_count"):
         build_shadow_batch_upsert_sql(0)
 

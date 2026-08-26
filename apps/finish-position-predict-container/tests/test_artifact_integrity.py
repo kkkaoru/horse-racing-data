@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "f719971a04c88c26465c9fabbece9ff8341a19dda4898532e31a8c95600f4a13"
+EXPECTED_MANIFEST_ROOT = "9dd150083b282eb8652fb004ee6cbf547f62bceccc4fb1cca8ce84d3bb673a0d"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,8 +80,8 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 40
-    assert len(selected) == 40
+    assert len(manifest.artifacts) == 124
+    assert len(selected) == 124
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
@@ -143,7 +143,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 36
+    assert len(selected) == 120
     assert report.status == "MATCH"
     assert len(report.warnings) == 4
     assert (
@@ -964,7 +964,7 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":40,"status":"MATCH","warnings":[]}'
+        '"observed_count":0,"selected_count":124,"status":"MATCH","warnings":[]}'
     )
 
 
@@ -974,7 +974,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 40
+    assert output["selected_count"] == 124
 
 
 def test_main_missing_local_artifacts_fail(
@@ -1001,7 +1001,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 40
+    assert output["selected_count"] == 124
 
 
 def test_main_stage_requires_artifact_root_and_system(
@@ -1110,7 +1110,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 36
+    assert output["selected_count"] == 120
 
 
 # ---------------------------------------------------------------------------
@@ -1473,8 +1473,8 @@ def test_dockerfile_stages_only_selected_models_and_verifies_runtime_tree() -> N
 def test_deploy_script_blocks_wrangler_when_verification_fails(tmp_path: Path) -> None:
     """Adversarial regression: `apps/finish-position-cron/package.json`'s
     `deploy` script must run the artifact-integrity preflight before
-    `wrangler deploy` and never reach wrangler when the preflight fails.
-    Proven by executing the REAL deploy script string with a stub `wrangler`
+    the queue-draining deploy entrypoint and never reach wrangler when the
+    preflight fails. Proven by executing the REAL deploy script string with a stub `wrangler`
     on PATH that only ever writes a marker file if invoked. The ambient
     `apps/finish-position-predict-container/models/` directory is gitignored
     and may or may not be populated with real artifacts depending on the
@@ -1482,13 +1482,13 @@ def test_deploy_script_blocks_wrangler_when_verification_fails(tmp_path: Path) -
     guaranteed-empty tmp dir: this makes the preflight fail closed
     deterministically regardless of local models/ state, while the
     assertions above still pin the real deploy script's
-    `artifact:verify`-before-`wrangler deploy` ordering."""
+    `artifact:verify`-before-deploy ordering."""
     cron_package_json = json.loads(
         (REPO_ROOT / "apps/finish-position-cron/package.json").read_text(encoding="utf-8")
     )
     deploy_script = cron_package_json["scripts"]["deploy"]
     assert "artifact:verify" in deploy_script
-    assert "wrangler deploy" in deploy_script
+    assert "deploy-with-queue-drain.ts" in deploy_script
     assert "--artifact-root models" in deploy_script
 
     empty_artifact_root = tmp_path / "empty-models"

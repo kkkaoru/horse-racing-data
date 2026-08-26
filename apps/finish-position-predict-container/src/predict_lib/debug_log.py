@@ -19,6 +19,7 @@ from urllib.parse import parse_qs
 PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
 TRUE_DEBUG_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on", "debug"})
 _DEBUG_PROGRESS_QUEUE: Final[SimpleQueue[str]] = SimpleQueue()
+_OPERATIONAL_PROGRESS_QUEUE: Final[SimpleQueue[str]] = SimpleQueue()
 """Process-wide queue of debug-only pipeline step tokens.
 
 ``record_debug_progress`` is called from the predict thread (where
@@ -70,6 +71,26 @@ def drain_debug_progress() -> list[str]:
     while True:
         try:
             messages.append(_DEBUG_PROGRESS_QUEUE.get_nowait())
+        except Empty:
+            return messages
+
+
+def record_operational_progress(message: str) -> None:
+    """Queue low-volume, credential-free production telemetry.
+
+    Unlike debug progress this is always enabled. Callers must only pass a
+    bounded allowlist of operational tokens; raw argv, URLs, and exceptions do
+    not belong on this channel.
+    """
+    _OPERATIONAL_PROGRESS_QUEUE.put(message)
+
+
+def drain_operational_progress() -> list[str]:
+    """Pop every queued operational progress token."""
+    messages: list[str] = []
+    while True:
+        try:
+            messages.append(_OPERATIONAL_PROGRESS_QUEUE.get_nowait())
         except Empty:
             return messages
 

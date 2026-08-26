@@ -31,6 +31,7 @@ from predict_lib.late_binding import (
     WeightSnapshot,
     apply_late_binding_to_entry,
     coerce_optional_int,
+    recompute_market_signal_features,
 )
 from predict_lib.model_meta import Category
 from predict_lib.race_id import parse_race_id
@@ -171,17 +172,19 @@ def apply_fresh_snapshots(
     """
     updated: dict[str, list[Entry]] = {}
     for race_id, entries in races.items():
-        updated[race_id] = [
-            apply_late_binding_to_entry(
-                entry,
-                *_snapshot_for_entry(
+        updated[race_id] = recompute_market_signal_features(
+            [
+                apply_late_binding_to_entry(
                     entry,
-                    _lookup_race_snapshot(entry, snapshots_by_race_key),
-                ),
-                category,
-            )
-            for entry in entries
-        ]
+                    *_snapshot_for_entry(
+                        entry,
+                        _lookup_race_snapshot(entry, snapshots_by_race_key),
+                    ),
+                    category,
+                )
+                for entry in entries
+            ]
+        )
     return updated
 
 

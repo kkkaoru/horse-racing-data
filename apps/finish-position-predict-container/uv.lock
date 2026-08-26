@@ -260,6 +260,7 @@ dependencies = [
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
+    { name = "scipy" },
     { name = "xgboost" },
 ]
 
@@ -281,6 +282,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pyarrow", specifier = ">=17.0.0" },
+    { name = "scipy", specifier = ">=1.13.0" },
     { name = "xgboost", specifier = ">=3.2.0" },
 ]
 

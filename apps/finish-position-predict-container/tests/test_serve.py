@@ -32,7 +32,11 @@ from typing import cast
 import pytest
 
 from predict_lib import serve as serve_module
-from predict_lib.debug_log import drain_debug_progress, record_debug_progress
+from predict_lib.debug_log import (
+    drain_debug_progress,
+    record_debug_progress,
+    record_operational_progress,
+)
 from predict_lib.focused_full_cache import FocusedFullCachePayload
 from predict_lib.serve import (
     FOCUSED_FULL_ACCEPTED_STATUS,
@@ -1631,6 +1635,50 @@ def test_iter_predict_chunks_rescore_cache_miss_emits_fallback_progress() -> Non
     assert "rescore-fallback-to-full" in stages
 
 
+def test_iter_predict_chunks_attested_rescore_cache_miss_fails_closed() -> None:
+    """A Worker-attested production miss must return to Queue without rebuilding."""
+    full_calls: list[str] = []
+
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        del run_date, days_ahead, keibajo_code, race_bango, card_max_race_bango
+        full_calls.append(category)
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="09",
+        rescore_cache_attestation=RescoreCacheAttestation(
+            entry_set_hash="a" * 64,
+            entry_count=8,
+            feature_cache_etag="etag-1",
+            feature_cache_version="version-1",
+            issued_at_ms=0,
+        ),
+    )
+    chunks = list(
+        iter_predict_chunks(
+            params, _full_fn, rescore_fn=_mock_rescore_cache_miss, sleep_fn=_noop_sleep
+        )
+    )
+    parsed = [json.loads(chunk.decode()) for chunk in chunks]
+
+    assert full_calls == []
+    assert all(line.get("stage") != "rescore-fallback-to-full" for line in parsed)
+    assert parsed[-1]["status"] == "error"
+    assert "CacheMissError" in parsed[-1]["error"]
+
+
 def test_iter_predict_chunks_rescore_no_rescore_fn_falls_back_to_full() -> None:
     """When mode=rescore but rescore_fn=None, must fall back to predict_fn."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
@@ -2684,6 +2732,7 @@ def _make_focused_full_params(
 def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches() -> None:
     """A claimed focused per-race full request starts the pipeline and returns accepted."""
     invoked = threading.Event()
+    release = threading.Event()
 
     def _slow_predict(
         category: str,
@@ -2694,6 +2743,7 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
         card_max_race_bango: int | None = None,
     ) -> int:
         invoked.set()
+        release.wait(timeout=2.0)
         return 1
 
     params = _make_focused_full_params()
@@ -2714,6 +2764,12 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
     assert last["category"] == "jra"
     assert last["runDate"] == "20260619"
     assert invoked.wait(timeout=2.0), "predict_fn was never invoked"
+    focused_lock = vars(serve_module)["_FOCUSED_FULL_LOCK"]
+    detached_threads = vars(serve_module)["_DETACHED_FOCUSED_FULL_THREADS"]
+    with focused_lock:
+        detached = list(detached_threads)
+    assert detached and all(not thread.daemon for thread in detached)
+    release.set()
 
 
 def test_focused_full_status_records_running_progress_and_success(
@@ -3061,10 +3117,8 @@ def test_iter_predict_chunks_focused_full_cache_populate_not_called_on_predict_e
     assert populate_calls == []
 
 
-def test_iter_predict_chunks_focused_full_cache_populate_error_does_not_fail_run() -> None:
-    """A raising focused_full_cache_populate_fn must be swallowed -- a cache
-    populate failure must never fail (or even be visible in) the underlying
-    prediction run, matching ParquetPayloadFn's non-blocking convention."""
+def test_iter_predict_chunks_focused_full_cache_populate_error_marks_run_failed() -> None:
+    """A prediction without its exact-race cache is not terminal success."""
     released = threading.Event()
 
     def _populate_raises(_params: PredictParams) -> None:
@@ -3089,6 +3143,9 @@ def test_iter_predict_chunks_focused_full_cache_populate_error_does_not_fail_run
     assert last["racesPredicted"] == 0
 
     assert released.wait(timeout=2.0), "release_fn must still run after populate_fn raises"
+    terminal = json.loads(build_focused_full_status_response_body(params))
+    assert terminal["status"] == "error"
+    assert "cache populate blew up" in terminal["error"]
 
 
 def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -> None:
@@ -3662,6 +3719,40 @@ def test_parse_prewarm_params_debug_flag_invalid_is_off() -> None:
     assert result.debug_logs is False
 
 
+def test_parse_prewarm_params_force_enabled() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&force=1")
+    assert isinstance(result, PrewarmParams)
+    assert result.force is True
+
+
+def test_parse_prewarm_params_force_disabled() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&force=0")
+    assert isinstance(result, PrewarmParams)
+    assert result.force is False
+
+
+def test_parse_prewarm_params_force_invalid() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&force=true")
+    assert result == "invalid force: 'true'; must be 0 or 1"
+
+
+def test_parse_prewarm_params_rebuild_enabled() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&rebuild=1")
+    assert isinstance(result, PrewarmParams)
+    assert result.force is False
+    assert result.rebuild is True
+
+
+def test_parse_prewarm_params_rebuild_invalid() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&rebuild=yes")
+    assert result == "invalid rebuild: 'yes'; must be 0 or 1"
+
+
+def test_parse_prewarm_params_rejects_force_with_rebuild() -> None:
+    result = parse_prewarm_params("category=jra&runDate=20260712&force=1&rebuild=1")
+    assert result == "force and rebuild cannot both be enabled"
+
+
 def test_parse_prewarm_params_jra_success() -> None:
     result = parse_prewarm_params("category=jra&runDate=20260712&daysAhead=0")
     assert isinstance(result, PrewarmParams)
@@ -4028,6 +4119,33 @@ def test_iter_prewarm_chunks_success_yields_progress_then_result() -> None:
     assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
 
 
+def test_iter_prewarm_chunks_streams_operational_daybase_timing_without_debug() -> None:
+    params = PrewarmParams(category="nar", run_date="20260826", days_ahead=0)
+
+    def _build(_category: str, _run_date: str, _days_ahead: int) -> None:
+        record_operational_progress(
+            "step=daybase-base index=0 status=done category=nar elapsed_seconds=2.500"
+        )
+        record_operational_progress(
+            "step=daybase-layer index=1/8 status=done category=nar "
+            "script=add-race-internal-features.py elapsed_seconds=0.100"
+        )
+
+    chunks = list(iter_prewarm_chunks(params, _build, sleep_fn=_noop_sleep))
+    stages = [
+        parsed["stage"]
+        for parsed in (json.loads(chunk) for chunk in chunks)
+        if parsed.get("type") == "progress" and str(parsed.get("stage", "")).startswith("step=")
+    ]
+    assert stages == [
+        "step=daybase-base index=0 status=done category=nar elapsed_seconds=2.500",
+        (
+            "step=daybase-layer index=1/8 status=done category=nar "
+            "script=add-race-internal-features.py elapsed_seconds=0.100"
+        ),
+    ]
+
+
 def test_iter_prewarm_chunks_empty_build_yields_empty_status() -> None:
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     chunks = list(iter_prewarm_chunks(params, _mock_build_empty, sleep_fn=_noop_sleep))
@@ -4376,6 +4494,62 @@ def test_iter_prewarm_chunks_existing_object_skips_build() -> None:
     assert last["status"] == "success"
     assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
     assert built == []
+
+
+def test_iter_prewarm_chunks_force_skips_existing_object_lookup_and_builds() -> None:
+    built: list[bool] = []
+    existing_lookups: list[bool] = []
+
+    def _build(category: str, run_date: str, days_ahead: int) -> Path:
+        built.append(True)
+        return Path("/tmp/daybase")
+
+    def _existing(category: str, run_date: str) -> str | None:
+        existing_lookups.append(True)
+        return "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0, force=True)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _build,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert built == [True]
+    assert existing_lookups == []
+
+
+def test_iter_prewarm_chunks_rebuild_skips_existing_object_lookup_and_builds() -> None:
+    built: list[bool] = []
+    existing_lookups: list[bool] = []
+
+    def _build(category: str, run_date: str, days_ahead: int) -> Path:
+        built.append(True)
+        return Path("/tmp/daybase")
+
+    def _existing(category: str, run_date: str) -> str | None:
+        existing_lookups.append(True)
+        return "feat-daybase/catalog-v1/nar/20260712/features.parquet"
+
+    params = PrewarmParams(category="nar", run_date="20260712", days_ahead=0, rebuild=True)
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _build,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=_existing,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert built == [True]
+    assert existing_lookups == []
 
 
 def test_existing_fresh_object_replaces_old_error_status_with_success() -> None:

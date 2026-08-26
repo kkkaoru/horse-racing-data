@@ -20,7 +20,8 @@ import http.server
 import json
 import sys
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ import predict_upcoming
 from predict_lib.cell_router import CellRouter, build_base_model_r2_key
 from predict_lib.dynamic_market_shadow import COMPARISON_CONTRACT
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
+from predict_lib.jra_joint_alternate_scorer import JointAlternateCandidate
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
     METADATA_FILE_NAME,
@@ -87,6 +89,10 @@ def reset_model_bundle_cache() -> Iterator[None]:
 _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
 _LOAD_STAGE1_MODEL_ATTR = "_load_stage1_model"
+_SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR = "_score_one_race_variant_top1_swap"
+_SCORE_ONE_RACE_NAR_TOP1_SWAP_ATTR = "_score_one_race_nar_top1_swap"
+_SCORE_ONE_RACE_NAR_TOP2_SWAP_ATTR = "_score_one_race_nar_top2_swap"
+_SCORE_ONE_RACE_NAR_TOP2_CONSENSUS_SWAP_ATTR = "_score_one_race_nar_top2_consensus_swap"
 _BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
 _MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
 _MAKE_RESCORE_FN_ATTR = "_make_rescore_fn"
@@ -483,6 +489,7 @@ def _shadow_record() -> predict_upcoming.DynamicMarketShadowRecord:
         distance_band="mile",
         baseline_top5=("H1", "H2", "H3"),
         shadow_top5=("H2", "H3", "H1"),
+        additional_top5_candidates=(),
         classifier_version="classifier",
         market_expert_version="market",
         market_free_expert_version="free",
@@ -499,7 +506,7 @@ def test_flush_dynamic_market_shadow_writes_ddl_and_record() -> None:
         written = flush_shadow(_DB_URL, [_shadow_record()])
 
     assert written == 1
-    assert connection.committed == 5
+    assert connection.committed == 6
     assert connection.closed is True
 
 
@@ -518,7 +525,7 @@ def test_flush_dynamic_market_shadow_batches_50_hypotheses_across_races() -> Non
         written = flush_shadow(_DB_URL, records)
 
     assert written == 501
-    assert connection.committed == 6
+    assert connection.committed == 7
     assert connection.closed is True
 
 
@@ -1363,6 +1370,12 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
     import pipeline_runner
 
     captured: list[tuple[object, ...]] = []
+    scopes: list[bool] = []
+
+    @contextmanager
+    def fake_pipeline_scope() -> Generator[None]:
+        scopes.append(True)
+        yield
 
     def fake_build_day_base(
         category: str,
@@ -1387,6 +1400,7 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
         return Path("/tmp/daybase-final")
 
     monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
+    monkeypatch.setattr(pipeline_runner, "pipeline_execution_scope", fake_pipeline_scope)
     r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
 
     prewarm_fn = _make_prewarm_fn("postgresql://u:p@h/db", r2)
@@ -1395,6 +1409,7 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
     assert result == Path("/tmp/daybase-final")
     assert captured[0][0:5] == ("nar", "20260712", 2, "postgresql://u:p@h/db", r2)
     assert callable(captured[0][5])
+    assert scopes == [True]
 
 
 def test_make_prewarm_fn_commits_running_style_foundation_payload(
@@ -1439,6 +1454,53 @@ def test_make_prewarm_fn_commits_running_style_foundation_payload(
         "rsRowCount": 0,
     }
     assert watermark_error is None
+
+
+def test_make_prewarm_fn_commits_terminal_payload_inside_pipeline_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    final_dir = tmp_path / "final"
+    final_dir.mkdir()
+    committed: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(pipeline_runner, "build_day_base", lambda *args, **kwargs: final_dir)
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_prewarm_parquet_payload",
+        lambda category, run_date, directory: (
+            "RklOQUw=",
+            f"feat-daybase/catalog-v1/{category}/{run_date}/features.parquet",
+            {
+                "maxDataSakuseiNengappi": run_date,
+                "rowCount": 477,
+                "rsPredictedAtMax": "2026-08-25T09:00:00",
+                "rsRowCount": 477,
+            },
+            None,
+        ),
+    )
+
+    prewarm_fn = _make_prewarm_fn(
+        "r2-catalog://pc-keiba",
+        None,
+        lambda *args: committed.append(args),
+    )
+    result = prewarm_fn("nar", "20260825", 0)
+
+    assert result == final_dir
+    assert committed == [
+        (
+            "feat-daybase/catalog-v1/nar/20260825/features.parquet",
+            "RklOQUw=",
+            {
+                "maxDataSakuseiNengappi": "20260825",
+                "rowCount": 477,
+                "rsPredictedAtMax": "2026-08-25T09:00:00",
+                "rsRowCount": 477,
+            },
+            None,
+        )
+    ]
 
 
 def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) -> None:
@@ -2592,6 +2654,413 @@ def _run_nar_etop2(
     return score_one_race_nar_etop2(xgb, cb, _NAR_RACE_ID, "nar", entries, ["feat"])
 
 
+@final
+class _TransformerScores:
+    def __init__(self, scores: list[float]) -> None:
+        self._scores = scores
+
+    def missing_feature_keys(self, entries: Sequence[Mapping[str, object]]) -> set[str]:
+        del entries
+        return set()
+
+    def seed_score_mean(self, entries: Sequence[Mapping[str, object]]) -> list[float]:
+        del entries
+        return list(self._scores)
+
+
+def test_score_one_race_jra_variant_top1_swap_preserves_base_order_below_winner() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR),
+    )
+    base = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-703-pooled-yetirank-v2",
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-703-querysoftmax-maxrange-v1",
+        top1_swap_base=base,
+        routing_mode="jra_variant_top1_swap",
+    )
+
+    rows = helper(
+        companion,
+        "jra:20260620:05:01:01",
+        "jra",
+        _nar_entries(),
+    )
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 3, 2: 2, 3: 1}
+    assert {row[0] for row in rows} == {"jra-joken-703-querysoftmax-maxrange-v1"}
+
+
+def test_score_one_race_jra_variant_top1_swap_fails_closed_when_confidence_is_low() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR),
+    )
+    base = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-005-pooled-yetirank-v2",
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.25]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+        top1_swap_base=base,
+        routing_mode="jra_variant_top1_swap",
+        minimum_candidate_margin=0.15,
+        minimum_candidate_top_z=1.0,
+    )
+
+    rows = helper(companion, "jra:20260620:05:01:01", "jra", _nar_entries())
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 2, 3: 3}
+
+
+def test_score_one_race_jra_variant_top1_swap_applies_when_confidence_is_high() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR),
+    )
+    base = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-005-pooled-yetirank-v2",
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 1.0]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+        top1_swap_base=base,
+        routing_mode="jra_variant_top1_swap",
+        minimum_candidate_margin=0.15,
+        minimum_candidate_top_z=1.0,
+    )
+
+    rows = helper(companion, "jra:20260620:05:01:01", "jra", _nar_entries())
+
+    assert {row[9]: row[7] for row in rows} == {1: 3, 2: 2, 3: 1}
+
+
+def test_score_one_race_jra_variant_top1_swap_gates_candidate_base_rank() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR),
+    )
+    base = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-703-pooled-yetirank-v2",
+    )
+    rejected = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 1.0]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1",
+        top1_swap_base=base,
+        routing_mode="jra_variant_top1_swap",
+        minimum_candidate_margin=0.01,
+        minimum_candidate_top_z=1.0,
+        maximum_candidate_v2_rank=2,
+    )
+    accepted = VariantModel(
+        booster=_ScoreByUmaban([0.1, 1.0, 0.2]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1",
+        top1_swap_base=base,
+        routing_mode="jra_variant_top1_swap",
+        minimum_candidate_margin=0.01,
+        minimum_candidate_top_z=1.0,
+        maximum_candidate_v2_rank=2,
+    )
+
+    rejected_rows = helper(rejected, "jra:20260620:05:01:01", "jra", _nar_entries())
+    accepted_rows = helper(accepted, "jra:20260620:05:01:01", "jra", _nar_entries())
+
+    assert {row[9]: row[7] for row in rejected_rows} == {1: 1, 2: 2, 3: 3}
+    assert {row[9]: row[7] for row in accepted_rows} == {1: 2, 2: 1, 3: 3}
+
+
+def test_score_one_race_nar_top1_swap_preserves_production_order_below_winner() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_NAR_TOP1_SWAP_ATTR),
+    )
+    base = _ScoreByUmaban([0.9, 0.5, 0.1])
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="nar-cell-top1-test-v1",
+        routing_mode="nar_transformer_top1_swap",
+    )
+    rows = helper(
+        base,
+        _TransformerScores([0.9, 0.5, 0.1]),
+        companion,
+        _NAR_RACE_ID,
+        _nar_entries(),
+        ["feat"],
+    )
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 3, 2: 2, 3: 1}
+    assert {row[0] for row in rows} == {"nar-cell-top1-test-v1"}
+
+
+def test_score_one_race_nar_top2_swap_preserves_winner_and_lower_ranks() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_NAR_TOP2_SWAP_ATTR),
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="nar-cell-top2-test-v1",
+        routing_mode="nar_transformer_top2_swap",
+        minimum_candidate_margin=0.2,
+    )
+
+    rows = helper(
+        _ScoreByUmaban([0.9, 0.5, 0.1]),
+        _TransformerScores([0.9, 0.5, 0.1]),
+        companion,
+        _NAR_RACE_ID,
+        _nar_entries(),
+        ["feat"],
+    )
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 3, 3: 2}
+    assert {row[0] for row in rows} == {"nar-cell-top2-test-v1"}
+
+
+def test_score_one_race_nar_top2_swap_respects_candidate_margin() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_NAR_TOP2_SWAP_ATTR),
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.3]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="nar-cell-top2-test-v1",
+        routing_mode="nar_transformer_top2_swap",
+        minimum_candidate_margin=0.2,
+    )
+
+    rows = helper(
+        _ScoreByUmaban([0.9, 0.5, 0.1]),
+        _TransformerScores([0.9, 0.5, 0.1]),
+        companion,
+        _NAR_RACE_ID,
+        _nar_entries(),
+        ["feat"],
+    )
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 2, 3: 3}
+
+
+def test_score_one_race_nar_top2_consensus_swaps_on_two_votes() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_NAR_TOP2_CONSENSUS_SWAP_ATTR),
+    )
+    agreeing = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="agreeing",
+    )
+    disagreeing = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.9, 0.2]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="disagreeing",
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="consensus",
+        routing_mode="nar_transformer_top2_consensus_swap",
+        consensus_members=(agreeing, disagreeing),
+        consensus_required_votes=2,
+    )
+
+    rows = helper(
+        _ScoreByUmaban([0.9, 0.5, 0.1]),
+        _TransformerScores([0.9, 0.5, 0.1]),
+        companion,
+        _NAR_RACE_ID,
+        _nar_entries(),
+        ["feat"],
+    )
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 3, 3: 2}
+
+
+def test_score_one_race_nar_top2_consensus_preserves_order_on_one_vote() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_NAR_TOP2_CONSENSUS_SWAP_ATTR),
+    )
+    disagreeing = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.9, 0.2]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="disagreeing",
+    )
+    companion = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        feature_names=["feat"],
+        architecture="xgboost",
+        model_version="consensus",
+        routing_mode="nar_transformer_top2_consensus_swap",
+        consensus_members=(disagreeing, disagreeing),
+        consensus_required_votes=2,
+    )
+
+    rows = helper(
+        _ScoreByUmaban([0.9, 0.5, 0.1]),
+        _TransformerScores([0.9, 0.5, 0.1]),
+        companion,
+        _NAR_RACE_ID,
+        _nar_entries(),
+        ["feat"],
+    )
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 2, 3: 3}
+
+
+def test_score_races_routes_jra_variant_top1_swap(tmp_path: Path) -> None:
+    base_version = "jra-joken-703-pooled-yetirank-v2"
+    companion_version = "jra-joken-703-querysoftmax-maxrange-v1"
+    _write_variant_metadata(tmp_path, "jra", base_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", companion_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "joken_703": _FakeVariantSpec(base_version, 1, "catboost"),
+            "cell": _FakeVariantSpec(
+                companion_version,
+                1,
+                "catboost",
+                routing_mode="jra_variant_top1_swap",
+                base_variant="joken_703",
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    fallback = _ScoreByUmaban([0.8, 0.4, 0.2])
+    base = _ScoreByUmaban([0.9, 0.5, 0.1])
+    companion = _ScoreByUmaban([0.1, 0.2, 0.9])
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[base, companion],
+        ),
+        patch("predict_upcoming._load_jra_dirt_hybrid", return_value=None),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races(
+            {"jra:20260620:05:01:01": _nar_entries()},
+            "jra",
+            tmp_path,
+            ["feat"],
+        )[0]
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 3, 2: 2, 3: 1}
+    assert {row[0] for row in rows} == {companion_version}
+
+
+def test_score_races_routes_nar_top1_swap_variant(tmp_path: Path) -> None:
+    version = "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1"
+    _write_variant_metadata(tmp_path, "nar", version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188", 1, "xgboost"),
+            "cell": _FakeVariantSpec(
+                version,
+                1,
+                "xgboost",
+                routing_mode="nar_transformer_top1_swap",
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    base = _ScoreByUmaban([0.9, 0.5, 0.1])
+    companion = _ScoreByUmaban([0.1, 0.2, 0.9])
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=base),
+        patch("predict_upcoming._load_booster_by_arch", return_value=companion),
+        patch(
+            "predict_upcoming._load_nar_transformer",
+            return_value=_TransformerScores([0.9, 0.5, 0.1]),
+        ),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races({_NAR_RACE_ID: _nar_entries()}, "nar", tmp_path, ["feat"])[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 3, 2: 2, 3: 1}
+    assert {row[0] for row in rows} == {version}
+
+
+def test_score_races_routes_nar_top2_swap_variant(tmp_path: Path) -> None:
+    version = "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1"
+    _write_variant_metadata(tmp_path, "nar", version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188", 1, "xgboost"),
+            "cell": _FakeVariantSpec(
+                version,
+                1,
+                "xgboost",
+                routing_mode="nar_transformer_top2_swap",
+                minimum_candidate_margin=0.2,
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([0.9, 0.5, 0.1])),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            return_value=_ScoreByUmaban([0.1, 0.2, 0.9]),
+        ),
+        patch(
+            "predict_upcoming._load_nar_transformer",
+            return_value=_TransformerScores([0.9, 0.5, 0.1]),
+        ),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races({_NAR_RACE_ID: _nar_entries()}, "nar", tmp_path, ["feat"])[0]
+
+    assert {row[9]: row[7] for row in rows} == {1: 1, 2: 3, 3: 2}
+    assert {row[0] for row in rows} == {version}
+
+
 def test_score_one_race_nar_etop2_override_promotes_xgb_rank2(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2694,10 +3163,32 @@ def test_score_dynamic_market_shadow_uses_fixed_experts_without_serving_mutation
             model_version=free_version,
         ),
     }
+    joint_model = cast(
+        predict_upcoming.JraJointAlternateScorer,
+        SimpleNamespace(
+            feature_names=("feat",),
+            select_candidate=lambda *args: JointAlternateCandidate(
+                None, None, 0.01, 0.5, "low-margin-abstain"
+            ),
+        ),
+    )
     shadow_models = predict_upcoming.DynamicMarketShadowModels(
         classifier=_ShadowClassifier(),
         classifier_version=("jra-dynamic-market-shadow-loop43-2026-upset-classifier"),
         experts=experts,
+        joint_alternate=joint_model,
+        joint_champion=VariantModel(
+            booster=_ScoreByUmaban([3.0, 2.0, 1.0]),
+            feature_names=("feat",),
+            architecture="catboost",
+            model_version="joint-champion",
+        ),
+        joint_specialist=VariantModel(
+            booster=_ScoreByUmaban([1.0, 2.0, 3.0]),
+            feature_names=("feat",),
+            architecture="catboost",
+            model_version="joint-specialist",
+        ),
     )
     bundle = SimpleNamespace(
         dynamic_market_shadow=shadow_models,
@@ -2721,8 +3212,8 @@ def test_score_dynamic_market_shadow_uses_fixed_experts_without_serving_mutation
         Path("/models"),
     )
 
-    assert len(records) == 50
-    assert len({record.router_version for record in records}) == 50
+    assert len(records) == 51
+    assert len({record.router_version for record in records}) == 51
     assert all(record.baseline_top5 == ("H3", "H1", "H2") for record in records)
     assert all(record.served_model_version == "served-cell" for record in records)
     record = next(
@@ -2735,6 +3226,14 @@ def test_score_dynamic_market_shadow_uses_fixed_experts_without_serving_mutation
     assert record.shadow_top5 == ("H2", "H3", "H1")
     assert record.market_weight == pytest.approx(0.95)
     assert record.active is True
+    joint_record = next(
+        record
+        for record in records
+        if record.router_version == "jra-joint-group-dro-alternate-top5-v1"
+    )
+    assert joint_record.baseline_top5 == joint_record.shadow_top5
+    assert joint_record.additional_top5_candidates == ()
+    assert joint_record.reason == "low-margin-abstain"
 
 
 def test_score_dynamic_market_shadow_skips_absent_bundle_and_race_errors(
@@ -2804,12 +3303,18 @@ class _FakeVariantSpec:
         *,
         feature_names: tuple[str, ...] | None = None,
         feature_set_hash: str | None = None,
+        routing_mode: str = "direct",
+        base_variant: str | None = None,
+        minimum_candidate_margin: float | None = None,
     ) -> None:
         self.model_version = model_version
         self.feature_count = feature_count
         self.architecture = architecture
         self.feature_names = feature_names
         self.feature_set_hash = feature_set_hash
+        self.routing_mode = routing_mode
+        self.base_variant = base_variant
+        self.minimum_candidate_margin = minimum_candidate_margin
 
 
 @final
@@ -4404,14 +4909,15 @@ def _build_real_predict_fn_and_cache_populate(
     return predict_fn, populate_fn
 
 
-def test_populate_focused_full_cache_noop_when_store_not_provided(
+def test_populate_focused_full_cache_fails_when_store_not_provided(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(None)
     params = PredictParams(
         category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
     )
-    populate_fn(params)  # must not raise even though no run ever happened
+    with pytest.raises(RuntimeError, match="cache store is unavailable"):
+        populate_fn(params)
 
 
 def test_populate_focused_full_cache_stores_payload_for_this_race(
@@ -4454,7 +4960,7 @@ def test_populate_focused_full_cache_stores_payload_for_this_race(
     ]
 
 
-def test_populate_focused_full_cache_stores_nothing_for_unreadable_parquet(
+def test_populate_focused_full_cache_fails_for_unreadable_parquet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import pipeline_runner
@@ -4470,12 +4976,13 @@ def test_populate_focused_full_cache_stores_nothing_for_unreadable_parquet(
         category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
     )
 
-    populate_fn(params)
+    with pytest.raises(RuntimeError, match="cache payload is unavailable"):
+        populate_fn(params)
 
     assert store.pop(build_focused_full_race_key(params)) is None
 
 
-def test_populate_focused_full_cache_stores_nothing_when_expected_banei_race_absent(
+def test_populate_focused_full_cache_fails_when_expected_banei_race_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Never relabel races 01-11 or an out-of-scope race as focused race 12."""
@@ -4518,7 +5025,8 @@ def test_populate_focused_full_cache_stores_nothing_when_expected_banei_race_abs
         race_bango="12",
     )
 
-    populate_fn(params)
+    with pytest.raises(RuntimeError, match="cache payload is unavailable"):
+        populate_fn(params)
 
     assert store.pop(build_focused_full_race_key(params)) is None
 
@@ -4565,7 +5073,7 @@ def test_populate_focused_full_cache_stores_valid_banei_race_with_nar_source(
     ]
 
 
-def test_populate_focused_full_cache_stores_nothing_when_no_parquet_exists(
+def test_populate_focused_full_cache_fails_when_no_parquet_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import pipeline_runner
@@ -4578,7 +5086,8 @@ def test_populate_focused_full_cache_stores_nothing_when_no_parquet_exists(
         category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
     )
 
-    populate_fn(params)
+    with pytest.raises(RuntimeError, match="cache payload is unavailable"):
+        populate_fn(params)
 
     assert store.pop(build_focused_full_race_key(params)) is None
 
@@ -4943,6 +5452,11 @@ def test_main_logs_serve_mode_before_binding(
     assert "[predict-startup] binding HTTP server on :8080" in stderr
     assert "secret" not in stderr
     serve_mock.assert_called_once()
+    # Production must acknowledge prewarm immediately and let the existing
+    # pickup flow persist the detached build without coupling it to one socket.
+    assert len(serve_mock.call_args.args) == 13
+    assert serve_mock.call_args.args[-1] is predict_upcoming.run_prewarm_in_background
+    assert serve_mock.call_args.kwargs == {}
 
 
 def test_main_logs_one_shot_mode_before_neon_connect(

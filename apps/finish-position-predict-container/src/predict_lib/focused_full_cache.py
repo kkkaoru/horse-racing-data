@@ -17,10 +17,10 @@ consumer polls Neon for completion on redelivery, and once it observes a
 race is done, it makes a follow-up call to fetch this race's
 cached payload so it can still be proxied to R2 through the normal channel.
 
-Population must never fail the underlying prediction run (log-only, per the
-same non-blocking convention as :data:`serve.ParquetPayloadFn`), and a missed
-pickup (container recycled, Worker never polled, TTL expired) degrades to "no
-cache entry for this race today" -- not a prediction failure.
+Population is part of focused-full semantic completion: a prediction without
+its exact-race cache is recorded as an error and retried. A missed later pickup
+remains recoverable because ``peek`` retains the immutable payload until R2
+confirmation or bounded eviction.
 """
 
 from __future__ import annotations

@@ -110,6 +110,35 @@ _CREATE_TABLE_SQL: Final[str] = (
     "primary key (keibajo_code, weather_date, weather_hour))"
 )
 _INSERT_SQL: Final[str] = "insert or replace into venue_weather values (?,?,?,?,?,?,?)"
+_V2_ROW_KEYS: Final[tuple[str, ...]] = (
+    "keibajo_code",
+    "race_date",
+    "weather_hour",
+    "temperature",
+    "relative_humidity",
+    "dew_point",
+    "wet_bulb_temperature",
+    "shortwave_radiation",
+)
+_V2_METRIC_KEYS: Final[tuple[str, ...]] = (
+    "relative_humidity",
+    "dew_point",
+    "wet_bulb_temperature",
+    "shortwave_radiation",
+)
+_CREATE_V2_TABLE_SQL: Final[str] = (
+    "create table if not exists venue_weather_v2 ("
+    "keibajo_code VARCHAR, "
+    "weather_date DATE, "
+    "weather_hour INTEGER, "
+    "temperature DOUBLE, "
+    "relative_humidity DOUBLE, "
+    "dew_point DOUBLE, "
+    "wet_bulb_temperature DOUBLE, "
+    "shortwave_radiation DOUBLE, "
+    "primary key (keibajo_code, weather_date, weather_hour))"
+)
+_V2_INSERT_SQL: Final[str] = "insert or replace into venue_weather_v2 values (?,?,?,?,?,?,?,?)"
 
 
 def build_weather_url(target_date: str) -> str:
@@ -197,6 +226,31 @@ def fetch_weather_json(target_date: str) -> list[dict[str, object]]:
     return []
 
 
+def _write_v2_duckdb(
+    rows: list[dict[str, object]],
+    target_date: str,
+    weather_dir: Path,
+) -> None:
+    import duckdb
+
+    if not all(all(row.get(key) is not None for key in _V2_METRIC_KEYS) for row in rows):
+        return
+    params = [tuple(row.get(key) for key in _V2_ROW_KEYS) for row in rows]
+    db_path = weather_dir / f"venue_weather_v2_{int(target_date[:4]):04d}.duckdb"
+    try:
+        con = duckdb.connect(str(db_path))
+        try:
+            con.execute(_CREATE_V2_TABLE_SQL)
+            con.executemany(_V2_INSERT_SQL, params)
+        finally:
+            con.close()
+    except (OSError, duckdb.Error) as exc:
+        debug_log(
+            f"[venue-weather] optional v2 DuckDB write failed "
+            f"target_date={target_date} error={exc!r}"
+        )
+
+
 def write_weather_duckdb(
     rows: list[dict[str, object]],
     target_date: str,
@@ -238,6 +292,7 @@ def write_weather_duckdb(
             con.executemany(_INSERT_SQL, params)
         finally:
             con.close()
+        _write_v2_duckdb(rows, target_date, weather_dir)
     except (OSError, duckdb.Error) as exc:
         debug_log(f"[venue-weather] duckdb write failed target_date={target_date} error={exc!r}")
         return None

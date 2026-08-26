@@ -30,6 +30,7 @@ RELATIONSHIP_FEATURE_NAMES: Final[frozenset[str]] = frozenset(
 _MODEL_FILE_NAMES: Final[frozenset[str]] = frozenset({"model.json", "model.txt"})
 _METADATA_FILE_NAME: Final[str] = "metadata.json"
 _TRANSFORMER_NORM_FILE_NAME: Final[str] = "norm.json"
+_HYBRID_MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 
 
 def _feature_names_from_contract(path: Path, field: str) -> tuple[str, ...] | None:
@@ -39,7 +40,13 @@ def _feature_names_from_contract(path: Path, field: str) -> tuple[str, ...] | No
         return None
     if not isinstance(payload, Mapping):
         return None
-    raw_names = payload.get(field)
+    if field == "stats.feature_names":
+        stats = payload.get("stats")
+        if not isinstance(stats, Mapping):
+            return None
+        raw_names = stats.get("feature_names")
+    else:
+        raw_names = payload.get(field)
     if not isinstance(raw_names, Sequence) or isinstance(raw_names, (str, bytes)):
         return None
     if not raw_names or not all(isinstance(name, str) and name for name in raw_names):
@@ -84,8 +91,13 @@ def relationship_layer_is_provably_unused(
         if name == _TRANSFORMER_NORM_FILE_NAME:
             feature_contracts.append((key, "feature_order"))
             continue
+        if name == _HYBRID_MANIFEST_FILE_NAME:
+            feature_contracts.append((key, "stats.feature_names"))
+            continue
         if name.endswith(".npz"):
-            if f"{parent}/{_TRANSFORMER_NORM_FILE_NAME}" not in category_keys:
+            norm_key = f"{parent}/{_TRANSFORMER_NORM_FILE_NAME}"
+            manifest_key = f"{parent}/{_HYBRID_MANIFEST_FILE_NAME}"
+            if norm_key not in category_keys and manifest_key not in category_keys:
                 return False
             continue
         # An enabled ensemble manifest or a future scorer format needs an

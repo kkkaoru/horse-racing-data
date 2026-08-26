@@ -155,6 +155,24 @@ def test_build_layer_argv_near_miss_has_pg_url_and_from_date() -> None:
     ]
 
 
+def test_build_layer_argv_near_miss_target_date_adds_bulk_bounds() -> None:
+    argv = build_layer_argv(
+        "add-near-miss-features.py",
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_date="20260827",
+    )
+    assert argv[-4:] == [
+        "--target-from-date",
+        "20260827",
+        "--target-to-date",
+        "20260827",
+    ]
+
+
 def test_build_layer_argv_sectional_weight_has_pg_url_and_from_date() -> None:
     argv = build_layer_argv(
         "add-sectional-and-weight-features.py",
@@ -847,6 +865,22 @@ def test_build_base_argv_temp_dir_none_same_as_omitted() -> None:
         BUILDER, "nar", "20260629", 0, URL, Path("/tmp/base"), temp_dir=None
     )
     assert argv_implicit == argv_explicit_none
+
+
+def test_build_base_argv_appends_source_watermark_file() -> None:
+    argv = build_base_argv(
+        BUILDER,
+        "nar",
+        "20260826",
+        0,
+        URL,
+        Path("/tmp/base"),
+        source_watermark_file=Path("/tmp/daybase/source-watermark.json"),
+    )
+    assert argv[-2:] == [
+        "--source-watermark-file",
+        "/tmp/daybase/source-watermark.json",
+    ]
 
 
 def test_build_layer_argv_pacestyle_target_date_adds_run_date() -> None:

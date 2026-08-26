@@ -79,6 +79,8 @@ ODDS_SCORE_FIELD: Final[str] = "odds_score"
 POPULARITY_SCORE_FIELD: Final[str] = "popularity_score"
 TANSHO_ODDS_FIELD: Final[str] = "tansho_odds"
 TANSHO_NINKIJUN_FIELD: Final[str] = "tansho_ninkijun"
+TANSHO_ODDS_RAW_FIELD: Final[str] = "tansho_odds_raw"
+TANSHO_NINKIJUN_RAW_FIELD: Final[str] = "tansho_ninkijun_raw"
 WEIGHT_DIFF_FROM_AVG_FIELD: Final[str] = "weight_diff_from_avg"
 
 # Entry columns read (NOT overwritten) by the recompute: cache-derived inputs.
@@ -221,6 +223,8 @@ def apply_late_binding_to_entry(
     updated = dict(entry)
     updated[TANSHO_ODDS_FIELD] = odds_snapshot.tansho_odds
     updated[TANSHO_NINKIJUN_FIELD] = odds_snapshot.tansho_ninkijun
+    updated[TANSHO_ODDS_RAW_FIELD] = odds_snapshot.tansho_odds
+    updated[TANSHO_NINKIJUN_RAW_FIELD] = odds_snapshot.tansho_ninkijun
     updated[ODDS_SCORE_FIELD] = compute_odds_score(odds_snapshot.tansho_odds, category)
     updated[POPULARITY_SCORE_FIELD] = compute_popularity_score(
         odds_snapshot.tansho_ninkijun, runner_count, category
@@ -229,3 +233,76 @@ def apply_late_binding_to_entry(
         weight_snapshot.current_bataiju, weight_avg_5
     )
     return updated
+
+
+def _competition_ranks(values: list[float | None], *, descending: bool) -> list[int | None]:
+    present = [(index, value) for index, value in enumerate(values) if value is not None]
+    present.sort(key=lambda item: item[1], reverse=descending)
+    ranks: list[int | None] = [None] * len(values)
+    prior: float | None = None
+    rank = 0
+    for position, (index, value) in enumerate(present, start=1):
+        if prior is None or value != prior:
+            rank = position
+            prior = value
+        ranks[index] = rank
+    return ranks
+
+
+def recompute_market_signal_features(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Recompute race-level market features after timestamped odds late binding."""
+    odds = [coerce_optional_float(entry.get(TANSHO_ODDS_RAW_FIELD)) for entry in entries]
+    popularity = [coerce_optional_float(entry.get(TANSHO_NINKIJUN_RAW_FIELD)) for entry in entries]
+    implied = [None if value is None or value <= 0 else 1.0 / value for value in odds]
+    implied_total = sum(value for value in implied if value is not None)
+    inverse_ranks = _competition_ranks(implied, descending=True)
+    popularity_ranks = _competition_ranks(popularity, descending=False)
+    odds_scores = [coerce_optional_float(entry.get(ODDS_SCORE_FIELD)) for entry in entries]
+    popularity_scores = [
+        coerce_optional_float(entry.get(POPULARITY_SCORE_FIELD)) for entry in entries
+    ]
+    odds_mean = (
+        sum(value for value in odds_scores if value is not None)
+        / sum(value is not None for value in odds_scores)
+        if any(value is not None for value in odds_scores)
+        else None
+    )
+    popularity_mean = (
+        sum(value for value in popularity_scores if value is not None)
+        / sum(value is not None for value in popularity_scores)
+        if any(value is not None for value in popularity_scores)
+        else None
+    )
+    updated_entries: list[dict[str, object]] = []
+    for index, entry in enumerate(entries):
+        updated = dict(entry)
+        implied_value = implied[index]
+        odds_score = odds_scores[index]
+        popularity_score = popularity_scores[index]
+        updated["inverse_odds_implied_prob"] = implied_value
+        updated["inverse_odds_market_share"] = (
+            None if implied_value is None or implied_total <= 0 else implied_value / implied_total
+        )
+        updated["inverse_odds_rank_in_race"] = inverse_ranks[index]
+        updated["popularity_rank_in_race"] = popularity_ranks[index]
+        updated["odds_score_diff_from_race_avg"] = (
+            None if odds_score is None or odds_mean is None else odds_score - odds_mean
+        )
+        updated["popularity_score_diff_from_race_avg"] = (
+            None
+            if popularity_score is None or popularity_mean is None
+            else popularity_score - popularity_mean
+        )
+        updated["popularity_odds_disagreement"] = (
+            None
+            if popularity_score is None or odds_score is None
+            else abs(popularity_score - odds_score)
+        )
+        career_win_rate = coerce_optional_float(entry.get("career_win_rate"))
+        updated["form_market_edge"] = (
+            None
+            if career_win_rate is None or implied_value is None
+            else career_win_rate - implied_value
+        )
+        updated_entries.append(updated)
+    return updated_entries

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from predict_lib.late_binding import (
     OddsSnapshot,
     WeightSnapshot,
@@ -20,7 +22,51 @@ from predict_lib.late_binding import (
     compute_odds_score,
     compute_popularity_score,
     compute_weight_diff,
+    recompute_market_signal_features,
 )
+
+
+def test_recompute_market_signal_features_matches_race_level_formulas() -> None:
+    entries: list[dict[str, object]] = [
+        {
+            "tansho_odds_raw": 2.0,
+            "tansho_ninkijun_raw": 1,
+            "odds_score": 0.2,
+            "popularity_score": 0.0,
+            "career_win_rate": 0.3,
+        },
+        {
+            "tansho_odds_raw": 4.0,
+            "tansho_ninkijun_raw": 2,
+            "odds_score": 0.4,
+            "popularity_score": 0.5,
+            "career_win_rate": 0.1,
+        },
+        {
+            "tansho_odds_raw": 4.0,
+            "tansho_ninkijun_raw": 2,
+            "odds_score": 0.6,
+            "popularity_score": 1.0,
+            "career_win_rate": None,
+        },
+    ]
+
+    result = recompute_market_signal_features(entries)
+
+    assert [row["inverse_odds_implied_prob"] for row in result] == [0.5, 0.25, 0.25]
+    assert [row["inverse_odds_market_share"] for row in result] == [0.5, 0.25, 0.25]
+    assert [row["inverse_odds_rank_in_race"] for row in result] == [1, 2, 2]
+    assert [row["popularity_rank_in_race"] for row in result] == [1, 2, 2]
+    assert [row["odds_score_diff_from_race_avg"] for row in result] == pytest.approx(
+        [-0.2, 0.0, 0.2]
+    )
+    assert [row["popularity_score_diff_from_race_avg"] for row in result] == pytest.approx(
+        [-0.5, 0.0, 0.5]
+    )
+    assert result[0]["popularity_odds_disagreement"] == pytest.approx(0.2)
+    assert result[0]["form_market_edge"] == pytest.approx(-0.2)
+    assert result[2]["form_market_edge"] is None
+
 
 # ---------------------------------------------------------------------------
 # compute_odds_score

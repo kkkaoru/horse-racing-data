@@ -13,16 +13,66 @@ The source of truth is
 `apps/finish-position-predict-container/src/predict_lib/model_meta.json` plus the
 explicit NAR transformer metadata in `predict_lib/model_meta.py`.
 
-| Category     | Production model_version                      | Notes                                                                                         |
-| ------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| JRA          | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default (Stage-2).                                                          |
-| JRA cell     | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1.              |
-| JRA cell     | `jra-cb-v10-prior-corner274-2013`             | Routed only for dirt, field size <=10, and `kyoso_joken_code=005`.                            |
-| JRA fallback | `jra-cb-stage1-marketfree235-2013`            | Stage-1 gated fallback; see "Stage-1 Market-Free Gated Fallback" below.                       |
-| NAR          | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.                           |
-| NAR fallback | `iter12-nar-xgb-hpo-v8-stage1-marketfree-184` | Stage-1 gated fallback (freshness-gate-only); see "Stage-1 Market-Free Gated Fallback" below. |
-| Ban-ei       | `banei-cb-v9-sim-2011`                        | Default.                                                                                      |
-| Ban-ei cell  | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                                    |
+| Category      | Production model_version                      | Notes                                                                                         |
+| ------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| JRA           | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default (Stage-2).                                                          |
+| JRA cell      | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1.              |
+| JRA cell      | `jra-cb-v10-prior-corner274-2013`             | Base scorer routed only for dirt, field size <=10, and `kyoso_joken_code=005`.                |
+| JRA companion | `jra-dirt-small-005-hybrid-v1`                | The same cell only: 0.76 prior-corner z-score + 0.24 weighted three-seed venue02 head.        |
+| JRA alternate | `jra-joint-group-dro-alternate-top5-v1`       | Shadow-only: one margin>=0.1 candidate outside served Top5; never changes `predicted_rank`.   |
+| JRA fallback  | `jra-cb-stage1-marketfree235-2013`            | Stage-1 gated fallback; see "Stage-1 Market-Free Gated Fallback" below.                       |
+| NAR           | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.                           |
+| NAR fallback  | `iter12-nar-xgb-hpo-v8-stage1-marketfree-184` | Stage-1 gated fallback (freshness-gate-only); see "Stage-1 Market-Free Gated Fallback" below. |
+| Ban-ei        | `banei-cb-v9-sim-2011`                        | Default.                                                                                      |
+| Ban-ei cell   | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                                    |
+
+### NAR canonical cell routing
+
+Six canonical NAR cells use an XGBoost specialist only to select rank 1. Serving
+first computes the normal `iter40` clean188 + Transformer ranking, then swaps
+that winner with the specialist winner; every other relative position is
+preserved. A seventh route for Monbetsu MUKATSU/sprint/summer/condition 2 uses a
+position-specific Top2 head and margin 0.2. An eighth route for Sonoda
+C/sprint/summer/condition 2 uses three heterogeneous physiology/form,
+market/rider, and pedigree/surface Top2 heads and swaps only when at least two
+agree. Both Top2 routes swap only production ranks 2 and 3; Top1 and ranks 4+
+are structurally invariant. Rules require the configured
+venue, derived `nar_subclass`, canonical
+distance band (`sprint <= 1400m`), season, dirt surface, canonical medium field
+(9-14 declared runners), and track condition. Adaptive/rolling artifacts also
+fail closed before their training cutoff via `effective_after`.
+
+The promoted model versions are:
+
+- `nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1`
+- `nar-cell-top1-42-c-sprint-summer-tc1-v1`
+- `nar-cell-top1-30-c-sprint-summer-tc1-v1`
+- `nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1`
+- `nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1`
+- `nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1`
+- `nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1`
+- `nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-{physiology-form,market-rider,pedigree-surface}`
+
+The Sonoda consensus route partially pools summer C and maiden sprint cells
+across venues and adjacent dirt conditions 1/2. It was selected on 2024, was
+non-regressing in 2025, and improved independent 2026 Top2 from 5% to 15%
+(+10pp) with Top1 and Top3-5 unchanged over 20 races. Three additional seeds
+all preserved 2025 metrics and improved 2026 Top2 by 5-10pp.
+
+The Monbetsu Top2 route was selected on 2024 (+2.94pp Top2 and +2.94pp Top3), had no
+Top1-Top5 regression in the untouched 2025 confirmation, and improved Top2
+from 10.53% to 21.05% (+10.53pp) with all other ranks unchanged over the 19
+completed 2026 target-cell races.
+
+The frozen 2026 Top1 routes improved Top1 from 25.69% to 33.94% over 109 races;
+the adaptive condition-2 route improved the untouched July-August window from
+13.04% to 39.13% over 23 races. Historical rolling backtests over 135 forward
+races added 3.70pp Top1 with +0.37pp mean Top2-Top5 change. Full evidence and
+race-level hits are under `tmp/nar-low-cell-top1/`.
+
+**Rollback:** remove the `nar` rules/variants from `cell_routing.json` (or set
+its rules to `[]`) and redeploy. Unmatched NAR races continue through `iter40`;
+artifact load/feature validation failures also fail closed to the default.
 
 ### JRA dynamic-market shadow router
 
@@ -35,7 +85,15 @@ once per race, then reuses those outputs for the 50 fixed blend hypotheses
 Top5, served model version, ordered-feature SHA-256, and comparison contract
 `served-same-snapshot/v1` are stored with every counterfactual Top5. Writes are
 batched in groups of 500. Load, score, and database errors fail open for shadow
-collection and cannot block served predictions.
+collection and cannot block served predictions. In addition, router version
+`jra-joint-group-dro-alternate-top5-v1` stores exactly one joint Group-DRO
+candidate outside the served Top5 when its candidate margin is at least 0.1.
+Its `shadow_top5` is identical to `baseline_top5`, and the candidate appears
+only in `additional_top5_candidates`; it never changes `predicted_rank`.
+`upset_probability` stores the learned defer probability and `market_weight`
+stores the candidate margin for this joint record. Missing/incomplete odds,
+degenerate 269/235 feature matrices, low margin, or artifact load failure all
+fail closed to no joint candidate without blocking served predictions.
 
 The seven model versions and fourteen `model.json`/`metadata.json` files are
 part of the `production-artifacts.json` selector closure. Their training cutoff
@@ -106,8 +164,10 @@ fallback for that run automatically (falls back to champion-only), so a
 broken Stage-1 artifact can never block or degrade ordinary serving even
 without an operator action.
 
-Historical leaky JRA/NAR artifacts must not be selected in production. NAR
-rollback is `NAR_TRANSFORMER_BLEND_ENABLED=0`, which keeps the leak-free
+Historical leaky JRA/NAR artifacts must not be selected in production. The
+JRA dirt companion rollback is `JRA_DIRT_HYBRID_ENABLED=0`, which keeps the
+existing `jra-cb-v10-prior-corner274-2013` cell score unchanged. NAR rollback
+is `NAR_TRANSFORMER_BLEND_ENABLED=0`, which keeps the leak-free
 `iter12-nar-xgb-hpo-v8-clean188` base and disables only the transformer blend.
 
 ## Artifact Integrity Preflight

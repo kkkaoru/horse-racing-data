@@ -42,7 +42,6 @@ import signal
 import subprocess
 import sys
 import threading
-import traceback
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +58,12 @@ from predict_lib.container_role import (
     PredictContainerRole,
     predict_container_role,
 )
-from predict_lib.debug_log import debug_log, debug_logs_enabled, record_debug_progress
+from predict_lib.debug_log import (
+    debug_log,
+    debug_logs_enabled,
+    record_debug_progress,
+    record_operational_progress,
+)
 from predict_lib.foundation_cache import (
     FOUNDATION_MANIFEST_MAX_BYTES,
     FOUNDATION_RACE_MAX_BYTES,
@@ -128,6 +132,7 @@ _WATERMARK_RS_UNAVAILABLE_REASON: Final[str] = "rs watermark unavailable"
 _WATERMARK_R2_HIVE_MISSING_REASON: Final[str] = "r2-hive-layout-missing"
 _WATERMARK_R2_MISSING_OBJECT_REASON: Final[str] = "r2-missing-object"
 _WATERMARK_R2_MISMATCH_REASON: Final[str] = "r2-watermark-mismatch"
+_SOURCE_WATERMARK_SIDECAR_FILENAME: Final[str] = "source-watermark.json"
 HIVE_PARQUET_GLOB: Final[str] = "race_year=*/*.parquet"
 HIVE_PARTITION_PREFIX: Final[str] = "race_year="
 HIVE_PARQUET_FILENAME: Final[str] = "features.parquet"
@@ -425,12 +430,50 @@ def mask_pg_url(text: str) -> str:
     return PG_URL_USERINFO_RE.sub(PG_URL_REDACTED, text)
 
 
-def _capture_stream(src: IO[str], buffer: list[str], *, sink: IO[str] | None = None) -> None:
+def _forward_finish_feature_timing(line: str) -> None:
+    """Forward credential-free base-builder stage telemetry in normal mode."""
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(payload, dict):
+        return
+    stage = payload.get("stage")
+    status = payload.get("status")
+    elapsed = payload.get("elapsed_seconds")
+    if not isinstance(stage, str) or not isinstance(status, str):
+        return
+    if not isinstance(elapsed, int | float):
+        return
+    event: dict[str, str | int | float] = {
+        "elapsed_seconds": elapsed,
+        "event": "finish-feature-timing",
+        "stage": stage,
+        "status": status,
+    }
+    rows = payload.get("rows")
+    if isinstance(rows, int):
+        event["rows"] = rows
+    record_operational_progress(
+        f"step=daybase-base-stage stage={stage} status={status} elapsed_seconds={elapsed}"
+    )
+    print(json.dumps(event, separators=(",", ":"), sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _capture_stream(
+    src: IO[str],
+    buffer: list[str],
+    *,
+    sink: IO[str] | None = None,
+    line_observer: Callable[[str], None] | None = None,
+) -> None:
     """Collect a subprocess stream and optionally forward it for debug output."""
     for line in src:
         if sink is not None:
             sink.write(line)
             sink.flush()
+        if line_observer is not None:
+            line_observer(line)
         buffer.append(line)
 
 
@@ -471,10 +514,16 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     assert process.stdout is not None
     assert process.stderr is not None
     stream_debug = debug_logs_enabled()
+    base_builder = len(args) > 1 and Path(args[1]).name == DUCKDB_BUILDER.name
     stdout_thread = threading.Thread(
         target=_capture_stream,
         args=(process.stdout, stdout_buffer),
-        kwargs={"sink": sys.stdout if stream_debug else None},
+        kwargs={
+            "sink": sys.stdout if stream_debug else None,
+            "line_observer": (
+                None if stream_debug or not base_builder else _forward_finish_feature_timing
+            ),
+        },
     )
     stderr_thread = threading.Thread(
         target=_capture_stream,
@@ -544,6 +593,23 @@ def _day_base_dir(category: Category, target_date: str) -> Path:
 
 
 def _log_pipeline_progress(message: str) -> None:
+    # Day-base layer timings are low-volume operational telemetry, not debug
+    # output.  Production keeps debug disabled, but without these boundaries a
+    # deadline failure only reports the command that happened to be running at
+    # the end; the time consumed by every completed layer is lost.  Emit only
+    # the credential-free base/layer tokens (never argv, URLs, or exceptions)
+    # so normal Container logs identify the actual SQL bottleneck.
+    if message.startswith(("step=daybase-base ", "step=daybase-layer ", "step=daybase-watermark ")):
+        record_operational_progress(message)
+        print(
+            json.dumps(
+                {"event": "daybase-pipeline-timing", "detail": message},
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
     debug_log(f"[pipeline] {message}")
     record_debug_progress(message)
     progress_fn = _PIPELINE_PROGRESS_FN.get()
@@ -704,6 +770,36 @@ def _compute_source_watermark_outcome(
     if not max_token:
         return SourceWatermarkOutcome((_ABSENT_WATERMARK_TOKEN, count_value), None)
     return SourceWatermarkOutcome((max_token, count_value), None)
+
+
+def _read_source_watermark_sidecar(
+    path: Path,
+    category: Category,
+    target_date: str,
+) -> SourceWatermarkOutcome:
+    """Read the base subprocess watermark, failing closed on any mismatch."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("watermark sidecar must be an object")
+        if payload.get("category") != category or payload.get("target_date") != target_date:
+            raise ValueError("watermark sidecar scope mismatch")
+        row_count = payload["row_count"]
+        max_updated = payload["max_data_sakusei_nengappi"]
+        if not isinstance(row_count, int) or isinstance(row_count, bool):
+            raise TypeError("watermark row_count must be an integer")
+        if max_updated is not None and not isinstance(max_updated, str):
+            raise TypeError("watermark max token must be a string or null")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        return SourceWatermarkOutcome(None, f"{_WATERMARK_QUERY_FAILED_PREFIX}{exc}")
+    if row_count <= 0:
+        return SourceWatermarkOutcome(None, _WATERMARK_COUNT_ZERO_REASON)
+    if max_updated is None:
+        return SourceWatermarkOutcome((_ABSENT_WATERMARK_TOKEN, row_count), None)
+    max_token = max_updated.strip()
+    if max_token == "":
+        return SourceWatermarkOutcome((_ABSENT_WATERMARK_TOKEN, row_count), None)
+    return SourceWatermarkOutcome((max_token, row_count), None)
 
 
 def _compute_source_watermark(
@@ -1441,6 +1537,7 @@ def build_day_base(
     base_dir = day_dir / "base"
     duckdb_temp_dir = day_dir / "duckdb-spill"
     duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
+    source_watermark_file = day_dir / _SOURCE_WATERMARK_SIDECAR_FILENAME
     chain = day_chain_for(category)
     run_id = f"{category}:{target_date}:daybase:{uuid.uuid4().hex[:8]}"
     base_start = perf_counter()
@@ -1461,6 +1558,9 @@ def build_day_base(
                 venue_weather_dir,
                 None,  # target_race: whole-day scope -- every race of the day
                 temp_dir=duckdb_temp_dir,
+                source_watermark_file=(
+                    source_watermark_file if is_catalog_source_url(database_url) else None
+                ),
             )
         )
     except Exception:
@@ -1509,7 +1609,15 @@ def build_day_base(
         return None
     source_outcome: SourceWatermarkOutcome | None = None
     if is_catalog_source_url(database_url):
-        source_outcome = _compute_source_watermark_outcome(category, target_date, database_url)
+        watermark_started = perf_counter()
+        source_outcome = _read_source_watermark_sidecar(
+            source_watermark_file, category, target_date
+        )
+        _log_pipeline_progress(
+            f"step=daybase-watermark status=done category={category} "
+            f"target_date={target_date} source=base-sidecar "
+            f"elapsed_seconds={perf_counter() - watermark_started:.3f}"
+        )
         if source_outcome.value is None:
             reason = source_outcome.reason or "source watermark unavailable"
             message = (
@@ -2675,9 +2783,8 @@ def build_upcoming_feature_rows_split(
     whole-category / whole-day dispatch.
 
     Resolution order: :func:`ensure_day_base` (local-disk / R2 fast paths)
-    first; if that returns ``None``, build the day-base synchronously via
-    :func:`build_day_base` (slow, but still saves work for the NEXT race of
-    the same category+day via the day-base's on-disk cache). Realtime-odds /
+    first; if that returns ``None``, return ``None`` so the caller can use the
+    target-race scoped fallback. Realtime-odds /
     venue-weather are intentionally NOT fetched on this path (``None`` /
     ``None``) -- the day-base is expected to be pre-warmed once per day via
     ``GET /prewarm-day-base`` before genuine odds volatility begins, and the
@@ -2711,14 +2818,14 @@ def build_upcoming_feature_rows_split(
                 raise DayBaseRequiredError(
                     f"day-base unavailable category={category} target_date={target_date}"
                 )
-            day_base_dir = build_day_base(
-                category,
-                target_date,
-                days_ahead,
-                database_url,
-                r2_config=r2_config,
-            )
-        if day_base_dir is None:
+            # A legacy focused request must not synchronously construct a
+            # whole-card day-base on the race's critical path.  A cache miss
+            # falls through to build_upcoming_feature_rows(), which already
+            # forwards target_race to the scoped base/layer pipeline.  The
+            # previous inline build_day_base call could scan ten years of
+            # catalog history and consume the 35-minute container deadline,
+            # leaving the race with no prediction.  Day-base generation stays
+            # an explicit prewarm job; a miss is a per-race fallback.
             return None
         expected_entry_tokens = (
             foundation_readiness.expected_entries
@@ -2780,7 +2887,7 @@ def build_upcoming_feature_rows_split(
             )
         if not built:
             if role is PredictContainerRole.RACE_CHAIN:
-                raise DayBaseRequiredError(
+                raise RuntimeError(
                     f"race-chain build failed category={category} target_date={target_date} "
                     f"target_race={target_race}"
                 )
@@ -2797,17 +2904,8 @@ def build_upcoming_feature_rows_split(
             f"target_race={target_race} error={exc}"
         )
         if role is PredictContainerRole.RACE_CHAIN:
-            safe_error = mask_pg_url(str(exc)) or "<empty>"
-            frames = traceback.extract_tb(exc.__traceback__)
-            origin = frames[-1] if frames else None
-            origin_text = (
-                f"{Path(origin.filename).name}:{origin.lineno}:{origin.name}"
-                if origin is not None
-                else "unknown"
-            )
-            raise DayBaseRequiredError(
-                f"race-chain error category={category} target_date={target_date} "
-                f"target_race={target_race}: {type(exc).__name__}: {safe_error} "
-                f"origin={origin_text}"
-            ) from exc
+            # DAY_BASE_REQUIRED is reserved for a genuine cache/readiness miss
+            # above. Converting a layer crash, deadline, or SIGTERM into that
+            # code rebuilds an already-HIT day-base and hides the real failure.
+            raise
         return None

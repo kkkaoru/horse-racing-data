@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib import model_meta
 from predict_lib.model_meta import (
+    JRA_DIRT_HYBRID_MODEL_VERSION,
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
     NAR_ETOP2_ADOPT_CLASSES,
@@ -28,6 +29,7 @@ from predict_lib.model_meta import (
     architecture_for,
     assert_no_within_race_leak_columns,
     assert_production_model_version_allowed,
+    build_r2_jra_dirt_hybrid_key,
     build_r2_nar_etop2_key,
     build_r2_nar_transformer_key,
     build_r2_object_key,
@@ -94,18 +96,290 @@ def test_feature_count_banei() -> None:
 
 
 def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base() -> None:
-    assert frozenset({
-        "jra-cb-v9-sim-2013-clean",
-        "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-        "jra-cb-v10-prior-corner274-2013",
-        "jra-cb-stage1-marketfree235-2013",
-        "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
-        "iter12-nar-xgb-hpo-v8-clean188",
-        "iter40-nar-settransformer-blend-v1",
-        "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
-        "banei-cb-v9-sim-2011",
-        "banei-cb-v8-window2011-wf-15y",
-    }) == PRODUCTION_MODEL_VERSION_ALLOWLIST
+    assert (
+        frozenset(
+            {
+                "jra-cb-v9-sim-2013-clean",
+                "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+                "jra-cb-v10-prior-corner274-2013",
+                "jra-cb-stage1-marketfree235-2013",
+                "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
+                "jra-dirt-small-005-hybrid-v1",
+                "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+                "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+                "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+                "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+                "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+                "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+                "jra-joken-005-pooled-yetirank-v2",
+                "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+                "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+                "jra-joken-005-turf-mile-yeti-gated-v1",
+                "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+                "jra-joken-010-pooled-yetirank-v2",
+                "jra-joken-016-pooled-yetirank-v2",
+                "jra-joken-701-pooled-yetirank-v2",
+                "jra-joken-701-turf-intermediate-qsm-gated-v1",
+                "jra-joken-701-turf-long-qsm-gated-v1",
+                "jra-joken-701-turf-mile-qsm-gated-v1",
+                "jra-joken-703-pooled-yetirank-v2",
+                "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+                "jra-joken-703-dirt-sprint-yeti-gated-v1",
+                "jra-joken-703-other-extended-qsm-gated-v1",
+                "jra-joken-703-querysoftmax-maxrange-v1",
+                "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+                "jra-joken-703-turf-1400-qsm-gated-v1",
+                "jra-joken-703-turf-intermediate-qsm-gated-v1",
+                "jra-joken-703-turf-long-spring-qsm-gated-v1",
+                "jra-joken-703-turf-long-summer-yeti-gated-v1",
+                "jra-joken-999-pooled-yetirank-v2",
+                "iter12-nar-xgb-hpo-v8-clean188",
+                "iter40-nar-settransformer-blend-v1",
+                "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+                "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+                "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+                "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+                "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+                "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+                "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+                "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+                "banei-cb-v9-sim-2011",
+                "banei-cb-v8-window2011-wf-15y",
+            }
+        )
+        == PRODUCTION_MODEL_VERSION_ALLOWLIST
+    )
+
+
+def test_jra_joken_v2_artifacts_record_fixed_training_ranges() -> None:
+    artifact_root = Path(__file__).resolve().parent.parent / "models/finish-position/jra"
+    metadata_005 = json.loads(
+        (artifact_root / "jra-joken-005-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_005_turf_long = json.loads(
+        (
+            artifact_root / "jra-joken-005-turf-long-hierarchical-qsm-gated-v2/metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    metadata_005_turf_mile = json.loads(
+        (artifact_root / "jra-joken-005-turf-mile-yeti-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_010 = json.loads(
+        (artifact_root / "jra-joken-010-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_016 = json.loads(
+        (artifact_root / "jra-joken-016-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_701 = json.loads(
+        (artifact_root / "jra-joken-701-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_701_turf_long = json.loads(
+        (artifact_root / "jra-joken-701-turf-long-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703 = json.loads(
+        (artifact_root / "jra-joken-703-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_999 = json.loads(
+        (artifact_root / "jra-joken-999-pooled-yetirank-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_dirt_intermediate = json.loads(
+        (artifact_root / "jra-joken-703-dirt-intermediate-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_005_dirt_mile_autumn = json.loads(
+        (artifact_root / "jra-joken-005-dirt-mile-autumn-yeti-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_turf_long_spring = json.loads(
+        (artifact_root / "jra-joken-703-turf-long-spring-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_010_dirt_intermediate = json.loads(
+        (artifact_root / "jra-joken-010-dirt-intermediate-yeti-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_701_turf_mile = json.loads(
+        (artifact_root / "jra-joken-701-turf-mile-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_turf_intermediate = json.loads(
+        (artifact_root / "jra-joken-703-turf-intermediate-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_701_turf_intermediate = json.loads(
+        (artifact_root / "jra-joken-701-turf-intermediate-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_dirt_sprint = json.loads(
+        (artifact_root / "jra-joken-703-dirt-sprint-yeti-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_other_extended = json.loads(
+        (artifact_root / "jra-joken-703-other-extended-qsm-gated-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    metadata_703_querysoftmax = json.loads(
+        (artifact_root / "jra-joken-703-querysoftmax-maxrange-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert metadata_005["training_kyoso_joken_codes"] == ["005", "703", "701"]
+    assert metadata_005_turf_long["feature_count"] == 113
+    assert metadata_005_turf_long["training_kyoso_joken_codes"] == ["005", "703", "701"]
+    assert metadata_005_turf_long["target_cell_weight"] == 6.0
+    assert metadata_005_turf_long["related_cell_weight"] == 2.0
+    assert metadata_005_turf_long["routing_gate"] == {
+        "minimum_candidate_margin": 0.3,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_005_turf_mile["feature_count"] == 113
+    assert metadata_005_turf_mile["training_kyoso_joken_codes"] == ["005", "703", "701"]
+    assert metadata_005_turf_mile["target_cell_weight"] == 4.0
+    assert metadata_005_turf_mile["routing_gate"] == {
+        "minimum_candidate_margin": 0.1,
+        "minimum_candidate_top_z": 1.25,
+    }
+    assert metadata_010["training_kyoso_joken_codes"] == ["010", "005", "703", "701"]
+    assert metadata_016["training_kyoso_joken_codes"] == [
+        "016",
+        "010",
+        "005",
+        "703",
+        "701",
+    ]
+    assert metadata_701["training_kyoso_joken_codes"] == ["701"]
+    assert metadata_701_turf_long["feature_count"] == 113
+    assert metadata_701_turf_long["training_kyoso_joken_codes"] == ["701"]
+    assert metadata_701_turf_long["target_cell_weight"] == 4.0
+    assert metadata_701_turf_long["routing_gate"] == {
+        "minimum_candidate_margin": 0.5,
+        "minimum_candidate_top_z": 1.5,
+    }
+    assert metadata_703["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_dirt_intermediate["feature_count"] == 113
+    assert metadata_703_dirt_intermediate["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_dirt_intermediate["target_cell_weight"] == 4.0
+    assert metadata_703_dirt_intermediate["routing_gate"] == {
+        "minimum_candidate_margin": 0.01,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 2,
+    }
+    assert metadata_005_dirt_mile_autumn["feature_count"] == 113
+    assert metadata_005_dirt_mile_autumn["training_kyoso_joken_codes"] == [
+        "005",
+        "703",
+        "701",
+    ]
+    assert metadata_005_dirt_mile_autumn["target_cell_weight"] == 4.0
+    assert metadata_005_dirt_mile_autumn["routing_gate"] == {
+        "minimum_candidate_margin": 0.05,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_703_turf_long_spring["feature_count"] == 113
+    assert metadata_703_turf_long_spring["training_kyoso_joken_codes"] == [
+        "703",
+        "701",
+    ]
+    assert metadata_703_turf_long_spring["target_cell_weight"] == 8.0
+    assert metadata_703_turf_long_spring["routing_gate"] == {
+        "minimum_candidate_margin": 0.1,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 2,
+    }
+    assert metadata_010_dirt_intermediate["feature_count"] == 113
+    assert metadata_010_dirt_intermediate["training_kyoso_joken_codes"] == [
+        "010",
+        "005",
+        "703",
+        "701",
+    ]
+    assert metadata_010_dirt_intermediate["target_cell_weight"] == 4.0
+    assert metadata_010_dirt_intermediate["routing_gate"] == {
+        "minimum_candidate_margin": 0.2,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_701_turf_mile["feature_count"] == 113
+    assert metadata_701_turf_mile["training_kyoso_joken_codes"] == ["701"]
+    assert metadata_701_turf_mile["target_cell_weight"] == 4.0
+    assert metadata_701_turf_mile["routing_gate"] == {
+        "minimum_candidate_margin": 0.5,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_703_turf_intermediate["feature_count"] == 113
+    assert metadata_703_turf_intermediate["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_turf_intermediate["target_cell_weight"] == 4.0
+    assert metadata_703_turf_intermediate["routing_gate"] == {
+        "minimum_candidate_margin": 0.05,
+        "minimum_candidate_top_z": 1.25,
+        "maximum_candidate_v2_rank": 2,
+    }
+    assert metadata_701_turf_intermediate["feature_count"] == 113
+    assert metadata_701_turf_intermediate["training_kyoso_joken_codes"] == ["701"]
+    assert metadata_701_turf_intermediate["target_cell_weight"] == 4.0
+    assert metadata_701_turf_intermediate["routing_gate"] == {
+        "minimum_candidate_margin": 0.5,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_703_dirt_sprint["feature_count"] == 113
+    assert metadata_703_dirt_sprint["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_dirt_sprint["target_cell_weight"] == 4.0
+    assert metadata_703_dirt_sprint["routing_gate"] == {
+        "minimum_candidate_margin": 0.02,
+        "minimum_candidate_top_z": 1.5,
+        "maximum_candidate_v2_rank": 20,
+    }
+    assert metadata_703_other_extended["feature_count"] == 113
+    assert metadata_703_other_extended["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_other_extended["target_cell_weight"] == 4.0
+    assert metadata_703_other_extended["routing_gate"] == {
+        "minimum_candidate_margin": 0.15,
+        "minimum_candidate_top_z": 1.25,
+        "maximum_candidate_v2_rank": 2,
+    }
+    assert metadata_703_querysoftmax["training_kyoso_joken_codes"] == ["703", "701"]
+    assert metadata_703_querysoftmax["training_scope_may_exceed_routing_cell"] is True
+    assert metadata_999["training_kyoso_joken_codes"] == [
+        "999",
+        "016",
+        "010",
+        "005",
+        "703",
+        "701",
+    ]
 
 
 def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
@@ -119,16 +393,23 @@ def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
 
 
 def test_within_race_leak_columns_are_explicitly_denied() -> None:
-    assert frozenset({
-        "target_corner_1_norm",
-        "target_corner_2_norm",
-        "target_corner_3_norm",
-        "target_corner_4_norm",
-        "target_running_style_class",
-    }) == WITHIN_RACE_LEAK_COLUMNS
-    assert leak_columns_in(["feature_a", "target_corner_1_norm"]) == frozenset({
-        "target_corner_1_norm",
-    })
+    assert (
+        frozenset(
+            {
+                "target_corner_1_norm",
+                "target_corner_2_norm",
+                "target_corner_3_norm",
+                "target_corner_4_norm",
+                "target_running_style_class",
+            }
+        )
+        == WITHIN_RACE_LEAK_COLUMNS
+    )
+    assert leak_columns_in(["feature_a", "target_corner_1_norm"]) == frozenset(
+        {
+            "target_corner_1_norm",
+        }
+    )
     assert_no_within_race_leak_columns(["feature_a"], context="clean")
     with pytest.raises(ValueError, match="within-race leak columns"):
         assert_no_within_race_leak_columns(
@@ -418,6 +699,13 @@ def test_build_r2_nar_etop2_key() -> None:
 
 def test_nar_etop2_adopt_classes_empty() -> None:
     assert frozenset() == NAR_ETOP2_ADOPT_CLASSES
+
+
+def test_build_r2_jra_dirt_hybrid_key() -> None:
+    assert build_r2_jra_dirt_hybrid_key("manifest.json") == (
+        "finish-position/jra/jra-dirt-small-005-hybrid-v1/manifest.json"
+    )
+    assert JRA_DIRT_HYBRID_MODEL_VERSION in PRODUCTION_MODEL_VERSION_ALLOWLIST
 
 
 def test_build_r2_nar_transformer_key() -> None:
