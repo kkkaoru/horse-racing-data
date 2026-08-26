@@ -514,9 +514,8 @@ def dismiss_completed_progress(pid: int) -> bool:
 
 
 def is_update_in_progress_by_pid(pid: int) -> bool:
-    """プロセス PID だけで進行中判定。main window 未接続時にも使える。"""
+    """Check progress presence without mutating the PC-KEIBA UI."""
     try:
-        dismiss_completed_progress(pid)
         return find_progress_window(pid) is not None
     except Exception as e:
         logging.warning("進行中判定 (PID) 失敗 (安全側=進行中扱い): %s", e)
@@ -637,11 +636,13 @@ def wait_for_progress_window_to_finish(
 def wait_for_completion(
     main_window: UiWindow, max_minutes: int = 180, poll_sec: int = 15
 ) -> bool:
-    """実際の完了を待つ。成功条件:
-      1. 進捗ウィンドウが出現したあと消滅する
-      2. StartButton が disabled → enabled に戻る (進捗ウィンドウが出ない短時間更新)
-    StartButton 不在だけでは完了にしない (進捗ダイアログ中の偽完了を防止)。
-    タイムアウト時は False (成功扱いにしない)。"""
+    """Wait until StartButton proves that the database update is idle again.
+
+    The progress dialog exposes an enabled ``CloseButton`` while processing, so
+    clicking that button is not completion evidence.  Only dismiss it after the
+    main dialog's StartButton is enabled.  A vanished progress window or an
+    absent StartButton alone must never permit the host to stop the VM.
+    """
     deadline = time.time() + max_minutes * 60
     logging.info("完了待機開始 (最大 %d 分, poll %d 秒)", max_minutes, poll_sec)
     started_via_button = False
@@ -652,28 +653,28 @@ def wait_for_completion(
         with contextlib.suppress(Exception):
             main_window.set_focus()
         _dismiss_popups(main_window)
-        if pid is not None and dismiss_completed_progress(pid):
-            logging.info("Completed progress dialog closed -> complete")
-            _dismiss_popups(main_window)
-            return True
-        if _progress_visible(pid):
+        progress_visible = _progress_visible(pid)
+        state = _probe_start_button(main_window)
+        if state == "enabled" and (started_via_button or saw_progress):
+            if progress_visible and pid is not None:
+                dismiss_completed_progress(pid)
+                progress_visible = _progress_visible(pid)
+            if not progress_visible:
+                logging.info(
+                    "StartButton enabled and progress dialog absent -> complete"
+                )
+                _dismiss_popups(main_window)
+                return True
+        if progress_visible:
             saw_progress = _log_first(saw_progress, "進捗ウィンドウを検出 — 更新進行中")
             time.sleep(poll_sec)
             continue
-        if saw_progress:
-            logging.info("進捗ウィンドウ消滅 → 完了")
-            _dismiss_popups(main_window)
-            return True
-        state = _probe_start_button(main_window)
         if state == "disabled":
             started_via_button = _log_first(
                 started_via_button, "更新進行中を確認 (StartButton disabled)"
             )
             time.sleep(poll_sec)
             continue
-        if started_via_button and state == "enabled":
-            logging.info("StartButton が再 enabled → 完了")
-            return True
         time.sleep(poll_sec)
     logging.warning("完了待機タイムアウト (%d 分)", max_minutes)
     return False

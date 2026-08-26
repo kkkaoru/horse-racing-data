@@ -998,7 +998,7 @@ def test_wait_for_completion_is_enabled_exception(
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
 
-def test_wait_for_completion_progress_appears_then_vanishes(
+def test_wait_for_completion_progress_vanishes_without_idle_button_times_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     main = MagicMock()
@@ -1009,7 +1009,9 @@ def test_wait_for_completion_progress_appears_then_vanishes(
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
-    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+    fake_times = itertools.chain([0.0, 1.0, 1.0, 1.0], itertools.repeat(100000.0))
+    monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
+    assert mod.wait_for_completion(main, max_minutes=1, poll_sec=1) is False
 
 
 def test_wait_for_completion_succeeds_when_completed_progress_is_closed(
@@ -1018,13 +1020,42 @@ def test_wait_for_completion_succeeds_when_completed_progress_is_closed(
     main = MagicMock()
     main.element_info.process_id = 1
     dismiss_popups = MagicMock()
-    monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
-    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
+    button_states = iter([_mk_element(is_enabled=False), _mk_element(is_enabled=True)])
+    progress_states = iter([MagicMock(), MagicMock(), None])
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: next(button_states))
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress_states))
     monkeypatch.setattr(mod, "_dismiss_popups", dismiss_popups)
-    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: True)
+    dismiss_completed = MagicMock(return_value=True)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", dismiss_completed)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
 
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
-    assert dismiss_popups.call_count == 2
+    dismiss_completed.assert_called_once_with(1)
+    assert dismiss_popups.call_count == 3
+
+
+def test_wait_for_completion_does_not_close_clickable_progress_while_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 1
+    button_states = iter(
+        [
+            _mk_element(is_enabled=False),
+            _mk_element(is_enabled=False),
+            _mk_element(is_enabled=True),
+        ]
+    )
+    progress_states = iter([MagicMock(), MagicMock(), MagicMock(), None])
+    dismiss_completed = MagicMock(return_value=True)
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: next(button_states))
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress_states))
+    monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod, "dismiss_completed_progress", dismiss_completed)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+
+    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+    dismiss_completed.assert_called_once_with(1)
 
 
 def test_wait_for_completion_absent_while_progress_open_times_out(
