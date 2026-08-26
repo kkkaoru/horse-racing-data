@@ -22,6 +22,7 @@ Features added (per horse × race):
 
 Data leakage 防止: race_date strictly less than current race_date のみを集計。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,9 +31,7 @@ import shutil
 from pathlib import Path
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
-
 from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
@@ -60,9 +59,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Focused production mode keibajo_code:race_bango. The input parquet "
-            "is already scoped by the base builder; this flag narrows PG history "
-            "staging to trainers present in that input."
+            "Compatibility marker for a focused keibajo_code:race_bango input. "
+            "History staging is always narrowed to trainers present in the "
+            "input parquet."
         ),
     )
     add_resource_args(parser)
@@ -73,26 +72,84 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def target_race_entry_filter_sql(
+    con: duckdb.DuckDBPyConnection, category: str
+) -> str:
+    """Build exact input-race predicates that the remote SE scan can push down."""
+    rows = con.execute(
+        """
+        select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango
+        from base_input
+        where source is not null and ketto_toroku_bango is not null
+        order by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                 ketto_toroku_bango
+        """
+    ).fetchall()
+    horses_by_race: dict[tuple[str, str, str, str], set[str]] = {}
+    for raw_source, raw_year, raw_date, raw_venue, raw_race, raw_horse in rows:
+        if str(raw_source) != category:
+            continue
+        race_key = (str(raw_year), str(raw_date), str(raw_venue), str(raw_race))
+        horses_by_race.setdefault(race_key, set()).add(str(raw_horse))
+    if not horses_by_race:
+        return "false"
+
+    race_predicates: list[str] = []
+    for race_key in sorted(horses_by_race):
+        year, date, venue, race = race_key
+        horse_literals = ", ".join(
+            sql_literal(horse) for horse in sorted(horses_by_race[race_key])
+        )
+        race_predicates.append(
+            f"(se.kaisai_nen = {sql_literal(year)} "
+            f"and se.kaisai_tsukihi = {sql_literal(date)} "
+            f"and se.keibajo_code = {sql_literal(venue)} "
+            f"and se.race_bango = {sql_literal(race)} "
+            f"and se.ketto_toroku_bango in ({horse_literals}))"
+        )
+    return " or ".join(race_predicates)
+
+
+def target_trainer_filter_sql(con: duckdb.DuckDBPyConnection) -> str:
+    """Build a constant trainer predicate that remote SE scans can push down."""
+    rows = con.execute(
+        """
+        select chokyoshi_code
+        from target_trainers
+        where chokyoshi_code is not null and trim(chokyoshi_code) != ''
+        order by chokyoshi_code
+        """
+    ).fetchall()
+    trainer_literals = ", ".join(
+        sql_literal(trainer)
+        for trainer in sorted({str(raw_trainer) for (raw_trainer,) in rows})
+    )
+    if not trainer_literals:
+        return "false"
+    return f"se.chokyoshi_code in ({trainer_literals})"
+
+
 def stage_target_trainers(con: duckdb.DuckDBPyConnection, category: str) -> None:
     """Stage trainer ids present in the target input parquet.
 
-    Used only for focused production mode. The feature values still come from
-    strictly prior race history; this table only narrows which trainers' history
-    needs to be staged.
+    The feature values still come from strictly prior race history; this table
+    only narrows which trainers' history needs to be staged for focused and
+    whole-day inputs alike.
     """
     se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
+    target_filter = target_race_entry_filter_sql(con, category)
     con.execute(
         f"""
         create or replace temp table target_trainers as
         select distinct se.chokyoshi_code
-        from base_input b
-        join {se_table} se
-          on se.kaisai_nen = b.kaisai_nen
-          and se.kaisai_tsukihi = b.kaisai_tsukihi
-          and se.keibajo_code = b.keibajo_code
-          and se.race_bango = b.race_bango
-          and se.ketto_toroku_bango = b.ketto_toroku_bango
+        from {se_table} se
         where se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
+          and ({target_filter})
         """
     )
     con.execute("create index target_trainers_idx on target_trainers (chokyoshi_code)")
@@ -102,7 +159,6 @@ def stage_race_history_with_trainer(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
     category: str,
-    focused_target: bool = False,
 ) -> None:
     """horse の過去レース成績 + trainer (chokyoshi_code) + grade_code を取得。
 
@@ -110,38 +166,38 @@ def stage_race_history_with_trainer(
     category=nar → pg.nvd_se / source='nar' filter (ban-ei 含む全 nvd_se rows)
     """
     se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
+    ra_table = "pg.jvd_ra" if category == "jra" else "pg.nvd_ra"
     source_filter = "jra" if category == "jra" else "nar"
-    trainer_filter = (
-        "and se.chokyoshi_code in (select chokyoshi_code from target_trainers)"
-        if focused_target
-        else ""
-    )
+    trainer_filter = target_trainer_filter_sql(con)
+    from_date_literal = sql_literal(from_date)
+    from_year_literal = sql_literal(from_date[:4])
+    source_literal = sql_literal(source_filter)
     con.execute(
         f"""
         create or replace temp table race_history as
         select
-          rec.source,
-          rec.race_date,
-          rec.kaisai_nen,
-          rec.kaisai_tsukihi,
-          rec.keibajo_code,
-          rec.race_bango,
-          rec.ketto_toroku_bango,
-          rec.finish_position,
-          rec.grade_code,
+          {source_literal} as source,
+          se.kaisai_nen || se.kaisai_tsukihi as race_date,
+          se.kaisai_nen,
+          se.kaisai_tsukihi,
+          se.keibajo_code,
+          se.race_bango,
+          se.ketto_toroku_bango,
+          try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+            as finish_position,
+          ra.grade_code,
           se.chokyoshi_code
-        from pg.race_entry_corner_features rec
-        left join {se_table} se
-          on se.kaisai_nen = rec.kaisai_nen
-          and se.kaisai_tsukihi = rec.kaisai_tsukihi
-          and se.keibajo_code = rec.keibajo_code
-          and se.race_bango = rec.race_bango
-          and se.ketto_toroku_bango = rec.ketto_toroku_bango
-        where rec.race_date >= '{from_date}'
-          and rec.finish_position is not null
-          and rec.source = '{source_filter}'
+        from {se_table} se
+        inner join {ra_table} ra
+          using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where se.kaisai_nen || se.kaisai_tsukihi >= {from_date_literal}
+          and se.kaisai_nen >= {from_year_literal}
+          and try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+            is not null
+          and nullif(trim(se.ketto_toroku_bango), '') is not null
+          and try_cast(nullif(trim(se.umaban), '') as integer) is not null
           and se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
-          {trainer_filter}
+          and ({trainer_filter})
         """
     )
     con.execute(
@@ -174,7 +230,7 @@ def stage_trainer_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window trainer_grade_career as (
           partition by source, chokyoshi_code, grade_code
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -228,7 +284,7 @@ def stage_trainer_target_race_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window trainer_target_career as (
           partition by source, chokyoshi_code, target_race_id
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -247,9 +303,7 @@ def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
         from read_parquet('{input_glob}', hive_partitioning=true)
         """
     )
-    con.execute(
-        f"create index base_input_idx on base_input ({RACE_PARTITION})"
-    )
+    con.execute(f"create index base_input_idx on base_input ({RACE_PARTITION})")
 
 
 def append_features_sql(input_glob: str, category: str = "jra") -> str:
@@ -283,22 +337,24 @@ def append_features_sql(input_glob: str, category: str = "jra") -> str:
         coalesce(tt.past_top3, 0) as trainer_target_race_top3_count,
         case when coalesce(tt.past_starts, 0) > 0 then 1 else 0 end as trainer_target_race_has_history
       from base_with_trainer bwt
-      left join trainer_grade_cumul tg
+      asof left join trainer_grade_cumul tg
         on tg.source = bwt.source
         and tg.chokyoshi_code = bwt.chokyoshi_code
         and tg.grade_code = bwt.grade_code
-        and tg.race_date = bwt.race_date
-      left join trainer_target_cumul tt
+        and tg.race_date < bwt.race_date
+      asof left join trainer_target_cumul tt
         on tt.source = bwt.source
         and tt.chokyoshi_code = bwt.chokyoshi_code
         and tt.target_race_id = bwt.target_race_id
-        and tt.race_date = bwt.race_date
+        and tt.race_date < bwt.race_date
     )
     select * from joined
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -317,12 +373,13 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_base_input(con, input_glob)
-    if args.target_race is not None:
-        stage_target_trainers(con, args.category)
-    stage_race_history_with_trainer(con, args.from_date, args.category, args.target_race is not None)
+    stage_target_trainers(con, args.category)
+    stage_race_history_with_trainer(con, args.from_date, args.category)
     stage_trainer_grade_cumul(con)
     stage_trainer_target_race_cumul(con)
-    write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
+    write_partitioned(
+        con, append_features_sql(input_glob, args.category), args.output_dir
+    )
     con.close()
 
 

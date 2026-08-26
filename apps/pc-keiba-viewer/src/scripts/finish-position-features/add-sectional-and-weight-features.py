@@ -65,22 +65,46 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def target_horse_literals(con: duckdb.DuckDBPyConnection) -> str:
+    """Return target horse IDs as an escaped SQL literal list for scan pushdown."""
+    rows = con.execute(
+        """
+        select distinct ketto_toroku_bango
+        from base_v3
+        where ketto_toroku_bango is not null
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    literals = ", ".join(sql_literal(str(row[0])) for row in rows)
+    return literals or "null"
+
+
 def stage_history(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
     to_date: str,
     focused_target: bool = False,
+    horse_literals: str | None = None,
 ) -> None:
-    focused_bataiju_filter = (
-        "and ketto_toroku_bango in (select distinct ketto_toroku_bango from base_v3)"
-        if focused_target
-        else ""
-    )
-    focused_rec_filter = (
-        "and rec.ketto_toroku_bango in (select distinct ketto_toroku_bango from base_v3)"
-        if focused_target
-        else ""
-    )
+    if horse_literals is not None:
+        bataiju_filter = f"and ketto_toroku_bango in ({horse_literals})"
+        rec_filter = f"and rec.ketto_toroku_bango in ({horse_literals})"
+    elif focused_target:
+        bataiju_filter = (
+            "and ketto_toroku_bango in "
+            "(select distinct ketto_toroku_bango from base_v3)"
+        )
+        rec_filter = (
+            "and rec.ketto_toroku_bango in "
+            "(select distinct ketto_toroku_bango from base_v3)"
+        )
+    else:
+        bataiju_filter = ""
+        rec_filter = ""
     con.execute(
         f"""
         create or replace temp table bataiju_hist as
@@ -88,8 +112,9 @@ def stage_history(
                try_cast(nullif(trim(bataiju), '') as double) as bataiju
         from pg.jvd_se
         where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
+          and kaisai_nen between '{from_date[:4]}' and '{to_date[:4]}'
           and ketto_toroku_bango is not null
-          {focused_bataiju_filter}
+          {bataiju_filter}
         """
     )
     con.execute(
@@ -114,8 +139,9 @@ def stage_history(
           and bw.race_bango = rec.race_bango
           and bw.ketto_toroku_bango = rec.ketto_toroku_bango
         where rec.race_date between '{from_date}' and '{to_date}'
+          and rec.kaisai_nen between '{from_date[:4]}' and '{to_date[:4]}'
           and rec.ketto_toroku_bango is not null
-          {focused_rec_filter}
+          {rec_filter}
         """
     )
     con.execute("create index rec_hist_horse_date on rec_hist (source, ketto_toroku_bango, race_date)")
@@ -219,16 +245,22 @@ def main() -> None:
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     install_and_attach_pg(con, args.pg_url)
-    if args.target_race is not None:
-        con.execute(
-            f"""
-            create or replace temp table base_v3 as
-            select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-                   ketto_toroku_bango, kyori, race_date
-            from read_parquet('{input_glob}', hive_partitioning=true)
-            """
-        )
-    stage_history(con, args.from_date, args.to_date, args.target_race is not None)
+    con.execute(
+        f"""
+        create or replace temp table base_v3 as
+        select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kyori, race_date
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        """
+    )
+    horse_literals = target_horse_literals(con)
+    stage_history(
+        con,
+        args.from_date,
+        args.to_date,
+        args.target_race is not None,
+        horse_literals,
+    )
     stage_horse_history_lookup(con, input_glob)
     stage_horse_history_agg(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

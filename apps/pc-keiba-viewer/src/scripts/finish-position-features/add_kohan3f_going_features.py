@@ -55,8 +55,12 @@ from _catalog_attach import attach_source_catalog
 from _resource_defaults import add_resource_args, apply_to_connection
 
 
+class _DuckDBResultLike(Protocol):
+    def fetchall(self) -> list[tuple[object, ...]]: ...
+
+
 class _DuckDBConnectionLike(Protocol):
-    def execute(self, query: str) -> object: ...
+    def execute(self, query: str) -> _DuckDBResultLike: ...
 
 
 RACE_PARTITION: str = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
@@ -99,8 +103,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Focused production mode keibajo_code:race_bango. The input parquet "
-            "is already scoped by the base builder; this flag narrows kohan3f "
-            "history staging to horses present in that input."
+            "is already scoped by the base builder. History staging is always "
+            "restricted to horses present in that input."
         ),
     )
     add_resource_args(parser)
@@ -129,29 +133,65 @@ def going_code_case_sql() -> str:
     )
 
 
-def focused_history_filter_sql(focused_target: bool) -> str:
-    if not focused_target:
-        return ""
-    return """
-          and se.ketto_toroku_bango in (
-            select ketto_toroku_bango from base_races
-          )
+def sql_literal(value: str) -> str:
+    """Return a safely quoted DuckDB SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def target_history_scope(
+    con: _DuckDBConnectionLike,
+) -> tuple[set[str], str | None]:
+    """Return target horses and the latest target date from staged input."""
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, max(race_date) over () as max_race_date
+        from base_races
+        where nullif(trim(ketto_toroku_bango), '') is not null
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    if not rows:
+        return set(), None
+    horses = {str(row[0]) for row in rows}
+    return horses, str(rows[0][1])
+
+
+def history_scope_filter_sql(
+    horses: set[str], max_target_date: str | None
+) -> str:
+    """Build predicates that can be pushed into the raw JRA source scan."""
+    if not horses or max_target_date is None:
+        return "and false"
+    horse_literals = ", ".join(sql_literal(horse) for horse in sorted(horses))
+    max_target_year = max_target_date[:4]
+    return f"""
+          and se.ketto_toroku_bango in ({horse_literals})
+          and se.kaisai_nen <= {sql_literal(max_target_year)}
+          and ra.kaisai_nen <= {sql_literal(max_target_year)}
+          and se.kaisai_nen || se.kaisai_tsukihi < {sql_literal(max_target_date)}
+          and ra.kaisai_nen || ra.kaisai_tsukihi < {sql_literal(max_target_date)}
     """
 
 
 def stage_kohan3f_history(
     con: _DuckDBConnectionLike,
     history_from_year: int,
-    focused_target: bool = False,
 ) -> None:
     """Stage per-horse going-coded kohan_3f history rows from PG.
 
     Keeps only rows with a parseable positive ``kohan_3f`` (4-char string in
     tenths of seconds) and a non-empty ``ketto_toroku_bango``.  The going code
-    itself is filtered later at the join (must be 1-4).
+    Only target horses and eligible going-coded rows before the latest target
+    date are read. The same strict per-target date guard remains in the later
+    join for inputs that contain more than one target date.
     """
     going_sql = going_code_case_sql()
-    target_filter = focused_history_filter_sql(focused_target)
+    target_horses, max_target_date = target_history_scope(con)
+    target_filter = history_scope_filter_sql(target_horses, max_target_date)
+    valid_codes = ", ".join(str(c) for c in FIRM_GOING_CODES + SOFT_GOING_CODES)
+    turf_lo, turf_hi = TURF_TRACK_CODE_RANGE
+    dirt_lo, dirt_hi = DIRT_TRACK_CODE_RANGE
+    history_from_year_literal = sql_literal(f"{history_from_year:04d}")
     con.execute(
         f"""
         create or replace temp table kohan3f_hist as
@@ -167,9 +207,15 @@ def stage_kohan3f_history(
          and ra.keibajo_code = se.keibajo_code
          and ra.race_bango = se.race_bango
         where regexp_matches(se.keibajo_code, '{JRA_KEIBAJO_REGEXP}')
-          and cast(se.kaisai_nen as integer) >= {history_from_year}
+          and se.kaisai_nen >= {history_from_year_literal}
+          and ra.kaisai_nen >= {history_from_year_literal}
           and se.ketto_toroku_bango is not null
           and se.ketto_toroku_bango != ''
+          and (
+            cast(ra.track_code as integer) between {turf_lo} and {turf_hi}
+            or cast(ra.track_code as integer) between {dirt_lo} and {dirt_hi}
+          )
+          and ({going_sql}) in ({valid_codes})
           and try_cast(nullif(trim(se.kohan_3f), '') as double) is not null
           and try_cast(nullif(trim(se.kohan_3f), '') as double) > 0
           {target_filter}
@@ -282,7 +328,7 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_base_races(con, input_glob)
-    stage_kohan3f_history(con, args.history_from_year, args.target_race is not None)
+    stage_kohan3f_history(con, args.history_from_year)
     stage_going_conditional_agg(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

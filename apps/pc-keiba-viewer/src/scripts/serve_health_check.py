@@ -130,6 +130,7 @@ D1_UNAVAILABLE_LABEL: Final[str] = "N/A (wrangler unavailable)"
 # diagnosing via checks 1-5.
 R2_SHARD_LOOKBACK_DAYS: Final[int] = 7
 R2_SHARD_CATEGORIES: Final[tuple[str, ...]] = ("jra", "nar")
+ROUTING_HEALTH_SUPPORTED_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "ban-ei"})
 RUNNING_STYLE_CATALOG_GENERATION: Final[str] = "raw-iceberg-v1"
 R2_PREDICTIONS_PREFIX: Final[str] = (
     f"running-style/predictions/by-day/{RUNNING_STYLE_CATALOG_GENERATION}"
@@ -648,14 +649,17 @@ def parse_cell_routing_config(
 ) -> CategoryRoutingConfig | None:
     """Parse the subset of cell_routing.json needed to resolve an expected
     model_version for ``category``. Returns None if the category has no
-    routing entry (e.g. "nar" -- cell_routing.json only defines jra/ban-ei
-    today), mirroring ``CellRouter.has_routing()``. Only the current
+    routing entry or when this retrospective checker lacks the dimensions
+    needed to reproduce that category's live route. NAR is intentionally
+    unsupported here because ``ConfirmedRaceRow`` does not carry
+    ``nar_subclass`` or ``current_baba_condition``; treating its config as
+    checkable would fabricate routing mismatches. Only the current
     "variants" object format is supported (both live jra/ban-ei entries use
     it) -- the legacy flat sim_model_version/base_model_version format
     ``cell_router.py`` also accepts is not reimplemented here since no live
     file uses it.
     """
-    if category not in payload:
+    if category not in ROUTING_HEALTH_SUPPORTED_CATEGORIES or category not in payload:
         return None
     category_payload = cast(Mapping[str, object], payload[category])
     variants_payload = cast(Mapping[str, object], category_payload["variants"])

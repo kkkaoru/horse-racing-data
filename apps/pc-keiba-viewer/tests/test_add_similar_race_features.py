@@ -176,6 +176,21 @@ def test_similar_pool_cap_constant() -> None:
     assert subject.SIMILAR_POOL_CAP == 200
 
 
+def test_measure_stage_emits_credential_free_elapsed_timing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    readings = iter((10.0, 12.3456))
+    monkeypatch.setattr(subject, "perf_counter", lambda: next(readings))
+    with subject.measure_stage("history"):
+        pass
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        captured.err
+        == "[finish-feature-timing] stage=similar.history elapsed_seconds=2.346\n"
+    )
+
+
 # ── install_and_attach_pg ──────────────────────────────────────────────────────
 
 
@@ -387,6 +402,65 @@ def test_similar_history_focus_filter_sql_true_preserves_level4_dims() -> None:
     assert "ts.kyori_band =" in sql
     assert "rec.race_date <= ts.race_date" in sql
     assert "- 10" in sql
+
+
+def test_sql_string_escapes_single_quotes() -> None:
+    assert subject._sql_string("O'Brien") == "'O''Brien'"
+
+
+def test_fetch_target_similarity_scopes_returns_typed_ordered_rows() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "create temp table target_similarity_scope as "
+        "select * from (values ('nar', '20260826', '2026', '2', 1)) "
+        "as v(source, race_date, kaisai_nen, surface, kyori_band)"
+    )
+    rows = subject.fetch_target_similarity_scopes(con)
+    con.close()
+    assert rows == (("nar", "20260826", "2026", "2", 1),)
+
+
+def test_fetch_target_race_keys_returns_exact_ordered_rows() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "create temp table target_races as "
+        "select * from (values ('nar', '2026', '0826', '43', '03')) "
+        "as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)"
+    )
+    rows = subject.fetch_target_race_keys(con)
+    con.close()
+    assert rows == (("nar", "2026", "0826", "43", "03"),)
+
+
+def test_raw_similar_history_filter_pushes_partition_and_similarity_literals() -> None:
+    sql = subject.raw_similar_history_focus_filter_sql(
+        (("nar", "20260826", "2026", "2", 1),), "nar"
+    )
+    assert "se.kaisai_nen between '2016' and '2026'" in sql
+    assert "se.kaisai_nen || se.kaisai_tsukihi <= '20260826'" in sql
+    assert "left(coalesce(ra.track_code, ''), 1) = '2'" in sql
+    assert "= 1" in sql
+
+
+def test_raw_similar_history_filter_handles_unscoped_and_empty_targets() -> None:
+    assert subject.raw_similar_history_focus_filter_sql(None, "nar") == ""
+    assert subject.raw_similar_history_focus_filter_sql((), "nar") == " and false"
+
+
+def test_stage_similar_history_raw_scope_bypasses_compatibility_view() -> None:
+    conn = FakeConn()
+    subject.stage_similar_history(
+        conn,
+        "20000101",
+        "nar",
+        focused_target=True,
+        target_scopes=(("nar", "20260826", "2026", "2", 1),),
+    )
+    body = " ".join(conn.statements)
+    assert "from pg.nvd_se se" in body
+    assert "inner join pg.nvd_ra ra" in body
+    assert "count(*) over" in body
+    assert "pg.race_entry_corner_features" not in body
 
 
 # ── stage_target_races (SQL shape) ──────────────────────────────────────────────
@@ -655,6 +729,130 @@ def test_target_entities_focus_filter_sql_true_uses_target_races() -> None:
     assert "target_races tr" in sql
     assert "tr.keibajo_code = rec.keibajo_code" in sql
     assert "tr.race_bango = rec.race_bango" in sql
+
+
+def test_raw_target_entities_filter_pushes_exact_race_key() -> None:
+    sql = subject.raw_target_entities_focus_filter_sql(
+        (("nar", "2026", "0826", "43", "03"),), "nar"
+    )
+    assert (
+        sql
+        == "\n            and (se.kaisai_nen, se.kaisai_tsukihi, "
+        "se.keibajo_code, se.race_bango) in (values\n              "
+        "('2026', '0826', '43', '03')\n            )"
+    )
+
+
+def test_raw_target_entities_filter_handles_unscoped_and_empty_targets() -> None:
+    assert subject.raw_target_entities_focus_filter_sql(None, "nar") == ""
+    assert subject.raw_target_entities_focus_filter_sql((), "nar") == " and false"
+    assert (
+        subject.raw_target_entities_focus_filter_sql(
+            (("jra", "2026", "0826", "01", "01"),), "nar"
+        )
+        == " and false"
+    )
+
+
+def test_stage_target_entities_raw_key_bypasses_compatibility_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = FakeConn()
+    monkeypatch.setattr(
+        subject,
+        "fetch_table_horse_ids",
+        lambda _con, _table_name: ("horse_1",),
+    )
+    subject.stage_target_entities(
+        conn,
+        "20000101",
+        "nar",
+        focused_target=True,
+        target_keys=(("nar", "2026", "0826", "43", "03"),),
+    )
+    body = " ".join(conn.statements)
+    assert "from pg.nvd_se se" in body
+    assert "inner join pg.nvd_ra ra" in body
+    assert "('2026', '0826', '43', '03')" in body
+    assert "from pg.nvd_um" in body
+    assert "ketto_toroku_bango in ('horse_1')" in body
+    assert "pg.race_entry_corner_features" not in body
+
+
+def test_pedigree_filter_sql_escapes_ids_and_handles_empty_scope() -> None:
+    assert subject.pedigree_filter_sql(()) == "false"
+    assert (
+        subject.pedigree_filter_sql(("horse_1", "O'Brien"))
+        == "ketto_toroku_bango in ('horse_1', 'O''Brien')"
+    )
+
+
+def test_fetch_table_horse_ids_returns_distinct_ordered_rows() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "create temp table scoped_horses as "
+        "select * from (values ('horse_2'), ('horse_1'), ('horse_1')) "
+        "as v(ketto_toroku_bango)"
+    )
+    rows = subject.fetch_table_horse_ids(con, "scoped_horses")
+    con.close()
+    assert rows == ("horse_1", "horse_2")
+
+
+def test_raw_catalog_staging_preserves_field_count_before_finish_filter() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from (values
+          ('2026','0825','43','03','horse_1','01','01','01','J1','T1','O1'),
+          ('2026','0825','43','03','horse_2','02','00','02','J2','T2','O2')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kakutei_chakujun, tansho_ninkijun,
+          kishumei_ryakusho, chokyoshimei_ryakusho, banushimei)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_ra as
+        select '2026' kaisai_nen, '0825' kaisai_tsukihi, '43' keibajo_code,
+          '03' race_bango, '23' track_code, '1600' kyori,
+          '000' kyoso_joken_code, 'Ｃ１' kyoso_joken_meisho, '00' shusso_tosu
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_um as
+        select 'horse_1' ketto_toroku_bango, 'S1' ketto_joho_01b,
+          'D1' ketto_joho_05b
+        """
+    )
+    subject.stage_similar_history(
+        con,
+        "20000101",
+        "nar",
+        focused_target=True,
+        target_scopes=(("nar", "20260826", "2026", "2", 1),),
+    )
+    history = con.execute(
+        "select ketto_toroku_bango, shusso_tosu, umaban_zone "
+        "from similar_history"
+    ).fetchall()
+    subject.stage_target_entities(
+        con,
+        "20000101",
+        "nar",
+        focused_target=True,
+        target_keys=(("nar", "2026", "0825", "43", "03"),),
+    )
+    targets = con.execute(
+        "select ketto_toroku_bango, umaban_zone from target_entities "
+        "order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    assert history == [("horse_1", 2, 1)]
+    assert targets == [("horse_1", 1), ("horse_2", 2)]
 
 
 def test_stage_target_entities_focused_filters_to_target_races() -> None:
@@ -1195,7 +1393,32 @@ def test_main_end_to_end_appends_similar_features(
     def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
         _seed_pg_schema(con)
 
+    history_scopes: list[bool] = []
+    entity_scopes: list[bool] = []
+    original_stage_history = subject.stage_similar_history
+    original_stage_entities = subject.stage_target_entities
+
+    def _stage_history(
+        con: duckdb.DuckDBPyConnection,
+        from_date: str,
+        category: str,
+        focused_target: bool = False,
+    ) -> None:
+        history_scopes.append(focused_target)
+        original_stage_history(con, from_date, category, focused_target)
+
+    def _stage_entities(
+        con: duckdb.DuckDBPyConnection,
+        from_date: str,
+        category: str,
+        focused_target: bool = False,
+    ) -> None:
+        entity_scopes.append(focused_target)
+        original_stage_entities(con, from_date, category, focused_target)
+
     monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(subject, "stage_similar_history", _stage_history)
+    monkeypatch.setattr(subject, "stage_target_entities", _stage_entities)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1212,6 +1435,8 @@ def test_main_end_to_end_appends_similar_features(
         ],
     )
     subject.main()
+    assert history_scopes == [True]
+    assert entity_scopes == [True]
 
     verify_con = duckdb.connect(":memory:")
     rows = verify_con.execute(
@@ -1237,6 +1462,68 @@ def test_main_end_to_end_appends_similar_features(
     assert by_horse["horse_a"][5] == 2
     # horse_b's jockey J20 has no prior pool ride -> NULL.
     assert by_horse["horse_b"][3] is None
+
+
+def test_main_r2_catalog_path_uses_raw_pushdown_and_preserves_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+        con.execute("drop table pg.jvd_se")
+        con.execute(
+            """
+            create table pg.jvd_se as
+            select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              ketto_toroku_bango, lpad(cast(umaban as varchar), 2, '0') as umaban,
+              lpad(cast(finish_position as varchar), 2, '0') as kakutei_chakujun,
+              tansho_ninkijun, kishumei_ryakusho, chokyoshimei_ryakusho, banushimei
+            from pg.race_entry_corner_features
+            """
+        )
+        con.execute("drop table pg.jvd_ra")
+        con.execute(
+            """
+            create table pg.jvd_ra as
+            select distinct kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              track_code, cast(kyori as varchar) as kyori,
+              kyoso_joken_code, kyoso_joken_code as kyoso_joken_meisho,
+              lpad(cast(shusso_tosu as varchar), 2, '0') as shusso_tosu
+            from pg.race_entry_corner_features
+            """
+        )
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--pg-url",
+            "r2-catalog://pc-keiba",
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+        ],
+    )
+    subject.main()
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"select ketto_toroku_bango, sim_race_count from "
+        f"read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet') "
+        "order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    assert rows == [("horse_a", 3), ("horse_b", 3), ("horse_c", 3)]
 
 
 def test_main_end_to_end_emits_sire_and_umaban_zone_columns(

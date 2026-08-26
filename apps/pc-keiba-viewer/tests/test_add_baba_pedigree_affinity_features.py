@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import duckdb
 import pytest
@@ -54,6 +56,22 @@ def test_append_features_sql_contains_baba_columns() -> None:
     assert "sire_baba_win_rate" in sql
     assert "damsire_baba_win_rate" in sql
     assert "sire_horse_baba_combined_score" in sql
+
+
+def test_literal_predicates_escape_quotes_and_handle_empty_sets() -> None:
+    assert subject.sql_string_literal("horse'01") == "'horse''01'"
+    assert subject.string_in_predicate("rec.horse", []) == "false"
+    assert (
+        subject.string_in_predicate("rec.horse", ["horse'01", "horse02"])
+        == "rec.horse in ('horse''01', 'horse02')"
+    )
+    assert subject.race_key_predicate("ra", []) == "false"
+    assert subject.race_key_predicate(
+        "ra", [("2026", "0826", "43", "0'3")]
+    ) == (
+        "((ra.kaisai_nen = '2026' and ra.kaisai_tsukihi = '0826' and "
+        "ra.keibajo_code = '43' and ra.race_bango = '0''3'))"
+    )
 
 
 def test_append_features_sql_uses_scoped_live_current_baba() -> None:
@@ -189,6 +207,24 @@ def test_carried_baba_condition_matches_legacy_ra_for_all_categories_and_edge_ca
     )
     con.execute(
         """
+        create table pg.jvd_se as
+        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, cast(finish_position as varchar) kakutei_chakujun
+        from pg.race_entry_corner_features
+        where source = 'jra'
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, cast(finish_position as varchar) kakutei_chakujun
+        from pg.race_entry_corner_features
+        where source = 'nar'
+        """
+    )
+    con.execute(
+        """
         create temp table legacy_race_baba as
         select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code,
                race_bango,
@@ -228,6 +264,26 @@ def test_carried_baba_condition_matches_legacy_ra_for_all_categories_and_edge_ca
         """
     ).fetchall()
 
+    con.execute(
+        """
+        create temp table target_horses as
+        select distinct ketto_toroku_bango
+        from pg.race_entry_corner_features
+        where ketto_toroku_bango is not null
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree (
+          ketto_toroku_bango varchar, sire_id varchar, damsire_id varchar
+        )
+        """
+    )
+    con.execute(
+        """
+        create temp table target_pedigree_ids (sire_id varchar, damsire_id varchar)
+        """
+    )
     subject.stage_race_history_with_baba(con, "20000101")
     carried_rows = con.execute(
         """
@@ -310,6 +366,37 @@ def test_current_baba_live_lookup_is_scoped_to_input_races_for_jra_nar_and_banei
     ]
 
 
+def test_current_baba_pushes_source_specific_literal_race_keys_to_remote_scan() -> (
+    None
+):
+    class QueryResult:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+            self.fetch_count: int = 0
+
+        def execute(self, query: str) -> QueryResult:
+            self.sql.append(query)
+            return self
+
+        def fetchall(self) -> list[tuple[str, str, str, str]]:
+            self.fetch_count += 1
+            if self.fetch_count == 1:
+                return [("2026", "0826", "01", "01")]
+            return [("2026", "0826", "43", "02")]
+
+    conn = QueryResult()
+    subject.stage_current_race_baba(conn, "20100101")
+    remote_sql = conn.sql[2]
+    assert "inner join target_races" not in remote_sql
+    assert "ra.kaisai_nen >= '2010'" in remote_sql
+    assert (
+        "ra.keibajo_code = '01' and ra.race_bango = '01'" in remote_sql
+    )
+    assert (
+        "ra.keibajo_code = '43' and ra.race_bango = '02'" in remote_sql
+    )
+
+
 def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
     tmp_path: Path,
 ) -> None:
@@ -329,7 +416,11 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         """
         create table pg.jvd_ra as
         select * from (
-          values ('2024','0122','06','14','1','0')
+          values
+            ('2024','0101','06','11','1','0'),
+            ('2024','0108','06','12','1','0'),
+            ('2024','0115','06','13','1','0'),
+            ('2024','0122','06','14','1','0')
         ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                babajotai_code_shiba, babajotai_code_dirt)
         """
@@ -356,6 +447,20 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
         ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
                race_bango, ketto_toroku_bango, finish_position,
                babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_se as
+        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, cast(finish_position as varchar) kakutei_chakujun
+        from pg.race_entry_corner_features
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from pg.jvd_se where false
         """
     )
     con.execute(
@@ -389,6 +494,7 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
 
     subject.stage_base_input(con, input_glob)
     subject.stage_current_race_baba(con, "20000101")
+    subject.stage_target_pedigree_context(con)
     subject.stage_race_history_with_baba(con, "20000101")
     subject.stage_horse_baba_cumul(con)
     subject.stage_sire_baba_cumul(con)
@@ -456,25 +562,157 @@ def test_stage_target_pedigree_context_builds_horse_and_pedigree_filters() -> No
     assert "left join horse_pedigree hp using (ketto_toroku_bango)" in joined
 
 
-def test_stage_race_history_focused_filters_to_target_pedigree_context() -> None:
+def test_stage_race_history_always_filters_to_input_pedigree_context() -> None:
     class FakeConn:
         def __init__(self) -> None:
             self.sql: list[str] = []
 
-        def execute(self, query: str) -> None:
+        def execute(self, query: str) -> FakeConn:
             self.sql.append(query)
+            return self
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("target'horse",), ("pedigree_horse",)]
 
     conn = FakeConn()
-    subject.stage_race_history_with_baba(conn, "20100101", focused_target=True)
+    subject.stage_race_history_with_baba(conn, "20100101")
     joined = "\n".join(conn.sql)
-    assert (
-        "rec.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)"
-        in joined
-    )
-    assert "join target_pedigree_ids t" in joined
-    assert "rec.finish_position is not null" in joined
-    assert "rec.babajotai_code_shiba" in joined
-    assert "rec.babajotai_code_dirt" in joined
+    remote_sql = conn.sql[1]
+    assert "from target_horses" in joined
+    assert "from target_pedigree_ids" in joined
+    assert "target_sires using (sire_id)" in joined
+    assert "target_damsires using (damsire_id)" in joined
+    assert "se.ketto_toroku_bango in ('target''horse', 'pedigree_horse')" in remote_sql
+    assert "select ketto_toroku_bango from target_horses" not in remote_sql
+    assert "se.kaisai_nen >= '2010'" in remote_sql
+    assert "se.kaisai_nen || se.kaisai_tsukihi >= '20100101'" in remote_sql
+    assert "se.kakutei_chakujun" in joined
+    assert "ra.babajotai_code_shiba" in joined
+    assert "ra.babajotai_code_dirt" in joined
+    assert "shusso_tosu" not in remote_sql
     assert "race_baba" not in joined
-    assert "jvd_ra" not in joined
-    assert "nvd_ra" not in joined
+    assert "from pg.race_entry_corner_features" not in joined
+    assert "from pg.jvd_se se" in joined
+    assert "from pg.nvd_se se" in joined
+
+
+def test_stage_race_history_keeps_jra_history_for_nar_pedigree_cohort() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create temp table target_horses as
+        select 'nar_target' as ketto_toroku_bango
+        """
+    )
+    con.execute(
+        """
+        create temp table target_pedigree_ids as
+        select 'shared_sire' as sire_id, null::varchar as damsire_id
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (
+          values
+            ('nar_target', 'shared_sire', null),
+            ('jra_runner', 'shared_sire', null),
+            ('unrelated', 'other_sire', null)
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_se as
+        select * from (
+          values
+            ('2019','1231','06','01','jra_runner','1'),
+            ('2026','0102','06','01','jra_runner','2'),
+            ('2026','0104','06','01','jra_runner','00')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kakutei_chakujun)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select * from (
+          values
+            ('2019','1231','06','01','1','0'),
+            ('2026','0102','06','01','1','0'),
+            ('2026','0104','06','01','1','0')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from (
+          values
+            ('2026','0101','43','01','nar_target','1'),
+            ('2026','0103','43','01','unrelated','3')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kakutei_chakujun)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_ra as
+        select * from (
+          values
+            ('2026','0101','43','01','1','0'),
+            ('2026','0103','43','01','1','0')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+
+    subject.stage_race_history_with_baba(con, "20200101")
+    rows = con.execute(
+        """
+        select source, ketto_toroku_bango
+        from race_history
+        order by source, ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert rows == [("jra", "jra_runner"), ("nar", "nar_target")]
+
+
+def test_main_stages_pedigree_context_for_whole_day_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    args = argparse.Namespace(
+        from_date="20100101",
+        input_dir=tmp_path / "input",
+        memory_limit="1GB",
+        output_dir=tmp_path / "output",
+        pg_url="postgresql://example",
+        target_race=None,
+        threads=1,
+    )
+    connection = Mock()
+    stage_context = Mock()
+    stage_history = Mock()
+    monkeypatch.setattr(subject, "parse_args", Mock(return_value=args))
+    monkeypatch.setattr(subject.duckdb, "connect", Mock(return_value=connection))
+    monkeypatch.setattr(subject, "apply_to_connection", Mock())
+    monkeypatch.setattr(subject, "install_and_attach_pg", Mock())
+    monkeypatch.setattr(subject, "stage_horse_pedigree", Mock())
+    monkeypatch.setattr(subject, "stage_base_input", Mock())
+    monkeypatch.setattr(subject, "stage_current_race_baba", Mock())
+    monkeypatch.setattr(subject, "stage_target_pedigree_context", stage_context)
+    monkeypatch.setattr(subject, "stage_race_history_with_baba", stage_history)
+    monkeypatch.setattr(subject, "stage_horse_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "stage_sire_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "stage_damsire_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "append_features_sql", Mock(return_value="select 1"))
+    monkeypatch.setattr(subject, "write_partitioned", Mock())
+
+    subject.main()
+
+    stage_context.assert_called_once_with(connection)
+    stage_history.assert_called_once_with(connection, "20100101")

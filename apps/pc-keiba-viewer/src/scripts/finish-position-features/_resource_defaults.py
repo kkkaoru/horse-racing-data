@@ -34,6 +34,12 @@ env force (2026-08-16): PIPELINE_FORCE_MEMORY_GB / PIPELINE_FORCE_THREADS は
 auto 検出と MAX-cap の前に完全上書きする。MAX は上げられないので、
 macOS compressor 判定で auto が 2-4 GiB / 1 thread に落ちた緊急経路で使う。
 未設定または不正値なら挙動は完全に不変。
+
+spill isolation (2026-08-25): 既定のDuckDB spill先は
+``/tmp/duckdb-spill-<pid>``とし、並行processを自動分離する。
+PIPELINE_SPILL_TEMP_DIR はjob orchestration側がさらに安定した絶対pathを指定する
+overrideである。同一directoryを複数DuckDB processで共有すると固定temp file名が
+衝突して双方のspillを破損するため、共有pathへ戻してはならない。
 """
 from __future__ import annotations
 
@@ -81,6 +87,23 @@ PIPELINE_MAX_MEMORY_GB_ENV = "PIPELINE_MAX_MEMORY_GB"
 PIPELINE_MAX_THREADS_ENV = "PIPELINE_MAX_THREADS"
 PIPELINE_FORCE_MEMORY_GB_ENV = "PIPELINE_FORCE_MEMORY_GB"
 PIPELINE_FORCE_THREADS_ENV = "PIPELINE_FORCE_THREADS"
+PIPELINE_SPILL_TEMP_DIR_ENV = "PIPELINE_SPILL_TEMP_DIR"
+
+
+def spill_temp_directory() -> str:
+    """Resolve an absolute, job-private DuckDB spill directory."""
+    raw = os.environ.get(PIPELINE_SPILL_TEMP_DIR_ENV, "").strip()
+    if not raw:
+        return f"{SPILL_TEMP_DIR}-{os.getpid()}"
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ValueError(f"{PIPELINE_SPILL_TEMP_DIR_ENV} must be an absolute path")
+    return str(path)
+
+
+def _duckdb_string_literal(value: str) -> str:
+    """Escape one trusted setting value as a DuckDB string literal."""
+    return value.replace("'", "''")
 
 
 def _env_positive_int(name: str) -> int | None:
@@ -314,5 +337,6 @@ def apply_to_connection(
     # CF container (standard-4 / 12 GiB) ではメモリ limit =6 GiB を超えた瞬間に
     # /tmp/duckdb-spill へ中間結果を書き出すことで head-to-head pairwise 集計などの
     # OOM を回避する。
-    con.execute(f"SET temp_directory='{SPILL_TEMP_DIR}'")
+    spill_directory = _duckdb_string_literal(spill_temp_directory())
+    con.execute(f"SET temp_directory='{spill_directory}'")
     con.execute(f"SET max_temp_directory_size='{SPILL_MAX_SIZE}'")

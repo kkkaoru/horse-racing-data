@@ -59,3 +59,45 @@ def test_stage_history_default_does_not_require_base_v3() -> None:
     body = " ".join(captured)
     assert "base_v3" not in body
 
+
+def test_stage_history_pushes_literal_horses_and_year_partitions() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_history(
+        FakeConn(),
+        "20230101",
+        "20241231",
+        horse_literals="'horse_a', 'horse_b'",
+    )
+    body = " ".join(captured)
+    assert "ketto_toroku_bango in ('horse_a', 'horse_b')" in body
+    assert "rec.ketto_toroku_bango in ('horse_a', 'horse_b')" in body
+    assert "kaisai_nen between '2023' and '2024'" in body
+    assert "rec.kaisai_nen between '2023' and '2024'" in body
+
+
+def test_target_horse_literals_escapes_and_handles_empty() -> None:
+    class Result:
+        rows: list[tuple[str]]
+
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self.rows = rows
+
+        def fetchall(self) -> list[tuple[str]]:
+            return self.rows
+
+    class FakeConn:
+        rows: list[tuple[str]]
+
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self.rows = rows
+
+        def execute(self, _sql: str) -> Result:
+            return Result(self.rows)
+
+    assert subject.target_horse_literals(FakeConn([("a'b",), ("horse_c",)])) == "'a''b', 'horse_c'"
+    assert subject.target_horse_literals(FakeConn([])) == "null"

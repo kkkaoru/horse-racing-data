@@ -36,6 +36,8 @@ import argparse
 import json
 import os
 import shutil
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -47,6 +49,16 @@ from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
+BAN_EI_KEIBAJO_CODE = "83"
+DEFAULT_TRIAL_LOOKBACK_DAYS = 90
+SUPPORTED_CATEGORIES = frozenset({"jra", "nar", "ban-ei"})
+
+
+@dataclass(frozen=True)
+class LineageScope:
+    category: str
+    history_from_date: str
+    target_to_date: str
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -77,13 +89,140 @@ def load_config(config_path: Path) -> dict[str, object]:
     return data
 
 
-def stage_race_meta(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+def config_category(config: dict[str, object]) -> str:
+    category = config.get("category")
+    if not isinstance(category, str) or category not in SUPPORTED_CATEGORIES:
+        raise ValueError("Config category must be one of: jra, nar, ban-ei")
+    return category
+
+
+def max_trial_lookback_days(config: dict[str, object]) -> int:
+    lookbacks: list[int] = []
+    for target_raw in cast(list[object], config["target_races"]):
+        target = cast(dict[str, object], target_raw)
+        for trial_raw in cast(list[object], target.get("trials", [])):
+            trial = cast(dict[str, object], trial_raw)
+            lookbacks.append(
+                int(cast(int, trial.get("lookback_days", DEFAULT_TRIAL_LOOKBACK_DAYS)))
+            )
+    if not lookbacks:
+        raise ValueError("No trial lookback definitions built")
+    return max(lookbacks)
+
+
+def category_predicate(category: str, alias: str) -> str:
+    if category == "jra":
+        return f"{alias}.source = 'jra'"
+    if category == "nar":
+        return (
+            f"{alias}.source = 'nar' and "
+            f"({alias}.keibajo_code is null or {alias}.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}')"
+        )
+    if category == "ban-ei":
+        return f"{alias}.source = 'nar' and {alias}.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
+    raise ValueError(f"Unsupported category: {category}")
+
+
+def category_venue_predicate(category: str, alias: str) -> str:
+    if category == "nar":
+        return (
+            f"({alias}.keibajo_code is null or "
+            f"{alias}.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}')"
+        )
+    if category == "ban-ei":
+        return f"{alias}.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
+    if category == "jra":
+        return "true"
+    raise ValueError(f"Unsupported category: {category}")
+
+
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def target_horse_predicate(
+    con: duckdb.DuckDBPyConnection,
+    source: str,
+    alias: str,
+) -> str:
+    rows = cast(
+        list[tuple[str]],
+        con.execute(
+            f"""
+            select distinct ketto_toroku_bango
+            from lineage_target_horses
+            where source = {sql_literal(source)}
+              and ketto_toroku_bango is not null
+            order by ketto_toroku_bango
+            """
+        ).fetchall(),
+    )
+    if not rows:
+        return "false"
+    horse_literals = ", ".join(sql_literal(horse_id) for (horse_id,) in rows)
+    return f"{alias}.ketto_toroku_bango in ({horse_literals})"
+
+
+def stage_target_scope(
+    con: duckdb.DuckDBPyConnection,
+    input_glob: str,
+    category: str,
+    lookback_days: int,
+) -> LineageScope:
+    predicate = category_predicate(category, "base")
+    con.execute(
+        f"""
+        create or replace temp table lineage_target_entries as
+        select distinct
+          base.source,
+          base.kaisai_nen,
+          base.kaisai_tsukihi,
+          base.keibajo_code,
+          base.race_bango,
+          base.ketto_toroku_bango,
+          concat(base.kaisai_nen, base.kaisai_tsukihi) as target_race_date
+        from read_parquet('{input_glob}', hive_partitioning=true) base
+        where {predicate}
+        """
+    )
+    bounds = con.execute(
+        """
+        select min(target_race_date), max(target_race_date)
+        from lineage_target_entries
+        """
+    ).fetchone()
+    if bounds is None or bounds[0] is None or bounds[1] is None:
+        raise ValueError(f"Input contains no target entries for category={category}")
+    target_from_date = str(bounds[0])
+    target_to_date = str(bounds[1])
+    history_from_date = (
+        datetime.strptime(target_from_date, "%Y%m%d") - timedelta(days=lookback_days)
+    ).strftime("%Y%m%d")
+    con.execute(
+        """
+        create or replace temp table lineage_target_horses as
+        select distinct source, ketto_toroku_bango
+        from lineage_target_entries
+        """
+    )
+    return LineageScope(
+        category=category,
+        history_from_date=history_from_date,
+        target_to_date=target_to_date,
+    )
+
+
+def stage_race_meta(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    scope: LineageScope | None = None,
+) -> None:
     """race_meta: jvd_ra + nvd_ra から kyosomei_norm / kyori_int / month / race coords を取得。
 
     JRA は jvd_ra、NAR/Ban-ei は nvd_ra から取る。両方 union all で対応。
     """
-    con.execute(
-        f"""
+    if scope is None:
+        source_sql = f"""
         create or replace temp table race_meta as
         select
           'jra' as source,
@@ -111,10 +250,30 @@ def stage_race_meta(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
         from pg.nvd_ra
         where kaisai_nen >= substring('{from_date}', 1, 4)
         """
-    )
-    con.execute(
-        f"create index race_meta_idx on race_meta ({RACE_PARTITION})"
-    )
+    else:
+        table = "pg.jvd_ra" if scope.category == "jra" else "pg.nvd_ra"
+        source = "jra" if scope.category == "jra" else "nar"
+        effective_from_date = max(from_date, scope.history_from_date)
+        venue_predicate = category_venue_predicate(scope.category, "ra")
+        source_sql = f"""
+        create or replace temp table race_meta as
+        select
+          '{source}' as source,
+          ra.kaisai_nen,
+          ra.kaisai_tsukihi,
+          ra.keibajo_code,
+          ra.race_bango,
+          replace(replace(coalesce(ra.kyosomei_hondai, ''), '　', ''), ' ', '') as kyosomei_norm,
+          try_cast(nullif(trim(ra.kyori), '') as int) as kyori_int,
+          ra.grade_code,
+          cast(substring(ra.kaisai_tsukihi, 1, 2) as int) as month
+        from {table} ra
+        where concat(ra.kaisai_nen, ra.kaisai_tsukihi)
+              between '{effective_from_date}' and '{scope.target_to_date}'
+          and {venue_predicate}
+        """
+    con.execute(source_sql)
+    con.execute(f"create index race_meta_idx on race_meta ({RACE_PARTITION})")
 
 
 def build_target_classify_sql(config: dict[str, object]) -> str:
@@ -176,19 +335,33 @@ def build_trial_defs_values(config: dict[str, object]) -> str:
     return ",\n          ".join(rows)
 
 
-def stage_target_classifications(con: duckdb.DuckDBPyConnection, classify_sql: str) -> None:
+def stage_target_classifications(
+    con: duckdb.DuckDBPyConnection,
+    classify_sql: str,
+    scoped: bool = False,
+) -> None:
     """race_target: race_meta + target_race_id (target 該当 race だけ)。"""
+    target_join = (
+        """
+        inner join (
+          select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+          from lineage_target_entries
+        ) target
+          using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        """
+        if scoped
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table race_target as
         select * exclude (kyosomei_norm, kyori_int, grade_code, month),
           ({classify_sql}) as target_race_id
         from race_meta
+        {target_join}
         """
     )
-    con.execute(
-        f"create index race_target_idx on race_target ({RACE_PARTITION})"
-    )
+    con.execute(f"create index race_target_idx on race_target ({RACE_PARTITION})")
 
 
 def stage_trial_definitions(con: duckdb.DuckDBPyConnection, trial_values: str) -> None:
@@ -234,24 +407,72 @@ def stage_race_serves_as_trial(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_race_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+def stage_race_history(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    scope: LineageScope | None = None,
+) -> None:
     """horse 単位の過去レース成績 (finish_position, time_sa を含む)。"""
+    if scope is None:
+        where_sql = (
+            f"history.race_date >= '{from_date}' "
+            "and history.finish_position is not null"
+        )
+        source_sql = "pg.race_entry_corner_features history"
+        select_sql = """
+          history.source,
+          history.race_date,
+          history.kaisai_nen,
+          history.kaisai_tsukihi,
+          history.keibajo_code,
+          history.race_bango,
+          history.ketto_toroku_bango,
+          history.finish_position,
+          history.time_sa
+        """
+    else:
+        effective_from_date = max(from_date, scope.history_from_date)
+        source = "jra" if scope.category == "jra" else "nar"
+        se_table = "jvd_se" if scope.category == "jra" else "nvd_se"
+        ra_table = "jvd_ra" if scope.category == "jra" else "nvd_ra"
+        horse_predicate = target_horse_predicate(con, source, "se")
+        venue_predicate = category_venue_predicate(scope.category, "se")
+        source_sql = f"""pg.{se_table} se
+        inner join pg.{ra_table} ra
+          using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)"""
+        select_sql = f"""
+          {sql_literal(source)} as source,
+          se.kaisai_nen || se.kaisai_tsukihi as race_date,
+          se.kaisai_nen,
+          se.kaisai_tsukihi,
+          se.keibajo_code,
+          se.race_bango,
+          se.ketto_toroku_bango,
+          try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+            as finish_position,
+          try_cast(nullif(trim(se.time_sa), '0000') as double) / 10 as time_sa
+        """
+        where_sql = (
+            f"se.kaisai_nen between {sql_literal(effective_from_date[:4])} "
+            f"and {sql_literal(scope.target_to_date[:4])} "
+            f"and se.kaisai_nen || se.kaisai_tsukihi "
+            f"between {sql_literal(effective_from_date)} "
+            f"and {sql_literal(scope.target_to_date)} "
+            f"and {venue_predicate} "
+            f"and {horse_predicate} "
+            "and nullif(trim(se.ketto_toroku_bango), '') is not null "
+            "and try_cast(nullif(trim(se.umaban), '') as integer) is not null "
+            "and try_cast(nullif(trim(ra.kyori), '') as integer) is not null "
+            "and try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer) "
+            "is not null"
+        )
     con.execute(
         f"""
         create or replace temp table race_history as
         select
-          source,
-          race_date,
-          kaisai_nen,
-          kaisai_tsukihi,
-          keibajo_code,
-          race_bango,
-          ketto_toroku_bango,
-          finish_position,
-          time_sa
-        from pg.race_entry_corner_features
-        where race_date >= '{from_date}'
-          and finish_position is not null
+          {select_sql}
+        from {source_sql}
+        where {where_sql}
         """
     )
     con.execute(
@@ -306,15 +527,15 @@ def stage_horse_target_race_trial_summary(con: duckdb.DuckDBPyConnection) -> Non
             rt.keibajo_code,
             rt.race_bango,
             rt.target_race_id,
-            rh.race_date as current_race_date,
-            rh.ketto_toroku_bango
+            target.target_race_date as current_race_date,
+            target.ketto_toroku_bango
           from race_target rt
-          inner join race_history rh
-            on rh.source = rt.source
-            and rh.kaisai_nen = rt.kaisai_nen
-            and rh.kaisai_tsukihi = rt.kaisai_tsukihi
-            and rh.keibajo_code = rt.keibajo_code
-            and rh.race_bango = rt.race_bango
+          inner join lineage_target_entries target
+            on target.source = rt.source
+            and target.kaisai_nen = rt.kaisai_nen
+            and target.kaisai_tsukihi = rt.kaisai_tsukihi
+            and target.keibajo_code = rt.keibajo_code
+            and target.race_bango = rt.race_bango
           where rt.target_race_id is not null
         )
         select
@@ -401,19 +622,22 @@ def main() -> None:
     args = parse_args()
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
     config = load_config(args.config)
+    category = config_category(config)
     classify_sql = build_target_classify_sql(config)
     trial_values = build_trial_defs_values(config)
+    lookback_days = max_trial_lookback_days(config)
 
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_race_meta(con, args.from_date)
-    stage_target_classifications(con, classify_sql)
+    scope = stage_target_scope(con, input_glob, category, lookback_days)
+    stage_race_meta(con, args.from_date, scope)
+    stage_target_classifications(con, classify_sql, scoped=True)
     stage_trial_definitions(con, trial_values)
     stage_race_serves_as_trial(con)
-    stage_race_history(con, args.from_date)
+    stage_race_history(con, args.from_date, scope)
     stage_horse_trial_history(con)
     stage_horse_target_race_trial_summary(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

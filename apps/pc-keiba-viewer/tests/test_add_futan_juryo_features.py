@@ -157,6 +157,50 @@ def test_stage_futan_juryo_focused_filters_to_target_horses() -> None:
     assert "b.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)" in body
 
 
+def test_stage_futan_juryo_pushes_horses_and_date_partitions() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_futan_juryo(
+        FakeConn(),
+        "20230101",
+        "20241231",
+        horse_literals="'horse_a', 'horse_b'",
+    )
+    body = " ".join(captured)
+    assert "b.ketto_toroku_bango in ('horse_a', 'horse_b')" in body
+    assert "rec.ketto_toroku_bango in ('horse_a', 'horse_b')" in body
+    assert "b.kaisai_nen between '2023' and '2024'" in body
+    assert "rec.kaisai_nen between '2023' and '2024'" in body
+    assert "(b.kaisai_nen || b.kaisai_tsukihi) between '20230101' and '20241231'" in body
+
+
+def test_target_horse_literals_escapes_and_handles_empty() -> None:
+    class Result:
+        rows: list[tuple[str]]
+
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self.rows = rows
+
+        def fetchall(self) -> list[tuple[str]]:
+            return self.rows
+
+    class FakeConn:
+        rows: list[tuple[str]]
+
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self.rows = rows
+
+        def execute(self, _sql: str) -> Result:
+            return Result(self.rows)
+
+    assert subject.target_horse_literals(FakeConn([("a'b",), ("horse_c",)])) == "'a''b', 'horse_c'"
+    assert subject.target_horse_literals(FakeConn([])) == "null"
+
+
 # ---------------------------------------------------------------------------
 # Helper: seed jvd_se and race_entry_corner_features in an in-memory DuckDB
 # ---------------------------------------------------------------------------
@@ -281,14 +325,14 @@ def test_stage_futan_juryo_filters_null_futan_se_rows() -> None:
 
 def test_stage_futan_juryo_pg_wins_over_se_for_historical_race() -> None:
     """For historical rows present in race_entry_corner_features, the PG value
-    (stored in 0.1 kg units × 10) takes priority over jvd_se.
+    (stored in kg) takes priority over raw jvd_se.
     """
     con = duckdb.connect(":memory:")
-    # rec has authoritative historical value '560' = 56.0 kg
+    # rec has authoritative historical value '56.0' kg
     # se has a different value '990' = 99.0 kg
     _seed_pg_schema(
         con,
-        rec_rows=[("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "560")],
+        rec_rows=[("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "56.0")],
         se_rows=[("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "990")],
     )
     subject.stage_futan_juryo(con, "20100101", "20991231", "pg.jvd_se")
@@ -306,8 +350,8 @@ def test_stage_futan_juryo_mixed_historical_and_upcoming() -> None:
     _seed_pg_schema(
         con,
         rec_rows=[
-            # historical horse in rec: '560' = 56.0 kg
-            ("jra", "2024", "0415", "05", "11", "horse_hist", "20240415", "560")
+            # historical horse in rec: already normalized to 56.0 kg
+            ("jra", "2024", "0415", "05", "11", "horse_hist", "20240415", "56.0")
         ],
         se_rows=[
             # same historical horse in se: different value ('990' = 99.0 kg)
@@ -646,8 +690,8 @@ def test_upcoming_race_with_history_past_diff_non_null(tmp_path: Path) -> None:
     _seed_pg_schema(
         con,
         rec_rows=[
-            # past race in rec (historical): futan '540' = 54.0 kg
-            ("jra", "2026", "0601", "05", "11", "horse_est", "20260601", "540")
+            # past race in rec (historical): already normalized to 54.0 kg
+            ("jra", "2026", "0601", "05", "11", "horse_est", "20260601", "54.0")
         ],
         se_rows=[
             # past race in se (matches rec — rec wins for this row)
@@ -723,8 +767,8 @@ def test_historical_race_pg_rec_wins_over_se(tmp_path: Path) -> None:
     _seed_pg_schema(
         con,
         rec_rows=[
-            ("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "560"),
-            ("jra", "2024", "0415", "05", "11", "horse_b", "20240415", "540"),
+            ("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "56.0"),
+            ("jra", "2024", "0415", "05", "11", "horse_b", "20240415", "54.0"),
         ],
         se_rows=[
             ("jra", "2024", "0415", "05", "11", "horse_a", "20240415", "990"),
@@ -949,8 +993,8 @@ def test_main_historical_race_pg_rec_values_used(
             create table pg.race_entry_corner_features as
             select * from (
               values
-                ('jra', '2024', '0415', '05', '11', 'horse_a', '20240415', '560'),
-                ('jra', '2024', '0415', '05', '11', 'horse_b', '20240415', '540')
+                ('jra', '2024', '0415', '05', '11', 'horse_a', '20240415', '56.0'),
+                ('jra', '2024', '0415', '05', '11', 'horse_b', '20240415', '54.0')
             ) as v(
               source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
               ketto_toroku_bango, race_date, futan_juryo
@@ -994,7 +1038,7 @@ def test_main_historical_race_pg_rec_values_used(
         """
     ).fetchall()
     verify_con.close()
-    # rec stored '560' → 560.0/10 = 56.0, '540' → 54.0
+    # rec values are already normalized to kg.
     horse_a = next(r for r in rows if r[0] == "horse_a")
     horse_b = next(r for r in rows if r[0] == "horse_b")
     assert horse_a[1] == pytest.approx(56.0)
@@ -1225,9 +1269,9 @@ def test_stage_horse_history_excludes_future_races_from_window() -> None:
     _seed_pg_schema(
         con,
         rec_rows=[
-            ("jra", "2020", "0415", "05", "11", "horse_x", "20200415", "500"),
-            ("jra", "2022", "0415", "05", "11", "horse_x", "20220415", "520"),
-            ("jra", "2024", "0415", "05", "11", "horse_x", "20240415", "560"),
+            ("jra", "2020", "0415", "05", "11", "horse_x", "20200415", "50.0"),
+            ("jra", "2022", "0415", "05", "11", "horse_x", "20220415", "52.0"),
+            ("jra", "2024", "0415", "05", "11", "horse_x", "20240415", "56.0"),
         ],
         se_rows=[
             ("jra", "2020", "0415", "05", "11", "horse_x", "20200415", "500"),

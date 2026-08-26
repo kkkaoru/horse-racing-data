@@ -1,3 +1,4 @@
+// Run with bun. Builds the local or Neon corner feature table.
 import { Pool } from "pg";
 
 import { getConnectionString, loadEnv } from "./compare-corner-predictions";
@@ -80,7 +81,7 @@ const buildRaceDateFilterSql = (options: Pick<Options, "fromDate" | "toDate">): 
   return filters.join("\n        ");
 };
 
-const buildSql = (options: Options): string => {
+export const buildSql = (options: Options): string => {
   const { buildVectorIndex, sourceScope } = options;
   const includeJra = sourceScope === "all" || sourceScope === "jra";
   const includeNar = sourceScope === "all" || sourceScope === "nar" || sourceScope === "ban-ei";
@@ -300,7 +301,7 @@ const buildSql = (options: Options): string => {
         case when tansho_ninkijun ~ '^[0-9]+$' then nullif(tansho_ninkijun, '00')::integer else null end tansho_ninkijun,
         case when tansho_odds ~ '^[0-9]+$' then nullif(tansho_odds, '0000')::numeric / 10 else null end tansho_odds,
         case when soha_time ~ '^[0-9]+$' then nullif(soha_time, '0000')::integer else null end soha_time,
-        case when time_sa ~ '^[0-9]+$' then nullif(time_sa, '0000')::numeric / 10 else null end time_sa,
+        case when trim(time_sa) ~ '^[+-]?[0-9]+$' then nullif(trim(time_sa), '0000')::numeric / 10 else null end time_sa,
         case when kohan_3f ~ '^[0-9]+$' then nullif(kohan_3f, '000')::numeric / 10 else null end kohan_3f,
         case
           when shusso_tosu ~ '^[0-9]+$' and corner_1 ~ '^[0-9]+$' then
@@ -515,7 +516,9 @@ const main = async () => {
   }
 };
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

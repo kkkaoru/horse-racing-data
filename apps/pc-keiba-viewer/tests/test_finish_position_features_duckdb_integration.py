@@ -281,7 +281,7 @@ def test_stage_rec_table_loads_columns_and_indexes(capsys: pytest.CaptureFixture
         cast(duckdb.DuckDBPyConnection, captured), "20100101", "20251231", "jra"
     )
     joined = "\n".join(captured.statements)
-    assert "race_date between '20100101' and '20251231'" in joined
+    assert "between '20100101' and '20251231'" in joined
     assert "create index rec_horse_date on rec" in joined
     assert "create index rec_jockey_date on rec" in joined
     assert "create index rec_trainer_date on rec" in joined
@@ -291,12 +291,11 @@ def test_stage_rec_table_loads_columns_and_indexes(capsys: pytest.CaptureFixture
     assert "source.rec.indexes" in output
 
 
-def test_build_rec_select_sql_jra_unions_corner_features_and_ban_ei():
+def test_build_rec_select_sql_jra_scopes_corner_history_without_ban_ei_union():
     sql = subject.build_rec_select_sql("jra", "20160101", "20251231")
-    assert "from pg.race_entry_corner_features" in sql
-    assert "union all" in sql
-    assert "from pg.nvd_se" in sql
-    assert "se.keibajo_code = '83'" in sql
+    assert "from pg.jvd_se se" in sql
+    assert "'jra' as source" in sql
+    assert "se.keibajo_code = '83'" not in sql
 
 
 def test_build_rec_select_sql_ban_ei_uses_only_nvd_se_path():
@@ -305,6 +304,85 @@ def test_build_rec_select_sql_ban_ei_uses_only_nvd_se_path():
     assert "from pg.nvd_se" in sql
     assert "se.keibajo_code = '83'" in sql
     assert "union all" not in sql
+
+
+def test_whole_day_rec_cohort_matches_full_history_for_all_feature_consumers():
+    """An 8/26-like day cohort keeps complete races for every required scope."""
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.nvd_se (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar, "
+        "umaban varchar, kishumei_ryakusho varchar, chokyoshimei_ryakusho varchar, "
+        "kakutei_chakujun varchar, time_sa varchar, kohan_3f varchar, "
+        "corner_1 varchar, corner_2 varchar, corner_3 varchar, corner_4 varchar, "
+        "tansho_ninkijun varchar, tansho_odds varchar, seibetsu_code varchar, "
+        "barei varchar, ijo_kubun_code varchar)"
+    )
+    con.execute(
+        "insert into pg.nvd_se values "
+        "('2026','0801','44','01','target','01','j1','t1','01','001','350','01','01','01','01','01','0010','1','03','0'),"
+        "('2026','0801','44','01','field-a','02','j2','t2','02','002','360','02','02','02','02','02','0020','2','04','0'),"
+        "('2026','0822','43','02','sibling','01','j3','t3','01','001','350','01','01','01','01','01','0010','1','03','0'),"
+        "('2026','0822','43','02','field-b','02','j4','t4','02','002','360','02','02','02','02','02','0020','2','04','0'),"
+        "('2026','0822','43','02','scratch','03','j5','t5','00','0000','000','00','00','00','00','00','0000','1','05','1'),"
+        "('2026','0810','44','03','jockey-horse','01','j-target','t6','01','001','350','01','01','01','01','01','0010','1','03','0'),"
+        "('2026','0810','44','03','field-c','02','j7','t7','02','002','360','02','02','02','02','02','0020','2','04','0'),"
+        "('2026','0811','44','04','trainer-horse','01','j8','','01','001','350','01','01','01','01','01','0010','1','03','0'),"
+        "('2026','0811','44','04','field-d','02','j9','t9','02','002','360','02','02','02','02','02','0020','2','04','0'),"
+        "('2026','0805','45','05','unrelated','01','jx','tx','01','001','350','01','01','01','01','01','0010','1','03','0')"
+    )
+    con.execute(
+        "create table pg.nvd_ra (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, kyori varchar, track_code varchar, "
+        "grade_code varchar, kyoso_joken_code varchar, babajotai_code_shiba varchar, "
+        "babajotai_code_dirt varchar, shusso_tosu varchar)"
+    )
+    con.execute(
+        "insert into pg.nvd_ra values "
+        "('2026','0801','44','01','1200','24',' ','010','1','1','02'),"
+        "('2026','0822','43','02','1200','24',' ','010','1','1','00'),"
+        "('2026','0810','44','03','1200','24',' ','010','1','1','02'),"
+        "('2026','0811','44','04','1200','24',' ','010','1','1','02'),"
+        "('2026','0805','45','05','1200','24',' ','010','1','1','01')"
+    )
+    entity_filter = (
+        " and (ketto_toroku_bango in ('target', 'sibling') "
+        "or kishumei_ryakusho in ('j-target') "
+        "or chokyoshimei_ryakusho in ('') "
+        "or (keibajo_code = '43' and race_date >= '20260821' "
+        "and race_date < '20260826'))"
+    )
+    full_sql = subject.canonicalize_placeholder_runners_sql(
+        subject._rec_select_from_raw_se_ra("nar", "20260801", "20260825", "")
+    )
+    cohort_sql = subject.canonicalize_placeholder_runners_sql(
+        subject._rec_select_from_raw_se_ra(
+            "nar", "20260801", "20260825", entity_filter
+        )
+    )
+    expected_sql = f"""
+      with full_rec as ({full_sql}), relevant_races as (
+        select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+        from full_rec where true{entity_filter}
+      )
+      select full_rec.* from full_rec join relevant_races
+        using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+    """
+    missing = con.execute(
+        f"select count(*) from (({expected_sql}) except all ({cohort_sql}))"
+    ).fetchone()
+    extra = con.execute(
+        f"select count(*) from (({cohort_sql}) except all ({expected_sql}))"
+    ).fetchone()
+    fallback = con.execute(
+        f"select distinct shusso_tosu from ({cohort_sql}) where race_bango = '02'"
+    ).fetchall()
+    con.close()
+
+    assert missing == (0,)
+    assert extra == (0,)
+    assert fallback == [(2,)]
 
 
 def test_build_rec_select_sql_upcoming_window_orders_settled_finish_position_first():
@@ -361,6 +439,12 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
     )
     con.register("se_df", se_df)
     con.execute("create table pg.jvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.jvd_se add column corner_1 varchar; "
+        "alter table pg.jvd_se add column corner_2 varchar; "
+        "alter table pg.jvd_se add column corner_3 varchar; "
+        "alter table pg.jvd_se add column corner_4 varchar"
+    )
     ra_df = pl.DataFrame(
         [
             (
@@ -465,6 +549,12 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
     )
     con.register("se_df", se_df)
     con.execute("create table pg.jvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.jvd_se add column corner_1 varchar; "
+        "alter table pg.jvd_se add column corner_2 varchar; "
+        "alter table pg.jvd_se add column corner_3 varchar; "
+        "alter table pg.jvd_se add column corner_4 varchar"
+    )
     ra_df = pl.DataFrame(
         [
             (
@@ -560,6 +650,12 @@ def test_upcoming_target_union_sql_jra_excludes_scratched_and_excluded_entrants(
     )
     con.register("se_df", se_df)
     con.execute("create table pg.jvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.jvd_se add column corner_1 varchar; "
+        "alter table pg.jvd_se add column corner_2 varchar; "
+        "alter table pg.jvd_se add column corner_3 varchar; "
+        "alter table pg.jvd_se add column corner_4 varchar"
+    )
     ra_df = pl.DataFrame(
         [
             (
@@ -621,6 +717,12 @@ def test_upcoming_target_union_sql_nar_excludes_scratched_entrant():
     )
     con.register("se_df", se_df)
     con.execute("create table pg.nvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.nvd_se add column corner_1 varchar; "
+        "alter table pg.nvd_se add column corner_2 varchar; "
+        "alter table pg.nvd_se add column corner_3 varchar; "
+        "alter table pg.nvd_se add column corner_4 varchar"
+    )
     ra_df = pl.DataFrame(
         [
             (
@@ -692,6 +794,12 @@ def test_build_rec_select_sql_ban_ei_upcoming_window_excludes_scratched_entrant_
     )
     con.register("se_df", se_df)
     con.execute("create table pg.nvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.nvd_se add column corner_1 varchar; "
+        "alter table pg.nvd_se add column corner_2 varchar; "
+        "alter table pg.nvd_se add column corner_3 varchar; "
+        "alter table pg.nvd_se add column corner_4 varchar"
+    )
     ra_df = pl.DataFrame(
         [
             (
@@ -781,6 +889,21 @@ def test_stage_source_tables_jra_orchestrates_rec_se_um_ra(capsys: pytest.Captur
         assert stage in output
 
 
+def test_stage_source_tables_jra_uses_empty_nar_stubs_without_nar_pg_reads(
+    capsys: pytest.CaptureFixture[str],
+):
+    captured = _ExecCaptureCon()
+    subject.stage_source_tables(
+        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231", "jra"
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.nvd_se" not in joined
+    assert "from pg.nvd_um" not in joined
+    assert "from pg.nvd_nu" not in joined
+    assert "from pg.nvd_ra" not in joined
+    assert "source.nar_se.skip" in capsys.readouterr().out
+
+
 def test_stage_source_tables_ban_ei_skips_jra_pg_reads(capsys: pytest.CaptureFixture[str]):
     captured = _ExecCaptureCon()
     subject.stage_source_tables(
@@ -799,7 +922,7 @@ def test_stage_source_tables_ban_ei_skips_jra_pg_reads(capsys: pytest.CaptureFix
     assert "source.jra_ra.skip" in output
 
 
-def test_stage_source_tables_nar_keeps_full_rec_for_history_precision(
+def test_stage_source_tables_nar_keeps_nar_history_and_stubs_jra_tables(
     capsys: pytest.CaptureFixture[str],
 ):
     captured = _ExecCaptureCon()
@@ -807,12 +930,11 @@ def test_stage_source_tables_nar_keeps_full_rec_for_history_precision(
         cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231", "nar"
     )
     joined = "\n".join(captured.statements)
-    assert "from pg.race_entry_corner_features" in joined
-    assert "union all" in joined
-    assert "from pg.jvd_se" in joined
+    assert "from pg.nvd_se se" in joined
+    assert "'nar' as source" in joined
     assert "from pg.nvd_se" in joined
     output = capsys.readouterr().out
-    assert "source.jra_se" in output
+    assert "source.jra_se.skip" in output
     assert "source.nar_se" in output
 
 

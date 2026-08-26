@@ -33,6 +33,7 @@ from pedigree_staging import stage_horse_pedigree
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
+RACE_KEY_COLUMNS = ("kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -50,9 +51,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Focused production mode keibajo_code:race_bango. The input parquet "
-            "is already scoped by the base builder; this flag narrows PG history "
-            "staging to the target horses and their sire/damsire cohorts."
+            "Compatibility marker for a focused keibajo_code:race_bango input. "
+            "History staging is always narrowed to the horses and pedigree "
+            "cohorts present in the input parquet."
         ),
     )
     add_resource_args(parser)
@@ -69,6 +70,35 @@ def baba_condition_sql(alias: str) -> str:
             try_cast(nullif({alias}.babajotai_code_shiba, '0') as int),
             try_cast(nullif({alias}.babajotai_code_dirt, '0') as int)
           )"""
+
+
+def sql_string_literal(value: str) -> str:
+    """Quote one DuckDB/PostgreSQL string literal without changing its value."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def string_in_predicate(column: str, values: list[str]) -> str:
+    """Build a literal predicate that remote catalog scans can push down."""
+    if not values:
+        return "false"
+    literals = ", ".join(sql_string_literal(value) for value in values)
+    return f"{column} in ({literals})"
+
+
+def race_key_predicate(
+    alias: str, race_keys: list[tuple[str, str, str, str]]
+) -> str:
+    """Build a source-specific literal race-key predicate for live RA lookup."""
+    if not race_keys:
+        return "false"
+    clauses = []
+    for race_key in race_keys:
+        parts = [
+            f"{alias}.{column} = {sql_string_literal(value)}"
+            for column, value in zip(RACE_KEY_COLUMNS, race_key, strict=True)
+        ]
+        clauses.append("(" + " and ".join(parts) + ")")
+    return "(" + " or ".join(clauses) + ")"
 
 
 def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -88,52 +118,56 @@ def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
 def stage_current_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     """Read live RA baba only for races present in the input parquet.
 
-    Historical baba is already carried by ``race_entry_corner_features``, but
-    current baba must remain a live RA lookup: a day-base input can predate a
-    same-day going change. Restricting the lookup to the distinct input race
-    keys removes the old all-years materialisation without freezing that live
-    value at day-base time.
+    Historical baba comes from the direct raw SE/RA history scan, while current
+    baba must remain a separate live RA lookup: a day-base input can predate a
+    same-day going change. Restricting the lookup to distinct input race keys
+    avoids all-years materialisation without freezing that live value at
+    day-base time.
     """
+    jra_races = con.execute(
+        """
+        select distinct kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+        from base_input
+        where source = 'jra'
+        order by all
+        """
+    ).fetchall()
+    nar_races = con.execute(
+        """
+        select distinct kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+        from base_input
+        where source = 'nar'
+        order by all
+        """
+    ).fetchall()
+    jra_predicate = race_key_predicate("ra", jra_races)
+    nar_predicate = race_key_predicate("ra", nar_races)
+    from_year = sql_string_literal(from_date[:4])
     con.execute(
         f"""
         create or replace temp table race_baba as
-        with target_races as (
-          select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code,
-                          race_bango
-          from base_input
-        )
         select
           'jra' as source,
           ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
           {baba_condition_sql("ra")} as baba_cond
         from pg.jvd_ra ra
-        inner join target_races target
-          on target.source = 'jra'
-          and target.kaisai_nen = ra.kaisai_nen
-          and target.kaisai_tsukihi = ra.kaisai_tsukihi
-          and target.keibajo_code = ra.keibajo_code
-          and target.race_bango = ra.race_bango
-        where ra.kaisai_nen >= substring('{from_date}', 1, 4)
+        where ra.kaisai_nen >= {from_year}
+          and {jra_predicate}
         union all
         select
           'nar' as source,
           ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
           {baba_condition_sql("ra")} as baba_cond
         from pg.nvd_ra ra
-        inner join target_races target
-          on target.source = 'nar'
-          and target.kaisai_nen = ra.kaisai_nen
-          and target.kaisai_tsukihi = ra.kaisai_tsukihi
-          and target.keibajo_code = ra.keibajo_code
-          and target.race_bango = ra.race_bango
-        where ra.kaisai_nen >= substring('{from_date}', 1, 4)
+        where ra.kaisai_nen >= {from_year}
+          and {nar_predicate}
         """
     )
     con.execute(f"create index race_baba_idx on race_baba ({RACE_PARTITION})")
 
 
 def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
-    """Stage target horses and their sire/damsire ids for focused mode."""
+    """Stage input horses and their sire/damsire ids for history narrowing."""
     con.execute(
         """
         create or replace temp table target_horses as
@@ -160,51 +194,75 @@ def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def focused_history_filter_sql(focused_target: bool) -> str:
-    if not focused_target:
-        return ""
-    return """
-          and (
-            rec.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)
-            or exists (
-              select 1
-              from horse_pedigree hp
-              join target_pedigree_ids t
-                on (t.sire_id is not null and hp.sire_id = t.sire_id)
-                or (t.damsire_id is not null and hp.damsire_id = t.damsire_id)
-              where hp.ketto_toroku_bango = rec.ketto_toroku_bango
-            )
-          )
-    """
-
-
 def stage_race_history_with_baba(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
-    focused_target: bool = False,
 ) -> None:
-    """horse history + baba from the existing corner-feature projection."""
-    target_filter = focused_history_filter_sql(focused_target)
-    baba_condition = baba_condition_sql("rec")
+    """Stage history for input horses and their sire/damsire cohorts."""
+    history_horses = con.execute(
+        """
+        select ketto_toroku_bango
+        from (
+          select ketto_toroku_bango
+          from target_horses
+          union
+          select hp.ketto_toroku_bango
+          from horse_pedigree hp
+          inner join (
+            select distinct sire_id
+            from target_pedigree_ids
+            where sire_id is not null
+          ) target_sires using (sire_id)
+          union
+          select hp.ketto_toroku_bango
+          from horse_pedigree hp
+          inner join (
+            select distinct damsire_id
+            from target_pedigree_ids
+            where damsire_id is not null
+          ) target_damsires using (damsire_id)
+        ) cohort
+        where ketto_toroku_bango is not null
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    horse_predicate = string_in_predicate(
+        "se.ketto_toroku_bango", [row[0] for row in history_horses]
+    )
+    from_date_literal = sql_string_literal(from_date)
+    from_year_literal = sql_string_literal(from_date[:4])
+
+    def raw_branch(source: str, se_table: str, ra_table: str) -> str:
+        finish_position = (
+            "try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)"
+        )
+        return f"""
+        select
+          '{source}' as source,
+          se.kaisai_nen || se.kaisai_tsukihi as race_date,
+          se.kaisai_nen,
+          se.kaisai_tsukihi,
+          se.keibajo_code,
+          se.race_bango,
+          se.ketto_toroku_bango,
+          {finish_position} as finish_position,
+          {baba_condition_sql("ra")} as baba_cond
+        from pg.{se_table} se
+        inner join pg.{ra_table} ra
+          using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where se.kaisai_nen >= {from_year_literal}
+          and se.kaisai_nen || se.kaisai_tsukihi >= {from_date_literal}
+          and {finish_position} is not null
+          and {baba_condition_sql("ra")} is not null
+          and {horse_predicate}
+        """
+
     con.execute(
         f"""
         create or replace temp table race_history as
-        select
-          rec.source,
-          rec.race_date,
-          rec.kaisai_nen,
-          rec.kaisai_tsukihi,
-          rec.keibajo_code,
-          rec.race_bango,
-          rec.ketto_toroku_bango,
-          rec.finish_position,
-          {baba_condition} as baba_cond
-        from pg.race_entry_corner_features rec
-        where rec.race_date >= '{from_date}'
-          and rec.finish_position is not null
-          and rec.ketto_toroku_bango is not null
-          and {baba_condition} is not null
-          {target_filter}
+        {raw_branch("jra", "jvd_se", "jvd_ra")}
+        union all
+        {raw_branch("nar", "nvd_se", "nvd_ra")}
         """
     )
     con.execute(
@@ -227,8 +285,8 @@ def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
     target's race_date". The old exact-date equality join required
     horse_baba_cumul to carry a row keyed at exactly the target's own
     race_date, which only a COMPLETED race can ever produce (race_history is
-    built from race_entry_corner_features filtered to finish_position is not
-    null), so every live prediction on an upcoming race fell back to NULL. For
+    built from settled raw SE rows filtered to finish_position is not null), so
+    every live prediction on an upcoming race fell back to NULL. For
     a historical row (target's own race_date IS one of this horse's actual
     race dates in this baba_cond), the inclusive cumulative at the
     immediately-preceding actual race date is byte-identical to the old
@@ -428,9 +486,8 @@ def main() -> None:
     stage_horse_pedigree(con)
     stage_base_input(con, input_glob)
     stage_current_race_baba(con, args.from_date)
-    if args.target_race is not None:
-        stage_target_pedigree_context(con)
-    stage_race_history_with_baba(con, args.from_date, args.target_race is not None)
+    stage_target_pedigree_context(con)
+    stage_race_history_with_baba(con, args.from_date)
     stage_horse_baba_cumul(con)
     stage_sire_baba_cumul(con)
     stage_damsire_baba_cumul(con)

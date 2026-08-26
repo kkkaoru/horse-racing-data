@@ -466,7 +466,7 @@ def test_build_feature_builder_args_sets_clean_output_and_dates():
     assert builder.log_file is None
     assert builder.resume is False
     assert builder.incremental is False
-    assert builder.venue_weather_dir is None
+    assert builder.venue_weather_dir == subject.DEFAULT_VENUE_WEATHER_DIR
     assert builder.realtime_odds is None
 
 

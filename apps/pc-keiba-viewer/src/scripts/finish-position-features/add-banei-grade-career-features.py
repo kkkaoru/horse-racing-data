@@ -16,8 +16,6 @@ Features added (per horse × race):
   - horse_grade_P_career_starts/win_rate (最高 grade)
   - horse_current_grade_career_win_rate  : horse の current race grade での career win rate
   - horse_current_grade_career_starts
-  - horse_higher_grade_starts            : current grade 以上の grade での過去出走数
-  - horse_higher_grade_wins              : 同 wins
   - field_avg_career_starts              : field horses の平均 career race count
   - horse_career_starts_minus_field      : self career starts - field avg
 
@@ -75,8 +73,73 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    """Return a safely quoted DuckDB SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _literal_list(values: set[str]) -> str:
+    return ", ".join(sql_literal(value) for value in sorted(values))
+
+
+def stage_target_scope(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Materialize the exact Ban-ei rows requested by the upstream layer."""
+    con.execute(
+        f"""
+        create or replace temp table banei_targets as
+        select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+          race_bango, ketto_toroku_bango,
+          kaisai_nen || kaisai_tsukihi as race_date
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
+        where source = 'nar'
+          and keibajo_code = '{BAN_EI_KEIBAJO}'
+          and ketto_toroku_bango is not null
+        """
+    )
+    con.execute(
+        f"create index banei_targets_idx on banei_targets ({RACE_PARTITION}, ketto_toroku_bango)"
+    )
+
+
+def _target_horse_ids(con: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = con.execute(
+        "select distinct ketto_toroku_bango from banei_targets order by 1"
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _target_race_predicate(con: duckdb.DuckDBPyConnection) -> str:
+    rows = con.execute(
+        """
+        select min(race_date), max(race_date)
+        from banei_targets
+        """
+    ).fetchall()
+    if not rows or rows[0][0] is None or rows[0][1] is None:
+        return "false"
+    from_date = str(rows[0][0])
+    to_date = str(rows[0][1])
+    return (
+        f"ra.kaisai_nen between {sql_literal(from_date[:4])} "
+        f"and {sql_literal(to_date[:4])} "
+        f"and ra.kaisai_nen || ra.kaisai_tsukihi between "
+        f"{sql_literal(from_date)} and {sql_literal(to_date)}"
+    )
+
+
 def stage_banei_grade_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     """Ban-ei race history (馬単位) with grade_letter (jvd_ra/nvd_ra から)。"""
+    horse_ids = _target_horse_ids(con)
+    horse_filter = (
+        f"and ketto_toroku_bango in ({_literal_list(horse_ids)})"
+        if horse_ids
+        else "and false"
+    )
+    target_to_date = str(
+        con.execute(
+            "select coalesce(max(race_date), '00000000') from banei_targets"
+        ).fetchall()[0][0]
+    )
     con.execute(
         f"""
         create or replace temp table banei_grade_history as
@@ -89,12 +152,18 @@ def stage_banei_grade_history(con: duckdb.DuckDBPyConnection, from_date: str) ->
           from pg.nvd_se
           where keibajo_code = '{BAN_EI_KEIBAJO}'
             and kaisai_nen >= substring('{from_date}', 1, 4)
+            and kaisai_nen <= substring({sql_literal(target_to_date)}, 1, 4)
+            and kaisai_nen || kaisai_tsukihi < {sql_literal(target_to_date)}
+            {horse_filter}
         ),
         ra as (
           select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
             coalesce(nullif(trim(grade_code), ''), '_') as grade_letter
           from pg.nvd_ra
           where keibajo_code = '{BAN_EI_KEIBAJO}'
+            and kaisai_nen >= substring('{from_date}', 1, 4)
+            and kaisai_nen <= substring({sql_literal(target_to_date)}, 1, 4)
+            and kaisai_nen || kaisai_tsukihi < {sql_literal(target_to_date)}
         )
         select s.source, s.kaisai_nen, s.kaisai_tsukihi, s.keibajo_code, s.race_bango,
           s.ketto_toroku_bango, s.finish_position, s.race_date,
@@ -136,7 +205,7 @@ def stage_horse_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window horse_grade_career as (
           partition by source, ketto_toroku_bango, grade_letter
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -145,13 +214,8 @@ def stage_horse_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_horse_higher_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
-    """horse × grade_rank ladder (current race grade 以上での過去出走数)。
-
-    各 (horse, race_date) について、grade_rank >= current_rank の race count + wins を集計。
-    実装方針: bucketed cumul を rank ごとに用意 (rank 0..6) → join 時に >= で再集計。
-    シンプル実装: rank 別に partial cumul, current_rank で filter。
-    """
+def stage_horse_total_career(con: duckdb.DuckDBPyConnection) -> None:
+    """Stage total prior career stats used by the field-relative features."""
     con.execute(
         """
         create or replace temp table horse_grade_total_career as
@@ -168,7 +232,7 @@ def stage_horse_higher_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window total_window as (
           partition by source, ketto_toroku_bango
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -179,6 +243,7 @@ def stage_horse_higher_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
 
 def stage_current_race_grade(con: duckdb.DuckDBPyConnection) -> None:
     """current race の grade_letter / grade_rank を取得。"""
+    target_predicate = _target_race_predicate(con)
     con.execute(
         f"""
         create or replace temp table current_race_grade as
@@ -186,8 +251,9 @@ def stage_current_race_grade(con: duckdb.DuckDBPyConnection) -> None:
           select 'nar' as source,
             kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
             coalesce(nullif(trim(grade_code), ''), '_') as grade_letter
-          from pg.nvd_ra
-          where keibajo_code = '{BAN_EI_KEIBAJO}'
+          from pg.nvd_ra ra
+          where ra.keibajo_code = '{BAN_EI_KEIBAJO}'
+            and ({target_predicate})
         )
         select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           grade_letter,
@@ -205,21 +271,13 @@ def stage_field_career_avg(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         f"""
         create or replace temp table banei_field_career_avg as
-        with se as (
-          select 'nar' as source,
-            kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-            ketto_toroku_bango,
-            kaisai_nen || kaisai_tsukihi as race_date
-          from pg.nvd_se
-          where keibajo_code = '{BAN_EI_KEIBAJO}'
-        ),
-        joined as (
-          select se.*, coalesce(htc.total_past_starts, 0) as starts
-          from se
-          left join horse_grade_total_career htc
-            on htc.source = se.source
-            and htc.ketto_toroku_bango = se.ketto_toroku_bango
-            and htc.race_date = se.race_date
+        with joined as (
+          select t.*, coalesce(htc.total_past_starts, 0) as starts
+          from banei_targets t
+          asof left join horse_grade_total_career htc
+            on htc.source = t.source
+            and htc.ketto_toroku_bango = t.ketto_toroku_bango
+            and htc.race_date < t.race_date
         )
         select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           avg(starts) as field_avg_career_starts
@@ -229,6 +287,84 @@ def stage_field_career_avg(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         f"create index banei_field_career_avg_idx on banei_field_career_avg ({RACE_PARTITION})"
+    )
+
+
+def stage_target_grade_careers(con: duckdb.DuckDBPyConnection) -> None:
+    """Align inclusive history cumuls to every target via strict-before ASOF."""
+    con.execute(
+        """
+        create or replace temp table target_grade_career as
+        with grade_grid as (
+          select t.source, t.ketto_toroku_bango, t.race_date, g.grade_letter
+          from (
+            select distinct source, ketto_toroku_bango, race_date
+            from banei_targets
+          ) t
+          cross join (values ('E'), ('T'), ('S'), ('R'), ('Q'), ('P')) g(grade_letter)
+        ), aligned as (
+          select g.*, c.past_starts, c.past_wins
+          from grade_grid g
+          asof left join horse_grade_cumul c
+            on c.source = g.source
+            and c.ketto_toroku_bango = g.ketto_toroku_bango
+            and c.grade_letter = g.grade_letter
+            and c.race_date < g.race_date
+        )
+        select source, ketto_toroku_bango, race_date,
+          max(past_starts) filter (where grade_letter = 'E') as e_starts,
+          max(past_wins) filter (where grade_letter = 'E') as e_wins,
+          max(past_starts) filter (where grade_letter = 'T') as t_starts,
+          max(past_wins) filter (where grade_letter = 'T') as t_wins,
+          max(past_starts) filter (where grade_letter = 'S') as s_starts,
+          max(past_wins) filter (where grade_letter = 'S') as s_wins,
+          max(past_starts) filter (where grade_letter = 'R') as r_starts,
+          max(past_wins) filter (where grade_letter = 'R') as r_wins,
+          max(past_starts) filter (where grade_letter = 'Q') as q_starts,
+          max(past_wins) filter (where grade_letter = 'Q') as q_wins,
+          max(past_starts) filter (where grade_letter = 'P') as p_starts,
+          max(past_wins) filter (where grade_letter = 'P') as p_wins
+        from aligned
+        group by all
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table target_current_grade_career as
+        select t.source, t.ketto_toroku_bango, t.race_date,
+          c.past_starts, c.past_wins
+        from (
+          select distinct t.source, t.ketto_toroku_bango, t.race_date,
+            crg.grade_letter
+          from banei_targets t
+          left join current_race_grade crg
+            on crg.source = t.source
+            and crg.kaisai_nen = t.kaisai_nen
+            and crg.kaisai_tsukihi = t.kaisai_tsukihi
+            and crg.keibajo_code = t.keibajo_code
+            and crg.race_bango = t.race_bango
+        ) t
+        asof left join horse_grade_cumul c
+          on c.source = t.source
+          and c.ketto_toroku_bango = t.ketto_toroku_bango
+          and c.grade_letter = t.grade_letter
+          and c.race_date < t.race_date
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table target_total_career as
+        select t.source, t.ketto_toroku_bango, t.race_date,
+          c.total_past_starts, c.total_past_wins
+        from (
+          select distinct source, ketto_toroku_bango, race_date
+          from banei_targets
+        ) t
+        asof left join horse_grade_total_career c
+          on c.source = t.source
+          and c.ketto_toroku_bango = t.ketto_toroku_bango
+          and c.race_date < t.race_date
+        """
     )
 
 
@@ -246,28 +382,6 @@ def append_features_sql(input_glob: str) -> str:
         and crg.kaisai_tsukihi = b.kaisai_tsukihi
         and crg.keibajo_code = b.keibajo_code
         and crg.race_bango = b.race_bango
-    ),
-    horse_grade_pivoted as (
-      select source, ketto_toroku_bango, race_date,
-        max(case when grade_letter = 'E' then past_starts end) as e_starts,
-        max(case when grade_letter = 'E' then past_wins end) as e_wins,
-        max(case when grade_letter = 'T' then past_starts end) as t_starts,
-        max(case when grade_letter = 'T' then past_wins end) as t_wins,
-        max(case when grade_letter = 'S' then past_starts end) as s_starts,
-        max(case when grade_letter = 'S' then past_wins end) as s_wins,
-        max(case when grade_letter = 'R' then past_starts end) as r_starts,
-        max(case when grade_letter = 'R' then past_wins end) as r_wins,
-        max(case when grade_letter = 'Q' then past_starts end) as q_starts,
-        max(case when grade_letter = 'Q' then past_wins end) as q_wins,
-        max(case when grade_letter = 'P' then past_starts end) as p_starts,
-        max(case when grade_letter = 'P' then past_wins end) as p_wins
-      from horse_grade_cumul
-      group by all
-    ),
-    horse_current_grade_only as (
-      select source, ketto_toroku_bango, grade_letter, race_date,
-        past_starts, past_wins
-      from horse_grade_cumul
     ),
     joined as (
       select
@@ -289,16 +403,15 @@ def append_features_sql(input_glob: str) -> str:
         coalesce(htc.total_past_starts, 0) - coalesce(fca.field_avg_career_starts, 0) as horse_career_starts_minus_field,
         coalesce(fca.field_avg_career_starts, 0) as field_avg_career_starts
       from base_with_current bwc
-      left join horse_grade_pivoted hgp
+      left join target_grade_career hgp
         on hgp.source = bwc.source
         and hgp.ketto_toroku_bango = bwc.ketto_toroku_bango
         and hgp.race_date = bwc.race_date
-      left join horse_current_grade_only hcgo
+      left join target_current_grade_career hcgo
         on hcgo.source = bwc.source
         and hcgo.ketto_toroku_bango = bwc.ketto_toroku_bango
-        and hcgo.grade_letter = bwc.current_race_grade_letter
         and hcgo.race_date = bwc.race_date
-      left join horse_grade_total_career htc
+      left join target_total_career htc
         on htc.source = bwc.source
         and htc.ketto_toroku_bango = bwc.ketto_toroku_bango
         and htc.race_date = bwc.race_date
@@ -331,11 +444,13 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
+    stage_target_scope(con, input_glob)
     stage_banei_grade_history(con, args.from_date)
     stage_horse_grade_cumul(con)
-    stage_horse_higher_grade_cumul(con)
+    stage_horse_total_career(con)
     stage_current_race_grade(con)
     stage_field_career_avg(con)
+    stage_target_grade_careers(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()
 

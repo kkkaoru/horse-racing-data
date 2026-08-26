@@ -47,14 +47,15 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-from collections.abc import Sequence
+import sys
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from time import perf_counter
 from typing import Protocol, cast
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
-
 from _resource_defaults import add_resource_args, apply_to_connection
 
 
@@ -62,8 +63,16 @@ class _Fetchable(Protocol):
     def fetchall(self) -> Sequence[Sequence[int]]: ...
 
 
+class _FetchObjects(Protocol):
+    def fetchall(self) -> Sequence[Sequence[object]]: ...
+
+
 class _DuckDBConnectionLike(Protocol):
     def execute(self, query: str) -> object: ...
+
+
+type SimilarityScope = tuple[str, str, str, str, int]
+type TargetRaceKey = tuple[str, str, str, str, str]
 
 
 DEFAULT_PG_URL: str = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
@@ -91,6 +100,22 @@ KYORI_BAND_INTERMEDIATE_MAX: int = 2200
 
 # Ban-ei is always keibajo_code '83'; venue matching is therefore trivial.
 BAN_EI_KEIBAJO_CODE: str = "83"
+
+
+@contextmanager
+def measure_stage(stage: str) -> Generator[None, None, None]:
+    """Emit credential-free operational timing for production bottleneck audits."""
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = perf_counter() - started
+        print(
+            f"[finish-feature-timing] stage=similar.{stage} "
+            f"elapsed_seconds={elapsed:.3f}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -237,6 +262,119 @@ def stage_target_similarity_scope(con: _DuckDBConnectionLike, input_glob: str) -
     )
 
 
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def fetch_target_similarity_scopes(
+    con: _DuckDBConnectionLike,
+) -> tuple[SimilarityScope, ...]:
+    """Return literal-safe target keys used to prune the remote history scan."""
+    rows = cast(
+        _FetchObjects,
+        con.execute(
+            "select source, race_date, kaisai_nen, surface, kyori_band "
+            "from target_similarity_scope where kyori_band is not null "
+            "order by source, race_date, kaisai_nen, surface, kyori_band"
+        ),
+    ).fetchall()
+    return tuple(
+        (str(row[0]), str(row[1]), str(row[2]), str(row[3]), int(cast(int, row[4])))
+        for row in rows
+    )
+
+
+def fetch_target_race_keys(con: _DuckDBConnectionLike) -> tuple[TargetRaceKey, ...]:
+    """Return exact target race keys for remote target-entity pruning."""
+    rows = cast(
+        _FetchObjects,
+        con.execute(
+            "select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango "
+            "from target_races "
+            "where kaisai_nen is not null and kaisai_tsukihi is not null "
+            "and keibajo_code is not null and race_bango is not null "
+            "order by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
+        ),
+    ).fetchall()
+    return tuple(
+        (str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
+        for row in rows
+    )
+
+
+def fetch_pooled_horse_ids(con: _DuckDBConnectionLike) -> tuple[str, ...]:
+    """Return horses from the distinct historical races retained by the cap."""
+    rows = cast(
+        _FetchObjects,
+        con.execute(
+            "select distinct sh.ketto_toroku_bango "
+            "from similar_history sh "
+            "join (select distinct source, sim_kaisai_nen, sim_kaisai_tsukihi, "
+            "sim_keibajo_code, sim_race_bango from similar_pool) sp "
+            "on sp.source = sh.source "
+            "and sp.sim_kaisai_nen = sh.kaisai_nen "
+            "and sp.sim_kaisai_tsukihi = sh.kaisai_tsukihi "
+            "and sp.sim_keibajo_code = sh.keibajo_code "
+            "and sp.sim_race_bango = sh.race_bango "
+            "where sh.ketto_toroku_bango is not null "
+            "order by sh.ketto_toroku_bango"
+        ),
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def stage_pooled_pedigree(
+    con: _DuckDBConnectionLike, category: str
+) -> None:
+    """Read pedigree only for horses in the capped similar-race pool.
+
+    The previous raw-Catalog query joined the entire UM master while staging
+    every ten-year history candidate. Pedigree is consumed only by Phase 2,
+    after the pool has been capped, so resolving it here preserves the output
+    while avoiding both the unused history join and a full remote UM scan.
+    """
+    horse_ids = fetch_pooled_horse_ids(con)
+    um_table = "pg.jvd_um" if category == "jra" else "pg.nvd_um"
+    horse_filter = pedigree_filter_sql(horse_ids)
+    con.execute(
+        f"""
+        create or replace temp table pooled_pedigree as
+        select
+          ketto_toroku_bango,
+          nullif(trim(ketto_joho_01b), '') as sire,
+          nullif(trim(ketto_joho_05b), '') as damsire
+        from {um_table}
+        where {horse_filter}
+        """
+    )
+    con.execute(
+        "create index pooled_pedigree_idx on pooled_pedigree (ketto_toroku_bango)"
+    )
+
+
+def fetch_table_horse_ids(
+    con: _DuckDBConnectionLike, table_name: str
+) -> tuple[str, ...]:
+    """Return ordered horse IDs from a trusted internal temporary table."""
+    rows = cast(
+        _FetchObjects,
+        con.execute(
+            f"select distinct ketto_toroku_bango from {table_name} "
+            "where ketto_toroku_bango is not null order by ketto_toroku_bango"
+        ),
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def pedigree_filter_sql(horse_ids: Sequence[str]) -> str:
+    """Build the literal predicate used for Iceberg row-group pruning."""
+    if not horse_ids:
+        return "false"
+    return "ketto_toroku_bango in (" + ", ".join(
+        _sql_string(horse_id) for horse_id in horse_ids
+    ) + ")"
+
+
 def similar_history_focus_filter_sql(focused_target: bool) -> str:
     if not focused_target:
         return ""
@@ -252,11 +390,37 @@ def similar_history_focus_filter_sql(focused_target: bool) -> str:
         """
 
 
+def raw_similar_history_focus_filter_sql(
+    scopes: Sequence[SimilarityScope] | None,
+    source_value: str,
+) -> str:
+    """Build a remote-pushable superset of the exact similarity history pool."""
+    if scopes is None:
+        return ""
+    if not scopes:
+        return " and false"
+    predicates = []
+    for source, race_date, target_year, surface, kyori_band in scopes:
+        history_start_year = str(int(target_year) - HISTORY_LOOKBACK_YEARS)
+        raw_kyori = "try_cast(nullif(trim(ra.kyori), '') as integer)"
+        predicates.append(
+            f"({_sql_string(source_value)} = {_sql_string(source)} "
+            f"and se.kaisai_nen || se.kaisai_tsukihi <= {_sql_string(race_date)} "
+            f"and se.kaisai_nen between {_sql_string(history_start_year)} "
+            f"and {_sql_string(target_year)} "
+            f"and {surface_sql('ra.track_code')} = {_sql_string(surface)} "
+            f"and {kyori_band_sql(raw_kyori)} "
+            f"= {kyori_band})"
+        )
+    return "\n          and (\n            " + "\n            or ".join(predicates) + "\n          )"
+
+
 def stage_similar_history(
     con: _DuckDBConnectionLike,
     from_date: str,
     category: str,
     focused_target: bool = False,
+    target_scopes: Sequence[SimilarityScope] | None = None,
 ) -> None:
     """Stage the per-entry historical race rows used to build the similar-race pool.
 
@@ -265,6 +429,7 @@ def stage_similar_history(
     sire/damsire/umaban) used by the Phase-2 per-horse aggregates.
     """
     ra_table = "pg.jvd_ra" if category == "jra" else "pg.nvd_ra"
+    se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
     um_table = "pg.jvd_um" if category == "jra" else "pg.nvd_um"
     source_value = "jra" if category == "jra" else "nar"
     if category == "ban-ei":
@@ -275,23 +440,100 @@ def stage_similar_history(
         )
     else:
         keibajo_predicate = "true"
-    class_group = class_group_sql(category, "rec.kyoso_joken_code", "ra.kyoso_joken_meisho")
-    target_filter = similar_history_focus_filter_sql(focused_target)
+    class_group = class_group_sql(
+        category, "rec.kyoso_joken_code", "rec.kyoso_joken_meisho"
+    )
+    if target_scopes is None:
+        compatibility_class_group = class_group_sql(
+            category, "rec.kyoso_joken_code", "ra.kyoso_joken_meisho"
+        )
+        target_filter = similar_history_focus_filter_sql(focused_target)
+        con.execute(
+            f"""
+            create or replace temp table similar_history as
+            select
+              rec.source, rec.race_date, rec.kaisai_nen, rec.kaisai_tsukihi,
+              rec.keibajo_code, rec.race_bango, rec.ketto_toroku_bango,
+              rec.finish_position, rec.shusso_tosu,
+              cast(rec.tansho_ninkijun as int) as tansho_ninkijun, rec.umaban,
+              {surface_sql("rec.track_code")} as surface,
+              {kyori_band_sql("rec.kyori")} as kyori_band,
+              {season_band_sql("rec.kaisai_tsukihi")} as season_band,
+              {compatibility_class_group} as class_group,
+              nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
+              nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
+              nullif(trim(rec.banushimei), '') as banushimei,
+              nullif(trim(um.ketto_joho_01b), '') as sire,
+              nullif(trim(um.ketto_joho_05b), '') as damsire,
+              case
+                when rec.umaban is null or rec.shusso_tosu is null or rec.shusso_tosu < 1 then null
+                when cast(rec.umaban as double) <= cast(rec.shusso_tosu as double) / 3.0 then 0
+                when cast(rec.umaban as double) <= 2.0 * cast(rec.shusso_tosu as double) / 3.0 then 1
+                else 2
+              end as umaban_zone
+            from pg.race_entry_corner_features rec
+            left join {ra_table} ra
+              on ra.kaisai_nen = rec.kaisai_nen
+              and ra.kaisai_tsukihi = rec.kaisai_tsukihi
+              and ra.keibajo_code = rec.keibajo_code
+              and ra.race_bango = rec.race_bango
+            left join {um_table} um
+              on um.ketto_toroku_bango = rec.ketto_toroku_bango
+            where rec.source = '{source_value}'
+              and rec.race_date >= '{from_date}'
+              and rec.finish_position is not null
+              and {keibajo_predicate}
+              {target_filter}
+            """
+        )
+        con.execute(
+            "create index similar_history_idx on similar_history "
+            "(source, keibajo_code, surface, kyori_band, season_band, class_group, race_date)"
+        )
+        return
+    target_filter = raw_similar_history_focus_filter_sql(
+        target_scopes if focused_target else None, source_value
+    )
     con.execute(
         f"""
         create or replace temp table similar_history as
+        with rec as (
+          select
+            '{source_value}' as source,
+            se.kaisai_nen || se.kaisai_tsukihi as race_date,
+            se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+            se.ketto_toroku_bango,
+            try_cast(nullif(trim(se.umaban), '') as integer) as umaban,
+            ra.track_code,
+            try_cast(nullif(trim(ra.kyori), '') as integer) as kyori,
+            ra.kyoso_joken_code,
+            ra.kyoso_joken_meisho,
+            coalesce(
+              try_cast(nullif(trim(ra.shusso_tosu), '00') as integer),
+              count(*) over (
+                partition by se.kaisai_nen, se.kaisai_tsukihi,
+                  se.keibajo_code, se.race_bango
+              )
+            ) as shusso_tosu,
+            try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+              as finish_position,
+            try_cast(nullif(trim(se.tansho_ninkijun), '00') as integer)
+              as tansho_ninkijun,
+            se.kishumei_ryakusho, se.chokyoshimei_ryakusho, se.banushimei
+          from {se_table} se
+          inner join {ra_table} ra using
+            (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+          where se.kaisai_nen || se.kaisai_tsukihi >= '{from_date}'
+            and se.kaisai_nen >= '{from_date[:4]}'
+            and nullif(trim(se.ketto_toroku_bango), '') is not null
+            and try_cast(nullif(trim(se.umaban), '') as integer) is not null
+            and {keibajo_predicate.replace('rec.', 'se.')}
+            {target_filter}
+        )
         select
-          rec.source,
-          rec.race_date,
-          rec.kaisai_nen,
-          rec.kaisai_tsukihi,
-          rec.keibajo_code,
-          rec.race_bango,
-          rec.ketto_toroku_bango,
-          rec.finish_position,
-          rec.shusso_tosu,
-          cast(rec.tansho_ninkijun as int) as tansho_ninkijun,
-          rec.umaban,
+          rec.source, rec.race_date, rec.kaisai_nen, rec.kaisai_tsukihi,
+          rec.keibajo_code, rec.race_bango, rec.ketto_toroku_bango,
+          rec.finish_position, rec.shusso_tosu, rec.tansho_ninkijun, rec.umaban,
           {surface_sql("rec.track_code")} as surface,
           {kyori_band_sql("rec.kyori")} as kyori_band,
           {season_band_sql("rec.kaisai_tsukihi")} as season_band,
@@ -299,27 +541,18 @@ def stage_similar_history(
           nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
           nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
           nullif(trim(rec.banushimei), '') as banushimei,
-          nullif(trim(um.ketto_joho_01b), '') as sire,
-          nullif(trim(um.ketto_joho_05b), '') as damsire,
+          cast(null as varchar) as sire,
+          cast(null as varchar) as damsire,
           case
             when rec.umaban is null or rec.shusso_tosu is null or rec.shusso_tosu < 1 then null
             when cast(rec.umaban as double) <= cast(rec.shusso_tosu as double) / 3.0 then 0
             when cast(rec.umaban as double) <= 2.0 * cast(rec.shusso_tosu as double) / 3.0 then 1
             else 2
           end as umaban_zone
-        from pg.race_entry_corner_features rec
-        left join {ra_table} ra
-          on ra.kaisai_nen = rec.kaisai_nen
-          and ra.kaisai_tsukihi = rec.kaisai_tsukihi
-          and ra.keibajo_code = rec.keibajo_code
-          and ra.race_bango = rec.race_bango
-        left join {um_table} um
-          on um.ketto_toroku_bango = rec.ketto_toroku_bango
-        where rec.source = '{source_value}'
-          and rec.race_date >= '{from_date}'
-          and rec.finish_position is not null
-          and {keibajo_predicate}
-          {target_filter}
+        from rec
+        where rec.finish_position is not null
+          and rec.kyori is not null
+          and rec.shusso_tosu is not null
         """
     )
     con.execute(
@@ -770,7 +1003,9 @@ def stage_race_level_features(con: _DuckDBConnectionLike) -> None:
     )
 
 
-def stage_entity_features(con: _DuckDBConnectionLike) -> None:
+def stage_entity_features(
+    con: _DuckDBConnectionLike, raw_catalog_category: str | None = None
+) -> None:
     """Phase-2 per-horse entity stats from the similar-race pool.
 
     The similar_pool gives, per target race, the set of similar historical races.
@@ -778,13 +1013,25 @@ def stage_entity_features(con: _DuckDBConnectionLike) -> None:
     pool; we then aggregate by the target horse's entity code (jockey/trainer/
     sire/damsire/owner/umaban_zone). One row per (target race, horse).
     """
+    if raw_catalog_category is not None:
+        stage_pooled_pedigree(con, raw_catalog_category)
+        pedigree_sire = "ped.sire"
+        pedigree_damsire = "ped.damsire"
+        pedigree_join = (
+            "left join pooled_pedigree ped "
+            "on ped.ketto_toroku_bango = sh.ketto_toroku_bango"
+        )
+    else:
+        pedigree_sire = "sh.sire"
+        pedigree_damsire = "sh.damsire"
+        pedigree_join = ""
     con.execute(
-        """
+        f"""
         create or replace temp table pool_results as
         select
           sp.source, sp.kaisai_nen, sp.kaisai_tsukihi, sp.keibajo_code, sp.race_bango,
           sh.kishumei_ryakusho, sh.chokyoshimei_ryakusho, sh.banushimei,
-          sh.sire, sh.damsire, sh.umaban_zone,
+          {pedigree_sire} as sire, {pedigree_damsire} as damsire, sh.umaban_zone,
           sh.finish_position
         from similar_pool sp
         join similar_history sh
@@ -793,6 +1040,7 @@ def stage_entity_features(con: _DuckDBConnectionLike) -> None:
           and sh.kaisai_tsukihi = sp.sim_kaisai_tsukihi
           and sh.keibajo_code = sp.sim_keibajo_code
           and sh.race_bango = sp.sim_race_bango
+        {pedigree_join}
         """
     )
     for entity_col, table, win_alias, place_alias, count_alias, with_place in (
@@ -842,11 +1090,41 @@ def target_entities_focus_filter_sql(focused_target: bool) -> str:
     return ""
 
 
+def raw_target_entities_focus_filter_sql(
+    keys: Sequence[TargetRaceKey] | None,
+    source_value: str,
+) -> str:
+    """Build exact raw-table target predicates that R2 can prune remotely."""
+    if keys is None:
+        return ""
+    values = []
+    for source, year, month_day, venue, race_number in keys:
+        if source != source_value:
+            continue
+        values.append(
+            "("
+            + ", ".join(
+                _sql_string(value)
+                for value in (year, month_day, venue, race_number)
+            )
+            + ")"
+        )
+    if not values:
+        return " and false"
+    return (
+        "\n            and (se.kaisai_nen, se.kaisai_tsukihi, "
+        "se.keibajo_code, se.race_bango) in (values\n              "
+        + ",\n              ".join(values)
+        + "\n            )"
+    )
+
+
 def stage_target_entities(
     con: _DuckDBConnectionLike,
     from_date: str,
     category: str,
     focused_target: bool = False,
+    target_keys: Sequence[TargetRaceKey] | None = None,
 ) -> None:
     """The target horses' own entity codes (for joining the Phase-2 stats back).
 
@@ -855,7 +1133,9 @@ def stage_target_entities(
     jockey / trainer / owner / sire / damsire / umaban_zone codes and therefore
     their Phase-2 entity stats.
     """
-    se_table = "pg.jvd_um" if category == "jra" else "pg.nvd_um"
+    se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
+    ra_table = "pg.jvd_ra" if category == "jra" else "pg.nvd_ra"
+    um_table = "pg.jvd_um" if category == "jra" else "pg.nvd_um"
     source_value = "jra" if category == "jra" else "nar"
     if category == "ban-ei":
         keibajo_predicate = f"rec.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
@@ -865,53 +1145,119 @@ def stage_target_entities(
         )
     else:
         keibajo_predicate = "true"
-    target_filter = target_entities_focus_filter_sql(focused_target)
+    if target_keys is None:
+        target_filter = target_entities_focus_filter_sql(focused_target)
+        con.execute(
+            f"""
+            create or replace temp table target_entities as
+            with target_raw as (
+              select
+                rec.source, rec.kaisai_nen, rec.kaisai_tsukihi,
+                rec.keibajo_code, rec.race_bango, rec.ketto_toroku_bango,
+                nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
+                nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
+                nullif(trim(rec.banushimei), '') as banushimei,
+                nullif(trim(um.ketto_joho_01b), '') as sire,
+                nullif(trim(um.ketto_joho_05b), '') as damsire,
+                rec.umaban,
+                coalesce(
+                  nullif(rec.shusso_tosu, 0),
+                  count(*) over (
+                    partition by rec.source, rec.kaisai_nen, rec.kaisai_tsukihi,
+                      rec.keibajo_code, rec.race_bango
+                  )
+                ) as effective_shusso_tosu
+              from pg.race_entry_corner_features rec
+              left join {um_table} um
+                on um.ketto_toroku_bango = rec.ketto_toroku_bango
+              where rec.source = '{source_value}'
+                and rec.race_date >= '{from_date}'
+                and {keibajo_predicate}
+                {target_filter}
+            )
+            select
+              source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
+              banushimei, sire, damsire,
+              case
+                when umaban is null or effective_shusso_tosu is null
+                  or effective_shusso_tosu < 1 then null
+                when cast(umaban as double) <= cast(effective_shusso_tosu as double) / 3.0 then 0
+                when cast(umaban as double) <= 2.0 * cast(effective_shusso_tosu as double) / 3.0 then 1
+                else 2
+              end as umaban_zone
+            from target_raw
+            """
+        )
+        con.execute(
+            "create index target_entities_idx on target_entities "
+            "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+        )
+        return
+    target_filter = raw_target_entities_focus_filter_sql(
+        target_keys if focused_target else None, source_value
+    )
     con.execute(
         f"""
-        create or replace temp table target_entities as
-        with target_raw as (
-          select
-            rec.source, rec.kaisai_nen, rec.kaisai_tsukihi, rec.keibajo_code, rec.race_bango,
-            rec.ketto_toroku_bango,
-            nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
-            nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
-            nullif(trim(rec.banushimei), '') as banushimei,
-            nullif(trim(um.ketto_joho_01b), '') as sire,
-            nullif(trim(um.ketto_joho_05b), '') as damsire,
-            rec.umaban,
-            -- race_entry_corner_features.shusso_tosu is structurally NULL for
-            -- upcoming/unconfirmed races (populated only once a race settles),
-            -- so umaban_zone -- and every serving row's sim_umaban_zone_win_rate
-            -- -- was unconditionally NULL at serve time. Same fallback shape as
-            -- finish_position_features_duckdb.py's shusso_tosu workaround:
-            -- fall back to the field size counted directly from this table.
-            coalesce(
-              nullif(rec.shusso_tosu, 0),
-              count(*) over (
-                partition by rec.source, rec.kaisai_nen, rec.kaisai_tsukihi,
-                  rec.keibajo_code, rec.race_bango
-              )
-            ) as effective_shusso_tosu
-          from pg.race_entry_corner_features rec
-          left join {se_table} um
-            on um.ketto_toroku_bango = rec.ketto_toroku_bango
-          where rec.source = '{source_value}'
-            and rec.race_date >= '{from_date}'
-            and {keibajo_predicate}
-            {target_filter}
-        )
+        create or replace temp table raw_target_entities as
         select
-          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-          kishumei_ryakusho, chokyoshimei_ryakusho, banushimei, sire, damsire,
+          '{source_value}' as source,
+          se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+          se.ketto_toroku_bango,
+          nullif(trim(se.kishumei_ryakusho), '') as kishumei_ryakusho,
+          nullif(trim(se.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
+          nullif(trim(se.banushimei), '') as banushimei,
+          try_cast(nullif(trim(se.umaban), '') as integer) as umaban,
+          coalesce(
+            try_cast(nullif(trim(ra.shusso_tosu), '00') as integer),
+            count(*) over (
+              partition by se.kaisai_nen, se.kaisai_tsukihi,
+                se.keibajo_code, se.race_bango
+            )
+          ) as effective_shusso_tosu
+        from {se_table} se
+        inner join {ra_table} ra using
+          (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where se.kaisai_nen || se.kaisai_tsukihi >= '{from_date}'
+          and se.kaisai_nen >= '{from_date[:4]}'
+          and nullif(trim(se.ketto_toroku_bango), '') is not null
+          and try_cast(nullif(trim(se.umaban), '') as integer) is not null
+          and try_cast(nullif(trim(ra.kyori), '') as integer) is not null
+          and {keibajo_predicate.replace('rec.', 'se.')}
+          {target_filter}
+        """
+    )
+    target_horse_ids = fetch_table_horse_ids(con, "raw_target_entities")
+    con.execute(
+        f"""
+        create or replace temp table target_pedigree as
+        select
+          ketto_toroku_bango,
+          nullif(trim(ketto_joho_01b), '') as sire,
+          nullif(trim(ketto_joho_05b), '') as damsire
+        from {um_table}
+        where {pedigree_filter_sql(target_horse_ids)}
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table target_entities as
+        select
+          raw.source, raw.kaisai_nen, raw.kaisai_tsukihi,
+          raw.keibajo_code, raw.race_bango, raw.ketto_toroku_bango,
+          raw.kishumei_ryakusho, raw.chokyoshimei_ryakusho, raw.banushimei,
+          ped.sire, ped.damsire,
           case
-            when umaban is null or effective_shusso_tosu is null or effective_shusso_tosu < 1
-              then null
-            when cast(umaban as double) <= cast(effective_shusso_tosu as double) / 3.0 then 0
-            when cast(umaban as double) <= 2.0 * cast(effective_shusso_tosu as double) / 3.0
-              then 1
+            when raw.umaban is null or raw.effective_shusso_tosu is null
+              or raw.effective_shusso_tosu < 1 then null
+            when cast(raw.umaban as double)
+              <= cast(raw.effective_shusso_tosu as double) / 3.0 then 0
+            when cast(raw.umaban as double)
+              <= 2.0 * cast(raw.effective_shusso_tosu as double) / 3.0 then 1
             else 2
           end as umaban_zone
-        from target_raw
+        from raw_target_entities raw
+        left join target_pedigree ped using (ketto_toroku_bango)
         """
     )
     con.execute(
@@ -1032,6 +1378,9 @@ def drop_staging_tables(con: _DuckDBConnectionLike) -> None:
         "sim_owner_stats",
         "sim_umaban_zone_stats",
         "target_entities",
+        "pooled_pedigree",
+        "raw_target_entities",
+        "target_pedigree",
     ):
         con.execute(f"drop table if exists {table}")
 
@@ -1060,12 +1409,32 @@ def main() -> None:
     con.execute(f"SET temp_directory='{tmp_dir.as_posix()}'")
     con.execute("SET max_temp_directory_size='50GB'")
     install_and_attach_pg(con, args.pg_url)
-    if args.target_race is not None:
+    # Whole-day input is still a narrow target set (normally one race day).
+    # Scope both historical scans to the surfaces/distance bands and exact
+    # target races present in that parquet. Leaving the day-base path
+    # unscoped scanned every NAR entry since --from-date even though the
+    # similarity algorithm itself only permits a ten-year target-relative
+    # window, which exhausted the shared 30-minute pipeline deadline.
+    with measure_stage("target-scope"):
         stage_target_similarity_scope(con, input_glob)
-    stage_similar_history(
-        con, args.from_date, args.category, args.target_race is not None
-    )
-    stage_race_summary(con)
+    use_raw_catalog_pushdown = args.pg_url.startswith("r2-catalog://")
+    if use_raw_catalog_pushdown:
+        target_scopes = fetch_target_similarity_scopes(con)
+        with measure_stage("history"):
+            stage_similar_history(
+                con,
+                args.from_date,
+                args.category,
+                focused_target=True,
+                target_scopes=target_scopes,
+            )
+    else:
+        with measure_stage("history"):
+            stage_similar_history(
+                con, args.from_date, args.category, focused_target=True
+            )
+    with measure_stage("race-summary"):
+        stage_race_summary(con)
     years = _get_years(con, input_glob)
     output_dir = args.output_dir
     if output_dir.exists():
@@ -1073,14 +1442,30 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for year in years:
         year_glob = f"{args.input_dir.as_posix()}/race_year={year}/*.parquet"
-        stage_target_races(con, year_glob, args.category)
-        stage_target_match_level(con)
-        stage_similar_pool(con)
-        stage_race_level_features(con)
-        stage_entity_features(con)
-        stage_target_entities(
-            con, args.from_date, args.category, args.target_race is not None
-        )
+        with measure_stage("pool"):
+            stage_target_races(con, year_glob, args.category)
+            stage_target_match_level(con)
+            stage_similar_pool(con)
+            stage_race_level_features(con)
+        with measure_stage("entities"):
+            stage_entity_features(
+                con, args.category if use_raw_catalog_pushdown else None
+            )
+        if use_raw_catalog_pushdown:
+            target_keys = fetch_target_race_keys(con)
+            with measure_stage("target-entities"):
+                stage_target_entities(
+                    con,
+                    args.from_date,
+                    args.category,
+                    focused_target=True,
+                    target_keys=target_keys,
+                )
+        else:
+            with measure_stage("target-entities"):
+                stage_target_entities(
+                    con, args.from_date, args.category, focused_target=True
+                )
         sql = append_features_sql(year_glob)
         # partition_by (race_year) makes DuckDB emit the
         # race_year=<year>/data_*.parquet hive layout AND, critically, OMIT
@@ -1095,10 +1480,11 @@ def main() -> None:
         # overwrite_or_ignore=true tolerates the output_dir already existing
         # on the second-onwards iteration (per-partition writes stay
         # year-scoped because each iteration's SELECT only emits its year).
-        con.execute(
-            f"copy ({sql}) to '{output_dir.as_posix()}' "
-            "(format parquet, partition_by (race_year), overwrite_or_ignore true)"
-        )
+        with measure_stage("write"):
+            con.execute(
+                f"copy ({sql}) to '{output_dir.as_posix()}' "
+                "(format parquet, partition_by (race_year), overwrite_or_ignore true)"
+            )
         drop_staging_tables(con)
     con.close()
 

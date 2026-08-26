@@ -86,9 +86,13 @@ def get_season(month: int) -> str:
     return "winter"
 
 
-def get_class_label(grade_code: str) -> str:
-    if grade_code:
-        return grade_code
+def get_class_label(grade_code: str, kyoso_joken_code: str = "") -> str:
+    cleaned_grade = grade_code.strip()
+    if cleaned_grade:
+        return cleaned_grade
+    cleaned_condition = kyoso_joken_code.strip()
+    if cleaned_condition:
+        return f"joken-{cleaned_condition}"
     return "unknown"
 
 
@@ -168,14 +172,23 @@ def _season_expr(df: pl.DataFrame) -> pl.Expr:
 
 
 def _class_expr(df: pl.DataFrame) -> pl.Expr:
-    """Return grade_code as-is, or 'unknown' if the column is absent."""
-    if "grade_code" not in df.columns:
-        return pl.lit("unknown")
-    cleaned = pl.col("grade_code").cast(pl.Utf8).str.strip_chars().fill_null("")
+    """Prefer grade_code, then split ungraded races by kyoso_joken_code."""
+    grade = (
+        pl.col("grade_code").cast(pl.Utf8).str.strip_chars().fill_null("")
+        if "grade_code" in df.columns
+        else pl.lit("")
+    )
+    condition = (
+        pl.col("kyoso_joken_code").cast(pl.Utf8).str.strip_chars().fill_null("")
+        if "kyoso_joken_code" in df.columns
+        else pl.lit("")
+    )
     return (
-        pl.when(cleaned == pl.lit(""))
-        .then(pl.lit("unknown"))
-        .otherwise(cleaned)
+        pl.when(grade != pl.lit(""))
+        .then(grade)
+        .when(condition != pl.lit(""))
+        .then(pl.concat_str([pl.lit("joken-"), condition]))
+        .otherwise(pl.lit("unknown"))
     )
 
 

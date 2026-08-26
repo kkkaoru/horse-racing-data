@@ -5,7 +5,8 @@ feature parquet, producing a new layer (v5).
 
 Pattern B post-processor:
   - reads input parquet (hive-partitioned by race_year)
-  - joins with PG `race_entry_corner_features` (primary) + `jvd_se` (fallback)
+  - joins with PG `race_entry_corner_features` (primary, already kg) +
+    `jvd_se` (fallback, raw 0.1 kg units)
     for futan_juryo per horse; the COALESCE ensures PG wins for historical rows
     while upcoming races absent from race_entry_corner_features are filled from
     jvd_se.futan_juryo (text 0.1 kg units, divided by 10.0 to kg)
@@ -71,6 +72,10 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _source_literal_from_se_table(se_table: str) -> str:
     """Derive the source literal ('jra' or 'nar') from the se_table name.
 
@@ -95,12 +100,26 @@ def stage_target_horses(con: duckdb.DuckDBPyConnection, input_glob: str) -> None
     con.execute("create index target_horses_idx on target_horses (ketto_toroku_bango)")
 
 
+def target_horse_literals(con: duckdb.DuckDBPyConnection) -> str:
+    """Return target horse IDs as an escaped SQL literal list for scan pushdown."""
+    rows = con.execute(
+        """
+        select ketto_toroku_bango
+        from target_horses
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    literals = ", ".join(sql_literal(str(row[0])) for row in rows)
+    return literals or "null"
+
+
 def stage_futan_juryo(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
     to_date: str,
     se_table: str = "pg.jvd_se",
     focused_target: bool = False,
+    horse_literals: str | None = None,
 ) -> None:
     """Stage current-race futan_juryo with a fallback for upcoming races.
 
@@ -108,7 +127,7 @@ def stage_futan_juryo(
     current-weight lookup and ``stage_horse_history()``.  Built from
     ``se_table`` (``jvd_se`` / ``nvd_se``) LEFT JOINed against
     ``race_entry_corner_features``.  The COALESCE ensures:
-      * historical rows: PG rec value wins (authoritative, no training regression)
+      * historical rows: PG rec value (already kg) wins
       * upcoming rows absent from rec: se fallback fills the gap (se.futan_juryo
         is text in 0.1 kg units, e.g. ``'540'`` = 54.0 kg)
 
@@ -124,11 +143,21 @@ def stage_futan_juryo(
     into the COALESCE fallback arm.
     """
     source_lit = _source_literal_from_se_table(se_table)
-    focused_filter = (
-        "and b.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)"
-        if focused_target
-        else ""
-    )
+    if horse_literals is not None:
+        se_horse_filter = f"and b.ketto_toroku_bango in ({horse_literals})"
+        rec_horse_filter = f"and rec.ketto_toroku_bango in ({horse_literals})"
+    elif focused_target:
+        se_horse_filter = (
+            "and b.ketto_toroku_bango in "
+            "(select ketto_toroku_bango from target_horses)"
+        )
+        rec_horse_filter = (
+            "and rec.ketto_toroku_bango in "
+            "(select ketto_toroku_bango from target_horses)"
+        )
+    else:
+        se_horse_filter = ""
+        rec_horse_filter = ""
     con.execute(
         f"""
         create or replace temp table futan_raw as
@@ -140,7 +169,7 @@ def stage_futan_juryo(
           coalesce(rec.race_bango, b.race_bango) as race_bango,
           coalesce(rec.ketto_toroku_bango, b.ketto_toroku_bango) as ketto_toroku_bango,
           coalesce(
-            try_cast(rec.futan_juryo as double) / 10.0,
+            try_cast(rec.futan_juryo as double),
             try_cast(nullif(trim(b.futan_juryo), '') as double) / 10.0
           ) as futan_juryo
         from {se_table} b
@@ -151,15 +180,19 @@ def stage_futan_juryo(
           and rec.race_bango = b.race_bango
           and rec.ketto_toroku_bango = b.ketto_toroku_bango
           and rec.race_date between '{from_date}' and '{to_date}'
+          and rec.kaisai_nen between '{from_date[:4]}' and '{to_date[:4]}'
+          {rec_horse_filter}
         where
           b.kaisai_nen is not null
           and b.kaisai_tsukihi is not null
           and b.keibajo_code is not null
           and b.race_bango is not null
           and b.ketto_toroku_bango is not null
-          {focused_filter}
+          and b.kaisai_nen between '{from_date[:4]}' and '{to_date[:4]}'
+          and (b.kaisai_nen || b.kaisai_tsukihi) between '{from_date}' and '{to_date}'
+          {se_horse_filter}
           and coalesce(
-                try_cast(rec.futan_juryo as double) / 10.0,
+                try_cast(rec.futan_juryo as double),
                 try_cast(nullif(trim(b.futan_juryo), '') as double) / 10.0
               ) is not null
         """
@@ -253,9 +286,15 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    if args.target_race is not None:
-        stage_target_horses(con, input_glob)
-    stage_futan_juryo(con, args.from_date, args.to_date, focused_target=args.target_race is not None)
+    stage_target_horses(con, input_glob)
+    horse_literals = target_horse_literals(con)
+    stage_futan_juryo(
+        con,
+        args.from_date,
+        args.to_date,
+        focused_target=args.target_race is not None,
+        horse_literals=horse_literals,
+    )
     stage_horse_history(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

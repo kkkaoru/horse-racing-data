@@ -532,14 +532,36 @@ def test_add_resource_args_explicit_values() -> None:
     assert args.memory_limit == "4GB"
 
 
-def test_apply_to_connection_uses_explicit_values() -> None:
+def test_apply_to_connection_uses_explicit_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(subject.PIPELINE_SPILL_TEMP_DIR_ENV, raising=False)
+    monkeypatch.setattr(os, "getpid", lambda: 1234)
     con = MagicMock()
     subject.apply_to_connection(con, threads=2, memory_limit="4GB")
     executed = [call.args[0] for call in con.execute.call_args_list]
     assert executed[0] == "SET threads TO 2"
     assert executed[1] == "SET memory_limit='4GB'"
-    assert executed[2] == f"SET temp_directory='{subject.SPILL_TEMP_DIR}'"
+    assert executed[2] == f"SET temp_directory='{subject.SPILL_TEMP_DIR}-1234'"
     assert executed[3] == f"SET max_temp_directory_size='{subject.SPILL_MAX_SIZE}'"
+
+
+def test_apply_to_connection_uses_job_private_spill_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(subject.PIPELINE_SPILL_TEMP_DIR_ENV, "/tmp/job's-spill")
+    con = MagicMock()
+    subject.apply_to_connection(con, threads=2, memory_limit="4GB")
+    executed = [call.args[0] for call in con.execute.call_args_list]
+    assert executed[2] == "SET temp_directory='/tmp/job''s-spill'"
+
+
+def test_spill_temp_directory_rejects_relative_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(subject.PIPELINE_SPILL_TEMP_DIR_ENV, "shared-spill")
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        subject.spill_temp_directory()
 
 
 def test_apply_to_connection_falls_back_to_auto_detect(

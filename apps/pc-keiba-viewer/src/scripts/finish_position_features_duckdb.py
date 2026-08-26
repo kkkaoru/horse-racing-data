@@ -313,6 +313,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force-clean-output", action="store_true")
     parser.add_argument("--temp-dir", type=Path, default=None)
     parser.add_argument(
+        "--source-watermark-file",
+        type=Path,
+        default=None,
+        help=(
+            "Write the target day's entrant freshness watermark from the already "
+            "attached source connection. Intended for the prediction container to "
+            "avoid a second Catalog attach after this build."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -467,16 +477,208 @@ def signed_zogen_sa_sql(fugo_expr: str, sa_expr: str) -> str:
     )
 
 
+def corner_feature_scratched_exclusion_sql(alias: str) -> str:
+    """Exclude stale corner rows when the official entry is取消/除外."""
+    keys = (
+        ("kaisai_nen", "kaisai_nen"),
+        ("kaisai_tsukihi", "kaisai_tsukihi"),
+        ("keibajo_code", "keibajo_code"),
+        ("race_bango", "race_bango"),
+    )
+
+    def official_exists(table: str) -> str:
+        predicates = "\n          and ".join(
+            f"trim(se.{source}) = trim(cast({alias}.{target} as varchar))"
+            for source, target in keys
+        )
+        return f"""exists (
+        select 1 from pg.{table} se
+        where {predicates}
+          and try_cast(nullif(trim(se.umaban), '') as int)
+              = try_cast({alias}.umaban as int)
+          and coalesce(trim(se.ijo_kubun_code), '0') in ('1', '2')
+      )"""
+
+    return f"""not (
+      ({alias}.source = 'jra' and {official_exists('jvd_se')})
+      or ({alias}.source = 'nar' and {official_exists('nvd_se')})
+    )"""
+
+
+def _rec_select_from_raw_se_ra(
+    source: str,
+    history_start: str,
+    to_date: str,
+    entity_filter: str,
+    keibajo_code: str | None = None,
+) -> str:
+    """Build source-scoped history without the compatibility view's full scan.
+
+    The R2 ``race_entry_corner_features`` compatibility view computes its field
+    size with a window over the complete JRA + NAR archive. DuckDB therefore
+    cannot push a focused race's year/date/entity predicates through that
+    window. Read the authoritative raw source tables instead: restrict the
+    archive before the window, retain every valid runner in each matching race
+    while computing the fallback field size, and only then apply the focused
+    horse/jockey/trainer predicate.
+    """
+    table_prefix = "jvd" if source == CATEGORY_JRA else "nvd"
+    venue_predicate = (
+        "" if keibajo_code is None else f"and se.keibajo_code = {sql_literal(keibajo_code)}"
+    )
+    base_predicate = f"""
+      se.kaisai_nen between {sql_literal(history_start[:4])}
+        and {sql_literal(to_date[:4])}
+      and (se.kaisai_nen || se.kaisai_tsukihi)
+        between {sql_literal(history_start)} and {sql_literal(to_date)}
+      and nullif(trim(se.ketto_toroku_bango), '') is not null
+      and try_cast(nullif(trim(se.umaban), '') as int) is not null
+      and (
+        try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int)
+          is not null
+        or coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')
+      )
+      {venue_predicate}
+    """
+    cohort_cte = ""
+    cohort_join = ""
+    if entity_filter:
+        cohort_cte = f"""
+    cohort_race_keys as (
+      select distinct kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+      from (
+        select
+          se.kaisai_nen || se.kaisai_tsukihi as race_date,
+          se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+          se.ketto_toroku_bango,
+          se.kishumei_ryakusho, se.chokyoshimei_ryakusho
+        from pg.{table_prefix}_se se
+        inner join pg.{table_prefix}_ra ra
+          on ra.kaisai_nen = se.kaisai_nen
+          and ra.kaisai_tsukihi = se.kaisai_tsukihi
+          and ra.keibajo_code = se.keibajo_code
+          and ra.race_bango = se.race_bango
+        where {base_predicate}
+      ) cohort_candidates
+      where true{entity_filter}
+    ),
+        """
+        cohort_join = """
+      inner join cohort_race_keys cohort
+        on cohort.kaisai_nen = se.kaisai_nen
+        and cohort.kaisai_tsukihi = se.kaisai_tsukihi
+        and cohort.keibajo_code = se.keibajo_code
+        and cohort.race_bango = se.race_bango
+        """
+    return f"""
+    with {cohort_cte}raw_race_rows as (
+      select
+        {sql_literal(source)} as source,
+        se.kaisai_nen || se.kaisai_tsukihi as race_date,
+        se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+        se.ketto_toroku_bango,
+        try_cast(nullif(trim(se.umaban), '') as int) as umaban,
+        se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
+        try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
+        ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+        coalesce(
+          nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
+          count(*) over (
+            partition by se.kaisai_nen, se.kaisai_tsukihi,
+              se.keibajo_code, se.race_bango
+          )
+        ) as shusso_tosu,
+        try_cast(
+          nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int
+        ) as finish_position,
+        try_cast(nullif(nullif(trim(se.time_sa), ''), '0000') as double) / 10
+          as time_sa,
+        try_cast(nullif(nullif(trim(se.kohan_3f), ''), '000') as double) / 10
+          as kohan_3f,
+        try_cast(nullif(nullif(trim(se.corner_1), ''), '00') as double)
+          as corner_1,
+        try_cast(nullif(nullif(trim(se.corner_2), ''), '00') as double)
+          as corner_2,
+        try_cast(nullif(nullif(trim(se.corner_3), ''), '00') as double)
+          as corner_3,
+        try_cast(nullif(nullif(trim(se.corner_4), ''), '00') as double)
+          as corner_4,
+        ra.babajotai_code_shiba, ra.babajotai_code_dirt,
+        try_cast(nullif(nullif(trim(se.tansho_ninkijun), ''), '00') as int)
+          as tansho_ninkijun,
+        try_cast(nullif(nullif(trim(se.tansho_odds), ''), '0000') as double) / 10
+          as tansho_odds,
+        se.seibetsu_code,
+        try_cast(nullif(nullif(trim(se.barei), ''), '00') as int) as barei
+      from pg.{table_prefix}_se se
+      inner join pg.{table_prefix}_ra ra
+        on ra.kaisai_nen = se.kaisai_nen
+        and ra.kaisai_tsukihi = se.kaisai_tsukihi
+        and ra.keibajo_code = se.keibajo_code
+        and ra.race_bango = se.race_bango
+      {cohort_join}
+      where {base_predicate}
+    ), normalized_race_rows as (
+      select
+        *,
+        case when shusso_tosu > 1 and finish_position is not null
+          then (finish_position - 1)::double / (shusso_tosu - 1) else null end
+          as finish_norm,
+        case when shusso_tosu > 1 and corner_1 is not null
+          then (corner_1 - 1) / (shusso_tosu - 1) else null end as corner1_norm,
+        case when shusso_tosu > 1 and corner_2 is not null
+          then (corner_2 - 1) / (shusso_tosu - 1) else null end as corner2_norm,
+        case when shusso_tosu > 1 and corner_3 is not null
+          then (corner_3 - 1) / (shusso_tosu - 1) else null end as corner3_norm,
+        case when shusso_tosu > 1 and corner_4 is not null
+          then (corner_4 - 1) / (shusso_tosu - 1) else null end as corner4_norm
+      from raw_race_rows
+      where kyori is not null and shusso_tosu is not null
+    )
+    select
+      source, race_date,
+      strptime(race_date, '%Y%m%d')::date as race_dt,
+      kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+      ketto_toroku_bango, umaban,
+      kishumei_ryakusho, chokyoshimei_ryakusho,
+      kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,
+      finish_position, finish_norm,
+      time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
+      babajotai_code_shiba, babajotai_code_dirt,
+      tansho_ninkijun, tansho_odds,
+      cast(null as int) as bataiju,
+      try_cast(nullif(trim(cast(seibetsu_code as varchar)), '') as int)
+        as seibetsu_code,
+      barei
+    from normalized_race_rows
+    """
+
+
 def _rec_select_from_corner_features(
-    history_start: str, to_date: str, entity_filter: str = ""
+    history_start: str,
+    to_date: str,
+    entity_filter: str = "",
+    source: str | None = None,
 ) -> str:
     """Build rec SELECT from race_entry_corner_features (no bataiju enrichment).
 
     bataiju lookup is done separately via stage_se_table / weight_cte to avoid
-    a heavy PG-side double LEFT JOIN that would dominate stage time.
+    a heavy PG-side double LEFT JOIN that would dominate stage time. The
+    separately materialized corner table has no ``ijo_kubun_code`` and can
+    retain a pre-race row after an official取消/除外. Correlated anti-existence
+    against the authoritative JVD/NVD entry table removes only codes 1/2.
     """
-    where_clause = f"race_date between '{history_start}' and '{to_date}'{entity_filter}"
-    if entity_filter:
+    if source is not None:
+        return _rec_select_from_raw_se_ra(
+            source, history_start, to_date, entity_filter
+        )
+    source_filter = "" if source is None else f" and source = {sql_literal(source)}"
+    where_clause = (
+        f"kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'"
+        f" and race_date between '{history_start}' and '{to_date}'"
+        f"{source_filter}{entity_filter}"
+    )
+    if entity_filter or source_filter:
         from_source = (
             f"("
             f" SELECT source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
@@ -491,7 +693,24 @@ def _rec_select_from_corner_features(
         )
     else:
         from_source = "pg.race_entry_corner_features"
-    where_sql = "" if entity_filter else f"where {where_clause}"
+    scratched_exclusion = corner_feature_scratched_exclusion_sql("rec")
+    # A corner row with a settled finish position is already an authoritative
+    # historical result.  The official JVD/NVD scratch lookup is only needed
+    # for unresolved rows (the upcoming slice), where a stale pre-race corner
+    # row could otherwise survive an official 取消/除外.  Keeping the lookup
+    # behind this guard is important for focused races: the target-horse
+    # history can span millions of rows on the remote catalog, while the
+    # unresolved slice is limited to the current card.  It preserves the
+    # scratch exclusion semantics and avoids a correlated remote lookup for
+    # every settled historical row.
+    guarded_scratch_exclusion = (
+        f"(rec.finish_position is not null or {scratched_exclusion})"
+    )
+    where_sql = (
+        f"where {guarded_scratch_exclusion}"
+        if entity_filter
+        else f"where {where_clause} and {guarded_scratch_exclusion}"
+    )
     return f"""
     select
       source, race_date,
@@ -513,7 +732,7 @@ def _rec_select_from_corner_features(
       cast(null as int) as bataiju,
       try_cast(nullif(trim(cast(seibetsu_code as varchar)), '') as int) as seibetsu_code,
       try_cast(cast(barei as varchar) as int) as barei
-    from {from_source}
+    from {from_source} rec
     {where_sql}
     """
 
@@ -834,6 +1053,60 @@ def upcoming_target_union_sql(
     return f"{jra_sql}\nunion all\n{nar_sql}\nunion all\n{ban_ei_sql}"
 
 
+def canonicalize_placeholder_runners_sql(source_sql: str) -> str:
+    """Canonicalize superseded runner rows only when authority is unambiguous.
+
+    NAR can contain both ``0000000000`` and the later-resolved registration
+    number for the same race and ``umaban``.  They are two versions of one
+    runner, not two entrants.  A placeholder without a real-id counterpart is
+    retained because it is still the only observed entrant row.
+
+    NAR can also retain a pre-race ``data_kubun=2`` row after a settled
+    ``data_kubun=7`` correction changes the registration number for the same
+    horse number.  The normalized projection no longer carries ``data_kubun``,
+    but the settled row is still uniquely authoritative through its non-NULL
+    ``finish_position``.  Drop a NULL-outcome candidate only when the same
+    race and horse number has a settled candidate.  Two unresolved candidates,
+    or two settled candidates, remain visible so downstream uniqueness checks
+    fail closed rather than choosing an arbitrary row.
+    """
+    return f"""
+    with runner_candidates as (
+      {source_sql}
+    )
+    select candidate.*
+    from runner_candidates candidate
+    where (
+        candidate.finish_position is not null
+        or not exists (
+          select 1
+          from runner_candidates settled
+          where settled.source = candidate.source
+            and settled.kaisai_nen = candidate.kaisai_nen
+            and settled.kaisai_tsukihi = candidate.kaisai_tsukihi
+            and settled.keibajo_code = candidate.keibajo_code
+            and settled.race_bango = candidate.race_bango
+            and settled.umaban = candidate.umaban
+            and settled.finish_position is not null
+        )
+      )
+      and (
+        trim(candidate.ketto_toroku_bango) <> '0000000000'
+        or not exists (
+         select 1
+         from runner_candidates resolved
+         where resolved.source = candidate.source
+           and resolved.kaisai_nen = candidate.kaisai_nen
+           and resolved.kaisai_tsukihi = candidate.kaisai_tsukihi
+           and resolved.keibajo_code = candidate.keibajo_code
+           and resolved.race_bango = candidate.race_bango
+           and resolved.umaban = candidate.umaban
+           and trim(resolved.ketto_toroku_bango) <> '0000000000'
+        )
+      )
+    """
+
+
 def build_rec_select_sql(
     category: str,
     history_start: str,
@@ -843,15 +1116,32 @@ def build_rec_select_sql(
     target_race: tuple[str, str] | None = None,
 ) -> str:
     if category == CATEGORY_BAN_EI:
-        base = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
-    else:
-        corner_sql = _rec_select_from_corner_features(
-            history_start, to_date, entity_filter
+        base = _rec_select_from_raw_se_ra(
+            CATEGORY_NAR,
+            history_start,
+            to_date,
+            entity_filter,
+            BAN_EI_KEIBAJO_CODE,
         )
-        ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
-        base = f"{corner_sql}\nunion all\n{ban_ei_sql}"
+    else:
+        source = "jra" if category == CATEGORY_JRA else "nar" if category == CATEGORY_NAR else None
+        corner_sql = _rec_select_from_corner_features(
+            history_start, to_date, entity_filter, source
+        )
+        if category == CATEGORY_JRA:
+            base = corner_sql
+        elif category == CATEGORY_NAR:
+            # The NVD raw branch already contains venue 83. NAR targets exclude
+            # venue 83 and Ban-ei has its own category, so unioning the direct
+            # Ban-ei branch here only duplicated archive rows and scan work.
+            base = corner_sql
+        else:
+            ban_ei_sql = _rec_select_from_ban_ei(
+                history_start, to_date, entity_filter
+            )
+            base = f"{corner_sql}\nunion all\n{ban_ei_sql}"
     if upcoming_window is None:
-        return base
+        return canonicalize_placeholder_runners_sql(base)
     target_from, target_to = upcoming_window
     upcoming_sql = upcoming_target_union_sql(
         category, target_from, target_to, target_race
@@ -883,20 +1173,10 @@ def build_rec_select_sql(
     # populated by `_rec_select_from_se_ra`) -- an accepted trade-off against
     # silently losing the label entirely, which is what the bug did.
     #
-    # KNOWN GAP (2026-07-18, entrant-selection scratch/exclusion fix): both
-    # `_rec_select_from_se_ra` (priority 1, direct jvd_se/nvd_se read) and
-    # `_rec_select_from_ban_ei` (priority 0, direct nvd_se read, Ban-ei only)
-    # now exclude `ijo_kubun_code in ('1', '2')` -- see each function's own
-    # docstring. `_rec_select_from_corner_features` (priority 0, JRA/NAR) does
-    # NOT: `race_entry_corner_features` is a separately-owned, pre-materialised
-    # table (written by the running-style Worker in apps/sync-realtime-data)
-    # that carries no `ijo_kubun_code` column at all, so a JRA/NAR horse
-    # scratched AFTER that Worker last wrote its pre-race row could still
-    # surface here as the sole (and therefore trivially winning) candidate for
-    # that horse. Confirmed out of scope for the 2026-07-18 fix (different
-    # package/language, separately owned pipeline); flagged here for whoever
-    # picks up that follow-up.
-    return f"""
+    # `_rec_select_from_corner_features` also anti-joins official
+    # `ijo_kubun_code in ('1', '2')` keys, so a stale pre-race corner row cannot
+    # survive merely because the direct-source candidate was filtered out.
+    merged = f"""
     select * exclude (_rec_priority) from (
       select base_union.*, _rec_priority from (
         select *, 0 as _rec_priority from ({base})
@@ -909,6 +1189,7 @@ def build_rec_select_sql(
       ) = 1
     )
     """
+    return canonicalize_placeholder_runners_sql(merged)
 
 
 def build_target_race_entities_sql(
@@ -919,8 +1200,10 @@ def build_target_race_entities_sql(
     target_race: tuple[str, str],
 ) -> str:
     if upcoming_window is not None:
-        target_select = upcoming_target_union_sql(
-            category, target_from, target_to, target_race
+        target_select = canonicalize_placeholder_runners_sql(
+            upcoming_target_union_sql(
+                category, target_from, target_to, target_race
+            )
         )
     else:
         target_select = build_rec_select_sql(
@@ -937,6 +1220,10 @@ def build_target_race_entities_sql(
     select distinct
       target_rec.source,
       target_rec.race_date,
+      target_rec.kaisai_nen,
+      target_rec.kaisai_tsukihi,
+      target_rec.keibajo_code,
+      target_rec.race_bango,
       target_rec.ketto_toroku_bango,
       target_rec.kishumei_ryakusho,
       target_rec.chokyoshimei_ryakusho
@@ -984,6 +1271,20 @@ def _distinct_non_empty_values(
     return [str(row[0]) for row in rows]
 
 
+def _distinct_present_values(
+    con: duckdb.DuckDBPyConnection, table: str, column: str
+) -> list[str]:
+    rows = con.execute(
+        f"""
+        select distinct cast({column} as varchar) as value
+        from {table}
+        where {column} is not null
+        order by 1
+        """
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def _in_filter(column: str, values: list[str]) -> str:
     return f"{column} in ({', '.join(sql_literal(value) for value in values)})"
 
@@ -992,17 +1293,133 @@ def _build_rec_entity_filter_from_target_race_entities(
     con: duckdb.DuckDBPyConnection,
 ) -> str:
     filters: list[str] = []
-    for column in (
-        "ketto_toroku_bango",
-        "kishumei_ryakusho",
-        "chokyoshimei_ryakusho",
-    ):
-        values = _distinct_non_empty_values(con, "target_race_entities", column)
+    horses = [
+        value
+        for value in _distinct_non_empty_values(
+            con, "target_race_entities", "ketto_toroku_bango"
+        )
+        if value != "0000000000"
+    ]
+    if horses:
+        filters.append(_in_filter("ketto_toroku_bango", horses))
+    for column in ("kishumei_ryakusho", "chokyoshimei_ryakusho"):
+        values = _distinct_present_values(con, "target_race_entities", column)
         if values:
             filters.append(_in_filter(column, values))
+    venue_windows = con.execute(
+        "select distinct keibajo_code, race_date from target_race_entities "
+        "where keibajo_code is not null and race_date is not null order by 1, 2"
+    ).fetchall()
+    filters.extend(
+        f"(keibajo_code = {sql_literal(row[0])} and race_date >= "
+        f"{sql_literal(add_days(str(row[1]), -TRACK_BIAS_WINDOW_DAYS))} "
+        f"and race_date < {sql_literal(row[1])})"
+        for row in venue_windows
+    )
     if not filters:
         return " and false"
     return f" and ({' or '.join(filters)})"
+
+
+def _pedigree_cohort_horses(
+    con: duckdb.DuckDBPyConnection,
+    category: str,
+    target_horses: list[str],
+) -> list[str]:
+    """Return horses sharing a target runner's sire or damsire."""
+    if not target_horses:
+        return []
+    target_filter = _in_filter("ketto_toroku_bango", target_horses)
+    if category == CATEGORY_JRA:
+        target_lineage_sql = (
+            "select distinct ketto_joho_01b, ketto_joho_05b from pg.jvd_um "
+            f"where {target_filter}"
+        )
+        cohort_source = "pg.jvd_um"
+    else:
+        target_lineage_sql = f"""
+        with target_ids as (
+          select ketto_toroku_bango from pg.nvd_um where {target_filter}
+          union
+          select ketto_toroku_bango from pg.nvd_nu where {target_filter}
+        )
+        select distinct
+          coalesce(um.ketto_joho_01b, nu.ketto_joho_01b),
+          coalesce(um.ketto_joho_05b, nu.ketto_joho_05b)
+        from target_ids ids
+        left join pg.nvd_um um using (ketto_toroku_bango)
+        left join pg.nvd_nu nu using (ketto_toroku_bango)
+        """
+        cohort_source = """
+        (
+          with horse_ids as (
+            select ketto_toroku_bango from pg.nvd_um
+            union
+            select ketto_toroku_bango from pg.nvd_nu
+          )
+          select ids.ketto_toroku_bango,
+            coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b,
+            coalesce(um.ketto_joho_05b, nu.ketto_joho_05b) as ketto_joho_05b
+          from horse_ids ids
+          left join pg.nvd_um um using (ketto_toroku_bango)
+          left join pg.nvd_nu nu using (ketto_toroku_bango)
+        )
+        """
+    lineage_rows = con.execute(target_lineage_sql).fetchall()
+    sires = sorted(
+        {str(row[0]) for row in lineage_rows if row[0] is not None and str(row[0]).strip()}
+    )
+    damsires = sorted(
+        {str(row[1]) for row in lineage_rows if row[1] is not None and str(row[1]).strip()}
+    )
+    predicates: list[str] = []
+    if sires:
+        predicates.append(_in_filter("ketto_joho_01b", sires))
+    if damsires:
+        predicates.append(_in_filter("ketto_joho_05b", damsires))
+    if not predicates:
+        return []
+    rows = con.execute(
+        "select distinct ketto_toroku_bango from "
+        f"{cohort_source} where ({' or '.join(predicates)}) "
+        "and ketto_toroku_bango is not null "
+        "and trim(ketto_toroku_bango) not in ('', '0000000000') order by 1"
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _build_focused_rec_cohort_filter(
+    con: duckdb.DuckDBPyConnection, category: str
+) -> tuple[str, list[str]]:
+    target_horses = [
+        value
+        for value in _distinct_non_empty_values(
+            con, "target_race_entities", "ketto_toroku_bango"
+        )
+        if value != "0000000000"
+    ]
+    pedigree_horses = _pedigree_cohort_horses(con, category, target_horses)
+    entity_filter = _build_rec_entity_filter_from_target_race_entities(con)
+    if pedigree_horses:
+        pedigree_filter = _in_filter("ketto_toroku_bango", pedigree_horses)
+        entity_filter = f" and ({entity_filter.removeprefix(' and ')} or {pedigree_filter})"
+    return entity_filter, sorted(set(target_horses) | set(pedigree_horses))
+
+
+def _stage_rec_pedigree_horse_ids(
+    con: duckdb.DuckDBPyConnection, horse_ids: list[str]
+) -> None:
+    if horse_ids:
+        values = ", ".join(f"({sql_literal(horse_id)})" for horse_id in horse_ids)
+        con.execute(
+            "create or replace temp table rec_pedigree_horse_ids as "
+            f"select * from (values {values}) cohort(ketto_toroku_bango)"
+        )
+        return
+    con.execute(
+        "create or replace temp table rec_pedigree_horse_ids as "
+        "select cast(null as varchar) as ketto_toroku_bango where false"
+    )
 
 
 def _build_horse_filter_from_target_race_entities(
@@ -1026,6 +1443,7 @@ def stage_rec_table(
     target_from: str | None = None,
 ) -> None:
     entity_filter = ""
+    pedigree_horse_ids: list[str] = []
     if target_race is not None:
         entity_target_from = target_from
         if entity_target_from is None and upcoming_window is not None:
@@ -1040,7 +1458,10 @@ def stage_rec_table(
             upcoming_window,
             target_race,
         )
-        entity_filter = _build_rec_entity_filter_from_target_race_entities(con)
+        entity_filter, pedigree_horse_ids = _build_focused_rec_cohort_filter(
+            con, category
+        )
+    _stage_rec_pedigree_horse_ids(con, pedigree_horse_ids)
     select_sql = build_rec_select_sql(
         category,
         history_start,
@@ -1339,6 +1760,42 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _stage_empty_nar_stubs(con: duckdb.DuckDBPyConnection) -> None:
+    """Create source-compatible NAR stubs for a source-scoped JRA build."""
+    run_staged_sql(
+        con,
+        "source.nar_se.skip",
+        "create or replace temp table nar_se as "
+        "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
+        "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
+        "cast(null as varchar) as ketto_toroku_bango, cast(null as int) as bataiju, "
+        "cast(null as varchar) as zogen_sa, cast(null as varchar) as zogen_fugo "
+        "where false",
+        row_count_table="nar_se",
+    )
+    for table in ("nar_um", "nar_nu"):
+        run_staged_sql(
+            con,
+            f"source.{table}.skip",
+            f"create or replace temp table {table} as "
+            "select cast(null as varchar) as ketto_toroku_bango, "
+            "cast(null as varchar) as ketto_joho_01b, "
+            "cast(null as varchar) as ketto_joho_05b where false",
+            row_count_table=table,
+        )
+    run_staged_sql(
+        con,
+        "source.nar_ra.skip",
+        "create or replace temp table nar_ra as "
+        "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
+        "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
+        "cast(null as varchar) as tenko_code, "
+        "cast(null as varchar) as kyoso_joken_meisho, "
+        "cast(null as varchar) as hasso_jikoku where false",
+        row_count_table="nar_ra",
+    )
+
+
 def stage_source_tables(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
@@ -1368,11 +1825,49 @@ def stage_source_tables(
         target_from=from_date,
     )
     horse_filter = ""
+    pedigree_horse_filter = ""
     race_filter = ""
     if target_race is not None:
         horse_filter = _build_horse_filter_from_target_race_entities(con)
+        pedigree_horses = _distinct_non_empty_values(
+            con, "rec_pedigree_horse_ids", "ketto_toroku_bango"
+        )
+        if pedigree_horses:
+            pedigree_horse_filter = (
+                f" and {_in_filter('ketto_toroku_bango', pedigree_horses)}"
+            )
+        else:
+            pedigree_horse_filter = " and false"
         race_filter = target_race_table_filter_sql(target_race)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
+    if category == CATEGORY_JRA:
+        _stage_empty_nar_stubs(con)
+        stage_se_table(
+            con,
+            "source.jra_se",
+            "jra_se",
+            "jvd_se",
+            history_start,
+            to_date,
+            entity_filter=horse_filter,
+        )
+        stage_um_table(
+            con,
+            "source.jra_um",
+            "jra_um",
+            "jvd_um",
+            entity_filter=pedigree_horse_filter,
+        )
+        stage_ra_table(
+            con,
+            "source.jra_ra",
+            "jra_ra",
+            "jvd_ra",
+            from_date,
+            to_date,
+            entity_filter=race_filter,
+        )
+        return
     stage_se_table(
         con,
         "source.nar_se",
@@ -1383,8 +1878,20 @@ def stage_source_tables(
         nar_keibajo_filter,
         entity_filter=horse_filter,
     )
-    stage_um_table(con, "source.nar_um", "nar_um", "nvd_um", entity_filter=horse_filter)
-    stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu", entity_filter=horse_filter)
+    stage_um_table(
+        con,
+        "source.nar_um",
+        "nar_um",
+        "nvd_um",
+        entity_filter=pedigree_horse_filter,
+    )
+    stage_um_table(
+        con,
+        "source.nar_nu",
+        "nar_nu",
+        "nvd_nu",
+        entity_filter=pedigree_horse_filter,
+    )
     stage_ra_table(
         con,
         "source.nar_ra",
@@ -1395,28 +1902,8 @@ def stage_source_tables(
         nar_keibajo_filter,
         entity_filter=race_filter,
     )
-    if category == CATEGORY_BAN_EI:
-        _stage_empty_jra_stubs(con)
-        return
-    stage_se_table(
-        con,
-        "source.jra_se",
-        "jra_se",
-        "jvd_se",
-        history_start,
-        to_date,
-        entity_filter=horse_filter,
-    )
-    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um", entity_filter=horse_filter)
-    stage_ra_table(
-        con,
-        "source.jra_ra",
-        "jra_ra",
-        "jvd_ra",
-        from_date,
-        to_date,
-        entity_filter=race_filter,
-    )
+    _stage_empty_jra_stubs(con)
+    return
 
 
 def build_target_table(
@@ -2490,7 +2977,40 @@ def venue_weather_empty_prior3_sql() -> str:
       weather_date date,
       weather_date_yyyymmdd varchar,
       post_hour integer,
-      venue_temperature_prior3 double
+      venue_temperature_prior3 double,
+      venue_precipitation_prior3 double,
+      venue_wind_speed_prior3_max double,
+      venue_wind_gusts_prior3_max double
+    )
+    """
+
+
+def venue_weather_v2_empty_prior3_sql() -> str:
+    """Empty causal humidity/wet-bulb window used until v2 is available."""
+    return """
+    create or replace temp table venue_weather_v2_prior3 (
+      keibajo_code varchar,
+      weather_date_yyyymmdd varchar,
+      post_hour integer,
+      venue_relative_humidity_prior3_mean double,
+      venue_relative_humidity_prior3_max double,
+      venue_dew_point_prior3_mean double,
+      venue_wet_bulb_prior3_mean double,
+      venue_wet_bulb_prior3_max double,
+      venue_shortwave_radiation_prior3_mean double
+    )
+    """
+
+
+def venue_weather_empty_prior_days_sql() -> str:
+    """Empty completed-day precipitation windows used without weather files."""
+    return """
+    create or replace temp table venue_weather_prior_days (
+      keibajo_code varchar,
+      weather_date_yyyymmdd varchar,
+      venue_precipitation_prior1d double,
+      venue_precipitation_prior3d double,
+      venue_precipitation_prior7d double
     )
     """
 
@@ -2518,14 +3038,26 @@ def materialize_venue_weather(
     created empty so the downstream LEFT JOIN still resolves to NULL columns."""
     log_event("weather.venue_weather", "start", 0.0)
     started = perf_counter()
+    context_years = sorted({*years, min(years) - 1}) if years else []
+    v2_files = (
+        [
+            (year, venue_weather_dir / f"venue_weather_v2_{year:04d}.duckdb")
+            for year in context_years
+            if (venue_weather_dir / f"venue_weather_v2_{year:04d}.duckdb").exists()
+        ]
+        if venue_weather_dir is not None
+        else []
+    )
     files = (
-        venue_weather_files_for_years(venue_weather_dir, years)
+        venue_weather_files_for_years(venue_weather_dir, context_years)
         if venue_weather_dir is not None
         else []
     )
     if not files:
         con.execute(venue_weather_empty_agg_sql())
         con.execute(venue_weather_empty_prior3_sql())
+        con.execute(venue_weather_empty_prior_days_sql())
+        con.execute(venue_weather_v2_empty_prior3_sql())
         log_event("weather.venue_weather", "done", perf_counter() - started, 0)
         return
     aliases: list[str] = []
@@ -2564,7 +3096,10 @@ def materialize_venue_weather(
         select w.keibajo_code, w.weather_date,
           strftime(w.weather_date, '%Y%m%d') as weather_date_yyyymmdd,
           p.post_hour,
-          avg(w.temperature) as venue_temperature_prior3
+          avg(w.temperature) as venue_temperature_prior3,
+          sum(w.precipitation) as venue_precipitation_prior3,
+          max(w.wind_speed) as venue_wind_speed_prior3_max,
+          max(w.wind_gusts) as venue_wind_gusts_prior3_max
         from venue_weather_raw w
         cross join range(0, 24) p(post_hour)
         where w.weather_hour < p.post_hour
@@ -2573,7 +3108,86 @@ def materialize_venue_weather(
         having count(*) = 3
         """
     )
+    con.execute(
+        """
+        create or replace temp table venue_weather_daily as
+        select keibajo_code, weather_date, sum(precipitation) as precipitation_total
+        from venue_weather_raw
+        group by keibajo_code, weather_date
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table venue_weather_prior_days as
+        with target_dates as (
+          select keibajo_code, weather_date from venue_weather_daily
+        )
+        select t.keibajo_code,
+          strftime(t.weather_date, '%Y%m%d') as weather_date_yyyymmdd,
+          sum(d.precipitation_total) filter (
+            where d.weather_date = t.weather_date - interval 1 day
+          ) as venue_precipitation_prior1d,
+          sum(d.precipitation_total) filter (
+            where d.weather_date between t.weather_date - interval 3 day
+              and t.weather_date - interval 1 day
+          ) as venue_precipitation_prior3d,
+          sum(d.precipitation_total) filter (
+            where d.weather_date between t.weather_date - interval 7 day
+              and t.weather_date - interval 1 day
+          ) as venue_precipitation_prior7d
+        from target_dates t
+        left join venue_weather_daily d on d.keibajo_code = t.keibajo_code
+          and d.weather_date between t.weather_date - interval 7 day
+            and t.weather_date - interval 1 day
+        group by t.keibajo_code, t.weather_date
+        """
+    )
+    con.execute("drop table if exists venue_weather_daily")
     con.execute("drop table if exists venue_weather_raw")
+    if not v2_files:
+        con.execute(venue_weather_v2_empty_prior3_sql())
+    else:
+        v2_aliases: list[str] = []
+        v2_union_parts: list[str] = []
+        for year, path in v2_files:
+            alias = f"vw2_{year:04d}"
+            con.execute(f"attach '{path.as_posix()}' as {alias} (read_only)")
+            v2_aliases.append(alias)
+            v2_union_parts.append(
+                "select keibajo_code, weather_date, weather_hour, temperature, "
+                "relative_humidity, dew_point, wet_bulb_temperature, "
+                f"shortwave_radiation from {alias}.venue_weather_v2"
+            )
+        con.execute(
+            "create or replace temp table venue_weather_v2_raw as "
+            + " union all ".join(v2_union_parts)
+        )
+        for alias in v2_aliases:
+            con.execute(f"detach {alias}")
+        con.execute(
+            """
+            create or replace temp table venue_weather_v2_prior3 as
+            select w.keibajo_code,
+              strftime(w.weather_date, '%Y%m%d') as weather_date_yyyymmdd,
+              p.post_hour,
+              avg(w.relative_humidity) as venue_relative_humidity_prior3_mean,
+              max(w.relative_humidity) as venue_relative_humidity_prior3_max,
+              avg(w.dew_point) as venue_dew_point_prior3_mean,
+              avg(w.wet_bulb_temperature) as venue_wet_bulb_prior3_mean,
+              max(w.wet_bulb_temperature) as venue_wet_bulb_prior3_max,
+              avg(w.shortwave_radiation) as venue_shortwave_radiation_prior3_mean
+            from venue_weather_v2_raw w
+            cross join range(0, 24) p(post_hour)
+            where w.weather_hour < p.post_hour
+              and w.weather_hour >= p.post_hour - 3
+            group by w.keibajo_code, w.weather_date, p.post_hour
+            having count(w.relative_humidity) = 3
+              and count(w.wet_bulb_temperature) = 3
+              and count(w.dew_point) = 3
+              and count(w.shortwave_radiation) = 3
+            """
+        )
+        con.execute("drop table if exists venue_weather_v2_raw")
     agg_row = con.execute("select count(*) from venue_weather_agg").fetchone()
     agg_rows = int(agg_row[0]) if agg_row is not None else 0
     log_event("weather.venue_weather", "done", perf_counter() - started, agg_rows)
@@ -2590,6 +3204,18 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
           nr.kyoso_joken_meisho as nar_kyoso_joken_meisho,
           vw.venue_temperature,
           vp.venue_temperature_prior3,
+          vp.venue_precipitation_prior3,
+          vp.venue_wind_speed_prior3_max,
+          vp.venue_wind_gusts_prior3_max,
+          pd.venue_precipitation_prior1d,
+          pd.venue_precipitation_prior3d,
+          pd.venue_precipitation_prior7d,
+          v2.venue_relative_humidity_prior3_mean,
+          v2.venue_relative_humidity_prior3_max,
+          v2.venue_dew_point_prior3_mean,
+          v2.venue_wet_bulb_prior3_mean,
+          v2.venue_wet_bulb_prior3_max,
+          v2.venue_shortwave_radiation_prior3_mean,
           vw.venue_precipitation_total,
           vw.venue_wind_speed_max,
           vw.venue_wind_gusts_max
@@ -2603,6 +3229,11 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
         left join venue_weather_prior3 vp on vp.keibajo_code = t.keibajo_code
           and vp.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
           and vp.post_hour = try_cast(substr(coalesce(jr.hasso_jikoku, nr.hasso_jikoku), 1, 2) as integer)
+        left join venue_weather_prior_days pd on pd.keibajo_code = t.keibajo_code
+          and pd.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
+        left join venue_weather_v2_prior3 v2 on v2.keibajo_code = t.keibajo_code
+          and v2.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
+          and v2.post_hour = try_cast(substr(coalesce(jr.hasso_jikoku, nr.hasso_jikoku), 1, 2) as integer)
         """
     )
     log_event("weather.weather_lookup", "done", perf_counter() - started)
@@ -2709,6 +3340,18 @@ def base_features_select_sql(category: str) -> str:
         else null end as weather_normalized,
       wl.venue_temperature,
       wl.venue_temperature_prior3,
+      wl.venue_precipitation_prior3,
+      wl.venue_wind_speed_prior3_max,
+      wl.venue_wind_gusts_prior3_max,
+      wl.venue_precipitation_prior1d,
+      wl.venue_precipitation_prior3d,
+      wl.venue_precipitation_prior7d,
+      wl.venue_relative_humidity_prior3_mean,
+      wl.venue_relative_humidity_prior3_max,
+      wl.venue_dew_point_prior3_mean,
+      wl.venue_wet_bulb_prior3_mean,
+      wl.venue_wet_bulb_prior3_max,
+      wl.venue_shortwave_radiation_prior3_mean,
       wl.venue_precipitation_total,
       wl.venue_wind_speed_max,
       wl.venue_wind_gusts_max,
@@ -3561,8 +4204,13 @@ def _shrink_se_table_to_target_horses(
         f"select * from {table} "
         "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
     )
+    # DuckDB 1.4 turns a renamed temp table into a non-temporary entry in the
+    # temporary catalog, which then rejects CREATE INDEX. Recreate the final
+    # temp table explicitly rather than renaming the scratch table.
+    con.execute(f"drop index if exists {table}_jk_idx")
     drop_view_or_table(con, table)
-    con.execute(f"alter table {scratch} rename to {table}")
+    con.execute(f"create temp table {table} as select * from {scratch}")
+    con.execute(f"drop table {scratch}")
     con.execute(
         f"create index {table}_jk_idx on {table} "
         "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
@@ -4223,6 +4871,54 @@ def build_empty_result(output_dir: Path, elapsed: float) -> BuildResult:
     }
 
 
+def source_watermark_sql(category: str, target_date: str) -> str:
+    """Return the exact entrant freshness query used by day-base serving."""
+    if category == CATEGORY_JRA:
+        table = "jvd_se"
+        venue_filter = f"keibajo_code in {JRA_KEIBAJO_CODES_SQL}"
+    elif category == CATEGORY_NAR:
+        table = "nvd_se"
+        venue_filter = "keibajo_code <> '83'"
+    elif category == CATEGORY_BAN_EI:
+        table = "nvd_se"
+        venue_filter = "keibajo_code = '83'"
+    else:
+        raise ValueError("source watermark requires a single prediction category")
+    year = target_date[:4]
+    return f"""
+        select max(data_sakusei_nengappi), count(*)
+        from pg.{table}
+        where kaisai_nen between '{year}' and '{year}'
+          and (kaisai_nen || kaisai_tsukihi) between '{target_date}' and '{target_date}'
+          and {venue_filter}
+    """
+
+
+def write_source_watermark_sidecar(
+    con: duckdb.DuckDBPyConnection,
+    path: Path,
+    category: str,
+    target_date: str,
+) -> None:
+    """Atomically persist a watermark using the base build's live connection."""
+    started = perf_counter()
+    log_event("source.watermark", "start", 0.0)
+    row = con.execute(source_watermark_sql(category, target_date)).fetchone()
+    max_updated = None if row is None else row[0]
+    row_count = 0 if row is None else int(row[1])
+    payload = {
+        "category": category,
+        "max_data_sakusei_nengappi": None if max_updated is None else str(max_updated).strip(),
+        "row_count": row_count,
+        "target_date": target_date,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    log_event("source.watermark", "done", perf_counter() - started, row_count)
+
+
 def resolve_upcoming_window(
     args: argparse.Namespace, from_date: str, to_date: str
 ) -> tuple[str, str] | None:
@@ -4466,6 +5162,15 @@ def run(args: argparse.Namespace) -> BuildResult:
             args.keep_existing_output,
             args.force_clean_output,
         )
+        if args.source_watermark_file is not None:
+            if args.target_date is None:
+                raise ValueError("--source-watermark-file requires --target-date")
+            write_source_watermark_sidecar(
+                con,
+                args.source_watermark_file,
+                args.category,
+                args.target_date,
+            )
         rows = resolve_output_rows(args, target_rows)
         elapsed = perf_counter() - overall_started
         heartbeat.set_stage("done")

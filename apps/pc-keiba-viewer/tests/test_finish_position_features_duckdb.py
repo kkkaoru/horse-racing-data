@@ -64,6 +64,62 @@ def test_parse_args_full_set():
     assert args.threads == 4
 
 
+def test_parse_args_source_watermark_file_defaults_to_none() -> None:
+    args = subject.parse_args([])
+    assert args.source_watermark_file is None
+
+
+def test_parse_args_accepts_source_watermark_file(tmp_path: Path) -> None:
+    path = tmp_path / "source-watermark.json"
+    args = subject.parse_args(["--source-watermark-file", str(path)])
+    assert args.source_watermark_file == path
+
+
+def test_source_watermark_sql_uses_category_table_and_partition() -> None:
+    sql = subject.source_watermark_sql("jra", "20260826")
+    assert "from pg.jvd_se" in sql
+    assert "kaisai_nen between '2026' and '2026'" in sql
+    assert "keibajo_code in ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10')" in sql
+
+
+def test_source_watermark_sql_rejects_all_category() -> None:
+    with pytest.raises(
+        ValueError, match="source watermark requires a single prediction category"
+    ):
+        subject.source_watermark_sql("all", "20260826")
+
+
+def test_write_source_watermark_sidecar_filters_nar_and_writes_atomically(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    connection = duckdb.connect()
+    connection.execute("attach ':memory:' as pg")
+    connection.execute(
+        "create table pg.nvd_se (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, data_sakusei_nengappi varchar)"
+    )
+    connection.execute(
+        "insert into pg.nvd_se values "
+        "('2026', '0826', '43', '20260826090100'), "
+        "('2026', '0826', '44', '20260826090200'), "
+        "('2026', '0826', '83', '20260826090300'), "
+        "('2025', '0826', '43', '20250826090100')"
+    )
+    path = tmp_path / "source-watermark.json"
+
+    subject.write_source_watermark_sidecar(connection, path, "nar", "20260826")
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "category": "nar",
+        "max_data_sakusei_nengappi": "20260826090200",
+        "row_count": 2,
+        "target_date": "20260826",
+    }
+    assert not (tmp_path / "source-watermark.json.tmp").exists()
+
+
 def test_parse_args_rejects_unknown_category():
     with pytest.raises(SystemExit):
         subject.parse_args(["--category", "bogus"])
@@ -332,18 +388,35 @@ def test_upcoming_target_union_sql_all_unions_three_categories():
 
 def test_build_rec_select_sql_without_upcoming_window_keeps_corner_source():
     sql = subject.build_rec_select_sql("nar", "20100101", "20251231")
-    assert "from pg.race_entry_corner_features" in sql
+    assert "from pg.nvd_se se" in sql
+    assert "'nar' as source" in sql
     assert "_rec_priority" not in sql
+    assert "from runner_candidates resolved" in sql
+
+
+def test_build_rec_select_sql_nar_does_not_duplicate_ban_ei_archive() -> None:
+    sql = subject.build_rec_select_sql("nar", "20100101", "20251231")
+    assert sql.count("from pg.nvd_se se") == 1
+    assert "se.keibajo_code = '83'" not in sql
+
+
+def test_build_rec_select_sql_jra_excludes_unreachable_nar_history():
+    sql = subject.build_rec_select_sql("jra", "20100101", "20251231")
+    assert "from pg.jvd_se se" in sql
+    assert "'jra' as source" in sql
+    assert "from pg.nvd_se se" not in sql
+    assert "se.keibajo_code = '83'" not in sql
 
 
 def test_build_rec_select_sql_with_upcoming_window_dedupes_and_adds_direct_source():
     sql = subject.build_rec_select_sql(
         "nar", "20100101", "20260603", ("20260603", "20260603")
     )
-    assert "from pg.race_entry_corner_features" in sql
+    assert "from pg.nvd_se se" in sql
     assert "pg.nvd_se se" in sql
     assert "_rec_priority" in sql
     assert "row_number() over" in sql
+    assert "from runner_candidates resolved" in sql
 
 
 def test_build_rec_select_sql_ban_ei_with_upcoming_window_uses_ban_ei_history():
@@ -371,6 +444,7 @@ def test_build_target_race_entities_sql_filters_to_target_race_and_category():
     assert "pg.nvd_se se" in sql
     assert "se.keibajo_code = '35'" in sql
     assert "se.race_bango = '01'" in sql
+    assert "from runner_candidates resolved" in sql
 
 
 def test_jockey_cte_filters_on_kishumei_ryakusho():
@@ -1735,20 +1809,17 @@ def test_build_per_year_specs_legacy_features_uses_nar_median() -> None:
 def test_build_rec_select_sql_ban_ei_uses_double_nullif_for_finish_position() -> None:
     """B001: Ban-ei rec SQL must use double nullif so '00' → NULL (not 0)."""
     sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231", None)
-    assert (
-        "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position"
-        in sql
-    )
+    assert "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int" in sql
 
 
 def test_build_rec_select_sql_ban_ei_uses_double_nullif_in_finish_norm_case() -> None:
     """B001: finish_norm CASE expression must also exclude '00' DQ rows.
 
-    finish_position (1) + CASE when-condition (1) + CASE then-expression (1) = 3 total.
+    Raw normalization parses the sentinel once and the early scratch predicate
+    parses it once. finish_norm consumes the typed alias rather than reparsing.
     """
     sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231", None)
-    # finish_position line + two CASE expression references = 3 total occurrences.
-    assert sql.count("nullif(nullif(trim(se.kakutei_chakujun), ''), '00')") == 3
+    assert sql.count("nullif(nullif(trim(se.kakutei_chakujun), ''), '00')") == 2
 
 
 def test_ban_ei_double_nullif_drops_00_finish_position_via_duckdb() -> None:
@@ -2298,6 +2369,47 @@ def test_venue_weather_empty_prior3_sql_has_expected_columns() -> None:
         "weather_date_yyyymmdd",
         "post_hour",
         "venue_temperature_prior3",
+        "venue_precipitation_prior3",
+        "venue_wind_speed_prior3_max",
+        "venue_wind_gusts_prior3_max",
+    ]
+
+
+def test_venue_weather_v2_empty_prior3_sql_has_expected_columns() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(subject.venue_weather_v2_empty_prior3_sql())
+    columns = [
+        row[0] for row in con.execute("describe venue_weather_v2_prior3").fetchall()
+    ]
+    assert columns == [
+        "keibajo_code",
+        "weather_date_yyyymmdd",
+        "post_hour",
+        "venue_relative_humidity_prior3_mean",
+        "venue_relative_humidity_prior3_max",
+        "venue_dew_point_prior3_mean",
+        "venue_wet_bulb_prior3_mean",
+        "venue_wet_bulb_prior3_max",
+        "venue_shortwave_radiation_prior3_mean",
+    ]
+
+
+def test_venue_weather_empty_prior_days_sql_has_expected_columns() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(subject.venue_weather_empty_prior_days_sql())
+    columns = [
+        row[0] for row in con.execute("describe venue_weather_prior_days").fetchall()
+    ]
+    assert columns == [
+        "keibajo_code",
+        "weather_date_yyyymmdd",
+        "venue_precipitation_prior1d",
+        "venue_precipitation_prior3d",
+        "venue_precipitation_prior7d",
     ]
 
 
@@ -2373,11 +2485,11 @@ def test_materialize_venue_weather_aggregates_three_hours_strictly_before_post(
     )
     src.execute(
         "insert into venue_weather values "
-        "('01', date '2020-01-01', 9, 100.0, 0.0, 1.0, 2.0), "
-        "('01', date '2020-01-01', 10, 10.0, 0.0, 1.0, 2.0), "
-        "('01', date '2020-01-01', 11, 20.0, 0.0, 1.0, 2.0), "
-        "('01', date '2020-01-01', 12, 30.0, 0.0, 1.0, 2.0), "
-        "('01', date '2020-01-01', 13, 200.0, 0.0, 1.0, 2.0)"
+        "('01', date '2020-01-01', 9, 100.0, 100.0, 100.0, 100.0), "
+        "('01', date '2020-01-01', 10, 10.0, 1.0, 4.0, 7.0), "
+        "('01', date '2020-01-01', 11, 20.0, 2.0, 5.0, 8.0), "
+        "('01', date '2020-01-01', 12, 30.0, 3.0, 6.0, 9.0), "
+        "('01', date '2020-01-01', 13, 200.0, 200.0, 200.0, 200.0)"
     )
     src.close()
     con = duckdb.connect(":memory:")
@@ -2385,12 +2497,103 @@ def test_materialize_venue_weather_aggregates_three_hours_strictly_before_post(
     subject.materialize_venue_weather(con, tmp_path, [2020])
 
     row = con.execute(
-        "select venue_temperature_prior3 from venue_weather_prior3 "
+        "select venue_temperature_prior3, venue_precipitation_prior3, "
+        "venue_wind_speed_prior3_max, venue_wind_gusts_prior3_max "
+        "from venue_weather_prior3 "
         "where keibajo_code = '01' and weather_date = date '2020-01-01' "
         "and post_hour = 13"
     ).fetchone()
     assert row is not None
     assert row[0] == pytest.approx(20.0)
+    assert row[1] == pytest.approx(6.0)
+    assert row[2] == pytest.approx(6.0)
+    assert row[3] == pytest.approx(9.0)
+
+
+def test_materialize_venue_weather_builds_causal_v2_prior3_window(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    v1 = duckdb.connect(str(tmp_path / "venue_weather_2020.duckdb"))
+    v1.execute(
+        "create table venue_weather ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, "
+        "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+    )
+    v1.execute(
+        "insert into venue_weather values ('01', date '2020-01-01', 10, 10, 0, 1, 2)"
+    )
+    v1.close()
+    v2 = duckdb.connect(str(tmp_path / "venue_weather_v2_2020.duckdb"))
+    v2.execute(
+        "create table venue_weather_v2 ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, temperature double, "
+        "relative_humidity double, dew_point double, wet_bulb_temperature double, "
+        "shortwave_radiation double)"
+    )
+    v2.execute(
+        "insert into venue_weather_v2 values "
+        "('01', date '2020-01-01', 10, 20, 70, 14, 17, 100), "
+        "('01', date '2020-01-01', 11, 22, 72, 15, 18, 200), "
+        "('01', date '2020-01-01', 12, 24, 74, 16, 19, 300), "
+        "('01', date '2020-01-01', 13, 100, 100, 100, 100, 1000)"
+    )
+    v2.close()
+    con = duckdb.connect(":memory:")
+
+    subject.materialize_venue_weather(con, tmp_path, [2020])
+
+    row = con.execute(
+        "select venue_relative_humidity_prior3_mean, "
+        "venue_relative_humidity_prior3_max, venue_dew_point_prior3_mean, "
+        "venue_wet_bulb_prior3_mean, venue_wet_bulb_prior3_max, "
+        "venue_shortwave_radiation_prior3_mean from venue_weather_v2_prior3 "
+        "where keibajo_code = '01' and weather_date_yyyymmdd = '20200101' "
+        "and post_hour = 13"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(72.0)
+    assert row[1] == pytest.approx(74.0)
+    assert row[2] == pytest.approx(15.0)
+    assert row[3] == pytest.approx(18.0)
+    assert row[4] == pytest.approx(19.0)
+    assert row[5] == pytest.approx(200.0)
+
+
+def test_materialize_venue_weather_uses_completed_prior_day_across_year_boundary(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    for year, weather_date, precipitation in (
+        (2019, "2019-12-31", 2.0),
+        (2020, "2020-01-01", 100.0),
+    ):
+        src = duckdb.connect(str(tmp_path / f"venue_weather_{year}.duckdb"))
+        src.execute(
+            "create table venue_weather ("
+            "keibajo_code varchar, weather_date date, weather_hour integer, "
+            "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+        )
+        src.execute(
+            "insert into venue_weather values ('01', cast(? as date), 10, 10.0, ?, 5.0, 9.0)",
+            [weather_date, precipitation],
+        )
+        src.close()
+    con = duckdb.connect(":memory:")
+
+    subject.materialize_venue_weather(con, tmp_path, [2020])
+
+    row = con.execute(
+        "select venue_precipitation_prior1d, venue_precipitation_prior3d, "
+        "venue_precipitation_prior7d from venue_weather_prior_days "
+        "where keibajo_code = '01' and weather_date_yyyymmdd = '20200101'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(2.0)
+    assert row[1] == pytest.approx(2.0)
+    assert row[2] == pytest.approx(2.0)
 
 
 def test_materialize_weather_lookup_joins_prior3_window_by_post_hour() -> None:
@@ -2418,24 +2621,31 @@ def test_materialize_weather_lookup_joins_prior3_window_by_post_hour() -> None:
     )
     con.execute(subject.venue_weather_empty_agg_sql())
     con.execute(subject.venue_weather_empty_prior3_sql())
+    con.execute(subject.venue_weather_empty_prior_days_sql())
+    con.execute(subject.venue_weather_v2_empty_prior3_sql())
     con.execute(
         "insert into venue_weather_agg values "
         "('01', date '2020-01-01', '20200101', 18.0, 0.0, 2.0, 4.0)"
     )
     con.execute(
         "insert into venue_weather_prior3 values "
-        "('01', date '2020-01-01', '20200101', 13, 20.0)"
+        "('01', date '2020-01-01', '20200101', 13, 20.0, 1.5, 6.0, 9.0)"
     )
 
     subject.materialize_weather_lookup(con)
 
     row = con.execute(
-        "select venue_temperature, venue_temperature_prior3 "
+        "select venue_temperature, venue_temperature_prior3, "
+        "venue_precipitation_prior3, venue_wind_speed_prior3_max, "
+        "venue_wind_gusts_prior3_max "
         "from weather_lookup where ketto_toroku_bango = 'horse'"
     ).fetchone()
     assert row is not None
     assert row[0] == pytest.approx(18.0)
     assert row[1] == pytest.approx(20.0)
+    assert row[2] == pytest.approx(1.5)
+    assert row[3] == pytest.approx(6.0)
+    assert row[4] == pytest.approx(9.0)
 
 
 def test_materialize_venue_weather_detaches_so_source_db_is_not_locked(
@@ -2766,6 +2976,73 @@ def test_stage_sql_fingerprint_unknown_stage_returns_name() -> None:
     assert (
         subject._stage_sql_fingerprint("mystery_stage", "jra", None) == "mystery_stage"
     )
+
+
+def test_canonicalize_runners_prefers_resolved_and_settled_rows() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    source_sql = """
+      select * from (values
+        ('nar', '2025', '0405', '55', '02', 10, '0000000000', null, 'placeholder'),
+        ('nar', '2025', '0405', '55', '02', 10, '2021101841', null, 'resolved'),
+        ('nar', '2025', '0405', '55', '03', 7, '0000000000', null, 'only-placeholder'),
+        ('nar', '2025', '0405', '55', '04', 2, '2022100001', null, 'known-a'),
+        ('nar', '2025', '0405', '55', '04', 2, '2022100002', null, 'known-b'),
+        ('nar', '2026', '0811', '30', '05', 6, '2022102400', null, 'stale-prerace'),
+        ('nar', '2026', '0811', '30', '05', 6, '2023103681', 3, 'settled-correction'),
+        ('nar', '2026', '0812', '30', '01', 1, '2024100001', 1, 'settled-a'),
+        ('nar', '2026', '0812', '30', '01', 1, '2024100002', 2, 'settled-b')
+      ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+             umaban, ketto_toroku_bango, finish_position, marker)
+    """
+    rows = con.execute(
+        subject.canonicalize_placeholder_runners_sql(source_sql)
+        + " order by kaisai_nen, kaisai_tsukihi, race_bango, marker"
+    ).fetchall()
+    con.close()
+    assert rows == [
+        ("nar", "2025", "0405", "55", "02", 10, "2021101841", None, "resolved"),
+        (
+            "nar",
+            "2025",
+            "0405",
+            "55",
+            "03",
+            7,
+            "0000000000",
+            None,
+            "only-placeholder",
+        ),
+        ("nar", "2025", "0405", "55", "04", 2, "2022100001", None, "known-a"),
+        ("nar", "2025", "0405", "55", "04", 2, "2022100002", None, "known-b"),
+        ("nar", "2026", "0811", "30", "05", 6, "2023103681", 3, "settled-correction"),
+        ("nar", "2026", "0812", "30", "01", 1, "2024100001", 1, "settled-a"),
+        ("nar", "2026", "0812", "30", "01", 1, "2024100002", 2, "settled-b"),
+    ]
+
+
+def test_corner_feature_select_excludes_official_scratches_for_jra_and_nar() -> None:
+    sql = subject._rec_select_from_corner_features("20260811", "20260811")
+    assert "from pg.race_entry_corner_features rec" in sql
+    assert "rec.finish_position is not null or" in sql
+    assert "rec.source = 'jra' and exists" in sql
+    assert "select 1 from pg.jvd_se se" in sql
+    assert "rec.source = 'nar' and exists" in sql
+    assert "select 1 from pg.nvd_se se" in sql
+    assert "coalesce(trim(se.ijo_kubun_code), '0') in ('1', '2')" in sql
+    assert "try_cast(nullif(trim(se.umaban), '') as int)" in sql
+
+
+def test_corner_feature_entity_filter_keeps_scratch_exclusion() -> None:
+    sql = subject._rec_select_from_corner_features(
+        "20260811", "20260811", " and ketto_toroku_bango = 'horse'"
+    )
+    assert "from pg.race_entry_corner_features rec" not in sql
+    assert ") rec" in sql
+    assert "rec.finish_position is not null or" in sql
+    assert "select 1 from pg.jvd_se se" in sql
+    assert "select 1 from pg.nvd_se se" in sql
 
 
 def test_stage_sql_fingerprint_horse_history_includes_base_select() -> None:
@@ -4200,16 +4477,19 @@ def test_build_rec_entity_filter_from_target_race_entities_uses_target_fields() 
     con = duckdb.connect()
     con.execute(
         "create temp table target_race_entities as select * from (values "
-        "('jra', '20260629', 'h-target-1', 'j-target', 't-target'), "
-        "('jra', '20260629', 'h-target-2', null, '')"
-        ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
-        "chokyoshimei_ryakusho)"
+        "('jra', '20260629', '2026', '0629', '05', '01', "
+        "'h-target-1', 'j-target', 't-target'), "
+        "('jra', '20260629', '2026', '0629', '05', '01', "
+        "'h-target-2', null, '')"
+        ") as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, "
+        "race_bango, ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho)"
     )
     result = subject._build_rec_entity_filter_from_target_race_entities(con)
     con.close()
     assert "ketto_toroku_bango in ('h-target-1', 'h-target-2')" in result
     assert "kishumei_ryakusho in ('j-target')" in result
-    assert "chokyoshimei_ryakusho in ('t-target')" in result
+    assert "chokyoshimei_ryakusho in ('', 't-target')" in result
+    assert "keibajo_code = '05' and race_date >= '20260624'" in result
 
 
 def test_build_rec_entity_filter_from_target_race_entities_empty_is_false() -> None:
@@ -4220,10 +4500,95 @@ def test_build_rec_entity_filter_from_target_race_entities_empty_is_false() -> N
         "create temp table target_race_entities as select "
         "cast(null as varchar) as ketto_toroku_bango, "
         "cast(null as varchar) as kishumei_ryakusho, "
-        "cast(null as varchar) as chokyoshimei_ryakusho where false"
+        "cast(null as varchar) as chokyoshimei_ryakusho, "
+        "cast(null as varchar) as keibajo_code, "
+        "cast(null as varchar) as race_date where false"
     )
     result = subject._build_rec_entity_filter_from_target_race_entities(con)
     con.close()
+    assert result == " and false"
+
+
+def test_pedigree_cohort_horses_jra_includes_matching_sire_and_damsire() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.jvd_um as select * from (values "
+        "('target', 'sire-a', 'damsire-a'), "
+        "('sire-sibling', 'sire-a', 'other'), "
+        "('damsire-sibling', 'other', 'damsire-a'), "
+        "('unrelated', 'other', 'other'), "
+        "('0000000000', 'sire-a', 'damsire-a')"
+        ") v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)"
+    )
+
+    result = subject._pedigree_cohort_horses(con, "jra", ["target"])
+    con.close()
+
+    assert result == ["damsire-sibling", "sire-sibling", "target"]
+
+
+def test_pedigree_cohort_horses_nar_uses_um_then_nu_fallback() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.nvd_um as select * from (values "
+        "('target', null, null), ('sibling', 'sire-a', 'other')"
+        ") v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)"
+    )
+    con.execute(
+        "create table pg.nvd_nu as select * from (values "
+        "('target', 'sire-a', 'damsire-a'), "
+        "('damsire-sibling', 'other', 'damsire-a')"
+        ") v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)"
+    )
+
+    result = subject._pedigree_cohort_horses(con, "nar", ["target"])
+    con.close()
+
+    assert result == ["damsire-sibling", "sibling", "target"]
+
+
+def test_pedigree_cohort_horses_empty_target_is_empty() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    result = subject._pedigree_cohort_horses(con, "jra", [])
+    con.close()
+    assert result == []
+
+
+def test_pedigree_cohort_horses_without_lineage_is_empty() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.jvd_um as select 'target' ketto_toroku_bango, "
+        "null::varchar ketto_joho_01b, null::varchar ketto_joho_05b"
+    )
+    result = subject._pedigree_cohort_horses(con, "jra", ["target"])
+    con.close()
+    assert result == []
+
+
+def test_rec_entity_filter_excludes_placeholder_horse_identity() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create temp table target_race_entities as select "
+        "'0000000000' ketto_toroku_bango, null::varchar kishumei_ryakusho, "
+        "null::varchar chokyoshimei_ryakusho, null::varchar keibajo_code, "
+        "null::varchar race_date"
+    )
+    result = subject._build_rec_entity_filter_from_target_race_entities(con)
+    con.close()
+
     assert result == " and false"
 
 
@@ -4415,6 +4780,10 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
             ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
             "chokyoshimei_ryakusho)"
         )
+        con.execute(
+            "create temp table rec_pedigree_horse_ids as select * from (values "
+            "('2020100001'), ('2020100002')) v(ketto_toroku_bango)"
+        )
 
     def fake_stage_se(
         con_: object,
@@ -4473,7 +4842,7 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
     assert all("race_bango = '01'" in f for f in captured_ra)
 
 
-def test_stage_source_tables_passes_empty_filter_when_target_race_none(
+def test_stage_source_tables_keeps_whole_day_unscoped_when_target_race_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import duckdb
@@ -4550,13 +4919,81 @@ def test_rec_select_from_corner_features_uses_catalog_view_with_entity_filter() 
     )
     assert "postgres_query" not in sql
     assert "pg.race_entry_corner_features" in sql
+    assert "kaisai_nen between '2006' and '2026'" in sql
+    assert "race_date between '20060101' and '20260628'" in sql
     assert "ketto_toroku_bango in ('2020100001')" in sql
+
+
+def test_rec_select_from_corner_features_source_scopes_raw_before_field_count() -> None:
+    sql = subject._rec_select_from_corner_features(
+        "20060101",
+        "20260628",
+        entity_filter=" and ketto_toroku_bango in ('2020100001')",
+        source="nar",
+    )
+    assert "from pg.nvd_se se" in sql
+    assert "inner join pg.nvd_ra ra" in sql
+    assert "pg.race_entry_corner_features" not in sql
+    assert "se.kaisai_nen between '2006'" in sql
+    assert "between '20060101' and '20260628'" in sql
+    assert "count(*) over" in sql
+    assert "from normalized_race_rows" in sql
+    assert "from pg.nvd_se se" in sql
+    assert "where true and ketto_toroku_bango in ('2020100001')" in sql
+    assert "inner join cohort_race_keys cohort" in sql
+
+
+def test_rec_select_from_raw_se_ra_counts_full_race_before_entity_filter() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.nvd_se as select * from (values "
+        "('2026', '0628', '30', '01', 'horse-a', '01', 'j-a', 't-a', '01', "
+        "'001', '003', '01', '00', '00', '00', '01', '0015', '1', '03', '0'), "
+        "('2026', '0628', '30', '01', 'horse-b', '02', 'j-b', 't-b', '02', "
+        "'002', '004', '02', '00', '00', '00', '02', '0025', '2', '04', '0'), "
+        "('2026', '0628', '30', '01', 'horse-scratch', '03', 'j-c', 't-c', "
+        "'00', '0000', '000', '00', '00', '00', '00', '00', '0000', '1', '05', '1')"
+        ") v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
+        "ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho, "
+        "kakutei_chakujun, time_sa, kohan_3f, corner_1, corner_2, corner_3, "
+        "corner_4, tansho_ninkijun, tansho_odds, seibetsu_code, barei, "
+        "ijo_kubun_code)"
+    )
+    con.execute(
+        "create table pg.nvd_ra as select * from (values "
+        "('2026', '0628', '30', '01', '1200', '24', ' ', '010', '1', '1', '00')"
+        ") v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, kyori, "
+        "track_code, grade_code, kyoso_joken_code, babajotai_code_shiba, "
+        "babajotai_code_dirt, shusso_tosu)"
+    )
+    sql = subject._rec_select_from_raw_se_ra(
+        "nar",
+        "20260628",
+        "20260628",
+        " and ketto_toroku_bango = 'horse-a'",
+    )
+
+    rows = con.execute(sql + " order by umaban").fetchall()
+    con.close()
+
+    assert len(rows) == 2
+    assert rows[0][7] == "horse-a"
+    assert rows[0][15] == 2
+    assert rows[0][17] == pytest.approx(0.0)
+    assert rows[0][20] == pytest.approx(0.0)
+    assert rows[1][7] == "horse-b"
+    assert rows[1][15] == 2
 
 
 def test_rec_select_from_corner_features_uses_pg_dot_without_entity_filter() -> None:
     sql = subject._rec_select_from_corner_features("20060101", "20260628")
     assert "pg.race_entry_corner_features" in sql
     assert "postgres_query" not in sql
+    assert "kaisai_nen between '2006' and '2026'" in sql
+    assert "race_date between '20060101' and '20260628'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -4620,9 +5057,11 @@ def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(
     def fake_stage_target_entities(*_args: object, **_kwargs: object) -> None:
         con.execute(
             "create temp table target_race_entities as select * from (values "
-            "('nar', '20260629', 'h-target', 'j-target', 't-target')"
-            ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
-            "chokyoshimei_ryakusho)"
+            "('nar', '20260629', '2026', '0629', '35', '01', "
+            "'h-target', 'j-target', 't-target')"
+            ") as v(source, race_date, kaisai_nen, kaisai_tsukihi, "
+            "keibajo_code, race_bango, ketto_toroku_bango, "
+            "kishumei_ryakusho, chokyoshimei_ryakusho)"
         )
 
     def capture_run(
@@ -4643,6 +5082,7 @@ def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(
     monkeypatch.setattr(
         subject, "stage_target_race_entities", fake_stage_target_entities
     )
+    monkeypatch.setattr(subject, "_pedigree_cohort_horses", lambda *_args: [])
     monkeypatch.setattr(subject, "run_staged_sql", capture_run)
     subject.create_empty_realtime_odds_stub(con)
     subject.stage_rec_table(
@@ -4661,6 +5101,52 @@ def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(
     assert "chokyoshimei_ryakusho in ('t-target')" in joined
     assert "se.keibajo_code = '35'" in joined
     assert "se.race_bango = '01'" in joined
+
+
+def test_stage_rec_table_whole_day_skips_focused_cohort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    captured_sql: list[str] = []
+
+    def fail_if_staged(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("whole-day build must not stage a focused cohort")
+
+    def capture_run(
+        con_inner: duckdb.DuckDBPyConnection,
+        stage: str,
+        sql: str,
+        **_kwargs: object,
+    ) -> None:
+        if stage == "source.rec":
+            captured_sql.append(sql)
+            con_inner.execute(
+                "create temp table rec as select null::varchar as \"source\", "
+                "null::varchar ketto_toroku_bango, null::varchar race_date, "
+                "null::varchar kishumei_ryakusho, "
+                "null::varchar chokyoshimei_ryakusho, "
+                "null::varchar keibajo_code where false"
+            )
+
+    monkeypatch.setattr(
+        subject, "stage_target_race_entities", fail_if_staged
+    )
+    monkeypatch.setattr(subject, "run_staged_sql", capture_run)
+    subject.stage_rec_table(
+        con,
+        "20160826",
+        "20260826",
+        "nar",
+        ("20260826", "20260826"),
+        None,
+        target_from="20260826",
+    )
+    con.close()
+
+    assert len(captured_sql) == 1
+    assert "cohort_race_keys" not in captured_sql[0]
 
 
 def test_target_race_arg_valid() -> None:
@@ -4705,3 +5191,29 @@ def test_stage_source_passes_target_race(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     con.close()
     assert captured["target_race"] == ("05", "11")
+
+
+def test_shrink_se_table_recreates_an_existing_temp_index() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create temp table _target_horse_ids as select 'horse-a' ketto_toroku_bango"
+    )
+    con.execute(
+        "create temp table jra_se as select * from (values "
+        "('2026', '0824', '83', '01', 'horse-a'), "
+        "('2026', '0824', '83', '01', 'horse-b')) "
+        "v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    con.execute(
+        "create index jra_se_jk_idx on jra_se "
+        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+
+    rows = subject._shrink_se_table_to_target_horses(con, "jra_se")
+    horses = con.execute("select ketto_toroku_bango from jra_se").fetchall()
+    con.close()
+
+    assert rows == 1
+    assert horses == [("horse-a",)]

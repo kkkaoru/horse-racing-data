@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 CATEGORY_CHOICES: tuple[str, ...] = ("jra", "nar", "ban-ei")
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS: float = 10.0
+DEFAULT_VENUE_WEATHER_DIR: Path = (
+    Path(__file__).resolve().parents[3] / "venue-weather" / "data"
+)
 RAW_OUTPUT_PREFIX: str = "_raw"
 SINGLE_QUOTE: str = "'"
 DOUBLED_SINGLE_QUOTE: str = "''"
@@ -189,7 +192,7 @@ def build_feature_builder_args(args: PhaseAArguments, raw_output_dir: Path) -> N
         temp_dir=resolve_temp_dir(args),
         resume=args["resume"],
         incremental=args["incremental"],
-        venue_weather_dir=None,
+        venue_weather_dir=DEFAULT_VENUE_WEATHER_DIR,
         realtime_odds=None,
     )
 

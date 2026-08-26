@@ -37,6 +37,10 @@ from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
+HISTORY_SOURCE_TABLES = (
+    ("jra", "jvd_se", "jvd_ra"),
+    ("nar", "nvd_se", "nvd_ra"),
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,7 +59,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Focused production mode keibajo_code:race_bango. The input parquet "
-            "is already race-scoped; this switches pair-history staging to target horses."
+            "is already race-scoped; pair-history staging is always restricted to "
+            "horses present in that input."
         ),
     )
     add_resource_args(parser)
@@ -66,23 +71,104 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def target_horses_by_source(
+    con: duckdb.DuckDBPyConnection,
+) -> dict[str, set[str]]:
+    """Return non-null target horses grouped by their current race source."""
+    rows = con.execute(
+        """
+        select source, ketto_toroku_bango
+        from target_horses
+        where source is not null and ketto_toroku_bango is not null
+        order by source, ketto_toroku_bango
+        """
+    ).fetchall()
+    horses_by_source: dict[str, set[str]] = {}
+    for raw_source, raw_horse in rows:
+        source = str(raw_source)
+        horses_by_source.setdefault(source, set()).add(str(raw_horse))
+    return horses_by_source
+
+
+def raw_race_history_branch_sql(
+    *,
+    source: str,
+    se_table: str,
+    ra_table: str,
+    horses: set[str],
+    from_date: str,
+) -> str:
+    """Build one source branch with filters below the compatibility-view window."""
+    horse_literals = ", ".join(sql_literal(horse) for horse in sorted(horses))
+    from_date_literal = sql_literal(from_date)
+    from_year_literal = sql_literal(from_date[:4])
+    return f"""
+        select
+          {sql_literal(source)} as source,
+          se.kaisai_nen || se.kaisai_tsukihi as race_date,
+          se.kaisai_nen,
+          se.kaisai_tsukihi,
+          se.keibajo_code,
+          se.race_bango,
+          se.ketto_toroku_bango,
+          try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+            as finish_position
+        from pg.{se_table} se
+        inner join pg.{ra_table} ra
+          using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where se.kaisai_nen >= {from_year_literal}
+          and se.kaisai_nen || se.kaisai_tsukihi >= {from_date_literal}
+          and se.ketto_toroku_bango in ({horse_literals})
+          and nullif(trim(se.ketto_toroku_bango), '') is not null
+          and try_cast(nullif(trim(se.umaban), '') as integer) is not null
+          and try_cast(nullif(trim(ra.kyori), '') as integer) is not null
+          and try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
+              is not null
+        """
+
+
+def race_history_select_sql(
+    con: duckdb.DuckDBPyConnection, from_date: str
+) -> str:
+    """Build raw source branches only for sources present in the target card."""
+    horses_by_source = target_horses_by_source(con)
+    branches = [
+        raw_race_history_branch_sql(
+            source=source,
+            se_table=se_table,
+            ra_table=ra_table,
+            horses=horses_by_source[source],
+            from_date=from_date,
+        )
+        for source, se_table, ra_table in HISTORY_SOURCE_TABLES
+        if source in horses_by_source
+    ]
+    if branches:
+        return "\n        union all\n".join(branches)
+    return """
+        select
+          cast(null as varchar) as source,
+          cast(null as varchar) as race_date,
+          cast(null as varchar) as kaisai_nen,
+          cast(null as varchar) as kaisai_tsukihi,
+          cast(null as varchar) as keibajo_code,
+          cast(null as varchar) as race_bango,
+          cast(null as varchar) as ketto_toroku_bango,
+          cast(null as integer) as finish_position
+        where false
+        """
+
+
 def stage_race_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+    history_select = race_history_select_sql(con, from_date)
     con.execute(
         f"""
         create or replace temp table race_history as
-        select
-          source,
-          race_date,
-          kaisai_nen,
-          kaisai_tsukihi,
-          keibajo_code,
-          race_bango,
-          ketto_toroku_bango,
-          finish_position
-        from pg.race_entry_corner_features
-        where race_date >= '{from_date}'
-          and finish_position is not null
-          and ketto_toroku_bango is not null
+        {history_select}
         """
     )
     con.execute(
@@ -105,9 +191,8 @@ def stage_target_horses(con: duckdb.DuckDBPyConnection, input_glob: str) -> None
     )
 
 
-def target_pair_filter_sql(focused_target: bool) -> str:
-    if focused_target:
-        return """
+def target_pair_filter_sql() -> str:
+    return """
         where exists (
           select 1 from target_horses th
           where th.source = h1.source
@@ -119,20 +204,18 @@ def target_pair_filter_sql(focused_target: bool) -> str:
             and th.ketto_toroku_bango = h2.ketto_toroku_bango
         )
         """
-    return ""
 
 
-def stage_pair_history(
-    con: duckdb.DuckDBPyConnection, focused_target: bool = False
-) -> None:
+def stage_pair_history(con: duckdb.DuckDBPyConnection) -> None:
     """過去同 race で走った unique 馬 pair (a < b) の finish_diff を materialize。
 
     Cardinality 制御: ketto_toroku_bango > 比較で重複除去。1 race あたり N×(N-1)/2 pairs。
-    JRA 全期間で約 150M 行想定 (DuckDB 24GB で持つ)。
-    focused_target=True の production single-race mode では input parquet の
-    target field horses 同士に限定して同じ historical pair を作る。
+    input parquet に出力する馬同士の履歴だけに限定する。Whole-day
+    day-base でも対象は当日カードの馬だけであり、それ以外の過去 pair は
+    最終出力に join されない。Offline full input では target_horses が全入力馬を
+    含むため従来と同じ pair 集合になる。
     """
-    target_filter = target_pair_filter_sql(focused_target)
+    target_filter = target_pair_filter_sql()
     con.execute(
         f"""
         create or replace temp table pair_history as
@@ -342,11 +425,10 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
+    stage_target_horses(con, input_glob)
     stage_race_history(con, args.from_date)
     stage_target_races(con, input_glob)
-    if args.target_race is not None:
-        stage_target_horses(con, input_glob)
-    stage_pair_history(con, args.target_race is not None)
+    stage_pair_history(con)
     stage_current_pair_aggregates(con)
     stage_h2h_horse_summary(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

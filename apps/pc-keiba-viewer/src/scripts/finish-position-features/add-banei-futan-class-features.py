@@ -89,11 +89,104 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def sql_literal(value: str) -> str:
+    """Return a safely quoted DuckDB SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _literal_list(values: set[str]) -> str:
+    return ", ".join(sql_literal(value) for value in sorted(values))
+
+
+def stage_target_scope(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Materialize the exact Ban-ei rows requested by the upstream layer."""
+    con.execute(
+        f"""
+        create or replace temp table banei_targets as
+        select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+          race_bango, ketto_toroku_bango,
+          kaisai_nen || kaisai_tsukihi as race_date
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
+        where source = 'nar'
+          and keibajo_code = '{BAN_EI_KEIBAJO}'
+          and ketto_toroku_bango is not null
+        """
+    )
+    con.execute(
+        f"create index banei_targets_idx on banei_targets ({RACE_PARTITION}, ketto_toroku_bango)"
+    )
+
+
+def _target_horse_ids(con: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = con.execute(
+        "select distinct ketto_toroku_bango from banei_targets order by 1"
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _pedigree_union_sql(row_filter: str) -> str:
+    """Resolve Ban-ei pedigree from the native master then its NU fallback."""
+    return f"""
+        select ketto_toroku_bango,
+          nullif(trim(ketto_joho_01a), '') as sire_id,
+          nullif(trim(ketto_joho_05a), '') as damsire_id,
+          1 as priority
+        from pg.nvd_um
+        where ketto_toroku_bango is not null and ({row_filter})
+        union all
+        select ketto_toroku_bango,
+          nullif(trim(ketto_joho_01a), '') as sire_id,
+          nullif(trim(ketto_joho_05a), '') as damsire_id,
+          2 as priority
+        from pg.nvd_nu
+        where ketto_toroku_bango is not null and ({row_filter})
+    """
+
+
+def _history_horse_ids(con: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = con.execute(
+        "select distinct ketto_toroku_bango from banei_pedigree order by 1"
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _target_runner_predicate(con: duckdb.DuckDBPyConnection) -> str:
+    rows = con.execute(
+        """
+        select min(race_date), max(race_date)
+        from banei_targets
+        """
+    ).fetchall()
+    horse_ids = _target_horse_ids(con)
+    if not horse_ids or not rows or rows[0][0] is None or rows[0][1] is None:
+        return "false"
+    from_date = str(rows[0][0])
+    to_date = str(rows[0][1])
+    return (
+        f"se.kaisai_nen between {sql_literal(from_date[:4])} "
+        f"and {sql_literal(to_date[:4])} "
+        f"and se.kaisai_nen || se.kaisai_tsukihi between "
+        f"{sql_literal(from_date)} and {sql_literal(to_date)} "
+        f"and se.ketto_toroku_bango in ({_literal_list(horse_ids)})"
+    )
+
+
 def stage_banei_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     """horse 過去 race + futan_class を Ban-ei filter で取得。
 
     futan_juryo は hex string ('26C'=620kg etc.) なので '0x' prefix + integer cast でデコード。
     """
+    horse_ids = _history_horse_ids(con)
+    horse_filter = (
+        f"and ketto_toroku_bango in ({_literal_list(horse_ids)})"
+        if horse_ids
+        else "and false"
+    )
+    target_to_date = str(
+        con.execute(
+            "select coalesce(max(race_date), '00000000') from banei_targets"
+        ).fetchall()[0][0]
+    )
     con.execute(
         f"""
         create or replace temp table banei_history as
@@ -107,6 +200,9 @@ def stage_banei_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
           from pg.nvd_se
           where keibajo_code = '{BAN_EI_KEIBAJO}'
             and kaisai_nen >= substring('{from_date}', 1, 4)
+            and kaisai_nen <= substring({sql_literal(target_to_date)}, 1, 4)
+            and kaisai_nen || kaisai_tsukihi < {sql_literal(target_to_date)}
+            {horse_filter}
         )
         select
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
@@ -125,16 +221,64 @@ def stage_banei_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
 
 
 def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
-    """nvd_um (NAR including ban-ei) から sire/damsire を取得。"""
+    """Stage target horses and progeny sharing their resolved sire/damsire."""
+    target_horses = _target_horse_ids(con)
+    target_filter = (
+        f"ketto_toroku_bango in ({_literal_list(target_horses)})"
+        if target_horses
+        else "false"
+    )
     con.execute(
+        f"""
+        create or replace temp table target_banei_pedigree as
+        with combined as ({_pedigree_union_sql(target_filter)})
+        select ketto_toroku_bango, sire_id, damsire_id
+        from combined
+        qualify row_number() over (
+          partition by ketto_toroku_bango order by priority
+        ) = 1
         """
+    )
+    lineage_rows = con.execute(
+        """
+        select sire_id from target_banei_pedigree where sire_id is not null
+        union
+        select damsire_id from target_banei_pedigree where damsire_id is not null
+        order by 1
+        """
+    ).fetchall()
+    lineage_ids = {str(row[0]) for row in lineage_rows}
+    if lineage_ids:
+        lineage_literals = _literal_list(lineage_ids)
+        lineage_filter = (
+            f"nullif(trim(ketto_joho_01a), '') in ({lineage_literals}) "
+            f"or nullif(trim(ketto_joho_05a), '') in ({lineage_literals})"
+        )
+        candidate_rows = con.execute(
+            f"""
+            select distinct ketto_toroku_bango
+            from ({_pedigree_union_sql(lineage_filter)}) candidates
+            order by 1
+            """
+        ).fetchall()
+        candidate_horses = {str(row[0]) for row in candidate_rows}
+    else:
+        candidate_horses = set()
+    scoped_horses = target_horses | candidate_horses
+    scoped_filter = (
+        f"ketto_toroku_bango in ({_literal_list(scoped_horses)})"
+        if scoped_horses
+        else "false"
+    )
+    con.execute(
+        f"""
         create or replace temp table banei_pedigree as
-        select
-          ketto_toroku_bango,
-          nullif(trim(ketto_joho_01a), '') as sire_id,
-          nullif(trim(ketto_joho_05a), '') as damsire_id
-        from pg.nvd_um
-        where ketto_toroku_bango is not null
+        with combined as ({_pedigree_union_sql(scoped_filter)})
+        select ketto_toroku_bango, sire_id, damsire_id
+        from combined
+        qualify row_number() over (
+          partition by ketto_toroku_bango order by priority
+        ) = 1
         """
     )
     con.execute(
@@ -166,7 +310,7 @@ def stage_horse_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window horse_futan_career as (
           partition by source, ketto_toroku_bango, futan_class
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -198,7 +342,7 @@ def stage_sire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window sire_futan_career as (
           partition by sire_id, futan_class
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -230,7 +374,7 @@ def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window damsire_futan_career as (
           partition by damsire_id, futan_class
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -241,6 +385,7 @@ def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
 
 def stage_current_race_futan(con: duckdb.DuckDBPyConnection) -> None:
     """current race の futan_class を horse 単位で取得 + field average。"""
+    target_predicate = _target_runner_predicate(con)
     con.execute(
         f"""
         create or replace temp table current_race_futan as
@@ -250,8 +395,9 @@ def stage_current_race_futan(con: duckdb.DuckDBPyConnection) -> None:
             kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
             ketto_toroku_bango,
             {FUTAN_HEX_PARSE} as futan_kg
-          from pg.nvd_se
-          where keibajo_code = '{BAN_EI_KEIBAJO}'
+          from pg.nvd_se se
+          where se.keibajo_code = '{BAN_EI_KEIBAJO}'
+            and ({target_predicate})
         ),
         bucketed as (
           select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
@@ -310,19 +456,19 @@ def append_features_sql(input_glob: str) -> str:
              then dfc.past_wins::double / dfc.past_starts
              else null end as damsire_futan_class_win_rate
       from base_with_pedigree bwp
-      left join horse_futan_cumul hfc
+      asof left join horse_futan_cumul hfc
         on hfc.source = bwp.source
         and hfc.ketto_toroku_bango = bwp.ketto_toroku_bango
         and hfc.futan_class = bwp.current_futan_class
-        and hfc.race_date = bwp.race_date
-      left join sire_futan_cumul sfc
+        and hfc.race_date < bwp.race_date
+      asof left join sire_futan_cumul sfc
         on sfc.sire_id = bwp.sire_id
         and sfc.futan_class = bwp.current_futan_class
-        and sfc.race_date = bwp.race_date
-      left join damsire_futan_cumul dfc
+        and sfc.race_date < bwp.race_date
+      asof left join damsire_futan_cumul dfc
         on dfc.damsire_id = bwp.damsire_id
         and dfc.futan_class = bwp.current_futan_class
-        and dfc.race_date = bwp.race_date
+        and dfc.race_date < bwp.race_date
     )
     select * from joined
     """
@@ -346,8 +492,9 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_banei_history(con, args.from_date)
+    stage_target_scope(con, input_glob)
     stage_horse_pedigree(con)
+    stage_banei_history(con, args.from_date)
     stage_horse_futan_cumul(con)
     stage_sire_futan_cumul(con)
     stage_damsire_futan_cumul(con)

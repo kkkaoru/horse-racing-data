@@ -26,8 +26,12 @@ class FakeConn:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    def execute(self, sql: str) -> None:
+    def execute(self, sql: str) -> FakeConn:
         self.statements.append(sql)
+        return self
+
+    def fetchall(self) -> list[tuple[str]]:
+        return [("tansho_ninkijun",), ("shusso_tosu",)]
 
 
 def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
@@ -44,9 +48,86 @@ def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
     assert args.target_race == "05:11"
 
 
+def test_parse_args_accepts_bounded_target_period(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-from-date",
+            "20250101",
+            "--target-to-date",
+            "20250131",
+        ]
+    )
+    assert args.target_from_date == "20250101"
+    assert args.target_to_date == "20250131"
+
+
+@pytest.mark.parametrize("value", ["20250229", "2025-01-01", "2025011"])
+def test_validate_yyyymmdd_rejects_invalid_dates(value: str) -> None:
+    with pytest.raises(ValueError, match="valid YYYYMMDD"):
+        subject.validate_yyyymmdd(value, "--target-from-date")
+
+
+def test_target_date_filter_sql_is_inclusive() -> None:
+    assert subject.target_date_filter_sql("b", "20250101", "20250131") == (
+        "b.race_date >= '20250101' and b.race_date <= '20250131'"
+    )
+    assert subject.target_date_filter_sql("b", None, None) == "true"
+
+
+def test_offline_bulk_requires_bounded_target_period() -> None:
+    with pytest.raises(ValueError, match="offline bulk mode requires"):
+        subject.require_bounded_bulk(False, None, None)
+    subject.require_bounded_bulk(False, "20250101", "20250131")
+    subject.require_bounded_bulk(True, None, None)
+
+
+def test_drop_temp_tables_releases_only_named_intermediates() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create temp table obsolete as select 1 as value")
+    con.execute("create temp table retained as select 2 as value")
+    subject.drop_temp_tables(con, ("obsolete", "already_absent"))
+    assert con.execute("select value from retained").fetchone() == (2,)
+    with pytest.raises(duckdb.CatalogException):
+        con.execute("select * from obsolete")
+
+
+def test_optional_parquet_column_sql_uses_typed_null_for_missing_column(
+    tmp_path: Path,
+) -> None:
+    parquet_path = tmp_path / "minimal.parquet"
+    con = duckdb.connect(":memory:")
+    con.execute(f"copy (select 1 as present) to '{parquet_path.as_posix()}'")
+    assert (
+        subject.optional_parquet_column_sql(
+            con, parquet_path.as_posix(), "missing", "bigint"
+        )
+        == "cast(null as bigint) as missing"
+    )
+    assert (
+        subject.optional_parquet_column_sql(
+            con, parquet_path.as_posix(), "present", "integer"
+        )
+        == "b.present"
+    )
+
+
 def test_append_features_sql_excludes_base_meta_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "exclude (kishumei_ryakusho, tansho_ninkijun, shusso_tosu)" in sql
+
+
+def test_append_features_sql_bounded_base_defines_filter_alias() -> None:
+    sql = subject.append_features_sql(
+        "dummy.parquet",
+        target_from_date="20250101",
+        target_to_date="20250131",
+    )
+    assert "hive_partitioning=true) b" in sql
+    assert "where b.race_date >= '20250101'" in sql
 
 
 def test_append_features_sql_reemits_canonical_null_shusso_tosu() -> None:
@@ -301,6 +382,143 @@ def test_append_features_sql_uses_asof_join_for_horse_near_miss() -> None:
     assert "h.race_date = b.race_date" not in sql
 
 
+def test_append_features_sql_bulk_uses_exact_shifted_history_joins() -> None:
+    sql = subject.append_features_sql("dummy.parquet", focused_target=False)
+    assert "left join horse_near_miss_target h" in sql
+    assert "b.race_date = h.race_date" in sql
+    assert "left join jockey_near_miss_target j" in sql
+    assert "b.race_date = j.race_date" in sql
+    assert "asof left join horse_near_miss h" not in sql
+    assert "asof left join jockey_near_miss j" not in sql
+
+
+def test_bulk_prior_date_lookups_match_strict_asof_with_same_day_rows() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table horse_near_miss as
+        select * from (values
+          ('nar','horse','20240101',1,0,1,null,0,null),
+          ('nar','horse','20240101',2,1,1,2.0,1,2.0),
+          ('nar','horse','20240105',3,1,2,2.0,0,null),
+          ('nar','horse','20240110',4,2,2,1.5,2,1.5)
+        ) v(source,ketto_toroku_bango,race_date,past_starts,past_p2_count,
+            past_p1_count,past_p2_avg_timesa,recent_p2_count_5,
+            recent_p2_avg_timesa_5)
+        """
+    )
+    con.execute(
+        """
+        create temp table jockey_near_miss as
+        select * from (values
+          ('nar','J','20240101',2,1),
+          ('nar','J','20240105',3,1),
+          ('nar','J','20240110',4,2)
+        ) v(source,kishumei_ryakusho,race_date,past_rides,past_jockey_p2_count)
+        """
+    )
+    subject.stage_bulk_prior_date_lookups(con)
+    horse = con.execute(
+        """select race_date,past_starts,past_p2_count,recent_p2_count_5,
+          recent_p2_avg_timesa_5
+        from horse_near_miss_target order by race_date"""
+    ).fetchall()
+    jockey = con.execute(
+        """select race_date,past_rides,past_jockey_p2_count
+        from jockey_near_miss_target order by race_date"""
+    ).fetchall()
+    con.close()
+    assert horse == [
+        ("20240105", 2, 1, 1, 2.0),
+        ("20240110", 3, 1, 0, None),
+    ]
+    assert jockey == [("20240105", 2, 1), ("20240110", 3, 1)]
+
+
+def test_append_features_sql_does_not_share_unknown_horse_history() -> None:
+    sql = subject.append_features_sql("dummy.parquet")
+    guard = (
+        "and nullif(trim(b.ketto_toroku_bango), '0000000000') is not null"
+    )
+    assert sql.count(guard) == 4
+
+
+def test_append_features_sql_unknown_horse_keeps_one_row_and_null_horse_stats(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "unknown-horse"
+    input_dir.mkdir()
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table seed as
+        select
+          'nar'::varchar as source, '2025'::varchar as kaisai_nen,
+          '0406'::varchar as kaisai_tsukihi, '46'::varchar as keibajo_code,
+          '01'::varchar as race_bango, '0000000000'::varchar as ketto_toroku_bango,
+          '20250406'::varchar as race_date, 2025::integer as race_year,
+          'JOCKEY_ZERO'::varchar as kishumei_ryakusho,
+          1::integer as tansho_ninkijun, 10::integer as shusso_tosu,
+          3.0::double as tansho_odds, 1300::integer as kyori,
+          '1'::varchar as track_code, 'C'::varchar as grade_code
+        """
+    )
+    con.execute(
+        f"copy seed to '{input_dir.as_posix()}' "
+        "(format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+    _seed_join_temps(con)
+    con.execute(
+        """
+        insert into race_history values
+          ('nar', '2025', '0406', '46', '01', '0000000000',
+           'JOCKEY_ZERO', 1, 10, 3.0)
+        """
+    )
+    con.execute(
+        """
+        insert into horse_near_miss values
+          ('nar', '0000000000', '20250405', 20, 4, 6, 0.2, 3, 0.1)
+        """
+    )
+    con.execute(
+        """
+        insert into horse_context values
+          ('nar', '2025', '0406', '46', '01', '0000000000',
+           10, 5, 10, 5, 10, 5, 10, 5)
+        """
+    )
+    con.execute(
+        """
+        insert into horse_pedigree_context values
+          ('nar', '2025', '0406', '46', '01', '0000000000', 10, 5, 10, 5, 10, 5)
+        """
+    )
+    con.execute(
+        """
+        insert into horse_distance_grade values
+          ('nar', '2025', '0406', '46', '01', '0000000000', 10, 5)
+        """
+    )
+    con.execute(
+        """
+        insert into jockey_near_miss values
+          ('nar', 'JOCKEY_ZERO', '20250405', 10, 2)
+        """
+    )
+    rows = con.execute(
+        f"""
+        select career_place2_rate, same_keibajo_place2_rate,
+               sire_distance_place2_rate, horse_distance_grade_place2_rate,
+               jockey_career_place2_rate
+        from ({subject.append_features_sql(glob)})
+        """
+    ).fetchall()
+    con.close()
+    assert rows == [(None, None, None, None, 0.2)]
+
+
 def test_append_features_sql_uses_asof_join_for_jockey_near_miss() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "asof left join jockey_near_miss j" in sql
@@ -507,6 +725,25 @@ def test_stage_race_history_focused_appends_entity_filter() -> None:
     assert "rec.kaisai_nen >= substring('20240101', 1, 4)" in body
     assert "rec.source in (select distinct source from target_entities)" in body
     assert "target_entities" in body
+
+
+def test_stage_race_history_bulk_prunes_unrequested_source() -> None:
+    conn = FakeConn()
+    subject.stage_race_history(
+        conn, "20240101", offline_sources=frozenset({"nar"})
+    )
+    body = " ".join(conn.statements)
+    assert "and rec.source in ('nar')" in body
+
+
+def test_stage_race_history_bulk_rejects_invalid_or_empty_source_scope() -> None:
+    conn = FakeConn()
+    with pytest.raises(ValueError, match="source scope cannot be empty"):
+        subject.stage_race_history(conn, "20240101", offline_sources=frozenset())
+    with pytest.raises(ValueError, match="unsupported offline race-history sources"):
+        subject.stage_race_history(
+            conn, "20240101", offline_sources=frozenset({"other"})
+        )
 
 
 def test_raw_catalog_race_history_sql_pushes_filters_into_source_branches() -> None:
@@ -764,6 +1001,102 @@ def test_focused_target_staging_uses_one_current_catalog_lookup() -> None:
     subject.stage_target_context(conn, "dummy.parquet", True)
     body = " ".join(conn.statements)
     assert body.count("pg.race_entry_corner_features") == 1
+
+
+def test_stage_race_history_pushes_inclusive_upper_date_into_pg_scan() -> None:
+    conn = FakeConn()
+    subject.stage_race_history(
+        conn,
+        "20100101",
+        offline_sources=frozenset({"nar"}),
+        to_date="20250131",
+    )
+    body = " ".join(conn.statements)
+    assert "rec.race_date <= '20250131'" in body
+    assert "rec.kaisai_nen <= substring('20250131', 1, 4)" in body
+    assert "rec.source in ('nar')" in body
+
+
+def test_postgres_entity_scoped_query_pushes_source_entities_and_dates() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table target_entities as select * from (
+          values
+            ('nar', 'horse_n', 'O''Brien', 'sire_n', cast(null as varchar)),
+            ('jra', 'horse_j', cast(null as varchar), cast(null as varchar), 'dam_j')
+        ) as v(source, ketto_toroku_bango, kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    sql = subject.postgres_entity_scoped_race_history_query(
+        con, "20100101", "20250131"
+    )
+    assert "rec.race_date >= '20100101'" in sql
+    assert "rec.race_date <= '20250131'" in sql
+    assert "rec.source = 'nar'" in sql
+    assert "rec.source = 'jra'" in sql
+    assert "rec.ketto_toroku_bango in ('horse_n')" in sql
+    assert "rec.kishumei_ryakusho in ('O''Brien')" in sql
+    assert "hp.damsire_id in ('dam_j')" in sql
+
+
+def test_postgres_entity_scoped_query_rejects_empty_or_unknown_source() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table target_entities(
+          source varchar, ketto_toroku_bango varchar,
+          kishumei_ryakusho varchar, sire_id varchar, damsire_id varchar
+        )
+        """
+    )
+    with pytest.raises(ValueError, match="target cannot be empty"):
+        subject.postgres_entity_scoped_race_history_query(
+            con, "20100101", "20250131"
+        )
+    con.execute(
+        "insert into target_entities values ('other', 'horse', null, null, null)"
+    )
+    with pytest.raises(ValueError, match="unsupported entity-scoped"):
+        subject.postgres_entity_scoped_race_history_query(
+            con, "20100101", "20250131"
+        )
+
+
+def test_postgres_query_table_sql_escapes_remote_query_literal() -> None:
+    sql = subject.postgres_query_table_sql("select 'quoted' as value")
+    assert "postgres_query('pg', 'select ''quoted'' as value')" in sql
+
+
+def test_project_scoped_race_history_drops_output_only_columns() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_history as select
+          'nar'::varchar as source, '20250101'::varchar as race_date,
+          '35'::varchar as keibajo_code, 'horse'::varchar as ketto_toroku_bango,
+          'jockey'::varchar as kishumei_ryakusho, 2::integer as finish_position,
+          0.1::double as time_sa, 1200::integer as kyori,
+          '11'::varchar as track_code, 'A'::varchar as grade_code,
+          '2025'::varchar as kaisai_nen, '0101'::varchar as kaisai_tsukihi,
+          '01'::varchar as race_bango, 3.2::double as tansho_odds,
+          1::integer as tansho_ninkijun, 12::integer as shusso_tosu
+        """
+    )
+    subject.project_scoped_race_history(con)
+    columns = [row[0] for row in con.execute("describe race_history").fetchall()]
+    assert columns == [
+        "source",
+        "race_date",
+        "keibajo_code",
+        "ketto_toroku_bango",
+        "kishumei_ryakusho",
+        "finish_position",
+        "time_sa",
+        "kyori",
+        "track_code",
+        "grade_code",
+    ]
 
 
 def test_main_calls_stage_race_history_and_stage_target_context_each_once() -> None:
@@ -1178,6 +1511,109 @@ def test_stage_horse_context_full_race_key_isolation_no_cross_race_join() -> Non
     assert rows == [("01", 1, 1), ("02", 1, 1)]
 
 
+def test_stage_horse_context_cumulative_asof_matches_reference_inequality_join() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_history as
+        select * from (values
+          ('nar','20240101','2024','0101','01','01','horse_a',' J1 ',2,1.0,1,1,8,1200,'24','A'),
+          ('nar','20240105','2024','0105','02','02','horse_a','J2',1,1.0,1,1,8,1400,'14','A'),
+          ('nar','20240110','2024','0110','01','03','horse_a','J1',2,1.0,1,1,8,1600,'25','B'),
+          ('nar','20240115','2024','0115','01','04','horse_a','J1',1,1.0,1,1,8,1400,'24','A'),
+          ('nar','20240115','2024','0115','02','05','horse_b',null,2,1.0,1,1,8,1800,'','A')
+        ) v(source,race_date,kaisai_nen,kaisai_tsukihi,keibajo_code,race_bango,
+            ketto_toroku_bango,kishumei_ryakusho,finish_position,time_sa,
+            tansho_odds,tansho_ninkijun,shusso_tosu,kyori,track_code,grade_code)
+        """
+    )
+    con.execute(
+        """
+        create temp table target_context as
+        select * from (values
+          ('nar','20240115','2024','0115','01','04','horse_a',1400,'24','A','J1',null,null),
+          ('nar','20240115','2024','0115','02','05','horse_b',1800,'','A',null,null,null)
+        ) v(source,race_date,kaisai_nen,kaisai_tsukihi,keibajo_code,race_bango,
+            ketto_toroku_bango,kyori,track_code,grade_code,kishumei_ryakusho,
+            sire_id,damsire_id)
+        """
+    )
+    expected = con.execute(
+        """
+        select curr.race_bango,
+          count(case when past.keibajo_code = curr.keibajo_code then 1 end),
+          sum(case when past.keibajo_code = curr.keibajo_code
+                    and past.finish_position = 2 then 1 else 0 end),
+          count(case when curr.kyori is not null and past.kyori is not null
+                       and abs(past.kyori - curr.kyori) <= 200 then 1 end),
+          sum(case when curr.kyori is not null and past.kyori is not null
+                    and abs(past.kyori - curr.kyori) <= 200
+                    and past.finish_position = 2 then 1 else 0 end),
+          count(case when nullif(trim(curr.track_code), '') is not null
+                       and nullif(trim(past.track_code), '') is not null
+                       and left(curr.track_code, 1) = left(past.track_code, 1)
+                     then 1 end),
+          sum(case when nullif(trim(curr.track_code), '') is not null
+                    and nullif(trim(past.track_code), '') is not null
+                    and left(curr.track_code, 1) = left(past.track_code, 1)
+                    and past.finish_position = 2 then 1 else 0 end),
+          count(case when curr.kishumei_ryakusho is not null
+                       and nullif(trim(past.kishumei_ryakusho), '') = curr.kishumei_ryakusho
+                     then 1 end),
+          sum(case when curr.kishumei_ryakusho is not null
+                    and nullif(trim(past.kishumei_ryakusho), '') = curr.kishumei_ryakusho
+                    and past.finish_position = 2 then 1 else 0 end)
+        from target_context curr
+        left join race_history past
+          on past.source = curr.source
+          and past.ketto_toroku_bango = curr.ketto_toroku_bango
+          and past.race_date < curr.race_date
+        group by curr.race_bango
+        order by curr.race_bango
+        """
+    ).fetchall()
+
+    subject.stage_horse_context(con)
+    actual = con.execute(
+        """
+        select race_bango, same_keibajo_starts, same_keibajo_p2,
+          same_distance_starts, same_distance_p2,
+          same_track_starts, same_track_p2, pair_starts, pair_p2
+        from horse_context order by race_bango
+        """
+    ).fetchall()
+
+    subject.stage_horse_context(con, focused_target=False)
+    bulk_actual = con.execute(
+        """
+        select race_bango, same_keibajo_starts, same_keibajo_p2,
+          same_distance_starts, same_distance_p2,
+          same_track_starts, same_track_p2, pair_starts, pair_p2
+        from horse_context order by race_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert actual == expected
+    assert bulk_actual == expected
+
+
+def test_stage_horse_context_bulk_uses_shifted_exact_joins() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_horse_context(RecordingConn(), focused_target=False)
+    body = " ".join(sql_calls)
+    assert "left join venue_shifted venue" in body
+    assert "left join distance_shifted distance" in body
+    assert "left join track_shifted track" in body
+    assert "left join pair_shifted pair" in body
+    assert "asof left join venue_cumulative venue" not in body
+
+
 def test_append_features_sql_hc_join_uses_full_race_key_not_race_date_only() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "hc.kaisai_nen = b.kaisai_nen" in sql
@@ -1247,6 +1683,154 @@ def test_stage_horse_distance_grade_target_cte_sources_from_target_context() -> 
     subject.stage_horse_distance_grade(RecordingConn())
     body = " ".join(sql_calls)
     assert "from target_context\n          where kyori is not null" in body
+
+
+def test_bulk_pedigree_timeline_is_strict_and_carries_across_date_gaps() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table pedigree_target as
+        select * from (values
+          ('nar', date '2024-01-05', '2024', '0105', '01', '01', 'horse_gap',
+           1600, 'A', 'sire_x', 'damsire_x'),
+          ('nar', date '2024-01-10', '2024', '0110', '01', '02', 'horse_same_day',
+           1600, 'A', 'sire_x', 'damsire_x')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+          race_bango, ketto_toroku_bango, kyori, grade_code, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_kyori_cumul as
+        select * from (values
+          ('sire_x', 1600, date '2024-01-01', 1::hugeint, 1::hugeint),
+          ('sire_x', 1600, date '2024-01-10', 2::hugeint, 1::hugeint)
+        ) as v(sire_id, kyori, race_date, cum_starts, cum_p2)
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_grade_cumul as
+        select * from (values
+          ('sire_x', 'A', date '2024-01-01', 1::hugeint, 1::hugeint),
+          ('sire_x', 'A', date '2024-01-10', 2::hugeint, 1::hugeint)
+        ) as v(sire_id, grade_code, race_date, cum_starts, cum_p2)
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_kyori_cumul as
+        select * from (values
+          ('damsire_x', 1600, date '2024-01-01', 1::hugeint, 1::hugeint),
+          ('damsire_x', 1600, date '2024-01-10', 2::hugeint, 1::hugeint)
+        ) as v(damsire_id, kyori, race_date, cum_starts, cum_p2)
+        """
+    )
+    con.execute(
+        "create temp table distance_bridge as select 1600 as target_kyori, "
+        "1600 as past_kyori"
+    )
+
+    subject._stage_horse_pedigree_context_bulk(con)
+    rows = con.execute(
+        """
+        select sd.ketto_toroku_bango, sd.sire_distance_starts,
+          sd.sire_distance_p2, sg.sire_grade_starts, dd.damsire_distance_starts
+        from sire_distance_stats sd
+        join sire_grade_stats sg using (
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango
+        )
+        join damsire_distance_stats dd using (
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango
+        )
+        order by sd.ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert rows == [
+        ("horse_gap", 1, 1, 1, 1),
+        ("horse_same_day", 1, 1, 1, 1),
+    ]
+
+
+def test_bulk_distance_grade_lag_matches_strict_prior_date() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_history as
+        select * from (values
+          ('nar', 'horse_a', 1600, 'A', date '2024-01-01', 2),
+          ('nar', 'horse_a', 1600, 'A', date '2024-01-10', 1)
+        ) as v(source, ketto_toroku_bango, kyori, grade_code, race_date,
+          finish_position)
+        """
+    )
+    con.execute(
+        """
+        create temp table target_context as
+        select 'nar' as source, date '2024-01-10' as race_date,
+          '2024' as kaisai_nen, '0110' as kaisai_tsukihi, '01' as keibajo_code,
+          '01' as race_bango, 'horse_a' as ketto_toroku_bango,
+          1600 as kyori, 'A' as grade_code
+        """
+    )
+
+    subject.stage_distance_bridge(con)
+    subject.stage_horse_distance_grade(con, focused_target=False)
+    row = con.execute(
+        "select dg_starts, dg_p2 from horse_distance_grade"
+    ).fetchone()
+    con.close()
+
+    assert row == (1, 1)
+
+
+def test_bulk_pedigree_and_distance_grade_sql_contains_no_asof() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_horse_pedigree_context(RecordingConn(), focused_target=False)
+    subject.stage_horse_distance_grade(RecordingConn(), focused_target=False)
+    body = " ".join(sql_calls)
+    assert "asof left join" not in body
+    assert "last_value(cum_starts ignore nulls)" in body
+    assert "lag(cum_starts) over history" in body
+
+
+def test_distance_tolerance_is_resolved_by_small_bridge_before_entity_joins() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_horse_context(RecordingConn())
+    subject.stage_horse_pedigree_context(RecordingConn())
+    subject.stage_horse_distance_grade(RecordingConn())
+    body = " ".join(sql_calls)
+
+    # The range comparison is isolated in a separate physical table built
+    # from two already-materialized DISTINCT distance domains. Every large
+    # target/entity query consumes that table through equality joins only.
+    assert "create or replace temp table target_distance_domain" in body
+    assert "create or replace temp table history_distance_domain" in body
+    assert body.count("abs(history.past_kyori - target.target_kyori)") == 1
+    assert "distance_bridge as materialized" not in body
+    assert "cross join unnest(range(" not in body
+    assert "abs(past.kyori - target.target_kyori)" not in body
+    assert "bridge.past_kyori = past.kyori" in body
+    assert "abs(sk.kyori - t.kyori)" not in body
+    assert "abs(dk.kyori - t.kyori)" not in body
+    assert "abs(hk.kyori - t.kyori)" not in body
+    assert "sk.kyori = bridge.past_kyori" in body
+    assert "dk.kyori = bridge.past_kyori" in body
+    assert "hk.kyori = bridge.past_kyori" in body
 
 
 def test_upcoming_target_race_resolves_pedigree_and_distance_grade_context(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Protocol
 
 
@@ -45,13 +46,6 @@ with raw_rows as (
     ra.babajotai_code_shiba, ra.babajotai_code_dirt, ra.kyori, ra.shusso_tosu
   from pg.nvd_se se
   inner join pg.nvd_ra ra using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-), race_counts as (
-  select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-    count(*) as entry_count
-  from raw_rows
-  where nullif(trim(ketto_toroku_bango), '') is not null
-    and try_cast(nullif(trim(umaban), '') as integer) is not null
-  group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
 ), normalized as (
   select
     source,
@@ -64,7 +58,9 @@ with raw_rows as (
     try_cast(nullif(trim(kyori), '') as integer) as kyori,
     coalesce(
       try_cast(nullif(trim(raw.shusso_tosu), '00') as integer),
-      counts.entry_count
+      count(*) over (
+        partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+      )
     ) as shusso_tosu,
     seibetsu_code,
     try_cast(nullif(trim(barei), '00') as integer) as barei,
@@ -81,9 +77,8 @@ with raw_rows as (
     try_cast(nullif(trim(corner_3), '00') as double) as corner_3,
     try_cast(nullif(trim(corner_4), '00') as double) as corner_4
   from raw_rows raw
-  inner join race_counts counts
-    using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
   where nullif(trim(raw.ketto_toroku_bango), '') is not null
+    and try_cast(nullif(trim(raw.umaban), '') as integer) is not null
 )
 select
   *,
@@ -127,7 +122,16 @@ def _sql_literal(value: str) -> str:
 
 
 def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
-    """Attach PostgreSQL or an R2 Data Catalog as ``pg``."""
+    """Attach PostgreSQL, a local DuckDB snapshot, or R2 as ``pg``."""
+    if source_url.startswith("duckdb://"):
+        snapshot_path = Path(source_url.removeprefix("duckdb://")).expanduser()
+        if not snapshot_path.is_absolute():
+            raise ValueError("duckdb:// source path must be absolute")
+        con.execute(
+            f"attach {_sql_literal(str(snapshot_path))} as pg "
+            "(type duckdb, read_only)"
+        )
+        return
     if not source_url.startswith("r2-catalog://"):
         con.execute("install postgres")
         con.execute("load postgres")

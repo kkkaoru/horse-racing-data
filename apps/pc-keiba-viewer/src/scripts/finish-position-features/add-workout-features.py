@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -37,6 +39,13 @@ DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_ra
 LOOKBACK_DAYS = 90
 WORKOUT_RECENT_WINDOW = 5
 WORKOUT_LONG_WINDOW = 10
+
+
+@dataclass(frozen=True)
+class WorkoutScope:
+    history_floor: str
+    history_ceiling: str
+    horse_ids: tuple[str, ...]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -68,22 +77,54 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     attach_source_catalog(con, pg_url)
 
 
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def workout_scope(con: duckdb.DuckDBPyConnection) -> WorkoutScope | None:
+    """Resolve the exact horses and date interval required by the input rows."""
+    row = con.execute(
+        """
+        select min(race_date), max(race_date),
+          list(distinct ketto_toroku_bango order by ketto_toroku_bango)
+        from base_parquet
+        where race_date is not null and ketto_toroku_bango is not null
+        """
+    ).fetchone()
+    if row is None or row[0] is None or row[1] is None:
+        return None
+
+    first_race_date = str(row[0])
+    last_race_date = str(row[1])
+    raw_horse_ids = row[2]
+    if not isinstance(raw_horse_ids, list):
+        raise TypeError("base_parquet horse ID aggregation did not return a list")
+    horse_ids = tuple(str(horse_id) for horse_id in raw_horse_ids)
+    return WorkoutScope(
+        history_floor=_shift_date_back(first_race_date, LOOKBACK_DAYS),
+        history_ceiling=last_race_date,
+        horse_ids=horse_ids,
+    )
+
+
 def stage_workout_raw(
     con: duckdb.DuckDBPyConnection,
-    from_date: str,
-    focused_target: bool = False,
+    scope: WorkoutScope | None,
 ) -> None:
-    """Stage jvd_hc workout records, filtered to lookback window from from_date.
+    """Stage only workout records that can contribute to the input races.
 
     jvd_hc.lap_time_*f / time_gokei_*f are zero-padded varchar ('000', '166' = 16.6s).
     Values of '000' or empty mean no recording. Cast to numeric and treat 0 as null.
     """
-    history_floor = _shift_date_back(from_date, LOOKBACK_DAYS + 30)
-    focused_filter = (
-        "and ketto_toroku_bango in (select distinct ketto_toroku_bango from base_parquet)"
-        if focused_target
-        else ""
-    )
+    if scope is None or not scope.horse_ids:
+        source_filter = "false"
+    else:
+        horse_literals = ", ".join(_sql_literal(value) for value in scope.horse_ids)
+        source_filter = (
+            f"chokyo_nengappi >= {_sql_literal(scope.history_floor)} "
+            f"and chokyo_nengappi < {_sql_literal(scope.history_ceiling)} "
+            f"and ketto_toroku_bango in ({horse_literals})"
+        )
     con.execute(
         f"""
         create or replace temp table workout_raw as
@@ -100,8 +141,7 @@ def stage_workout_raw(
           nullif(try_cast(time_gokei_3f as double), 0) / 10.0 as gokei_3f,
           nullif(try_cast(time_gokei_2f as double), 0) / 10.0 as gokei_2f
         from pg.jvd_hc
-        where chokyo_nengappi >= '{history_floor}'
-          {focused_filter}
+        where {source_filter}
         """
     )
     con.execute(
@@ -126,11 +166,13 @@ def stage_workout_agg(con: duckdb.DuckDBPyConnection) -> None:
             w.workout_dt, w.lap_1f, w.lap_2f, w.lap_3f, w.lap_4f,
             w.gokei_4f, w.gokei_3f, w.gokei_2f, w.tracen_kubun,
             (rk.race_dt - w.workout_dt) as days_before,
-            row_number() over (
-              partition by rk.source, rk.kaisai_nen, rk.kaisai_tsukihi, rk.keibajo_code,
-                rk.race_bango, rk.ketto_toroku_bango
-              order by w.workout_dt desc
-            ) as rn
+            case when w.workout_dt is not null then
+              row_number() over (
+                partition by rk.source, rk.kaisai_nen, rk.kaisai_tsukihi, rk.keibajo_code,
+                  rk.race_bango, rk.ketto_toroku_bango
+                order by w.workout_dt desc
+              )
+            end as rn
           from race_keys rk
           left join workout_raw w
             on w.ketto_toroku_bango = rk.ketto_toroku_bango
@@ -146,8 +188,10 @@ def stage_workout_agg(con: duckdb.DuckDBPyConnection) -> None:
           min(lap_3f) filter (where rn <= {WORKOUT_RECENT_WINDOW}) as workout_lap_3f_best5,
           avg(gokei_4f) filter (where rn <= {WORKOUT_RECENT_WINDOW}) as workout_gokei_4f_avg5,
           avg(gokei_3f) filter (where rn <= {WORKOUT_RECENT_WINDOW}) as workout_gokei_3f_avg5,
-          count(*) filter (where rn <= {WORKOUT_LONG_WINDOW}) as workout_count_recent,
-          count(*) filter (where rn is not null and days_before <= 30) as workout_count_30d,
+          count(workout_dt) filter (where rn <= {WORKOUT_LONG_WINDOW})
+            as workout_count_recent,
+          count(workout_dt) filter (where rn is not null and days_before <= 30)
+            as workout_count_30d,
           min(days_before) as days_since_last_workout,
           max(case when rn = 1 then tracen_kubun end) as recent_tracen_kubun
         from joined
@@ -157,7 +201,7 @@ def stage_workout_agg(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql() -> str:
     return f"""
     select
       b.*,
@@ -175,7 +219,7 @@ def append_features_sql(input_glob: str) -> str:
       case when a.workout_lap_4f_avg5 is not null and a.workout_lap_1f_avg5 is not null
            then a.workout_lap_4f_avg5 - a.workout_lap_1f_avg5
            else null end as workout_pace_progression
-    from read_parquet('{input_glob}', hive_partitioning=true) b
+    from base_parquet b
     left join workout_agg a using ({RACE_PARTITION}, ketto_toroku_bango)
     """
 
@@ -191,9 +235,8 @@ def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
 
 
 def _shift_date_back(date_str: str, days: int) -> str:
-    """Compute YYYYMMDD shifted back by N days. Best-effort for SQL date filter."""
-    from datetime import date as _date, timedelta
-    parsed = _date(int(date_str[0:4]), int(date_str[4:6]), int(date_str[6:8]))
+    """Compute YYYYMMDD shifted back by N days for a SQL date filter."""
+    parsed = date(int(date_str[0:4]), int(date_str[4:6]), int(date_str[6:8]))
     shifted = parsed - timedelta(days=days)
     return shifted.strftime("%Y%m%d")
 
@@ -210,9 +253,9 @@ def main() -> None:
         f"create or replace temp table base_parquet as "
         f"select * from read_parquet('{input_glob}', hive_partitioning=true)"
     )
-    stage_workout_raw(con, args.from_date, args.target_race is not None)
+    stage_workout_raw(con, workout_scope(con))
     stage_workout_agg(con)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    write_partitioned(con, append_features_sql(), args.output_dir)
     con.close()
 
 

@@ -4,11 +4,10 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+import learning.subgroup_diagnostics as subject
 import numpy as np
 import polars as pl
 import pytest
-
-import learning.subgroup_diagnostics as subject
 
 
 def _make_ground_truth(races: list[dict[str, object]]) -> pl.DataFrame:
@@ -184,6 +183,11 @@ def test_get_class_label_empty_returns_unknown():
     assert subject.get_class_label("") == "unknown"
 
 
+def test_get_class_label_empty_grade_uses_kyoso_joken_code():
+    assert subject.get_class_label("", "703") == "joken-703"
+    assert subject.get_class_label("  ", " 005 ") == "joken-005"
+
+
 def test_make_subgroup_key_six_parts():
     assert subject.make_subgroup_key("jra", "turf", "mile", "G2", "summer", "10") == "jra_turf_mile_G2_summer_10"
 
@@ -305,6 +309,20 @@ def test_assign_subgroup_keys_null_grade_code_uses_unknown():
     }])
     result = subject.assign_subgroup_keys(df)
     assert result.to_list() == ["jra_turf_mile_unknown_summer_10"]
+
+
+def test_assign_subgroup_keys_null_grade_code_uses_kyoso_joken_code():
+    df = pl.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "05",
+        "track_code": "23",
+        "kyori": 1600,
+        "grade_code": None,
+        "kyoso_joken_code": "703",
+        "kaisai_nengappi": "20260201",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_dirt_intermediate_joken-703_winter_05"]
 
 
 def test_dcg_at_3_perfect_prediction():

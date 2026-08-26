@@ -26,9 +26,12 @@ class FakeConn:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    def execute(self, query: str) -> object:
+    def execute(self, query: str) -> FakeConn:
         self.statements.append(query)
-        return None
+        return self
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
 
 
 # ── parse_args ─────────────────────────────────────────────────────────────────
@@ -222,7 +225,8 @@ def test_stage_kohan3f_history_sql_filters_jra_year_and_valid_kohan() -> None:
     subject.stage_kohan3f_history(conn, 2010)
     body = " ".join(conn.statements)
     assert "regexp_matches(se.keibajo_code, '^0[1-9]$|^10$')" in body
-    assert "cast(se.kaisai_nen as integer) >= 2010" in body
+    assert "se.kaisai_nen >= '2010'" in body
+    assert "ra.kaisai_nen >= '2010'" in body
     assert "se.ketto_toroku_bango is not null" in body
     assert "as double) > 0" in body
 
@@ -234,12 +238,26 @@ def test_stage_kohan3f_history_sql_builds_hist_race_date_concat() -> None:
     assert "se.kaisai_nen || se.kaisai_tsukihi as hist_race_date" in body
 
 
-def test_stage_kohan3f_history_focused_filters_to_base_race_horses() -> None:
+def test_history_scope_filter_sql_pushes_horses_and_latest_target_date() -> None:
+    sql = subject.history_scope_filter_sql({"horse'b", "horse_a"}, "20250415")
+    assert "se.ketto_toroku_bango in ('horse''b', 'horse_a')" in sql
+    assert "se.kaisai_nen <= '2025'" in sql
+    assert "ra.kaisai_nen <= '2025'" in sql
+    assert "se.kaisai_nen || se.kaisai_tsukihi < '20250415'" in sql
+    assert "ra.kaisai_nen || ra.kaisai_tsukihi < '20250415'" in sql
+
+
+def test_history_scope_filter_sql_returns_false_for_empty_scope() -> None:
+    assert subject.history_scope_filter_sql(set(), None) == "and false"
+
+
+def test_stage_kohan3f_history_pushes_surface_and_going_filters() -> None:
     conn = FakeConn()
-    subject.stage_kohan3f_history(conn, 2005, focused_target=True)
+    subject.stage_kohan3f_history(conn, 2005)
     body = " ".join(conn.statements)
-    assert "se.ketto_toroku_bango in (" in body
-    assert "select ketto_toroku_bango from base_races" in body
+    assert "cast(ra.track_code as integer) between 10 and 29" in body
+    assert "cast(ra.track_code as integer) between 51 and 69" in body
+    assert "in (1, 2, 3, 4)" in body
 
 
 # ── stage_base_races ───────────────────────────────────────────────────────────
@@ -346,6 +364,8 @@ def _seed_pg_schema(con: duckdb.DuckDBPyConnection) -> None:
             ('2025', '0415', '05', '11', 'horse_b', '0311'),
             ('2025', '0310', '06', '01', 'horse_b', '0322'),
             ('2025', '0305', '06', '01', 'horse_b', '0000'),
+            -- Valid JRA history for a horse absent from the target card.
+            ('2025', '0301', '07', '02', 'horse_unused', '0320'),
             -- NAR keibajo row must be excluded by the JRA filter
             ('2025', '0301', '30', '01', 'horse_b', '0301')
         ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
@@ -370,6 +390,7 @@ def _seed_pg_schema(con: duckdb.DuckDBPyConnection) -> None:
             ('2025', '0415', '05', '11', '17', '1', ''),
             ('2025', '0310', '06', '01', '17', '0', ''),
             ('2025', '0305', '06', '01', '17', '1', ''),
+            ('2025', '0301', '07', '02', '17', '1', ''),
             ('2025', '0301', '30', '01', '17', '1', '')
         ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                track_code, babajotai_code_shiba, babajotai_code_dirt)
@@ -406,8 +427,11 @@ def test_staging_pipeline_computes_going_conditional_averages(tmp_path: Path) ->
 
     con = duckdb.connect(":memory:")
     _seed_pg_schema(con)
-    subject.stage_kohan3f_history(con, 2005)
     subject.stage_base_races(con, f"{input_dir.as_posix()}/race_year=*/*.parquet")
+    subject.stage_kohan3f_history(con, 2005)
+    history_horses = con.execute(
+        "select distinct ketto_toroku_bango from kohan3f_hist order by 1"
+    ).fetchall()
     subject.stage_going_conditional_agg(con)
     rows = con.execute(
         """
@@ -417,6 +441,7 @@ def test_staging_pipeline_computes_going_conditional_averages(tmp_path: Path) ->
     ).fetchall()
     con.close()
 
+    assert history_horses == [("horse_a",), ("horse_b",)]
     by_horse = {row[0]: row for row in rows}
     # horse_a last 5 going-coded priors: 0345(F),0350(F),0360(S),0370(S),0340(F dirt).
     # The 6th (9999) falls outside the window.
