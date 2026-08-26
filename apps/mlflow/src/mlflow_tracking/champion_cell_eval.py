@@ -290,6 +290,26 @@ def resolve_champion_model_version(client: MlflowClient, category: str, task: st
 
 ChampionMatchKind = Literal["champion", "variant", "other"]
 
+# Must mirror sync_production._DECLARED_CHAMPION_DERIVED_PAIRS: these tracked
+# NAR/Ban-ei production routes use immutable model labels that are not based
+# on the newer ``<champion>-<scope>`` naming convention.
+_DECLARED_CHAMPION_DERIVED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter40-nar-settransformer-blend-v1",
+        ),
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        ),
+        (
+            "banei-cb-v9-sim-2011",
+            "banei-cb-v8-window2011-wf-15y",
+        ),
+    }
+)
+
 
 def _classify_champion_match(served_model_version: str, champion_label: str) -> ChampionMatchKind:
     """Classify one served `model_version` against the resolved champion
@@ -309,7 +329,11 @@ def _classify_champion_match(served_model_version: str, champion_label: str) -> 
     """
     if served_model_version == champion_label:
         return "champion"
-    if served_model_version.startswith(f"{champion_label}-"):
+    declared_pair = (champion_label, served_model_version)
+    if (
+        served_model_version.startswith(f"{champion_label}-")
+        or declared_pair in _DECLARED_CHAMPION_DERIVED_PAIRS
+    ):
         return "variant"
     return "other"
 

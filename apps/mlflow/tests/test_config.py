@@ -172,7 +172,11 @@ def test_load_repo_root_env_fallback_sets_exact_neon_primary_url(tmp_path: Path)
     assert os.environ["NEON_PRIMARY_URL"] == "postgresql://user:pass@ep-example.neon.tech/racing"
 
 
-def test_load_repo_root_env_fallback_ignores_unrelated_keys(tmp_path: Path) -> None:
+def test_load_repo_root_env_fallback_ignores_unrelated_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("PC_KEIBA_INTERNAL_TOKEN", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(
         "DATABASE_URL=postgres://should-not-be-imported\n"

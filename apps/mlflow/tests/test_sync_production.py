@@ -2026,6 +2026,32 @@ def test_rs_champion_gap_detected(client: MlflowClient) -> None:
 # `champion_at_sync`'s existing true/false semantics are untouched.
 
 
+@pytest.mark.parametrize(
+    ("champion", "served"),
+    (
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter40-nar-settransformer-blend-v1",
+        ),
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        ),
+        (
+            "banei-cb-v9-sim-2011",
+            "banei-cb-v8-window2011-wf-15y",
+        ),
+    ),
+)
+def test_declared_companion_and_routed_versions_are_champion_derived(
+    champion: str, served: str
+) -> None:
+    classify = vars(sync_production)["_classify_served_model_version"]
+    is_derived = vars(sync_production)["_is_champion_or_variant"]
+    assert classify(served, champion) == "variant"
+    assert is_derived(served, champion) is True
+
+
 def test_fp_champion_served_variant_tag_and_no_gap(client: MlflowClient) -> None:
     _register_champion(client, "jra", "finish-position", "iter14")
     neon = FakeNeonConnection(

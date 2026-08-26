@@ -669,6 +669,31 @@ def _champion_at_sync_tag_value(
 
 _ServedMatchKind = Literal["champion", "variant", "other"]
 
+# Tracked production selectors whose served label is intentionally not a
+# ``<champion>-<scope>`` string.  The left-hand label is the registry/Neon
+# category base; the right-hand label is a routed or companion scorer that
+# DEPLOY.md and the container's tracked routing config declare as part of the
+# same production policy.  Keeping this relation explicit prevents valid NAR
+# companion/fallback rows and the Ban-ei grade-E route from being reported as
+# unrelated challengers merely because their immutable artifact names predate
+# the later suffix convention.
+_DECLARED_CHAMPION_DERIVED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter40-nar-settransformer-blend-v1",
+        ),
+        (
+            "iter12-nar-xgb-hpo-v8-clean188",
+            "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        ),
+        (
+            "banei-cb-v9-sim-2011",
+            "banei-cb-v8-window2011-wf-15y",
+        ),
+    }
+)
+
 
 def _classify_served_model_version(
     served_model_version: str, champion_label: str | None
@@ -692,7 +717,11 @@ def _classify_served_model_version(
         return "other"
     if served_model_version == champion_label:
         return "champion"
-    if served_model_version.startswith(f"{champion_label}-"):
+    declared_pair = (champion_label, served_model_version)
+    if (
+        served_model_version.startswith(f"{champion_label}-")
+        or declared_pair in _DECLARED_CHAMPION_DERIVED_PAIRS
+    ):
         return "variant"
     return "other"
 

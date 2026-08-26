@@ -42,6 +42,7 @@ from mlflow_tracking import (
     logging_api,
     registry,
     serve_eval,
+    sync_production,
     trace_emit,
 )
 
@@ -735,6 +736,17 @@ def test_real_coverage_running_style_hand_verified_math(
 # split.
 
 
+def test_declared_champion_derived_pairs_match_sync_and_cell_evaluation() -> None:
+    cell_pairs = vars(champion_cell_eval)["_DECLARED_CHAMPION_DERIVED_PAIRS"]
+    sync_pairs = vars(sync_production)["_DECLARED_CHAMPION_DERIVED_PAIRS"]
+    classify = vars(champion_cell_eval)["_classify_champion_match"]
+    is_derived = vars(champion_cell_eval)["_is_champion_derived"]
+    assert cell_pairs == sync_pairs
+    for champion, served in cell_pairs:
+        assert classify(served, champion) == "variant"
+        assert is_derived(served, champion) is True
+
+
 def test_variant_serving_widens_fp_coverage_and_flags_cells(
     client: MlflowClient, tmp_path: Path
 ) -> None:
@@ -1088,5 +1100,3 @@ def test_eval_champion_cells_isolates_per_category_failures(client: MlflowClient
     # 4 pairs attempted (jra/nar x finish-position/running-style), 1 fails.
     assert len(results) == 3
     assert not any(r.category == "jra" and r.task == "finish-position" for r in results)
-
-
