@@ -408,7 +408,18 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
     status: "written",
   });
   expect(neonMock).toHaveBeenCalledWith("postgres://example");
-  expect(queryMock).toHaveBeenCalledWith(expect.any(String), ["jra", "2026", "0809", "05", "11"]);
+  expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
+    "jra",
+    "2026",
+    "0809",
+    "05",
+    "11",
+    "jra",
+    "iter40-nar-settransformer-blend-v1",
+  ]);
+  const selectionSql = queryMock.mock.calls[0]?.[0] ?? "";
+  expect(selectionSql).toMatch(/when \$6 = 'nar' and model_version = \$7 then 0/u);
+  expect(selectionSql).not.toMatch(/ban-ei/u);
   expect(putMock).toHaveBeenCalledTimes(1);
   const writtenBody = putMock.mock.calls[0]?.[1] ?? "";
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260809:05:11", writtenBody, {
@@ -518,7 +529,15 @@ test("publishFinishPositionPredictionCache uses tomorrow TTL and reports busted 
     expectedGeneratedAt: "2026-08-10T01:15:00.000Z",
     status: "written",
   });
-  expect(queryMock).toHaveBeenCalledWith(expect.any(String), ["nar", "2026", "0810", "83", "12"]);
+  expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
+    "nar",
+    "2026",
+    "0810",
+    "83",
+    "12",
+    "ban-ei",
+    "iter40-nar-settransformer-blend-v1",
+  ]);
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260810:83:12", putMock.mock.calls[0]?.[1], {
     expirationTtl: 86400,
   });

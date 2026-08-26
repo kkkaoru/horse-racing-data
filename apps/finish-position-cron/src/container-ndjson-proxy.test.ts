@@ -2,6 +2,7 @@
 
 import { expect, test, vi } from "vitest";
 import {
+  proxyDayBaseParquetFromNdjson,
   proxyParquetFromNdjson,
   proxyResultParquetsToR2,
   type R2ProxyEnv,
@@ -82,6 +83,33 @@ test("proxyParquetFromNdjson returns responses without content type unchanged", 
   expect(put).not.toHaveBeenCalled();
 });
 
+test("proxyParquetFromNdjson returns stream responses without content type unchanged", () => {
+  const { env, put } = makeR2Mock();
+  const response = new Response(new Blob(["ok"]).stream());
+  expect(proxyParquetFromNdjson(response, env)).toBe(response);
+  expect(put).not.toHaveBeenCalled();
+});
+
+test("proxyDayBaseParquetFromNdjson returns body-less responses unchanged", () => {
+  const { env } = makeR2Mock();
+  const response = new Response(null, { status: 204 });
+  expect(proxyDayBaseParquetFromNdjson({ env, response })).toBe(response);
+});
+
+test("proxyDayBaseParquetFromNdjson returns stream responses without content type unchanged", () => {
+  const { env, put } = makeR2Mock();
+  const response = new Response(new Blob(["ok"]).stream());
+  expect(proxyDayBaseParquetFromNdjson({ env, response })).toBe(response);
+  expect(put).not.toHaveBeenCalled();
+});
+
+test("proxyDayBaseParquetFromNdjson returns non-NDJSON responses unchanged", () => {
+  const { env, put } = makeR2Mock();
+  const response = new Response("ok", { headers: { "Content-Type": "text/plain" } });
+  expect(proxyDayBaseParquetFromNdjson({ env, response })).toBe(response);
+  expect(put).not.toHaveBeenCalled();
+});
+
 test("proxyParquetFromNdjson does not schedule R2 proxy when stream has no result line", async () => {
   const { env, put } = makeR2Mock();
   const waitUntil = vi.fn();
@@ -156,6 +184,88 @@ test("proxyParquetFromNdjson streams chunks before upstream closes and proxies r
     encoder.encode("race2").buffer,
     { httpMetadata: { contentType: "application/octet-stream" } },
   );
+});
+
+test("proxyDayBaseParquetFromNdjson waits for terminal result R2 writes before stream completion", async () => {
+  const { controller, stream } = makeControlledStream();
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const putBarrier = Promise.withResolvers<void>();
+  const { env, put } = makeR2Mock(() => putBarrier.promise);
+  const { tasks, waitUntil } = makeWaitUntil();
+  const proxied = proxyDayBaseParquetFromNdjson({
+    env,
+    response: ndjsonResponse(stream),
+    waitUntil,
+  });
+  const reader = proxied.body?.getReader();
+  if (!reader) throw new Error("proxied response did not have a body");
+
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 1,
+    category: "nar",
+    parquetBase64: "bWFpbg==",
+    parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+  });
+  enqueueText(controller, resultLine);
+  controller.close();
+
+  await expect(reader.read()).resolves.toStrictEqual({
+    done: false,
+    value: encoder.encode(resultLine),
+  });
+  expect(put).toHaveBeenCalledTimes(1);
+  expect(tasks).toHaveLength(1);
+
+  const terminalRead = reader.read();
+  const terminalState = vi.fn();
+  void terminalRead.then(terminalState);
+  await Promise.resolve();
+  expect(terminalState).not.toHaveBeenCalled();
+
+  putBarrier.resolve();
+  await expect(terminalRead).resolves.toStrictEqual({ done: true, value: undefined });
+  await expect(Promise.all(tasks)).resolves.toStrictEqual([undefined]);
+  expect(consoleLog).toHaveBeenCalledWith("[daybase-r2-commit] terminal result received entries=1");
+  expect(consoleLog).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /^\[daybase-r2-commit\] key=feat-daybase\/catalog-v1\/nar\/20260826\/features\.parquet bytes=4 durationMs=\d+$/,
+    ),
+  );
+  expect(consoleLog).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /^\[daybase-r2-commit\] terminal barrier complete entries=1 durationMs=\d+$/,
+    ),
+  );
+  consoleLog.mockRestore();
+});
+
+test("proxyParquetFromNdjson keeps ordinary prediction stream completion non-blocking", async () => {
+  const { controller, stream } = makeControlledStream();
+  const putBarrier = Promise.withResolvers<void>();
+  const { env } = makeR2Mock(() => putBarrier.promise);
+  const { tasks, waitUntil } = makeWaitUntil();
+  const proxied = proxyParquetFromNdjson(ndjsonResponse(stream), env, waitUntil);
+  const reader = proxied.body?.getReader();
+  if (!reader) throw new Error("proxied response did not have a body");
+
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 1,
+    category: "nar",
+    parquetBase64: "bWFpbg==",
+    parquetKey: "feat-cache/nar/20260826/43/01/features.parquet",
+  });
+  enqueueText(controller, resultLine);
+  controller.close();
+
+  await expect(reader.read()).resolves.toStrictEqual({
+    done: false,
+    value: encoder.encode(resultLine),
+  });
+  await expect(reader.read()).resolves.toStrictEqual({ done: true, value: undefined });
+  putBarrier.resolve();
+  await expect(Promise.all(tasks)).resolves.toStrictEqual([undefined]);
 });
 
 test("proxyParquetFromNdjson attaches the daybase watermark as R2 customMetadata on the single parquet only", async () => {
@@ -277,6 +387,48 @@ test("proxyParquetFromNdjson renews container activity for each streamed chunk",
   });
   await expect(reader.read()).resolves.toStrictEqual({ done: true, value: undefined });
   expect(renewActivityTimeout).toHaveBeenCalledTimes(2);
+});
+
+test("proxyParquetFromNdjson logs split day-base timings without debug", async () => {
+  const { env } = makeR2Mock();
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const timingLine = `${JSON.stringify({
+    type: "progress",
+    stage:
+      "step=daybase-layer index=3/8 status=done category=nar script=add-head-to-head-features.py elapsed_seconds=12.345",
+    elapsed_s: 13,
+  })}\n`;
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(timingLine.slice(0, 35)));
+        controller.enqueue(encoder.encode(timingLine.slice(35)));
+        controller.close();
+      },
+    }),
+  );
+
+  await expect(proxyParquetFromNdjson(response, env).text()).resolves.toBe(timingLine);
+  expect(consoleLog).toHaveBeenCalledWith(
+    "[daybase-pipeline-timing] step=daybase-layer index=3/8 status=done category=nar script=add-head-to-head-features.py elapsed_seconds=12.345",
+  );
+  consoleLog.mockRestore();
+});
+
+test("proxyParquetFromNdjson ignores non-daybase progress for operational logging", async () => {
+  const { env } = makeR2Mock();
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const progressLine = `${JSON.stringify({
+    type: "progress",
+    stage: "predict",
+    elapsed_s: 10,
+  })}\n`;
+
+  await expect(
+    proxyParquetFromNdjson(ndjsonResponse(new Blob([progressLine]).stream()), env).text(),
+  ).resolves.toBe(progressLine);
+  expect(consoleLog).not.toHaveBeenCalled();
+  consoleLog.mockRestore();
 });
 
 test("proxyParquetFromNdjson does not renew activity for a busy result chunk", async () => {
@@ -461,6 +613,106 @@ test("proxyParquetFromNdjson does not block stream completion when R2 put fails"
   expect(errorSpy).toHaveBeenCalledOnce();
   expect(errorSpy).toHaveBeenCalledWith("[container-class] live R2 proxy failed: Error: r2 down");
   errorSpy.mockRestore();
+});
+
+test("proxyDayBaseParquetFromNdjson rejects stream completion when an R2 put fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const { env, put } = makeR2Mock(async () => {
+    throw new Error("day-base r2 down");
+  });
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 1,
+    category: "nar",
+    parquetBase64: "bWFpbg==",
+    parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+  });
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+
+  await expect(proxyDayBaseParquetFromNdjson({ env, response, waitUntil }).text()).rejects.toThrow(
+    "day-base r2 down",
+  );
+  await expect(Promise.all(tasks)).rejects.toThrow("day-base r2 down");
+  expect(put).toHaveBeenCalledTimes(1);
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /^\[daybase-r2-commit\] failed key=feat-daybase\/catalog-v1\/nar\/20260826\/features\.parquet durationMs=\d+ error=Error: day-base r2 down$/,
+    ),
+  );
+  errorSpy.mockRestore();
+});
+
+test("proxyDayBaseParquetFromNdjson preserves an existing-key success without embedded parquet", async () => {
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { env, put } = makeR2Mock();
+  const resultLine = JSON.stringify({
+    type: "result",
+    status: "success",
+    racesPredicted: 0,
+    category: "nar",
+    parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+  });
+  const response = ndjsonResponse(new Blob([resultLine]).stream());
+
+  await expect(proxyDayBaseParquetFromNdjson({ env, response }).text()).resolves.toBe(resultLine);
+  expect(put).not.toHaveBeenCalled();
+  expect(consoleLog).toHaveBeenCalledWith("[daybase-r2-commit] terminal result received entries=0");
+  expect(consoleLog).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /^\[daybase-r2-commit\] terminal barrier complete entries=0 durationMs=\d+$/,
+    ),
+  );
+  consoleLog.mockRestore();
+});
+
+test("proxyDayBaseParquetFromNdjson preserves an empty terminal result", async () => {
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { env, put } = makeR2Mock();
+  const resultLine = JSON.stringify({
+    type: "result",
+    status: "empty",
+    racesPredicted: 0,
+    category: "nar",
+  });
+  const response = ndjsonResponse(new Blob([resultLine]).stream());
+
+  await expect(proxyDayBaseParquetFromNdjson({ env, response }).text()).resolves.toBe(resultLine);
+  expect(put).not.toHaveBeenCalled();
+  consoleLog.mockRestore();
+});
+
+test("proxyDayBaseParquetFromNdjson preserves an error terminal result", async () => {
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { env, put } = makeR2Mock();
+  const resultLine = JSON.stringify({
+    type: "result",
+    status: "error",
+    racesPredicted: 0,
+    category: "nar",
+    error: "build failed",
+  });
+  const response = ndjsonResponse(new Blob([resultLine]).stream());
+
+  await expect(proxyDayBaseParquetFromNdjson({ env, response }).text()).resolves.toBe(resultLine);
+  expect(put).not.toHaveBeenCalled();
+  consoleLog.mockRestore();
+});
+
+test("proxyDayBaseParquetFromNdjson preserves a non-result terminal line", async () => {
+  const { env, put } = makeR2Mock();
+  const progressLine = JSON.stringify({ type: "progress", stage: "complete" });
+  const response = ndjsonResponse(new Blob([progressLine]).stream());
+
+  await expect(proxyDayBaseParquetFromNdjson({ env, response }).text()).resolves.toBe(progressLine);
+  expect(put).not.toHaveBeenCalled();
 });
 
 test("proxyResultParquetsToR2 strictly rejects an R2 PUT failure for pickup callers", async () => {

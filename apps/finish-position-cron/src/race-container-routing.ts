@@ -1,6 +1,5 @@
 // Run with bun. Fail-closed routing for the optional race-chain Container.
 
-import { headDayBaseObject } from "./day-base-prewarm-pickup";
 import type { Env, PredictCategory } from "./types";
 
 export type PredictionContainerRole = "legacy" | "race-chain";
@@ -10,6 +9,8 @@ interface ResolveRaceContainerRouteParams {
   env: Env;
   forceLegacy?: boolean;
   focusedFull: boolean;
+  keibajoCode?: string;
+  raceBango?: string;
   runYmd: string;
 }
 
@@ -43,7 +44,7 @@ export const qualifyPredictionContainerDoName = (
 export const resolveRaceContainerRoute = async (
   params: ResolveRaceContainerRouteParams,
 ): Promise<PredictionContainerRoute> => {
-  const { category, env, forceLegacy, focusedFull, runYmd } = params;
+  const { category, env, forceLegacy, focusedFull, keibajoCode, raceBango } = params;
   if (
     forceLegacy === true ||
     !focusedFull ||
@@ -52,14 +53,11 @@ export const resolveRaceContainerRoute = async (
     return legacyRoute(env);
   if (!enabledCategories(env).has(category)) return legacyRoute(env);
   if (env.FINISH_POSITION_RACE_CHAIN_CONTAINER === undefined) return legacyRoute(env);
-  try {
-    if ((await headDayBaseObject({ category, env, runYmd })) === null) return legacyRoute(env);
-  } catch (error) {
-    console.warn(
-      `[race-container-routing] day-base HEAD failed category=${category} runYmd=${runYmd}: ${String(error)}`,
-    );
-    return legacyRoute(env);
-  }
+  if (keibajoCode === undefined || raceBango === undefined) return legacyRoute(env);
+  // Exact foundation freshness is a Queue precondition, enforced before any
+  // coordinator or Container slot claim. Routing must remain a pure binding
+  // choice: repeating R2 HEAD here could turn a transient second probe into a
+  // legacy fallback that bypasses the fail-closed HIT gate.
   return { namespace: env.FINISH_POSITION_RACE_CHAIN_CONTAINER, role: "race-chain" };
 };
 

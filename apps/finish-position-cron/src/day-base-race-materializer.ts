@@ -42,7 +42,13 @@ type FoundationRow = Record<string, JsonScalar>;
 interface MaterializeParams {
   category: PredictCategory;
   env: Pick<Env, "FEATURES_CACHE">;
+  force?: boolean;
   runYmd: string;
+}
+
+interface RaceFoundationReadinessParams extends MaterializeParams {
+  raceNumber: string;
+  venueCode: string;
 }
 
 interface RaceIdentity {
@@ -121,6 +127,11 @@ export type DayBaseRaceMaterializeResult =
       status: "materialized";
     }
   | { reason: string; status: "fallback" };
+
+export interface DayBaseRaceFoundationReadiness {
+  ready: boolean;
+  reason: string;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -383,6 +394,60 @@ const existingManifestResult = (
   return { featureHash, manifestKey, raceCount, rowCount, status: "materialized" };
 };
 
+const metadataString = (object: R2Object | null, key: string): string | null => {
+  const value = object?.customMetadata?.[key]?.trim();
+  return value === undefined || value.length === 0 ? null : value;
+};
+
+export const getDayBaseRaceFoundationReadiness = async (
+  params: RaceFoundationReadinessParams,
+): Promise<DayBaseRaceFoundationReadiness> => {
+  if (!/^\d{8}$/.test(params.runYmd)) return { ready: false, reason: "invalid-run-ymd" };
+  if (!/^\d{1,2}$/.test(params.venueCode) || !/^\d{1,2}$/.test(params.raceNumber)) {
+    return { ready: false, reason: "invalid-race-scope" };
+  }
+  const [source, manifest, foundation] = await Promise.all([
+    params.env.FEATURES_CACHE.head(buildDayBaseObjectKey(params)),
+    params.env.FEATURES_CACHE.head(buildDayBaseRaceManifestKey(params.category, params.runYmd)),
+    params.env.FEATURES_CACHE.head(
+      buildDayBaseRaceFoundationKey(
+        params.category,
+        params.runYmd,
+        params.venueCode,
+        params.raceNumber,
+      ),
+    ),
+  ]);
+  if (source === null) return { ready: false, reason: "day-base-miss" };
+  if (manifest === null) return { ready: false, reason: "manifest-miss" };
+  if (foundation === null) return { ready: false, reason: "foundation-miss" };
+  const generationId = metadataString(manifest, "generation-id");
+  if (
+    metadataString(manifest, "contract-version") !== FOUNDATION_CONTRACT_VERSION ||
+    metadataString(manifest, "schema-version") !== CONTRACT_SCHEMA_VERSION ||
+    metadataString(manifest, "source-etag") !== source.etag ||
+    (manifest.customMetadata?.["source-version"] ?? "") !== (source.version ?? "") ||
+    generationId === null
+  ) {
+    return { ready: false, reason: "manifest-attestation-mismatch" };
+  }
+  const rowCount = Number(metadataString(foundation, "row-count"));
+  if (
+    metadataString(foundation, "contract-version") !== FOUNDATION_CONTRACT_VERSION ||
+    metadataString(foundation, "schema-version") !== CONTRACT_SCHEMA_VERSION ||
+    metadataString(foundation, "source-etag") !== source.etag ||
+    (foundation.customMetadata?.["source-version"] ?? "") !== (source.version ?? "") ||
+    metadataString(foundation, "generation-id") !== generationId ||
+    metadataString(foundation, "entry-set-hash") === null ||
+    !Number.isSafeInteger(rowCount) ||
+    rowCount <= 0 ||
+    rowCount > MAX_ROWS_PER_RACE
+  ) {
+    return { ready: false, reason: "foundation-attestation-mismatch" };
+  }
+  return { ready: true, reason: "ready" };
+};
+
 export const materializeDayBasePerRaceCache = async (
   params: MaterializeParams,
   dependencies: MaterializerDependencies = { decodeDayBase: defaultDecodeDayBase },
@@ -395,12 +460,14 @@ export const materializeDayBasePerRaceCache = async (
     if (source.size <= 0 || source.size > MAX_DAY_BASE_BYTES) throw new Error("source-size-limit");
     const sourceVersion = source.version ?? "";
     const manifestKey = buildDayBaseRaceManifestKey(params.category, params.runYmd);
-    const existing = existingManifestResult(
-      await params.env.FEATURES_CACHE.head(manifestKey),
-      manifestKey,
-      source.etag,
-      sourceVersion,
-    );
+    const existing = params.force
+      ? null
+      : existingManifestResult(
+          await params.env.FEATURES_CACHE.head(manifestKey),
+          manifestKey,
+          source.etag,
+          sourceVersion,
+        );
     if (existing !== null) return existing;
     const decoded = await dependencies.decodeDayBase(
       new R2RangeBuffer(params.env.FEATURES_CACHE, sourceKey, source.size),
@@ -463,6 +530,7 @@ export const materializeDayBasePerRaceCache = async (
           "row-count": String(raceRows.length),
           "schema-version": CONTRACT_SCHEMA_VERSION,
           "source-etag": source.etag,
+          "source-version": sourceVersion,
         },
       };
     });

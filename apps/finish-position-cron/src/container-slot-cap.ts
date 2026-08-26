@@ -54,12 +54,17 @@ export const CONTAINER_GENERAL_SLOT_MAX = CONTAINER_MAX_INSTANCES - CONTAINER_RE
 // One shared category DO per rescore category (jra/nar/ban-ei). Combined with
 // unsharded rescore DO names this is also the max concurrent rescore instances.
 export const CONTAINER_RESCORE_SLOT_MAX = 3;
+// Matches FinishPositionRaceChainContainer.max_instances in wrangler.jsonc.
+// Race-chain DO names share this coordinator with legacy DOs, so they need an
+// explicit software ceiling instead of relying on a platform start failure.
+export const RACE_CHAIN_CONTAINER_SLOT_MAX = 3;
 export const CONTAINER_SLOT_STALE_MS = 20 * 60 * 1000;
 export const CONTAINER_DAY_BASE_SLOT_STALE_MS = 60 * 60 * 1000;
 export const CONTAINER_SLOT_RETRY_DELAY_SECONDS = 30;
 export const CONTAINER_SLOT_BUSY_STATE = "busy";
 export const CONTAINER_SLOT_CAPPED_STATE = "capped";
 const BAN_EI_CATEGORY = "ban-ei";
+const RACE_CHAIN_DO_NAME_PREFIX = "race-chain-";
 const RESCORE_KIND: ContainerSlotKind = "rescore";
 const HOLDER_INCREMENT = 1;
 const EMPTY_HOLDER_COUNT = 0;
@@ -84,6 +89,9 @@ const countReservedLeases = (leases: readonly ContainerSlotLease[]): number =>
 const countRescoreDos = (leases: readonly ContainerSlotLease[]): number =>
   leases.filter((lease) => lease.rescoreHolders > EMPTY_HOLDER_COUNT).length;
 
+const countRaceChainLeases = (leases: readonly ContainerSlotLease[]): number =>
+  leases.filter((lease) => lease.doName.startsWith(RACE_CHAIN_DO_NAME_PREFIX)).length;
+
 const decideSharedContainerSlotClaim = (
   live: readonly ContainerSlotLease[],
   _existing: ContainerSlotLease,
@@ -100,6 +108,12 @@ const decideNewContainerSlotClaim = (
   live: readonly ContainerSlotLease[],
   params: ContainerSlotClaimParams,
 ): ContainerSlotClaimDecision => {
+  if (
+    params.doName.startsWith(RACE_CHAIN_DO_NAME_PREFIX) &&
+    countRaceChainLeases(live) >= RACE_CHAIN_CONTAINER_SLOT_MAX
+  ) {
+    return { leases: [...live], proceed: false, state: CONTAINER_SLOT_CAPPED_STATE };
+  }
   if (params.kind === RESCORE_KIND && countRescoreDos(live) >= CONTAINER_RESCORE_SLOT_MAX) {
     return { leases: [...live], proceed: false, state: CONTAINER_SLOT_CAPPED_STATE };
   }
@@ -145,12 +159,42 @@ const transferExistingContainerSlotClaim = (
   proceed: true,
 });
 
+const transferDayBaseToFocusedFullClaim = (
+  live: readonly ContainerSlotLease[],
+  params: ContainerSlotClaimParams,
+): ContainerSlotClaimDecision => ({
+  leases: live.map((lease) =>
+    lease.doName === params.doName
+      ? {
+          ...lease,
+          kind: params.kind,
+          rescoreHolders: EMPTY_HOLDER_COUNT,
+          staleAfterMs: params.staleAfterMs,
+          timestamp: params.now,
+          workKey: params.workKey,
+        }
+      : lease,
+  ),
+  proceed: true,
+});
+
 export const decideContainerSlotClaim = (
   leases: readonly ContainerSlotLease[],
   params: ContainerSlotClaimParams,
 ): ContainerSlotClaimDecision => {
   const live = pruneStaleContainerSlots(leases, params.now);
   const existing = live.find((lease) => lease.doName === params.doName);
+  if (
+    existing !== undefined &&
+    existing.kind === "day-base" &&
+    params.kind === "focused-full" &&
+    params.workKey !== undefined
+  ) {
+    // A focused pre-race request is allowed to take over the shared legacy
+    // DO from day-base work. The focused watch is registered before this
+    // claim, so day-base cleanup is fenced and cannot stop the replacement.
+    return transferDayBaseToFocusedFullClaim(live, params);
+  }
   if (
     existing !== undefined &&
     params.replaceWorkKey !== undefined &&

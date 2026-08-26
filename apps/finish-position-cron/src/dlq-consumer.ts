@@ -9,7 +9,11 @@
 // re-enqueues it once, bounded by dlqRedriveCount on the message body so a
 // poison-pill message cannot bounce between the two queues forever.
 
-import { cleanupDayBaseWork, isDayBasePickupQueueMessage } from "./day-base-pickup";
+import {
+  cleanupDayBaseWork,
+  dayBaseGenerationFields,
+  isDayBasePickupQueueMessage,
+} from "./day-base-pickup";
 import { isDayBasePrewarmQueueMessage } from "./day-base-prewarm";
 import { clearDayBaseRepairReservation } from "./day-base-repair";
 import {
@@ -259,9 +263,14 @@ const redriveMessage = async (
 
 const cleanupExpiredDayBaseMessage = async (
   env: Env,
-  body: { category: PredictCategory; force?: boolean; runYmd: string },
+  body: {
+    category: PredictCategory;
+    force?: boolean;
+    generationId?: string;
+    runYmd: string;
+  },
 ): Promise<void> => {
-  if (body.force === true || !isOldDateRunYmd(body.runYmd, new Date())) return;
+  if (!isOldDateRunYmd(body.runYmd, new Date())) return;
   await Promise.all([
     clearDayBaseRepairReservation({ category: body.category, env, runYmd: body.runYmd }).catch(
       (error) => {
@@ -271,7 +280,12 @@ const cleanupExpiredDayBaseMessage = async (
         );
       },
     ),
-    cleanupDayBaseWork({ category: body.category, env, runYmd: body.runYmd }).catch((error) => {
+    cleanupDayBaseWork({
+      category: body.category,
+      env,
+      ...dayBaseGenerationFields(body.generationId),
+      runYmd: body.runYmd,
+    }).catch((error) => {
       console.error(
         `[predict-dlq] old day-base container cleanup failed category=${body.category} runYmd=${body.runYmd}:`,
         String(error),
@@ -286,7 +300,7 @@ const processDlqMessage = async (
 ): Promise<void> => {
   const body = message.body;
   const redriveCount = resolveDlqRedriveCount(body);
-  const expired = body.force !== true && isOldDateRunYmd(body.runYmd, new Date());
+  const expired = isOldDateRunYmd(body.runYmd, new Date());
   const shouldRedrive = !expired && redriveCount < MAX_DLQ_REDRIVES;
   try {
     try {

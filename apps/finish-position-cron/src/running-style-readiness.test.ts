@@ -31,6 +31,37 @@ test("returns no rows without querying D1 for an empty race list", async () => {
   expect(prepare).not.toHaveBeenCalled();
 });
 
+test("chunks a 56-race card below the D1 bound-variable limit", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const races: RaceEntry[] = Array.from({ length: 56 }, (_, index) => ({
+    category: "nar",
+    keibajoCode: String(Math.floor(index / 12) + 30),
+    raceBango: String((index % 12) + 1).padStart(2, "0"),
+  }));
+
+  const result = await getRunningStyleRaceReadiness({
+    category: "nar",
+    db: { prepare } as unknown as D1Database,
+    races,
+    runYmd: "20260825",
+  });
+
+  expect(prepare).toHaveBeenCalledTimes(2);
+  expect(bind.mock.calls[0]?.length).toBe(80);
+  expect(bind.mock.calls[1]?.length).toBe(32);
+  expect(result).toHaveLength(56);
+  expect(result[0]).toStrictEqual({
+    race: { category: "nar", keibajoCode: "30", raceBango: "01" },
+    reason: "state-missing",
+  });
+  expect(result[55]).toStrictEqual({
+    race: { category: "nar", keibajoCode: "34", raceBango: "08" },
+    reason: "state-missing",
+  });
+});
+
 test("marks only a completed feature and prediction set covering every active entrant ready", async () => {
   const all = vi.fn(async () => ({
     results: [
@@ -147,6 +178,36 @@ test("uses the completed Catalog inference expected count when realtime entrant 
   ).resolves.toStrictEqual([
     { race: JRA_RACE, reason: null },
     { race: SECOND_JRA_RACE, reason: "prediction-count-7-of-14" },
+  ]);
+});
+
+test("accepts a sync-failed state only when the R2 artifact and all rows are complete", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        entrant_count: 6,
+        expected_horse_count: 6,
+        features_r2_key: "running-style/nar/20260825/43/03/features.parquet",
+        prediction_count: 6,
+        running_key: "nar:20260825:43:03",
+        status: "sync-failed",
+        written_horse_count: 6,
+      },
+    ],
+  }));
+  const db = {
+    prepare: vi.fn(() => ({ bind: vi.fn(() => ({ all })) })),
+  } as unknown as D1Database;
+
+  await expect(
+    getRunningStyleRaceReadiness({
+      category: "nar",
+      db,
+      races: [{ category: "nar", keibajoCode: "43", raceBango: "03" }],
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual([
+    { race: { category: "nar", keibajoCode: "43", raceBango: "03" }, reason: null },
   ]);
 });
 

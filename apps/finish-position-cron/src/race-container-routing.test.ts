@@ -3,12 +3,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
 
-const { headDayBaseObjectMock } = vi.hoisted(() => ({
-  headDayBaseObjectMock: vi.fn(async (): Promise<R2Object | null> => null),
-}));
-
-vi.mock("./day-base-prewarm-pickup", () => ({ headDayBaseObject: headDayBaseObjectMock }));
-
 import {
   qualifyPredictionContainerDoName,
   resolveContainerNamespaceForRole,
@@ -28,8 +22,7 @@ const makeEnv = (overrides: Partial<Env> = {}): Env =>
   }) as unknown as Env;
 
 beforeEach(() => {
-  headDayBaseObjectMock.mockClear();
-  headDayBaseObjectMock.mockResolvedValue({} as R2Object);
+  vi.clearAllMocks();
 });
 
 test("routes an allowlisted focused-full R2 day-base hit to the race-chain binding", async () => {
@@ -37,11 +30,12 @@ test("routes an allowlisted focused-full R2 day-base hit to the race-chain bindi
     category: "jra",
     env: makeEnv(),
     focusedFull: true,
+    keibajoCode: "05",
+    raceBango: "11",
     runYmd: "20260823",
   });
 
   expect(route).toStrictEqual({ namespace: raceNamespace, role: "race-chain" });
-  expect(headDayBaseObjectMock).toHaveBeenCalledTimes(1);
 });
 
 test("keeps the production flag off path on the legacy binding without an R2 read", async () => {
@@ -49,11 +43,12 @@ test("keeps the production flag off path on the legacy binding without an R2 rea
     category: "jra",
     env: makeEnv({ RACE_CHAIN_CONTAINER_ENABLED: "0" }),
     focusedFull: true,
+    keibajoCode: "05",
+    raceBango: "11",
     runYmd: "20260823",
   });
 
   expect(route).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
-  expect(headDayBaseObjectMock).not.toHaveBeenCalled();
 });
 
 test("keeps a DAY_BASE_REQUIRED replacement on legacy without another R2 read", async () => {
@@ -62,11 +57,12 @@ test("keeps a DAY_BASE_REQUIRED replacement on legacy without another R2 read", 
     env: makeEnv(),
     forceLegacy: true,
     focusedFull: true,
+    keibajoCode: "05",
+    raceBango: "11",
     runYmd: "20260823",
   });
 
   expect(route).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
-  expect(headDayBaseObjectMock).not.toHaveBeenCalled();
 });
 
 test("keeps non-focused and non-allowlisted work on the legacy binding", async () => {
@@ -80,44 +76,35 @@ test("keeps non-focused and non-allowlisted work on the legacy binding", async (
     category: "ban-ei",
     env: makeEnv(),
     focusedFull: true,
+    keibajoCode: "83",
+    raceBango: "01",
     runYmd: "20260823",
   });
 
   expect(nonFocused).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
   expect(nonAllowlisted).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
-  expect(headDayBaseObjectMock).not.toHaveBeenCalled();
 });
 
-test("falls back when R2 misses, HEAD fails, or the race binding is absent", async () => {
-  headDayBaseObjectMock.mockResolvedValueOnce(null);
-  const miss = await resolveRaceContainerRoute({
+test("keeps routing independent from cache probes and falls back only when binding is absent", async () => {
+  const route = await resolveRaceContainerRoute({
     category: "nar",
     env: makeEnv(),
     focusedFull: true,
-    runYmd: "20260823",
-  });
-  headDayBaseObjectMock.mockRejectedValueOnce(new Error("R2 unavailable"));
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  const failed = await resolveRaceContainerRoute({
-    category: "nar",
-    env: makeEnv(),
-    focusedFull: true,
+    keibajoCode: "44",
+    raceBango: "01",
     runYmd: "20260823",
   });
   const absent = await resolveRaceContainerRoute({
     category: "nar",
     env: makeEnv({ FINISH_POSITION_RACE_CHAIN_CONTAINER: undefined }),
     focusedFull: true,
+    keibajoCode: "44",
+    raceBango: "01",
     runYmd: "20260823",
   });
 
-  expect(miss).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
-  expect(failed).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
+  expect(route).toStrictEqual({ namespace: raceNamespace, role: "race-chain" });
   expect(absent).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
-  expect(warnSpy).toHaveBeenCalledWith(
-    "[race-container-routing] day-base HEAD failed category=nar runYmd=20260823: Error: R2 unavailable",
-  );
-  warnSpy.mockRestore();
 });
 
 test("qualifies race DO names and resolves stop bindings by explicit role", () => {

@@ -31,28 +31,34 @@ interface EnqueuePredictCallParams {
   skipDedup: boolean;
 }
 
-const { enqueuePredictMock, isFocusedFullPredictionCompleteMock, isOldDateRunYmdMock } = vi.hoisted(
-  () => {
-    const enqueuePredict = vi.fn(
-      async (_params: EnqueuePredictCallParams): Promise<PredictCategory[]> => ["jra"],
-    );
-    const isFocusedFullPredictionComplete = vi.fn(
-      async (_params: CompletionCallParams): Promise<boolean> => false,
-    );
-    const isOldDateRunYmd = vi.fn((): boolean => false);
-    return {
-      enqueuePredictMock: enqueuePredict,
-      isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
-      isOldDateRunYmdMock: isOldDateRunYmd,
-    };
-  },
-);
+const {
+  enqueuePredictMock,
+  isFocusedFullPredictionCompleteMock,
+  isOldDateRunYmdMock,
+  warmNeonMock,
+} = vi.hoisted(() => {
+  const enqueuePredict = vi.fn(
+    async (_params: EnqueuePredictCallParams): Promise<PredictCategory[]> => ["jra"],
+  );
+  const isFocusedFullPredictionComplete = vi.fn(
+    async (_params: CompletionCallParams): Promise<boolean> => false,
+  );
+  const isOldDateRunYmd = vi.fn((): boolean => false);
+  const warmNeon = vi.fn(async (_url: string): Promise<void> => undefined);
+  return {
+    enqueuePredictMock: enqueuePredict,
+    isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
+    isOldDateRunYmdMock: isOldDateRunYmd,
+    warmNeonMock: warmNeon,
+  };
+});
 
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueuePredictMock }));
 vi.mock("./focused-full-completion", () => ({
   isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
 }));
 vi.mock("./old-date-guard", () => ({ isOldDateRunYmd: isOldDateRunYmdMock }));
+vi.mock("./neon-warm", () => ({ warmNeon: warmNeonMock }));
 
 import {
   COVERAGE_SELF_HEAL_CRON,
@@ -120,6 +126,7 @@ const EMPTY_SUMMARY = {
 
 beforeEach(() => {
   enqueuePredictMock.mockClear();
+  warmNeonMock.mockClear();
   isFocusedFullPredictionCompleteMock.mockClear();
   isOldDateRunYmdMock.mockClear();
   realtimeAllMock.mockClear();
@@ -144,7 +151,7 @@ test("COVERAGE_SELF_HEAL_CRON covers late local races and is offset by 7 minutes
 
 test("pre-race readiness constants mirror weight lead and keep separate budgets", () => {
   expect(PRE_RACE_LEAD_MINUTES).toBe(180);
-  expect(PRE_RACE_ENQUEUE_CAP_PER_TICK).toBe(16);
+  expect(PRE_RACE_ENQUEUE_CAP_PER_TICK).toBe(256);
   expect(MAX_PRE_RACE_ENQUEUES_PER_RACE).toBe(2);
   expect(PRE_RACE_ESCALATED_RETRY_MINUTES).toBe(30);
 });
@@ -200,7 +207,7 @@ test("isWithinPreRaceLeadWindow covers (now, now+180m] and rejects past/unparsea
   expect(isWithinPreRaceLeadWindow("not-a-date", NOW)).toBe(false);
 });
 
-test("buildPreRaceGapCandidates sorts by race_start ascending and tags phase", () => {
+test("buildPreRaceGapCandidates prioritizes the 17:00+ card and tags phase", () => {
   const rows: RaceSourceRow[] = [
     {
       keibajo_code: "44",
@@ -225,17 +232,17 @@ test("buildPreRaceGapCandidates sorts by race_start ascending and tags phase", (
   expect(candidates).toStrictEqual([
     {
       category: "nar",
-      keibajoCode: "30",
-      phase: "pre-race",
-      raceBango: "01",
-      raceStartAtJst: "2026-07-12T15:30:00+09:00",
-    },
-    {
-      category: "nar",
       keibajoCode: "44",
       phase: "pre-race",
       raceBango: "10",
       raceStartAtJst: "2026-07-12T17:00:00+09:00",
+    },
+    {
+      category: "nar",
+      keibajoCode: "30",
+      phase: "pre-race",
+      raceBango: "01",
+      raceStartAtJst: "2026-07-12T15:30:00+09:00",
     },
   ]);
 });
@@ -402,6 +409,7 @@ test("runCoverageSelfHeal enqueues a fresh skipDedup focused-full message and re
   cronFirstMock.mockResolvedValue(null);
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
   expect(enqueuePredictMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 2,
@@ -447,6 +455,28 @@ test("runCoverageSelfHeal enqueues a fresh skipDedup focused-full message and re
     scanned: 1,
   });
   warnSpy.mockRestore();
+});
+
+test("runCoverageSelfHeal still enqueues when Neon warm is not configured", async () => {
+  realtimeAllMock.mockResolvedValue({
+    results: [
+      {
+        keibajo_code: "05",
+        race_bango: "11",
+        race_start_at_jst: "2026-07-12T10:00:00+09:00",
+        source: "jra",
+      },
+    ],
+  });
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
+
+  const summary = await runCoverageSelfHeal({
+    env: { ...makeEnv(), NEON_DATABASE_URL: undefined as unknown as string },
+    now: NOW,
+  });
+
+  expect(summary.enqueued).toBe(1);
+  expect(warmNeonMock).not.toHaveBeenCalled();
 });
 
 test("runCoverageSelfHeal passes the D1 prior-enqueue count through to the re-enqueue and its event row", async () => {
@@ -663,20 +693,17 @@ test("runCoverageSelfHeal skips complete pre-race candidates without enqueueing"
   });
 });
 
-test("runCoverageSelfHeal processes pre-race candidates earliest-post first and respects the per-tick enqueue cap", async () => {
-  // 18 incomplete pre-race candidates within the lead window; only first 16 enqueue.
-  // Fixed JST wall times (NOW = 15:00 JST): 15:30, 15:31, ... — all inside 180m lead.
+test("runCoverageSelfHeal prioritizes pre-race candidates and respects the safety cap", async () => {
+  // 258 incomplete pre-race candidates within the lead window; only the first
+  // 256 enqueue. Keep a common wall time so the assertion isolates race order.
   const results: RaceSourceRow[] = Array.from(
     { length: PRE_RACE_ENQUEUE_CAP_PER_TICK + 2 },
     (_, i) => {
       const raceNum = i + 1;
-      const minute = 30 + i;
-      const hh = minute >= 60 ? "16" : "15";
-      const mm = String(minute % 60).padStart(2, "0");
       return {
         keibajo_code: "44",
         race_bango: String(raceNum),
-        race_start_at_jst: `2026-07-12T${hh}:${mm}:00+09:00`,
+        race_start_at_jst: "2026-07-12T15:30:00+09:00",
         source: "nar",
       };
     },
@@ -693,7 +720,11 @@ test("runCoverageSelfHeal processes pre-race candidates earliest-post first and 
   // Earliest race_bango first among enqueued
   const enqueuedRaceBangos = enqueuePredictMock.mock.calls.map((call) => call[0].raceBango);
   expect(enqueuedRaceBangos).toStrictEqual(
-    Array.from({ length: PRE_RACE_ENQUEUE_CAP_PER_TICK }, (_, i) => String(i + 1).padStart(2, "0")),
+    Array.from({ length: PRE_RACE_ENQUEUE_CAP_PER_TICK + 2 }, (_, i) =>
+      String(i + 1).padStart(2, "0"),
+    )
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, PRE_RACE_ENQUEUE_CAP_PER_TICK),
   );
   expect(summary.enqueued).toBe(PRE_RACE_ENQUEUE_CAP_PER_TICK);
   expect(summary.preRaceEnqueued).toBe(PRE_RACE_ENQUEUE_CAP_PER_TICK);

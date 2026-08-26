@@ -20,6 +20,70 @@ interface EnqueueContainerStopForRoleParams {
   workKey?: string;
 }
 
+interface ContainerStateReader {
+  getState(): Promise<{ status: string }>;
+}
+
+interface FinalizeContainerStopParams {
+  afterDestroyed?: () => Promise<void>;
+  env: Env;
+  message: ContainerControlMessage;
+}
+
+interface PollContainerStoppedParams {
+  deadlineAtMs: number;
+  name: string;
+  reader: ContainerStateReader;
+}
+
+export const CONTAINER_STOP_CONFIRM_POLL_INTERVAL_MS: number = 250;
+export const CONTAINER_STOP_CONFIRM_TIMEOUT_MS: number = 15_000;
+
+const pause = async (durationMs: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, durationMs));
+
+const isStoppedStatus = (status: string): boolean =>
+  status === "stopped" || status === "stopped_with_code";
+
+const pollContainerStopped = async (params: PollContainerStoppedParams): Promise<string> => {
+  const state = await params.reader.getState();
+  if (isStoppedStatus(state.status)) return state.status;
+  const remainingMs = params.deadlineAtMs - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error(
+      `Container stop confirmation timed out name=${params.name} status=${state.status}`,
+    );
+  }
+  await pause(Math.min(CONTAINER_STOP_CONFIRM_POLL_INTERVAL_MS, remainingMs));
+  return pollContainerStopped(params);
+};
+
+export const waitForContainerStopped = async (
+  name: string,
+  reader: ContainerStateReader,
+): Promise<string> =>
+  pollContainerStopped({
+    deadlineAtMs: Date.now() + CONTAINER_STOP_CONFIRM_TIMEOUT_MS,
+    name,
+    reader,
+  });
+
+const finalizeContainerStop = async (params: FinalizeContainerStopParams): Promise<void> => {
+  await markContainerSlotStopped({
+    acceptableWorkKeys: params.message.acceptableWorkKeys,
+    doName: params.message.name,
+    env: params.env,
+    workKey: params.message.workKey,
+  });
+  await params.afterDestroyed?.();
+  await clearContainerSlot({
+    acceptableWorkKeys: params.message.acceptableWorkKeys,
+    doName: params.message.name,
+    env: params.env,
+    workKey: params.message.workKey,
+  });
+};
+
 export const isAllowedContainerDoName = (
   name: string,
   role: PredictionContainerRole | undefined,
@@ -122,26 +186,9 @@ export const consumeContainerStop = async (
     const namespace = resolveContainerNamespaceForRole(env, message.role);
     const stub = namespace.get(namespace.idFromName(message.name));
     if (claim.state === "pending") {
-      const state = await stub.getState();
-      if (state.status === "stopped" || state.status === "stopped_with_code") {
-        await markContainerSlotStopped({
-          acceptableWorkKeys: message.acceptableWorkKeys,
-          doName: message.name,
-          env,
-          workKey: message.workKey,
-        });
-        await afterDestroyed?.();
-        await clearContainerSlot({
-          acceptableWorkKeys: message.acceptableWorkKeys,
-          doName: message.name,
-          env,
-          workKey: message.workKey,
-        });
-        return true;
-      }
-      throw new Error(
-        `Container stop already in progress name=${message.name} status=${state.status}`,
-      );
+      await waitForContainerStopped(message.name, stub);
+      await finalizeContainerStop({ afterDestroyed, env, message });
+      return true;
     }
     return false;
   }
@@ -149,20 +196,8 @@ export const consumeContainerStop = async (
   const stub = namespace.get(namespace.idFromName(message.name));
   if (claim.state === "resumed") {
     const state = await stub.getState();
-    if (state.status === "stopped" || state.status === "stopped_with_code") {
-      await markContainerSlotStopped({
-        acceptableWorkKeys: message.acceptableWorkKeys,
-        doName: message.name,
-        env,
-        workKey: message.workKey,
-      });
-      await afterDestroyed?.();
-      await clearContainerSlot({
-        acceptableWorkKeys: message.acceptableWorkKeys,
-        doName: message.name,
-        env,
-        workKey: message.workKey,
-      });
+    if (isStoppedStatus(state.status)) {
+      await finalizeContainerStop({ afterDestroyed, env, message });
       return true;
     }
   }
@@ -177,21 +212,10 @@ export const consumeContainerStop = async (
       `Container stop failed name=${message.name} requestedAt=${message.requestedAt} status=${response.status}`,
     );
   }
-  await markContainerSlotStopped({
-    acceptableWorkKeys: message.acceptableWorkKeys,
-    doName: message.name,
-    env,
-    workKey: message.workKey,
-  });
-  await afterDestroyed?.();
-  await clearContainerSlot({
-    acceptableWorkKeys: message.acceptableWorkKeys,
-    doName: message.name,
-    env,
-    workKey: message.workKey,
-  });
+  const terminalStatus = await waitForContainerStopped(message.name, stub);
+  await finalizeContainerStop({ afterDestroyed, env, message });
   console.log(
-    `[container-control] stopped name=${message.name} requestedAt=${message.requestedAt} status=${response.status}`,
+    `[container-control] stopped name=${message.name} requestedAt=${message.requestedAt} responseStatus=${response.status} terminalStatus=${terminalStatus}`,
   );
   return true;
 };

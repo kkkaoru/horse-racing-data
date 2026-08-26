@@ -6,6 +6,7 @@ import type { AsyncBuffer } from "hyparquet";
 import {
   buildDayBaseRaceFoundationKey,
   buildDayBaseRaceManifestKey,
+  getDayBaseRaceFoundationReadiness,
   materializeDayBasePerRaceCache,
 } from "./day-base-race-materializer";
 
@@ -38,7 +39,7 @@ const makeBucket = (
   bytes: Uint8Array = fixture,
   overrides: {
     get?: (key: string, options: R2GetOptions) => Promise<unknown>;
-    head?: () => Promise<unknown>;
+    head?: (key: string) => Promise<unknown>;
     put?: (key: string, value: unknown, options: R2PutOptions) => Promise<unknown>;
   } = {},
 ): BucketFixture => {
@@ -133,6 +134,7 @@ describe("day-base per-race foundation materializer", () => {
       "row-count": "3",
       "schema-version": "1",
       "source-etag": "source-etag",
+      "source-version": "source-version",
     });
   });
 
@@ -167,6 +169,119 @@ describe("day-base per-race foundation materializer", () => {
     });
     expect(decodeDayBase).not.toHaveBeenCalled();
     expect(bucket.puts).toHaveLength(0);
+  });
+
+  test("force rematerializes an existing manifest so a missing race object is repaired", async () => {
+    const head = vi
+      .fn()
+      .mockResolvedValueOnce({ etag: "source-etag", size: 4, version: "source-version" });
+    const bucket = makeBucket(new Uint8Array([1, 2, 3, 4]), { head });
+    const decodeDayBase = vi.fn(injected([validRow()]).decodeDayBase);
+
+    const result = await materializeDayBasePerRaceCache(
+      { category: "jra", env: bucket.env, force: true, runYmd: "20260823" },
+      { decodeDayBase },
+    );
+
+    expect(result.status).toBe("materialized");
+    expect(decodeDayBase).toHaveBeenCalledTimes(1);
+    expect(bucket.puts).toHaveLength(2);
+  });
+
+  test("attests the exact race foundation against the canonical source and manifest", async () => {
+    const metadataByKey: Record<string, R2Object> = {
+      "feat-daybase/catalog-v1/jra/20260823/features.parquet": {
+        etag: "source-etag",
+        version: "source-version",
+      } as unknown as R2Object,
+      "feat-daybase-race/catalog-v1/jra/20260823/manifest.json": {
+        customMetadata: {
+          "contract-version": "day-base-race-foundation-v1",
+          "generation-id": "generation-id",
+          "schema-version": "1",
+          "source-etag": "source-etag",
+          "source-version": "source-version",
+        },
+      } as unknown as R2Object,
+      "feat-daybase-race/catalog-v1/jra/20260823/05/11/foundation.json": {
+        customMetadata: {
+          "contract-version": "day-base-race-foundation-v1",
+          "entry-set-hash": "entry-hash",
+          "generation-id": "generation-id",
+          "row-count": "12",
+          "schema-version": "1",
+          "source-etag": "source-etag",
+          "source-version": "source-version",
+        },
+      } as unknown as R2Object,
+    };
+    const head = vi.fn(async (key: string) => metadataByKey[key] ?? null);
+    const bucket = makeBucket(new Uint8Array([1]), { head });
+
+    await expect(
+      getDayBaseRaceFoundationReadiness({
+        category: "jra",
+        env: bucket.env,
+        raceNumber: "11",
+        runYmd: "20260823",
+        venueCode: "05",
+      }),
+    ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  });
+
+  test("fails exact-race attestation when the Worker foundation is absent", async () => {
+    const head = vi
+      .fn()
+      .mockResolvedValueOnce({ etag: "source-etag", version: "source-version" })
+      .mockResolvedValueOnce({ customMetadata: {} })
+      .mockResolvedValueOnce(null);
+    const bucket = makeBucket(new Uint8Array([1]), { head });
+
+    await expect(
+      getDayBaseRaceFoundationReadiness({
+        category: "jra",
+        env: bucket.env,
+        raceNumber: "11",
+        runYmd: "20260823",
+        venueCode: "05",
+      }),
+    ).resolves.toStrictEqual({ ready: false, reason: "foundation-miss" });
+  });
+
+  test.each([
+    ["bad-date", "05", "11", "invalid-run-ymd"],
+    ["20260823", "venue", "11", "invalid-race-scope"],
+    ["20260823", "05", "race", "invalid-race-scope"],
+  ])(
+    "rejects invalid exact foundation scope runYmd=%s venue=%s race=%s",
+    async (runYmd, venueCode, raceNumber, reason) => {
+      const bucket = makeBucket();
+      await expect(
+        getDayBaseRaceFoundationReadiness({
+          category: "jra",
+          env: bucket.env,
+          raceNumber,
+          runYmd,
+          venueCode,
+        }),
+      ).resolves.toStrictEqual({ ready: false, reason });
+      expect(bucket.head).not.toHaveBeenCalled();
+    },
+  );
+
+  test("fails exact-race attestation when the canonical day-base is absent", async () => {
+    const bucket = makeBucket(new Uint8Array([1]), {
+      head: vi.fn(async () => null),
+    });
+    await expect(
+      getDayBaseRaceFoundationReadiness({
+        category: "jra",
+        env: bucket.env,
+        raceNumber: "11",
+        runYmd: "20260823",
+        venueCode: "05",
+      }),
+    ).resolves.toStrictEqual({ ready: false, reason: "day-base-miss" });
   });
 
   test.each([

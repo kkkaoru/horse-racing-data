@@ -22,6 +22,8 @@ vi.mock("./do-state", () => ({
 }));
 
 import {
+  CONTAINER_STOP_CONFIRM_POLL_INTERVAL_MS,
+  CONTAINER_STOP_CONFIRM_TIMEOUT_MS,
   consumeContainerStop,
   enqueueContainerStop,
   enqueueContainerStopForRole,
@@ -32,7 +34,7 @@ import {
 
 const idFromNameMock = vi.fn(() => ({ name: "container-id" }));
 const stubFetchMock = vi.fn<(...args: [Request]) => Promise<Response>>();
-const getStateMock = vi.fn<() => Promise<{ status: string }>>(async () => ({ status: "running" }));
+const getStateMock = vi.fn<() => Promise<{ status: string }>>(async () => ({ status: "stopped" }));
 const getMock = vi.fn(() => ({ fetch: stubFetchMock, getState: getStateMock }));
 const raceIdFromNameMock = vi.fn(() => ({ name: "race-container-id" }));
 const raceGetMock = vi.fn(() => ({ fetch: stubFetchMock, getState: getStateMock }));
@@ -66,7 +68,7 @@ beforeEach(() => {
   markContainerSlotStoppedMock.mockClear();
   markContainerSlotStoppedMock.mockResolvedValue(undefined);
   getStateMock.mockClear();
-  getStateMock.mockResolvedValue({ status: "running" });
+  getStateMock.mockResolvedValue({ status: "stopped" });
   getMock.mockClear();
   idFromNameMock.mockClear();
   raceGetMock.mockClear();
@@ -113,6 +115,7 @@ test("stops the named container and clears its coordinator slot", async () => {
   expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-1");
   expect(getMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(getStateMock).toHaveBeenCalledTimes(1);
   const request = (stubFetchMock.mock.calls[0] as [Request])[0];
   expect(request.url).toBe("http://do/__admin/stop-container");
   expect(request.method).toBe("POST");
@@ -292,16 +295,43 @@ test.each(["stopped", "stopped_with_code"])(
   },
 );
 
-test("keeps a pending stop durable while the Container is still running", async () => {
+test("keeps a pending stop durable when terminal state confirmation times out", async () => {
+  vi.useFakeTimers();
   claimContainerSlotStopMock.mockResolvedValueOnce({ allowed: false, state: "pending" });
   getStateMock.mockResolvedValueOnce({ status: "running" });
+  getStateMock.mockResolvedValue({ status: "stopping" });
 
-  await expect(consumeContainerStop(makeEnv(), message)).rejects.toThrow(
-    "Container stop already in progress name=predict-jra-1 status=running",
+  const rejection = expect(consumeContainerStop(makeEnv(), message)).rejects.toThrow(
+    "Container stop confirmation timed out name=predict-jra-1 status=stopping",
   );
+  await vi.advanceTimersByTimeAsync(CONTAINER_STOP_CONFIRM_TIMEOUT_MS);
+  await rejection;
 
   expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(markContainerSlotStoppedMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test("keeps the slot fenced until post-destroy polling observes a terminal state", async () => {
+  vi.useFakeTimers();
+  stubFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  getStateMock
+    .mockResolvedValueOnce({ status: "healthy" })
+    .mockResolvedValueOnce({ status: "stopping" })
+    .mockResolvedValueOnce({ status: "stopped_with_code" });
+
+  const stopped = consumeContainerStop(makeEnv(), message);
+  await vi.advanceTimersByTimeAsync(CONTAINER_STOP_CONFIRM_POLL_INTERVAL_MS);
+  expect(markContainerSlotStoppedMock).not.toHaveBeenCalled();
+  expect(clearContainerSlotMock).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(CONTAINER_STOP_CONFIRM_POLL_INTERVAL_MS);
+  await expect(stopped).resolves.toBe(true);
+
+  expect(getStateMock).toHaveBeenCalledTimes(3);
+  expect(markContainerSlotStoppedMock).toHaveBeenCalledTimes(1);
+  expect(clearContainerSlotMock).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
 });
 
 test("does not act when a non-allowed claim has no resumable stop stage", async () => {

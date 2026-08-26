@@ -65,6 +65,7 @@ export interface Env {
   // fails closed instead of falling back to Neon.
   SOURCE_DATABASE_URL?: string;
   PREDICT_DAYS_AHEAD: string;
+  PIPELINE_TOTAL_TIMEOUT_SECONDS?: string;
   TRIGGER_TOKEN: string;
   // Direct producer route to sync-realtime-data's general job consumer.
   // This avoids public HTTP, Access, and bearer-token failure modes. Optional
@@ -218,6 +219,9 @@ export interface DayBasePickupMessage {
   category: PredictCategory;
   runYmd: string;
   attempt: number;
+  // Stable for every pickup/redelivery belonging to one logical prewarm.
+  // Missing only on messages queued before generation-scoped ownership.
+  generationId?: string;
   // True only when the source-day running-style barrier requested the first
   // prediction pass. Scheduled prewarms leave this false/absent and only warm
   // the artifact; the pickup fans out after it proves the fresh object landed.
@@ -233,6 +237,9 @@ export interface DayBasePrewarmMessage {
   runYmd: string;
   daysAhead: number;
   requestedAt: string;
+  // Created once by the producer and retained by every Queue redelivery.
+  // Missing only on messages queued before generation-scoped ownership.
+  generationId?: string;
   generatePredictionsAfterHit?: boolean;
   force?: boolean;
 }

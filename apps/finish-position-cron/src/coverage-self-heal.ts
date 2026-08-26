@@ -21,6 +21,7 @@
 
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import { isOldDateRunYmd } from "./old-date-guard";
+import { warmNeon } from "./neon-warm";
 import { enqueuePredict } from "./queue-producer";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import type { Env, PredictCategory, PredictMode } from "./types";
@@ -42,10 +43,12 @@ const SELF_HEAL_GRACE_MINUTES = 15;
 // focused-full pipeline (~13-27 min/race, single container slot per category)
 // still has room to finish before post for the earliest races in the window.
 export const PRE_RACE_LEAD_MINUTES = 180;
-// Per-tick bound so a full NAR morning card of incomplete races cannot stampede
-// the predict queue / single container slot in one heal tick. Remainder is
-// picked up on the next 15-min tick, still ordered by earliest post first.
-export const PRE_RACE_ENQUEUE_CAP_PER_TICK = 16;
+// Keep the guard well above the maximum number of domestic races that can be
+// in one 180-minute window. The old value (16) silently left later races out
+// of the pre-race window until the next tick; for a 15:35 race that meant the
+// prediction could start after post. Queue/DO lane claims already provide the
+// real concurrency bound, so this is only a last-resort corruption guard.
+export const PRE_RACE_ENQUEUE_CAP_PER_TICK = 256;
 const MS_PER_MINUTE = 60 * 1000;
 // Bounded lower than DLQ's MAX_DLQ_REDRIVES=1 escalation philosophy would
 // suggest at first glance, but self-heal covers a broader failure class than
@@ -276,6 +279,15 @@ const rowToCandidate = (row: RaceSourceRow, phase: HealPhase): GapCandidate => {
 // heal / readiness attempts before later ones when a tick is capacity-bound.
 const sortByRaceStartAscending = (candidates: GapCandidate[]): GapCandidate[] =>
   [...candidates].sort((a, b) => {
+    // From 17:00 JST onward, prioritize the late-card races as a group, then
+    // preserve strict post-time order inside that group. This prevents the
+    // earlier broad window from consuming the enqueue budget before the
+    // evening races have received their pre-weight prediction.
+    const aHour = Number.parseInt(a.raceStartAtJst.slice(11, 13), 10);
+    const bHour = Number.parseInt(b.raceStartAtJst.slice(11, 13), 10);
+    const aLate = Number.isFinite(aHour) && aHour >= 17;
+    const bLate = Number.isFinite(bHour) && bHour >= 17;
+    if (aLate !== bLate) return aLate ? -1 : 1;
     const aMs = Date.parse(a.raceStartAtJst);
     const bMs = Date.parse(b.raceStartAtJst);
     if (aMs !== bMs) return aMs - bMs;
@@ -373,6 +385,12 @@ const enqueueGapFill = async (
 ): Promise<HealOutcome> => {
   const { candidate, env, runDate, runYmd } = params;
   const escalated = options?.escalated === true;
+  // Wake Neon immediately before the pre-weight focused-full message is
+  // handed to Queue. This is best-effort and never blocks a valid enqueue;
+  // Worker warm cannot load the Python model or Container day-base itself.
+  if (env.NEON_DATABASE_URL !== undefined) {
+    await warmNeon(env.NEON_DATABASE_URL);
+  }
   const enqueuedCategories = await enqueuePredict({
     category: candidate.category,
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),

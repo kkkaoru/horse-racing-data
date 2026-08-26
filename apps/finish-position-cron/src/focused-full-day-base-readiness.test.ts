@@ -151,15 +151,13 @@ test("accepts only matching Catalog and current running-style metadata", async (
   );
 });
 
-test("accepts a NAR artifact only after every exact-category race is complete", async () => {
+test("accepts a NAR artifact without consulting the D1 running-style mirror", async () => {
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 
-  expect(runningStyleReadinessAllMock).toHaveBeenCalledTimes(1);
-  expect(realtimePrepareSqlMock).toHaveBeenCalledWith(
-    expect.stringContaining("races.source = 'nar' and races.keibajo_code <> '83'"),
-  );
+  expect(runningStyleReadinessAllMock).not.toHaveBeenCalled();
+  expect(realtimePrepareSqlMock).not.toHaveBeenCalled();
 });
 
 test("rejects missing and malformed day-base metadata before live probes", async () => {
@@ -228,17 +226,17 @@ test("rejects malformed in-process candidate watermarks before live probes", asy
   expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
-test("rejects stale running-style count and timestamp metadata", async () => {
+test("leaves R2 running-style watermark validation to the Container authority", async () => {
   featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-row-count": "1" }));
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-1-of-2" });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
   featureHeadMock.mockResolvedValueOnce(
     metadataObject({ "rs-predicted-at-max": "2026-08-22T23:00:00Z" }),
   );
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: false, reason: "rs-predicted-at-max-mismatch" });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
 test("compares a live source watermark when the Catalog projection provides it", async () => {
@@ -253,7 +251,7 @@ test("compares a live source watermark when the Catalog projection provides it",
   ).resolves.toStrictEqual({ ready: false, reason: "source-watermark-mismatch" });
 });
 
-test("rejects a stale populated artifact while the export source has no running-style rows", async () => {
+test("does not let an empty D1 running-style mirror reject an R2 artifact", async () => {
   runningStyleFirstMock.mockResolvedValueOnce({
     ...readyRunningStyleRow(),
     rs_predicted_at_max: null,
@@ -262,10 +260,11 @@ test("rejects a stale populated artifact while the export source has no running-
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-2-of-0" });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
-test("rejects a zero-running-style artifact while a category race lacks inference state", async () => {
+test("does not mix per-race D1 inference state into artifact freshness", async () => {
   featureHeadMock.mockResolvedValueOnce(
     metadataObject({ "rs-predicted-at-max": "none", "rs-row-count": "0" }),
   );
@@ -278,13 +277,10 @@ test("rejects a zero-running-style artifact while a category race lacks inferenc
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({
-    ready: false,
-    reason: "running-style-race-incomplete-43-01-state-missing",
-  });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
-test("rejects a partial category artifact while a later race is still pending", async () => {
+test("does not block a category artifact on a later D1 race mirror", async () => {
   runningStyleFirstMock.mockResolvedValueOnce({
     ...readyRunningStyleRow(),
     race_count: 2,
@@ -321,13 +317,10 @@ test("rejects a partial category artifact while a later race is still pending", 
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({
-    ready: false,
-    reason: "running-style-race-incomplete-43-02-state-missing",
-  });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
-test("rejects a category race whose inference state is not completed", async () => {
+test("does not block an R2 artifact on a processing D1 mirror state", async () => {
   runningStyleReadinessAllMock.mockResolvedValueOnce({
     results: [
       {
@@ -344,13 +337,10 @@ test("rejects a category race whose inference state is not completed", async () 
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({
-    ready: false,
-    reason: "running-style-race-incomplete-43-01-status-processing",
-  });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
-test("rejects a category race whose prediction count is incomplete", async () => {
+test("does not block an R2 artifact on a short D1 prediction count", async () => {
   runningStyleReadinessAllMock.mockResolvedValueOnce({
     results: [
       {
@@ -367,24 +357,22 @@ test("rejects a category race whose prediction count is incomplete", async () =>
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({
-    ready: false,
-    reason: "running-style-race-incomplete-43-01-prediction-count-1-of-2",
-  });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
-test("fails closed when category race enumeration is empty or unavailable", async () => {
+test("does not enumerate category races from D1 for artifact freshness", async () => {
   raceSourceAllMock.mockResolvedValueOnce({
     results: [{ keibajo_code: "43", race_bango: "01", source: "nar" }],
   });
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: false, reason: "running-style-races-missing" });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 
   raceSourceAllMock.mockRejectedValueOnce(new Error("D1 enumeration unavailable"));
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).rejects.toThrow("D1 enumeration unavailable");
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  expect(raceSourceAllMock).not.toHaveBeenCalled();
 });
 
 test("uses the canonical no-running-style watermark for Ban-ei", async () => {
@@ -413,41 +401,37 @@ test("atomically enqueues one day-base repair and suppresses duplicates", async 
   const env = makeEnv();
 
   await expect(
-    enqueueDayBaseRepairOnce({ category: "jra", env, runYmd: "20260823" }),
+    enqueueDayBaseRepairOnce({ category: "jra", env, runYmd: "20990101" }),
   ).resolves.toBe("enqueued");
   repairFirstMock.mockResolvedValueOnce(null);
   await expect(
-    enqueueDayBaseRepairOnce({ category: "jra", env, runYmd: "20260823" }),
+    enqueueDayBaseRepairOnce({ category: "jra", env, runYmd: "20990101" }),
   ).resolves.toBe("already-enqueued");
 
   expect(queueSendMock).toHaveBeenCalledTimes(1);
   expect(queueSendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
+    generationId: expect.any(String),
     requestedAt: expect.any(String),
-    runYmd: "20260823",
+    runYmd: "20990101",
     type: "day-base-prewarm",
   });
 });
 
-test("preserves force on an old-date day-base repair message", async () => {
+test("rejects force on an old-date day-base repair message before reserving", async () => {
   await expect(
     enqueueDayBaseRepairOnce({
       category: "jra",
       env: makeEnv(),
       force: true,
+      now: new Date("2026-08-24T00:00:00.000Z"),
       runYmd: "20260823",
     }),
-  ).resolves.toBe("enqueued");
+  ).resolves.toBe("skipped-old-date");
 
-  expect(queueSendMock).toHaveBeenCalledWith({
-    category: "jra",
-    daysAhead: 0,
-    force: true,
-    requestedAt: expect.any(String),
-    runYmd: "20260823",
-    type: "day-base-prewarm",
-  });
+  expect(queueSendMock).not.toHaveBeenCalled();
+  expect(repairPrepareSqlMock).not.toHaveBeenCalled();
 });
 
 test("atomically reclaims and enqueues a repair after the 45-minute lease expires", async () => {
@@ -475,7 +459,7 @@ test("releases the repair reservation when Queue send fails", async () => {
   queueSendMock.mockRejectedValueOnce(new Error("Queue unavailable"));
 
   await expect(
-    enqueueDayBaseRepairOnce({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+    enqueueDayBaseRepairOnce({ category: "nar", env: makeEnv(), runYmd: "20990101" }),
   ).rejects.toThrow("Queue unavailable");
   expect(repairRunMock).toHaveBeenCalledTimes(1);
 });

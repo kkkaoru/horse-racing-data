@@ -17,6 +17,11 @@ interface RunningStyleReadinessTarget {
   runningStyleKey: string;
 }
 
+interface QueryRunningStyleReadinessChunkParams {
+  db: D1Database;
+  targets: readonly RunningStyleReadinessTarget[];
+}
+
 interface RunningStyleReadinessRow {
   entrant_count: number | null;
   expected_horse_count: number | null;
@@ -35,9 +40,18 @@ export interface RunningStyleRaceReadiness {
 const RUN_YMD_YEAR_END: number = 4;
 const RUN_YMD_LENGTH: number = 8;
 const COMPLETED_STATUS: string = "completed";
+// The inference worker writes the R2 artifact and race_running_styles rows
+// before updating running_style_inference_state.completed_at.  A transient
+// D1 timeout can therefore leave a durable `sync-failed` state even though
+// the artifact is complete.  Treat only that provably complete shape as HIT;
+// missing artifacts or short row counts remain fail-closed below.
+const ARTIFACT_COMPLETE_STALE_STATUS: string = "sync-failed";
 const RUNNING_STYLE_JRA_SOURCE: string = "jra";
 const RUNNING_STYLE_NAR_SOURCE: string = "nar";
 const TARGET_PLACEHOLDER: string = "(?, ?)";
+// D1 currently rejects more than 100 bound variables. Each target consumes
+// two variables, so 40 leaves explicit headroom for future predicates.
+const READINESS_QUERY_RACE_CHUNK_SIZE: number = 40;
 const SCRATCHED_STATUSES_SQL: string = "'出場停止', '出走取消', '取消', '競走除外', '除外'";
 
 const resolveRunningStyleSource = (category: PredictCategory): string =>
@@ -72,7 +86,16 @@ const readinessReason = (row: RunningStyleReadinessRow | undefined): string | nu
   const writtenCount = Number(row.written_horse_count ?? 0);
   const predictionCount = Number(row.prediction_count ?? 0);
   if (entrantCount <= 0) return "entrants-missing";
-  if (row.status !== COMPLETED_STATUS) return `status-${row.status ?? "missing"}`;
+  const artifactComplete =
+    row.features_r2_key !== null &&
+    row.features_r2_key.length > 0 &&
+    expectedCount >= entrantCount &&
+    writtenCount >= entrantCount &&
+    predictionCount >= entrantCount;
+  const statusIsUsable =
+    row.status === COMPLETED_STATUS ||
+    (row.status === ARTIFACT_COMPLETE_STALE_STATUS && artifactComplete);
+  if (!statusIsUsable) return `status-${row.status ?? "missing"}`;
   if (row.features_r2_key === null || row.features_r2_key.length === 0)
     return "feature-artifact-missing";
   if (expectedCount < entrantCount)
@@ -138,16 +161,37 @@ const buildReadinessSql = (targetCount: number): string => {
               state.expected_horse_count, state.written_horse_count`;
 };
 
+const chunkReadinessTargets = (
+  targets: readonly RunningStyleReadinessTarget[],
+): ReadonlyArray<readonly RunningStyleReadinessTarget[]> =>
+  Array.from({ length: Math.ceil(targets.length / READINESS_QUERY_RACE_CHUNK_SIZE) }, (_, index) =>
+    targets.slice(
+      index * READINESS_QUERY_RACE_CHUNK_SIZE,
+      (index + 1) * READINESS_QUERY_RACE_CHUNK_SIZE,
+    ),
+  );
+
+const queryRunningStyleReadinessChunk = async (
+  params: QueryRunningStyleReadinessChunkParams,
+): Promise<readonly RunningStyleReadinessRow[]> => {
+  const result = await params.db
+    .prepare(buildReadinessSql(params.targets.length))
+    .bind(...params.targets.flatMap((target) => [target.runningStyleKey, target.realtimeKey]))
+    .all<RunningStyleReadinessRow>();
+  return result.results;
+};
+
 export const getRunningStyleRaceReadiness = async (
   params: RunningStyleReadinessParams,
 ): Promise<readonly RunningStyleRaceReadiness[]> => {
   if (params.races.length === 0) return [];
   const targets = params.races.map((race) => buildTarget(params.category, params.runYmd, race));
-  const result = await params.db
-    .prepare(buildReadinessSql(targets.length))
-    .bind(...targets.flatMap((target) => [target.runningStyleKey, target.realtimeKey]))
-    .all<RunningStyleReadinessRow>();
-  const rowsByKey = new Map(result.results.map((row) => [row.running_key, row]));
+  const chunkRows = await Promise.all(
+    chunkReadinessTargets(targets).map((targetChunk) =>
+      queryRunningStyleReadinessChunk({ db: params.db, targets: targetChunk }),
+    ),
+  );
+  const rowsByKey = new Map(chunkRows.flat().map((row) => [row.running_key, row]));
   return targets.map((target) => ({
     race: target.race,
     reason: readinessReason(rowsByKey.get(target.runningStyleKey)),

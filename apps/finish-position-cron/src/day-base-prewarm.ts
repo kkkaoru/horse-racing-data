@@ -22,25 +22,35 @@ import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
 import {
   DAY_BASE_PICKUP_FIRST_ATTEMPT,
   buildDayBaseWorkKey,
+  dayBaseGenerationFields,
   enqueueDayBasePickup,
 } from "./day-base-pickup";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
+import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   getDayBasePrewarmHitReadiness,
   getFocusedFullDayBaseReadiness,
 } from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark } from "./ndjson-stream";
+import { isOldDateRunYmd } from "./old-date-guard";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
+import { claimDayBaseGeneration } from "./predict-run-coordinator";
 import type { DayBasePrewarmMessage, Env, PredictCategory } from "./types";
 
 type PrewarmResultType = "result";
 type PrewarmSuccessStatus = "success";
 type PrewarmAcceptedStatus = "accepted";
 type PrewarmEmptyStatus = "empty";
-export type PrewarmCategoryOutcome = "failed" | "landed" | "pickup-scheduled";
+type DayBaseReadinessProbe = "probe-error" | "verified-hit" | "verified-miss";
+export type PrewarmCategoryOutcome =
+  | "busy"
+  | "failed"
+  | "landed"
+  | "pickup-scheduled"
+  | "superseded";
 
 interface PrewarmNdjsonLine {
   type: string;
@@ -60,9 +70,14 @@ interface PrewarmCategoryParams {
   category: PredictCategory;
   daysAhead: number;
   env: Env;
+  generationId?: string;
   runYmd: string;
   generatePredictionsAfterHit?: boolean;
   force?: boolean;
+}
+
+interface PrewarmUrlParams extends Omit<PrewarmCategoryParams, "env"> {
+  rebuild?: boolean;
 }
 
 interface RunDayBasePrewarmParams {
@@ -91,6 +106,7 @@ interface ReleaseDayBaseSlotParams {
   category: PredictCategory;
   doName: string;
   env: Env;
+  generationId?: string;
   landed: boolean;
   runYmd: string;
   started: boolean;
@@ -111,6 +127,7 @@ const PREWARM_ACCEPTED_STATUS: PrewarmAcceptedStatus = "accepted";
 const PREWARM_EMPTY_STATUS: PrewarmEmptyStatus = "empty";
 const NONE_LABEL: string = "-";
 const DAY_BASE_SLOT_KIND: ContainerSlotKind = "day-base";
+const GENERATION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,128}$/u;
 export const DAY_BASE_PREWARM_TYPE = "day-base-prewarm";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -127,6 +144,8 @@ export const isDayBasePrewarmMessage = (value: unknown): value is DayBasePrewarm
   typeof value.requestedAt === "string" &&
   (value.generatePredictionsAfterHit === undefined ||
     typeof value.generatePredictionsAfterHit === "boolean") &&
+  (value.generationId === undefined ||
+    (typeof value.generationId === "string" && GENERATION_ID_PATTERN.test(value.generationId))) &&
   (value.force === undefined || typeof value.force === "boolean");
 
 export const isDayBasePrewarmQueueMessage = (
@@ -134,12 +153,19 @@ export const isDayBasePrewarmQueueMessage = (
 ): message is Message<DayBasePrewarmMessage> => isDayBasePrewarmMessage(message.body);
 
 export const enqueueDayBasePrewarm = async (params: EnqueueDayBasePrewarmParams): Promise<void> => {
+  const requestedAt = params.requestedAt ?? new Date();
+  if (isOldDateRunYmd(params.runYmd, requestedAt)) {
+    throw new Error(
+      `Refusing historical day-base enqueue category=${params.category} runYmd=${params.runYmd}`,
+    );
+  }
   await params.env.PREDICT_QUEUE.send({
     category: params.category,
     daysAhead: params.daysAhead,
+    generationId: params.generationId ?? crypto.randomUUID(),
     ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
     ...(params.force === true ? { force: true } : {}),
-    requestedAt: (params.requestedAt ?? new Date()).toISOString(),
+    requestedAt: requestedAt.toISOString(),
     runYmd: params.runYmd,
     type: DAY_BASE_PREWARM_TYPE,
   });
@@ -151,12 +177,14 @@ const isPrewarmNdjsonLine = (value: unknown): value is PrewarmNdjsonLine =>
 const isPrewarmResultLine = (line: PrewarmNdjsonLine): line is PrewarmResultLine =>
   line.type === PREWARM_RESULT_TYPE;
 
-const buildPrewarmUrl = (params: Omit<PrewarmCategoryParams, "env">): string => {
+const buildPrewarmUrl = (params: PrewarmUrlParams): string => {
   const searchParams = new URLSearchParams({
     category: params.category,
     daysAhead: String(params.daysAhead),
     runDate: params.runYmd,
   });
+  if (params.force === true) searchParams.set("force", "1");
+  if (params.rebuild === true) searchParams.set("rebuild", "1");
   return `${PREWARM_HOST}${PREWARM_PATH}?${searchParams.toString()}`;
 };
 
@@ -229,7 +257,7 @@ const landDayBaseFromPickup = async (
 };
 
 const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): Promise<void> => {
-  const workKey = buildDayBaseWorkKey(params.category, params.runYmd);
+  const workKey = buildDayBaseWorkKey(params);
   try {
     if (!params.started) {
       await releaseContainerSlot({
@@ -254,31 +282,45 @@ const releaseDayBaseSlotBestEffort = async (params: ReleaseDayBaseSlotParams): P
   }
 };
 
-const readExistingDayBaseHit = async (params: PrewarmCategoryParams): Promise<boolean | null> => {
-  if (params.force === true) return null;
+const probeExistingDayBaseHit = async (
+  params: PrewarmCategoryParams,
+): Promise<DayBaseReadinessProbe> => {
   try {
     const readiness = await getDayBasePrewarmHitReadiness(params);
     if (!readiness.ready) {
       console.log(
         `[day-base-prewarm] worker-hit-miss category=${params.category} runYmd=${params.runYmd} reason=${readiness.reason}`,
       );
-      return false;
+      return "verified-miss";
     }
-    return true;
+    return "verified-hit";
   } catch (error) {
     console.warn(
       `[day-base-prewarm] worker-hit-check failed category=${params.category} runYmd=${params.runYmd}: ${String(error)} -- continuing to container freshness check`,
     );
-    return false;
+    return "probe-error";
   }
 };
 
-const useExistingDayBaseHit = async (
+const useVerifiedDayBaseHit = async (
   params: PrewarmCategoryParams,
-): Promise<PrewarmCategoryOutcome | null> => {
-  const hit = await readExistingDayBaseHit(params);
-  if (hit !== true) return null;
+): Promise<PrewarmCategoryOutcome> => {
   try {
+    // A verified category day-base HIT is not sufficient for fast scoring by
+    // itself. Materialize the bounded per-race foundation in the Worker before
+    // fan-out so the Container can read it directly instead of rebuilding the
+    // race lazily during the prediction request. If materialization cannot be
+    // completed, keep the existing lazy fallback as a safety net.
+    const materialized = await materializeDayBasePerRaceCache({
+      category: params.category,
+      env: params.env,
+      runYmd: params.runYmd,
+    });
+    if (materialized.status !== "materialized") {
+      throw new Error(
+        `per-race foundation warm failed category=${params.category} runYmd=${params.runYmd} reason=${materialized.reason}`,
+      );
+    }
     if (params.generatePredictionsAfterHit === true) {
       await fanOutPredictionsAfterDayBaseHit({
         category: params.category,
@@ -309,31 +351,61 @@ export const prewarmCategoryWithOutcome = async (
   // A plain R2 HEAD is not enough: the explicit readiness probe compares the
   // canonical object's metadata with live Catalog and complete per-race
   // running-style state. Only that verified HIT may bypass Container startup.
-  const existingHit = await useExistingDayBaseHit(params);
-  if (existingHit !== null) return existingHit;
+  const readinessProbe = params.force === true ? null : await probeExistingDayBaseHit(params);
+  if (readinessProbe === "verified-hit") return useVerifiedDayBaseHit(params);
   const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
-  const url = buildPrewarmUrl({ category, daysAhead, runYmd });
+  const url = buildPrewarmUrl({
+    category,
+    daysAhead,
+    ...(params.force === true ? { force: true } : {}),
+    ...(readinessProbe === "verified-miss" ? { rebuild: true } : {}),
+    runYmd,
+  });
+  const generation = await claimDayBaseGeneration({
+    category,
+    env,
+    ...(params.force === true ? { force: true } : {}),
+    ...dayBaseGenerationFields(params.generationId),
+    phase: "start",
+    runYmd,
+  });
+  if (!generation.proceed) {
+    if (generation.state === "preempting") {
+      await handOffContainerStopOrCleanup({
+        env,
+        name: doName,
+        role: "legacy",
+        workKey: generation.preemptedWorkKey,
+      });
+    }
+    console.warn(
+      `[day-base-prewarm] generation ${generation.state} doName=${doName} category=${category} runYmd=${runYmd} preemptedWorkKey=${generation.state === "preempting" ? generation.preemptedWorkKey : NONE_LABEL}`,
+    );
+    return generation.state === "superseded" ? "superseded" : "busy";
+  }
   const claim = await claimContainerSlot({
     category,
     doName,
     env,
     kind: DAY_BASE_SLOT_KIND,
     staleAfterMs: CONTAINER_DAY_BASE_SLOT_STALE_MS,
-    workKey: buildDayBaseWorkKey(category, runYmd),
+    workKey: buildDayBaseWorkKey({
+      category,
+      ...dayBaseGenerationFields(params.generationId),
+      runYmd,
+    }),
   });
   if (!claim.proceed) {
     console.warn(
       `[day-base-prewarm] container slot ${claim.state ?? "capped"} doName=${doName} kind=${DAY_BASE_SLOT_KIND} category=${category} runYmd=${runYmd} -- skipping start`,
     );
-    await enqueueDayBasePickup({
-      attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
-      category,
-      env,
-      ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
-      ...(params.force === true ? { force: true } : {}),
-      runYmd,
-    });
-    return "pickup-scheduled";
+    // A pickup chain belongs only to a Container build that this invocation
+    // actually started. Starting another chain while the category DO is busy
+    // multiplies one periodic prewarm into many delayed messages, and every
+    // message then schedules its own successor. Return a retryable outcome so
+    // Queue redelivery preserves exactly one prewarm chain without probing or
+    // extending the existing Container owner.
+    return "busy";
   }
   let releaseSlot = true;
   const lifecycle = { landed: false, started: false };
@@ -346,6 +418,12 @@ export const prewarmCategoryWithOutcome = async (
     // Only the container can declare an existing R2 object fresh because its
     // prewarm fast path compares the live Catalog + running-style watermark.
     if (result?.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) {
+      const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+      if (materialized.status !== "materialized") {
+        throw new Error(
+          `per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,
+        );
+      }
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
@@ -353,6 +431,12 @@ export const prewarmCategoryWithOutcome = async (
       return "landed";
     }
     if (await landDayBaseFromPickup({ category, env, runYmd })) {
+      const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+      if (materialized.status !== "materialized") {
+        throw new Error(
+          `per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,
+        );
+      }
       if (params.generatePredictionsAfterHit === true) {
         await fanOutPredictionsAfterDayBaseHit({ category, env, runYmd });
       }
@@ -364,6 +448,7 @@ export const prewarmCategoryWithOutcome = async (
       attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
       category,
       env,
+      ...dayBaseGenerationFields(params.generationId),
       ...(params.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
       ...(params.force === true ? { force: true } : {}),
       runYmd,
@@ -387,6 +472,7 @@ export const prewarmCategoryWithOutcome = async (
         category,
         doName,
         env,
+        ...dayBaseGenerationFields(params.generationId),
         landed: lifecycle.landed,
         runYmd,
         started: lifecycle.started,

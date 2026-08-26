@@ -11,6 +11,7 @@ import {
   CONTAINER_SLOT_CAPPED_STATE,
   CONTAINER_SLOT_RETRY_DELAY_SECONDS,
   CONTAINER_SLOT_STALE_MS,
+  RACE_CHAIN_CONTAINER_SLOT_MAX,
   decideContainerSlotClaim,
   isContainerSlotStopAllowed,
   isReservedContainerLane,
@@ -48,6 +49,10 @@ test("general pool is max instances minus reserved Ban-ei headroom", () => {
 
 test("rescore unique-DO cap is three so one category instance each", () => {
   expect(CONTAINER_RESCORE_SLOT_MAX).toBe(3);
+});
+
+test("race-chain software cap matches its platform ceiling of three", () => {
+  expect(RACE_CHAIN_CONTAINER_SLOT_MAX).toBe(3);
 });
 
 test("slot heartbeat stale window is twenty minutes", () => {
@@ -465,6 +470,141 @@ test("a stale rescore lease is dropped so a later claim can reuse that unique DO
       timestamp: 1_000_000,
     },
   ]);
+});
+
+test("a fourth race-chain DO is capped before the platform rejects its start", () => {
+  const three: ContainerSlotLease[] = [
+    makeLease({ doName: "race-chain-predict-jra-0" }),
+    makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+    makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+  ];
+  const fourth = decideContainerSlotClaim(three, {
+    category: "jra",
+    doName: "race-chain-predict-jra-1",
+    kind: "focused-full",
+    now: NOW_MS,
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    workKey: "focused-full:20260826:jra:05:11",
+  });
+
+  expect(fourth.proceed).toBe(false);
+  expect(fourth.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
+  expect(fourth.leases).toStrictEqual(three);
+});
+
+test("a stale race-chain lease is pruned before the race-chain cap is counted", () => {
+  const claim = decideContainerSlotClaim(
+    [
+      makeLease({
+        doName: "race-chain-predict-jra-0",
+        timestamp: NOW_MS - CONTAINER_SLOT_STALE_MS,
+      }),
+      makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+      makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+    ],
+    {
+      category: "jra",
+      doName: "race-chain-predict-jra-1",
+      kind: "focused-full",
+      now: NOW_MS,
+      staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    },
+  );
+
+  expect(claim.proceed).toBe(true);
+  expect(claim.leases).toStrictEqual([
+    {
+      category: "nar",
+      doName: "race-chain-predict-nar-0",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1_000_000,
+    },
+    {
+      category: "ban-ei",
+      doName: "race-chain-predict-ban-ei-0",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1_000_000,
+    },
+    {
+      category: "jra",
+      doName: "race-chain-predict-jra-1",
+      holders: 1,
+      kind: "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1_000_000,
+    },
+  ]);
+});
+
+test("the race-chain cap does not block a legacy lease below the shared general cap", () => {
+  const claim = decideContainerSlotClaim(
+    [
+      makeLease({ doName: "race-chain-predict-jra-0" }),
+      makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+      makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+    ],
+    {
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      now: NOW_MS,
+      staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    },
+  );
+
+  expect(claim.proceed).toBe(true);
+  expect(claim.leases).toHaveLength(4);
+});
+
+test("the same race-chain owner can reclaim while all race-chain slots are held", () => {
+  const three: ContainerSlotLease[] = [
+    makeLease({ doName: "race-chain-predict-jra-0", workKey: "focused-work" }),
+    makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+    makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+  ];
+  const claim = decideContainerSlotClaim(three, {
+    allowSameOwner: true,
+    category: "jra",
+    doName: "race-chain-predict-jra-0",
+    kind: "focused-full",
+    now: NOW_MS + 1,
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    workKey: "focused-work",
+  });
+
+  expect(claim).toStrictEqual({ leases: three, proceed: true });
+});
+
+test("a race-chain owner transfer succeeds while all race-chain slots are held", () => {
+  const three: ContainerSlotLease[] = [
+    makeLease({ doName: "race-chain-predict-jra-0", workKey: "old-work" }),
+    makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+    makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+  ];
+  const claim = decideContainerSlotClaim(three, {
+    category: "jra",
+    doName: "race-chain-predict-jra-0",
+    kind: "focused-full",
+    now: NOW_MS + 1,
+    replaceWorkKey: "old-work",
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    workKey: "new-work",
+  });
+
+  expect(claim.proceed).toBe(true);
+  expect(claim.leases[0]).toStrictEqual({
+    category: "jra",
+    doName: "race-chain-predict-jra-0",
+    holders: 1,
+    kind: "focused-full",
+    rescoreHolders: 0,
+    timestamp: 1_000_001,
+    workKey: "new-work",
+  });
 });
 
 test("a different execution cannot share one DO and leaves sibling leases unchanged", () => {

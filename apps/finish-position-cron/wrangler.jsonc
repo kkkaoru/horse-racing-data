@@ -104,6 +104,9 @@
       "class_name": "FinishPositionRaceChainContainer",
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
+      "image_vars": {
+        "ARTIFACT_ROLLOUT_REV": "e8d925b4",
+      },
       "instance_type": {
         "vcpu": 2,
         "memory_mib": 6144,
@@ -114,6 +117,9 @@
       // makes concurrent Queue deliveries fail at Container start instead of
       // waiting on the existing bounded Queue retry path.
       "max_instances": 3,
+      // Keep race-chain rollouts atomic so a transient first rollout can be retriggered
+      // without leaving active instances pinned to the previous image.
+      "rollout_step_percentage": 100,
     },
   ],
   "durable_objects": {
@@ -168,6 +174,9 @@
   ],
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
+    // Immutable end-to-end bound. Expensive feature layers must optimize their
+    // target scope instead of extending this ceiling and retaining a standard-4.
+    "PIPELINE_TOTAL_TIMEOUT_SECONDS": "1800",
     // Backward window (days) the corner-features-refresh crons above
     // additionally sweep on every run, so a day whose settlement columns
     // (finish_position etc.) were still NULL on a prior visit gets
@@ -305,6 +314,10 @@
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
     "R2_BUCKET": "pc-keiba-features-archive",
+    // Prefer the cached day-base/race-chain layers for every category.  A
+    // missing day-base now falls through to the target-race scoped pipeline;
+    // it never performs a whole-card build inside a focused pre-race request.
+    "DAY_BASE_SPLIT_ENABLED": "jra,nar,ban-ei",
     // venue-weather Worker base URL, forwarded into the container env so the
     // Python prediction path can fetch venue weather data over HTTP.
     "VENUE_WEATHER_URL": "https://venue-weather.kaoru.workers.dev",
@@ -325,7 +338,7 @@
     // no-inline-day-base-build switch. Worker-side R2 HEAD proves presence,
     // but cannot prove the live Catalog/running-style watermark still matches.
     "RACE_CHAIN_CONTAINER_ENABLED": "1",
-    "RACE_CHAIN_CONTAINER_CATEGORIES": "jra",
+    "RACE_CHAIN_CONTAINER_CATEGORIES": "jra,nar,ban-ei",
     // Default-off rollout for durable Container DO completion watches. The
     // legacy Queue-redelivery polling path remains authoritative until this is
     // explicitly changed to "1" after production observation.

@@ -79,11 +79,17 @@ const makeEnv = (): Env =>
   ({
     FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
     FINISH_POSITION_PREDICT_CONTAINER: {
-      get: vi.fn(() => ({ fetch: containerFetchMock })),
+      get: vi.fn(() => ({
+        fetch: containerFetchMock,
+        getState: async () => ({ status: "stopped" }),
+      })),
       idFromName: vi.fn((name: string) => ({ name })),
     } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
     FINISH_POSITION_RACE_CHAIN_CONTAINER: {
-      get: vi.fn(() => ({ fetch: raceChainContainerFetchMock })),
+      get: vi.fn(() => ({
+        fetch: raceChainContainerFetchMock,
+        getState: async () => ({ status: "stopped" }),
+      })),
       idFromName: vi.fn((name: string) => ({ name })),
     } as unknown as Env["FINISH_POSITION_RACE_CHAIN_CONTAINER"],
     CONTAINER_CONTROL_QUEUE: {
@@ -935,13 +941,12 @@ test("does not redrive an old non-force prediction from the DLQ", async () => {
   warnSpy.mockRestore();
 });
 
-test("keeps the explicit historical force path redrivable from the DLQ", async () => {
+test("does not redrive an explicitly forced historical message from the DLQ", async () => {
   isOldDateRunYmdMock.mockReturnValue(true);
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await handleDlqQueue(makeBatch([makeMessage({ force: true })]), makeEnv());
-  expect(sendMock).toHaveBeenCalledWith(
-    expect.objectContaining({ force: true, dlqRedriveCount: 1 }),
-  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   warnSpy.mockRestore();
 });

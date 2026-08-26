@@ -17,8 +17,9 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // Normal Queue traffic is useful only for today's or a future card. Allowing
 // yesterday's failed deliveries to retain their retry budget can starve the
-// current card after midnight. Explicit operator repairs remain available via
-// the message `force` flag, which bypasses this guard in queue-consumer.ts.
+// current card after midnight. `force` may bypass freshness/deduplication but
+// never this date fence; historical regeneration belongs to the local backfill
+// path rather than production Containers.
 export const OLD_DATE_THRESHOLD_DAYS = 0;
 
 interface YmdParts {
@@ -64,8 +65,7 @@ export const parseRunYmdToUtcDate = (runYmd: string): Date | null => {
 };
 
 // True when runYmd's JST calendar day is earlier than today's JST calendar
-// day. Future-dated runYmd is never old. Explicit `force` messages bypass this
-// guard at the consumer. `now` is required (not defaulted) so callers inject
+// day. Future-dated runYmd is never old. `now` is required so callers inject
 // `new Date()` explicitly and tests can inject a fixed date
 // deterministically.
 export const isOldDateRunYmd = (runYmd: string, now: Date): boolean => {

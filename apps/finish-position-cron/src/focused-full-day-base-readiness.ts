@@ -1,9 +1,7 @@
 // Run with bun. Canonical fail-closed day-base readiness for focused-full work.
 
 import { buildDayBaseObjectKey } from "./day-base-object-key";
-import { enumerateTodaysRaces } from "./cron-decision";
 import type { DaybaseWatermark } from "./ndjson-stream";
-import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface FocusedFullDayBaseReadinessParams {
@@ -27,17 +25,9 @@ interface CatalogRowsPayload {
   rows: unknown[];
 }
 
-interface RunningStyleWatermarkRow {
-  race_count: number | null;
-  rs_predicted_at_max: string | null;
-  rs_row_count: number | null;
-}
-
 interface LiveDayBaseWatermark {
   rowCount: number;
   sourceUpdatedMax: string | null;
-  rsPredictedAtMax: string;
-  rsRowCount: number;
 }
 
 export interface FocusedFullDayBaseReadiness {
@@ -46,11 +36,7 @@ export interface FocusedFullDayBaseReadiness {
 }
 
 const CATALOG_ORIGIN: string = "https://pc-keiba-r2-catalog.internal";
-const RUN_YMD_YEAR_END: number = 4;
-const RUN_YMD_LENGTH: number = 8;
 const READY_REASON: string = "ready";
-const NONE_WATERMARK: string = "none";
-const RUNNING_STYLE_RACES_MISSING_REASON: string = "running-style-races-missing";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -120,110 +106,24 @@ const fetchCatalogWatermark = async (
   };
 };
 
-const categoryPredicates = (category: PredictCategory): string => {
-  if (category === "jra") return "races.source = 'jra'";
-  return category === "ban-ei"
-    ? "races.source = 'nar' and races.keibajo_code = '83'"
-    : "races.source = 'nar' and races.keibajo_code <> '83'";
-};
-
-const buildRunningStyleWatermarkSql = (category: PredictCategory): string => `with target_races as (
-  select distinct source, keibajo_code, race_bango
-    from realtime_race_sources races
-   where races.kaisai_nen = ?1
-     and races.kaisai_tsukihi = ?2
-     and ${categoryPredicates(category)}
-)
-select (select count(*) from target_races) as race_count,
-       count(styles.horse_number) as rs_row_count,
-       max(styles.predicted_at) as rs_predicted_at_max
-  from target_races targets
-  left join race_running_styles styles
-    on styles.race_key = targets.source || ':' || ?1 || ?2 || ':' ||
-                         targets.keibajo_code || ':' || targets.race_bango`;
-
-const finiteCount = (value: number | null): number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
-
-const normalizeTimestamp = (value: string): string => {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? String(parsed) : value.trim();
-};
-
-const fetchRunningStyleWatermark = async (
-  params: FocusedFullDayBaseReadinessParams,
-): Promise<Pick<LiveDayBaseWatermark, "rsPredictedAtMax" | "rsRowCount"> | null> => {
-  if (params.category === "ban-ei") return { rsPredictedAtMax: NONE_WATERMARK, rsRowCount: 0 };
-  const row = await params.env.REALTIME_DB.prepare(buildRunningStyleWatermarkSql(params.category))
-    .bind(
-      params.runYmd.slice(0, RUN_YMD_YEAR_END),
-      params.runYmd.slice(RUN_YMD_YEAR_END, RUN_YMD_LENGTH),
-    )
-    .first<RunningStyleWatermarkRow>();
-  if (row === null) return null;
-  const raceCount = finiteCount(row.race_count);
-  const rsRowCount = finiteCount(row.rs_row_count);
-  if (raceCount === 0) return null;
-  if (rsRowCount === 0) {
-    return { rsPredictedAtMax: NONE_WATERMARK, rsRowCount: 0 };
-  }
-  if (row.rs_predicted_at_max === null || row.rs_predicted_at_max.trim().length === 0) return null;
-  return { rsPredictedAtMax: row.rs_predicted_at_max.trim(), rsRowCount };
-};
-
 const liveWatermark = async (
   params: FocusedFullDayBaseReadinessParams,
 ): Promise<LiveDayBaseWatermark | null> => {
-  const [catalog, runningStyle] = await Promise.all([
-    fetchCatalogWatermark(params),
-    fetchRunningStyleWatermark(params),
-  ]);
-  if (catalog.rowCount === 0 || runningStyle === null) return null;
-  return { ...catalog, ...runningStyle };
-};
-
-const runningStyleRaceReadinessReason = async (
-  params: FocusedFullDayBaseReadinessParams,
-): Promise<string | null> => {
-  if (params.category === "ban-ei") return null;
-  const races = (await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd)).filter(
-    (race) => race.category === params.category,
-  );
-  if (races.length === 0) return RUNNING_STYLE_RACES_MISSING_REASON;
-  const readiness = await getRunningStyleRaceReadiness({
-    category: params.category,
-    db: params.env.REALTIME_DB,
-    races,
-    runYmd: params.runYmd,
-  });
-  const incomplete = readiness.find((item) => item.reason !== null);
-  return incomplete === undefined
-    ? null
-    : `running-style-race-incomplete-${incomplete.race.keibajoCode}-${incomplete.race.raceBango}-${incomplete.reason}`;
+  const catalog = await fetchCatalogWatermark(params);
+  return catalog.rowCount === 0 ? null : catalog;
 };
 
 const compareWithLiveWatermark = async (
   params: FocusedFullDayBaseReadinessParams,
   metadata: DayBaseMetadata,
 ): Promise<FocusedFullDayBaseReadiness> => {
-  const [live, raceReadinessReason] = await Promise.all([
-    liveWatermark(params),
-    runningStyleRaceReadinessReason(params),
-  ]);
+  const live = await liveWatermark(params);
   if (live === null) return { ready: false, reason: "live-readiness-incomplete" };
-  if (raceReadinessReason !== null) return { ready: false, reason: raceReadinessReason };
   if (metadata.rowCount !== live.rowCount)
     return {
       ready: false,
       reason: `source-row-count-${String(metadata.rowCount)}-of-${String(live.rowCount)}`,
     };
-  if (metadata.rsRowCount !== live.rsRowCount)
-    return {
-      ready: false,
-      reason: `rs-row-count-${String(metadata.rsRowCount)}-of-${String(live.rsRowCount)}`,
-    };
-  if (normalizeTimestamp(metadata.rsPredictedAtMax) !== normalizeTimestamp(live.rsPredictedAtMax))
-    return { ready: false, reason: "rs-predicted-at-max-mismatch" };
   if (live.sourceUpdatedMax !== null && metadata.maxSourceUpdated !== live.sourceUpdatedMax)
     return { ready: false, reason: "source-watermark-mismatch" };
   return { ready: true, reason: READY_REASON };

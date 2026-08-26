@@ -258,6 +258,7 @@ import workerDefault, {
   handleFetch,
   handleQueueBatch,
   handleScheduled,
+  isAdminPrewarmDayBaseStatusRequest,
   isInternalDeliveryCanaryRequest,
   isInternalPredictionReadinessRequest,
 } from "./worker";
@@ -278,7 +279,11 @@ const predictQueueSendMock = vi.fn(async () => undefined);
 const weightRescoreQueueSendMock = vi.fn(async () => undefined);
 const controlQueueSendMock = vi.fn(async () => undefined);
 const containerDoFetchMock = vi.fn(async (_request: Request) => Response.json({ ok: true }));
-const containerDoGetMock = vi.fn(() => ({ fetch: containerDoFetchMock }));
+const containerDoGetStateMock = vi.fn(async () => ({ status: "stopped" }));
+const containerDoGetMock = vi.fn(() => ({
+  fetch: containerDoFetchMock,
+  getState: containerDoGetStateMock,
+}));
 const containerDoIdFromNameMock = vi.fn((name: string) => ({
   name,
   toString: () => name,
@@ -379,6 +384,8 @@ beforeEach(() => {
   weightRescoreQueueSendMock.mockClear();
   controlQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
+  containerDoGetStateMock.mockClear();
+  containerDoGetStateMock.mockResolvedValue({ status: "stopped" });
   containerDoGetMock.mockClear();
   containerDoIdFromNameMock.mockClear();
   containerDoIdFromStringMock.mockClear();
@@ -454,6 +461,13 @@ const adminCompleteFocusedFullRaceRequest = (token: string | null, body: string)
 
 const adminRunFocusedFullRaceRequest = (token: string | null, body: string): Request =>
   new Request("https://cron.example/api/admin/run-focused-full-race", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const adminRunFocusedFullRaceDirectRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/run-focused-full-race-direct", {
     body,
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
@@ -776,6 +790,7 @@ test("admin prewarm-day-base forwards the feature-hit generation intent", async 
     daysAhead: 0,
     env: expect.any(Object),
     generatePredictionsAfterHit: true,
+    generationId: expect.any(String),
     runYmd: "20260817",
   });
 });
@@ -794,6 +809,7 @@ test("admin prewarm-day-base preserves an explicit category-scoped historical fo
     daysAhead: 0,
     env: expect.any(Object),
     force: true,
+    generationId: expect.any(String),
     runYmd: "20260817",
   });
 });
@@ -882,11 +898,99 @@ test("monitor endpoint predicates require GET and exact paths", () => {
   );
   expect(isInternalDeliveryCanaryRequest("GET", "/api/internal/delivery-canaries")).toBe(true);
   expect(isInternalDeliveryCanaryRequest("GET", "/wrong")).toBe(false);
+  expect(isAdminPrewarmDayBaseStatusRequest("GET", "/api/admin/prewarm-day-base-status")).toBe(
+    true,
+  );
+  expect(isAdminPrewarmDayBaseStatusRequest("POST", "/api/admin/prewarm-day-base-status")).toBe(
+    false,
+  );
+});
+
+test("admin prewarm day-base status authenticates and forwards to the category DO without debug", async () => {
+  containerDoFetchMock.mockResolvedValueOnce(
+    Response.json({
+      error: null,
+      finishedAtMs: null,
+      flightKey: "nar:20260825",
+      generation: 2,
+      startedAtMs: 1_777_000_000_000,
+      status: "running",
+    }),
+  );
+  const response = await handleFetch(
+    new Request(
+      "https://cron.example/api/admin/prewarm-day-base-status?category=nar&runYmd=20260825",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: null,
+    finishedAtMs: null,
+    flightKey: "nar:20260825",
+    generation: 2,
+    startedAtMs: 1_777_000_000_000,
+    status: "running",
+  });
+  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-nar");
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
+  expect(containerDoFetchMock.mock.calls[0]?.[0].url).toBe(
+    "http://predict-container-do/prewarm-day-base-status?category=nar&runDate=20260825",
+  );
+  expect(containerDoFetchMock.mock.calls[0]?.[0].method).toBe("GET");
+});
+
+test("admin prewarm day-base status rejects unauthorized requests before forwarding", async () => {
+  const response = await handleFetch(
+    new Request(
+      "https://cron.example/api/admin/prewarm-day-base-status?category=nar&runYmd=20260825",
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm day-base status rejects invalid category and runYmd values", async () => {
+  const invalidCategory = await handleFetch(
+    new Request(
+      "https://cron.example/api/admin/prewarm-day-base-status?category=overseas&runYmd=20260825",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  const invalidRunYmd = await handleFetch(
+    new Request(
+      "https://cron.example/api/admin/prewarm-day-base-status?category=nar&runYmd=2026-08-25",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  expect(invalidCategory.status).toBe(400);
+  expect(invalidRunYmd.status).toBe(400);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm day-base status returns JSON when the category DO fetch fails", async () => {
+  containerDoFetchMock.mockRejectedValueOnce(new Error("status unavailable"));
+  const response = await handleFetch(
+    new Request(
+      "https://cron.example/api/admin/prewarm-day-base-status?category=ban-ei&runYmd=20260825",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(503);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "Error: status unavailable",
+    ok: false,
+  });
 });
 
 test("monitor endpoints authenticate and return readiness/canary payloads", async () => {
   const env = makeEnv();
-  const readinessUrl = "https://cron.example/api/internal/prediction-readiness";
+  const readinessUrl = "https://cron.example/api/internal/prediction-readiness?runYmd=20260825";
   const unauthorized = await handleFetch(new Request(readinessUrl), env);
   expect(unauthorized.status).toBe(401);
   const readiness = await handleFetch(
@@ -896,6 +1000,9 @@ test("monitor endpoints authenticate and return readiness/canary payloads", asyn
   expect(readiness.status).toBe(200);
   await expect(readiness.json()).resolves.toMatchObject({ runYmd: "20260815" });
   expect(getPredictionReadinessMock).toHaveBeenCalledTimes(1);
+  expect(getPredictionReadinessMock).toHaveBeenCalledWith(
+    expect.objectContaining({ runYmd: "20260825" }),
+  );
 
   listDeliveryCanariesMock.mockResolvedValue([
     { consumedAt: null, deliveryLagMs: null, enqueuedAt: "now", id: "id" },
@@ -907,6 +1014,40 @@ test("monitor endpoints authenticate and return readiness/canary payloads", asyn
   );
   expect(canaries.status).toBe(200);
   await expect(canaries.json()).resolves.toMatchObject({ canaries: [{ id: "id" }] });
+});
+
+test("prediction readiness defaults an omitted runYmd to the current JST day", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-24T15:30:00.000Z"));
+  try {
+    const response = await handleFetch(
+      new Request("https://cron.example/api/internal/prediction-readiness", {
+        headers: { authorization: "Bearer secret-token" },
+      }),
+      makeEnv(),
+    );
+    expect(response.status).toBe(200);
+    expect(getPredictionReadinessMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runYmd: "20260825" }),
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("prediction readiness rejects an invalid runYmd without querying readiness", async () => {
+  const response = await handleFetch(
+    new Request("https://cron.example/api/internal/prediction-readiness?runYmd=2026-08-25", {
+      headers: { authorization: "Bearer secret-token" },
+    }),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "invalid runYmd",
+    ok: false,
+  });
+  expect(getPredictionReadinessMock).not.toHaveBeenCalled();
 });
 
 test("fetch returns a health payload for GET", async () => {
@@ -1712,6 +1853,25 @@ test("admin stop containers endpoint forces a stop only with an explicit active 
   );
 });
 
+test("admin stop containers endpoint accepts race-chain names with the correct role", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["race-chain-predict-nar-2"], overrideActive: true }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(controlQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      force: true,
+      name: "race-chain-predict-nar-2",
+      role: "race-chain",
+      type: "container-stop",
+    }),
+  );
+});
+
 test("admin Durable Object purge route rejects unauthenticated and malformed requests", async () => {
   const unauthorized = await handleFetch(
     adminPurgeUnusedPredictDoStateRequest(
@@ -2037,6 +2197,53 @@ test("admin run focused full race endpoint omits optional debug and force fields
   });
 });
 
+test("admin direct focused full race endpoint starts the scoped Container request", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceDirectRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "30",
+        raceBango: "02",
+        runYmd: "20260826",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
+  expect(containerDoFetchMock.mock.calls[0]?.[0].url).toContain("/predict?");
+});
+
+test("admin direct focused full race endpoint rejects unauthenticated requests", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceDirectRequest(
+      null,
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "30",
+        raceBango: "02",
+        runYmd: "20260826",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin direct focused full race endpoint rejects an invalid race", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceDirectRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", keibajoCode: "30", raceBango: "", runYmd: "20260826" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
 test("internal rescore-race endpoint claims, enqueues a per-race rescore message, and returns 202", async () => {
   const response = await handleFetch(
     internalRescoreRaceRequest(
@@ -2061,6 +2268,7 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
     }),
   );
   expect(weightRescoreQueueSendMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
   expect(weightRescoreQueueSendMock).toHaveBeenCalledWith({
     activeHorseNumbers: [1, 2, 3],
     category: "nar",

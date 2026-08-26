@@ -12,6 +12,7 @@ interface DayBaseHeadHit {
 type DayBaseHeadResult = DayBaseHeadHit | null;
 
 const {
+  claimDayBaseGenerationMock,
   claimContainerSlotMock,
   controlSendMock,
   enumerateTodaysRacesMock,
@@ -19,9 +20,17 @@ const {
   getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadinessMock,
   headDayBaseObjectMock,
+  materializeDayBasePerRaceCacheMock,
   pickUpPrewarmDayBaseMock,
   releaseContainerSlotMock,
 } = vi.hoisted(() => ({
+  claimDayBaseGenerationMock: vi.fn(
+    async (): Promise<{
+      preemptedWorkKey?: string;
+      proceed: boolean;
+      state: "active" | "busy" | "preempting" | "superseded";
+    }> => ({ proceed: true, state: "active" }),
+  ),
   claimContainerSlotMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
@@ -34,6 +43,11 @@ const {
   })),
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   headDayBaseObjectMock: vi.fn(async (): Promise<DayBaseHeadResult> => null),
+  materializeDayBasePerRaceCacheMock: vi.fn(
+    async (): Promise<{ status: "materialized" } | { reason: string; status: "fallback" }> => ({
+      status: "materialized",
+    }),
+  ),
   pickUpPrewarmDayBaseMock: vi.fn(async (): Promise<boolean> => false),
   releaseContainerSlotMock: vi.fn(async () => undefined),
 }));
@@ -45,6 +59,10 @@ vi.mock("./cron-decision", () => ({
 vi.mock("./do-state", () => ({
   claimContainerSlot: claimContainerSlotMock,
   releaseContainerSlot: releaseContainerSlotMock,
+}));
+
+vi.mock("./predict-run-coordinator", () => ({
+  claimDayBaseGeneration: claimDayBaseGenerationMock,
 }));
 
 vi.mock("./day-base-prewarm-pickup", () => ({
@@ -60,12 +78,16 @@ vi.mock("./focused-full-day-base-readiness", () => ({
   getDayBasePrewarmHitReadiness: getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
+vi.mock("./day-base-race-materializer", () => ({
+  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+}));
 
 import {
   enqueueDayBasePrewarm,
   isDayBasePrewarmMessage,
   isDayBasePrewarmQueueMessage,
   prewarmCategory,
+  prewarmCategoryWithOutcome,
   runDayBasePrewarm,
 } from "./day-base-prewarm";
 import type { Env } from "./types";
@@ -111,6 +133,7 @@ test("validates day-base prewarm messages and queue wrappers", () => {
   };
   expect(isDayBasePrewarmMessage(valid)).toBe(true);
   expect(isDayBasePrewarmMessage({ ...valid, force: true })).toBe(true);
+  expect(isDayBasePrewarmMessage({ ...valid, generationId: "generation_1-token" })).toBe(true);
   expect(isDayBasePrewarmQueueMessage({ body: valid } as Message<unknown>)).toBe(true);
   for (const invalid of [
     null,
@@ -124,6 +147,7 @@ test("validates day-base prewarm messages and queue wrappers", () => {
     { ...valid, requestedAt: 1 },
     { ...valid, generatePredictionsAfterHit: "yes" },
     { ...valid, force: "yes" },
+    { ...valid, generationId: "generation:1" },
   ]) {
     expect(isDayBasePrewarmMessage(invalid)).toBe(false);
   }
@@ -136,6 +160,7 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
     daysAhead: 0,
     env,
     force: true,
+    generationId: "generation-test",
     generatePredictionsAfterHit: true,
     requestedAt: new Date("2026-08-22T00:00:00.000Z"),
     runYmd: "20260822",
@@ -144,11 +169,26 @@ test("enqueueDayBasePrewarm preserves generation intent and explicit request tim
     category: "ban-ei",
     daysAhead: 0,
     force: true,
+    generationId: "generation-test",
     generatePredictionsAfterHit: true,
     requestedAt: "2026-08-22T00:00:00.000Z",
     runYmd: "20260822",
     type: "day-base-prewarm",
   });
+});
+
+test("enqueueDayBasePrewarm rejects historical work even when forced", async () => {
+  await expect(
+    enqueueDayBasePrewarm({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      force: true,
+      requestedAt: new Date("2026-08-23T00:00:00.000Z"),
+      runYmd: "20260822",
+    }),
+  ).rejects.toThrow("Refusing historical day-base enqueue category=nar runYmd=20260822");
+  expect(queueSendMock).not.toHaveBeenCalled();
 });
 
 beforeEach(() => {
@@ -167,14 +207,18 @@ beforeEach(() => {
   queueSendMock.mockReset();
   queueSendMock.mockResolvedValue(undefined);
   headDayBaseObjectMock.mockReset();
+  materializeDayBasePerRaceCacheMock.mockReset();
+  materializeDayBasePerRaceCacheMock.mockResolvedValue({ status: "materialized" });
   pickUpPrewarmDayBaseMock.mockReset();
   claimContainerSlotMock.mockClear();
+  claimDayBaseGenerationMock.mockReset();
   controlSendMock.mockReset();
   controlSendMock.mockResolvedValue(undefined);
   releaseContainerSlotMock.mockReset();
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseMock.mockResolvedValue(false);
   claimContainerSlotMock.mockResolvedValue({ proceed: true });
+  claimDayBaseGenerationMock.mockResolvedValue({ proceed: true, state: "active" });
   releaseContainerSlotMock.mockResolvedValue(undefined);
   enumerateTodaysRacesMock.mockResolvedValue([]);
   containerDoFetchMock.mockImplementation(() => Promise.resolve(new Response("", { status: 200 })));
@@ -183,11 +227,11 @@ beforeEach(() => {
 test("runDayBasePrewarm skips dispatch and logs when no races are scheduled today", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([]);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
+  await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20990101" });
   expect(containerDoIdFromNameMock).not.toHaveBeenCalled();
   expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] no races scheduled runYmd=20260628 -- skipping dispatch",
+    "[day-base-prewarm] no races scheduled runYmd=20990101 -- skipping dispatch",
   );
   logSpy.mockRestore();
 });
@@ -200,7 +244,7 @@ test("runDayBasePrewarm dedupes categories from a mixed-category race list and d
     { category: "ban-ei", keibajoCode: "83", raceBango: "01" },
   ]);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
+  await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20990101" });
   expect(queueSendMock).toHaveBeenCalledTimes(3);
   expect(queueSendMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "jra", type: "day-base-prewarm" }),
@@ -248,12 +292,12 @@ test("runDayBasePrewarm continues enqueueing other categories when one queue sen
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await expect(
-    runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
+    runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20990101" }),
   ).resolves.toBe(false);
   expect(queueSendMock).toHaveBeenCalledTimes(2);
   expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] enqueue failed category=jra runYmd=20260628: Error: boom",
+    "[day-base-prewarm] enqueue failed category=jra runYmd=20990101: Error: boom",
   );
   errorSpy.mockRestore();
   logSpy.mockRestore();
@@ -291,6 +335,11 @@ test("prewarmCategory returns a live Worker HIT before slot claim and Container 
     env: expect.any(Object),
     runYmd: "20260824",
   });
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledWith({
+    category: "nar",
+    env: expect.any(Object),
+    runYmd: "20260824",
+  });
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(containerDoFetchMock).not.toHaveBeenCalled();
   expect(pickUpPrewarmDayBaseMock).not.toHaveBeenCalled();
@@ -298,6 +347,33 @@ test("prewarmCategory returns a live Worker HIT before slot claim and Container 
     "[day-base-prewarm] worker-hit category=nar runYmd=20260824 containerStarted=false",
   );
   logSpy.mockRestore();
+});
+
+test("prewarmCategory does not fan out when per-race materialization misses", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  materializeDayBasePerRaceCacheMock.mockResolvedValueOnce({
+    reason: "day-base-miss",
+    status: "fallback",
+  });
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategory({
+      category: "jra",
+      daysAhead: 0,
+      env: makeEnv(),
+      generatePredictionsAfterHit: true,
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe(false);
+
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "per-race foundation warm failed category=jra runYmd=20260824 reason=day-base-miss",
+    ),
+  );
+  errorSpy.mockRestore();
 });
 
 test("prewarmCategory Worker HIT does not fan out without generation intent", async () => {
@@ -371,6 +447,11 @@ test("prewarmCategory falls back to Container freshness when the Worker probe fa
 
   expect(claimContainerSlotMock).toHaveBeenCalledTimes(1);
   expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
+  const firstCall = containerDoFetchMock.mock.calls[0];
+  if (firstCall === undefined) throw new Error("expected a fetch");
+  const request = firstCall[0];
+  if (!isRequest(request)) throw new Error("expected a Request");
+  expect(request.url).toBe("http://do/prewarm-day-base?category=jra&daysAhead=0&runDate=20260824");
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm] worker-hit-check failed category=jra runYmd=20260824: Error: Catalog unavailable -- continuing to container freshness check",
   );
@@ -391,7 +472,7 @@ test("prewarmCategory does not trust a merely present FEATURES_CACHE object", as
   logSpy.mockRestore();
 });
 
-test("prewarmCategory requests the category-scoped DO with category, daysAhead, and runDate query params", async () => {
+test("prewarmCategory forwards a verified Worker miss as an internal rebuild", async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await prewarmCategory({ category: "jra", daysAhead: 3, env: makeEnv(), runYmd: "20260701" });
@@ -400,7 +481,30 @@ test("prewarmCategory requests the category-scoped DO with category, daysAhead, 
   if (firstCall === undefined) throw new Error("expected a fetch");
   const request = firstCall[0];
   if (!isRequest(request)) throw new Error("expected a Request");
-  expect(request.url).toBe("http://do/prewarm-day-base?category=jra&daysAhead=3&runDate=20260701");
+  expect(request.url).toBe(
+    "http://do/prewarm-day-base?category=jra&daysAhead=3&runDate=20260701&rebuild=1",
+  );
+  logSpy.mockRestore();
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory forwards an explicit force flag to the Container", async () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await prewarmCategory({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    force: true,
+    runYmd: "20260826",
+  });
+  const firstCall = containerDoFetchMock.mock.calls[0];
+  if (firstCall === undefined) throw new Error("expected a fetch");
+  const request = firstCall[0];
+  if (!isRequest(request)) throw new Error("expected a Request");
+  expect(request.url).toBe(
+    "http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260826&force=1",
+  );
   logSpy.mockRestore();
   warnSpy.mockRestore();
 });
@@ -465,6 +569,41 @@ test("prewarmCategory logs a success outcome when the container returns status s
   logSpy.mockRestore();
 });
 
+test("prewarmCategory does not fan out a direct Container success before per-race cache warm", async () => {
+  containerDoFetchMock.mockResolvedValue(
+    new Response(
+      resultLineBody({
+        category: "nar",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+        runDate: "20260826",
+        status: "success",
+      }),
+      { status: 200 },
+    ),
+  );
+  materializeDayBasePerRaceCacheMock.mockResolvedValueOnce({
+    reason: "manifest-write-failed",
+    status: "fallback",
+  });
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await expect(
+    prewarmCategory({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      generatePredictionsAfterHit: true,
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe(false);
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "per-race foundation warm failed category=nar runYmd=20260826 reason=manifest-write-failed",
+    ),
+  );
+  errorSpy.mockRestore();
+});
+
 test("prewarmCategory fans out predictions only when a fresh HIT and generation intent coincide", async () => {
   containerDoFetchMock.mockResolvedValue(
     new Response(
@@ -493,10 +632,10 @@ test("prewarmCategory fans out predictions only when a fresh HIT and generation 
   logSpy.mockRestore();
 });
 
-test("prewarmCategory arms a pickup when a feature-hit request finds the category slot busy", async () => {
+test("prewarmCategory does not multiply pickup chains when the category slot is busy", async () => {
   claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "leased" });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  await prewarmCategory({
+  const outcome = await prewarmCategoryWithOutcome({
     category: "jra",
     daysAhead: 2,
     env: makeEnv(),
@@ -504,15 +643,62 @@ test("prewarmCategory arms a pickup when a feature-hit request finds the categor
     runYmd: "20260822",
   });
   expect(containerDoFetchMock).not.toHaveBeenCalled();
-  expect(queueSendMock).toHaveBeenCalledWith(
-    {
-      attempt: 1,
-      category: "jra",
+  expect(queueSendMock).not.toHaveBeenCalled();
+  expect(outcome).toBe("busy");
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory fences a later day-base owner before starting an earlier date", async () => {
+  claimDayBaseGenerationMock.mockResolvedValueOnce({
+    preemptedWorkKey: "day-base:20260827:nar",
+    proceed: false,
+    state: "preempting",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
       generatePredictionsAfterHit: true,
-      runYmd: "20260822",
-      type: "day-base-pickup",
-    },
-    { delaySeconds: 180 },
+      runYmd: "20260825",
+    }),
+  ).resolves.toBe("busy");
+
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(queueSendMock).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenCalledWith({
+    name: "predict-nar",
+    requestedAt: expect.any(String),
+    role: "legacy",
+    type: "container-stop",
+    workKey: "day-base:20260827:nar",
+  });
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] generation preempting doName=predict-nar category=nar runYmd=20260825 preemptedWorkKey=day-base:20260827:nar",
+  );
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory does not let a superseded future request claim a slot", async () => {
+  claimDayBaseGenerationMock.mockResolvedValueOnce({ proceed: false, state: "superseded" });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "nar",
+      daysAhead: 2,
+      env: makeEnv(),
+      runYmd: "20260827",
+    }),
+  ).resolves.toBe("superseded");
+
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(controlSendMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] generation superseded doName=predict-nar category=nar runYmd=20260827 preemptedWorkKey=-",
   );
   warnSpy.mockRestore();
 });
@@ -740,6 +926,8 @@ test("prewarmCategory logs missing-object when pickup does not land the day-base
     category: "jra",
     daysAhead: 2,
     env: makeEnv(),
+    force: true,
+    generatePredictionsAfterHit: true,
     runYmd: "20260628",
   });
   expect(landed).toBe(false);
@@ -751,6 +939,8 @@ test("prewarmCategory logs missing-object when pickup does not land the day-base
     {
       attempt: 1,
       category: "jra",
+      force: true,
+      generatePredictionsAfterHit: true,
       runYmd: "20260628",
       type: "day-base-pickup",
     },
@@ -829,7 +1019,7 @@ test("runDayBasePrewarm queues every category without directly reading or starti
   headDayBaseObjectMock.mockResolvedValue({ size: 1 });
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await expect(
-    runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260628" }),
+    runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20990101" }),
   ).resolves.toBe(true);
   expect(queueSendMock).toHaveBeenCalledTimes(2);
   expect(containerDoFetchMock).not.toHaveBeenCalled();
@@ -911,15 +1101,7 @@ test("prewarmCategory skips the container start when the slot is capped", async 
   });
   expect(landed).toBe(false);
   expect(containerDoFetchMock).not.toHaveBeenCalled();
-  expect(queueSendMock).toHaveBeenCalledWith(
-    {
-      attempt: 1,
-      category: "jra",
-      runYmd: "20260628",
-      type: "day-base-pickup",
-    },
-    { delaySeconds: 180 },
-  );
+  expect(queueSendMock).not.toHaveBeenCalled();
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm] container slot capped doName=predict-jra kind=day-base category=jra runYmd=20260628 -- skipping start",
   );

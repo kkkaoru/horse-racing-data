@@ -10,15 +10,19 @@ import { CONTAINER_DAY_BASE_SLOT_STALE_MS, type ContainerSlotKind } from "./cont
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
+import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
+import { kickRunningStylePlan } from "./running-style-kick";
 import { isOldDateRunYmd } from "./old-date-guard";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
+import { claimDayBaseGeneration } from "./predict-run-coordinator";
 import type { DayBasePickupMessage, Env, PredictCategory } from "./types";
 
 interface EnqueueDayBasePickupParams {
   attempt: number;
   category: PredictCategory;
   env: Env;
+  generationId?: string;
   runYmd: string;
   generatePredictionsAfterHit?: boolean;
   force?: boolean;
@@ -27,6 +31,7 @@ interface EnqueueDayBasePickupParams {
 interface CleanupDayBaseWorkParams {
   category: PredictCategory;
   env: Env;
+  generationId?: string;
   runYmd: string;
 }
 
@@ -46,6 +51,13 @@ interface ExhaustDayBasePickupParams extends CleanupDayBaseWorkParams {
 interface RestartStaleDayBaseParams {
   category: PredictCategory;
   env: Env;
+  generationId?: string;
+  runYmd: string;
+}
+
+interface DayBaseWorkKeyParams {
+  category: PredictCategory;
+  generationId?: string;
   runYmd: string;
 }
 
@@ -53,10 +65,14 @@ type StaleRestartOutcome = "accepted" | "busy" | "completed" | "failed";
 
 export const DAY_BASE_PICKUP_TYPE = "day-base-pickup";
 export const DAY_BASE_PICKUP_DELAY_SECONDS = 180;
-// The Python day-base pipeline has a 30-minute deadline. Eleven 3-minute
-// pickup polls cover 33 minutes, so the Worker can observe either the final
-// object or the authoritative pipeline timeout before releasing its slot.
-export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 11;
+// The Python day-base pipeline has a 30-minute deadline. Twelve 3-minute
+// pickup polls cover 36 minutes, leaving a bounded margin for the final
+// upload/readiness check and owner-safe stop handoff. Eight polls (24 minutes)
+// could stop a still-running detached build before its 30-minute deadline,
+// which discarded the only complete day-base and forced every race into the
+// expensive full fallback. The budget remains finite so stale Queue messages
+// cannot resurrect a container indefinitely.
+export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 12;
 export const DAY_BASE_PICKUP_FIRST_ATTEMPT = 1;
 const PREWARM_DAY_BASE_PATH: string = "/prewarm-day-base";
 const PREDICT_HOST: string = "http://do";
@@ -69,9 +85,14 @@ const STALE_EXACT_REASONS: ReadonlySet<string> = new Set([
   "source-watermark-mismatch",
 ]);
 const DAY_BASE_SLOT_KIND: ContainerSlotKind = "day-base";
+const GENERATION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,128}$/u;
 
-export const buildDayBaseWorkKey = (category: PredictCategory, runYmd: string): string =>
-  `day-base:${runYmd}:${category}`;
+export const dayBaseGenerationFields = (
+  generationId: string | undefined,
+): { generationId?: string } => (generationId === undefined ? {} : { generationId });
+
+export const buildDayBaseWorkKey = (params: DayBaseWorkKeyParams): string =>
+  `day-base:${params.runYmd}:${params.category}${params.generationId === undefined ? "" : `:${params.generationId}`}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -87,6 +108,11 @@ export const isDayBasePickupMessage = (value: unknown): value is DayBasePickupMe
   )
     return false;
   if (value.force !== undefined && typeof value.force !== "boolean") return false;
+  if (
+    value.generationId !== undefined &&
+    (typeof value.generationId !== "string" || !GENERATION_ID_PATTERN.test(value.generationId))
+  )
+    return false;
   return typeof value.attempt === "number" && Number.isInteger(value.attempt) && value.attempt > 0;
 };
 
@@ -98,6 +124,7 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
   const message: DayBasePickupMessage = {
     attempt: params.attempt,
     category: params.category,
+    ...dayBaseGenerationFields(params.generationId),
     runYmd: params.runYmd,
     type: DAY_BASE_PICKUP_TYPE,
     ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),
@@ -112,12 +139,12 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
 const isKnownStaleReadinessReason = (reason: string): boolean =>
   STALE_ROW_COUNT_REASON_PATTERN.test(reason) || STALE_EXACT_REASONS.has(reason);
 
-const buildStaleDayBaseWorkKey = (category: PredictCategory, runYmd: string): string =>
-  `day-base-stale:${runYmd}:${category}`;
+const buildStaleDayBaseWorkKey = (params: DayBaseWorkKeyParams): string =>
+  `day-base-stale:${params.runYmd}:${params.category}${params.generationId === undefined ? "" : `:${params.generationId}`}`;
 
 export const cleanupDayBaseWork = (params: CleanupDayBaseWorkParams): Promise<void> => {
-  const canonicalWorkKey = buildDayBaseWorkKey(params.category, params.runYmd);
-  const staleWorkKey = buildStaleDayBaseWorkKey(params.category, params.runYmd);
+  const canonicalWorkKey = buildDayBaseWorkKey(params);
+  const staleWorkKey = buildStaleDayBaseWorkKey(params);
   return handOffContainerStopOrCleanup({
     acceptableWorkKeys: [canonicalWorkKey, staleWorkKey],
     env: params.env,
@@ -132,7 +159,7 @@ const releaseStaleDayBaseSlot = (params: RestartStaleDayBaseParams): Promise<voi
     doName: `${PREDICT_DO_NAME_PREFIX}${params.category}`,
     env: params.env,
     kind: DAY_BASE_SLOT_KIND,
-    workKey: buildStaleDayBaseWorkKey(params.category, params.runYmd),
+    workKey: buildStaleDayBaseWorkKey(params),
   });
 
 const exhaustDayBasePickup = async (params: ExhaustDayBasePickupParams): Promise<void> => {
@@ -147,6 +174,16 @@ const exhaustDayBasePickup = async (params: ExhaustDayBasePickupParams): Promise
 export const completeLandedDayBase = async (
   params: CompleteLandedDayBaseParams,
 ): Promise<number> => {
+  const materialized = await materializeDayBasePerRaceCache({
+    category: params.category,
+    env: params.env,
+    runYmd: params.runYmd,
+  });
+  if (materialized.status !== "materialized") {
+    throw new Error(
+      `per-race foundation warm failed category=${params.category} runYmd=${params.runYmd} reason=${materialized.reason}`,
+    );
+  }
   const racesEnqueued = await (
     params.generatePredictionsAfterHit
       ? fanOutPredictionsAfterDayBaseHit({
@@ -206,8 +243,8 @@ const restartStaleDayBase = async (
   params: RestartStaleDayBaseParams,
 ): Promise<StaleRestartOutcome> => {
   const doName = `${PREDICT_DO_NAME_PREFIX}${params.category}`;
-  const canonicalWorkKey = buildDayBaseWorkKey(params.category, params.runYmd);
-  const staleWorkKey = buildStaleDayBaseWorkKey(params.category, params.runYmd);
+  const canonicalWorkKey = buildDayBaseWorkKey(params);
+  const staleWorkKey = buildStaleDayBaseWorkKey(params);
   const claim = await claimContainerSlot({
     category: params.category,
     doName,
@@ -252,18 +289,76 @@ const restartStaleDayBase = async (
 
 export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): Promise<void> => {
   const { env, message } = params;
-  const { category, runYmd, attempt } = message;
+  const { category, runYmd, attempt, generationId } = message;
   // Queue pickup is automatic lifecycle work, not a historical regeneration
   // command. After the JST date rolls over, a delayed delivery must only hand
   // off owner-safe stops for either lease identity. Probing readiness or the
   // Container first can cold-start a standard-4 and restart the stale build.
-  // Authenticated admin historical prewarm explicitly carries force=true and
-  // retains the existing operator repair behavior.
-  if (message.force !== true && isOldDateRunYmd(runYmd, new Date())) {
+  // Historical regeneration belongs to the local backfill path. `force`
+  // bypasses freshness and deduplication only; it must never bypass the date
+  // fence because automatic repair messages also carry force=true.
+  if (isOldDateRunYmd(runYmd, new Date())) {
     console.warn(
       `[day-base-pickup] dropping past automatic pickup category=${category} runYmd=${runYmd} attempt=${attempt}`,
     );
-    await cleanupDayBaseWork({ category, env, runYmd });
+    await cleanupDayBaseWork({
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      runYmd,
+    });
+    return;
+  }
+  const generation = await claimDayBaseGeneration({
+    category,
+    env,
+    ...dayBaseGenerationFields(generationId),
+    phase: "pickup",
+    runYmd,
+  });
+  if (generation.state === "superseded") {
+    console.warn(
+      `[day-base-pickup] dropping superseded generation category=${category} runYmd=${runYmd} attempt=${attempt}`,
+    );
+    await cleanupDayBaseWork({
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      runYmd,
+    });
+    return;
+  }
+  if (generation.state === "preempting") {
+    console.warn(
+      `[day-base-pickup] preempting later generation category=${category} runYmd=${runYmd} attempt=${attempt} preemptedWorkKey=${generation.preemptedWorkKey}`,
+    );
+    await handOffContainerStopOrCleanup({
+      env,
+      name: `${PREDICT_DO_NAME_PREFIX}${category}`,
+      role: "legacy",
+      workKey: generation.preemptedWorkKey,
+    });
+    if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
+      await exhaustDayBasePickup({
+        attempt,
+        category,
+        env,
+        ...dayBaseGenerationFields(generationId),
+        runYmd,
+      });
+      return;
+    }
+    await enqueueDayBasePickup({
+      attempt: attempt + 1,
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      ...(message.generatePredictionsAfterHit === true
+        ? { generatePredictionsAfterHit: true }
+        : {}),
+      ...(message.force === true ? { force: true } : {}),
+      runYmd,
+    });
     return;
   }
   // A delayed pickup may arrive after another pickup already committed the
@@ -273,9 +368,13 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
   // it compares the object metadata with the current Catalog/RS watermarks,
   // so a genuinely newer generation still fails this fast path and continues
   // to the Container pickup below.
-  const existingReadiness = await getFocusedFullDayBaseReadiness({ category, env, runYmd }).catch(
-    () => ({ ready: false, reason: "readiness-error" }),
-  );
+  const existingReadiness =
+    message.force === true
+      ? { ready: false, reason: "force-generation-pending" }
+      : await getFocusedFullDayBaseReadiness({ category, env, runYmd }).catch(() => ({
+          ready: false,
+          reason: "readiness-error",
+        }));
   if (existingReadiness.ready) {
     console.log(
       `[day-base-pickup] already-landed category=${category} runYmd=${runYmd} attempt=${attempt}`,
@@ -283,6 +382,7 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     await completeLandedDayBase({
       category,
       env,
+      ...dayBaseGenerationFields(generationId),
       generatePredictionsAfterHit: message.generatePredictionsAfterHit === true,
       runYmd,
     });
@@ -292,18 +392,40 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
   // producing a new watermark. Only a successful container pickup may prove
   // this generation landed; presence alone must not acknowledge the message.
   const pickupOutcome = await pickUpPrewarmDayBaseWithOutcome({ category, env, runYmd });
+  if (pickupOutcome === "transient-error") {
+    throw new Error(
+      `Transient day-base pickup failure category=${category} runYmd=${runYmd} attempt=${attempt}`,
+    );
+  }
   if (pickupOutcome === "foundation-landed") {
     console.log(
       `[day-base-pickup] foundation-landed category=${category} runYmd=${runYmd} attempt=${attempt}`,
     );
+    // A future-day foundation can land before sync-realtime-data's normal
+    // today/tomorrow running-style cron window. Kick its idempotent planner
+    // on every pickup retry so the final readiness cannot wait for rollover.
+    if (env.RUNNING_STYLE_PLAN_JOBS) {
+      await kickRunningStylePlan({ date: runYmd, env }).catch((error: unknown) => {
+        console.warn(
+          `[day-base-pickup] running-style planner kick failed category=${category} runYmd=${runYmd}: ${String(error)}`,
+        );
+      });
+    }
     if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
-      await exhaustDayBasePickup({ attempt, category, env, runYmd });
+      await exhaustDayBasePickup({
+        attempt,
+        category,
+        env,
+        ...dayBaseGenerationFields(generationId),
+        runYmd,
+      });
       return;
     }
     await enqueueDayBasePickup({
       attempt: attempt + 1,
       category,
       env,
+      ...dayBaseGenerationFields(generationId),
       ...(message.generatePredictionsAfterHit === true
         ? { generatePredictionsAfterHit: true }
         : {}),
@@ -328,6 +450,7 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     await completeLandedDayBase({
       category,
       env,
+      ...dayBaseGenerationFields(generationId),
       generatePredictionsAfterHit: message.generatePredictionsAfterHit === true,
       runYmd,
     });
@@ -341,7 +464,12 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
   const knownStaleReadiness = isKnownStaleReadinessReason(existingReadiness.reason);
   const pickedStaleReadiness = picked && isKnownStaleReadinessReason(readiness.reason);
   if (pickupOutcome === "stale" || knownStaleReadiness || pickedStaleReadiness) {
-    const restartOutcome = await restartStaleDayBase({ category, env, runYmd }).catch((error) => {
+    const restartOutcome = await restartStaleDayBase({
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      runYmd,
+    }).catch((error) => {
       console.error(
         `[day-base-pickup] stale rebuild request failed category=${category} runYmd=${runYmd}: ${String(error)}`,
       );
@@ -352,6 +480,7 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
         attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
         category,
         env,
+        ...dayBaseGenerationFields(generationId),
         ...(message.generatePredictionsAfterHit === true
           ? { generatePredictionsAfterHit: true }
           : {}),
@@ -361,14 +490,29 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
       return;
     }
   }
+  if (
+    attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS &&
+    (existingReadiness.reason === "readiness-error" || readiness.reason === "readiness-error")
+  ) {
+    throw new Error(
+      `Transient day-base readiness failure category=${category} runYmd=${runYmd} attempt=${attempt}`,
+    );
+  }
   if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
-    await exhaustDayBasePickup({ attempt, category, env, runYmd });
+    await exhaustDayBasePickup({
+      attempt,
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      runYmd,
+    });
     return;
   }
   await enqueueDayBasePickup({
     attempt: attempt + 1,
     category,
     env,
+    ...dayBaseGenerationFields(generationId),
     ...(message.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
     ...(message.force === true ? { force: true } : {}),
     runYmd,

@@ -14,6 +14,7 @@ import {
   clearContainerSlotLease,
   decideContainerSlotClaim,
   isContainerSlotStopAllowed,
+  pruneStaleContainerSlots,
   releaseContainerSlotLease,
   touchContainerSlotLease,
   type ContainerSlotKind,
@@ -49,13 +50,20 @@ const TOUCH_CONTAINER_SLOT_PATH = "/touch-container-slot";
 const CLEAR_CONTAINER_SLOT_PATH = "/clear-container-slot";
 const CHECK_CONTAINER_SLOT_STOP_PATH = "/check-container-slot-stop";
 const MARK_CONTAINER_SLOT_STOPPED_PATH = "/mark-container-slot-stopped";
+const CLAIM_DAY_BASE_GENERATION_PATH = "/claim-day-base-generation";
 const CONTAINER_SLOTS_KEY = "container-slots";
 const CONTAINER_STOP_FENCES_KEY = "container-stop-fences";
+const DAY_BASE_GENERATIONS_KEY = "day-base-generations";
+const DAY_BASE_WORK_KEY_PATTERN: RegExp =
+  /^day-base(?:-stale)?:([0-9]{8}):([^:]+)(?::([A-Za-z0-9_-]{1,128}))?$/u;
+const PREDICT_RUN_COORDINATOR_DO_NAME: string = "predict-run-coordinator";
+const DO_HOST: string = "http://do";
 const FOCUSED_FULL_WATCH_OUTBOX_KEY = "focused-full-watch-outbox";
 const FOCUSED_FULL_ACTIVE_WATCHES_KEY = "focused-full-active-watches";
 const FOCUSED_FULL_WATCH_OUTBOX_ALARM_DELAY_MS = 150_000;
 const RESCORE_ENQUEUE_CLAIM_STALE_MS = 5 * 60 * 1000;
 const RESCORE_EXECUTION_CLAIM_STALE_MS = 31 * 60 * 1000;
+const DAY_BASE_GENERATION_RESERVATION_STALE_MS = 2 * 60 * 1000;
 const HTTP_OK = 200;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_NOT_FOUND = 404;
@@ -80,6 +88,37 @@ interface RunRecord {
 interface ClaimResult {
   proceed: boolean;
   state?: string;
+}
+
+export type DayBaseGenerationClaimResult =
+  | { proceed: true; state: "active" }
+  | { proceed: false; state: "busy" | "superseded" }
+  | { preemptedWorkKey: string; proceed: false; state: "preempting" };
+
+interface DayBaseGenerationClaimRequest {
+  category: string;
+  force?: boolean;
+  generationId?: string;
+  phase: "pickup" | "start";
+  runYmd: string;
+}
+
+interface ClaimDayBaseGenerationParams extends DayBaseGenerationClaimRequest {
+  env: Env;
+}
+
+interface DayBaseGenerationRecord {
+  completed?: boolean;
+  generationId?: string;
+  retiredGenerationIds?: string[];
+  runYmd: string;
+  updatedAt: number;
+}
+
+interface DayBaseWorkIdentity {
+  category: string;
+  generationId?: string;
+  runYmd: string;
 }
 
 interface CompleteParams {
@@ -217,6 +256,55 @@ interface CheckContainerSlotStopParams {
   requestedAt: string;
   workKey?: string;
 }
+
+const parseDayBaseWorkIdentity = (workKey: string | undefined): DayBaseWorkIdentity | null => {
+  if (workKey === undefined) return null;
+  const match = DAY_BASE_WORK_KEY_PATTERN.exec(workKey);
+  return match?.[1] === undefined || match[2] === undefined
+    ? null
+    : {
+        category: match[2],
+        ...(match[3] === undefined ? {} : { generationId: match[3] }),
+        runYmd: match[1],
+      };
+};
+
+const isSameDayBaseGeneration = (
+  left: Pick<DayBaseGenerationRecord, "generationId" | "runYmd">,
+  right: Pick<DayBaseGenerationRecord, "generationId" | "runYmd">,
+): boolean => left.runYmd === right.runYmd && left.generationId === right.generationId;
+
+const retireDayBaseGeneration = (
+  current: DayBaseGenerationRecord | undefined,
+): string[] | undefined => {
+  if (current === undefined) return undefined;
+  const retired = new Set(current.retiredGenerationIds ?? []);
+  if (current.generationId !== undefined) retired.add(current.generationId);
+  return retired.size === 0 ? undefined : [...retired].slice(-32);
+};
+
+export const claimDayBaseGeneration = async (
+  params: ClaimDayBaseGenerationParams,
+): Promise<DayBaseGenerationClaimResult> => {
+  const id = params.env.PREDICT_RUN_COORDINATOR.idFromName(PREDICT_RUN_COORDINATOR_DO_NAME);
+  const response = await params.env.PREDICT_RUN_COORDINATOR.get(id).fetch(
+    new Request(`${DO_HOST}${CLAIM_DAY_BASE_GENERATION_PATH}`, {
+      body: JSON.stringify({
+        category: params.category,
+        force: params.force,
+        generationId: params.generationId,
+        phase: params.phase,
+        runYmd: params.runYmd,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+  if (response.status !== HTTP_OK) {
+    throw new Error(`DO claim-day-base-generation failed: ${response.status}`);
+  }
+  return response.json<DayBaseGenerationClaimResult>();
+};
 
 const buildKey = (runYmd: string, category: string): string =>
   `${STORAGE_KEY_PREFIX}:${runYmd}:${category}`;
@@ -491,6 +579,36 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         (existing?.status === "started"
           ? { activeRaceKey: raceKey, startedAt: existing.timestamp, waiters: [] }
           : undefined);
+      // An explicitly forced admin recovery is allowed to take over a lane
+      // left behind by an abandoned Queue/Container delivery.  Normal
+      // messages must retain FIFO priority, but a forced recovery is the
+      // bounded escape hatch for a stale earlier reservation; otherwise one
+      // dead race can keep every later race in `queued` forever.
+      if (params.force === true && lane !== undefined && lane.activeRaceKey !== raceKey) {
+        const active = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
+        if (!TERMINAL_STATUSES.has(active?.status ?? "")) {
+          await this.ctx.storage.put<RunRecord>(lane.activeRaceKey, {
+            ...(active?.doName === undefined ? {} : { doName: active.doName }),
+            ...(active?.priorityMs === undefined ? {} : { priorityMs: active.priorityMs }),
+            ...focusedFullRepairFields(active),
+            status: "error",
+            timestamp: now,
+          });
+        }
+        await this.ctx.storage.put<RunRecord>(raceKey, {
+          doName,
+          priorityMs,
+          ...focusedFullRepairFields(existing),
+          status: "started",
+          timestamp: now,
+        });
+        await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
+          activeRaceKey: raceKey,
+          startedAt: now,
+          waiters: [],
+        });
+        return { proceed: true, state: "forced" };
+      }
       if (lane === undefined) {
         if (
           await hasEarlierFreshReservation({
@@ -934,6 +1052,121 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  async claimDayBaseGeneration(
+    params: DayBaseGenerationClaimRequest,
+  ): Promise<DayBaseGenerationClaimResult> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const [record, storedGenerations] = await Promise.all([
+        this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY),
+        this.ctx.storage.get<Record<string, DayBaseGenerationRecord>>(DAY_BASE_GENERATIONS_KEY),
+      ]);
+      const generations = storedGenerations ?? {};
+      const current = generations[params.category];
+      const incoming = {
+        ...(params.generationId === undefined ? {} : { generationId: params.generationId }),
+        runYmd: params.runYmd,
+      };
+      const now = Date.now();
+      const liveLeases = pruneStaleContainerSlots(record?.leases ?? [], now);
+      const existingLease = liveLeases.find(
+        (lease) => lease.category === params.category && lease.kind === "day-base",
+      );
+      const existingIdentity = parseDayBaseWorkIdentity(existingLease?.workKey);
+      const currentMatchesIncoming =
+        current !== undefined && isSameDayBaseGeneration(current, incoming);
+      const existingMatchesIncoming =
+        existingIdentity !== null && isSameDayBaseGeneration(existingIdentity, incoming);
+      const currentReservationFresh =
+        current !== undefined && now - current.updatedAt < DAY_BASE_GENERATION_RESERVATION_STALE_MS;
+      const currentLeaseActive = liveLeases.some((lease) => {
+        const identity = parseDayBaseWorkIdentity(lease.workKey);
+        return (
+          lease.category === params.category &&
+          lease.kind === "day-base" &&
+          current !== undefined &&
+          identity !== null &&
+          isSameDayBaseGeneration(identity, current)
+        );
+      });
+
+      // A Queue redelivery from a generation that was already preempted must
+      // never regain ownership, even when its original `force` bit is still
+      // present. The bounded tombstone list covers the Queue retry horizon
+      // without allowing this coordinator record to grow indefinitely.
+      if (
+        params.generationId !== undefined &&
+        current?.retiredGenerationIds?.includes(params.generationId) === true
+      ) {
+        return { proceed: false, state: "superseded" };
+      }
+      // Rolling-deploy compatibility is deliberately fail-safe: a legacy
+      // static-key message cannot replace a generation-scoped owner.
+      if (params.generationId === undefined && current?.generationId !== undefined) {
+        return { proceed: false, state: "superseded" };
+      }
+      if (params.phase === "pickup") {
+        if (
+          current === undefined ||
+          !currentMatchesIncoming ||
+          current.completed === true ||
+          (existingLease !== undefined && !existingMatchesIncoming)
+        ) {
+          return { proceed: false, state: "superseded" };
+        }
+        generations[params.category] = { ...current, updatedAt: now };
+        await this.ctx.storage.put(DAY_BASE_GENERATIONS_KEY, generations);
+        return { proceed: true, state: "active" };
+      }
+      if (
+        params.force !== true &&
+        current !== undefined &&
+        !currentMatchesIncoming &&
+        params.runYmd >= current.runYmd &&
+        (currentReservationFresh || currentLeaseActive)
+      ) {
+        return { proceed: false, state: "superseded" };
+      }
+      if (currentMatchesIncoming && current?.completed === true) {
+        return { proceed: false, state: "superseded" };
+      }
+      const replacesCurrent =
+        current === undefined ||
+        (!currentMatchesIncoming && params.force === true) ||
+        params.runYmd < current.runYmd ||
+        (!currentMatchesIncoming && !currentReservationFresh && !currentLeaseActive);
+      if (!replacesCurrent && !currentMatchesIncoming) {
+        return { proceed: false, state: "superseded" };
+      }
+      const retiredGenerationIds = replacesCurrent
+        ? retireDayBaseGeneration(current)
+        : current?.retiredGenerationIds;
+      generations[params.category] = {
+        ...(params.generationId === undefined ? {} : { generationId: params.generationId }),
+        ...(retiredGenerationIds === undefined ? {} : { retiredGenerationIds }),
+        runYmd: params.runYmd,
+        updatedAt: now,
+      };
+      await this.ctx.storage.put(DAY_BASE_GENERATIONS_KEY, generations);
+
+      if (
+        existingLease !== undefined &&
+        existingLease.workKey !== undefined &&
+        ((!existingMatchesIncoming && (replacesCurrent || currentMatchesIncoming)) ||
+          (params.force === true && params.generationId === undefined))
+      ) {
+        return {
+          preemptedWorkKey: existingLease.workKey,
+          proceed: false,
+          state: "preempting",
+        };
+      }
+      if (existingLease !== undefined) {
+        return { proceed: false, state: "busy" };
+      }
+      return { proceed: true, state: "active" };
+    });
+  }
+
   async claimContainerSlot(params: ClaimContainerSlotParams): Promise<ClaimResult> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
@@ -978,6 +1211,13 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.workKey,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
+      const releasedLease = (record?.leases ?? []).find(
+        (lease) =>
+          lease.doName === params.doName &&
+          (params.workKey === undefined || lease.workKey === params.workKey) &&
+          !leases.some((candidate) => candidate.doName === lease.doName),
+      );
+      await this.clearReleasedDayBaseGeneration(releasedLease?.workKey);
     });
   }
 
@@ -1024,12 +1264,45 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       } else {
         await this.ctx.storage.put(CONTAINER_STOP_FENCES_KEY, stopFences);
       }
+      const previousLease = (record?.leases ?? []).find((lease) => lease.doName === params.doName);
+      const clearedLease =
+        previousLease !== undefined &&
+        !leases.some((candidate) => candidate.doName === previousLease.doName)
+          ? previousLease
+          : undefined;
+      const completedWorkKey = previousLease === undefined ? params.workKey : clearedLease?.workKey;
+      await this.clearReleasedDayBaseGeneration(completedWorkKey);
     });
+  }
+
+  private async clearReleasedDayBaseGeneration(workKey: string | undefined): Promise<void> {
+    const identity = parseDayBaseWorkIdentity(workKey);
+    if (identity === null) return;
+    const generations =
+      (await this.ctx.storage.get<Record<string, DayBaseGenerationRecord>>(
+        DAY_BASE_GENERATIONS_KEY,
+      )) ?? {};
+    const current = generations[identity.category];
+    if (current === undefined || !isSameDayBaseGeneration(current, identity)) return;
+    if (current.generationId === undefined) {
+      delete generations[identity.category];
+    } else {
+      generations[identity.category] = { ...current, completed: true, updatedAt: Date.now() };
+    }
+    if (Object.keys(generations).length === 0) {
+      await this.ctx.storage.delete(DAY_BASE_GENERATIONS_KEY);
+      return;
+    }
+    await this.ctx.storage.put(DAY_BASE_GENERATIONS_KEY, generations);
   }
 
   async checkContainerSlotStop(params: CheckContainerSlotStopParams): Promise<boolean> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const activeWatches =
+        (await this.ctx.storage.get<Record<string, FocusedFullWatchOutboxEntry>>(
+          FOCUSED_FULL_ACTIVE_WATCHES_KEY,
+        )) ?? {};
       const stopFences =
         (await this.ctx.storage.get<Record<string, ContainerStopFence>>(
           CONTAINER_STOP_FENCES_KEY,
@@ -1047,6 +1320,24 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         return false;
       }
       if (existingFence?.destroyedAtMs !== undefined) return false;
+      // A day-base cleanup can be queued after a focused-full race has already
+      // been accepted. Both paths use the legacy category DO, so the lease may
+      // still point at the day-base owner while the focused watch is waiting
+      // for that same DO. Never let the day-base stop destroy the focused run;
+      // only a stop carrying one of the focused watch's work keys may proceed.
+      if (!params.force) {
+        const focusedWorkKeys = new Set(
+          Object.values(activeWatches)
+            .filter((entry) => entry.message.doName === params.doName)
+            .map((entry) => entry.message.workKey),
+        );
+        if (
+          focusedWorkKeys.size > 0 &&
+          (ownerKeys === undefined || ![...focusedWorkKeys].every((key) => ownerKeys.includes(key)))
+        ) {
+          return false;
+        }
+      }
       if (
         existingFence?.claimedAtMs !== undefined &&
         Date.now() - existingFence.claimedAtMs < CONTAINER_STOP_FENCE_STALE_MS
@@ -1232,6 +1523,12 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return Response.json({ ok: true }, { status: HTTP_OK });
   }
 
+  private async handleClaimDayBaseGeneration(request: Request): Promise<Response> {
+    const body = (await request.json()) as DayBaseGenerationClaimRequest;
+    const result = await this.claimDayBaseGeneration(body);
+    return Response.json(result, { status: HTTP_OK });
+  }
+
   private async handleClaimContainerSlot(request: Request): Promise<Response> {
     const body = (await request.json()) as ClaimContainerSlotParams;
     const result = await this.claimContainerSlot(body);
@@ -1323,6 +1620,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         `POST:${CLEAR_FOCUSED_FULL_WATCH_OUTBOX_PATH}`,
         (req) => this.handleClearFocusedFullWatchOutbox(req),
       ],
+      [`POST:${CLAIM_DAY_BASE_GENERATION_PATH}`, (req) => this.handleClaimDayBaseGeneration(req)],
       [`POST:${CLAIM_CONTAINER_SLOT_PATH}`, (req) => this.handleClaimContainerSlot(req)],
       [`POST:${RELEASE_CONTAINER_SLOT_PATH}`, (req) => this.handleReleaseContainerSlot(req)],
       [`POST:${TOUCH_CONTAINER_SLOT_PATH}`, (req) => this.handleTouchContainerSlot(req)],
@@ -1356,6 +1654,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       MARK_FOCUSED_FULL_TERMINAL_WATCH_STOPPED_PATH,
       REGISTER_FOCUSED_FULL_WATCH_OUTBOX_PATH,
       CLEAR_FOCUSED_FULL_WATCH_OUTBOX_PATH,
+      CLAIM_DAY_BASE_GENERATION_PATH,
       CLAIM_CONTAINER_SLOT_PATH,
       RELEASE_CONTAINER_SLOT_PATH,
       TOUCH_CONTAINER_SLOT_PATH,

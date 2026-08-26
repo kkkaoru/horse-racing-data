@@ -5,6 +5,7 @@
 import {
   cleanupDayBaseWork,
   consumeDayBasePickup,
+  dayBaseGenerationFields,
   isDayBasePickupQueueMessage,
 } from "./day-base-pickup";
 import {
@@ -64,6 +65,10 @@ import {
   WATCH_RESPONSE_HEADER,
 } from "./focused-full-watch";
 import { clearDayBaseRepairReservation, enqueueDayBaseRepairOnce } from "./day-base-repair";
+import {
+  getDayBaseRaceFoundationReadiness,
+  materializeDayBasePerRaceCache,
+} from "./day-base-race-materializer";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import {
   parseNdjsonStream,
@@ -82,14 +87,9 @@ import {
   PER_RACE_SCOPE_INVALID_ERROR,
   PER_RACE_SCOPE_REQUIRED_ERROR,
 } from "./per-race-scope-guard";
-import {
-  buildWarmRaceParamsFromYmd,
-  warmPredictionCacheForCategory,
-  warmViewerDisplayForRace,
-} from "./prediction-cache-warm";
+import { buildWarmRaceParamsFromYmd, warmViewerDisplayForRace } from "./prediction-cache-warm";
 import {
   publishFinishPositionPredictionCache,
-  publishFinishPositionPredictionCacheForCategory,
   type PredictionKvPublishResult,
 } from "./prediction-kv-writer";
 import { parsePredictFailure } from "./predict-failure";
@@ -107,7 +107,6 @@ import {
 } from "./race-chain-market-signal-hook";
 import { isBeforeRaceStartDeadline, RaceDeadlineExceededError } from "./race-deadline";
 import { addRescoreAttestationToUrl, createRescoreAttestation } from "./rescore-attestation";
-import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import { rescoreJraRace } from "./scoring/rescore-consumer";
 import {
   buildRetryErrorBindParams,
@@ -191,6 +190,10 @@ const FOCUSED_FULL_RETRY_DELAY_SECONDS = 30;
 // never rotate a healthy owner before that authoritative deadline; one extra
 // minute lets the next status poll observe deadlineExpired and recycle it.
 const FOCUSED_FULL_IN_FLIGHT_STALE_MS = 31 * 60 * 1000;
+// Python emits a heartbeat while the detached pipeline is alive. A running
+// status without that heartbeat is a crashed/evicted Container, not evidence
+// that the 31-minute absolute deadline should be extended indefinitely.
+const FOCUSED_FULL_PROGRESS_STALE_MS = 4 * 60 * 1000;
 const RESCORE_EXECUTION_STALE_MS = 31 * 60 * 1000;
 const RESCORE_NEAR_POST_THRESHOLD_SECONDS = 5 * 60;
 const RESCORE_NEAR_POST_RETRY_MAX_SECONDS = 15;
@@ -228,6 +231,7 @@ interface FocusedFullCachePickupParams {
 interface PastDayBaseWorkParams {
   category: PredictCategory;
   env: Env;
+  generationId?: string;
   runYmd: string;
 }
 
@@ -235,6 +239,7 @@ type FocusedFullPollStatus = "error" | "missing" | "running" | "success";
 
 interface FocusedFullStatusPayload {
   error: string | null;
+  lastProgressAtMs: number | null;
   raceKey: string;
   status: FocusedFullPollStatus;
 }
@@ -262,6 +267,7 @@ interface CompleteFocusedFullFromStatusParams {
 
 interface FocusedFullStatusTarget {
   doName: string;
+  getContainerState: () => Promise<string>;
   fetchStatus: () => Promise<FocusedFullStatusPayload>;
   role: PredictionContainerRole;
   workKey: string;
@@ -790,6 +796,8 @@ const resolveFocusedFullStatusTarget = async (
     env,
     forceLegacy: body.forceLegacyContainer,
     focusedFull: true,
+    keibajoCode: body.keibajoCode,
+    raceBango: body.raceBango,
     runYmd: body.runYmd,
   });
   const doName = qualifyPredictionContainerDoName(
@@ -807,6 +815,7 @@ const resolveFocusedFullStatusTarget = async (
   const stub = route.namespace.get(doId);
   return {
     doName,
+    getContainerState: async () => (await stub.getState()).status,
     fetchStatus: async () => {
       const response = await stub.fetch(new Request(buildFocusedFullStatusUrl(body)));
       if (!response.ok) throw new Error(`Focused-full status returned ${response.status}`);
@@ -883,6 +892,18 @@ const enqueueFocusedFullCacheRepair = async (
 };
 
 const recoverFocusedFullCache = async (params: FocusedFullCacheRepairRequest): Promise<void> => {
+  // This path is an automatic repair, even though the replacement message
+  // carries force=true so it can bypass a stale same-race completion marker.
+  // Never let that internal force resurrect a historical Container after its
+  // terminal watcher notices an absent in-process payload. Explicit admin
+  // historical runs enter through the normal producer and remain available.
+  if (isOldDateRunYmd(params.body.runYmd, new Date())) {
+    params.message.ack();
+    console.warn(
+      `[predict-queue] skipping old focused-full cache repair reason=${params.reason} ${describePredictMessage(params.body)}`,
+    );
+    return;
+  }
   try {
     await enqueueFocusedFullCacheRepair(params);
   } catch (error) {
@@ -1002,6 +1023,8 @@ const ackIfFocusedFullAlreadyComplete = async (
       category,
       env,
       focusedFull: true,
+      keibajoCode,
+      raceBango,
       runYmd,
     });
     const doName = qualifyPredictionContainerDoName(
@@ -1189,7 +1212,19 @@ const parseFocusedFullStatus = (
     throw new Error(`Focused-full status race key mismatch expected=${expectedRaceKey}`);
   if (error !== null && typeof error !== "string")
     throw new Error("Focused-full status response has an invalid error");
-  return { error, raceKey, status };
+  const rawLastProgressAtMs = value.lastProgressAtMs;
+  if (
+    rawLastProgressAtMs !== undefined &&
+    rawLastProgressAtMs !== null &&
+    (typeof rawLastProgressAtMs !== "number" || !Number.isFinite(rawLastProgressAtMs))
+  )
+    throw new Error("Focused-full status response has an invalid lastProgressAtMs");
+  return {
+    error,
+    lastProgressAtMs: rawLastProgressAtMs === undefined ? null : rawLastProgressAtMs,
+    raceKey,
+    status,
+  };
 };
 
 const buildFocusedFullStatusUrl = (message: FocusedFullSkipDedupMessage): string => {
@@ -1200,6 +1235,28 @@ const buildFocusedFullStatusUrl = (message: FocusedFullSkipDedupMessage): string
     runDate: message.runYmd,
   });
   return `${PREDICT_HOST}${FOCUSED_FULL_STATUS_PATH}?${searchParams.toString()}`;
+};
+
+const repairDayBaseAfterContainerMiss = async (
+  body: FocusedFullSkipDedupMessage,
+  env: Env,
+): Promise<void> => {
+  try {
+    await clearDayBaseRepairReservation({ category: body.category, env, runYmd: body.runYmd });
+    await enqueueDayBaseRepairOnce({
+      category: body.category,
+      env,
+      force: true,
+      runYmd: body.runYmd,
+    });
+  } catch (error) {
+    console.error(
+      `[predict-queue] failed to schedule day-base repair after Container cache miss ${describePredictMessage(
+        body,
+      )}:`,
+      String(error),
+    );
+  }
 };
 
 const recoverFocusedFullStatus = async (params: RecoverFocusedFullStatusParams): Promise<void> => {
@@ -1221,26 +1278,12 @@ const recoverFocusedFullStatus = async (params: RecoverFocusedFullStatusParams):
     });
   }
   if (params.role === "race-chain" && params.error.includes(DAY_BASE_REQUIRED_ERROR_CODE)) {
-    try {
-      await params.env.PREDICT_QUEUE.send(
-        { ...params.body, forceLegacyContainer: true },
-        { delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS },
-      );
-    } catch (error) {
-      params.message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
-      console.warn(
-        `[predict-queue] detached race-chain legacy fallback enqueue failed ${describePredictMessage(
-          params.message.body,
-        )}:`,
-        String(error),
-      );
-      return;
-    }
-    params.message.ack();
+    await repairDayBaseAfterContainerMiss(params.body, params.env);
+    params.message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
     console.warn(
-      `[predict-queue] detached race-chain requested legacy fallback ${describePredictMessage(
+      `[predict-queue] detached race-chain cache HIT lost; retrying fail-closed ${describePredictMessage(
         params.message.body,
-      )} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
+      )} error=${params.error} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
     );
     return;
   }
@@ -1317,6 +1360,21 @@ const pollFocusedFullStatus = async (
     const { doName, role, workKey } = target;
     const status = await target.fetchStatus();
     if (status.status === "running") {
+      if (
+        status.lastProgressAtMs !== null &&
+        Date.now() - status.lastProgressAtMs > FOCUSED_FULL_PROGRESS_STALE_MS
+      ) {
+        await recoverFocusedFullStatus({
+          body,
+          doName,
+          env,
+          error: "Focused-full detached pipeline heartbeat stale",
+          message,
+          role,
+          workKey,
+        });
+        return false;
+      }
       await touchContainerSlot({
         doName,
         env,
@@ -1359,10 +1417,39 @@ const pollFocusedFullStatus = async (
     });
     return false;
   } catch (error) {
+    const statusQueryError = String(error);
     console.warn(
       `[predict-queue] focused-full status query failed ${describePredictMessage(message.body)}:`,
-      String(error),
+      statusQueryError,
     );
+    const containerState = await target.getContainerState().catch((stateError: unknown) => {
+      console.warn(
+        `[predict-queue] focused-full Container state query failed ${describePredictMessage(
+          message.body,
+        )}:`,
+        String(stateError),
+      );
+      return null;
+    });
+    if (containerState === "stopped" || containerState === "stopped_with_code") {
+      await recoverFocusedFullStatus({
+        body,
+        doName: target.doName,
+        env,
+        error: `Focused-full Container stopped before terminal status: ${statusQueryError}`,
+        message,
+        role: target.role,
+        workKey: target.workKey,
+      });
+      return false;
+    }
+    if (containerState !== null) {
+      console.warn(
+        `[predict-queue] focused-full status retry while Container remains ${containerState} ${describePredictMessage(
+          message.body,
+        )}`,
+      );
+    }
     retryFocusedFullAlreadyInFlight(message);
     return false;
   }
@@ -1512,56 +1599,53 @@ const retryAfterFailure = async (
   message.retry({ delaySeconds });
 };
 
-const deferFocusedFullUntilRunningStyleReady = async (
-  message: Message<PredictQueueMessage>,
-  env: Env,
-): Promise<boolean> => {
-  if (!isFocusedSkipDedupMessage(message.body)) return false;
-  const { category, keibajoCode, raceBango, runYmd } = message.body;
-  // Ban-ei finish-position day-base artifacts intentionally carry no
-  // running-style rows (focused-full-day-base-readiness treats their RS
-  // watermark as `none`). Requiring a separate running-style inference state
-  // here can therefore strand an otherwise-ready race forever when that
-  // optional job remains `processing`.
-  if (category === "ban-ei") return false;
-  try {
-    const [readiness] = await getRunningStyleRaceReadiness({
-      category,
-      db: env.REALTIME_DB,
-      races: [{ category, keibajoCode, raceBango }],
-      runYmd,
-    });
-    if (readiness?.reason === null) return false;
-    const reason = readiness?.reason ?? "state-missing";
-    const delaySeconds = computeRetryDelaySeconds(message.attempts);
-    message.retry({ delaySeconds });
-    console.warn(
-      `[predict-queue] focused-full deferred before claim ${describePredictMessage(
-        message.body,
-      )} reason=running-style-${reason} attempts=${message.attempts} delaySeconds=${delaySeconds}`,
-    );
-    return true;
-  } catch (error) {
-    console.error(
-      `[predict-queue] focused-full running-style readiness failed before claim ${describePredictMessage(
-        message.body,
-      )}:`,
-      String(error),
-    );
-    await retryAfterFailure(message, env, error);
-    return true;
-  }
-};
-
 const deferFocusedFullUntilDayBaseReady = async (
   message: Message<PredictQueueMessage>,
   env: Env,
 ): Promise<boolean> => {
   if (!isFocusedSkipDedupMessage(message.body)) return false;
-  const { category, runYmd } = message.body;
+  const { category, keibajoCode, raceBango, runYmd } = message.body;
   try {
     const readiness = await getFocusedFullDayBaseReadiness({ category, env, runYmd });
     if (readiness.ready) {
+      let foundation = await getDayBaseRaceFoundationReadiness({
+        category,
+        env,
+        raceNumber: raceBango,
+        runYmd,
+        venueCode: keibajoCode,
+      });
+      if (!foundation.ready) {
+        const materialized = await materializeDayBasePerRaceCache({
+          category,
+          env,
+          force: true,
+          runYmd,
+        });
+        if (materialized.status !== "materialized") {
+          throw new Error(`per-race foundation warm failed: ${materialized.reason}`);
+        }
+        foundation = await getDayBaseRaceFoundationReadiness({
+          category,
+          env,
+          raceNumber: raceBango,
+          runYmd,
+          venueCode: keibajoCode,
+        });
+      }
+      if (!foundation.ready) {
+        const delaySeconds = computeRetryDelaySeconds(message.attempts);
+        message.retry({ delaySeconds });
+        console.warn(
+          `[predict-queue] focused-full foundation deferred before claim ${describePredictMessage(
+            message.body,
+          )} reason=${foundation.reason} attempts=${message.attempts} delaySeconds=${delaySeconds}`,
+        );
+        return true;
+      }
+      console.log(
+        `[predict-queue] feature foundation HIT before Container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} source=worker-r2-warm`,
+      );
       try {
         await clearDayBaseRepairReservation({ category, env, runYmd });
       } catch (error) {
@@ -1871,7 +1955,7 @@ const handleFocusedFullStatus = async (params: HandleFocusedFullStatusParams): P
   return false;
 };
 
-const handOffDayBaseRequiredToLegacy = async (
+const retryDayBaseRequiredFailClosed = async (
   message: Message<PredictQueueMessage>,
   env: Env,
   role: PredictionContainerRole,
@@ -1888,15 +1972,12 @@ const handOffDayBaseRequiredToLegacy = async (
     runYmd: message.body.runYmd,
     status: "error",
   });
-  await env.PREDICT_QUEUE.send(
-    { ...message.body, forceLegacyContainer: true },
-    { delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS },
-  );
-  message.ack();
+  await repairDayBaseAfterContainerMiss(message.body, env);
+  message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
   console.warn(
-    `[predict-queue] race-chain requested legacy fallback ${describePredictMessage(
+    `[predict-queue] race-chain cache HIT lost; retrying fail-closed ${describePredictMessage(
       message.body,
-    )} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
+    )} error=${result.error} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
   );
   return true;
 };
@@ -2043,6 +2124,9 @@ const processContainerPerRaceRescore = async (
           raceBango,
           runYmd,
         });
+        console.log(
+          `[predict-queue] rescore feature HIT before Container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} entries=${attestation.entryCount}`,
+        );
         const predictUrl = addRescoreAttestationToUrl(basePredictUrl, attestation);
         debugLog(
           message.body,
@@ -2324,6 +2408,7 @@ const handlePastDayBaseSkip = async (
   await cleanupPastDayBaseWork({
     category: message.body.category,
     env,
+    ...dayBaseGenerationFields(message.body.generationId),
     runYmd: message.body.runYmd,
   });
   message.ack();
@@ -2355,8 +2440,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     return;
   }
   await recordConsumedBestEffort(env, message.body);
-  if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date()))
-    return handleOldDateSkip(message, env);
+  if (isOldDateRunYmd(message.body.runYmd, new Date())) return handleOldDateSkip(message, env);
   debugLog(message.body, `[predict-queue] received ${describePredictMessage(message.body)}`);
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, skipDedup } = message.body;
@@ -2366,11 +2450,8 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     ? buildFocusedFullWorkKey(message.body)
     : buildPredictWorkKey(message.body);
   const shouldCompleteCategoryRun = !isFocusedSkipDedup;
-  const shouldWarmCategoryCache =
-    skipDedup === true && shouldCompleteCategoryRun && mode !== RESCORE_MODE;
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   if (await deferFocusedFullUntilDayBaseReady(message, env)) return;
-  if (await deferFocusedFullUntilRunningStyleReady(message, env)) return;
   if (await ackIfFocusedFullAlreadyComplete(message, env)) return;
   if (
     isFocusedSkipDedupMessage(message.body) &&
@@ -2412,6 +2493,9 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     env,
     forceLegacy: message.body.forceLegacyContainer,
     focusedFull: isFocusedSkipDedup,
+    ...(isFocusedSkipDedupMessage(message.body)
+      ? { keibajoCode: message.body.keibajoCode, raceBango: message.body.raceBango }
+      : {}),
     runYmd,
   });
   const predictDoName = qualifyPredictionContainerDoName(
@@ -2506,7 +2590,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         result.status ?? "-"
       } racesPredicted=${result.racesPredicted} durationMs=${Date.now() - startedAt}`,
     );
-    if (await handOffDayBaseRequiredToLegacy(message, env, containerRoute.role, result)) {
+    if (await retryDayBaseRequiredFailClosed(message, env, containerRoute.role, result)) {
       lifecycle.terminal = true;
       return;
     }
@@ -2604,24 +2688,10 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         result.status ?? RESULT_SUCCESS_STATUS
       } racesPredicted=${result.racesPredicted} durationMs=${Date.now() - startedAt}`,
     );
-    // Non-skipDedup per-race full still uses category completeRun and does not
-    // publish pred:fp here. Generate-time display warm is skipDedup focused-full
-    // plus per-race rescore only. Do not revive shouldWarmCategoryCache
-    // (warm-before-KV); day-base pickup also does not write pred:fp.
-    if (shouldWarmCategoryCache) {
-      void warmPredictionCacheForCategory({
-        category,
-        env,
-        runDate: message.body.runDateIso ?? message.body.runDate,
-        runYmd,
-      });
-      void publishFinishPositionPredictionCacheForCategory({
-        bustCacheApi: false,
-        category,
-        env,
-        runYmd,
-      });
-    }
+    // Display publication is deliberately restricted to the durable per-race
+    // repair path above. Never start category-wide KV publication or warm work
+    // after ack: that can race a newer Neon generation and the Worker may end
+    // before either write completes.
   } catch (err) {
     lifecycle.terminal = lifecycle.started;
     console.error(
@@ -2890,7 +2960,7 @@ export const handleQueue = async (
       message.ack();
     } else if (isDayBasePickupQueueMessage(message)) {
       await consumeDayBasePickup({ env, message: message.body });
-      if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date()))
+      if (isOldDateRunYmd(message.body.runYmd, new Date()))
         await clearDayBaseRepairReservation({
           category: message.body.category,
           env,
@@ -2898,7 +2968,7 @@ export const handleQueue = async (
         });
       message.ack();
     } else if (isDayBasePrewarmQueueMessage(message)) {
-      if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date())) {
+      if (isOldDateRunYmd(message.body.runYmd, new Date())) {
         await handlePastDayBaseSkip(message, env);
         continue;
       }
@@ -2906,13 +2976,15 @@ export const handleQueue = async (
         category: message.body.category,
         daysAhead: message.body.daysAhead,
         env,
+        ...dayBaseGenerationFields(message.body.generationId),
         ...(message.body.generatePredictionsAfterHit === true
           ? { generatePredictionsAfterHit: true }
           : {}),
         ...(message.body.force === true ? { force: true } : {}),
         runYmd: message.body.runYmd,
       });
-      if (outcome === "landed" || outcome === "pickup-scheduled") message.ack();
+      if (outcome === "landed" || outcome === "pickup-scheduled" || outcome === "superseded")
+        message.ack();
       else message.retry({ delaySeconds: 30 });
     } else if (isPredictQueueMessage(message)) {
       await processMessage(message, env);

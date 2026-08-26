@@ -23,6 +23,7 @@ const CONFIDENCE_LOW_MAX_STDDEV = 1.3;
 const CONFIDENCE_MID_MAX_STDDEV = 1.5;
 const CONFIDENCE_MIN_VALID_SCORES = 2;
 const BAN_EI_KEIBAJO_CODE = "83";
+const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1";
 
 export type FinishPositionConfidenceTier = "high" | "low" | "mid";
 
@@ -168,6 +169,9 @@ const parsePredictionRow = (value: unknown): FinishPositionPredictionRow | null 
   };
 };
 
+// Keep KV selection aligned with the proven NAR Transformer display contract.
+// Other categories retain the latest-model behavior until an independently
+// evaluated cell route satisfies the production accuracy gate.
 const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, predicted_score,
               prediction_generated_at
        from race_finish_position_model_predictions
@@ -184,7 +188,12 @@ const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, pr
              and kaisai_tsukihi = $3
              and keibajo_code = $4
              and race_bango = $5
-           order by prediction_generated_at desc nulls last
+           order by
+             case
+               when $6 = 'nar' and model_version = $7 then 0
+               else 1
+             end,
+             prediction_generated_at desc nulls last
            limit 1
         )
       order by umaban`;
@@ -192,6 +201,7 @@ const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, pr
 const fetchPredictionRows = async (
   env: Env,
   params: {
+    category: PredictCategory;
     keibajoCode: string;
     raceBango: string;
     runYmd: string;
@@ -205,6 +215,8 @@ const fetchPredictionRows = async (
     params.runYmd.slice(RUN_YMD_YEAR_END),
     params.keibajoCode,
     params.raceBango,
+    params.category,
+    NAR_TRANSFORMER_BLEND_MODEL_VERSION,
   ]);
   if (!Array.isArray(result)) return [];
   return result
@@ -277,6 +289,7 @@ const writeFinishPositionPredictionKv = async (
   const raceBango = params.raceBango.padStart(RACE_BANGO_PAD_WIDTH, "0");
   const source = predictionCacheSourceForCategory(params.category);
   const rows = await fetchPredictionRows(params.env, {
+    category: params.category,
     keibajoCode,
     raceBango,
     runYmd: params.runYmd,

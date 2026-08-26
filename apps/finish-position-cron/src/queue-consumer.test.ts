@@ -153,6 +153,19 @@ const {
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
 }));
 
+const { getDayBaseRaceFoundationReadinessMock, materializeDayBasePerRaceCacheMock } = vi.hoisted(
+  () => ({
+    getDayBaseRaceFoundationReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+    materializeDayBasePerRaceCacheMock: vi.fn(async () => ({
+      featureHash: "feature-hash",
+      manifestKey: "manifest-key",
+      raceCount: 1,
+      rowCount: 12,
+      status: "materialized" as const,
+    })),
+  }),
+);
+
 const { addRescoreAttestationToUrlMock, createRescoreAttestationMock } = vi.hoisted(() => ({
   addRescoreAttestationToUrlMock: vi.fn((url: string) => url),
   createRescoreAttestationMock: vi.fn(async () => ({
@@ -200,6 +213,11 @@ vi.mock("./day-base-repair", () => ({
 
 vi.mock("./focused-full-day-base-readiness", () => ({
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
+}));
+
+vi.mock("./day-base-race-materializer", () => ({
+  getDayBaseRaceFoundationReadiness: getDayBaseRaceFoundationReadinessMock,
+  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
 }));
 
 vi.mock("./rescore-attestation", () => ({
@@ -311,7 +329,8 @@ const stubFetchMock = vi.fn(
       },
     ),
 );
-const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
+const getStateMock = vi.fn(async () => ({ status: "healthy" }));
+const getMock = vi.fn(() => ({ fetch: stubFetchMock, getState: getStateMock }));
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -462,6 +481,8 @@ beforeEach(() => {
   prepareMock.mockClear();
   idFromNameMock.mockClear();
   getMock.mockClear();
+  getStateMock.mockClear();
+  getStateMock.mockResolvedValue({ status: "healthy" });
   stubFetchMock.mockReset();
   claimContainerSlotMock.mockClear();
   claimFocusedFullRaceMock.mockClear();
@@ -496,6 +517,16 @@ beforeEach(() => {
   enqueueDayBaseRepairOnceMock.mockClear();
   getFocusedFullDayBaseReadinessMock.mockClear();
   getFocusedFullDayBaseReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
+  getDayBaseRaceFoundationReadinessMock.mockClear();
+  getDayBaseRaceFoundationReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
+  materializeDayBasePerRaceCacheMock.mockClear();
+  materializeDayBasePerRaceCacheMock.mockResolvedValue({
+    featureHash: "feature-hash",
+    manifestKey: "manifest-key",
+    raceCount: 1,
+    rowCount: 12,
+    status: "materialized",
+  });
   addRescoreAttestationToUrlMock.mockClear();
   addRescoreAttestationToUrlMock.mockImplementation((url: string) => url);
   createRescoreAttestationMock.mockClear();
@@ -550,35 +581,46 @@ beforeEach(() => {
   );
 });
 
-test("defers an RS-incomplete focused-full before any Container or coordinator claim", async () => {
+test("does not use the D1 running-style mirror as a second cache authority", async () => {
   getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
     {
       race: { category: "jra", keibajoCode: "05", raceBango: "11" },
       reason: "prediction-count-7-of-14",
     },
   ]);
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const message = makeMessage({ skipDedup: true });
 
   await handleQueue(makeBatch([message]), makeEnv());
 
-  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledWith({
-    category: "jra",
-    db: expect.anything(),
-    races: [{ category: "jra", keibajoCode: "05", raceBango: "11" }],
-    runYmd: "20260603",
-  });
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
-  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
-  expect(claimContainerSlotMock).not.toHaveBeenCalled();
-  expect(idFromNameMock).not.toHaveBeenCalled();
-  expect(getMock).not.toHaveBeenCalled();
-  expect(stubFetchMock).not.toHaveBeenCalled();
-  expect(ackMock).not.toHaveBeenCalled();
-  expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=running-style-prediction-count-7-of-14 attempts=3 delaySeconds=70",
+  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
+  expect(getDayBaseRaceFoundationReadinessMock).toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("allows an explicitly forced focused-full through stale RS sync state", async () => {
+  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
+    {
+      race: { category: "jra", keibajoCode: "05", raceBango: "11" },
+      reason: "sync-failed",
+    },
+  ]);
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        force: true,
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
   );
-  warnSpy.mockRestore();
+
+  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalled();
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("does not gate ban-ei focused-full on optional running-style state", async () => {
@@ -638,7 +680,7 @@ test("defers a partial day-base, enqueues one repair, and never claims a Contain
   enqueueDayBaseRepairOnceMock.mockResolvedValueOnce("enqueued");
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-  await handleQueue(makeBatch([makeMessage({ force: true, skipDedup: true }, 2)]), makeEnv());
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 2)]), makeEnv());
 
   expect(getFocusedFullDayBaseReadinessMock).toHaveBeenCalledWith({
     category: "jra",
@@ -648,7 +690,6 @@ test("defers a partial day-base, enqueues one repair, and never claims a Contain
   expect(enqueueDayBaseRepairOnceMock).toHaveBeenCalledWith({
     category: "jra",
     env: expect.anything(),
-    force: true,
     runYmd: "20260603",
   });
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 50 });
@@ -746,8 +787,10 @@ test("attaches the exact Worker artifact identity before focused-full Container 
   });
 });
 
-test("fails closed before claims when focused-full readiness returns no race", async () => {
-  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([]);
+test("fails closed before claims when exact foundation remains absent after Worker warm", async () => {
+  getDayBaseRaceFoundationReadinessMock
+    .mockResolvedValueOnce({ ready: false, reason: "foundation-miss" })
+    .mockResolvedValueOnce({ ready: false, reason: "foundation-miss" });
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 1)]), makeEnv());
@@ -755,14 +798,24 @@ test("fails closed before claims when focused-full readiness returns no race", a
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.anything(),
+    force: true,
+    runYmd: "20260603",
+  });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=running-style-state-missing attempts=1 delaySeconds=30",
+    "[predict-queue] focused-full foundation deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=foundation-miss attempts=1 delaySeconds=30",
   );
   warnSpy.mockRestore();
 });
 
-test("retries without claims when focused-full readiness query fails", async () => {
-  getRunningStyleRaceReadinessMock.mockRejectedValueOnce(new Error("D1 unavailable"));
+test("retries without claims when Worker foundation materialization fails", async () => {
+  getDayBaseRaceFoundationReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "foundation-miss",
+  });
+  materializeDayBasePerRaceCacheMock.mockRejectedValueOnce(new Error("R2 unavailable"));
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
   await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 2)]), makeEnv());
@@ -775,8 +828,8 @@ test("retries without claims when focused-full readiness query fails", async () 
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full running-style readiness failed before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11:",
-    "Error: D1 unavailable",
+    "[predict-queue] focused-full day-base readiness failed before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11:",
+    "Error: R2 unavailable",
   );
   errorSpy.mockRestore();
 });
@@ -978,13 +1031,19 @@ test("routes only an allowlisted focused-full R2 day-base hit to the race-chain 
     env,
   );
 
-  expect(head).toHaveBeenCalledWith("feat-daybase/catalog-v1/jra/20260823/features.parquet");
+  expect(getDayBaseRaceFoundationReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    env,
+    raceNumber: "03",
+    runYmd: "20260823",
+    venueCode: "01",
+  });
   expect(raceIdFromName).toHaveBeenCalledWith("race-chain-predict-jra");
   expect(raceGet).toHaveBeenCalledTimes(2);
   expect(idFromNameMock).not.toHaveBeenCalled();
 });
 
-test("hands DAY_BASE_REQUIRED from race-chain to one durable legacy replacement", async () => {
+test("retries DAY_BASE_REQUIRED fail-closed and schedules a day-base repair", async () => {
   parseNdjsonStreamMock.mockResolvedValueOnce({
     category: "jra",
     error: "DayBaseRequiredError: DAY_BASE_REQUIRED: source unavailable",
@@ -1018,22 +1077,22 @@ test("hands DAY_BASE_REQUIRED from race-chain to one durable legacy replacement"
 
   await handleQueue(makeBatch([original]), env);
 
-  expect(sendMock).toHaveBeenCalledWith(
-    { ...original.body, forceLegacyContainer: true },
-    { delaySeconds: 30 },
-  );
+  expect(sendMock).not.toHaveBeenCalled();
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "error" }),
   );
-  expect(ackMock).toHaveBeenCalledTimes(1);
-  expect(retryMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(enqueueDayBaseRepairOnceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", force: true, runYmd: "20260603" }),
+  );
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] race-chain requested legacy fallback category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 delaySeconds=30",
+    "[predict-queue] race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 error=DayBaseRequiredError: DAY_BASE_REQUIRED: source unavailable delaySeconds=30",
   );
   warnSpy.mockRestore();
 });
 
-test("retries the original race-chain delivery when legacy replacement enqueue fails", async () => {
+test("retries the original race-chain delivery without a legacy replacement", async () => {
   parseNdjsonStreamMock.mockResolvedValueOnce({
     category: "jra",
     error: "DAY_BASE_REQUIRED: transient source failure",
@@ -1041,7 +1100,6 @@ test("retries the original race-chain delivery when legacy replacement enqueue f
     status: "error",
     type: "result",
   });
-  sendMock.mockRejectedValueOnce(new Error("Queue unavailable"));
   const env: Env = {
     ...makeEnv(),
     FEATURES_CACHE: {
@@ -1066,7 +1124,7 @@ test("retries the original race-chain delivery when legacy replacement enqueue f
   await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), env);
 
   expect(ackMock).not.toHaveBeenCalled();
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   errorSpy.mockRestore();
 });
 
@@ -1418,6 +1476,45 @@ test("replaces missing detached payload with one forced cache-repair message", a
   expect(warnSpy).toHaveBeenCalledWith(
     expect.stringMatching(
       /^\[predict-queue\] focused-full cache repair reason=missing-status outcome=enqueued reservationId=\S+ category=jra .*keibajo=01 race=06$/,
+    ),
+  );
+  warnSpy.mockRestore();
+});
+
+test("acks an old missing-status repair without resurrecting its Container", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  isOldDateRunYmdMock.mockReturnValue(true);
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  isPerRaceFeatureCachePresentMock.mockResolvedValue(false);
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false })).mockResolvedValueOnce(
+    Response.json({
+      error: null,
+      raceKey: "jra:20260705:03:12",
+      status: "missing",
+    }),
+  );
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        force: true,
+        keibajoCode: "03",
+        mode: "full",
+        raceBango: "12",
+        runYmd: "20260705",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "Skipping old-dated predict message category=jra runYmd=20260705 mode=full",
     ),
   );
   warnSpy.mockRestore();
@@ -2191,7 +2288,7 @@ test("polls and touches an active focused run without restarting its prediction"
       deadlineAtMs: 2000,
       error: null,
       finishedAtMs: null,
-      lastProgressAtMs: 1500,
+      lastProgressAtMs: Date.now() - 1000,
       raceKey: "jra:20260628:02:01",
       startedAtMs: 1000,
       status: "running",
@@ -2503,7 +2600,7 @@ test("acks an old non-force day-base pickup only after its strict cleanup comple
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("allows an explicitly forced historical day-base pickup", async () => {
+test("cleans an explicitly forced historical day-base pickup", async () => {
   isOldDateRunYmdMock.mockReturnValue(true);
   const pickup = {
     ack: ackMock,
@@ -2521,7 +2618,11 @@ test("allows an explicitly forced historical day-base pickup", async () => {
     env: expect.any(Object),
     message: pickup.body,
   });
-  expect(clearDayBaseRepairReservationMock).not.toHaveBeenCalled();
+  expect(clearDayBaseRepairReservationMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.any(Object),
+    runYmd: "20260823",
+  });
   expect(controlSendMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
@@ -5264,13 +5365,13 @@ test("old-runYmd message is acked without touching the Container DO stub", async
   expect(runMock).toHaveBeenCalledTimes(2);
 });
 
-test("old-runYmd message with force:true bypasses the guard and reaches the Container DO", async () => {
+test("old-runYmd message with force:true is still fenced from the Container DO", async () => {
   isOldDateRunYmdMock.mockReturnValue(true);
   await handleQueue(makeBatch([makeMessage({ force: true, runYmd: "20260101" })]), makeEnv());
-  expect(isOldDateRunYmdMock).not.toHaveBeenCalled();
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(isOldDateRunYmdMock).toHaveBeenCalledWith("20260101", expect.any(Date));
+  expect(stubFetchMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
-  expect(prepareMock).toHaveBeenCalledTimes(3);
+  expect(prepareMock).toHaveBeenCalledTimes(2);
 });
 
 test("old-runYmd focused-full skipDedup message completes the DO claim with status skipped-old-date", async () => {
@@ -5791,6 +5892,7 @@ test("keeps claims and slots unchanged when focused-full status query fails", as
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(getStateMock).toHaveBeenCalledTimes(1);
   expect(touchContainerSlotMock).not.toHaveBeenCalled();
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
@@ -5801,6 +5903,41 @@ test("keeps claims and slots unchanged when focused-full status query fails", as
     "[predict-queue] focused-full status query failed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01:",
     "Error: Focused-full status returned 503",
   );
+  warnSpy.mockRestore();
+});
+
+test("recovers immediately when focused-full status is absent and the Container is stopped", async () => {
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
+  stubFetchMock.mockResolvedValueOnce(new Response("no instance", { status: 503 }));
+  getStateMock.mockResolvedValueOnce({ status: "stopped" });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "02", raceBango: "01", status: "error" }),
+  );
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: "predict-jra-1",
+      type: "container-stop",
+      workKey: "focused-full:20260628:jra:02:01",
+    }),
+  );
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(touchContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
 
@@ -5833,6 +5970,33 @@ test("keeps claims and slots unchanged when focused-full status JSON is invalid"
   expect(controlSendMock).not.toHaveBeenCalled();
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
+});
+
+test("rejects a focused-full status with an invalid progress heartbeat", async () => {
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      error: null,
+      lastProgressAtMs: "invalid",
+      raceKey: "jra:20260628:02:01",
+      status: "running",
+    }),
+  );
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(touchContainerSlotMock).not.toHaveBeenCalled();
 });
 
 test("persists detached errors and stops the exact container before retry", async () => {
@@ -5894,7 +6058,7 @@ test("persists detached errors and stops the exact container before retry", asyn
   warnSpy.mockRestore();
 });
 
-test("hands detached DAY_BASE_REQUIRED race-chain errors to one legacy replacement", async () => {
+test("retries detached DAY_BASE_REQUIRED fail-closed after scheduling repair", async () => {
   claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
   stubFetchMock.mockResolvedValueOnce(
     Response.json({
@@ -5942,19 +6106,19 @@ test("hands detached DAY_BASE_REQUIRED race-chain errors to one legacy replaceme
       workKey: "focused-full:20260628:jra:02:01",
     }),
   );
-  expect(sendMock).toHaveBeenCalledWith(
-    { ...original.body, forceLegacyContainer: true },
-    { delaySeconds: 30 },
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(enqueueDayBaseRepairOnceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", force: true, runYmd: "20260628" }),
   );
-  expect(ackMock).toHaveBeenCalledTimes(1);
-  expect(retryMock).not.toHaveBeenCalled();
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] detached race-chain requested legacy fallback category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 delaySeconds=30",
+    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DayBaseRequiredError: DAY_BASE_REQUIRED: layer subprocess terminated delaySeconds=30",
   );
   warnSpy.mockRestore();
 });
 
-test("retries detached DAY_BASE_REQUIRED delivery when legacy enqueue fails", async () => {
+test("retries detached DAY_BASE_REQUIRED without enqueueing a legacy fallback", async () => {
   claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
   stubFetchMock.mockResolvedValueOnce(
     Response.json({
@@ -5963,7 +6127,6 @@ test("retries detached DAY_BASE_REQUIRED delivery when legacy enqueue fails", as
       status: "error",
     }),
   );
-  sendMock.mockRejectedValueOnce(new Error("Queue unavailable"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const raceGet = vi.fn(() => ({ fetch: stubFetchMock }));
 
@@ -6002,8 +6165,7 @@ test("retries detached DAY_BASE_REQUIRED delivery when legacy enqueue fails", as
   expect(ackMock).not.toHaveBeenCalled();
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] detached race-chain legacy fallback enqueue failed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01:",
-    "Error: Queue unavailable",
+    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DAY_BASE_REQUIRED: transient source failure delaySeconds=30",
   );
   warnSpy.mockRestore();
 });
@@ -6102,6 +6264,7 @@ test("does not restart an accepted forced pipeline when resumed status is runnin
   stubFetchMock.mockResolvedValueOnce(
     Response.json({
       error: null,
+      lastProgressAtMs: null,
       raceKey: "jra:20260822:07:09",
       status: "running",
     }),
@@ -6135,6 +6298,42 @@ test("does not restart an accepted forced pipeline when resumed status is runnin
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("restarts a resumed focused pipeline when its heartbeat is stale", async () => {
+  claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: true, state: "resumed" });
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      error: null,
+      lastProgressAtMs: Date.now() - 5 * 60 * 1000,
+      raceKey: "jra:20260822:07:09",
+      status: "running",
+    }),
+  );
+
+  await handleQueue(
+    makeBatch([
+      makeMessage(
+        {
+          daysAhead: 0,
+          force: true,
+          forceRequestedAt: "2026-08-22T00:00:00.000Z",
+          keibajoCode: "07",
+          mode: "full",
+          raceBango: "09",
+          runYmd: "20260822",
+          skipDedup: true,
+        },
+        8,
+      ),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", keibajoCode: "07", raceBango: "09" }),
+  );
+  expect(retryMock).toHaveBeenCalled();
 });
 
 test("finishes cache pickup and terminal cleanup when detached status succeeds", async () => {
@@ -6894,7 +7093,7 @@ test("acks old non-force day-base prewarm work without restarting its container"
   warnSpy.mockRestore();
 });
 
-test("allows an explicitly forced historical day-base prewarm", async () => {
+test("cleans an explicitly forced historical day-base prewarm", async () => {
   isOldDateRunYmdMock.mockReturnValue(true);
   const message = {
     ack: ackMock,
@@ -6912,11 +7111,11 @@ test("allows an explicitly forced historical day-base prewarm", async () => {
     { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
     makeEnv(),
   );
-  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith(
-    expect.objectContaining({ force: true, runYmd: "20260823" }),
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+  expect(clearDayBaseRepairReservationMock).toHaveBeenCalledTimes(1);
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ workKey: "day-base:20260823:nar" }),
   );
-  expect(clearDayBaseRepairReservationMock).not.toHaveBeenCalled();
-  expect(controlSendMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
@@ -6954,6 +7153,42 @@ test("retries failed prewarms but acknowledges pickup ownership", async () => {
   expect(prewarmCategoryWithOutcomeMock).toHaveBeenLastCalledWith(
     expect.objectContaining({ generatePredictionsAfterHit: true }),
   );
+  ackMock.mockClear();
+  retryMock.mockClear();
+  prewarmCategoryWithOutcomeMock.mockResolvedValue("busy");
+  await handleQueue(
+    { messages: [makePrewarm()] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("acknowledges a superseded day-base generation without redelivery", async () => {
+  prewarmCategoryWithOutcomeMock.mockResolvedValue("superseded");
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      generationId: "retired-generation",
+      requestedAt: "2026-08-26T00:00:00.000Z",
+      runYmd: "20260826",
+      type: "day-base-prewarm",
+    },
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: "retired-generation", runYmd: "20260826" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
 });
 
 test("consumes cleanup-only messages without running prediction work", async () => {

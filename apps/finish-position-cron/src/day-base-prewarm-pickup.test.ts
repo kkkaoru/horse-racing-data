@@ -10,9 +10,8 @@ const {
 } = vi.hoisted(() => ({
   getDayBaseCandidateReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   materializeDayBasePerRaceCacheMock: vi.fn(
-    async (): Promise<{ reason: string; status: "fallback" }> => ({
-      reason: "test-fallback",
-      status: "fallback",
+    async (): Promise<{ status: "materialized" } | { reason: string; status: "fallback" }> => ({
+      status: "materialized",
     }),
   ),
   proxyResultParquetsToRMock: vi.fn(async () => undefined),
@@ -64,6 +63,7 @@ beforeEach(() => {
   idFromNameMock.mockClear();
   headMock.mockClear();
   materializeDayBasePerRaceCacheMock.mockClear();
+  materializeDayBasePerRaceCacheMock.mockResolvedValue({ status: "materialized" });
   proxyResultParquetsToRMock.mockClear();
   getDayBaseCandidateReadinessMock.mockReset();
   getDayBaseCandidateReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
@@ -343,6 +343,41 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
     env,
     runYmd: "20260816",
   });
+});
+
+test("pickUpPrewarmDayBase fails closed when the per-race Worker cache cannot materialize", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        found: true,
+        parquetBase64: "YQ==",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+        daybaseWatermark: {
+          maxDataSakuseiNengappi: "20260826",
+          rowCount: 446,
+          rsPredictedAtMax: "2026-08-25T12:10:07.376Z",
+          rsRowCount: 446,
+        },
+      }),
+      { status: 200 },
+    ),
+  );
+  materializeDayBasePerRaceCacheMock.mockResolvedValueOnce({
+    reason: "manifest-write-failed",
+    status: "fallback",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("transient-error");
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm-pickup] per-race foundation warm failed category=nar runYmd=20260826 reason=manifest-write-failed",
+  );
+  warnSpy.mockRestore();
 });
 
 test("pickUpPrewarmDayBaseWithOutcome lands the exact running-style foundation without final readiness", async () => {
@@ -868,6 +903,20 @@ test("pickUpPrewarmDayBase returns false when fetch rejects", async () => {
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm-pickup] failed category=jra runYmd=20260816 doName=predict-jra: Error: network down",
   );
+  warnSpy.mockRestore();
+});
+
+test("pickUpPrewarmDayBaseWithOutcome keeps a fetch failure distinct from a cache miss", async () => {
+  stubFetchMock.mockRejectedValueOnce(new Error("network down"));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await pickUpPrewarmDayBaseWithOutcome({
+    category: "jra",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260816",
+  });
+
+  expect(outcome).toBe("transient-error");
   warnSpy.mockRestore();
 });
 

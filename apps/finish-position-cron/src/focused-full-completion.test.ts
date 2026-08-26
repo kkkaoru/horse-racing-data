@@ -33,6 +33,7 @@ const buildCatalogRows = (count = 12): Record<string, unknown>[] =>
   Array.from({ length: count }, (_, index) => ({
     grade_code: null,
     ketto_toroku_bango: `horse-${String(index + 1).padStart(2, "0")}`,
+    kyori: null,
     kyoso_joken_code: null,
     shusso_tosu: count,
     track_code: null,
@@ -48,6 +49,7 @@ const { cacheHeadMock, catalogFetchMock, neonMock, queryMock } = vi.hoisted(() =
         rows: Array.from({ length: 12 }, (_, index) => ({
           grade_code: null,
           ketto_toroku_bango: `horse-${String(index + 1).padStart(2, "0")}`,
+          kyori: null,
           kyoso_joken_code: null,
           shusso_tosu: 12,
           track_code: null,
@@ -300,6 +302,7 @@ test("routes JRA 703 and prior-corner races from raw Catalog fields", async () =
   setCatalogRows([
     {
       ...buildCatalogRows(1)[0],
+      grade_code: "C",
       kyoso_joken_code: "703",
     },
   ]);
@@ -316,6 +319,7 @@ test("routes JRA 703 and prior-corner races from raw Catalog fields", async () =
   setCatalogRows([
     {
       ...buildCatalogRows(1)[0],
+      grade_code: "C",
       kyoso_joken_code: "005",
       shusso_tosu: 10,
       track_code: "2A",
@@ -361,6 +365,7 @@ test("prior-corner-005 outranks the venue 02 fallback when a race matches both",
   setCatalogRows([
     {
       ...buildCatalogRows(1)[0],
+      grade_code: "C",
       kyoso_joken_code: "005",
       shusso_tosu: 8,
       track_code: "2A",
@@ -604,8 +609,11 @@ test("does not retry under a stage1 fallback model_version for ban-ei -- stage1_
   expect(queryMock).toHaveBeenCalledTimes(1);
 });
 
-test("still reports incomplete when neither the primary nor the stage1 fallback model_version has the full row count", async () => {
-  queryMock.mockResolvedValueOnce([{ actual_rows: 5 }]).mockResolvedValueOnce([{ actual_rows: 7 }]);
+test("still reports incomplete when primary, stage1, and cell models lack the full row count", async () => {
+  queryMock
+    .mockResolvedValue([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 5 }])
+    .mockResolvedValueOnce([{ actual_rows: 7 }]);
   await expect(
     isFocusedFullPredictionComplete({
       category: "nar",
@@ -616,7 +624,27 @@ test("still reports incomplete when neither the primary nor the stage1 fallback 
     }),
   ).resolves.toBe(false);
 
-  expect(queryMock).toHaveBeenCalledTimes(2);
+  expect(queryMock).toHaveBeenCalledTimes(8);
+});
+
+test("accepts a complete promoted NAR cell model after primary and stage1 misses", async () => {
+  queryMock
+    .mockResolvedValue([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 12 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "30",
+      raceBango: "01",
+      runYmd: "20260724",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledTimes(8);
+  expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1");
 });
 
 test("fails closed when Catalog returns an HTTP or schema error", async () => {
@@ -668,7 +696,7 @@ const readContainerCellRoutingConfig = (): CellRoutingConfig => {
 
 // Intentional exception to "mock all file I/O in tests": this test's entire
 // purpose is to catch drift between expectedModelVersion()'s hand-written JRA
-// rule branches (703, prior-corner-005, venue==02) and the container's real
+// rule branches and the container's real
 // cell_routing.json, so it must read the real file. This is exactly the class
 // of bug this suite's venue==02 tests above were added to fix (the rule
 // survived a full rewrite of this file unnoticed) -- mirrors the same
@@ -694,22 +722,604 @@ test("expectedModelVersion covers every JRA rule in the real cell_routing.json (
   // cell_routing.json without a matching branch in expectedModelVersion()
   // fails silently exactly like the venue==02 gap this test guards against.
   // A failure here means: add the matching branch above FIRST, then update
-  // this expectation to the new count (AND the 3 behavioural parity tests
+  // this expectation to the new count (AND the behavioural parity tests
   // below, which index into this same rules array by position).
-  expect(jraRules).toHaveLength(3);
+  expect(jraRules).toHaveLength(31);
   const ruleModelVersions = jraRules.map(
     (rule) => containerConfig.jra.variants[rule.variant]?.model_version,
   );
   expect(ruleModelVersions).toStrictEqual([
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269", // rule 1: kyoso_joken_code=703
-    "jra-cb-v10-prior-corner274-2013", // rule 2: dirt + f_le10 + kyoso_joken_code=005
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269", // rule 3: venue=02
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+    "jra-joken-005-turf-mile-yeti-gated-v1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+    "jra-joken-701-turf-long-qsm-gated-v1",
+    "jra-joken-701-turf-mile-qsm-gated-v1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1",
+    "jra-joken-703-other-extended-qsm-gated-v1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+    "jra-joken-703-querysoftmax-maxrange-v1",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+    "jra-joken-703-turf-1400-qsm-gated-v1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+    "jra-joken-005-pooled-yetirank-v2",
+    "jra-joken-010-pooled-yetirank-v2",
+    "jra-joken-016-pooled-yetirank-v2",
+    "jra-joken-701-pooled-yetirank-v2",
+    "jra-joken-703-pooled-yetirank-v2",
+    "jra-joken-999-pooled-yetirank-v2",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+    "jra-cb-v10-prior-corner274-2013",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
   ]);
 });
 
-test("expectedModelVersion resolves rule 1 (kyoso_joken_code=703) to the model_version cell_routing.json declares for it", async () => {
+test("expectedModelVersion resolves rule 1 (ungraded 005 dirt mile autumn) from cell_routing.json", async () => {
   const containerConfig = readContainerCellRoutingConfig();
   const rule = containerConfig.jra.rules[0];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1400,
+      kyoso_joken_code: "005",
+      track_code: "23",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20261013",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 2 (ungraded 005 turf mile) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[1];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1400,
+      kyoso_joken_code: "005",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 3 (ungraded 005 turf long) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[2];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 2200,
+      kyoso_joken_code: "005",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 4 (ungraded 010 dirt intermediate) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[3];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1800,
+      kyoso_joken_code: "010",
+      track_code: "23",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 5 (ungraded 701 turf long) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[4];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 2200,
+      kyoso_joken_code: "701",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 6 (ungraded 701 turf mile) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[5];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1400,
+      kyoso_joken_code: "701",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 7 (ungraded 701 turf intermediate) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[6];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1800,
+      kyoso_joken_code: "701",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 8 (ungraded 703 turf long spring) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[7];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 2200,
+      kyoso_joken_code: "703",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260413",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 9 (ungraded 703 turf intermediate) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[8];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1800,
+      kyoso_joken_code: "703",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 10 (ungraded 703 other extended) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[9];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 3000,
+      kyoso_joken_code: "703",
+      track_code: "51",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 11 (ungraded 703 dirt sprint) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[10];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1000,
+      kyoso_joken_code: "703",
+      track_code: "23",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 12 (ungraded 703 dirt intermediate) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[11];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1800,
+      kyoso_joken_code: "703",
+      track_code: "23",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 13 (ungraded 703 dirt mile summer) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[12];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1400,
+      kyoso_joken_code: "703",
+      track_code: "23",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 14 (ungraded 005 turf intermediate spring) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[13];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyori: 1800,
+      kyoso_joken_code: "005",
+      track_code: "10",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260413",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 15 (ungraded 005 dirt mile spring) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[14];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1400, kyoso_joken_code: "005", track_code: "23" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260413",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 16 (ungraded 005 dirt intermediate autumn) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[15];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1800, kyoso_joken_code: "005", track_code: "23" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20261013",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 17 (ungraded 703 turf long summer) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[16];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 2200, kyoso_joken_code: "703", track_code: "10" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 18 (ungraded 005 dirt 1700 summer) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[17];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1700, kyoso_joken_code: "005", track_code: "23" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 19 (ungraded 005 dirt 1200 summer) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[18];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1200, kyoso_joken_code: "005", track_code: "23" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 20 (ungraded 703 turf 1400) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[19];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1400, kyoso_joken_code: "703", track_code: "10" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 21 (ungraded 005 dirt 1800 non-autumn) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[20];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyori: 1800, kyoso_joken_code: "005", track_code: "23" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 22 (ungraded 703 turf 1200 large field) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[21];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+  setCatalogRows(
+    buildCatalogRows(14).map((row) => ({
+      ...row,
+      kyori: 1200,
+      kyoso_joken_code: "703",
+      track_code: "10",
+    })),
+  );
+  queryMock.mockResolvedValue([{ actual_rows: 14 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260713",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 23 (ungraded class joken-005) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[22];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "005" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 24 (ungraded class joken-010) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[23];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "010" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 25 (ungraded class joken-016) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[24];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "016" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 26 (ungraded class joken-701) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[25];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "701" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 27 (ungraded class joken-703) before the legacy 703 rule", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[26];
   const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
 
   setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "703" }]);
@@ -717,6 +1327,23 @@ test("expectedModelVersion resolves rule 1 (kyoso_joken_code=703) to the model_v
   await isFocusedFullPredictionComplete({
     category: "jra",
     env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 28 (ungraded class joken-999) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[27];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "999" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
     keibajoCode: "05",
     raceBango: "01",
     runYmd: "20260613",
@@ -724,13 +1351,36 @@ test("expectedModelVersion resolves rule 1 (kyoso_joken_code=703) to the model_v
   expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
 });
 
-test("expectedModelVersion resolves rule 2 (dirt + f_le10 + kyoso_joken_code=005) to the model_version cell_routing.json declares for it", async () => {
+test("expectedModelVersion resolves rule 29 (graded kyoso_joken_code=703) from cell_routing.json", async () => {
   const containerConfig = readContainerCellRoutingConfig();
-  const rule = containerConfig.jra.rules[1];
+  const rule = containerConfig.jra.rules[28];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], grade_code: "C", kyoso_joken_code: "703" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 30 (graded dirt small-field 005) from cell_routing.json", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[29];
   const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
 
   setCatalogRows([
-    { ...buildCatalogRows(1)[0], kyoso_joken_code: "005", shusso_tosu: 8, track_code: "2A" },
+    {
+      ...buildCatalogRows(1)[0],
+      grade_code: "C",
+      kyoso_joken_code: "005",
+      shusso_tosu: 8,
+      track_code: "2A",
+    },
   ]);
   queryMock.mockResolvedValue([{ actual_rows: 1 }]);
   await isFocusedFullPredictionComplete({
@@ -743,9 +1393,9 @@ test("expectedModelVersion resolves rule 2 (dirt + f_le10 + kyoso_joken_code=005
   expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
 });
 
-test("expectedModelVersion resolves rule 3 (venue=02) to the model_version cell_routing.json declares for it", async () => {
+test("expectedModelVersion resolves rule 31 (venue=02 fallback) from cell_routing.json", async () => {
   const containerConfig = readContainerCellRoutingConfig();
-  const rule = containerConfig.jra.rules[2];
+  const rule = containerConfig.jra.rules[30];
   const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
 
   setCatalogRows(buildCatalogRows(11));

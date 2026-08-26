@@ -47,7 +47,8 @@ export type DayBasePickupOutcome =
   | "landed"
   | "missing"
   | "rejected"
-  | "stale";
+  | "stale"
+  | "transient-error";
 
 const PREWARM_CACHE_PATH: string = "/prewarm-day-base-cache";
 const PREDICT_HOST: string = "http://do";
@@ -213,7 +214,13 @@ const pickUpPrewarmDayBaseFromDo = async (
     env,
     debug === true,
   );
-  await materializeDayBasePerRaceCache({ category, env, runYmd });
+  const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+  if (materialized.status !== "materialized") {
+    console.warn(
+      `[day-base-prewarm-pickup] per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,
+    );
+    return "transient-error";
+  }
   return "landed";
 };
 
@@ -221,9 +228,12 @@ export const pickUpPrewarmDayBaseWithOutcome = async (
   params: PrewarmCachePickupParams,
 ): Promise<DayBasePickupOutcome> => {
   const { env, category, runYmd } = params;
-  const tryDoNames = async (doNames: readonly string[]): Promise<DayBasePickupOutcome> => {
+  const tryDoNames = async (
+    doNames: readonly string[],
+    hadError: boolean,
+  ): Promise<DayBasePickupOutcome> => {
     const [doName, ...rest] = doNames;
-    if (doName === undefined) return "missing";
+    if (doName === undefined) return hadError ? "transient-error" : "missing";
     try {
       const outcome = await pickUpPrewarmDayBaseFromDo(params, doName);
       if (outcome !== "missing") return outcome;
@@ -231,10 +241,11 @@ export const pickUpPrewarmDayBaseWithOutcome = async (
       console.warn(
         `[day-base-prewarm-pickup] failed category=${category} runYmd=${runYmd} doName=${doName}: ${String(err)}`,
       );
+      return tryDoNames(rest, true);
     }
-    return tryDoNames(rest);
+    return tryDoNames(rest, hadError);
   };
-  return tryDoNames(listDayBasePickupDoNames({ category, env }));
+  return tryDoNames(listDayBasePickupDoNames({ category, env }), false);
 };
 
 export const pickUpPrewarmDayBase = async (params: PrewarmCachePickupParams): Promise<boolean> =>

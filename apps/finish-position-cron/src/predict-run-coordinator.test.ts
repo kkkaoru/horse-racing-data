@@ -1110,6 +1110,495 @@ test("claimContainerSlot stores the first unique DO lease", async () => {
   vi.useRealTimers();
 });
 
+test("day-base generation fence preempts a later date and rejects its redelivery", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+        workKey: "day-base:20260827:nar",
+      },
+    ],
+  });
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260827", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({
+    preemptedWorkKey: "day-base:20260827:nar",
+    proceed: false,
+    state: "preempting",
+  });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "pickup",
+      runYmd: "20260827",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260825", updatedAt: 20_000 },
+  });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+        workKey: "day-base:20260827:nar",
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("day-base generation fence activates the earliest requested date without a lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(25_000);
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260827", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "pickup",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      force: true,
+      phase: "start",
+      runYmd: "20260826",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260826", updatedAt: 25_000 },
+  });
+  vi.useRealTimers();
+});
+
+test("an abandoned day-base reservation expires when it has no live lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(200_000);
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260827",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260827", updatedAt: 200_000 },
+  });
+  vi.useRealTimers();
+});
+
+test("day-base generation fence keeps duplicate starts busy and clears with its owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(30_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 30_000,
+        workKey: "day-base-stale:20260825:nar",
+      },
+    ],
+  });
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260825", updatedAt: 20_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "pickup",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+
+  await coordinator.clearContainerSlot({
+    acceptableWorkKeys: ["day-base:20260825:nar", "day-base-stale:20260825:nar"],
+    doName: "predict-nar",
+    workKey: "day-base:20260825:nar",
+  });
+
+  expect(storageMap.has("day-base-generations")).toBe(false);
+  expect(storageMap.get("container-slots")).toStrictEqual({ leases: [] });
+  vi.useRealTimers();
+});
+
+test("forced same-date day-base recovery stops the owner before a replacement build", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: Date.now(),
+        workKey: "day-base:20260825:jra",
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "jra",
+      force: true,
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({
+    preemptedWorkKey: "day-base:20260825:jra",
+    proceed: false,
+    state: "preempting",
+  });
+});
+
+test("generation-scoped day-base ownership fences delayed force, pickup, and legacy stop", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(40_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 40_000,
+        workKey: "day-base:20260825:jra:generation-a",
+      },
+    ],
+  });
+  storageMap.set("day-base-generations", {
+    jra: { generationId: "generation-a", runYmd: "20260825", updatedAt: 30_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "jra",
+      force: true,
+      generationId: "generation-b",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({
+    preemptedWorkKey: "day-base:20260825:jra:generation-a",
+    proceed: false,
+    state: "preempting",
+  });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    jra: {
+      generationId: "generation-b",
+      retiredGenerationIds: ["generation-a"],
+      runYmd: "20260825",
+      updatedAt: 40_000,
+    },
+  });
+
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 40_000,
+        workKey: "day-base:20260825:jra:generation-b",
+      },
+    ],
+  });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "jra",
+      force: true,
+      generationId: "generation-a",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "jra",
+      generationId: "generation-a",
+      phase: "pickup",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra",
+      requestedAt: new Date().toISOString(),
+      workKey: "day-base:20260825:jra",
+    }),
+  ).resolves.toBe(false);
+
+  await coordinator.releaseContainerSlot({
+    doName: "predict-jra",
+    kind: "day-base",
+    workKey: "day-base:20260825:jra:generation-b",
+  });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    jra: {
+      completed: true,
+      generationId: "generation-b",
+      retiredGenerationIds: ["generation-a"],
+      runYmd: "20260825",
+      updatedAt: 40_000,
+    },
+  });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "jra",
+      generationId: "generation-b",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  vi.useRealTimers();
+});
+
+test("generation-scoped day-base claims are idempotent across start and pickup deliveries", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(50_000);
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-a",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 50_000,
+        workKey: "day-base:20260825:nar:generation-a",
+      },
+    ],
+  });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-a",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-a",
+      phase: "pickup",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-b",
+      phase: "pickup",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  vi.useRealTimers();
+});
+
+test("a stale token reservation can advance while retired generations stay fenced", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(250_000);
+  storageMap.set("day-base-generations", {
+    nar: {
+      generationId: "generation-a",
+      retiredGenerationIds: ["generation-old"],
+      runYmd: "20260825",
+      updatedAt: 10_000,
+    },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-b",
+      phase: "start",
+      runYmd: "20260826",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: {
+      generationId: "generation-b",
+      retiredGenerationIds: ["generation-old", "generation-a"],
+      runYmd: "20260826",
+      updatedAt: 250_000,
+    },
+  });
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "generation-old",
+      phase: "start",
+      runYmd: "20260824",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  vi.useRealTimers();
+});
+
+test("release clears only the completed day-base generation", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: Date.now(),
+        workKey: "day-base:20260825:jra",
+      },
+    ],
+  });
+  storageMap.set("day-base-generations", {
+    jra: { runYmd: "20260825", updatedAt: 10_000 },
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await coordinator.releaseContainerSlot({
+    doName: "predict-jra",
+    kind: "day-base",
+    workKey: "day-base:20260825:jra",
+  });
+
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
+  });
+  expect(storageMap.get("container-slots")).toStrictEqual({ leases: [] });
+});
+
+test("a nonmatching clear preserves the live day-base generation fence", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+        workKey: "day-base-stale:20260825:nar",
+      },
+    ],
+  });
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await coordinator.clearContainerSlot({
+    doName: "predict-nar",
+    workKey: "day-base:20260825:nar",
+  });
+
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
+  });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: 20_000,
+        workKey: "day-base-stale:20260825:nar",
+      },
+    ],
+  });
+  vi.useRealTimers();
+});
+
+test("claim-day-base-generation endpoint serializes the coordinator result", async () => {
+  const coordinator = makeCoordinator();
+  const response = await coordinator.fetch(
+    new Request("http://do/claim-day-base-generation", {
+      body: JSON.stringify({ category: "ban-ei", phase: "start", runYmd: "20260825" }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({ proceed: true, state: "active" });
+});
+
 test("claimContainerSlot returns busy for a second rescore on the same DO", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(20_000);
@@ -1985,6 +2474,86 @@ test("an unscoped administrative stop cannot fence an active lease by default", 
   expect(storageMap.has("container-stop-fences")).toBe(false);
 });
 
+test("day-base cleanup cannot stop a DO while a focused-full watch owns it", async () => {
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: Date.now(),
+        workKey: "day-base:20260826:nar",
+      },
+    ],
+  });
+  storageMap.set("focused-full-active-watches", {
+    "watch-1": {
+      message: {
+        doName: "predict-nar",
+        workKey: "focused-full:20260826:nar:30:02",
+        watchId: "watch-1",
+      },
+    },
+    "watch-2": {
+      message: {
+        doName: "predict-nar",
+        workKey: "focused-full:20260826:nar:30:01",
+        watchId: "watch-2",
+      },
+    },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.checkContainerSlotStop({
+      acceptableWorkKeys: ["day-base:20260826:nar"],
+      doName: "predict-nar",
+      requestedAt: new Date().toISOString(),
+      workKey: "day-base:20260826:nar",
+    }),
+  ).resolves.toBe(false);
+  expect(storageMap.has("container-stop-fences")).toBe(false);
+
+  await expect(
+    coordinator.checkContainerSlotStop({
+      acceptableWorkKeys: ["focused-full:20260826:nar:30:02"],
+      doName: "predict-nar",
+      requestedAt: new Date().toISOString(),
+      workKey: "focused-full:20260826:nar:30:02",
+    }),
+  ).resolves.toBe(false);
+  storageMap.set("focused-full-active-watches", {
+    "watch-1": {
+      message: {
+        doName: "predict-nar",
+        workKey: "focused-full:20260826:nar:30:02",
+        watchId: "watch-1",
+      },
+    },
+  });
+
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "nar",
+      doName: "predict-nar",
+      kind: "focused-full",
+      staleAfterMs: 1_860_000,
+      workKey: "focused-full:20260826:nar:30:02",
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+
+  await expect(
+    coordinator.checkContainerSlotStop({
+      acceptableWorkKeys: ["focused-full:20260826:nar:30:02"],
+      doName: "predict-nar",
+      requestedAt: new Date().toISOString(),
+      workKey: "focused-full:20260826:nar:30:02",
+    }),
+  ).resolves.toBe(true);
+});
+
 test("a nonmatching clear preserves another stop fence", async () => {
   storageMap.set("container-stop-fences", {
     "predict-jra-1": { requestedAtMs: 1, workKey: "work-2" },
@@ -2682,6 +3251,105 @@ test("claimFocusedFullRace keeps a later delivery queued behind an earlier fresh
   vi.useRealTimers();
 });
 
+test("claimFocusedFullRace force takes over a stale earlier lane reservation", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    doName: "predict-jra-2",
+    priorityMs: 100,
+    timestamp: 9_500,
+  });
+  storageMap.set("focused-full-lane:predict-jra-2", {
+    activeRaceKey: "focused-full:20260823:jra:04:01",
+    startedAt: 9_500,
+    waiters: ["focused-full:20260823:jra:04:10"],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      force: true,
+      keibajoCode: "04",
+      raceBango: "10",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "forced" });
+  expect(storageMap.get("focused-full:20260823:jra:04:01")).toMatchObject({
+    status: "error",
+  });
+  expect(storageMap.get("focused-full-lane:predict-jra-2")).toMatchObject({
+    activeRaceKey: "focused-full:20260823:jra:04:10",
+    waiters: [],
+  });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace force preserves a terminal earlier reservation", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20260823:jra:04:01", {
+    status: "success",
+    timestamp: 9_500,
+  });
+  storageMap.set("focused-full-lane:predict-jra-2", {
+    activeRaceKey: "focused-full:20260823:jra:04:01",
+    startedAt: 9_500,
+    waiters: [],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      force: true,
+      keibajoCode: "04",
+      raceBango: "10",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "forced" });
+  expect(storageMap.get("focused-full:20260823:jra:04:01")).toMatchObject({
+    status: "success",
+  });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace force does not duplicate an active same race", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  const raceKey = "focused-full:20260823:jra:04:10";
+  storageMap.set(raceKey, {
+    doName: "predict-jra-2",
+    priorityMs: 200,
+    status: "started",
+    timestamp: 9_500,
+  });
+  storageMap.set("focused-full-lane:predict-jra-2", {
+    activeRaceKey: raceKey,
+    startedAt: 9_500,
+    waiters: [],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "jra",
+      doName: "predict-jra-2",
+      force: true,
+      keibajoCode: "04",
+      raceBango: "10",
+      runYmd: "20260823",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "resumed" });
+  expect(storageMap.get(raceKey)).toMatchObject({ status: "started", timestamp: 9_500 });
+  vi.useRealTimers();
+});
+
 test("claimFocusedFullRace ignores an expired earlier reservation", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(10_000);
@@ -3152,6 +3820,38 @@ test("claimFocusedFullTerminalWatch claims a new watch", async () => {
     status: "processing",
     timestamp: 2_000,
   });
+  vi.useRealTimers();
+});
+
+test("forced focused-full recovery does not duplicate a fresh lane owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  const raceKey = "focused-full:20260826:nar:30:02";
+  storageMap.set(raceKey, {
+    doName: "predict-nar",
+    status: "started",
+    timestamp: 10_000,
+  });
+  storageMap.set("focused-full-lane:predict-nar", {
+    activeRaceKey: raceKey,
+    startedAt: 10_000,
+    waiters: [],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "nar",
+      doName: "predict-nar",
+      force: true,
+      keibajoCode: "30",
+      raceBango: "02",
+      runYmd: "20260826",
+      staleAfterMs: 1_860_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "resumed" });
+  expect(storageMap.get(raceKey)).toMatchObject({ status: "started", timestamp: 10_000 });
+  expect(storageMap.get("focused-full-lane:predict-nar")).toMatchObject({ startedAt: 10_000 });
   vi.useRealTimers();
 });
 

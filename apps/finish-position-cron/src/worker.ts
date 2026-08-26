@@ -33,8 +33,9 @@ import {
   isContainerControlQueueMessage,
 } from "./container-control";
 import { claimRescoreRace, completeFocusedFullRace, releaseRescoreRaceClaim } from "./do-state";
+import { recordPreweightGenerationStarted } from "./delivery-lifecycle";
 import { warmNeon } from "./neon-warm";
-import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
+import { resolvePredictDoName } from "./predict-do-shard";
 import {
   handlePredictDoStatePurge,
   PREDICT_DO_INTERNAL_PURGE_PATH,
@@ -47,8 +48,10 @@ import {
 } from "./per-race-scope-guard";
 import { getPredictionReadiness } from "./prediction-readiness";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
+import type { PredictionContainerRole } from "./race-container-routing";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
+import { WATCH_REQUEST_HEADER } from "./focused-full-watch";
 import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
 import {
   runRunningStyleKickMorningGap,
@@ -65,6 +68,7 @@ import type {
   PredictCategory,
   PredictMode,
   PredictQueueMessage,
+  FocusedFullWatchPayload,
   RunDates,
 } from "./types";
 
@@ -100,7 +104,9 @@ const HTTP_SERVICE_UNAVAILABLE = 503;
 const ADMIN_STOP_CONTAINERS_PATH = "/api/admin/stop-predict-containers";
 const ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH = "/api/admin/complete-focused-full-race";
 const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
+const ADMIN_RUN_FOCUSED_FULL_RACE_DIRECT_PATH = "/api/admin/run-focused-full-race-direct";
 const ADMIN_PREWARM_DAY_BASE_PATH = "/api/admin/prewarm-day-base";
+const ADMIN_PREWARM_DAY_BASE_STATUS_PATH = "/api/admin/prewarm-day-base-status";
 const ADMIN_PICKUP_DAY_BASE_PATH = "/api/admin/pickup-day-base";
 const ADMIN_MATERIALIZE_DAY_BASE_PATH = "/api/admin/materialize-day-base-races";
 const ADMIN_PURGE_UNUSED_PREDICT_DO_STATE_PATH = "/api/admin/purge-unused-predict-do-state";
@@ -129,6 +135,11 @@ interface RaceScopedPredictRequest {
   raceBango: string;
   runYmd: string;
   raceStartAtJst?: string;
+}
+
+interface AdminContainerStopTarget {
+  name: string;
+  role: PredictionContainerRole;
 }
 
 interface InternalRescoreRaceRequest extends RaceScopedPredictRequest {
@@ -295,8 +306,14 @@ export const isAdminCompleteFocusedFullRaceRequest = (method: string, pathname: 
 export const isAdminRunFocusedFullRaceRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_RUN_FOCUSED_FULL_RACE_PATH;
 
+export const isAdminRunFocusedFullRaceDirectRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_RUN_FOCUSED_FULL_RACE_DIRECT_PATH;
+
 export const isAdminPrewarmDayBaseRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PREWARM_DAY_BASE_PATH;
+
+export const isAdminPrewarmDayBaseStatusRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_MONITOR_METHOD && pathname === ADMIN_PREWARM_DAY_BASE_STATUS_PATH;
 
 export const isAdminPickupDayBaseRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_PICKUP_DAY_BASE_PATH;
@@ -556,6 +573,13 @@ const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Re
     return Response.json({ claimed: false, ok: true }, { status: HTTP_OK });
   }
   try {
+    // Warm the Neon compute endpoint immediately before the weight-rescore
+    // message reaches the Container. This is best-effort and fail-closed
+    // inside warmNeon, so a transient warm failure never suppresses a valid
+    // prediction request.
+    if (env.NEON_DATABASE_URL !== undefined) {
+      await warmNeon(env.NEON_DATABASE_URL);
+    }
     await sendRescoreRaceMessage(env, { ...parsed, raceStartAtJst });
   } catch (error) {
     try {
@@ -580,17 +604,22 @@ const guardedInternalRescoreRace = async (request: Request, env: Env): Promise<R
   }
 };
 
-const parseStopContainerNames = (body: Record<string, unknown>): string[] | null => {
+const parseStopContainerTarget = (name: unknown): AdminContainerStopTarget | null => {
+  if (typeof name !== "string") return null;
+  if (isAllowedContainerDoName(name, "legacy")) return { name, role: "legacy" };
+  return isAllowedContainerDoName(name, "race-chain") ? { name, role: "race-chain" } : null;
+};
+
+const parseStopContainerTargets = (
+  body: Record<string, unknown>,
+): AdminContainerStopTarget[] | null => {
   const names = body.names;
   if (!Array.isArray(names)) return null;
   if (names.length === 0 || names.length > MAX_ADMIN_STOP_NAMES) return null;
-  const parsed = names.filter(
-    (name): name is string =>
-      typeof name === "string" &&
-      name.startsWith(PREDICT_DO_NAME_PREFIX) &&
-      isAllowedContainerDoName(name, "legacy"),
-  );
-  return parsed.length === names.length ? parsed : null;
+  const targets = names.map(parseStopContainerTarget);
+  return targets.every((target): target is AdminContainerStopTarget => target !== null)
+    ? targets
+    : null;
 };
 
 const parseStopContainerOverrideActive = (body: Record<string, unknown>): boolean | null => {
@@ -605,11 +634,12 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const body = await parseBody(request);
-  const names = parseStopContainerNames(body);
-  if (!names) {
+  const targets = parseStopContainerTargets(body);
+  if (!targets) {
     console.warn("[predict-worker] admin-stop invalid names");
     return Response.json({ error: "invalid names", ok: false }, { status: HTTP_BAD_REQUEST });
   }
+  const names = targets.map((target) => target.name);
   const overrideActive = parseStopContainerOverrideActive(body);
   if (overrideActive === null) {
     console.warn("[predict-worker] admin-stop invalid overrideActive");
@@ -630,11 +660,12 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
   const requestedAt = new Date().toISOString();
   const controlQueue = env.CONTAINER_CONTROL_QUEUE;
   await Promise.all(
-    names.map((name) =>
+    targets.map((target) =>
       controlQueue.send({
         ...(overrideActive ? { force: true } : {}),
-        name,
+        name: target.name,
         requestedAt,
+        role: target.role,
         type: "container-stop",
       } satisfies ContainerControlMessage),
     ),
@@ -713,6 +744,78 @@ const guardedAdminRunFocusedFullRace = async (request: Request, env: Env): Promi
   }
 };
 
+const handleAdminRunFocusedFullRaceDirect = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const parsed = parseRaceScopedPredictBody(await parseBody(request));
+  if (parsed === null)
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  const doName = resolvePredictDoName({
+    category: parsed.category,
+    env,
+    keibajoCode: parsed.keibajoCode,
+    raceBango: parsed.raceBango,
+  });
+  const body = {
+    category: parsed.category,
+    daysAhead: RESCORE_DAYS_AHEAD,
+    force: true,
+    keibajoCode: parsed.keibajoCode,
+    mode: DEFAULT_MODE,
+    raceBango: parsed.raceBango,
+    runDate: parsed.runYmd,
+    runDateIso: buildRunDateFromYmd(parsed.runYmd),
+    runYmd: parsed.runYmd,
+    skipDedup: true,
+    deliveryTrackingId: `preweight:${parsed.runYmd}:${parsed.category}:${parsed.keibajoCode}:${parsed.raceBango}`,
+  } satisfies PredictQueueMessage;
+  const workKey = `focused-full:${body.runYmd}:${body.category}:${body.keibajoCode}:${body.raceBango}:direct`;
+  const watchPayload = {
+    body,
+    doName,
+    role: "legacy",
+    watchId: `${workKey}:direct-${crypto.randomUUID()}`,
+    workKey,
+  } satisfies FocusedFullWatchPayload;
+  const searchParams = new URLSearchParams({
+    category: body.category,
+    daysAhead: String(body.daysAhead),
+    force: "true",
+    keibajoCode: body.keibajoCode,
+    mode: body.mode,
+    raceBango: body.raceBango,
+    runDate: body.runDate,
+    runYmd: body.runYmd,
+  });
+  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
+  await recordPreweightGenerationStarted(env, body, new Date());
+  const response = await env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(
+    new Request(`http://predict-container-do/predict?${searchParams.toString()}`, {
+      headers: { [WATCH_REQUEST_HEADER]: JSON.stringify(watchPayload) },
+    }),
+  );
+  const responseBody = response.ok ? undefined : await response.text();
+  return Response.json(
+    { error: responseBody, ok: response.ok, status: response.status, queued: true },
+    { status: HTTP_ACCEPTED },
+  );
+};
+
+const guardedAdminRunFocusedFullRaceDirect = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  try {
+    return await handleAdminRunFocusedFullRaceDirect(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
 const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     console.warn("[predict-worker] admin-prewarm-day-base unauthorized");
@@ -738,6 +841,7 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
       category: parsed.category,
       daysAhead,
       env,
+      generationId: crypto.randomUUID(),
       ...(parsed.force === true ? { force: true } : {}),
       ...(parsed.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
       runYmd: parsed.runYmd,
@@ -774,6 +878,34 @@ const guardedAdminPrewarmDayBase = async (request: Request, env: Env): Promise<R
     return await handleAdminPrewarmDayBase(request, env);
   } catch (error) {
     return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
+const handleAdminPrewarmDayBaseStatus = async (request: Request, env: Env): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const searchParams = new URL(request.url).searchParams;
+  const category = searchParams.get(CATEGORY_FIELD);
+  const runYmd = searchParams.get(RUN_YMD_FIELD);
+  if (!isValidRescoreCategory(category) || !isValidRunYmd(runYmd)) {
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const doName = resolvePredictDoName({ category, env });
+  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
+  const statusSearchParams = new URLSearchParams({ category, runDate: runYmd });
+  return env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(
+    new Request(
+      `http://predict-container-do/prewarm-day-base-status?${statusSearchParams.toString()}`,
+    ),
+  );
+};
+
+const guardedAdminPrewarmDayBaseStatus = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleAdminPrewarmDayBaseStatus(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_SERVICE_UNAVAILABLE });
   }
 };
 
@@ -914,7 +1046,12 @@ const handlePredictionReadiness = async (request: Request, env: Env): Promise<Re
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const now = new Date();
-  const readiness = await getPredictionReadiness({ env, now, runYmd: getRunYmdJst(now) });
+  const requestedRunYmd = new URL(request.url).searchParams.get(RUN_YMD_FIELD);
+  const runYmd = requestedRunYmd === null ? getRunYmdJst(now) : requestedRunYmd;
+  if (!isValidRunYmd(runYmd)) {
+    return Response.json({ error: "invalid runYmd", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const readiness = await getPredictionReadiness({ env, now, runYmd });
   return Response.json(readiness);
 };
 
@@ -945,8 +1082,14 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   if (isAdminRunFocusedFullRaceRequest(request.method, url.pathname)) {
     return guardedAdminRunFocusedFullRace(request, env);
   }
+  if (isAdminRunFocusedFullRaceDirectRequest(request.method, url.pathname)) {
+    return guardedAdminRunFocusedFullRaceDirect(request, env);
+  }
   if (isAdminPrewarmDayBaseRequest(request.method, url.pathname)) {
     return guardedAdminPrewarmDayBase(request, env);
+  }
+  if (isAdminPrewarmDayBaseStatusRequest(request.method, url.pathname)) {
+    return guardedAdminPrewarmDayBaseStatus(request, env);
   }
   if (isAdminPickupDayBaseRequest(request.method, url.pathname)) {
     return guardedAdminPickupDayBase(request, env);

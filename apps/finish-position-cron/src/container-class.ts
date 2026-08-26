@@ -5,12 +5,17 @@
 // container alive long enough for Neon completion polling to observe the write.
 // container-class.ts is excluded from the coverage gate (see vitest.config.ts).
 //
-// SLEEP_AFTER is "20m": first-day Ban-ei day-base + race-chain can take
-// 10–15m after a detached "accepted". 5m expired the instance mid-build
-// (Activity expired). 20m is well below the old 90m slot hold.
+// Detached day-base builds must survive the complete DAY_CHAIN, not only the
+// RS foundation step.  In production the foundation can land near the
+// twenty-minute boundary while the remaining layers are still running; when
+// the activity lease expired at 20m the Container disappeared with no final
+// feat-daybase object, causing repeated foundation-only pickups. 45m is a
+// bounded upper limit for the build deadline. Successful paths hand off an
+// explicit destroy through container-cleanup.ts, so this does not turn an
+// otherwise idle instance into a permanent charge.
 
 import { Container } from "@cloudflare/containers";
-import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
+import { proxyDayBaseParquetFromNdjson, proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import {
   createFocusedFullWatchTickMessage,
   FOCUSED_FULL_WATCH_POLL_SECONDS,
@@ -31,6 +36,7 @@ type PredictContainerEnvironment = Pick<
   | "DAY_BASE_SPLIT_ENABLED"
   | "NAR_TRANSFORMER_BLEND_ENABLED"
   | "NEON_DATABASE_URL"
+  | "PIPELINE_TOTAL_TIMEOUT_SECONDS"
   | "PREDICT_DAYS_AHEAD"
   | "R2_ACCESS_KEY_ID"
   | "R2_ACCOUNT_ID"
@@ -50,16 +56,42 @@ export interface BuildPredictContainerEnvVarsOptions {
 }
 
 const DEFAULT_PORT = 8080;
+const CONTAINER_INSTANCE_GET_TIMEOUT_MS = 20_000;
+const CONTAINER_PORT_READY_TIMEOUT_MS = 60_000;
+const CONTAINER_DELIVERY_HARD_TIMEOUT_MS = 65_000;
+const CONTAINER_DESTROY_HARD_TIMEOUT_MS = 15_000;
+const CONTAINER_STATUS_HARD_TIMEOUT_MS = 5_000;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
-const SLEEP_AFTER = "20m";
+const SLEEP_AFTER = "45m";
 const MODELS_DIR_DEFAULT = "/models";
+const PIPELINE_TOTAL_TIMEOUT_SECONDS_DEFAULT = "1800";
 const EMPTY_ENV_VALUE = "";
 const EMPTY_ENV_VARS: Readonly<Record<string, string>> = Object.freeze({});
 const ADMIN_STOP_PATH = "/__admin/stop-container";
+const PREWARM_DAY_BASE_PATH = "/prewarm-day-base";
+const PREWARM_DAY_BASE_STATUS_PATH = "/prewarm-day-base-status";
 const AUTH_HEADER = "authorization";
 const BEARER_PREFIX = "Bearer ";
 const LEGACY_CONTAINER_ROLE: PredictContainerRole = "legacy";
 const RACE_CHAIN_CONTAINER_ROLE: PredictContainerRole = "race-chain";
+
+const withHardTimeout = async <T>(operation: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(`Container delivery readiness exceeded ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+};
+
+const withReadOnlyStatusTimeout = async <T>(operation: Promise<T>): Promise<T> =>
+  withHardTimeout(operation, CONTAINER_STATUS_HARD_TIMEOUT_MS);
 
 const mergePredictContainerEnvVars = (
   { env, inheritedEnvVars }: BuildPredictContainerEnvVarsOptions,
@@ -68,6 +100,8 @@ const mergePredictContainerEnvVars = (
   ...inheritedEnvVars,
   MODELS_DIR: MODELS_DIR_DEFAULT,
   NEON_DATABASE_URL: env.NEON_DATABASE_URL,
+  PIPELINE_TOTAL_TIMEOUT_SECONDS:
+    env.PIPELINE_TOTAL_TIMEOUT_SECONDS ?? PIPELINE_TOTAL_TIMEOUT_SECONDS_DEFAULT,
   PREDICT_DAYS_AHEAD: env.PREDICT_DAYS_AHEAD,
   PREDICT_SERVE_MODE: "http",
   NAR_TRANSFORMER_BLEND_ENABLED: env.NAR_TRANSFORMER_BLEND_ENABLED ?? EMPTY_ENV_VALUE,
@@ -132,6 +166,19 @@ const parseWatchPayload = (
   }
 };
 
+const buildMissingPrewarmStatusResponse = (url: URL): Response => {
+  const category = url.searchParams.get("category") ?? "";
+  const runDate = url.searchParams.get("runDate") ?? "";
+  return Response.json({
+    error: null,
+    finishedAtMs: null,
+    flightKey: `${category}:${runDate}`,
+    generation: 0,
+    startedAtMs: null,
+    status: "missing",
+  });
+};
+
 export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
   override sleepAfter = SLEEP_AFTER;
@@ -170,6 +217,26 @@ export class FinishPositionPredictContainer extends Container<Env> {
       console.log(`[predict-container-do] admin-purge completed ${requestSummary}`);
       return Response.json({ ok: true, purged: true });
     }
+    if (url.pathname === PREWARM_DAY_BASE_STATUS_PATH) {
+      const runtimeContainer = this.ctx.container;
+      if (runtimeContainer?.running !== true) return buildMissingPrewarmStatusResponse(url);
+      try {
+        // This endpoint is observational. Calling the SDK's containerFetch or
+        // startAndWaitForPorts here would start a stopped standard-4 merely to
+        // report "missing". The runtime handle's running flag is the source of
+        // truth even when the SDK's persisted lifecycle state is stale; when
+        // it is live, address that existing process directly without renewing
+        // the activity lease.
+        const statusRequest = new Request(request, {
+          signal: AbortSignal.timeout(CONTAINER_STATUS_HARD_TIMEOUT_MS),
+        });
+        return await withReadOnlyStatusTimeout(
+          runtimeContainer.getTcpPort(DEFAULT_PORT).fetch(statusRequest),
+        );
+      } catch (error) {
+        return Response.json({ error: String(error), status: "unavailable" }, { status: 503 });
+      }
+    }
     const watchEnabled =
       this.env.FOCUSED_FULL_WATCH_ENABLED === "1" &&
       this.env.FOCUSED_FULL_COMPLETION_QUEUE !== undefined &&
@@ -180,24 +247,56 @@ export class FinishPositionPredictContainer extends Container<Env> {
     const startedAt = Date.now();
     const debug = isDebugRequest(url);
     try {
-      if (debug) console.log(`[predict-container-do] fetch start ${requestSummary}`);
-      const response = await this.containerFetch(request);
-      if (debug) {
-        console.log(
-          `[predict-container-do] fetch response ${requestSummary} status=${response.status} durationMs=${
-            Date.now() - startedAt
-          }`,
-        );
-      }
+      // `destroy()` does not synchronously rewrite the SDK's persisted
+      // `healthy` state. A rapid same-DO restart can therefore observe
+      // `container.running=true` plus stale `healthy` and make
+      // `containerFetch()` skip its readiness check. The ensuing tcpPort.fetch
+      // is unbounded and was observed holding a standard-4 for 32 minutes
+      // without delivering the request. Force a bounded port check on every
+      // application request; for an already healthy placement this is one
+      // cheap ping, while a replacement cannot receive work before :8080 is
+      // actually listening.
+      console.log(`[predict-container-do] delivery start ${requestSummary}`);
+      await withHardTimeout(
+        this.startAndWaitForPorts([DEFAULT_PORT], {
+          abort: AbortSignal.timeout(CONTAINER_PORT_READY_TIMEOUT_MS),
+          instanceGetTimeoutMS: CONTAINER_INSTANCE_GET_TIMEOUT_MS,
+          portReadyTimeoutMS: CONTAINER_PORT_READY_TIMEOUT_MS,
+        }),
+        CONTAINER_DELIVERY_HARD_TIMEOUT_MS,
+      );
+      console.log(
+        `[predict-container-do] delivery port-ready ${requestSummary} durationMs=${
+          Date.now() - startedAt
+        }`,
+      );
+      const response = await withHardTimeout(
+        this.containerFetch(request),
+        CONTAINER_DELIVERY_HARD_TIMEOUT_MS,
+      );
+      console.log(
+        `[predict-container-do] delivery headers ${requestSummary} status=${response.status} durationMs=${
+          Date.now() - startedAt
+        }`,
+      );
       const accepted =
         watchPayload === undefined ? false : await hasAcceptedResult(response.clone());
-      const proxied = proxyParquetFromNdjson(
-        response,
-        this.env,
-        this.ctx.waitUntil.bind(this.ctx),
-        this.renewActivityTimeout.bind(this),
-        debug,
-      );
+      const proxied =
+        url.pathname === PREWARM_DAY_BASE_PATH
+          ? proxyDayBaseParquetFromNdjson({
+              debug,
+              env: this.env,
+              renewActivityTimeout: this.renewActivityTimeout.bind(this),
+              response,
+              waitUntil: this.ctx.waitUntil.bind(this.ctx),
+            })
+          : proxyParquetFromNdjson(
+              response,
+              this.env,
+              this.ctx.waitUntil.bind(this.ctx),
+              this.renewActivityTimeout.bind(this),
+              debug,
+            );
       if (!accepted || watchPayload === undefined) return proxied;
       await sendFocusedFullWatchMessageDurably(
         this.env,
@@ -212,6 +311,15 @@ export class FinishPositionPredictContainer extends Container<Env> {
         `[predict-container-do] fetch failed ${requestSummary} durationMs=${
           Date.now() - startedAt
         }: ${String(err)}`,
+      );
+      await withHardTimeout(this.destroy(), CONTAINER_DESTROY_HARD_TIMEOUT_MS).catch(
+        (destroyError: unknown) => {
+          console.error(
+            `[predict-container-do] failed-delivery destroy failed ${requestSummary}: ${String(
+              destroyError,
+            )}`,
+          );
+        },
       );
       return Response.json(
         { error: "Container start failed", detail: String(err) },

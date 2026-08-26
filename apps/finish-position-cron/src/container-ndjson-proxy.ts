@@ -30,10 +30,35 @@ interface ParquetProxyEntry {
   customMetadata?: Record<string, string>;
 }
 
+interface ParquetPutContext {
+  debug: boolean;
+  env: R2ProxyEnv;
+  logCommit: boolean;
+}
+
+interface StrictDayBaseProxyOptions {
+  debug?: boolean;
+  env: R2ProxyEnv;
+  renewActivityTimeout?: RenewActivityTimeout;
+  response: Response;
+  waitUntil?: WaitUntil;
+}
+
+interface ProxyingStreamOptions {
+  body: ReadableStream<Uint8Array>;
+  debug: boolean;
+  env: R2ProxyEnv;
+  renewActivityTimeout: RenewActivityTimeout | undefined;
+  strictResultProxy: boolean;
+  waitUntil: WaitUntil | undefined;
+}
+
 interface LastLineTracker {
   acceptChunk(chunk: Uint8Array): void;
   finish(): string | undefined;
 }
+
+type LineObserver = (line: string) => void;
 
 const logLabel = (kind: ParquetProxyKind): string =>
   kind === SINGLE_PARQUET_KIND ? "R2 proxy" : "R2 per-race proxy";
@@ -60,12 +85,29 @@ const buildR2PutOptions = (customMetadata: Record<string, string> | undefined): 
 
 const putParquetToR2 = async (
   entry: ParquetProxyEntry,
-  env: R2ProxyEnv,
-  debug: boolean,
+  context: ParquetPutContext,
 ): Promise<void> => {
   const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
-  await env.FEATURES_CACHE.put(entry.key, bytes.buffer, buildR2PutOptions(entry.customMetadata));
-  if (debug) {
+  const startedAt = Date.now();
+  try {
+    await context.env.FEATURES_CACHE.put(
+      entry.key,
+      bytes.buffer,
+      buildR2PutOptions(entry.customMetadata),
+    );
+  } catch (error) {
+    if (context.logCommit) {
+      console.error(
+        `[daybase-r2-commit] failed key=${entry.key} durationMs=${Date.now() - startedAt} error=${String(error)}`,
+      );
+    }
+    throw error;
+  }
+  if (context.logCommit) {
+    console.log(
+      `[daybase-r2-commit] key=${entry.key} bytes=${bytes.length} durationMs=${Date.now() - startedAt}`,
+    );
+  } else if (context.debug) {
     console.log(
       `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
     );
@@ -103,7 +145,23 @@ export const proxyResultParquetsToR2 = async (
   debug: boolean,
 ): Promise<void> => {
   await Promise.all(
-    buildParquetProxyEntries(result).map((entry) => putParquetToR2(entry, env, debug)),
+    buildParquetProxyEntries(result).map((entry) =>
+      putParquetToR2(entry, { debug, env, logCommit: false }),
+    ),
+  );
+};
+
+const commitDayBaseResultParquetsToR2 = async (
+  result: PredictResultLine,
+  env: R2ProxyEnv,
+  debug: boolean,
+): Promise<void> => {
+  const startedAt = Date.now();
+  const entries = buildParquetProxyEntries(result);
+  console.log(`[daybase-r2-commit] terminal result received entries=${entries.length}`);
+  await Promise.all(entries.map((entry) => putParquetToR2(entry, { debug, env, logCommit: true })));
+  console.log(
+    `[daybase-r2-commit] terminal barrier complete entries=${entries.length} durationMs=${Date.now() - startedAt}`,
   );
 };
 
@@ -132,19 +190,36 @@ const proxyResultLineParquetsToR2 = async (
   }
 };
 
+const commitResultLineParquetsToR2 = async (
+  line: string,
+  env: R2ProxyEnv,
+  debug: boolean,
+): Promise<void> => {
+  let parsed: { type?: unknown };
+  try {
+    parsed = JSON.parse(line) as { type?: unknown };
+  } catch {
+    return;
+  }
+  if (parsed.type !== RESULT_LINE_TYPE) return;
+  await commitDayBaseResultParquetsToR2(parsed as PredictResultLine, env, debug);
+};
+
 const scheduleResultLineProxy = (
   line: string,
   env: R2ProxyEnv,
   waitUntil: WaitUntil | undefined,
   debug: boolean,
-): void => {
-  if (isIdleTerminalNdjson(line)) return;
-  const task = Promise.resolve().then(() => proxyResultLineParquetsToR2(line, env, debug));
-  if (waitUntil) {
-    waitUntil(task);
-    return;
-  }
-  void task;
+  strict: boolean,
+): Promise<void> | undefined => {
+  if (isIdleTerminalNdjson(line)) return undefined;
+  const task = Promise.resolve().then(() =>
+    strict
+      ? commitResultLineParquetsToR2(line, env, debug)
+      : proxyResultLineParquetsToR2(line, env, debug),
+  );
+  waitUntil?.(task);
+  return task;
 };
 
 const scheduleActivityRenew = (
@@ -160,14 +235,34 @@ const scheduleActivityRenew = (
   }
 };
 
-const createLastLineTracker = (): LastLineTracker => {
+const logDaybasePipelineTiming = (line: string): void => {
+  let parsed: { type?: unknown; stage?: unknown };
+  try {
+    parsed = JSON.parse(line) as { type?: unknown; stage?: unknown };
+  } catch {
+    return;
+  }
+  if (
+    parsed.type !== "progress" ||
+    typeof parsed.stage !== "string" ||
+    !parsed.stage.startsWith("step=daybase-")
+  ) {
+    return;
+  }
+  console.log(`[daybase-pipeline-timing] ${parsed.stage}`);
+};
+
+const createLastLineTracker = (observeLine?: LineObserver): LastLineTracker => {
   const decoder = new TextDecoder();
   let pendingLine = "";
   let lastNonEmptyLine: string | undefined;
 
   const rememberLine = (line: string): void => {
     const trimmed = line.trim();
-    if (trimmed.length > 0) lastNonEmptyLine = trimmed;
+    if (trimmed.length > 0) {
+      lastNonEmptyLine = trimmed;
+      observeLine?.(trimmed);
+    }
   };
 
   const acceptText = (text: string): void => {
@@ -190,25 +285,30 @@ const createLastLineTracker = (): LastLineTracker => {
   };
 };
 
-const createProxyingNdjsonStream = (
-  body: ReadableStream<Uint8Array>,
-  env: R2ProxyEnv,
-  waitUntil: WaitUntil | undefined,
-  renewActivityTimeout: RenewActivityTimeout | undefined,
-  debug: boolean,
-): ReadableStream<Uint8Array> => {
-  const tracker = createLastLineTracker();
+const createProxyingNdjsonStream = (options: ProxyingStreamOptions): ReadableStream<Uint8Array> => {
+  const tracker = createLastLineTracker(logDaybasePipelineTiming);
   const decoder = new TextDecoder();
-  return body.pipeThrough(
+  return options.body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller): void {
-        scheduleActivityRenew(renewActivityTimeout, decoder.decode(chunk, { stream: true }));
+        scheduleActivityRenew(
+          options.renewActivityTimeout,
+          decoder.decode(chunk, { stream: true }),
+        );
         controller.enqueue(chunk);
         tracker.acceptChunk(chunk);
       },
-      flush(): void {
+      async flush(): Promise<void> {
         const lastLine = tracker.finish();
-        if (lastLine !== undefined) scheduleResultLineProxy(lastLine, env, waitUntil, debug);
+        if (lastLine === undefined) return;
+        const task = scheduleResultLineProxy(
+          lastLine,
+          options.env,
+          options.waitUntil,
+          options.debug,
+          options.strictResultProxy,
+        );
+        if (options.strictResultProxy) await task;
       },
     }),
   );
@@ -225,11 +325,39 @@ export const proxyParquetFromNdjson = (
   const contentType = response.headers.get("Content-Type") ?? "";
   if (!contentType.includes(NDJSON_CONTENT_TYPE)) return response;
   return new Response(
-    createProxyingNdjsonStream(response.body, env, waitUntil, renewActivityTimeout, debug),
+    createProxyingNdjsonStream({
+      body: response.body,
+      debug,
+      env,
+      renewActivityTimeout,
+      strictResultProxy: false,
+      waitUntil,
+    }),
     {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText,
+    },
+  );
+};
+
+export const proxyDayBaseParquetFromNdjson = (options: StrictDayBaseProxyOptions): Response => {
+  if (!options.response.body) return options.response;
+  const contentType = options.response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes(NDJSON_CONTENT_TYPE)) return options.response;
+  return new Response(
+    createProxyingNdjsonStream({
+      body: options.response.body,
+      debug: options.debug ?? false,
+      env: options.env,
+      renewActivityTimeout: options.renewActivityTimeout,
+      strictResultProxy: true,
+      waitUntil: options.waitUntil,
+    }),
+    {
+      headers: options.response.headers,
+      status: options.response.status,
+      statusText: options.response.statusText,
     },
   );
 };

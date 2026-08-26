@@ -1,6 +1,7 @@
 // Run with bun. D1-reserved single-flight enqueue for canonical day-base repair.
 
 import { enqueueDayBasePrewarm } from "./day-base-prewarm";
+import { isOldDateRunYmd } from "./old-date-guard";
 import type { Env, PredictCategory } from "./types";
 
 interface DayBaseRepairParams {
@@ -11,7 +12,7 @@ interface DayBaseRepairParams {
   runYmd: string;
 }
 
-export type DayBaseRepairEnqueueOutcome = "already-enqueued" | "enqueued";
+export type DayBaseRepairEnqueueOutcome = "already-enqueued" | "enqueued" | "skipped-old-date";
 
 // Python's legal maximum layer/child chain is 35 minutes. A 45-minute lease
 // prevents overlap while leaving ten minutes for Queue/Worker handoff, then
@@ -38,6 +39,7 @@ export const enqueueDayBaseRepairOnce = async (
   params: DayBaseRepairParams,
 ): Promise<DayBaseRepairEnqueueOutcome> => {
   const now = params.now ?? new Date();
+  if (isOldDateRunYmd(params.runYmd, now)) return "skipped-old-date";
   const staleBefore = new Date(now.getTime() - DAY_BASE_REPAIR_LEASE_TTL_MS);
   const reserved = await params.env.FINISH_POSITION_CRON_DB.prepare(REPAIR_INSERT_SQL)
     .bind(params.category, params.runYmd, now.toISOString(), staleBefore.toISOString())
@@ -49,6 +51,7 @@ export const enqueueDayBaseRepairOnce = async (
       daysAhead: 0,
       env: params.env,
       ...(params.force === true ? { force: true } : {}),
+      requestedAt: now,
       runYmd: params.runYmd,
     });
     return "enqueued";
