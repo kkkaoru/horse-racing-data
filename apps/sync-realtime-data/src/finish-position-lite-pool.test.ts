@@ -75,10 +75,10 @@ it("reuses the existing write pool after the first Neon connection", async () =>
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionTimeoutMillis).toBe(15_000);
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(2);
   expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.query_timeout).toBe(90_000);
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.statement_timeout).toBe(90_000);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.query_timeout).toBe(30_000);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.statement_timeout).toBe(30_000);
 });
 
 it("uses DATABASE_URL_NEON for the write pool before Hyperdrive", async () => {
@@ -92,7 +92,7 @@ it("uses DATABASE_URL_NEON for the write pool before Hyperdrive", async () => {
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(2);
   expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 
@@ -107,7 +107,7 @@ it("prefers DATABASE_URL_NEON over NEON_DATABASE_URL for the write pool", async 
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(2);
   expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 
@@ -124,7 +124,7 @@ it("uses NEON_DATABASE_URL for the write pool when DATABASE_URL_NEON is absent",
   expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe(
     "postgres://secondary-writable-neon",
   );
-  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(2);
   expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 

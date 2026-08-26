@@ -73,6 +73,9 @@ test("buildDailyFeatureSelectSql includes both jra and nar selects for scope=all
   const sql = buildDailyFeatureSelectSql({ fromDate: "20260525", sourceScope: "all" });
   expect(sql).toMatch(/from jvd_se se/);
   expect(sql).toMatch(/from nvd_se se/);
+  expect(sql).toMatch(
+    "case when trim(time_sa) ~ '^[+-]?[0-9]+$' then nullif(trim(time_sa), '0000')::numeric / 10 else null end as time_sa",
+  );
 });
 
 test("buildDailyFeatureSelectSql excludes jra when scope=nar", () => {

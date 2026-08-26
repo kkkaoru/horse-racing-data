@@ -305,7 +305,7 @@ export const buildDailyFeatureSelectSql = (options: DailyFeatureBuildOptions): s
       case when tansho_ninkijun ~ '^[0-9]+$' then nullif(tansho_ninkijun, '00')::integer else null end as tansho_ninkijun,
       case when tansho_odds ~ '^[0-9]+$' then nullif(tansho_odds, '0000')::numeric / 10 else null end as tansho_odds,
       case when soha_time ~ '^[0-9]+$' then nullif(soha_time, '0000')::integer else null end as soha_time,
-      case when time_sa ~ '^[0-9]+$' then nullif(time_sa, '0000')::numeric / 10 else null end as time_sa,
+      case when trim(time_sa) ~ '^[+-]?[0-9]+$' then nullif(trim(time_sa), '0000')::numeric / 10 else null end as time_sa,
       case when kohan_3f ~ '^[0-9]+$' then nullif(kohan_3f, '000')::numeric / 10 else null end as kohan_3f,
       case
         when shusso_tosu ~ '^[0-9]+$' and corner_1 ~ '^[0-9]+$' then

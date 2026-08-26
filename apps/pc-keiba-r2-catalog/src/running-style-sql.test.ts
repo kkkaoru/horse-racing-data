@@ -27,9 +27,9 @@ it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs
   expect(sql).not.toMatch(/\busing\s*\(/i);
   expect(sql).toMatch("hc.source = t.source");
   expect(sql).not.toMatch(/nvd_(?:se|ra|um)/u);
-  expect(sql).toMatch("kaisai_nen >= '2016'");
-  expect(sql).toMatch("concat(kaisai_nen, kaisai_tsukihi) >= '20160715'");
-  expect(sql.match(/kaisai_nen = '2026'/gu)).toHaveLength(2);
+  expect(sql).toMatch("kaisai_nen = '2021' AND kaisai_tsukihi >= '0715'");
+  expect(sql).not.toMatch("concat(kaisai_nen, kaisai_tsukihi) >= '20210715'");
+  expect(sql.match(/kaisai_nen = '2026'/gu)).toHaveLength(4);
   expect(sql.match(/kaisai_tsukihi = '0715'/gu)).toHaveLength(2);
   expect(sql.match(/keibajo_code = '05'/gu)).toHaveLength(2);
   expect(sql.match(/race_bango = '01'/gu)).toHaveLength(2);
@@ -155,7 +155,29 @@ it("drops the target race filter and widens the cap when raceBango is omitted", 
   expect(venue).not.toMatch(/AND race_bango = /u);
   expect(venue.match(/keibajo_code = '05'/gu)).toHaveLength(2);
   expect(venue.match(/kaisai_tsukihi = '0715'/gu)).toHaveLength(2);
-  expect(venue).toMatch("concat(kaisai_nen, kaisai_tsukihi) >= '20160715'");
+  expect(venue).toMatch("kaisai_nen = '2021' AND kaisai_tsukihi >= '0715'");
+});
+
+it("uses narrow NAR history for regular races and wide history for graded races", () => {
+  const regular = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "43", raceBango: "01", source: "nar" },
+    false,
+  );
+  const graded = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "43", raceBango: "01", source: "nar", gradeCode: "A" },
+    false,
+  );
+  expect(regular).toMatch("kaisai_nen = '2023' AND kaisai_tsukihi >= '0715'");
+  expect(graded).toMatch("kaisai_nen = '2016' AND kaisai_tsukihi >= '0715'");
+  expect(
+    buildRunningStyleFeaturesQuery(
+      config(),
+      { date: "20260715", keibajoCode: "43", raceBango: "01", source: "nar", gradeCode: "E" },
+      false,
+    ),
+  ).toMatch("kaisai_nen = '2023' AND kaisai_tsukihi >= '0715'");
 });
 
 it("keeps the decade-wide history CTEs byte-identical between race and venue builds", () => {

@@ -86,6 +86,11 @@ const R2_SQL_EXPRESSION_TOO_DEEP_CODE = 40018;
 // with a much smaller final join, so only this code is eligible for the
 // bounded per-horse recovery below.
 const R2_SQL_EXECUTION_RESOURCE_CODE = 70200;
+// R2 SQL can surface a race-specific query-plan rejection as HTTP 422/60104.
+// The per-horse form has a materially smaller plan and is safe to retry.
+const R2_SQL_QUERY_PLAN_REJECTED_CODE = 60104;
+const RUNNING_STYLE_RACE_QUERY_TIMEOUT_MS = 30_000;
+const RUNNING_STYLE_HORSE_QUERY_TIMEOUT_MS = 60_000;
 const RUNNING_STYLE_UMABAN_BATCHES: ReadonlyArray<ReadonlyArray<number>> = [
   [1, 2, 3, 4, 5, 6],
   [7, 8, 9, 10, 11, 12],
@@ -182,6 +187,7 @@ const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   raceBango: parseCode(url, "raceBango"),
   source: parseRunningStyleSource(url),
   umaban: parseUmaban(url),
+  gradeCode: url.searchParams.get("gradeCode"),
 });
 
 const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
@@ -632,7 +638,8 @@ const isExpressionTooDeepError = (error: unknown): boolean =>
   error instanceof R2SqlQueryError && error.code === R2_SQL_EXPRESSION_TOO_DEEP_CODE;
 
 const isExecutionResourceError = (error: unknown): boolean =>
-  error instanceof R2SqlQueryError && error.code === R2_SQL_EXECUTION_RESOURCE_CODE;
+  error instanceof R2SqlQueryError &&
+  (error.code === R2_SQL_EXECUTION_RESOURCE_CODE || error.code === R2_SQL_QUERY_PLAN_REJECTED_CODE);
 
 const failureCode = (error: unknown): number | string | null => {
   if (!(error instanceof R2SqlQueryError)) return null;
@@ -671,12 +678,32 @@ const executeRunningStyleRaceQuery = async ({
   filters,
 }: RunningStyleQueryParams): Promise<Record<string, unknown>[]> => {
   try {
-    return await executeR2Sql(
-      env,
-      buildRunningStyleFeaturesQuery(env, filters, true),
-      dependencies.fetchImpl,
-    );
+    return await Promise.race([
+      executeR2Sql(env, buildRunningStyleFeaturesQuery(env, filters, true), dependencies.fetchImpl),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("running-style race query timed out")),
+          RUNNING_STYLE_RACE_QUERY_TIMEOUT_MS,
+        ),
+      ),
+    ]);
   } catch (error) {
+    if (
+      !isExpressionTooDeepError(error) &&
+      !isExecutionResourceError(error) &&
+      !(error instanceof Error && error.message === "running-style race query timed out")
+    ) {
+      throw error;
+    }
+    if (
+      canSplitRunningStyleRace(filters) &&
+      (isExecutionResourceError(error) ||
+        (error instanceof Error && error.message === "running-style race query timed out"))
+    ) {
+      return executeRunningStylePerHorse({ dependencies, env, filters }).then((rows) =>
+        [...rows].sort(compareByRaceThenUmaban),
+      );
+    }
     if (!isExpressionTooDeepError(error)) throw error;
     // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
     // the plan-depth protocol limit for a data volume as large as JRA's --
@@ -699,11 +726,20 @@ const executeRunningStyleHorseBatch = ({
 }: RunningStyleHorseBatchParams): Promise<Record<string, unknown>[][]> =>
   Promise.all(
     umabans.map((umaban) =>
-      executeR2Sql(
-        env,
-        buildRunningStyleFeaturesQuery(env, { ...filters, umaban }, false),
-        dependencies.fetchImpl,
-      ),
+      Promise.race([
+        executeR2Sql(
+          env,
+          buildRunningStyleFeaturesQuery(env, { ...filters, umaban }, false),
+          dependencies.fetchImpl,
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error(`running-style horse query timed out for umaban=${String(umaban)}`)),
+            RUNNING_STYLE_HORSE_QUERY_TIMEOUT_MS,
+          ),
+        ),
+      ]),
     ),
   );
 

@@ -11,10 +11,13 @@ export const RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1";
 const CATALOG_HTTP_5XX_PATTERN = /PC_KEIBA_R2_CATALOG \S+ failed with HTTP 5\d\d/;
 // A Catalog race-wide query normally finishes within the original 45s
 // budget. When R2 SQL returns execution-resource code 70200, the Catalog
-// Worker retries the exact race in three bounded per-horse batches. Keep the
-// client deadline above that recovery path so it cannot abort a healthy
-// split and unnecessarily start the slower PostgreSQL mirror fallback.
-const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 300_000;
+// Worker retries the exact race in bounded per-horse batches. Keep the client
+// deadline below the queue's 150s lease so an abandoned request is aborted
+// before the lease can be reclaimed and redelivered.
+// Keep the Catalog request plus the bounded PostgreSQL fallback below the
+// Queue lease so a slow R2 query cannot outlive the message and redeliver the
+// same inference while its first attempt is still running.
+const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 60_000;
 // Bounded slice of a failing Catalog response body appended to the thrown error so
 // the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
 // HTTP status. Never echoes request headers or env values.
@@ -188,6 +191,9 @@ export const fetchRunningStyleFeaturesFromCatalog = async (
   url.searchParams.set("source", catalogSource);
   url.searchParams.set("keibajoCode", keibajoCode);
   url.searchParams.set("raceBango", race.raceBango.padStart(2, "0"));
+  if (race.gradeCode !== undefined && race.gradeCode !== null) {
+    url.searchParams.set("gradeCode", race.gradeCode);
+  }
   const payload = await fetchCatalogJson(catalog, url, RUNNING_STYLE_CATALOG_TIMEOUT_MS);
   if (!isRecord(payload) || payload.generation !== RUNNING_STYLE_CATALOG_GENERATION) {
     throw new Error("catalog running-style response has invalid generation");
@@ -220,6 +226,7 @@ export interface CatalogRaceKeyRow {
   keibajo_code: string;
   race_bango: string;
   source: "jra" | "nar";
+  grade_code?: string | null;
 }
 
 const parseRaceKeyRow = (value: unknown): CatalogRaceKeyRow => {
@@ -228,12 +235,14 @@ const parseRaceKeyRow = (value: unknown): CatalogRaceKeyRow => {
   if (sourceValue !== "jra" && sourceValue !== "nar") {
     throw new Error("catalog race-key response has invalid source");
   }
+  const gradeCode = optionalString(value.grade_code, "grade_code");
   return {
     kaisai_nen: requireString(value.kaisai_nen, "kaisai_nen"),
     kaisai_tsukihi: requireString(value.kaisai_tsukihi, "kaisai_tsukihi"),
     keibajo_code: requireString(value.keibajo_code, "keibajo_code"),
     race_bango: requireString(value.race_bango, "race_bango"),
     source: sourceValue,
+    ...(gradeCode === null ? {} : { grade_code: gradeCode }),
   };
 };
 

@@ -86,6 +86,7 @@ vi.mock("./win5-cron", () => ({
 vi.mock("./running-style-cron", () => ({
   RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  resolveRunningStyleCronDates: vi.fn(() => ["20260512"]),
   formatTomorrowYYYYMMDDInJst: vi.fn(() => "20260513"),
   formatYYYYMMDDInJst: vi.fn(() => "20260512"),
   addDaysToYYYYMMDDInJst: vi.fn((d: string, days: number) =>
@@ -279,6 +280,32 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   );
   await flushWaits(waits);
   expect(runRunningStyleCronTick).toHaveBeenCalled();
+});
+
+it("scheduled inference cron fails closed before planning when feature warm is incomplete", async () => {
+  const { default: worker } = await import("./worker");
+  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260512",
+    materializeError: "feature warm failed",
+    materialized: 0,
+    scanned: 1,
+    skipped: 1,
+  });
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/10 0-14 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(runRunningStyleCronTick).not.toHaveBeenCalled();
 });
 
 it("scheduled prewarm path stringifies non-Error rejections from postgres", async () => {
@@ -686,7 +713,7 @@ it("scheduled defaults to handleJob via getCronJob for unknown cron", async () =
   await flushWaits(waits);
 });
 
-it("scheduled multi-day-prep cron plans next 1-3 JST dates without the legacy feature build", async () => {
+it("scheduled multi-day-prep cron reserves the FIFO inference queue for the next JST date", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
@@ -703,7 +730,33 @@ it("scheduled multi-day-prep cron plans next 1-3 JST dates without the legacy fe
   await flushWaits(waits);
   expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
   const dates = vi.mocked(planRunningStylePredictionsForDate).mock.calls.map(([, date]) => date);
-  expect(dates).toStrictEqual(["20260513", "20260514", "20260515"]);
+  expect(dates).toStrictEqual(["20260513"]);
+});
+
+it("scheduled multi-day prep does not plan when the next-day feature warm fails", async () => {
+  const { default: worker } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260513",
+    materializeError: "feature warm failed",
+    materialized: 0,
+    scanned: 1,
+    skipped: 1,
+  });
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "5 11 * * *",
+      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
 });
 
 it("scheduled today-backfill cron plans today without the legacy feature build", async () => {

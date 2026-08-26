@@ -329,7 +329,8 @@ const buildRawRaceKeySelect = (
   kaisai_nen,
   kaisai_tsukihi,
   lpad(keibajo_code, 2, '0') AS keibajo_code,
-  lpad(race_bango, 2, '0') AS race_bango
+    lpad(race_bango, 2, '0') AS race_bango,
+    nullif(btrim(grade_code), '') AS grade_code
 FROM ${rawTableName(env, config.raceTable)}
 WHERE kaisai_nen = '${kaisaiNen}' AND kaisai_tsukihi = '${kaisaiTsukihi}'`;
 };

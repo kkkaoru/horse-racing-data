@@ -1,6 +1,9 @@
 // Run via Bun from scripts/run-pc-keiba-update-and-sync.ts.
 
-export type RealtimeDiscoveryJobType = "discover-urls" | "plan-premium-race-data-fetches";
+export type RealtimeDiscoveryJobType =
+  | "discover-urls"
+  | "plan-premium-race-data-fetches"
+  | "plan-running-style-predictions";
 
 export interface RealtimeDiscoveryOptions {
   baseUrl: string;
@@ -9,6 +12,8 @@ export interface RealtimeDiscoveryOptions {
   log: (message: string) => void;
   pollIntervalMilliseconds: number;
   pollTimeoutMilliseconds: number;
+  /** Also enqueue the running-style planner after discovery for new dates. */
+  planRunningStyle?: boolean;
   retryDelay: (milliseconds: number) => Promise<void>;
   token: string;
 }
@@ -16,6 +21,8 @@ export interface RealtimeDiscoveryOptions {
 export interface RealtimeDiscoveryDates {
   base: string;
   next: string;
+  /** Additional upcoming dates published by PC-KEIBA (days 2-7). */
+  additional?: ReadonlyArray<string>;
 }
 
 interface FetchAttemptSuccess {
@@ -92,7 +99,14 @@ export const resolveRealtimeDiscoveryDates = (
   now: Date,
 ): RealtimeDiscoveryDates => {
   const base = resolveRealtimeDiscoveryDate(configuredDate, now);
-  return { base, next: addDaysToRealtimeDiscoveryDate(base, 1) };
+  const dates = Array.from({ length: 7 }, (_, index) =>
+    addDaysToRealtimeDiscoveryDate(base, index),
+  );
+  return {
+    additional: dates.slice(2),
+    base: dates[0]!,
+    next: dates[1]!,
+  };
 };
 
 const unquoteEnvValue = (value: string): string => {
@@ -309,19 +323,24 @@ const discoverThenPlan = async (options: RealtimeDiscoveryOptions, date: string)
   await enqueueJob(options, date, "discover-urls");
   await pollDiscovery(options, date, 0);
   await enqueueJob(options, date, "plan-premium-race-data-fetches");
+  if (options.planRunningStyle === true) {
+    await enqueueJob(options, date, "plan-running-style-predictions");
+  }
 };
 
 export const triggerRealtimeDiscoveryAfterReplica = async (
   options: RealtimeDiscoveryOptions,
 ): Promise<void> => {
-  validateDate(options.dates.base);
-  validateDate(options.dates.next);
+  const dates = [options.dates.base, options.dates.next, ...(options.dates.additional ?? [])];
+  const uniqueDates = [...new Set(dates)];
+  uniqueDates.forEach(validateDate);
   if (options.token === "") {
     throw new Error("REALTIME_ADMIN_TOKEN must not be empty");
   }
   if (options.pollIntervalMilliseconds <= 0 || options.pollTimeoutMilliseconds <= 0) {
     throw new Error("Discovery poll interval and timeout must be positive");
   }
-  await discoverThenPlan(options, options.dates.base);
-  await discoverThenPlan(options, options.dates.next);
+  for (const date of uniqueDates) {
+    await discoverThenPlan(options, date);
+  }
 };

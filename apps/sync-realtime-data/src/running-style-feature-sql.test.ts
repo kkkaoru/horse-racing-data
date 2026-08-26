@@ -18,19 +18,19 @@ import {
 // Snapshots were re-pinned after the addition; downstream parquet schema is
 // additive (existing columns unchanged).
 const PER_RACE_SQL_SHA256_REFERENCE =
-  "4a97c05c0725c714e5d524513aef2add234d00932192389df7ed3daacea552b5";
-const PER_RACE_SQL_LENGTH_REFERENCE = 49247;
+  "7e71f0970c829ccf789c4248fc1c1deaaa3f8be49055f64c1f89d45dfbc5fbc1";
+const PER_RACE_SQL_LENGTH_REFERENCE = 49563;
 const D1_TARGET_SQL_SHA256_REFERENCE =
-  "001c7685693fdf6c3d2d8c325eddc6c8b2425a8fd6877779ad6204ba2fa2d749";
-const D1_TARGET_SQL_LENGTH_REFERENCE = 49461;
+  "dd2113ed6098ade1e2317e8e31314c9313e22c380e0e4c9d7aa6d8597a6d0ca4";
+const D1_TARGET_SQL_LENGTH_REFERENCE = 49777;
 // Batch SQL gets `MATERIALIZED` hints injected for 10 heavy CTEs (rec, target,
 // target_horses, se_lookup, ra_lookup, horse_history_base, jockey_history,
 // trainer_history, pedigree_rec_um, target_months) so PG materializes them once
 // instead of re-inlining per reference. This snapshot pins the post-hint
 // output so any accidental regression on the materialization list trips here.
 const BATCH_JRA_SQL_SHA256_REFERENCE =
-  "f05c68ed2a1b7133c374e1b4b50c8978aeeecfd88cc4f41e22ed4863cd779ab6";
-const BATCH_JRA_SQL_LENGTH_REFERENCE = 49113;
+  "54ebfa9e7c3fec7c29de47664fa7bc5c200bb3cc34af059cde7be055126d4903";
+const BATCH_JRA_SQL_LENGTH_REFERENCE = 49429;
 const BATCH_MATERIALIZED_HINT_COUNT = 10;
 
 const BATCH_ARGS_JRA = {
@@ -108,6 +108,14 @@ it("buildRunningStylePostgresFeatureSql returns SQL string", () => {
   expect(sql.length).toBeGreaterThan(0);
 });
 
+it("buildRunningStylePostgresFeatureSql keeps history date predicates indexable", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql).toMatch(/\(se\.kaisai_nen, se\.kaisai_tsukihi\) between/);
+  expect(sql).toMatch(/\(ra\.kaisai_nen, ra\.kaisai_tsukihi\) between/);
+  expect(sql).not.toMatch(/se\.kaisai_nen \|\| se\.kaisai_tsukihi between/);
+  expect(sql).not.toMatch(/ra\.kaisai_nen \|\| ra\.kaisai_tsukihi between/);
+});
+
 it("buildRunningStylePostgresFeatureSql output is byte-identical to pre-refactor reference", () => {
   const sql = buildRunningStylePostgresFeatureSql();
   expect(sql.length).toBe(PER_RACE_SQL_LENGTH_REFERENCE);
@@ -152,7 +160,29 @@ it("buildRunningStyleBatchFeatureSql includes target.race_date date-range filter
 
 it("buildRunningStyleBatchFeatureSql derives history_start from fromDate", () => {
   const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
-  expect(sql.includes("to_date('20050101', 'YYYYMMDD') - interval '10 years'")).toBe(true);
+  expect(sql.includes("to_date('20050101', 'YYYYMMDD') - interval '5 years'")).toBe(true);
+});
+
+it("selects source and grade-specific per-race history windows", () => {
+  expect(
+    buildRunningStylePostgresFeatureSql({
+      source: "jra",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0715",
+      keibajoCode: "05",
+      raceBango: "01",
+    }),
+  ).toContain("interval '5 years'");
+  expect(
+    buildRunningStylePostgresFeatureSql({
+      source: "nar",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0715",
+      keibajoCode: "43",
+      raceBango: "01",
+      gradeCode: "A",
+    }),
+  ).toContain("interval '10 years'");
 });
 
 it("buildRunningStyleBatchFeatureSql shares the same suffix CTE list as the per-race builder", () => {

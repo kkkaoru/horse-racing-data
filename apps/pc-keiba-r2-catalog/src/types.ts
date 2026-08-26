@@ -16,7 +16,7 @@ export interface DailyRaceEntryRow {
   race_name: string | null;
   hasso_jikoku: string | null;
   track_code: string | null;
-  grade_code: string | null;
+  grade_code?: string | null;
   kyoso_shubetsu_code: string | null;
   juryo_shubetsu_code: string | null;
   kyoso_joken_code: string | null;
@@ -52,6 +52,7 @@ export interface DailyRaceEntryRow {
 
 export interface CatalogRaceKeyRow {
   source: CatalogSource;
+  grade_code?: string | null;
   kaisai_nen: string;
   kaisai_tsukihi: string;
   keibajo_code: string;
@@ -132,6 +133,7 @@ export interface RunningStyleFeatureFilters {
   raceBango?: string;
   source: RunningStyleSourceScope;
   umaban?: number;
+  gradeCode?: string | null;
 }
 
 export interface RaceTrainingFilters {

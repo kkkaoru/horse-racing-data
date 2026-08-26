@@ -40,7 +40,22 @@ export const RUNNING_STYLE_PREWARM_CRON = "0 12 * * *";
 const ENABLED_FLAG = "1";
 const DATE_PAD_WIDTH = 2;
 const QUEUE_SEND_BATCH_SIZE = 100;
-const ACTIVE_STATE_TTL_MS = 5 * 60 * 1000;
+// Existing work must not starve a newly published race day. Keep a bounded
+// projected backlog instead of refusing every dispatch whenever any message
+// is in flight; inference-state deduplication already prevents duplicates.
+const MAX_RUNNING_STYLE_PROJECTED_BACKLOG = 256;
+// A stale queue can contain acknowledged/duplicate work while D1 still has
+// several pending races.  Permit one bounded multi-race recovery batch above
+// the projected cap; state leases and per-race idempotency still prevent a
+// duplicate inference storm.  A single new race remains fail-closed at the
+// normal cap so this is not a general backlog bypass.
+const MAX_RUNNING_STYLE_RECOVERY_BATCH = 32;
+// Queue delivery can legitimately take several minutes while a container is
+// cold-starting.  A five-minute lease expired before that delivery completed,
+// so every planner tick could enqueue a duplicate job.  Keep the reservation
+// alive across the queue's retry window; failed sends are explicitly restored
+// to an enqueue-failed state and remain eligible on the next tick.
+const ACTIVE_STATE_TTL_MS = 15 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(["pending", "processing"]);
 const FINISH_POSITION_DAY_BASE_URL =
   "https://finish-position-cron.internal/api/admin/prewarm-day-base";
@@ -63,6 +78,7 @@ export interface RegisteredRaceRow {
   kaisai_tsukihi: string;
   keibajo_code: string;
   race_bango: string;
+  grade_code?: string | null;
 }
 
 export interface RunningStylePlanRace extends RunningStylePendingRace {
@@ -127,6 +143,42 @@ interface RunningStyleFoundationGateParams {
   races: ReadonlyArray<RunningStylePlanRace>;
 }
 
+interface RunningStyleQueueDispatchGate {
+  blocked: boolean;
+  error?: string;
+}
+
+const inspectRunningStyleQueueDispatch = async (
+  queue: Queue,
+  requestedCount: number,
+  allowRecoveryOverflow = false,
+): Promise<RunningStyleQueueDispatchGate> => {
+  try {
+    const metrics = await queue.metrics();
+    if (metrics.backlogCount + requestedCount <= MAX_RUNNING_STYLE_PROJECTED_BACKLOG) {
+      return { blocked: false };
+    }
+    if (allowRecoveryOverflow && requestedCount <= MAX_RUNNING_STYLE_RECOVERY_BATCH) {
+      console.warn(
+        `Running-style queue recovery overflow allowed backlog=${metrics.backlogCount} requested=${requestedCount}`,
+      );
+      return { blocked: false };
+    }
+    return {
+      blocked: true,
+      error: `Running-style queue projected backlog=${metrics.backlogCount + requestedCount}; dispatch deferred`,
+    };
+  } catch (error) {
+    // Do not enqueue blindly when the authoritative queue depth is unknown.
+    // A closed gate is retried by the next cron tick and prevents a metrics
+    // outage from turning into an unbounded duplicate backlog.
+    return {
+      blocked: true,
+      error: `Running-style queue metrics unavailable; dispatch deferred: ${formatError(error)}`,
+    };
+  }
+};
+
 const padDatePart = (value: number): string => String(value).padStart(DATE_PAD_WIDTH, "0");
 
 export const formatYYYYMMDDInJst = (now: Date): string => {
@@ -146,6 +198,9 @@ export const addDaysToYYYYMMDDInJst = (yyyymmdd: string, days: number): string =
 
 export const formatTomorrowYYYYMMDDInJst = (now: Date): string =>
   addDaysToYYYYMMDDInJst(formatYYYYMMDDInJst(now), 1);
+
+export const isRunningStylePlanDateAllowed = (date: string, now: Date): boolean =>
+  date <= formatTomorrowYYYYMMDDInJst(now);
 
 const isInferenceEnabled = (env: Env): boolean =>
   env.RUNNING_STYLE_D1_WRITE_ENABLED === ENABLED_FLAG;
@@ -349,41 +404,43 @@ const gateRunningStyleFoundations = async (
   };
 };
 
-const isRunningStyleStateCompleted = (
+const isRunningStyleStateGenerationComplete = (
   state: RunningStyleInferenceStateDetail | undefined,
 ): boolean =>
-  state?.status === "completed" &&
+  (state?.status === "completed" || state?.status === "sync-failed") &&
   state.writtenHorseCount !== null &&
   state.expectedHorseCount !== null &&
   state.writtenHorseCount >= state.expectedHorseCount;
 
-// D1-only completion probe used to short-circuit the Neon feature-count query.
-// Returns true when every registered race already has a completed inference
-// state (an empty race list trivially satisfies this).
+// D1-only generation probe. A sync-failed race has a complete recovery
+// payload, but is not serving-complete until the Queue retry commits to Neon.
+// An empty race list trivially satisfies the probe.
 const allRegisteredRacesCompleted = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
   states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
 ): boolean =>
   registeredRaces.every((row) =>
-    isRunningStyleStateCompleted(states.get(toRunningStyleRaceKey(row))),
+    isRunningStyleStateGenerationComplete(states.get(toRunningStyleRaceKey(row))),
   );
 
-const selectCompletedRacesNeedingRunningStyleMirror = (
+const selectSyncFailedRacesNeedingRunningStyleMirror = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
   states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
-  predictionCounts: ReadonlyMap<string, number>,
 ): RunningStylePlanRace[] => {
   const needed: RunningStylePlanRace[] = [];
   registeredRaces.forEach((row) => {
     const raceKey = toRunningStyleRaceKey(row);
     const state = states.get(raceKey);
-    if (state === undefined || !isRunningStyleStateCompleted(state)) return;
+    // sync-failed means D1 holds a complete recovery payload but Neon has not
+    // acknowledged the mirror transaction. D1 row counts cannot prove Neon
+    // completeness, so every such state must re-enter the idempotent mirror
+    // Queue path. The consumer promotes it to completed only after the Neon
+    // transaction succeeds and reports every expected row written.
+    if (state?.status !== "sync-failed" || !isRunningStyleStateGenerationComplete(state)) return;
     const expectedHorseCount = state.expectedHorseCount ?? 0;
-    const existingHorseCount = predictionCounts.get(raceKey) ?? 0;
-    if (existingHorseCount >= expectedHorseCount) return;
     needed.push({
       ...toRunningStylePendingRace(row, expectedHorseCount),
-      existingHorseCount,
+      existingHorseCount: state.writtenHorseCount ?? 0,
     });
   });
   return needed;
@@ -435,7 +492,7 @@ export const selectRacesNeedingRunningStyleInference = (
     const expectedHorseCount = expectedHorseCounts.get(race.raceKey) ?? featureCount;
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
     const state = states.get(race.raceKey);
-    const stateCompleted = isRunningStyleStateCompleted(state);
+    const stateCompleted = isRunningStyleStateGenerationComplete(state);
     if (stateCompleted) {
       completed += 1;
       return;
@@ -558,6 +615,18 @@ export const planRunningStylePredictionsForDate = async (
   date: string,
   now: Date,
 ): Promise<RunningStylePlanSummary> => {
+  if (!isRunningStylePlanDateAllowed(date, now)) {
+    return {
+      alreadyQueued: 0,
+      completed: 0,
+      date,
+      enqueued: 0,
+      featureReady: 0,
+      missingFeatures: 0,
+      planError: `running-style planning rejected future date ${date}; latest allowed date is ${formatTomorrowYYYYMMDDInJst(now)}`,
+      scanned: 0,
+    };
+  }
   const { races: registeredRaces } = await listRunningStyleRacesByDate(env, date);
   if (!isInferenceEnabled(env)) {
     return buildSettledPlanSummary({
@@ -568,21 +637,47 @@ export const planRunningStylePredictionsForDate = async (
     });
   }
   const raceKeys = registeredRaces.map(toRunningStyleRaceKey);
-  const [predictionCounts, states] = await Promise.all([
+  const [predictionCountsResult, statesResult] = await Promise.allSettled([
     listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
     listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
   ]);
-  const mirrorNeeded = selectCompletedRacesNeedingRunningStyleMirror(
-    registeredRaces,
-    states,
-    predictionCounts,
-  );
+  if (statesResult.status === "rejected") {
+    throw statesResult.reason;
+  }
+  const states = statesResult.value;
+  // A transient D1 count failure must never turn a completed race into a
+  // full re-inference. Treat completed rows as mirrored for this tick and let
+  // the next scheduled tick retry the mirror audit once counts are available.
+  // Non-completed rows remain eligible because their state is the source of
+  // truth for generation, independent of the count query.
+  const predictionCountError =
+    predictionCountsResult.status === "rejected"
+      ? formatError(predictionCountsResult.reason)
+      : undefined;
+  const predictionCounts =
+    predictionCountsResult.status === "fulfilled"
+      ? predictionCountsResult.value
+      : new Map(
+          registeredRaces.flatMap((row) => {
+            const state = states.get(toRunningStyleRaceKey(row));
+            return isRunningStyleStateGenerationComplete(state)
+              ? [[toRunningStyleRaceKey(row), state?.expectedHorseCount ?? 0] as const]
+              : [];
+          }),
+        );
+  const mirrorNeeded = selectSyncFailedRacesNeedingRunningStyleMirror(registeredRaces, states);
   const predictedAt = now.toISOString();
+  const runningStyleQueue = env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS;
   if (allRegisteredRacesCompleted(registeredRaces, states)) {
-    const sendResult = await sendPredictionJobs(
-      env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
-      mirrorNeeded.map((row) => toPredictionJob(row, predictedAt)),
-    );
+    const mirrorJobs = mirrorNeeded.map((row) => toPredictionJob(row, predictedAt));
+    const dispatchGate: RunningStyleQueueDispatchGate =
+      mirrorJobs.length === 0
+        ? { blocked: false }
+        : await inspectRunningStyleQueueDispatch(runningStyleQueue, mirrorJobs.length);
+    const sendResult = dispatchGate.blocked
+      ? { failed: [], sentCount: 0 }
+      : await sendPredictionJobs(runningStyleQueue, mirrorJobs);
+    await restoreFailedPendingStates(env, mirrorNeeded, sendResult.failed, predictedAt);
     return {
       alreadyQueued: 0,
       completed: registeredRaces.length - mirrorNeeded.length,
@@ -590,7 +685,14 @@ export const planRunningStylePredictionsForDate = async (
       enqueued: sendResult.sentCount,
       featureReady: 0,
       missingFeatures: 0,
-      planError: formatPredictionJobSendFailures(sendResult.failed),
+      planError:
+        [
+          predictionCountError,
+          dispatchGate.error,
+          formatPredictionJobSendFailures(sendResult.failed),
+        ]
+          .filter((error): error is string => error !== undefined)
+          .join("; ") || undefined,
       scanned: registeredRaces.length,
     };
   }
@@ -619,6 +721,38 @@ export const planRunningStylePredictionsForDate = async (
   const foundationReadyRaces = selected.needed.filter((race) =>
     foundationGate.readyCategories.has(toRunningStyleCategory(race)),
   );
+  const predictionJobs = [...foundationReadyRaces, ...mirrorNeeded].map((row) =>
+    toPredictionJob(row, predictedAt),
+  );
+  // A multi-race batch is either stale pending work or a newly published
+  // date.  Let one bounded batch through when an old queue backlog is above
+  // the cap; otherwise the planner can leave the date pending forever because
+  // its own messages never enter the queue.  The one-race case stays behind
+  // the normal cap and the queue-metrics failure gate remains fail-closed.
+  const allowRecoveryOverflow = predictionJobs.length > 1;
+  const dispatchGate: RunningStyleQueueDispatchGate =
+    predictionJobs.length === 0
+      ? { blocked: false }
+      : await inspectRunningStyleQueueDispatch(
+          runningStyleQueue,
+          predictionJobs.length,
+          allowRecoveryOverflow,
+        );
+  if (dispatchGate.blocked) {
+    return {
+      alreadyQueued: selected.alreadyQueued,
+      completed: selected.completed - mirrorNeeded.length,
+      date,
+      enqueued: 0,
+      featureReady: selected.featureReady,
+      missingFeatures: selected.missingFeatures,
+      planError:
+        [predictionCountError, ...foundationGate.errors, dispatchGate.error]
+          .filter((error): error is string => error !== undefined)
+          .join("; ") || undefined,
+      scanned: registeredRaces.length,
+    };
+  }
   // Never reset sync-failed rows to pending: their D1 predictions are
   // complete and the fast path in handleRunningStylePredictionJob retries
   // only the Neon mirror. Resetting would wipe written_horse_count and
@@ -627,10 +761,7 @@ export const planRunningStylePredictionsForDate = async (
     (row) => states.get(row.raceKey)?.status !== "sync-failed",
   );
   await upsertRunningStylePendingStates(env.REALTIME_DB, pendingUpsertRaces, predictedAt);
-  const sendResult = await sendPredictionJobs(
-    env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
-    [...foundationReadyRaces, ...mirrorNeeded].map((row) => toPredictionJob(row, predictedAt)),
-  );
+  const sendResult = await sendPredictionJobs(runningStyleQueue, predictionJobs);
   await restoreFailedPendingStates(env, pendingUpsertRaces, sendResult.failed, predictedAt);
   const queueError = formatPredictionJobSendFailures(sendResult.failed);
   return {
@@ -641,8 +772,13 @@ export const planRunningStylePredictionsForDate = async (
     featureReady: selected.featureReady,
     missingFeatures: selected.missingFeatures,
     planError:
-      [...foundationGate.errors, ...(queueError === undefined ? [] : [queueError])].join("; ") ||
-      undefined,
+      [
+        predictionCountError,
+        ...foundationGate.errors,
+        ...(queueError === undefined ? [] : [queueError]),
+      ]
+        .filter((error): error is string => error !== undefined)
+        .join("; ") || undefined,
     scanned: registeredRaces.length,
   };
 };
@@ -665,11 +801,15 @@ const isWithinYesterdaySweepWindow = (now: Date): boolean => {
 
 export const resolveRunningStyleCronDates = (now: Date): string[] => {
   const today = formatYYYYMMDDInJst(now);
+  const tomorrow = addDaysToYYYYMMDDInJst(today, 1);
+  // Re-audit tomorrow on every inference tick, not only during the nightly
+  // prewarm. This gives a Neon mirror failure a bounded ten-minute recovery
+  // cadence before race day while the date fence still rejects day+2 onward.
   if (!isWithinYesterdaySweepWindow(now)) {
-    return [today];
+    return [today, tomorrow];
   }
   const yesterday = addDaysToYYYYMMDDInJst(today, -1);
-  return [yesterday, today];
+  return [yesterday, today, tomorrow];
 };
 
 const planRunningStyleForDateSafe = async (

@@ -157,6 +157,7 @@ import {
   formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
   refreshViewerRunningStyleCachesForDate,
+  resolveRunningStyleCronDates,
   runRunningStyleCronTick,
 } from "./running-style-cron";
 import { materializeRunningStyleFeatureParquetsForDate } from "./running-style-feature-materialize";
@@ -523,6 +524,10 @@ const WEIGHT_FETCH_EMPTY_RETRY_NEAR_RACE_DELAY_SECONDS = 5 * 60;
 // retry delay. This blocks already-queued duplicates while ensuring the first
 // retry after a failed scrape can claim immediately.
 const WEIGHT_FETCH_LEASE_SECONDS = 45;
+// Running-style feature assembly may legitimately take about a minute when
+// Catalog has to build a race parquet.  It must still have a finite bound so
+// one unavailable Catalog request cannot hold the single-concurrency queue
+// forever and starve later race dates.
 const MILLISECONDS_PER_MINUTE = 60_000;
 // KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
 // empty result so the plan still has something to enqueue). 24h keeps the
@@ -541,6 +546,8 @@ const MIN_HORSE_WEIGHT_ROWS_PER_RACE = 2;
 // path must match finish-position-cron's INTERNAL_RESCORE_RACE_PATH.
 const FINISH_POSITION_CRON_INTERNAL_RESCORE_RACE_URL =
   "https://finish-position-cron.internal/api/internal/rescore-race";
+const FINISH_POSITION_CRON_INTERNAL_READINESS_URL =
+  "https://finish-position-cron.internal/api/internal/prediction-readiness";
 const WEIGHT_RESCORE_TRIGGER_LOG_KIND = "weight-rescore-trigger";
 // Ban-ei rows live under the nar source with keibajo_code 65 / 83 (帯広);
 // the finish-position-cron predict pipeline produces ban-ei as its own
@@ -1018,7 +1025,12 @@ const D1_RETENTION_CRON = "30 18 * * *";
 export const MULTI_DAY_PREP_CRON = "5 11 * * *";
 // 09:10 JST (= 00:10 UTC) — morning fallback for today.
 export const TODAY_BACKFILL_CRON = "10 0 * * *";
-const MULTI_DAY_PREP_OFFSET_DAYS: readonly number[] = [1, 2, 3];
+// Keep the shared FIFO inference Queue reserved for the next race day.  The
+// previous +1/+2/+3 fan-out put later dates behind the same consumer; when a
+// next-day cold Catalog query retried, its replacement was queued behind two
+// full future race cards.  Preparing only +1 preserves the useful day-ahead
+// warm-up without allowing later dates to delay tomorrow's predictions.
+const MULTI_DAY_PREP_OFFSET_DAYS: readonly number[] = [1];
 export const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
@@ -1038,6 +1050,19 @@ const logRunningStylePlanResult = async (
   scheduledAt: Date,
   ctx?: ExecutionContext,
 ): Promise<void> => {
+  for (const date of resolveRunningStyleCronDates(scheduledAt)) {
+    const materializeResult = await materializeRunningStyleFeatureParquetsForDate(env, date);
+    await logFetch(
+      env.REALTIME_DB,
+      "materialize-running-style-features",
+      resolveMaterializeLogStatus(materializeResult),
+      null,
+      JSON.stringify({ ...materializeResult, mode: "inference-cron" }),
+    );
+    if (materializeResult.materializeError !== undefined) {
+      throw new Error(materializeResult.materializeError);
+    }
+  }
   await runRunningStyleCronTick(env, scheduledAt, ctx)
     .then((summary) =>
       logFetch(
@@ -1676,6 +1701,82 @@ export interface StaleWeightFetchRace {
   raceStartAtJst: string;
 }
 
+interface PredictionReadinessRace {
+  preWeight: { complete: boolean };
+  raceKey: string;
+}
+
+const predictionReadinessRaceKey = (realtimeRaceKey: string): string | null => {
+  const parts = realtimeRaceKey.split(":");
+  if (parts.length !== RACE_KEY_PART_COUNT) return null;
+  const source = parts[0];
+  const keibajoCode = parts[3];
+  const raceBango = parts[4];
+  if (!source || !keibajoCode || !raceBango) return null;
+  return `${source}:${keibajoCode.padStart(2, "0")}:${raceBango.padStart(2, "0")}`;
+};
+
+const parsePredictionReadinessRaces = (value: unknown): readonly PredictionReadinessRace[] => {
+  if (!isObjectRecord(value) || !Array.isArray(value.races)) {
+    throw new Error("finish-position prediction readiness returned an invalid envelope");
+  }
+  return value.races.map((race): PredictionReadinessRace => {
+    if (
+      !isObjectRecord(race) ||
+      typeof race.raceKey !== "string" ||
+      !isObjectRecord(race.preWeight) ||
+      typeof race.preWeight.complete !== "boolean"
+    ) {
+      throw new Error("finish-position prediction readiness returned an invalid race");
+    }
+    return { preWeight: { complete: race.preWeight.complete }, raceKey: race.raceKey };
+  });
+};
+
+// Horse-weight acquisition is the next stage after the initial prediction,
+// not an independent clock-only lane. Query the finish-position Worker once
+// per race day over the existing Service Binding and admit only races whose
+// complete initial generation is present in both Neon and the display KV.
+// Missing bindings, auth, malformed responses, and upstream failures throw so
+// the watchdog fails closed and retries on its next cron instead of violating
+// the pipeline order.
+export const filterPreweightReadyWeightRaces = async (
+  env: Env,
+  races: readonly StaleWeightFetchRace[],
+): Promise<readonly StaleWeightFetchRace[]> => {
+  if (races.length === 0) return [];
+  const binding = env.FINISH_POSITION_CRON;
+  const token = env.TRIGGER_TOKEN;
+  if (!binding) throw new Error("FINISH_POSITION_CRON binding is required for weight readiness");
+  if (!token) throw new Error("TRIGGER_TOKEN is required for weight readiness");
+  const runYmds = [...new Set(races.map((race) => raceKeyDateYmd(race.raceKey)))];
+  if (runYmds.some((runYmd) => runYmd === null)) {
+    throw new Error("weight readiness received an invalid race key");
+  }
+  const validRunYmds = runYmds.filter((runYmd): runYmd is string => runYmd !== null);
+  const readyKeys = new Set<string>();
+  await Promise.all(
+    validRunYmds.map(async (runYmd) => {
+      const url = new URL(FINISH_POSITION_CRON_INTERNAL_READINESS_URL);
+      url.searchParams.set("runYmd", runYmd);
+      const response = await binding.fetch(
+        new Request(url, { headers: { Authorization: `Bearer ${token}` } }),
+      );
+      if (!response.ok) {
+        throw new Error(`finish-position prediction readiness failed with HTTP ${response.status}`);
+      }
+      const readiness = parsePredictionReadinessRaces(await response.json());
+      for (const race of readiness) {
+        if (race.preWeight.complete) readyKeys.add(race.raceKey);
+      }
+    }),
+  );
+  return races.filter((race) => {
+    const key = predictionReadinessRaceKey(race.raceKey);
+    return key !== null && readyKeys.has(key);
+  });
+};
+
 interface StaleWeightFetchRaceRow {
   last_weight_fetch_at: string | null;
   last_weight_fetch_attempt_at: string | null;
@@ -1819,9 +1920,21 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
       );
       return;
     }
+    const ready = await filterPreweightReadyWeightRaces(env, stale);
+    if (ready.length === 0) {
+      await logFetch(
+        env.REALTIME_DB,
+        "weight-watchdog",
+        "ok",
+        null,
+        JSON.stringify({ deferredUntilPreweight: stale.length, enqueued: 0 }),
+        env.DETAIL_SECTION_CACHE_KV,
+      );
+      return;
+    }
     const reservedAt = toJstIsoString(now);
     const reservations = await Promise.all(
-      stale.map(async (race): Promise<FetchWeightsJobShape | null> => {
+      ready.map(async (race): Promise<FetchWeightsJobShape | null> => {
         const minutesUntil =
           (new Date(race.raceStartAtJst).getTime() - now.getTime()) / MILLISECONDS_PER_MINUTE;
         const backoffMinutes =
@@ -2371,6 +2484,17 @@ const prewarmRaceDataForDate = async (
   mode = "scheduled-prep",
 ) => {
   const discoveryResult = await tryDiscoverUrlsForDate(env, targetDate, mode);
+  const materializeResult = await runMaterializeWhenReady(env, targetDate);
+  await logFetch(
+    env.REALTIME_DB,
+    "materialize-running-style-features",
+    resolveMaterializeLogStatus(materializeResult),
+    null,
+    JSON.stringify({ ...materializeResult, mode }),
+  );
+  if (materializeResult.materializeError !== undefined) {
+    throw new Error(materializeResult.materializeError);
+  }
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
   const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
@@ -2389,6 +2513,7 @@ const prewarmRaceDataForDate = async (
     cacheRefresh: cacheRefreshResult,
     date: targetDate,
     discovery: discoveryResult,
+    materialize: materializeResult,
     runningStyle: runningStyleResult,
   };
 };
@@ -5656,6 +5781,10 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "plan-running-style-predictions") {
+      const materialize = await materializeRunningStyleFeatureParquetsForDate(env, job.date);
+      if (materialize.materializeError !== undefined) {
+        throw new Error(materialize.materializeError);
+      }
       const planSummary = await planRunningStylePredictionsForDate(
         env,
         job.date,
@@ -5676,7 +5805,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         job.type,
         "ok",
         null,
-        JSON.stringify({ cacheRefresh, parquetExport, plan: planSummary }),
+        JSON.stringify({ cacheRefresh, materialize, parquetExport, plan: planSummary }),
       );
       return;
     }
@@ -5688,6 +5817,10 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "generate-running-style-predictions") {
+      // The running-style handler owns bounded Catalog (120s) and PostgreSQL
+      // (20s) deadlines. Do not wrap it in Promise.race: a queue-level timeout
+      // cannot cancel a Service Binding request, so it would acknowledge a
+      // retry while the original inference kept running and duplicated R2 SQL.
       const summary = await handleRunningStylePredictionJob(env, job);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, JSON.stringify(summary));
       return;

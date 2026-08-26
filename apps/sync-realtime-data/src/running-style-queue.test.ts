@@ -224,7 +224,7 @@ it("returns a skipped summary when state already completed and counts meet expec
   ]);
 });
 
-it("sends the finish-position day only when sync-failed transitions to completed", async () => {
+it("sends the finish-position day when D1 rows are complete even if Neon is sync-failed", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
@@ -364,7 +364,7 @@ it("does not call finish-position binding when trigger token is missing or empty
   );
 });
 
-it("skips finish-position full trigger on completed short-circuit when Neon write count is short", async () => {
+it("does not block finish-position full trigger on a short Neon mirror when D1 rows are complete", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const {
     getRunningStyleInferenceState,
@@ -386,17 +386,12 @@ it("skips finish-position full trigger on completed short-circuit when Neon writ
   );
   expect(summary?.skipped).toBe(true);
   expect(summary?.neonWrittenCount).toBe(2);
-  expect(summary?.finishPositionTriggerMode).toBe("skipped");
-  expect(summary?.finishPositionTriggerError).toBe(
-    "Neon written count 2 is below expected horse count 3",
-  );
-  expect(fetch).not.toHaveBeenCalled();
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
+  expect(fetch).toHaveBeenCalledTimes(1);
   expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
   expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
     "Neon sync wrote 2/3 rows",
-  );
-  expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
-    "finish-position trigger skipped for jra:20260512:08:01: Neon written count 2 is below expected horse count 3",
   );
 });
 
@@ -732,7 +727,8 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   const { markFinishPositionFeaturesCached } = await import("./finish-position-d1");
   const { putFinishPositionInputsCache } = await import("./finish-position-inputs-cache");
   const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
-  const { markRunningStyleInferenceCompleted } = await import("./running-style-d1");
+  const { markRunningStyleInferenceCompleted, markRunningStyleInferenceSyncFailed } =
+    await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
@@ -778,6 +774,22 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   ).toStrictEqual([{ umaban: 1 }, { umaban: 2 }]);
   expect(vi.mocked(markRunningStyleInferenceCompleted).mock.calls[0]?.[1]?.writtenHorseCount).toBe(
     2,
+  );
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
+    "Running-style Neon sync pending",
+  );
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.writtenHorseCount).toBe(
+    2,
+  );
+  expect(
+    vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.invocationCallOrder[0],
+  ).toBeLessThan(vi.mocked(markRunningStyleInferenceSyncFailed).mock.invocationCallOrder[0]!);
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(upsertRunningStylePredictionsToNeon).mock.invocationCallOrder[0]!,
+  );
+  expect(vi.mocked(upsertRunningStylePredictionsToNeon).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(markRunningStyleInferenceCompleted).mock.invocationCallOrder[0]!,
   );
   expect(listRaceRunningStylesForRace).toHaveBeenCalledWith({}, "jra:20260512:08:01", {
     bypassCache: true,
@@ -1135,6 +1147,8 @@ it("skips cacheCompletedRunningStyles when written count is less than expected h
   const { filterRunningStyleFeatureRowsByActiveEntries, resolveRunningStyleExpectedHorseCount } =
     await import("./running-style-expected-horses");
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { markRunningStyleInferenceCompleted, markRunningStyleInferenceFailed } =
+    await import("./running-style-d1");
   const fetch = vi.fn<typeof globalThis.fetch>(
     async (_input) => new Response("queued", { status: 202 }),
   );
@@ -1171,6 +1185,8 @@ it("skips cacheCompletedRunningStyles when written count is less than expected h
   );
   expect(listRaceRunningStylesForRace).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
+  expect(markRunningStyleInferenceCompleted).not.toHaveBeenCalled();
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: written count 2 is below expected horse count 3",
   );
@@ -1223,16 +1239,31 @@ it("skips finish-position full trigger after inference when Neon sync fails", as
   );
   expect(summary?.writtenCount).toBe(2);
   expect(summary?.neonError).toBe("neon connection refused");
-  expect(summary?.finishPositionTriggerMode).toBe("skipped");
-  expect(summary?.finishPositionTriggerError).toBe("Neon sync failed: neon connection refused");
-  expect(fetch).not.toHaveBeenCalled();
-  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(1);
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(markRunningStyleInferenceSyncFailed).toHaveBeenCalledTimes(2);
   expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[0]?.[1]?.errorMessage).toBe(
+    "Running-style Neon sync pending",
+  );
+  expect(vi.mocked(markRunningStyleInferenceSyncFailed).mock.calls[1]?.[1]?.errorMessage).toBe(
     "neon connection refused",
   );
-  expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
-    "finish-position trigger skipped for jra:20260512:08:01: Neon sync failed: neon connection refused",
-  );
+});
+
+it("acknowledges a redelivery while the original processing lease is still active", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, markRunningStyleInferenceProcessing } =
+    await import("./running-style-d1");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    attemptedAt: new Date(Date.now() - 30_000).toISOString(),
+    raceKey: JOB.raceKey,
+    status: "processing",
+  } as never);
+
+  await expect(handleRunningStylePredictionJob(buildEnv(), JOB)).resolves.toBeNull();
+  expect(markRunningStyleInferenceProcessing).not.toHaveBeenCalled();
 });
 
 it("captures cacheCompletedRunningStyles errors via cacheError", async () => {

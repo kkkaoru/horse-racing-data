@@ -12,6 +12,11 @@ import type { Env } from "./types";
 // running-style inference + retry storms. Hyperdrive fan-in caps upstream
 // PG connection usage, so 24 here is safe against Neon's plan max.
 const DEFAULT_POOL_SIZE = 24;
+// Writes are short per-race upserts. A large pool lets concurrent Queue
+// isolates exhaust Neon's connection budget and surface as `Query read
+// timeout` even when the SQL itself is tiny. Keep the write pool bounded;
+// Queue concurrency provides the needed throughput.
+const DEFAULT_WRITE_POOL_SIZE = 2;
 // Keep connection acquisition below Hyperdrive's 15-second initial connection
 // limit, and bound both the client-side wait and the PostgreSQL statement. The
 // matching query/statement limits ensure an abandoned query cannot keep a
@@ -19,6 +24,12 @@ const DEFAULT_POOL_SIZE = 24;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 15_000;
 const DEFAULT_QUERY_TIMEOUT_MS = 90_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 90_000;
+const DEFAULT_WRITE_CONNECTION_TIMEOUT_MS = 15_000;
+// Neon mirroring is deliberately secondary to the D1 prediction write. Keep
+// each write attempt bounded so a saturated mirror cannot occupy a Queue
+// consumer for the full 90-second read timeout and delay the next race.
+const DEFAULT_WRITE_QUERY_TIMEOUT_MS = 30_000;
+const DEFAULT_WRITE_STATEMENT_TIMEOUT_MS = 30_000;
 const SET_DEFAULT_TRANSACTION_READ_ONLY_SQL = "SET default_transaction_read_only TO off";
 let pool: Pool | null = null;
 let writePool: Pool | null = null;
@@ -69,12 +80,12 @@ export const getFinishPositionPool = (env: Env): Pool => {
 export const getFinishPositionWritePool = (env: Env): Pool => {
   if (writePool !== null) return writePool;
   writePool = new Pool({
-    connectionTimeoutMillis: DEFAULT_CONNECTION_TIMEOUT_MS,
+    connectionTimeoutMillis: DEFAULT_WRITE_CONNECTION_TIMEOUT_MS,
     connectionString: getWriteConnectionString(env),
-    max: DEFAULT_POOL_SIZE,
+    max: DEFAULT_WRITE_POOL_SIZE,
     onConnect: onWritePoolConnect,
-    query_timeout: DEFAULT_QUERY_TIMEOUT_MS,
-    statement_timeout: DEFAULT_STATEMENT_TIMEOUT_MS,
+    query_timeout: DEFAULT_WRITE_QUERY_TIMEOUT_MS,
+    statement_timeout: DEFAULT_WRITE_STATEMENT_TIMEOUT_MS,
   });
   return writePool;
 };

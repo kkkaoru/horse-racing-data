@@ -55,10 +55,21 @@ import { getLatestRaceEntries } from "./storage";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const ENABLED_FLAG = "1";
+const NEON_SYNC_PENDING_MESSAGE = "Running-style Neon sync pending";
+const ACTIVE_PROCESSING_TTL_MS = 5 * 60 * 1000;
 const FINISH_POSITION_DAY_BASE_URL =
   "https://finish-position-cron.internal/api/admin/prewarm-day-base";
 const NEON_SYNC_MAX_ATTEMPTS = 3;
 const NEON_SYNC_RETRY_DELAY_MS = 200;
+
+const isRecentlyProcessing = (
+  state: Awaited<ReturnType<typeof getRunningStyleInferenceState>>,
+): boolean => {
+  if (state?.status !== "processing" || state.attemptedAt === null) return false;
+  const attemptedAt = new Date(state.attemptedAt).getTime();
+  if (Number.isNaN(attemptedAt)) return false;
+  return Date.now() - attemptedAt <= ACTIVE_PROCESSING_TTL_MS;
+};
 
 const buildFinishPositionRunYmd = (job: RunningStylePredictionJob): string =>
   `${job.kaisaiNen}${job.kaisaiTsukihi}`;
@@ -291,11 +302,7 @@ const triggerFinishPositionDayWhenReady = async (
   const currentRaceNotReadyReason =
     writtenHorseCount < expectedHorseCount
       ? `written count ${writtenHorseCount} is below expected horse count ${expectedHorseCount}`
-      : cacheResult.neonError !== undefined
-        ? `Neon sync failed: ${cacheResult.neonError}`
-        : cacheResult.neonWrittenCount < expectedHorseCount
-          ? `Neon written count ${cacheResult.neonWrittenCount} is below expected horse count ${expectedHorseCount}`
-          : null;
+      : null;
   if (currentRaceNotReadyReason !== null) {
     console.log(`finish-position trigger skipped for ${raceKey}: ${currentRaceNotReadyReason}`);
     return {
@@ -332,7 +339,7 @@ const triggerFinishPositionDayWhenReady = async (
     const incompleteRace = jobs.find((registeredJob) => {
       const state = states.get(registeredJob.raceKey);
       return (
-        state?.status !== "completed" ||
+        (state?.status !== "completed" && state?.status !== "sync-failed") ||
         state.expectedHorseCount === null ||
         state.writtenHorseCount === null ||
         state.writtenHorseCount < state.expectedHorseCount
@@ -445,6 +452,15 @@ export const handleRunningStylePredictionJob = async (
   const raceKey = buildRunningStyleRaceKey(job);
   try {
     const state = await getRunningStyleInferenceState(env.REALTIME_DB, raceKey);
+    // Queue redelivery can race the original attempt after a bounded handler
+    // timeout.  The timeout cannot cancel an in-flight Catalog/Neon promise,
+    // so starting a second attempt here would duplicate the expensive query
+    // and create the very resource exhaustion that caused the timeout.  The
+    // planner will reclaim a genuinely lost attempt once this lease expires.
+    if (isRecentlyProcessing(state)) {
+      console.log(`Running-style prediction already processing ${raceKey}; acknowledging retry`);
+      return null;
+    }
     if (
       (state?.status === "completed" || state?.status === "sync-failed") &&
       state.expectedHorseCount !== null &&
@@ -582,6 +598,14 @@ export const handleRunningStylePredictionJob = async (
       },
       race: job,
     });
+    const syncOutboxBase = {
+      cellModelKey: selectedRoute.modelKey,
+      cellVariantId: selectedRoute.variantId,
+      expectedHorseCount,
+      featuresR2Key: loadOrBuild.featuresR2Key,
+      modelVersion: selectedHeader.model_version,
+      raceKey,
+    };
     const summary = await runRunningStyleInferenceRowsWithFlatModel(env.REALTIME_DB, {
       calibrators,
       cellModelKey: selectedRoute.modelKey,
@@ -591,27 +615,38 @@ export const handleRunningStylePredictionJob = async (
       rows: inferenceRows,
     });
     const completionInput = {
-      cellModelKey: selectedRoute.modelKey,
-      cellVariantId: selectedRoute.variantId,
-      expectedHorseCount,
-      featuresR2Key: loadOrBuild.featuresR2Key,
+      ...syncOutboxBase,
       modelVersion: summary.modelVersion,
-      raceKey,
       writtenHorseCount: summary.writtenCount,
     };
-    const cacheResult =
-      summary.writtenCount >= expectedHorseCount
-        ? await cacheAndSyncCompletedRunningStyles(env, job)
-        : { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
+    const generationComplete = summary.writtenCount >= expectedHorseCount;
+    if (generationComplete) {
+      // This is the durable outbox boundary: D1 now contains every generated
+      // row and the state remains replayable until Neon confirms its commit.
+      await markRunningStyleInferenceSyncFailed(env.REALTIME_DB, {
+        ...completionInput,
+        attemptedAt: new Date().toISOString(),
+        errorMessage: NEON_SYNC_PENDING_MESSAGE,
+      });
+    }
+    const cacheResult = generationComplete
+      ? await cacheAndSyncCompletedRunningStyles(env, job)
+      : { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
     // Record completed ONLY when the Neon mirror actually has every row
     // (2026-08-16 incident: completed was written before the Neon sync, so
     // Neon failures left a completed state with zero Neon rows that no
     // state-based monitor could detect). A failed Neon sync is recorded as
     // sync-failed instead; the planner re-enqueues it and the fast path
     // above retries just the sync until it upgrades to completed.
-    if (
-      summary.writtenCount >= expectedHorseCount &&
-      (cacheResult.neonError !== undefined || cacheResult.neonWrittenCount < expectedHorseCount)
+    if (!generationComplete) {
+      await markRunningStyleInferenceFailed(
+        env.REALTIME_DB,
+        raceKey,
+        `Running-style generation wrote ${summary.writtenCount}/${expectedHorseCount} rows`,
+      );
+    } else if (
+      cacheResult.neonError !== undefined ||
+      cacheResult.neonWrittenCount < expectedHorseCount
     ) {
       await markRunningStyleInferenceSyncFailed(env.REALTIME_DB, {
         ...completionInput,

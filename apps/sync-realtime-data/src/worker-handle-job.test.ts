@@ -97,6 +97,7 @@ vi.mock("./win5-cron", () => ({
 vi.mock("./running-style-cron", () => ({
   RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  resolveRunningStyleCronDates: vi.fn(() => ["20260512"]),
   exportRunningStyleParquetsForDate: vi.fn(async () => ({
     bytesWritten: 100,
     fileCount: 1,
@@ -348,6 +349,24 @@ it("handleJob delegates plan-running-style-predictions to planRunningStylePredic
   await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
   expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
   expect(exportRunningStyleParquetsForDate).toHaveBeenCalledWith(expect.anything(), "20260512");
+});
+
+it("handleJob does not plan running-style predictions when feature warm is incomplete", async () => {
+  const { handleJob } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260512",
+    materializeError: "feature warm failed",
+    materialized: 0,
+    scanned: 1,
+    skipped: 1,
+  });
+  await expect(
+    handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" }),
+  ).rejects.toThrow("feature warm failed");
+  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
 });
 
 it("handleJob materialize-running-style-features logs the materialize summary on success", async () => {

@@ -63,7 +63,7 @@ it("builds canonical Cache API and KV keys", () => {
     "catalog:v2:v2/race-features?date=20260715&source=jra&keibajoCode=05&raceBango=01",
   );
   expect(cacheRequestFor({ date: "20260715", kind: "race-keys" }).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-keys?date=20260715",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-keys?date=20260715&schema=grade-v1",
   );
   const training = trainingDescriptor({
     date: "20260715",
@@ -315,7 +315,7 @@ it("creates cache responses and writes Cache API plus KV", async () => {
   await populateCaches(cacheState.cache, kvState.kv, descriptor, '{"rows":[]}', 60, 600);
   expect(cacheState.putMock).toHaveBeenCalledOnce();
   expect(kvState.putMock).toHaveBeenCalledWith(
-    "catalog:v2:v2/race-keys?date=20260715",
+    "catalog:v2:v2/race-keys?date=20260715&schema=grade-v1",
     '{"rows":[]}',
     { expirationTtl: 600 },
   );

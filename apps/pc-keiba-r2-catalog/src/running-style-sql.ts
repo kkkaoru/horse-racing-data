@@ -14,6 +14,7 @@ const CODE_PATTERN = /^\d{2}$/u;
 // the product. Neither is a semantic truncation.
 const MAX_RUNNERS_PER_RACE = 18;
 const MAX_RACES_PER_VENUE_DAY = 12;
+const WIDE_HISTORY_GRADE_CODES = new Set(["A", "B", "C", "D", "G", "H"]);
 const RACE_ORDER_BY_COLUMNS = "umaban";
 const VENUE_ORDER_BY_COLUMNS = "race_bango, umaban";
 
@@ -89,8 +90,14 @@ const validateFilters = (filters: RunningStyleFeatureFilters): void => {
 const tableName = (env: R2SqlCatalogConfig, table: string): string =>
   `${requireIdentifier(env.R2_SQL_NAMESPACE)}.${table}`;
 
-const historyStart = (date: string): string =>
-  `${String(Number(date.slice(0, 4)) - 10).padStart(4, "0")}${date.slice(4)}`;
+const historyLookbackYears = (filters: RunningStyleFeatureFilters): number => {
+  if (filters.source === "jra") return 5;
+  const gradeCode = filters.gradeCode?.trim().toUpperCase() ?? "";
+  return WIDE_HISTORY_GRADE_CODES.has(gradeCode) ? 10 : 3;
+};
+
+const historyStart = (filters: RunningStyleFeatureFilters): string =>
+  `${String(Number(filters.date.slice(0, 4)) - historyLookbackYears(filters)).padStart(4, "0")}${filters.date.slice(4)}`;
 
 const venuePredicate = (source: RunningStyleRawSource): string => {
   if (source.scope === "nar") return "keibajo_code <> '83'";
@@ -102,11 +109,24 @@ const historyPredicates = (
   filters: RunningStyleFeatureFilters,
   source: RunningStyleRawSource,
 ): string => {
-  const start = historyStart(filters.date);
-  return `kaisai_nen >= '${start.slice(0, 4)}'
-    AND kaisai_nen <= '${filters.date.slice(0, 4)}'
-    AND concat(kaisai_nen, kaisai_tsukihi) >= '${start}'
-    AND concat(kaisai_nen, kaisai_tsukihi) <= '${filters.date}'
+  const start = historyStart(filters);
+  const startYear = start.slice(0, 4);
+  const startMonthDay = start.slice(4);
+  const endYear = filters.date.slice(0, 4);
+  const endMonthDay = filters.date.slice(4);
+  // Keep the partition columns bare. Applying concat() to the date columns
+  // forced R2 SQL to scan every partition in the lookback window before it
+  // could apply the horse/jockey joins. The lexicographic year + month-day
+  // range is equivalent for the fixed-width source values and enables
+  // partition pruning.
+  return `(
+      kaisai_nen > '${startYear}'
+      OR (kaisai_nen = '${startYear}' AND kaisai_tsukihi >= '${startMonthDay}')
+    )
+    AND (
+      kaisai_nen < '${endYear}'
+      OR (kaisai_nen = '${endYear}' AND kaisai_tsukihi <= '${endMonthDay}')
+    )
     AND ${venuePredicate(source)}`;
 };
 

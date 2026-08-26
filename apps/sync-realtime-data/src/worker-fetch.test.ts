@@ -139,6 +139,7 @@ vi.mock("./win5-cron", () => ({
 vi.mock("./running-style-cron", () => ({
   RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  resolveRunningStyleCronDates: vi.fn(() => ["20260512"]),
   planRunningStylePredictionsForDate: vi.fn(async () => ({})),
   refreshViewerRunningStyleCachesForDate: vi.fn(async () => ({})),
   refreshViewerRunningStyleCacheForRace: vi.fn(async () => false),

@@ -197,6 +197,48 @@ it("releases the client when SHOW transaction_read_only fails", async () => {
   expect(clientRelease).toHaveBeenCalledTimes(1);
 });
 
+it("discards a client after a query read timeout so the retry gets a fresh socket", async () => {
+  const timeout = new Error("Query read timeout");
+  const queryFn: QueryFn = vi.fn(async (sql: string) => {
+    if (sql === "SHOW transaction_read_only") {
+      return { rows: [{ transaction_read_only: "off" }] };
+    }
+    if (sql === "INSERT INTO demo VALUES (1)") {
+      throw timeout;
+    }
+    return undefined;
+  });
+  const { clientRelease, pool } = createPool(queryFn);
+  await expect(
+    withWritableClient(pool, async (client) => {
+      await client.query("INSERT INTO demo VALUES (1)");
+    }),
+  ).rejects.toThrow("Query read timeout");
+  expect(vi.mocked(queryFn).mock.calls.map(([sql]) => sql)).toStrictEqual([
+    "BEGIN",
+    "SET TRANSACTION READ WRITE",
+    "SHOW transaction_read_only",
+    "INSERT INTO demo VALUES (1)",
+  ]);
+  expect(clientRelease).toHaveBeenCalledWith(timeout);
+});
+
+it("discards a client when Neon terminates the connection", async () => {
+  const timeout = new Error("Connection terminated due to connection timeout");
+  const queryFn: QueryFn = vi.fn(async (sql: string) => {
+    if (sql === "BEGIN") {
+      throw timeout;
+    }
+    return undefined;
+  });
+  const { clientRelease, pool } = createPool(queryFn);
+  await expect(withWritableClient(pool, async () => undefined)).rejects.toThrow(
+    "Connection terminated due to connection timeout",
+  );
+  expect(vi.mocked(queryFn).mock.calls.map(([sql]) => sql)).toStrictEqual(["BEGIN"]);
+  expect(clientRelease).toHaveBeenCalledWith(timeout);
+});
+
 it("rolls back and rethrows when COMMIT fails", async () => {
   const queryFn: QueryFn = vi.fn(async (sql: string) => {
     if (sql === "SHOW transaction_read_only") {

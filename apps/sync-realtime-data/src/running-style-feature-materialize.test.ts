@@ -31,6 +31,10 @@ vi.mock("./running-style-features", () => ({
 }));
 vi.mock("./running-style-model-binary", () => ({
   buildRunningStyleFlatModelKey: vi.fn(() => "model.flatbin"),
+  loadFlatLightGBMHeaderFromR2: vi.fn(async () => ({
+    feature_names: ["f1"],
+    model_version: "v3",
+  })),
   loadFlatLightGBMModelFromR2: vi.fn(async () => ({
     header: { feature_names: ["f1"], model_version: "v3" },
   })),
@@ -330,6 +334,48 @@ it("keeps the Catalog error when fallback parquet is missing", async () => {
   expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
 });
 
+it("does not start the slow PostgreSQL fallback for an R2 SQL resource exhaustion", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable code=70200 R2 SQL HTTP 500: 70200 Internal Server Error",
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow(catalogError.message);
+  expect(buildRunningStyleFeaturesForRaceFromPostgres).not.toHaveBeenCalled();
+});
+
+it("also treats R2 SQL query-plan rejection 60104 as resource exhaustion", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable code=60104 R2 SQL query plan rejected",
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow(catalogError.message);
+  expect(buildRunningStyleFeaturesForRaceFromPostgres).not.toHaveBeenCalled();
+});
+
 it("keeps the Catalog error when fallback parquet misses model features", async () => {
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
@@ -392,6 +438,35 @@ it("fails closed when Catalog has no rows", async () => {
       race: RACE,
     }),
   ).rejects.toThrow("no running-style feature rows found");
+});
+
+it("uses the PostgreSQL mirror when Catalog returns an empty race slice", async () => {
+  const { materializeRunningStyleFeatureParquetForRace } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue([]);
+  vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+    elapsedMs: 12,
+    rows: rows(),
+    sqlRows: 1,
+  });
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+  await expect(
+    materializeRunningStyleFeatureParquetForRace({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toMatchObject({ builtRowCount: 1, bytesWritten: 42 });
+  expect(buildRunningStyleFeaturesForRaceFromPostgres).toHaveBeenCalled();
 });
 
 it("fails closed when Catalog rows do not cover the model", async () => {
@@ -489,6 +564,42 @@ it("materializes Catalog races and records a per-race failure", async () => {
     scanned: 2,
     skipped: 1,
   });
+});
+
+it("date materialization keeps a valid Worker R2 warm cache without rebuilding it", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toStrictEqual({
+    date: "20260513",
+    materialized: 0,
+    scanned: 1,
+    skipped: 1,
+  });
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
 });
 
 it("returns an empty summary for a Catalog date without races", async () => {

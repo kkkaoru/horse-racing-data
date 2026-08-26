@@ -10,6 +10,7 @@ export interface RunningStyleRaceParams {
   kaisaiTsukihi: string;
   keibajoCode: string;
   raceBango: string;
+  gradeCode?: string | null;
 }
 
 const RACE_BANGO_PAD_WIDTH = 2;

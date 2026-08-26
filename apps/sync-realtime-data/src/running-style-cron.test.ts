@@ -9,6 +9,7 @@ import {
   formatYYYYMMDDInJst,
   formatTomorrowYYYYMMDDInJst,
   isRunningStyleFoundationReady,
+  isRunningStylePlanDateAllowed,
   resolveRunningStyleCronDates,
   runRunningStyleCronTick,
   selectRacesNeedingRunningStyleInference,
@@ -127,6 +128,13 @@ test("formatTomorrowYYYYMMDDInJst returns the next JST date", () => {
   expect(addDaysToYYYYMMDDInJst("20260228", 1)).toBe("20260301");
 });
 
+test("running-style planner date fence allows recovery through tomorrow only", () => {
+  const now = new Date("2026-08-25T12:00:00.000Z");
+  expect(isRunningStylePlanDateAllowed("20260825", now)).toBe(true);
+  expect(isRunningStylePlanDateAllowed("20260826", now)).toBe(true);
+  expect(isRunningStylePlanDateAllowed("20260827", now)).toBe(false);
+});
+
 test("runRunningStyleCronTick does not touch Postgres or enqueue when disabled", async () => {
   const send = vi.fn();
   const env = {
@@ -138,7 +146,7 @@ test("runRunningStyleCronTick does not touch Postgres or enqueue when disabled",
 
   const result = await runRunningStyleCronTick(env, new Date("2026-05-19T00:00:00Z"));
 
-  expect(result).toMatchObject({ enqueued: 0, scanned: 1 });
+  expect(result).toMatchObject({ enqueued: 0, scanned: 2 });
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -325,10 +333,18 @@ test("selectRacesNeedingRunningStyleInference treats malformed attemptedAt as ac
   expect(selected.needed.length).toBe(1);
 });
 
-test("resolveRunningStyleCronDates returns only today outside the sweep window", () => {
+test("resolveRunningStyleCronDates audits August 28 and August 29 together", () => {
+  expect(resolveRunningStyleCronDates(new Date("2026-08-28T06:00:00Z"))).toStrictEqual([
+    "20260828",
+    "20260829",
+  ]);
+});
+
+test("resolveRunningStyleCronDates returns today and tomorrow outside the sweep window", () => {
   // 2026-06-04T06:00:00Z = 2026-06-04T15:00:00 JST (hour 15, outside 0-6)
   expect(resolveRunningStyleCronDates(new Date("2026-06-04T06:00:00Z"))).toStrictEqual([
     "20260604",
+    "20260605",
   ]);
 });
 
@@ -337,6 +353,7 @@ test("resolveRunningStyleCronDates sweeps yesterday when JST hour is 0-5", () =>
   expect(resolveRunningStyleCronDates(new Date("2026-06-03T16:30:00Z"))).toStrictEqual([
     "20260603",
     "20260604",
+    "20260605",
   ]);
 });
 
@@ -345,6 +362,7 @@ test("resolveRunningStyleCronDates sweeps yesterday at the boundary JST hour 5:5
   expect(resolveRunningStyleCronDates(new Date("2026-06-03T20:59:00Z"))).toStrictEqual([
     "20260603",
     "20260604",
+    "20260605",
   ]);
 });
 
@@ -352,10 +370,11 @@ test("resolveRunningStyleCronDates exits sweep window at JST hour 6", () => {
   // 2026-06-03T21:00:00Z = 2026-06-04T06:00:00 JST (hour 6, OUTSIDE window)
   expect(resolveRunningStyleCronDates(new Date("2026-06-03T21:00:00Z"))).toStrictEqual([
     "20260604",
+    "20260605",
   ]);
 });
 
-test("runRunningStyleCronTick scans yesterday + today inside the sweep window", async () => {
+test("runRunningStyleCronTick scans yesterday, today, and tomorrow inside the sweep window", async () => {
   const send = vi.fn();
   const env = {
     PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
@@ -365,11 +384,11 @@ test("runRunningStyleCronTick scans yesterday + today inside the sweep window", 
   } as unknown as Env;
   // JST 2026-06-04T01:30:00 → sweep window
   const result = await runRunningStyleCronTick(env, new Date("2026-06-03T16:30:00Z"));
-  expect(result.scanned).toBe(2);
-  expect(result.cacheRefresh?.date).toBe("20260604");
+  expect(result.scanned).toBe(3);
+  expect(result.cacheRefresh?.date).toBe("20260605");
 });
 
-test("runRunningStyleCronTick scans only today outside the sweep window", async () => {
+test("runRunningStyleCronTick scans today and tomorrow outside the sweep window", async () => {
   const send = vi.fn();
   const env = {
     PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
@@ -379,8 +398,8 @@ test("runRunningStyleCronTick scans only today outside the sweep window", async 
   } as unknown as Env;
   // JST 2026-06-04T15:00:00 → outside window
   const result = await runRunningStyleCronTick(env, new Date("2026-06-04T06:00:00Z"));
-  expect(result.scanned).toBe(1);
-  expect(result.cacheRefresh?.date).toBe("20260604");
+  expect(result.scanned).toBe(2);
+  expect(result.cacheRefresh?.date).toBe("20260605");
 });
 
 test("runRunningStyleCronTick captures planError when planRunningStylePredictionsForDate throws", async () => {

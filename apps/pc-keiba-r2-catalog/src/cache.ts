@@ -103,6 +103,7 @@ const appendCellClassCacheParams = (url: URL, descriptor: CellClassCacheFlags): 
 export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
   const url = new URL(`/${CACHE_VERSION}/${descriptor.kind}`, CACHE_ORIGIN);
   url.searchParams.set("date", descriptor.date);
+  if (descriptor.kind === "race-keys") url.searchParams.set("schema", "grade-v1");
   if (descriptor.kind === "race-features") {
     url.searchParams.set("source", descriptor.source);
     if (descriptor.keibajoCode) url.searchParams.set("keibajoCode", descriptor.keibajoCode);

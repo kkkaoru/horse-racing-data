@@ -144,8 +144,8 @@ test("does not mark a race completed when only existing predictions exist but st
   expect(selected.needed).toHaveLength(1);
 });
 
-test("treats stale active state (attemptedAt older than 5 minutes) as not active", () => {
-  const oldAttempt = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+test("treats stale active state (attemptedAt older than 15 minutes) as not active", () => {
+  const oldAttempt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],
     new Map([[RACE_KEY, 14]]),

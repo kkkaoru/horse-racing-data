@@ -21,7 +21,11 @@ it("formats the target date in JST and accepts an explicit date", () => {
   expect(addDaysToRealtimeDiscoveryDate("20261231", 1)).toBe("20270101");
   expect(
     resolveRealtimeDiscoveryDates(undefined, new Date("2026-08-21T15:30:00.000Z")),
-  ).toStrictEqual({ base: "20260822", next: "20260823" });
+  ).toStrictEqual({
+    additional: ["20260824", "20260825", "20260826", "20260827", "20260828"],
+    base: "20260822",
+    next: "20260823",
+  });
 });
 
 it("rejects an invalid configured date", () => {
@@ -139,6 +143,38 @@ it("enqueues discovery, polls completion, then enqueues planning in strict date 
     ["Discovery pending for 20260822: D1 JRA 12/36; polling again in 2000ms."],
     ["Discovery completed for 20260822: D1 JRA 36/36."],
     ["Discovery completed for 20260823: D1 JRA 0/0."],
+  ]);
+});
+
+it("can enqueue running-style planning after discovery for newly synced dates", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    .mockResolvedValueOnce(
+      new Response('{"complete":true,"d1JraRaceCount":0,"date":"20260827","neonJraRaceCount":0}', {
+        status: 200,
+      }),
+    )
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+
+  await triggerRealtimeDiscoveryAfterReplica({
+    baseUrl: "https://sync-realtime-data.example",
+    dates: { base: "20260827", next: "20260827" },
+    fetcher,
+    log: vi.fn(),
+    planRunningStyle: true,
+    pollIntervalMilliseconds: 10_000,
+    pollTimeoutMilliseconds: 60_000,
+    retryDelay: vi.fn().mockResolvedValue(undefined),
+    token: "secret",
+  });
+
+  expect(fetcher.mock.calls.map((call) => call[1]?.body)).toStrictEqual([
+    '{"date":"20260827","type":"discover-urls"}',
+    undefined,
+    '{"date":"20260827","type":"plan-premium-race-data-fetches"}',
+    '{"date":"20260827","type":"plan-running-style-predictions"}',
   ]);
 });
 

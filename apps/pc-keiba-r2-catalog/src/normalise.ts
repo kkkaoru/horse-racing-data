@@ -92,11 +92,13 @@ export const normaliseDailyRaceEntryRow = (raw: Record<string, unknown>): DailyR
 export const normaliseCatalogRaceKeyRow = (raw: Record<string, unknown>): CatalogRaceKeyRow => {
   const source = normaliseSource(raw.source);
   const date = normaliseRaceDate(raw.race_date);
+  const gradeCode = stringOrNull(raw.grade_code);
   return {
     kaisai_nen: date.slice(0, 4),
     kaisai_tsukihi: date.slice(4, 8),
     keibajo_code: paddedCode(raw.keibajo_code, "keibajo_code"),
     race_bango: paddedCode(raw.race_bango, "race_bango"),
     source,
+    ...(gradeCode === null ? {} : { grade_code: gradeCode }),
   };
 };

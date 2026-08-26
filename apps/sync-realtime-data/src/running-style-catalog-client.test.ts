@@ -182,10 +182,10 @@ it("bounds a running-style Catalog request and classifies the timeout as unavail
   const pending = fetchRunningStyleFeaturesFromCatalog(catalog, RACE, ["f1"]).catch(
     (error: unknown) => error,
   );
-  await vi.advanceTimersByTimeAsync(300_000);
+  await vi.advanceTimersByTimeAsync(120_000);
   const failure: unknown = await pending;
   expect(failure instanceof Error ? failure.message : "").toBe(
-    "running-style Catalog request timed out after 300000ms",
+    "running-style Catalog request timed out after 60000ms",
   );
   expect(isCatalogUnavailableError(failure)).toBe(true);
   vi.useRealTimers();

@@ -15,7 +15,18 @@ import type { RaceHorseFeatureRow } from "./running-style-r2";
 
 const RECENT_WINDOW_SIZE = 5;
 const SAME_DISTANCE_TOLERANCE = 200;
-const HISTORY_LOOKBACK_YEARS = 10;
+const DEFAULT_NAR_HISTORY_LOOKBACK_YEARS = 3;
+const JRA_HISTORY_LOOKBACK_YEARS = 5;
+const GRADED_NAR_HISTORY_LOOKBACK_YEARS = 10;
+const WIDE_HISTORY_GRADE_CODES = new Set(["A", "B", "C", "D", "G", "H"]);
+
+const historyLookbackYears = (params: RunningStyleRaceParams): number => {
+  if (params.source === "jra") return JRA_HISTORY_LOOKBACK_YEARS;
+  const gradeCode = params.gradeCode?.trim().toUpperCase() ?? "";
+  return WIDE_HISTORY_GRADE_CODES.has(gradeCode)
+    ? GRADED_NAR_HISTORY_LOOKBACK_YEARS
+    : DEFAULT_NAR_HISTORY_LOOKBACK_YEARS;
+};
 const CONSECUTIVE_RACE_WINDOW_DAYS = 30;
 const JOCKEY_RECENT_DAYS = 60;
 const TRACK_BIAS_WINDOW_DAYS = 5;
@@ -95,7 +106,7 @@ const NAR_SUBCLASS_EXPR = (alias: string): string => `
   end
 `;
 
-const buildPerRaceCoreCtesSql = (): string => `
+const buildPerRaceCoreCtesSql = (lookbackYears: number): string => `
 with params as (
   select
     $1::text as source,
@@ -105,7 +116,7 @@ with params as (
     lpad($5::text, 2, '0') as race_bango,
     ($2::text || $3::text) as race_date,
     to_date($2::text || $3::text, 'YYYYMMDD') as race_dt,
-    to_char(to_date($2::text || $3::text, 'YYYYMMDD') - interval '${HISTORY_LOOKBACK_YEARS} years', 'YYYYMMDD') as history_start
+    to_char(to_date($2::text || $3::text, 'YYYYMMDD') - interval '${lookbackYears} years', 'YYYYMMDD') as history_start
 ),
 rec as (
   select
@@ -195,7 +206,7 @@ target as (
 ),
 `;
 
-const buildSharedFeatureCtesSql = (): string => `target_horses as (
+const buildSharedFeatureCtesSql = (lookbackYears: number): string => `target_horses as (
   select distinct ketto_toroku_bango from target
 ),
 se_lookup as (
@@ -207,7 +218,9 @@ se_lookup as (
   from jvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
-  where se.kaisai_nen || se.kaisai_tsukihi between p.history_start and p.race_date
+  where (se.kaisai_nen, se.kaisai_tsukihi) between
+    (left(p.history_start, 4), right(p.history_start, 4))
+    and (left(p.race_date, 4), right(p.race_date, 4))
   union all
   select 'nar' as source, se.kaisai_nen, se.kaisai_tsukihi,
          lpad(se.keibajo_code::text, 2, '0') as keibajo_code,
@@ -217,7 +230,9 @@ se_lookup as (
   from nvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
-  where se.kaisai_nen || se.kaisai_tsukihi between p.history_start and p.race_date
+  where (se.kaisai_nen, se.kaisai_tsukihi) between
+    (left(p.history_start, 4), right(p.history_start, 4))
+    and (left(p.race_date, 4), right(p.race_date, 4))
 ),
 ra_lookup as (
   select 'jra' as source, ra.kaisai_nen, ra.kaisai_tsukihi,
@@ -226,7 +241,9 @@ ra_lookup as (
          ${SAFE_ZENHAN_3F_EXPR("ra")} as zenhan_3f
   from jvd_ra ra
   cross join params p
-  where ra.kaisai_nen || ra.kaisai_tsukihi between p.history_start and p.race_date
+  where (ra.kaisai_nen, ra.kaisai_tsukihi) between
+    (left(p.history_start, 4), right(p.history_start, 4))
+    and (left(p.race_date, 4), right(p.race_date, 4))
   union all
   select 'nar' as source, ra.kaisai_nen, ra.kaisai_tsukihi,
          lpad(ra.keibajo_code::text, 2, '0') as keibajo_code,
@@ -234,7 +251,9 @@ ra_lookup as (
          ${SAFE_ZENHAN_3F_EXPR("ra")} as zenhan_3f
   from nvd_ra ra
   cross join params p
-  where ra.kaisai_nen || ra.kaisai_tsukihi between p.history_start and p.race_date
+  where (ra.kaisai_nen, ra.kaisai_tsukihi) between
+    (left(p.history_start, 4), right(p.history_start, 4))
+    and (left(p.race_date, 4), right(p.race_date, 4))
 ),
 target_current_bataiju as (
   select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
@@ -285,7 +304,7 @@ horse_history_base as (
     on h.source = t.source
    and h.ketto_toroku_bango = t.ketto_toroku_bango
    and h.race_date < t.race_date
-   and h.race_dt >= t.race_dt - interval '${HISTORY_LOOKBACK_YEARS} years'
+   and h.race_dt >= t.race_dt - interval '${lookbackYears} years'
   left join se_lookup hs
     on hs.source = h.source
    and hs.kaisai_nen = h.kaisai_nen
@@ -343,7 +362,7 @@ jockey_history as (
     on h.source = t.source
    and h.kishumei_ryakusho = t.kishumei_ryakusho
    and h.race_date < t.race_date
-   and h.race_dt >= t.race_dt - interval '${HISTORY_LOOKBACK_YEARS} years'
+   and h.race_dt >= t.race_dt - interval '${lookbackYears} years'
   where h.finish_position is not null and t.kishumei_ryakusho is not null
 ),
 jockey_career as (
@@ -392,7 +411,7 @@ trainer_history as (
     on h.source = t.source
    and h.chokyoshimei_ryakusho = t.chokyoshimei_ryakusho
    and h.race_date < t.race_date
-   and h.race_dt >= t.race_dt - interval '${HISTORY_LOOKBACK_YEARS} years'
+   and h.race_dt >= t.race_dt - interval '${lookbackYears} years'
   where h.finish_position is not null and t.chokyoshimei_ryakusho is not null
 ),
 trainer_career as (
@@ -933,8 +952,13 @@ final_features as (
 select * from final_features order by umaban
 `;
 
-export const buildRunningStylePostgresFeatureSql = (): string =>
-  buildPerRaceCoreCtesSql() + buildSharedFeatureCtesSql();
+export const buildRunningStylePostgresFeatureSql = (params?: RunningStyleRaceParams): string =>
+  buildPerRaceCoreCtesSql(
+    params === undefined ? DEFAULT_NAR_HISTORY_LOOKBACK_YEARS : historyLookbackYears(params),
+  ) +
+  buildSharedFeatureCtesSql(
+    params === undefined ? DEFAULT_NAR_HISTORY_LOOKBACK_YEARS : historyLookbackYears(params),
+  );
 
 export interface BuildRunningStyleBatchFeatureSqlArgs {
   featureSchemaVersion: string;
@@ -987,7 +1011,7 @@ with params as (
     '${source}'::text as source,
     '${fromDate}'::text as race_date_min,
     '${toDate}'::text as race_date,
-    to_char(to_date('${fromDate}', 'YYYYMMDD') - interval '${HISTORY_LOOKBACK_YEARS} years', 'YYYYMMDD') as history_start
+    to_char(to_date('${fromDate}', 'YYYYMMDD') - interval '${source === "jra" ? JRA_HISTORY_LOOKBACK_YEARS : DEFAULT_NAR_HISTORY_LOOKBACK_YEARS} years', 'YYYYMMDD') as history_start
 ),
 rec as (
   select
@@ -1116,7 +1140,10 @@ export const buildRunningStyleBatchFeatureSql = (
   // Strict mode is an opt-in transform that narrows the nige case-arm to
   // require leading at both 1st and 2nd corner.
   const lax = applyBatchMaterializedHints(
-    buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql(),
+    buildBatchCoreCtesSql(args) +
+      buildSharedFeatureCtesSql(
+        args.source === "jra" ? JRA_HISTORY_LOOKBACK_YEARS : DEFAULT_NAR_HISTORY_LOOKBACK_YEARS,
+      ),
   );
   if (args.strictNigeTarget !== true) return lax;
   return applyBatchStrictNigeTargetTransform(lax);
@@ -1211,7 +1238,7 @@ export const buildRunningStyleFeaturesForRaceFromPostgres = async (
   featureNames: ReadonlyArray<string>,
 ): Promise<PostgresFeatureBuildSummary> => {
   const started = performance.now();
-  const result = await pool.query<SqlRow>(buildRunningStylePostgresFeatureSql(), [
+  const result = await pool.query<SqlRow>(buildRunningStylePostgresFeatureSql(params), [
     params.source,
     params.kaisaiNen,
     params.kaisaiTsukihi,
@@ -1312,12 +1339,14 @@ const D1_TARGET_CTE_SQL = `target as (
 const REC_TARGET_CTE_MARKER =
   /target as \(\s*select\s+r\.source,[\s\S]*?where r\.ketto_toroku_bango is not null\s*\)/;
 
-export const buildRunningStylePostgresFeatureSqlWithD1Target = (): string => {
+export const buildRunningStylePostgresFeatureSqlWithD1Target = (
+  params?: RunningStyleRaceParams,
+): string => {
   // REC_TARGET_CTE_MARKER is matched against a hardcoded SQL constant in the
   // same module, so the marker always matches. replace() would silently no-op
   // if it ever stopped matching, surfacing the regression via downstream SQL
   // failures rather than this synchronous throw.
-  const baseSql = buildRunningStylePostgresFeatureSql();
+  const baseSql = buildRunningStylePostgresFeatureSql(params);
   return baseSql.replace(REC_TARGET_CTE_MARKER, D1_TARGET_CTE_SQL);
 };
 
@@ -1331,7 +1360,7 @@ export const buildRunningStyleFeaturesForRaceFromD1Target = async (
     throw new Error(`no D1 target rows provided for race ${buildRunningStyleRaceKey(params)}`);
   }
   const started = performance.now();
-  const result = await pool.query<SqlRow>(buildRunningStylePostgresFeatureSqlWithD1Target(), [
+  const result = await pool.query<SqlRow>(buildRunningStylePostgresFeatureSqlWithD1Target(params), [
     params.source,
     params.kaisaiNen,
     params.kaisaiTsukihi,

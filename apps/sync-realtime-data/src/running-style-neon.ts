@@ -1,7 +1,8 @@
 // Run with bun. Neon upsert helpers for race_running_style_model_predictions.
-// Called after D1 write succeeds so the viewer can read predictions from Neon.
-// Failures are non-fatal — D1 remains the source of truth and the cron will
-// retry the Neon write on the next tick via the backfill path.
+// Called after D1 recovery rows are durable so the viewer can read predictions
+// from Neon. Neon is the canonical serving store; D1 is only the retry payload
+// and orchestration ledger. A Neon failure must therefore leave the inference
+// state as sync-failed until an idempotent retry commits every expected row.
 
 import type { Pool, PoolClient } from "pg";
 

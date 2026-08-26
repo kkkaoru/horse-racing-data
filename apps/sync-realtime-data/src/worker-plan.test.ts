@@ -91,6 +91,7 @@ vi.mock("./win5-cron", () => ({
 vi.mock("./running-style-cron", () => ({
   RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  resolveRunningStyleCronDates: vi.fn(() => ["20260512"]),
   formatTomorrowYYYYMMDDInJst: vi.fn(() => "20260513"),
   formatYYYYMMDDInJst: vi.fn(() => "20260512"),
   planRunningStylePredictionsForDate: vi.fn(async () => ({})),
@@ -177,6 +178,23 @@ const buildEnv = (overrides?: Partial<Env>): Env => {
     ...overrides,
   } as unknown as Env;
 };
+
+const buildReadyFinishPositionBinding = (raceKeys: readonly string[]): Partial<Env> => ({
+  FINISH_POSITION_CRON: {
+    fetch: vi.fn(async () =>
+      Response.json({
+        races: raceKeys.map((raceKey) => {
+          const parts = raceKey.split(":");
+          return {
+            preWeight: { complete: true },
+            raceKey: `${parts[0]}:${parts[3]}:${parts[4]}`,
+          };
+        }),
+      }),
+    ) as typeof fetch,
+  },
+  TRIGGER_TOKEN: "test-trigger-token",
+});
 
 const buildWeightRetryRace = (overrides?: Partial<NarRaceSource>): NarRaceSource => ({
   babaCode: "08",
@@ -2425,6 +2443,7 @@ it("runWeightWatchdog logs the no-stale path when there are no candidates", asyn
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["jra:2026:0607:05:06", "jra:2026:0607:05:11"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2468,6 +2487,119 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
   );
 });
 
+it("filterPreweightReadyWeightRaces admits only complete races and batches readiness by day", async () => {
+  const { filterPreweightReadyWeightRaces } = await import("./worker");
+  const fetchBinding = vi.fn(async (request: Request) => {
+    const runYmd = new URL(request.url).searchParams.get("runYmd");
+    return Response.json({
+      races:
+        runYmd === "20260607"
+          ? [
+              { preWeight: { complete: true }, raceKey: "nar:44:01" },
+              { preWeight: { complete: false }, raceKey: "nar:44:02" },
+            ]
+          : [{ preWeight: { complete: true }, raceKey: "jra:05:01" }],
+    });
+  });
+  const races = [
+    {
+      lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
+      raceKey: "nar:2026:0607:44:01",
+      raceStartAtJst: "2026-06-07T17:00:00+09:00",
+    },
+    {
+      lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
+      raceKey: "nar:2026:0607:44:02",
+      raceStartAtJst: "2026-06-07T17:30:00+09:00",
+    },
+    {
+      lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
+      raceKey: "jra:2026:0608:05:01",
+      raceStartAtJst: "2026-06-08T10:00:00+09:00",
+    },
+  ];
+  const result = await filterPreweightReadyWeightRaces(
+    buildEnv({
+      FINISH_POSITION_CRON: { fetch: fetchBinding as typeof fetch },
+      TRIGGER_TOKEN: "test-token",
+    }),
+    races,
+  );
+  expect(result.map((race) => race.raceKey)).toStrictEqual([
+    "nar:2026:0607:44:01",
+    "jra:2026:0608:05:01",
+  ]);
+  expect(fetchBinding).toHaveBeenCalledTimes(2);
+  expect(
+    fetchBinding.mock.calls.every(
+      ([request]) => request.headers.get("authorization") === "Bearer test-token",
+    ),
+  ).toBe(true);
+});
+
+it("filterPreweightReadyWeightRaces fails closed on missing config and invalid upstream data", async () => {
+  const { filterPreweightReadyWeightRaces } = await import("./worker");
+  const race = {
+    lastWeightFetchAt: null,
+    lastWeightFetchAttemptAt: null,
+    lastWeightFetchSoftMissAt: null,
+    raceKey: "nar:2026:0607:44:01",
+    raceStartAtJst: "2026-06-07T17:00:00+09:00",
+  };
+  await expect(filterPreweightReadyWeightRaces(buildEnv(), [race])).rejects.toThrow(
+    "FINISH_POSITION_CRON binding is required",
+  );
+  await expect(
+    filterPreweightReadyWeightRaces(
+      buildEnv({ FINISH_POSITION_CRON: { fetch: vi.fn() as typeof fetch } }),
+      [race],
+    ),
+  ).rejects.toThrow("TRIGGER_TOKEN is required");
+  await expect(
+    filterPreweightReadyWeightRaces(
+      buildEnv({
+        ...buildReadyFinishPositionBinding([race.raceKey]),
+        FINISH_POSITION_CRON: {
+          fetch: vi.fn(async () => Response.json({ races: [{}] })) as typeof fetch,
+        },
+      }),
+      [race],
+    ),
+  ).rejects.toThrow("invalid race");
+});
+
+it("filterPreweightReadyWeightRaces returns early for no races and rejects invalid keys or HTTP", async () => {
+  const { filterPreweightReadyWeightRaces } = await import("./worker");
+  await expect(filterPreweightReadyWeightRaces(buildEnv(), [])).resolves.toStrictEqual([]);
+  const race = {
+    lastWeightFetchAt: null,
+    lastWeightFetchAttemptAt: null,
+    lastWeightFetchSoftMissAt: null,
+    raceKey: "invalid",
+    raceStartAtJst: "2026-06-07T17:00:00+09:00",
+  };
+  await expect(
+    filterPreweightReadyWeightRaces(buildEnv({ ...buildReadyFinishPositionBinding([]) }), [race]),
+  ).rejects.toThrow("invalid race key");
+  await expect(
+    filterPreweightReadyWeightRaces(
+      buildEnv({
+        FINISH_POSITION_CRON: {
+          fetch: vi.fn(async () => new Response(null, { status: 503 })) as typeof fetch,
+        },
+        TRIGGER_TOKEN: "test-token",
+      }),
+      [{ ...race, raceKey: "nar:2026:0607:44:01" }],
+    ),
+  ).rejects.toThrow("HTTP 503");
+});
+
 // 2026-07-03 incident: the watchdog used to also inline-run
 // fetchAndStoreWeights for a subset of the same jobs it had just enqueued,
 // duplicating the HTTP request to keiba.go.jp for the same race in the same
@@ -2498,6 +2630,7 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale JRA races without in
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["jra:2026:0607:05:06", "jra:2026:0607:05:11"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2553,6 +2686,7 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale NAR races without in
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["nar:2026:0607:44:07"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2597,6 +2731,7 @@ it("runWeightWatchdog uses the next cron cadence only after a completed soft mis
   const prepare = vi.fn(() => ({ bind }));
   const send = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["nar:2026:0824:83:12"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
   } as unknown as Env;
@@ -2629,6 +2764,7 @@ it("runWeightWatchdog atomically enqueues one job when duplicate reads return th
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["nar:2026:0824:83:12"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2658,6 +2794,7 @@ it("runWeightWatchdog does not enqueue a race when its atomic reservation loses"
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["nar:2026:0607:44:07"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2695,6 +2832,7 @@ it("runWeightWatchdog recovers a failed queue send on the next near-race backoff
     .mockResolvedValueOnce();
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding(["nar:2026:0607:44:07"]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
@@ -2754,6 +2892,11 @@ it("runWeightWatchdog reserves and enqueues 57 races uniquely across three cappe
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
   const env = {
+    ...buildReadyFinishPositionBinding([
+      ...firstRows.map((row) => row.race_key),
+      ...secondRows.map((row) => row.race_key),
+      ...thirdRows.map((row) => row.race_key),
+    ]),
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;

@@ -743,6 +743,57 @@ it("splits only R2 SQL 70200 race failures into bounded per-horse batches", asyn
   });
 });
 
+it("splits an R2 SQL 60104 race-plan rejection into per-horse batches", async () => {
+  const harness = createHarness();
+  const fetchCalls: string[] = [];
+  const fetchImpl: Fetcher = async (_input, init) => {
+    fetchCalls.push(String(init?.body));
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 60104, message: "unprocessable entity" }], success: false },
+        { status: 422 },
+      );
+    }
+    return Response.json({ result: { rows: [] }, success: true });
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=nar&keibajoCode=43&raceBango=12",
+    ),
+    harness.env,
+    { cache: harness.dependencies.cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  expect(fetchCalls).toHaveLength(19);
+  expect(fetchCalls.slice(1).join("\n")).not.toMatch("order by umaban");
+});
+
+it("falls back to per-horse batches when the race-wide R2 SQL query stalls", async () => {
+  vi.useFakeTimers();
+  try {
+    const harness = createHarness();
+    let calls = 0;
+    const fetchImpl: Fetcher = async () => {
+      calls += 1;
+      if (calls === 1) return new Promise<Response>(() => {});
+      return Response.json({ result: { rows: [] }, success: true });
+    };
+    const responsePromise = handleRequest(
+      new Request(
+        "https://catalog.test/v1/running-style-features?date=20260715&source=nar&keibajoCode=43&raceBango=11",
+      ),
+      harness.env,
+      { cache: harness.dependencies.cache, fetchImpl },
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(calls).toBe(19);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("splits after the 40018 ORDER BY retry also returns R2 SQL 70200", async () => {
   const harness = createHarness();
   const fetchCalls: string[] = [];

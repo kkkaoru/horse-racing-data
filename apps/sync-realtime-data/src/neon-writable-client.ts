@@ -13,6 +13,8 @@ const SET_READ_WRITE_SQL = "SET TRANSACTION READ WRITE";
 const SHOW_READ_ONLY_SQL = "SHOW transaction_read_only";
 const COMMIT_SQL = "COMMIT";
 const ROLLBACK_SQL = "ROLLBACK";
+const QUERY_READ_TIMEOUT_MESSAGE = "Query read timeout";
+const CONNECTION_TERMINATED_MESSAGE_PREFIX = "Connection terminated";
 
 export class NeonTransactionReadOnlyError extends Error {
   constructor(actual: string | undefined) {
@@ -29,6 +31,11 @@ const rollbackQuietly = async (client: PoolClient): Promise<void> => {
   }
 };
 
+const shouldDiscardClient = (error: unknown): error is Error =>
+  error instanceof Error &&
+  (error.message === QUERY_READ_TIMEOUT_MESSAGE ||
+    error.message.startsWith(CONNECTION_TERMINATED_MESSAGE_PREFIX));
+
 export const withWritableClient = async <T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
@@ -44,11 +51,19 @@ export const withWritableClient = async <T>(
     }
     const result = await fn(client);
     await client.query(COMMIT_SQL);
+    client.release();
     return result;
   } catch (error: unknown) {
+    if (shouldDiscardClient(error)) {
+      // node-postgres query_timeout rejects the Promise without cancelling the
+      // server query. Reusing that socket can make the next retry queue behind
+      // the abandoned response and repeat the same timeout. An error release
+      // removes the client from pg-pool so the retry must open a fresh socket.
+      client.release(error);
+      throw error;
+    }
     await rollbackQuietly(client);
-    throw error;
-  } finally {
     client.release();
+    throw error;
   }
 };
