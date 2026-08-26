@@ -1,9 +1,11 @@
 # NAR Per-Class Baseline and Context
 
 Category: NAR  
-Production model: `iter12-nar-xgb-hpo-v8` (global fallback, 174 features)  
-Per-class ensembles: NEW / MUKATSU / C / A / OP / other — iter30 CB ensembles (except C which
-uses iter36 LGB LambdaRank). Class B routes to global iter12 fallback (no ensemble registered).
+Production base: `iter12-nar-xgb-hpo-v8-clean188`（MLflow `nar-finish-position@champion` version 3、188 features）
+Production default output: `NAR_TRANSFORMER_BLEND_ENABLED`有効時はclean113 Set Transformerとの0.5/0.5 score-level fusion `iter40-nar-settransformer-blend-v1`。無効時だけclean188 base-only。
+旧per-class ensembles（iter30/iter36）は現行dispatchから廃止済み。
+
+Authority: `apps/finish-position-predict-container/src/predict_lib/model_meta.json`と`docs/finish-position-prediction-system.md`。下記per-class表はhistorical experiment contextであり、現行routingの説明ではない。
 2YO / 3YO: labeled separately since commit aa2afd8, but normalize to "other" in per_class.py.
 
 ---

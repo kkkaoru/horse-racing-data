@@ -1,8 +1,10 @@
 # Ban-ei Per-Class Baseline and Context
 
 Category: Ban-ei  
-Production model: `banei-cb-v7-lineage-wf-21y` (category-global, no per-class routing)  
-Per-class routing: none (Ban-ei is excluded from PER_CLASS_ENABLED_CATEGORIES in per_class.py)
+Production default: `banei-cb-v9-sim-2011` (MLflow `banei-finish-position@champion` version 5)
+Cell routing: `grade_code == "E"`のみ`banei-cb-v8-window2011-wf-15y`、それ以外はdefault。旧per-class routingはなし。
+
+Authority: `apps/finish-position-predict-container/src/predict_lib/model_meta.json`、`cell_routing.json`、`production-artifacts.json`。下記のv7 baseline表はhistorical experiment contextであり、現行production model名ではない。
 
 ---
 
