@@ -3,7 +3,6 @@ import { expect, it } from "vitest";
 
 import {
   buildRaceEntityHistoryQuery,
-  buildRaceEntityIndexedTargetQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
   createRaceEntityCursor,
@@ -90,12 +89,6 @@ const rawHistory = (resultId: string, startKey: string): Record<string, unknown>
 });
 
 it("builds target queries with canonical horse, jockey, trainer, and owner IDs", () => {
-  expect(buildRaceEntityIndexedTargetQuery(env, filters("jockey"))).toMatch(
-    /catalog\.race_entity_history_v1/u,
-  );
-  expect(buildRaceEntityIndexedTargetQuery(env, filters("jockey"))).toMatch(
-    /se\.entity_type = 'horse'/u,
-  );
   expect(buildRaceEntityTargetQuery(env, filters("horse"))).toMatch(/se\.ketto_toroku_bango/u);
   expect(buildRaceEntityTargetQuery(env, filters("jockey"))).toMatch(/se\.kishu_code/u);
   expect(buildRaceEntityTargetQuery(env, filters("trainer"))).toMatch(/se\.chokyoshi_code/u);

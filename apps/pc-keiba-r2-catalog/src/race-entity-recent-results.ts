@@ -276,32 +276,6 @@ const historyUpperYear = (
   cursor: RaceEntityCursorKey | null,
 ): string => cursor?.raceStartSortKey.slice(0, 4) ?? filters.date.slice(0, 4);
 
-export const buildRaceEntityIndexedTargetQuery = (
-  env: R2SqlCatalogConfig,
-  filters: RaceEntityRecentResultsFilters,
-): string => {
-  const entityIdColumn = requiredMapValue(ENTITY_ID_COLUMNS, filters.entityType);
-  const entityNameColumn = requiredMapValue(ENTITY_NAME_COLUMNS, filters.entityType);
-  return `SELECT
-  substr(md5(${trimSql(`se.${entityIdColumn}`)}), 1, 1) AS entity_bucket,
-  ${trimSql(`se.${entityIdColumn}`)} AS entity_id,
-  ${trimSql(`se.${entityNameColumn}`)} AS entity_name,
-  ${trimSql("se.ketto_toroku_bango")} AS horse_id,
-  ${trimSql("se.bamei")} AS horse_name,
-  ${trimSql("se.kyosomei_hondai")} AS race_name,
-  ${trimSql("se.hasso_jikoku")} AS race_start_time,
-  true AS runner_found
-FROM ${tableName(env, ENTITY_HISTORY_TABLE)} se
-WHERE se.entity_type = 'horse'
-  AND se.source = ${sqlLiteral(filters.source)}
-  AND se.kaisai_nen = ${sqlLiteral(filters.date.slice(0, 4))}
-  AND se.kaisai_tsukihi = ${sqlLiteral(filters.date.slice(4))}
-  AND se.keibajo_code = ${sqlLiteral(filters.keibajoCode)}
-  AND se.race_bango = ${sqlLiteral(filters.raceBango)}
-  AND try_cast(${trimSql("se.umaban")} AS INT) = ${String(Number(filters.horseNumber))}
-LIMIT 1`;
-};
-
 export const buildRaceEntityTargetQuery = (
   env: R2SqlCatalogConfig,
   filters: RaceEntityRecentResultsFilters,
