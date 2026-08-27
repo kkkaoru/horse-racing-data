@@ -20,7 +20,7 @@ export interface RaceEntityCatalogResult {
 
 const CATALOG_ORIGIN: string = "https://pc-keiba-r2-catalog.internal";
 const MAX_CATALOG_RESPONSE_BYTES: number = 64 * 1024;
-const CATALOG_TIMEOUT_MS: number = 45_000;
+const CATALOG_TIMEOUT_MS: number = 90_000;
 
 export const buildRaceEntityCatalogUrl = (query: RaceEntityCatalogQuery): URL => {
   const url = new URL("/v1/race-entity-recent-results", CATALOG_ORIGIN);
