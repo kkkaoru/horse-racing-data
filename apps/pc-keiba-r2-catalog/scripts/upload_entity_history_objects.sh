@@ -2,7 +2,7 @@
 set -euo pipefail
 
 output_dir="${1:-tmp/entity-history-objects}"
-bucket="${ENTITY_HISTORY_OBJECT_BUCKET:-pc-keiba-r2-catalog}"
+bucket="${ENTITY_HISTORY_OBJECT_BUCKET:-pc-keiba-features-archive}"
 prefix="entity-serving-v1"
 
 : "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}"
