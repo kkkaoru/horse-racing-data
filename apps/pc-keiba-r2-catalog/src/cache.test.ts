@@ -12,6 +12,7 @@ import {
   populateCacheApi,
   populateCaches,
   purgeDescriptors,
+  raceEntityRecentResultsDescriptor,
   readKvConditionHistoryStats,
   readKvHeatmapStats,
   readKvRows,
@@ -48,6 +49,21 @@ const kvMocks = (
     putMock,
   };
 };
+
+it("compacts signed entity cursors below the KV key limit", () => {
+  const descriptor = raceEntityRecentResultsDescriptor({
+    cursor: "x".repeat(500),
+    date: "20260827",
+    entityType: "jockey",
+    horseNumber: "07",
+    keibajoCode: "50",
+    limit: 30,
+    raceBango: "05",
+    source: "nar",
+  });
+  expect(cacheRequestFor(descriptor).url).toMatch(/cursor=x{64}$/u);
+  expect(new TextEncoder().encode(kvKeyFor(descriptor)).byteLength).toBeLessThan(512);
+});
 
 it("builds canonical Cache API and KV keys", () => {
   const descriptor = featureDescriptor({
