@@ -85,12 +85,12 @@ increasing the bytes fetched for one entity. Daily maintenance uploads only the
 selected year's three immutable objects and then publishes the manifest:
 
 ```bash
-uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
-uv run pack_entity_history_objects.py tmp/entity-history-objects --year 2026
-uv run upload_entity_history_objects.py tmp/entity-history-objects --year 2026
+uv run refresh_entity_history_serving.py --year 2026 --output tmp/entity-history-objects
 ```
 
-Upload packed generation data first with `upload_entity_history_objects.py`; its
+The orchestrator is fail-fast and always refreshes the Catalog partition before
+building, packing, and uploading the same year's serving generation. Use
+`--skip-upload` to validate all local stages without publishing. Upload packed generation data first with `upload_entity_history_objects.py`; its
 final single `generations.json` write atomically publishes the new generation. The Worker
 reads these objects through the native R2 binding, preserving the same signed
 cursor and point-in-time filters without R2 SQL scheduling variance. Keep the

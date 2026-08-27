@@ -18,8 +18,9 @@
     "sync:entity-history-objects:targets": "uv run scripts/build_entity_history_objects.py --targets-only",
     "sync:entity-history-objects:pack": "uv run scripts/pack_entity_history_objects.py",
     "sync:entity-history-objects:upload": "uv run scripts/upload_entity_history_objects.py",
+    "sync:entity-history-serving": "uv run scripts/refresh_entity_history_serving.py",
     "sync:full": "uv run scripts/sync_r2_catalog.py --full",
-    "sync:test": "uv run scripts/test_sync_r2_catalog.py && uv run scripts/test_sync_entity_history.py && uv run scripts/test_build_entity_history_objects.py && uv run scripts/test_pack_entity_history_objects.py && uv run scripts/test_upload_entity_history_objects.py",
+    "sync:test": "uv run scripts/test_sync_r2_catalog.py && uv run scripts/test_sync_entity_history.py && uv run scripts/test_build_entity_history_objects.py && uv run scripts/test_pack_entity_history_objects.py && uv run scripts/test_upload_entity_history_objects.py && uv run scripts/test_refresh_entity_history_serving.py",
     "test": "bunx vitest run",
     "test:coverage": "bunx vitest run --coverage",
     "tsc": "bunx tsc --noEmit"

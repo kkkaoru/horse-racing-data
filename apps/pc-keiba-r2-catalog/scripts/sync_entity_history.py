@@ -189,7 +189,7 @@ def entity_query(year: str, *, completed_only: bool) -> str:
     )
     return (
         "\nUNION ALL\n".join(selects)
-        + "\nORDER BY entity_type, source, entity_bucket, kaisai_nen, entity_id, result_id"
+        + "\nORDER BY entity_type, source, entity_bucket, entity_id, kaisai_nen DESC, kaisai_tsukihi DESC, hasso_jikoku DESC, result_id DESC"
     )
 
 

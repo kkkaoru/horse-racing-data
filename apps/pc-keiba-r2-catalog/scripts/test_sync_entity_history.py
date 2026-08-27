@@ -40,6 +40,11 @@ class EntityHistorySyncTest(unittest.TestCase):
             "substr(md5(trim(replace(coalesce(entity.entity_id, ''), chr(12288), ''))), 1, 1)",
             query,
         )
+        self.assertIn(
+            "ORDER BY entity_type, source, entity_bucket, entity_id, kaisai_nen DESC, "
+            "kaisai_tsukihi DESC, hasso_jikoku DESC, result_id DESC",
+            query,
+        )
 
     def test_target_query_includes_unfinished_runners(self) -> None:
         history_query = subject.history_query("2026")
