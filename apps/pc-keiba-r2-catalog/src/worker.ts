@@ -35,11 +35,9 @@ import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-traini
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import {
   buildRaceEntityHistoryQuery,
-  buildRaceEntityInitialQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
   normaliseRaceEntityHistoryRow,
-  normaliseRaceEntityInitialTarget,
   normaliseRaceEntityTarget,
   parseRaceEntityCursor,
 } from "./race-entity-recent-results";
@@ -84,6 +82,7 @@ import type {
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{1,2}$/u;
 const YEAR_PATTERN: RegExp = /^\d{4}$/u;
+const ENTITY_BUCKET_PATTERN: RegExp = /^[0-9a-f]$/u;
 const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-ei"];
 const DEFAULT_STATS_YEARS: number = 10;
 const MIN_STATS_YEARS: number = 1;
@@ -679,21 +678,16 @@ const handleRaceEntityRecentResults = async (
   const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRaceEntityPage);
   if (cached) return cached;
   const cursorSecret = raceEntityCursorSecret(env);
-  const initialRows =
-    filters.cursor === null
-      ? await executeR2Sql(env, buildRaceEntityInitialQuery(env, filters), dependencies.fetchImpl)
-      : null;
-  const targetRows =
-    initialRows ??
-    (await executeR2Sql(env, buildRaceEntityTargetQuery(env, filters), dependencies.fetchImpl));
+  const targetRows = await executeR2Sql(
+    env,
+    buildRaceEntityTargetQuery(env, filters),
+    dependencies.fetchImpl,
+  );
   const targetRow = targetRows[0];
   if (targetRow === undefined) {
     throw new RaceEntityRequestError("RACE_NOT_FOUND", "The target race was not found.", 404);
   }
-  const target =
-    initialRows === null
-      ? normaliseRaceEntityTarget(targetRow)
-      : normaliseRaceEntityInitialTarget(targetRow);
+  const target = normaliseRaceEntityTarget(targetRow);
   if (!target.runnerFound) {
     throw new RaceEntityRequestError("RUNNER_NOT_FOUND", "The target runner was not found.", 404);
   }
@@ -707,6 +701,13 @@ const handleRaceEntityRecentResults = async (
       422,
     );
   }
+  if (target.entityBucket === null || !ENTITY_BUCKET_PATTERN.test(target.entityBucket)) {
+    throw new RaceEntityRequestError(
+      "MALFORMED_TARGET_DATA",
+      "The resolved entity history partition is malformed.",
+      502,
+    );
+  }
   if (target.entityName === null) {
     throw new RaceEntityRequestError(
       entityNotFoundCode(filters.entityType),
@@ -714,7 +715,11 @@ const handleRaceEntityRecentResults = async (
       404,
     );
   }
-  const resolvedTarget = { ...target, entityId: target.entityId };
+  const resolvedTarget = {
+    ...target,
+    entityBucket: target.entityBucket,
+    entityId: target.entityId,
+  };
   const cursor = await parseRaceEntityCursor(filters, resolvedTarget.entityId, cursorSecret);
   if (cursor === "invalid") {
     throw new RaceEntityRequestError(
@@ -723,13 +728,11 @@ const handleRaceEntityRecentResults = async (
       400,
     );
   }
-  const historyRows =
-    initialRows?.filter((row) => row.result_id !== null && row.result_id !== undefined) ??
-    (await executeR2Sql(
-      env,
-      buildRaceEntityHistoryQuery(env, filters, resolvedTarget, cursor),
-      dependencies.fetchImpl,
-    ));
+  const historyRows = await executeR2Sql(
+    env,
+    buildRaceEntityHistoryQuery(env, filters, resolvedTarget, cursor),
+    dependencies.fetchImpl,
+  );
   const rows = historyRows.map((row) => {
     try {
       return normaliseRaceEntityHistoryRow(row);

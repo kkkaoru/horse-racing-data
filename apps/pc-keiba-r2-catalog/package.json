@@ -11,8 +11,10 @@
     "smoke:r2-sql": "bun run scripts/smoke-r2-sql.ts",
     "smoke:running-style": "bun run scripts/smoke-running-style-r2-sql.ts",
     "sync": "uv run scripts/sync_r2_catalog.py",
+    "sync:entity-history": "uv run scripts/sync_entity_history.py",
+    "sync:entity-history:full": "uv run scripts/sync_entity_history.py --full",
     "sync:full": "uv run scripts/sync_r2_catalog.py --full",
-    "sync:test": "uv run scripts/test_sync_r2_catalog.py",
+    "sync:test": "uv run scripts/test_sync_r2_catalog.py && uv run scripts/test_sync_entity_history.py",
     "test": "bunx vitest run",
     "test:coverage": "bunx vitest run --coverage",
     "tsc": "bunx tsc --noEmit"

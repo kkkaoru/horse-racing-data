@@ -3,12 +3,10 @@ import { expect, it } from "vitest";
 
 import {
   buildRaceEntityHistoryQuery,
-  buildRaceEntityInitialQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
   createRaceEntityCursor,
   normaliseRaceEntityHistoryRow,
-  normaliseRaceEntityInitialTarget,
   normaliseRaceEntityTarget,
   parseRaceEntityCursor,
 } from "./race-entity-recent-results";
@@ -35,6 +33,7 @@ const filters = (entityType: RaceEntityType): RaceEntityRecentResultsFilters => 
 });
 
 const target = {
+  entityBucket: "a",
   entityId: "21379",
   entityName: "小谷哲平",
   horseId: "2022103916",
@@ -106,29 +105,10 @@ it("builds JRA target query and rejects an unsafe namespace", () => {
   ).toThrow("R2_SQL_NAMESPACE must be an unquoted SQL identifier");
 });
 
-it("builds a single initial target and history query", () => {
-  const query = buildRaceEntityInitialQuery(env, filters("trainer"));
-  expect(query).toMatch(/WITH target AS/u);
-  expect(query).toMatch(/CROSS JOIN target/u);
-  expect(query).toMatch(/LEFT JOIN bounded_history ON true/u);
-  expect(query).toMatch(/se\.chokyoshi_code = target\.entity_id/u);
-  expect(query).not.toMatch(/catalog\.jvd_se/u);
-  expect(
-    normaliseRaceEntityInitialTarget({
-      target_entity_id: "20692",
-      target_entity_name: "Trainer",
-      target_horse_id: "2022103916",
-      target_horse_name: "Horse",
-      target_race_name: "Race",
-      target_race_start_time: "1240",
-      target_runner_found: true,
-    }),
-  ).toMatchObject({ entityId: "20692", runnerFound: true });
-});
-
 it("normalises target values from R2 SQL scalar shapes", () => {
   expect(
     normaliseRaceEntityTarget({
+      entity_bucket: "a",
       entity_id: 21379,
       entity_name: "Jockey",
       horse_id: 2022103916n,
@@ -138,6 +118,7 @@ it("normalises target values from R2 SQL scalar shapes", () => {
       runner_found: "true",
     }),
   ).toStrictEqual({
+    entityBucket: "a",
     entityId: "21379",
     entityName: "Jockey",
     horseId: "2022103916",
@@ -147,6 +128,7 @@ it("normalises target values from R2 SQL scalar shapes", () => {
     runnerFound: true,
   });
   expect(normaliseRaceEntityTarget({ runner_found: false })).toStrictEqual({
+    entityBucket: null,
     entityId: null,
     entityName: null,
     horseId: null,
@@ -179,10 +161,11 @@ it("builds bounded N+1 history queries for all canonical entity columns", () => 
 
 it("prunes recent year partitions and scopes non-horse IDs to the target source", () => {
   const jockeyQuery = buildRaceEntityHistoryQuery(env, filters("jockey"), target, null);
-  expect(jockeyQuery).toMatch(/se\.kaisai_nen >= '2025'/u);
-  expect(jockeyQuery).toMatch(/se\.kishu_code = '21379'/u);
-  expect(jockeyQuery).toMatch(/catalog\.nvd_se/u);
-  expect(jockeyQuery).not.toMatch(/catalog\.jvd_se/u);
+  expect(jockeyQuery).toMatch(/se\.kaisai_nen >= '1986'/u);
+  expect(jockeyQuery).toMatch(/se\.entity_id = '21379'/u);
+  expect(jockeyQuery).toMatch(/se\.entity_bucket = 'a'/u);
+  expect(jockeyQuery).toMatch(/catalog\.race_entity_history_v1/u);
+  expect(jockeyQuery).toMatch(/se\.source = 'nar'/u);
 
   const jraOwnerQuery = buildRaceEntityHistoryQuery(
     env,
@@ -190,18 +173,18 @@ it("prunes recent year partitions and scopes non-horse IDs to the target source"
     target,
     null,
   );
-  expect(jraOwnerQuery).toMatch(/catalog\.jvd_se/u);
-  expect(jraOwnerQuery).not.toMatch(/catalog\.nvd_se/u);
+  expect(jraOwnerQuery).toMatch(/catalog\.race_entity_history_v1/u);
+  expect(jraOwnerQuery).toMatch(/se\.source = 'jra'/u);
 
   const horseQuery = buildRaceEntityHistoryQuery(
     env,
     filters("horse"),
-    { ...target, entityId: "2022103916" },
+    { ...target, entityBucket: "e", entityId: "2022103916" },
     null,
   );
   expect(horseQuery).toMatch(/se\.kaisai_nen >= '2024'/u);
-  expect(horseQuery).toMatch(/catalog\.jvd_se/u);
-  expect(horseQuery).toMatch(/catalog\.nvd_se/u);
+  expect(horseQuery).toMatch(/se\.source = 'jra'/u);
+  expect(horseQuery).toMatch(/se\.source = 'nar'/u);
 });
 
 it("uses keyset cursor predicates and rejects malformed canonical IDs", () => {
@@ -216,10 +199,19 @@ it("uses keyset cursor predicates and rejects malformed canonical IDs", () => {
       raceStartSortKey: "202512311500",
       resultId: "nar:20251231:50:12:07:2022103916",
     }),
+  ).toMatch(/se\.kaisai_nen >= '1986'/u);
+  expect(
+    buildRaceEntityHistoryQuery(env, filters("jockey"), target, {
+      raceStartSortKey: "202512311500",
+      resultId: "nar:20251231:50:12:07:2022103916",
+    }),
   ).toMatch(/se\.kaisai_nen <= '2025'/u);
   expect(() =>
     buildRaceEntityHistoryQuery(env, filters("jockey"), { ...target, entityId: "bad'id" }, null),
   ).toThrow("entityId is malformed");
+  expect(() =>
+    buildRaceEntityHistoryQuery(env, filters("jockey"), { ...target, entityBucket: "z" }, null),
+  ).toThrow("entityBucket is malformed");
 });
 
 it("normalises complete and nullable history fields", () => {

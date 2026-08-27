@@ -97,6 +97,7 @@ const UNGRADED_OPEN_CACHE_TOKEN = "1";
 const EMPTY_GRADE_MATCH_CACHE_TOKEN = "2";
 const FINISH_DETAILS_CACHE_TOKEN = "1";
 const RACE_ENTITY_CURSOR_CACHE_TOKEN_LENGTH = 64;
+const RACE_ENTITY_HISTORY_CACHE_TOKEN = "index-v1";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -148,6 +149,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("sourceScope", descriptor.sourceScope);
   }
   if (descriptor.kind === "race-entity-recent-results") {
+    url.searchParams.set("history", RACE_ENTITY_HISTORY_CACHE_TOKEN);
     url.searchParams.set("source", descriptor.source);
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);

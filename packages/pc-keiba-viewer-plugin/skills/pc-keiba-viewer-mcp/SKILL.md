@@ -42,8 +42,9 @@ uses. Defaults match first paint (勝率, レース数 off).
    Start with `cursor: null`; pass the HMAC-signed `nextCursor` unchanged for the
    next page. Horse registration IDs follow JRA/NAR results across sources;
    jockey, trainer, and owner IDs are source-scoped to prevent code collisions.
-   Non-horse history is bounded to the target year and preceding year. Horse
-   history starts no earlier than its registration-number birth year. If a
+   Non-horse history can page back to 1986 through the entity-partitioned
+   serving table. Horse history starts no earlier than its registration-number
+   birth year. If a
    same-day race lacks a valid start time, only an earlier race number at the
    same source and venue is safe enough to include.
 7. `get_json` for `/api/races/.../realtime?source=jra|nar` (odds) and `/trends`.

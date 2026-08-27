@@ -8,10 +8,10 @@ ignored.
 
 Existing feature Parquet files, feature archives, Neon, D1, processed feature
 tables, and existing Catalog rows are never seed, completion, merge, or
-fallback sources. The only transfer path is an allowlisted raw local PostgreSQL
-table to the same-named Iceberg table. Derived tables such as
-`race_entry_corner_features` and
-`race_running_style_model_predictions` are not part of the inventory. This sync
+fallback sources. The primary transfer path is an allowlisted raw local
+PostgreSQL table to the same-named Iceberg table. Prediction-derived tables such
+as `race_entry_corner_features` and `race_running_style_model_predictions` are
+not part of the inventory. This sync
 CLI does not provide or configure a prediction-runtime PostgreSQL dependency;
 readers must use the raw catalog tables and derive features at query time.
 
@@ -52,7 +52,19 @@ uv run sync_r2_catalog.py --full --tables jvd_ra --year-scope 2010-2014
 uv run sync_r2_catalog.py --full --force
 uv run sync_r2_catalog.py --full --tables oversea_runner_identity,oversea_runner_source_id,oversea_horse_race_history,oversea_person_race_history,oversea_horse_pedigree,oversea_person_win_rate_stats
 uv run test_sync_r2_catalog.py
+uv run sync_entity_history.py --full
+uv run sync_entity_history.py --year 2026
+uv run test_sync_entity_history.py
 ```
+
+`sync_entity_history.py` is the sole materialized serving-table exception. It
+expands each completed local JRA/NAR runner into horse, jockey, trainer, and
+owner rows in `race_entity_history_v1`. The table is identity-partitioned by
+entity type, source, one-hex MD5 bucket, and year. This lets the Worker prune to
+a small entity/year partition without imposing a two-year history ceiling.
+`--full` builds a temporary table and swaps it into service only after every
+year succeeds; `--year` atomically refreshes one year and should run after the
+corresponding raw `jvd_ra/jvd_se/nvd_ra/nvd_se` refresh.
 
 The `oversea_*` tables are small source-separated raw tables. They are treated
 as explicit full-table snapshots: local PostgreSQL remains the sole authority,

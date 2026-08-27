@@ -8,6 +8,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const targetRow = {
+  entity_bucket: "a",
   entity_id: "21379",
   entity_name: "Jockey",
   horse_id: "2022103916",
@@ -15,16 +16,6 @@ const targetRow = {
   race_name: "Target",
   race_start_time: "1240",
   runner_found: true,
-};
-
-const initialTargetRow = {
-  target_entity_id: "21379",
-  target_entity_name: "Jockey",
-  target_horse_id: "2022103916",
-  target_horse_name: "Horse",
-  target_race_name: "Target",
-  target_race_start_time: "1240",
-  target_runner_found: true,
 };
 
 const historyRow = {
@@ -45,8 +36,6 @@ const historyRow = {
   source: "nar",
   trainer_id: "20692",
 };
-
-const initialHistoryRow = { ...initialTargetRow, ...historyRow };
 
 const harness = (queryRows: (unknown[] | Error)[]) => {
   const cacheEntries = new Map<string, Response>();
@@ -97,9 +86,10 @@ const harness = (queryRows: (unknown[] | Error)[]) => {
 const url =
   "https://catalog.test/v1/race-entity-recent-results?date=20260827&keibajoCode=50&raceBango=05&source=nar&horseNumber=7&entityType=jockey&limit=1";
 
-it("serves canonical jockey history from one R2 SQL query and populates both caches", async () => {
+it("serves canonical jockey history from the indexed R2 SQL table and populates both caches", async () => {
   const test = harness([
-    [initialHistoryRow, { ...initialHistoryRow, result_id: "nar:20260820:50:01:01:1" }],
+    [targetRow],
+    [historyRow, { ...historyRow, result_id: "nar:20260820:50:01:01:1" }],
   ]);
   const response = await handleRequest(new Request(url), test.env, test.dependencies);
   expect(response.status).toBe(200);
@@ -109,29 +99,30 @@ it("serves canonical jockey history from one R2 SQL query and populates both cac
     entity: { entityId: "21379", entityType: "jockey", horseNumber: "07" },
     pagination: { effectiveLimit: 1, hasMore: true, requestedLimit: 1, returned: 1 },
   });
-  expect(test.queries).toHaveLength(1);
+  expect(test.queries).toHaveLength(2);
   expect(test.queries[0]).toMatch(/kishu_code/u);
-  expect(test.queries[0]).toMatch(/LIMIT 2/u);
+  expect(test.queries[1]).toMatch(/race_entity_history_v1/u);
+  expect(test.queries[1]).toMatch(/LIMIT 2/u);
   expect(test.cacheEntries.size).toBe(1);
   expect(test.kvEntries.size).toBe(1);
 
   const cached = await handleRequest(new Request(url), test.env, test.dependencies);
   expect(cached.headers.get("X-Catalog-Cache")).toBe("cache-api");
-  expect(test.queries).toHaveLength(1);
+  expect(test.queries).toHaveLength(2);
 });
 
 it("falls back from Cache API to KV without querying R2 SQL", async () => {
-  const test = harness([[initialHistoryRow]]);
+  const test = harness([[targetRow], [historyRow]]);
   const first = await handleRequest(new Request(url), test.env, test.dependencies);
   expect(first.status).toBe(200);
   test.cacheEntries.clear();
   const second = await handleRequest(new Request(url), test.env, test.dependencies);
   expect(second.headers.get("X-Catalog-Cache")).toBe("kv");
-  expect(test.queries).toHaveLength(1);
+  expect(test.queries).toHaveLength(2);
 });
 
 it("uses entity defaults and reports invalid entity and limit", async () => {
-  const defaults = harness([[initialHistoryRow]]);
+  const defaults = harness([[targetRow], [historyRow]]);
   const defaultResponse = await handleRequest(
     new Request(url.replace("&limit=1", "")),
     defaults.env,
@@ -175,27 +166,34 @@ it("distinguishes race, runner, horse, entity ID, entity, and history errors", a
     (await handleRequest(new Request(url), missingRace.env, missingRace.dependencies)).status,
   ).toBe(404);
 
-  const missingRunner = harness([[{ ...initialTargetRow, target_runner_found: false }]]);
+  const missingRunner = harness([[{ ...targetRow, runner_found: false }]]);
   await expect(
     (await handleRequest(new Request(url), missingRunner.env, missingRunner.dependencies)).json(),
   ).resolves.toMatchObject({ error: { code: "RUNNER_NOT_FOUND" } });
 
-  const missingHorse = harness([[{ ...initialTargetRow, target_horse_id: "0000000000" }]]);
+  const missingHorse = harness([[{ ...targetRow, horse_id: "0000000000" }]]);
   await expect(
     (await handleRequest(new Request(url), missingHorse.env, missingHorse.dependencies)).json(),
   ).resolves.toMatchObject({ error: { code: "HORSE_NOT_FOUND" } });
 
-  const missingId = harness([[{ ...initialTargetRow, target_entity_id: "00000" }]]);
+  const missingId = harness([[{ ...targetRow, entity_id: "00000" }]]);
   await expect(
     (await handleRequest(new Request(url), missingId.env, missingId.dependencies)).json(),
   ).resolves.toMatchObject({ error: { code: "ENTITY_ID_NOT_AVAILABLE" } });
 
-  const missingEntity = harness([[{ ...initialTargetRow, target_entity_name: null }]]);
+  const malformedTarget = harness([[{ ...targetRow, entity_bucket: "z" }]]);
+  await expect(
+    (
+      await handleRequest(new Request(url), malformedTarget.env, malformedTarget.dependencies)
+    ).json(),
+  ).resolves.toMatchObject({ error: { code: "MALFORMED_TARGET_DATA" } });
+
+  const missingEntity = harness([[{ ...targetRow, entity_name: null }]]);
   await expect(
     (await handleRequest(new Request(url), missingEntity.env, missingEntity.dependencies)).json(),
   ).resolves.toMatchObject({ error: { code: "JOCKEY_NOT_FOUND" } });
 
-  const missingHistory = harness([[initialTargetRow]]);
+  const missingHistory = harness([[targetRow], []]);
   await expect(
     (await handleRequest(new Request(url), missingHistory.env, missingHistory.dependencies)).json(),
   ).resolves.toMatchObject({
@@ -218,7 +216,7 @@ it("rejects a cache miss when the cursor signing secret is unavailable", async (
 });
 
 it("reports malformed rows, invalid route inputs, timeout, and upstream errors", async () => {
-  const malformed = harness([[{ ...initialTargetRow, result_id: "malformed" }]]);
+  const malformed = harness([[targetRow], [{ ...historyRow, kaisai_nen: null }]]);
   await expect(
     (await handleRequest(new Request(url), malformed.env, malformed.dependencies)).json(),
   ).resolves.toMatchObject({ error: { code: "MALFORMED_HISTORY_DATA" } });
@@ -264,7 +262,8 @@ it("reports malformed rows, invalid route inputs, timeout, and upstream errors",
 
 it("rejects a cursor reused for another entity", async () => {
   const first = harness([
-    [initialHistoryRow, { ...initialHistoryRow, result_id: "nar:20260820:50:01:01:1" }],
+    [targetRow],
+    [historyRow, { ...historyRow, result_id: "nar:20260820:50:01:01:1" }],
   ]);
   const response = await handleRequest(new Request(url), first.env, first.dependencies);
   const value: unknown = await response.json();
