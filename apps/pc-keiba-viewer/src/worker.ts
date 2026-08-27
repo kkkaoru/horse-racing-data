@@ -45,9 +45,9 @@ export default {
       }
     }
     const mcpResponse = await handlePcKeibaMcpRequest({
-      fetchSite: (pathWithQuery: string) =>
+      fetchSite: (pathWithQuery: string, signal?: AbortSignal) =>
         openNextWorker.fetch(
-          new Request(new URL(pathWithQuery, request.url), { method: "GET" }),
+          new Request(new URL(pathWithQuery, request.url), { method: "GET", signal }),
           env,
           ctx,
         ),

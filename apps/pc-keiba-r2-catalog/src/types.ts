@@ -86,6 +86,7 @@ export interface Env extends R2SqlCatalogConfig {
   CATALOG_KV: KvStore;
   FINISH_POSITION_ATTESTATION_TOKEN?: string;
   KV_TTL_SECONDS?: string;
+  RACE_ENTITY_CURSOR_SECRET?: string;
 }
 
 export interface WorkerDependencies {
@@ -150,6 +151,19 @@ export interface HorseRaceResultsFilters {
   raceBango: string;
   source: CatalogSource;
   sourceScope: HorseRaceResultsSourceScope;
+}
+
+export type RaceEntityType = "horse" | "jockey" | "trainer" | "owner";
+
+export interface RaceEntityRecentResultsFilters {
+  cursor: string | null;
+  date: string;
+  entityType: RaceEntityType;
+  horseNumber: string;
+  keibajoCode: string;
+  limit: number;
+  raceBango: string;
+  source: CatalogSource;
 }
 
 export interface HorseRaceResultRow {

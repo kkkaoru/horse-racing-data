@@ -1,7 +1,15 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 
+import { KEIBAJO_NAMES } from "./codes";
 import { indexLiveHorseWeightKg, type LiveHorseWeight } from "./horse-weight-class";
 import { resolveMcpApiPath } from "./mcp-allowlist";
+import {
+  buildFinishPredictionSummary,
+  createFinishPredictionSummaryError,
+  type FinishPredictionSummaryError,
+  type FinishPredictionSummaryRoute,
+} from "./mcp-finish-prediction-summary";
+import { inferRaceSourceFromKeibajoCode } from "./runner-format";
 import {
   buildWinRateHeatmapDisplay,
   DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
@@ -10,14 +18,16 @@ import {
 } from "./win-rate-heatmap";
 import { isWinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
 
-export type McpSiteFetch = (pathWithQuery: string) => Promise<Response>;
+export type McpSiteFetch = (pathWithQuery: string, signal?: AbortSignal) => Promise<Response>;
 
 interface McpJsonSchemaProperty {
   description?: string;
   enum?: readonly string[];
+  maximum?: number;
+  minimum?: number;
   minLength?: number;
   pattern?: string;
-  type: string;
+  type: string | readonly string[];
 }
 
 interface McpJsonSchemaObject {
@@ -62,11 +72,32 @@ interface SearchKindRowsInput {
   query: string;
 }
 
+interface BoundedResponseText {
+  byteLength: number;
+  status: "ok";
+  text: string;
+}
+
+interface OversizedResponseText {
+  status: "too-large";
+}
+
+type ReadBoundedResponseResult = BoundedResponseText | OversizedResponseText;
+
+type FinishPredictionRouteParseResult =
+  | { error: FinishPredictionSummaryError; status: "error" }
+  | { route: FinishPredictionSummaryRoute; status: "ok" };
+
 const YEAR_PATTERN: string = "^\\d{4}$";
 const MONTH_DAY_RACE_PATTERN: string = "^\\d{2}$";
 const KEIBAJO_PATTERN: string = "^[0-9A-Z]{2}$";
 const SOURCE_JRA: string = "jra";
 const SOURCE_NAR: string = "nar";
+const MAX_FINISH_PREDICTION_UPSTREAM_BYTES: number = 16 * 1024 * 1024;
+const MAX_FINISH_PREDICTION_SUMMARY_BYTES: number = 64 * 1024;
+const FINISH_PREDICTION_TIMEOUT_MS: number = 15_000;
+const RACE_ENTITY_TIMEOUT_MS: number = 50_000;
+const MAX_RACE_NUMBER: number = 18;
 const VIEW_MODE_LIST: readonly WinRateHeatmapViewMode[] = [
   "all",
   "quinellaRate",
@@ -117,7 +148,7 @@ const RACE_ROUTE_PROPERTIES: Record<string, McpJsonSchemaProperty> = {
   month: STRING_ARG("Calendar month, two digits.", MONTH_DAY_RACE_PATTERN),
   raceNumber: STRING_ARG("Race number, two digits.", MONTH_DAY_RACE_PATTERN),
   source: {
-    description: "Optional jra or nar source override.",
+    description: "jra or nar race source.",
     enum: [SOURCE_JRA, SOURCE_NAR],
     type: "string",
   },
@@ -183,6 +214,56 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
+      "Fetch a compact finish-position prediction summary for LLM use. Omits inputs.results and other UI-only history, joins current runner names by normalized horse number, and ranks lower predictedFinishNorm first.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: RACE_ROUTE_PROPERTIES,
+      required: ["year", "month", "day", "keibajoCode", "raceNumber", "source"],
+      type: "object",
+    },
+    name: "get_finish_prediction_summary",
+  },
+  {
+    description:
+      "Fetch bounded, point-in-time recent results for the selected runner's horse, current jockey, current trainer, or current owner. Uses canonical IDs and opaque cursor pagination backed by R2 Catalog.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        ...RACE_ROUTE_PROPERTIES,
+        cursor: {
+          description: "Opaque nextCursor from the preceding page, or null for the first page.",
+          type: ["string", "null"],
+        },
+        entityType: {
+          description: "Entity resolved from the selected target-race runner.",
+          enum: ["horse", "jockey", "trainer", "owner"],
+          type: "string",
+        },
+        horseNumber: STRING_ARG("Target-race horse number, one or two digits.", "^\\d{1,2}$"),
+        limit: {
+          description:
+            "Page size. The schema maximum is 30; horse is restricted to 20 by the backend, while jockey, trainer, and owner allow 30.",
+          maximum: 30,
+          minimum: 1,
+          type: "integer",
+        },
+      },
+      required: [
+        "year",
+        "month",
+        "day",
+        "keibajoCode",
+        "raceNumber",
+        "source",
+        "horseNumber",
+        "entityType",
+      ],
+      type: "object",
+    },
+    name: "get_race_entity_recent_results",
+  },
+  {
+    description:
       "Build the win-rate heatmap display model with the same buildWinRateHeatmapDisplay function the on-screen table uses. Defaults match first paint (勝率, レース数 off).",
     inputSchema: {
       additionalProperties: false,
@@ -245,6 +326,11 @@ const errorResult = (message: string): McpToolResult => ({
   isError: true,
 });
 
+const finishPredictionErrorResult = (error: FinishPredictionSummaryError): McpToolResult => ({
+  content: [{ text: JSON.stringify({ error }), type: "text" }],
+  isError: true,
+});
+
 const okJson = (value: unknown): McpToolResult => ({
   content: [{ text: JSON.stringify(value), type: "text" }],
   isError: false,
@@ -293,6 +379,297 @@ const parseRaceRoute = (args: Record<string, unknown>): RaceRoute | string => {
 const raceApiPath = (route: RaceRoute, suffix: string): string => {
   const base = `/api/races/${route.year}/${route.month}/${route.day}/${route.keibajoCode}/${route.raceNumber}/${suffix}`;
   return route.source === null ? base : `${base}?source=${route.source}`;
+};
+
+const parseFinishPredictionSummaryRoute = (
+  args: Record<string, unknown>,
+): FinishPredictionRouteParseResult => {
+  const source = readString(args, "source");
+  if (source !== SOURCE_JRA && source !== SOURCE_NAR) {
+    return {
+      error: createFinishPredictionSummaryError(
+        "INVALID_SOURCE",
+        "source must be either jra or nar.",
+      ),
+      status: "error",
+    };
+  }
+  const parsed = parseRaceRoute(args);
+  if (typeof parsed === "string") {
+    const code = parsed.startsWith("keibajoCode")
+      ? "INVALID_VENUE_CODE"
+      : parsed.startsWith("raceNumber")
+        ? "INVALID_RACE_NUMBER"
+        : "INVALID_ARGUMENT";
+    return {
+      error: createFinishPredictionSummaryError(code, parsed),
+      status: "error",
+    };
+  }
+  const inferredSource = inferRaceSourceFromKeibajoCode(parsed.keibajoCode);
+  if (!Object.hasOwn(KEIBAJO_NAMES, parsed.keibajoCode) || inferredSource !== source) {
+    return {
+      error: createFinishPredictionSummaryError(
+        "INVALID_VENUE_CODE",
+        `keibajoCode ${parsed.keibajoCode} is not valid for source ${source}.`,
+      ),
+      status: "error",
+    };
+  }
+  const raceNumber = Number(parsed.raceNumber);
+  if (!Number.isSafeInteger(raceNumber) || raceNumber < 1 || raceNumber > MAX_RACE_NUMBER) {
+    return {
+      error: createFinishPredictionSummaryError(
+        "INVALID_RACE_NUMBER",
+        `raceNumber must be between 01 and ${MAX_RACE_NUMBER}.`,
+      ),
+      status: "error",
+    };
+  }
+  return {
+    route: {
+      day: parsed.day,
+      keibajoCode: parsed.keibajoCode,
+      month: parsed.month,
+      raceNumber: parsed.raceNumber,
+      source,
+      year: parsed.year,
+    },
+    status: "ok",
+  };
+};
+
+const readResponseBodyChunks = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  decoder: TextDecoder,
+  chunks: readonly string[],
+  byteLength: number,
+): Promise<ReadBoundedResponseResult> => {
+  const next = await reader.read();
+  if (next.done) {
+    return {
+      byteLength,
+      status: "ok",
+      text: [...chunks, decoder.decode()].join(""),
+    };
+  }
+  const nextByteLength = byteLength + next.value.byteLength;
+  if (nextByteLength > MAX_FINISH_PREDICTION_UPSTREAM_BYTES) {
+    await reader.cancel();
+    return { status: "too-large" };
+  }
+  return readResponseBodyChunks(
+    reader,
+    decoder,
+    [...chunks, decoder.decode(next.value, { stream: true })],
+    nextByteLength,
+  );
+};
+
+const readBoundedResponseText = async (response: Response): Promise<ReadBoundedResponseResult> => {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_FINISH_PREDICTION_UPSTREAM_BYTES) {
+    await response.body?.cancel();
+    return { status: "too-large" };
+  }
+  if (response.body === null) {
+    return { byteLength: 0, status: "ok", text: "" };
+  }
+  return readResponseBodyChunks(response.body.getReader(), new TextDecoder(), [], 0);
+};
+
+const isTimeoutError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.name === "AbortError" ||
+    error.name === "TimeoutError" ||
+    error.message.toLowerCase().includes("timed out") ||
+    error.message.toLowerCase().includes("timeout")
+  );
+};
+
+const finishPredictionUpstreamError = (status: number): FinishPredictionSummaryError => {
+  if (status === 404) {
+    return createFinishPredictionSummaryError(
+      "RACE_NOT_FOUND",
+      "The requested race was not found.",
+    );
+  }
+  if (status === 408 || status === 504) {
+    return createFinishPredictionSummaryError("TIMEOUT", "The finish prediction API timed out.");
+  }
+  if (status === 413) {
+    return createFinishPredictionSummaryError(
+      "RESPONSE_TOO_LARGE",
+      "The finish prediction API response is too large to process safely.",
+    );
+  }
+  return createFinishPredictionSummaryError(
+    "UPSTREAM_API_ERROR",
+    `The finish prediction API failed with status ${status}.`,
+  );
+};
+
+const getFinishPredictionSummary = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const parsed = parseFinishPredictionSummaryRoute(args);
+  if (parsed.status === "error") {
+    return finishPredictionErrorResult(parsed.error);
+  }
+  const path = raceApiPath(parsed.route, "sections/finish-prediction");
+  const allowed = resolveMcpApiPath(path);
+  if (allowed === null) {
+    return finishPredictionErrorResult(
+      createFinishPredictionSummaryError(
+        "UPSTREAM_API_ERROR",
+        "The finish prediction API path is not allowlisted for MCP reads.",
+      ),
+    );
+  }
+  try {
+    const response = await fetchSite(allowed, AbortSignal.timeout(FINISH_PREDICTION_TIMEOUT_MS));
+    if (!response.ok) {
+      await response.body?.cancel();
+      return finishPredictionErrorResult(finishPredictionUpstreamError(response.status));
+    }
+    const body = await readBoundedResponseText(response);
+    if (body.status === "too-large") {
+      return finishPredictionErrorResult(
+        createFinishPredictionSummaryError(
+          "RESPONSE_TOO_LARGE",
+          "The finish prediction API response is too large to process safely.",
+        ),
+      );
+    }
+    try {
+      const payload: unknown = JSON.parse(body.text);
+      const built = buildFinishPredictionSummary(payload, parsed.route);
+      if (built.status === "error") {
+        return finishPredictionErrorResult(built.error);
+      }
+      const summaryText = JSON.stringify(built.summary);
+      const summaryBytes = new TextEncoder().encode(summaryText).byteLength;
+      return summaryBytes <= MAX_FINISH_PREDICTION_SUMMARY_BYTES
+        ? { content: [{ text: summaryText, type: "text" }], isError: false }
+        : finishPredictionErrorResult(
+            createFinishPredictionSummaryError(
+              "RESPONSE_TOO_LARGE",
+              "The compact finish prediction summary exceeds the MCP response size limit.",
+            ),
+          );
+    } catch {
+      return finishPredictionErrorResult(
+        createFinishPredictionSummaryError(
+          "PREDICTION_PAYLOAD_MALFORMED",
+          "The finish prediction API returned invalid JSON.",
+        ),
+      );
+    }
+  } catch (error) {
+    return finishPredictionErrorResult(
+      isTimeoutError(error)
+        ? createFinishPredictionSummaryError("TIMEOUT", "The finish prediction API timed out.")
+        : createFinishPredictionSummaryError(
+            "UPSTREAM_API_ERROR",
+            "The finish prediction API request failed.",
+          ),
+    );
+  }
+};
+
+const getRaceEntityRecentResults = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const parsed = parseRaceRoute(args);
+  if (typeof parsed === "string") {
+    return errorResult(JSON.stringify({ error: { code: "RACE_NOT_FOUND", message: parsed } }));
+  }
+  const horseNumber = readString(args, "horseNumber");
+  const entityType = readString(args, "entityType");
+  if (horseNumber === null || !/^\d{1,2}$/u.test(horseNumber)) {
+    return errorResult(
+      JSON.stringify({
+        error: { code: "RUNNER_NOT_FOUND", message: "horseNumber must contain one or two digits." },
+      }),
+    );
+  }
+  if (
+    entityType !== "horse" &&
+    entityType !== "jockey" &&
+    entityType !== "trainer" &&
+    entityType !== "owner"
+  ) {
+    return errorResult(
+      JSON.stringify({
+        error: {
+          code: "INVALID_ENTITY_TYPE",
+          message: "entityType must be horse, jockey, trainer, or owner.",
+        },
+      }),
+    );
+  }
+  const limit = args.limit;
+  if (limit !== undefined && (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1)) {
+    return errorResult(
+      JSON.stringify({
+        error: { code: "INVALID_LIMIT", message: "limit must be a positive integer." },
+      }),
+    );
+  }
+  const cursor = args.cursor;
+  if (cursor !== undefined && cursor !== null && typeof cursor !== "string") {
+    return errorResult(
+      JSON.stringify({
+        error: { code: "INVALID_CURSOR", message: "cursor must be a string or null." },
+      }),
+    );
+  }
+  const query = new URLSearchParams({
+    entityType,
+    horseNumber,
+    source: parsed.source ?? "",
+  });
+  if (limit !== undefined) query.set("limit", String(limit));
+  if (typeof cursor === "string") query.set("cursor", cursor);
+  const path = raceApiPath(parsed, "entity-recent-results").split("?")[0];
+  try {
+    const response = await fetchSite(
+      `${path}?${query.toString()}`,
+      AbortSignal.timeout(RACE_ENTITY_TIMEOUT_MS),
+    );
+    const text = await response.text();
+    try {
+      const value: unknown = JSON.parse(text);
+      return response.ok
+        ? okJson(value)
+        : { content: [{ text: JSON.stringify(value), type: "text" }], isError: true };
+    } catch {
+      return errorResult(
+        JSON.stringify({
+          error: {
+            code: "MALFORMED_HISTORY_DATA",
+            message: "The history API returned invalid JSON.",
+          },
+        }),
+      );
+    }
+  } catch (error) {
+    return errorResult(
+      JSON.stringify({
+        error: {
+          code: isTimeoutError(error) ? "TIMEOUT" : "UPSTREAM_ERROR",
+          message: isTimeoutError(error)
+            ? "The history request timed out."
+            : "The history request failed.",
+        },
+      }),
+    );
+  }
 };
 
 const fetchSiteJson = async (
@@ -410,6 +787,12 @@ export const callMcpTool = async (
       return errorResult(`get_race_section failed with status ${fetched.status}`);
     }
     return okJson(fetched.value);
+  }
+  if (name === "get_finish_prediction_summary") {
+    return getFinishPredictionSummary(args, fetchSite);
+  }
+  if (name === "get_race_entity_recent_results") {
+    return getRaceEntityRecentResults(args, fetchSite);
   }
   if (name === "get_win_rate_heatmap_display") {
     const parsed = parseRaceRoute(args);

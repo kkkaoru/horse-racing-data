@@ -34,7 +34,19 @@ uses. Defaults match first paint (勝率, レース数 off).
 2. `authenticate` — MCP bearer succeeded; Worker can read `/api/spec`.
 3. `search_entities` — horses, jockeys, owners, trainers.
 4. `get_win_rate_heatmap_display` — same display builder as the table.
-5. `get_json` for `/api/races/.../realtime?source=jra|nar` (odds) and `/trends`.
-6. `get_race_section` / `list_top_races` — same GET handlers the browser uses.
+5. `get_finish_prediction_summary` — compact ranked finish predictions for an
+   LLM. Use this instead of the full `finish-prediction` race section unless the
+   user explicitly needs its historical inputs or UI-only intermediate data.
+6. `get_race_entity_recent_results` — cursor-paged, point-in-time history for a
+   selected runner's horse, current jockey, current trainer, or current owner.
+   Start with `cursor: null`; pass the HMAC-signed `nextCursor` unchanged for the
+   next page. Horse registration IDs follow JRA/NAR results across sources;
+   jockey, trainer, and owner IDs are source-scoped to prevent code collisions.
+   Non-horse history is bounded to the target year and preceding year. Horse
+   history starts no earlier than its registration-number birth year. If a
+   same-day race lacks a valid start time, only an earlier race number at the
+   same source and venue is safe enough to include.
+7. `get_json` for `/api/races/.../realtime?source=jra|nar` (odds) and `/trends`.
+8. `get_race_section` / `list_top_races` — same GET handlers the browser uses.
 
 Do not call cache-warm, internal, admin, or POST paddock endpoints.

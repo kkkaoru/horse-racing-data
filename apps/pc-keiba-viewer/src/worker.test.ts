@@ -190,3 +190,57 @@ it("fetch-delegates-to-open-next-worker", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(response.status).toBe(200);
 });
+
+it("mcp finish prediction summary propagates its bounded signal to OpenNext", async () => {
+  const abortedSignal = AbortSignal.abort();
+  const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(abortedSignal);
+  fetchMock.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        inputs: {
+          currentKeibajoCode: "50",
+          currentRaceDate: "20260827",
+          currentSource: "nar",
+          modelPredictionFeatures: [{ horseNumber: "1", predictedFinishNorm: 0.1 }],
+          runners: [{ bamei: "Alpha", umaban: "01" }],
+        },
+        type: "finish-prediction",
+      }),
+      { status: 200 },
+    ),
+  );
+  const env: CloudflareEnv = { MCP_AUTH_TOKEN: "mcp-token" };
+  const ctx = buildCtx();
+  const response = await worker.fetch(
+    new Request("https://example.com/mcp", {
+      body: JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          arguments: {
+            day: "27",
+            keibajoCode: "50",
+            month: "08",
+            raceNumber: "05",
+            source: "nar",
+            year: "2026",
+          },
+          name: "get_finish_prediction_summary",
+        },
+      }),
+      headers: { Authorization: "Bearer mcp-token", "Content-Type": "application/json" },
+      method: "POST",
+    }),
+    env,
+    ctx,
+  );
+  const internalRequest = fetchMock.mock.calls[0]?.[0];
+  timeoutMock.mockRestore();
+
+  expect(response.status).toBe(200);
+  expect(internalRequest?.url).toBe(
+    "https://example.com/api/races/2026/08/27/50/05/sections/finish-prediction?source=nar",
+  );
+  expect(internalRequest?.signal.aborted).toBe(true);
+});

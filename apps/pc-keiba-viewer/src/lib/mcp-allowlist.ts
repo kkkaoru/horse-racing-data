@@ -6,7 +6,7 @@ const FAVORITES_SEARCH_PATH: string = "/api/mypage/favorites/search";
 const FAVORITES_PATH: string = "/api/mypage/favorites";
 
 const RACE_API_ROOT: RegExp =
-  /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/(?:paddock|premium|realtime|recent-results|running-styles|trends|sections\/[a-z0-9-]+)$/;
+  /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/(?:entity-recent-results|paddock|premium|realtime|recent-results|running-styles|trends|sections\/[a-z0-9-]+)$/;
 const HORSE_RUNNING_STYLES_API: RegExp = /^\/api\/horses\/[0-9]{6,16}\/running-styles$/;
 
 export const isMcpAllowedApiPath = (pathname: string): boolean => {

@@ -12,7 +12,9 @@ it("allows the spec, top-races, and favorites APIs", () => {
 
 it("allows race section and supporting race APIs", () => {
   expect(isMcpAllowedApiPath("/api/races/2026/08/20/45/12/sections/win-rate-heatmap")).toBe(true);
+  expect(isMcpAllowedApiPath("/api/races/2026/08/27/50/05/sections/finish-prediction")).toBe(true);
   expect(isMcpAllowedApiPath("/api/races/2026/08/20/45/12/realtime")).toBe(true);
+  expect(isMcpAllowedApiPath("/api/races/2026/08/27/50/05/entity-recent-results")).toBe(true);
   expect(isMcpAllowedApiPath("/api/horses/1234567890/running-styles")).toBe(true);
 });
 

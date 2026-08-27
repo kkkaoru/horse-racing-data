@@ -3,6 +3,7 @@ import type {
   HorseRaceResultsFilters,
   KvStore,
   RaceFeatureFilters,
+  RaceEntityRecentResultsFilters,
   RaceTrainingFilters,
   SourceScope,
   WinRateHeatmapStatsFilters,
@@ -50,6 +51,17 @@ export type CacheDescriptor =
       raceBango: string;
       source: "jra" | "nar";
       sourceScope: "all" | "jra" | "nar";
+    }
+  | {
+      cursor: string;
+      date: string;
+      entityType: RaceEntityRecentResultsFilters["entityType"];
+      horseNumber: string;
+      keibajoCode: string;
+      kind: "race-entity-recent-results";
+      limit: number;
+      raceBango: string;
+      source: "jra" | "nar";
     }
   | {
       date: string;
@@ -134,6 +146,15 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("source", descriptor.source);
     url.searchParams.set("sourceScope", descriptor.sourceScope);
   }
+  if (descriptor.kind === "race-entity-recent-results") {
+    url.searchParams.set("source", descriptor.source);
+    url.searchParams.set("keibajoCode", descriptor.keibajoCode);
+    url.searchParams.set("raceBango", descriptor.raceBango);
+    url.searchParams.set("horseNumber", descriptor.horseNumber);
+    url.searchParams.set("entityType", descriptor.entityType);
+    url.searchParams.set("limit", String(descriptor.limit));
+    url.searchParams.set("cursor", descriptor.cursor);
+  }
   if (descriptor.kind === "condition-history-stats") {
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
@@ -169,6 +190,19 @@ export const readKvRows = async (kv: KvStore, key: string): Promise<string | nul
   try {
     const parsed: unknown = JSON.parse(value);
     return isRecord(parsed) && Array.isArray(parsed.rows) ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+export const readKvRaceEntityPage = async (kv: KvStore, key: string): Promise<string | null> => {
+  const value = await kv.get(key);
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) && Array.isArray(parsed.results) && isRecord(parsed.pagination)
+      ? value
+      : null;
   } catch {
     return null;
   }
@@ -303,6 +337,20 @@ export const horseRaceResultsDescriptor = (filters: HorseRaceResultsFilters): Ca
   raceBango: filters.raceBango,
   source: filters.source,
   sourceScope: filters.sourceScope,
+});
+
+export const raceEntityRecentResultsDescriptor = (
+  filters: RaceEntityRecentResultsFilters,
+): CacheDescriptor => ({
+  cursor: filters.cursor ?? "first",
+  date: filters.date,
+  entityType: filters.entityType,
+  horseNumber: filters.horseNumber,
+  keibajoCode: filters.keibajoCode,
+  kind: "race-entity-recent-results",
+  limit: filters.limit,
+  raceBango: filters.raceBango,
+  source: filters.source,
 });
 
 export const conditionHistoryStatsDescriptor = (

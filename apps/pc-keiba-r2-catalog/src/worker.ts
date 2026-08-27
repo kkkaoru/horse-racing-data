@@ -10,8 +10,10 @@ import {
   populateCacheApi,
   populateCaches,
   purgeDescriptors,
+  raceEntityRecentResultsDescriptor,
   readKvConditionHistoryStats,
   readKvHeatmapStats,
+  readKvRaceEntityPage,
   readKvRows,
   trainingDescriptor,
   type CacheDescriptor,
@@ -31,6 +33,16 @@ import {
 import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
 import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
+import {
+  buildRaceEntityHistoryQuery,
+  buildRaceEntityInitialQuery,
+  buildRaceEntityPage,
+  buildRaceEntityTargetQuery,
+  normaliseRaceEntityHistoryRow,
+  normaliseRaceEntityInitialTarget,
+  normaliseRaceEntityTarget,
+  parseRaceEntityCursor,
+} from "./race-entity-recent-results";
 import {
   buildHorseRaceResultsQuery,
   normaliseHorseRaceResultRow,
@@ -59,6 +71,8 @@ import type {
   HorseRaceResultsSourceScope,
   KvStore,
   RaceFeatureFilters,
+  RaceEntityRecentResultsFilters,
+  RaceEntityType,
   RaceTrainingFilters,
   RunningStyleFeatureFilters,
   RunningStyleSourceScope,
@@ -74,6 +88,21 @@ const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-e
 const DEFAULT_STATS_YEARS: number = 10;
 const MIN_STATS_YEARS: number = 1;
 const MAX_STATS_YEARS: number = 50;
+const RACE_ENTITY_TYPES: ReadonlySet<string> = new Set(["horse", "jockey", "trainer", "owner"]);
+const RACE_ENTITY_DEFAULT_LIMITS: ReadonlyMap<RaceEntityType, number> = new Map([
+  ["horse", 5],
+  ["jockey", 10],
+  ["trainer", 10],
+  ["owner", 10],
+]);
+const RACE_ENTITY_MAX_LIMITS: ReadonlyMap<RaceEntityType, number> = new Map([
+  ["horse", 20],
+  ["jockey", 30],
+  ["trainer", 30],
+  ["owner", 30],
+]);
+const RACE_ENTITY_CACHE_API_TTL_SECONDS: number = 60 * 60;
+const RACE_ENTITY_KV_TTL_SECONDS: number = 6 * 60 * 60;
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
@@ -117,6 +146,17 @@ interface RunningStyleQueryParams {
 
 interface RunningStyleHorseBatchParams extends RunningStyleQueryParams {
   umabans: ReadonlyArray<number>;
+}
+
+class RaceEntityRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status: number) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
 }
 
 const jsonResponse = (value: unknown, status = 200): Response =>
@@ -334,6 +374,55 @@ const parseHorseRaceResultsFilters = (url: URL): HorseRaceResultsFilters => ({
   source: parseHeatmapSource(url),
   sourceScope: parseHorseRaceResultsSourceScope(url),
 });
+
+const isRaceEntityType = (value: string): value is RaceEntityType => RACE_ENTITY_TYPES.has(value);
+
+const parseRaceEntityType = (url: URL): RaceEntityType => {
+  const value = url.searchParams.get("entityType");
+  if (value === null || !isRaceEntityType(value)) {
+    throw new RaceEntityRequestError(
+      "INVALID_ENTITY_TYPE",
+      "entityType must be horse, jockey, trainer, or owner.",
+      400,
+    );
+  }
+  return value;
+};
+
+const raceEntityLimit = (url: URL, entityType: RaceEntityType): number => {
+  const defaultLimit = RACE_ENTITY_DEFAULT_LIMITS.get(entityType);
+  const maxLimit = RACE_ENTITY_MAX_LIMITS.get(entityType);
+  if (defaultLimit === undefined || maxLimit === undefined) {
+    throw new RaceEntityRequestError("INVALID_ENTITY_TYPE", "Entity limit policy is missing.", 400);
+  }
+  const raw = url.searchParams.get("limit");
+  if (raw === null) return defaultLimit;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxLimit) {
+    throw new RaceEntityRequestError(
+      "INVALID_LIMIT",
+      `limit must be an integer from 1 to ${String(maxLimit)} for ${entityType}.`,
+      400,
+    );
+  }
+  return parsed;
+};
+
+const parseRaceEntityFilters = (url: URL): RaceEntityRecentResultsFilters => {
+  const entityType = parseRaceEntityType(url);
+  const horseNumber = requireCode(url, "horseNumber");
+  const cursor = url.searchParams.get("cursor");
+  return {
+    cursor: cursor === null || cursor.length === 0 ? null : cursor,
+    date: requireDate(url),
+    entityType,
+    horseNumber,
+    keibajoCode: requireCode(url, "keibajoCode"),
+    limit: raceEntityLimit(url, entityType),
+    raceBango: parseRaceBangoOrNumber(url),
+    source: parseHeatmapSource(url),
+  };
+};
 
 const runningStyleCoalesceKey = (filters: RunningStyleFeatureFilters): string =>
   `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}:${filters.umaban === undefined ? "all" : String(filters.umaban)}`;
@@ -563,6 +652,107 @@ const handleHorseRaceResults = (
     buildHorseRaceResultsQuery(env, filters),
     (rows) => uniqueHorseRaceResults(rows.map(normaliseHorseRaceResultRow)),
   );
+};
+
+const entityNotFoundCode = (entityType: RaceEntityType): string =>
+  `${entityType.toUpperCase()}_NOT_FOUND`;
+
+const raceEntityCursorSecret = (env: Env): string => {
+  const secret = env.RACE_ENTITY_CURSOR_SECRET;
+  if (secret === undefined || secret.length < 32) {
+    throw new RaceEntityRequestError(
+      "UPSTREAM_ERROR",
+      "The race entity cursor signing secret is unavailable.",
+      502,
+    );
+  }
+  return secret;
+};
+
+const handleRaceEntityRecentResults = async (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseRaceEntityFilters(url);
+  const descriptor = raceEntityRecentResultsDescriptor(filters);
+  const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRaceEntityPage);
+  if (cached) return cached;
+  const cursorSecret = raceEntityCursorSecret(env);
+  const initialRows =
+    filters.cursor === null
+      ? await executeR2Sql(env, buildRaceEntityInitialQuery(env, filters), dependencies.fetchImpl)
+      : null;
+  const targetRows =
+    initialRows ??
+    (await executeR2Sql(env, buildRaceEntityTargetQuery(env, filters), dependencies.fetchImpl));
+  const targetRow = targetRows[0];
+  if (targetRow === undefined) {
+    throw new RaceEntityRequestError("RACE_NOT_FOUND", "The target race was not found.", 404);
+  }
+  const target =
+    initialRows === null
+      ? normaliseRaceEntityTarget(targetRow)
+      : normaliseRaceEntityInitialTarget(targetRow);
+  if (!target.runnerFound) {
+    throw new RaceEntityRequestError("RUNNER_NOT_FOUND", "The target runner was not found.", 404);
+  }
+  if (target.horseId === null || /^0+$/u.test(target.horseId)) {
+    throw new RaceEntityRequestError("HORSE_NOT_FOUND", "The runner horse ID is unavailable.", 404);
+  }
+  if (target.entityId === null || /^0+$/u.test(target.entityId)) {
+    throw new RaceEntityRequestError(
+      "ENTITY_ID_NOT_AVAILABLE",
+      `A canonical ${filters.entityType} ID is not available for this runner.`,
+      422,
+    );
+  }
+  if (target.entityName === null) {
+    throw new RaceEntityRequestError(
+      entityNotFoundCode(filters.entityType),
+      `The resolved ${filters.entityType} was not found.`,
+      404,
+    );
+  }
+  const resolvedTarget = { ...target, entityId: target.entityId };
+  const cursor = await parseRaceEntityCursor(filters, resolvedTarget.entityId, cursorSecret);
+  if (cursor === "invalid") {
+    throw new RaceEntityRequestError(
+      "INVALID_CURSOR",
+      "The cursor does not match the target race, entity, filter, or sort order.",
+      400,
+    );
+  }
+  const historyRows =
+    initialRows?.filter((row) => row.result_id !== null && row.result_id !== undefined) ??
+    (await executeR2Sql(
+      env,
+      buildRaceEntityHistoryQuery(env, filters, resolvedTarget, cursor),
+      dependencies.fetchImpl,
+    ));
+  const rows = historyRows.map((row) => {
+    try {
+      return normaliseRaceEntityHistoryRow(row);
+    } catch {
+      throw new RaceEntityRequestError(
+        "MALFORMED_HISTORY_DATA",
+        "The R2 Catalog history row is malformed.",
+        502,
+      );
+    }
+  });
+  const body = JSON.stringify(
+    await buildRaceEntityPage(filters, resolvedTarget, rows, cursorSecret),
+  );
+  await populateCaches(
+    dependencies.cache,
+    env.CATALOG_KV,
+    descriptor,
+    body,
+    RACE_ENTITY_CACHE_API_TTL_SECONDS,
+    RACE_ENTITY_KV_TTL_SECONDS,
+  );
+  return jsonRowsResponse(body, "r2-sql");
 };
 
 const conditionHistoryStatsBody = async (
@@ -875,6 +1065,9 @@ export const handleRequest = async (
     if (request.method === "GET" && url.pathname === "/v1/condition-history-stats") {
       return await handleConditionHistoryStats(url, env, dependencies);
     }
+    if (request.method === "GET" && url.pathname === "/v1/race-entity-recent-results") {
+      return await handleRaceEntityRecentResults(url, env, dependencies);
+    }
     if (
       (request.method === "POST" || request.method === "DELETE") &&
       url.pathname === "/admin/purge"
@@ -883,6 +1076,36 @@ export const handleRequest = async (
     }
     return jsonResponse({ error: "not_found" }, 404);
   } catch (error) {
+    if (error instanceof RaceEntityRequestError) {
+      return jsonResponse({ error: { code: error.code, message: error.message } }, error.status);
+    }
+    if (url.pathname === "/v1/race-entity-recent-results") {
+      const message = error instanceof Error ? error.message : "";
+      const validation = message.includes("must") || message.includes("required");
+      if (validation) {
+        return jsonResponse(
+          {
+            error: {
+              code: message.includes("horseNumber") ? "RUNNER_NOT_FOUND" : "RACE_NOT_FOUND",
+              message,
+            },
+          },
+          400,
+        );
+      }
+      const timeout = message.toLowerCase().includes("timeout");
+      return jsonResponse(
+        {
+          error: {
+            code: timeout ? "TIMEOUT" : "UPSTREAM_ERROR",
+            message: timeout
+              ? "The R2 Catalog history query timed out."
+              : "The R2 Catalog history query failed.",
+          },
+        },
+        timeout ? 504 : 502,
+      );
+    }
     if (
       error instanceof Error &&
       (error.message.includes("must") || error.message.includes("required"))
