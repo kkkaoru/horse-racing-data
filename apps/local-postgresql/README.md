@@ -83,13 +83,20 @@ individual commands independent and runs them in this strict order:
 
 1. `pc-keiba:update`
 2. verify that the Parallels VM is `stopped`
-3. `scrape:netkeiba-training` for JRA runners without an official `jvd_hc` or
+3. materialize local corner features for today through the seven-day publication horizon
+4. `scrape:netkeiba-training` for JRA runners without an official `jvd_hc` or
    `jvd_wc` workout in the preceding 14 days
-4. `replica:push` (R2 Catalog, then Neon)
-5. enqueue authenticated `sync-realtime-data` jobs for JST today and tomorrow;
+5. `replica:push` (R2 Catalog, then Neon)
+6. refresh the selected `race_entity_history_v1` year and atomically publish the
+   direct-Catalog Parquet manifest
+7. enqueue authenticated `sync-realtime-data` jobs for JST today and tomorrow;
    after each `discover-urls` enqueue, poll the read-only discovery status until
    D1 reaches the Neon JRA race count, then enqueue
    `plan-premium-race-data-fetches`
+
+The entity-history stage runs `sync:entity-history-serving` with the same JST
+run year, so the API manifest cannot lag the raw R2 Catalog replica after a
+successful end-to-end update.
 
 The orchestrator forces `PARALLELS_STOP_AFTER_SUCCESS=1`. If the Windows update
 fails, it does not start replica synchronization. If the VM is not confirmed

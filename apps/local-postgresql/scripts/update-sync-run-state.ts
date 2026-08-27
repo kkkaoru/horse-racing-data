@@ -9,6 +9,7 @@ export type UpdateSyncStep =
   | "features"
   | "training"
   | "sync"
+  | "entity-history"
   | "discovery"
   | "readiness";
 
@@ -54,6 +55,7 @@ const UPDATE_SYNC_STEPS: ReadonlySet<string> = new Set([
   "features",
   "training",
   "sync",
+  "entity-history",
   "discovery",
   "readiness",
 ]);

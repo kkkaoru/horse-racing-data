@@ -37,6 +37,7 @@ it("updates PC-KEIBA, verifies the stopped VM, then syncs replicas", async () =>
     })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
   const log = vi.fn<(message: string) => void>();
   const triggerRealtimeDiscovery = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -100,15 +101,27 @@ it("updates PC-KEIBA, verifies the stopped VM, then syncs replicas", async () =>
     "/repo/apps/local-postgresql",
     "replica:push",
   ]);
+  expect(runCommand.mock.calls[5]?.[0]).toStrictEqual([
+    "/usr/local/bin/bun",
+    "run",
+    "--env-file=/repo/.env",
+    "--cwd",
+    "/repo/apps/pc-keiba-r2-catalog",
+    "sync:entity-history-serving",
+    "--",
+    "--year",
+    "2026",
+  ]);
   expect(log.mock.calls.map(([message]) => message)).toEqual([
-    "Step 1/7: updating PC-KEIBA data through the Parallels Windows VM...",
-    "Step 2/7: verifying that the Windows VM stopped after the update...",
-    expect.stringMatching(/^Step 3\/7: materializing local corner features/),
-    "Step 4/7: importing JRA training workouts from netkeiba as backup...",
-    "Step 5/7: syncing local PostgreSQL to R2 Catalog and Neon...",
-    "Step 6/7: discovering synced races and planning premium fetches...",
-    "Step 7/7: attesting pre-weight prediction and KV readiness for upcoming 20260825 races...",
-    "PC-KEIBA update, R2 Catalog/Neon sync, realtime discovery, and prediction readiness attestation completed successfully.",
+    "Step 1/8: updating PC-KEIBA data through the Parallels Windows VM...",
+    "Step 2/8: verifying that the Windows VM stopped after the update...",
+    expect.stringMatching(/^Step 3\/8: materializing local corner features/),
+    "Step 4/8: importing JRA training workouts from netkeiba as backup...",
+    "Step 5/8: syncing local PostgreSQL to R2 Catalog and Neon...",
+    "Step 6/8: publishing direct-Catalog entity history for the selected year...",
+    "Step 7/8: discovering synced races and planning premium fetches...",
+    "Step 8/8: attesting pre-weight prediction and KV readiness for upcoming 20260825 races...",
+    "PC-KEIBA update, R2 Catalog/Neon sync, direct-Catalog entity history publication, realtime discovery, and prediction readiness attestation completed successfully.",
   ]);
   expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
   expect(attestFinishPosition).toHaveBeenCalledWith("20260825");
@@ -244,6 +257,43 @@ it("reports a replica sync failure without re-running the update", async () => {
   expect(runCommand).toHaveBeenCalledTimes(5);
 });
 
+it("fails before discovery when direct-Catalog entity history publication fails", async () => {
+  const runCommand = vi
+    .fn<CommandRunner>()
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({
+      exitCode: 0,
+      stderr: "",
+      stdout: "VM Windows 11 exist stopped\n",
+    })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 8, stderr: "manifest publish failed", stdout: "" });
+  const triggerRealtimeDiscovery = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+  await expect(
+    runPcKeibaUpdateAndSync({
+      appDir: "/repo/apps/local-postgresql",
+      attestFinishPosition: vi.fn().mockResolvedValue(undefined),
+      bunExecutable: "/usr/local/bin/bun",
+      log: vi.fn(),
+      now: () => new Date("2026-08-25T09:00:00.000Z"),
+      runCommand,
+      stateStore: {
+        clearCheckpoint: vi.fn().mockResolvedValue(undefined),
+        loadCheckpoint: vi.fn().mockResolvedValue(null),
+        recordCompletion: vi.fn().mockResolvedValue(undefined),
+        saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+      },
+      triggerRealtimeDiscovery,
+      vmName: "Windows 11",
+    }),
+  ).rejects.toThrow("manifest publish failed");
+  expect(runCommand).toHaveBeenCalledTimes(6);
+  expect(triggerRealtimeDiscovery).not.toHaveBeenCalled();
+});
+
 it("retries a replica sync broken-pipe exit without re-running the update", async () => {
   const runCommand = vi
     .fn<CommandRunner>()
@@ -256,6 +306,7 @@ it("retries a replica sync broken-pipe exit without re-running the update", asyn
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 141, stderr: "broken pipe", stdout: "" })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
   const log = vi.fn<(message: string) => void>();
 
@@ -276,8 +327,19 @@ it("retries a replica sync broken-pipe exit without re-running the update", asyn
     vmName: "Windows 11",
   });
 
-  expect(runCommand).toHaveBeenCalledTimes(6);
+  expect(runCommand).toHaveBeenCalledTimes(7);
   expect(runCommand.mock.calls[4]?.[0]).toEqual(runCommand.mock.calls[5]?.[0]);
+  expect(runCommand.mock.calls[6]?.[0]).toStrictEqual([
+    "/usr/local/bin/bun",
+    "run",
+    "--env-file=/repo/.env",
+    "--cwd",
+    "/repo/apps/pc-keiba-r2-catalog",
+    "sync:entity-history-serving",
+    "--",
+    "--year",
+    "2026",
+  ]);
   expect(log).toHaveBeenCalledWith(
     expect.stringContaining("broken pipe (141); retrying without repeating PC-KEIBA update"),
   );
@@ -292,6 +354,7 @@ it("fails closed when realtime discovery fails after a successful replica sync",
       stderr: "",
       stdout: "VM Windows 11 exist stopped\n",
     })
+    .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" })
     .mockResolvedValueOnce({ exitCode: 0, stderr: "", stdout: "" });
@@ -318,15 +381,16 @@ it("fails closed when realtime discovery fails after a successful replica sync",
       vmName: "Windows 11",
     }),
   ).rejects.toThrow("inline discovery failed");
-  expect(runCommand).toHaveBeenCalledTimes(5);
+  expect(runCommand).toHaveBeenCalledTimes(6);
   expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
   expect(log.mock.calls).toStrictEqual([
-    ["Step 1/7: updating PC-KEIBA data through the Parallels Windows VM..."],
-    ["Step 2/7: verifying that the Windows VM stopped after the update..."],
-    [expect.stringMatching(/^Step 3\/7: materializing local corner features/)],
-    ["Step 4/7: importing JRA training workouts from netkeiba as backup..."],
-    ["Step 5/7: syncing local PostgreSQL to R2 Catalog and Neon..."],
-    ["Step 6/7: discovering synced races and planning premium fetches..."],
+    ["Step 1/8: updating PC-KEIBA data through the Parallels Windows VM..."],
+    ["Step 2/8: verifying that the Windows VM stopped after the update..."],
+    [expect.stringMatching(/^Step 3\/8: materializing local corner features/)],
+    ["Step 4/8: importing JRA training workouts from netkeiba as backup..."],
+    ["Step 5/8: syncing local PostgreSQL to R2 Catalog and Neon..."],
+    ["Step 6/8: publishing direct-Catalog entity history for the selected year..."],
+    ["Step 7/8: discovering synced races and planning premium fetches..."],
   ]);
 });
 
@@ -403,10 +467,31 @@ it("resumes a failed same-day run at replica sync without repeating completed da
 
   expect(runCommand.mock.calls).toStrictEqual([
     [["/usr/local/bin/bun", "run", "--cwd", "/repo/apps/local-postgresql", "replica:push"]],
+    [
+      [
+        "/usr/local/bin/bun",
+        "run",
+        "--env-file=/repo/.env",
+        "--cwd",
+        "/repo/apps/pc-keiba-r2-catalog",
+        "sync:entity-history-serving",
+        "--",
+        "--year",
+        "2026",
+      ],
+    ],
   ]);
   expect(triggerRealtimeDiscovery).toHaveBeenCalledOnce();
   expect(attestFinishPosition).toHaveBeenCalledWith("20260825");
   expect(saveCheckpoint.mock.calls).toStrictEqual([
+    [
+      {
+        nextStep: "entity-history",
+        runYmd: "20260825",
+        updatedAt: "2026-08-25T09:00:00.000Z",
+        version: 1,
+      },
+    ],
     [
       {
         nextStep: "discovery",

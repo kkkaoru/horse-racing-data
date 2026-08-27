@@ -66,8 +66,9 @@ const UPDATE_SYNC_STEP_INDEX: ReadonlyMap<UpdateSyncStep, number> = new Map([
   ["features", 2],
   ["training", 3],
   ["sync", 4],
-  ["discovery", 5],
-  ["readiness", 6],
+  ["entity-history", 5],
+  ["discovery", 6],
+  ["readiness", 7],
 ]);
 
 const commandLabel = (command: readonly string[]): string => command.join(" ");
@@ -170,7 +171,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
     "pc-keiba:update",
   ] satisfies readonly string[];
   if (shouldRunStep(resumeStep, "update")) {
-    options.log("Step 1/7: updating PC-KEIBA data through the Parallels Windows VM...");
+    options.log("Step 1/8: updating PC-KEIBA data through the Parallels Windows VM...");
     const updateResult = await options.runCommand(updateCommand, {
       env: { PARALLELS_STOP_AFTER_SUCCESS: "1" },
     });
@@ -183,7 +184,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
 
   const statusCommand = ["prlctl", "status", options.vmName] satisfies readonly string[];
   if (shouldRunStep(resumeStep, "verify-vm")) {
-    options.log("Step 2/7: verifying that the Windows VM stopped after the update...");
+    options.log("Step 2/8: verifying that the Windows VM stopped after the update...");
     const statusResult = await options.runCommand(statusCommand, { captureOutput: true });
     requireSuccess(statusCommand, statusResult);
     const vmStatus = parseParallelsVmStatus(statusResult.stdout);
@@ -215,7 +216,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
   ] satisfies readonly string[];
   if (shouldRunStep(resumeStep, "features")) {
     options.log(
-      `Step 3/7: materializing local corner features for ${featureDates.fromDate}-${featureDates.toDate} before replica sync...`,
+      `Step 3/8: materializing local corner features for ${featureDates.fromDate}-${featureDates.toDate} before replica sync...`,
     );
     const cornerFeatureResult = await options.runCommand(cornerFeatureCommand);
     requireSuccess(cornerFeatureCommand, cornerFeatureResult);
@@ -230,7 +231,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
     "scrape:netkeiba-training",
   ] satisfies readonly string[];
   if (shouldRunStep(resumeStep, "training")) {
-    options.log("Step 4/7: importing JRA training workouts from netkeiba as backup...");
+    options.log("Step 4/8: importing JRA training workouts from netkeiba as backup...");
     const trainingResult = await options.runCommand(trainingCommand);
     requireSuccess(trainingCommand, trainingResult);
     await saveNextStep("sync");
@@ -244,18 +245,37 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
     "replica:push",
   ] satisfies readonly string[];
   if (shouldRunStep(resumeStep, "sync")) {
-    options.log("Step 5/7: syncing local PostgreSQL to R2 Catalog and Neon...");
+    options.log("Step 5/8: syncing local PostgreSQL to R2 Catalog and Neon...");
     await runReplicaSyncWithBrokenPipeRetry(syncCommand, options.runCommand, options.log);
+    await saveNextStep("entity-history");
+  }
+
+  const catalogAppDir = resolve(options.appDir, "../pc-keiba-r2-catalog");
+  const entityHistoryCommand = [
+    options.bunExecutable,
+    "run",
+    `--env-file=${resolve(options.appDir, "../../.env")}`,
+    "--cwd",
+    catalogAppDir,
+    "sync:entity-history-serving",
+    "--",
+    "--year",
+    runYmd.slice(0, 4),
+  ] satisfies readonly string[];
+  if (shouldRunStep(resumeStep, "entity-history")) {
+    options.log("Step 6/8: publishing direct-Catalog entity history for the selected year...");
+    const entityHistoryResult = await options.runCommand(entityHistoryCommand);
+    requireSuccess(entityHistoryCommand, entityHistoryResult);
     await saveNextStep("discovery");
   }
 
   if (shouldRunStep(resumeStep, "discovery")) {
-    options.log("Step 6/7: discovering synced races and planning premium fetches...");
+    options.log("Step 7/8: discovering synced races and planning premium fetches...");
     await options.triggerRealtimeDiscovery();
     await saveNextStep("readiness");
   }
   options.log(
-    `Step 7/7: attesting pre-weight prediction and KV readiness for upcoming ${runYmd} races...`,
+    `Step 8/8: attesting pre-weight prediction and KV readiness for upcoming ${runYmd} races...`,
   );
   await options.attestFinishPosition(runYmd);
   await options.stateStore.recordCompletion({
@@ -265,7 +285,7 @@ export const runPcKeibaUpdateAndSync = async (options: UpdateAndSyncOptions): Pr
   });
   await options.stateStore.clearCheckpoint();
   options.log(
-    "PC-KEIBA update, R2 Catalog/Neon sync, realtime discovery, and prediction readiness attestation completed successfully.",
+    "PC-KEIBA update, R2 Catalog/Neon sync, direct-Catalog entity history publication, realtime discovery, and prediction readiness attestation completed successfully.",
   );
 };
 

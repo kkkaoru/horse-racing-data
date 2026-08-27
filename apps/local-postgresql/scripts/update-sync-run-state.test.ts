@@ -4,10 +4,10 @@ import { createUpdateSyncRunStateStore, parseUpdateSyncCheckpoint } from "./upda
 it("parses a valid day-scoped checkpoint", () => {
   expect(
     parseUpdateSyncCheckpoint(
-      '{"version":1,"runYmd":"20260825","nextStep":"sync","updatedAt":"2026-08-25T09:00:00.000Z"}',
+      '{"version":1,"runYmd":"20260825","nextStep":"entity-history","updatedAt":"2026-08-25T09:00:00.000Z"}',
     ),
   ).toStrictEqual({
-    nextStep: "sync",
+    nextStep: "entity-history",
     runYmd: "20260825",
     updatedAt: "2026-08-25T09:00:00.000Z",
     version: 1,
