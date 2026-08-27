@@ -19,7 +19,7 @@
     "@cloudflare/containers": "0.3.7",
     "@neondatabase/serverless": "catalog:",
     "catboost-json-tree": "workspace:*",
-    "hyparquet": "1.26.0",
+    "hyparquet": "1.29.2",
     "xgboost-json-tree": "workspace:*"
   },
   "devDependencies": {

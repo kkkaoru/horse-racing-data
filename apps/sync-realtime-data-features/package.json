@@ -19,7 +19,7 @@
   "dependencies": {
     "@dsnp/parquetjs": "catalog:",
     "horse-racing-realtime": "workspace:*",
-    "hyparquet": "1.26.0"
+    "hyparquet": "1.29.2"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
