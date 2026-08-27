@@ -42,6 +42,23 @@ class EntityHistoryPackTest(unittest.TestCase):
             self.assertEqual(index["history"], {"horse/jra/a-1": [0, 7]})
             self.assertEqual(index["target"], {"jra/0827": [0, 6]})
 
+    def test_incremental_pack_preserves_other_years(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "packed/2025/old").mkdir(parents=True)
+            (output / "packed/2025/old/index.json").write_text("old")
+            source = output / "data/2026/new"
+            (source / "history").mkdir(parents=True)
+            (source / "target").mkdir(parents=True)
+            (output / "generations.json").write_text(
+                json.dumps({"version": 1, "years": {"2025": "old", "2026": "new"}})
+            )
+            self.assertEqual(pack(output, {"2026"}), 3)
+            self.assertEqual((output / "packed/2025/old/index.json").read_text(), "old")
+            self.assertTrue((output / "packed/2026/new/index.json").is_file())
+            with self.assertRaisesRegex(ValueError, "2024"):
+                pack(output, {"2024"})
+
 
 if __name__ == "__main__":
     unittest.main()

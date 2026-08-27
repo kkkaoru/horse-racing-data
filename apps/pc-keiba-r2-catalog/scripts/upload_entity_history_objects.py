@@ -33,6 +33,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    parser.add_argument("--year", action="append", type=int)
     args = parser.parse_args(argv)
     if args.concurrency < 1 or args.concurrency > 100:
         parser.error("--concurrency must be between 1 and 100")
@@ -54,6 +55,26 @@ def required_env(*names: str) -> str:
         if value:
             return value
     raise RuntimeError(f"one of {', '.join(names)} is required")
+
+
+def select_generations(
+    manifest_value: object, selected_years: set[str] | None
+) -> dict[str, str]:
+    generations = (
+        manifest_value.get("years") if isinstance(manifest_value, dict) else None
+    )
+    if not isinstance(generations, dict) or not all(
+        isinstance(year, str) and isinstance(value, str)
+        for year, value in generations.items()
+    ):
+        raise TypeError("generations.json is malformed")
+    selected = set(generations) if selected_years is None else selected_years
+    missing = selected - set(generations)
+    if missing:
+        raise ValueError(
+            f"years are absent from generations.json: {', '.join(sorted(missing))}"
+        )
+    return {year: generations[year] for year in sorted(selected)}
 
 
 async def upload_one(
@@ -100,9 +121,15 @@ async def upload_data(
     bucket: str,
     token: str,
     output: Path,
+    generations: dict[str, str],
 ) -> int:
     data_root = output / "packed"
-    files = sorted(path for path in data_root.rglob("*") if path.is_file())
+    files = sorted(
+        path
+        for year, generation in generations.items()
+        for path in (data_root / year / generation).iterdir()
+        if path.is_file()
+    )
     for offset in range(0, len(files), 1000):
         batch = files[offset : offset + 1000]
         await asyncio.gather(
@@ -140,6 +167,10 @@ async def upload(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "object data and generations.json must be built before upload"
         )
+    selected_years = None if args.year is None else {str(year) for year in args.year}
+    selected_generations = select_generations(
+        json.loads(manifest.read_text()), selected_years
+    )
     account_id = required_env("R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID")
     token = required_env("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_DEBUG_TOKEN")
     timeout = aiohttp.ClientTimeout(total=300)
@@ -153,6 +184,7 @@ async def upload(args: argparse.Namespace) -> int:
             args.bucket,
             token,
             output,
+            selected_generations,
         )
         await upload_one(
             session,

@@ -81,9 +81,17 @@ also avoid an R2 SQL target lookup.
 Each year uses an immutable generation directory. The pack step concatenates
 gzip members into three range-readable objects per year (history, target, and
 index), reducing a full publication from about 50,000 writes to 123 without
-increasing the bytes fetched for one entity. Upload packed generation data first
-with `upload_entity_history_objects.py`; its final single
-`generations.json` write atomically publishes the new generation. The Worker
+increasing the bytes fetched for one entity. Daily maintenance uploads only the
+selected year's three immutable objects and then publishes the manifest:
+
+```bash
+uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
+uv run pack_entity_history_objects.py tmp/entity-history-objects --year 2026
+uv run upload_entity_history_objects.py tmp/entity-history-objects --year 2026
+```
+
+Upload packed generation data first with `upload_entity_history_objects.py`; its
+final single `generations.json` write atomically publishes the new generation. The Worker
 reads these objects through the native R2 binding, preserving the same signed
 cursor and point-in-time filters without R2 SQL scheduling variance. Keep the
 local output directory between yearly refreshes because `--year` carries
