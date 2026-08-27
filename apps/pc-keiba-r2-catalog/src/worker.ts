@@ -1094,6 +1094,14 @@ export const handleRequest = async (
         );
       }
       const timeout = message.toLowerCase().includes("timeout");
+      console.error(
+        JSON.stringify({
+          code: failureCode(error),
+          detail: message,
+          event: "race_entity_recent_results_failed",
+          path: url.pathname,
+        }),
+      );
       return jsonResponse(
         {
           error: {
