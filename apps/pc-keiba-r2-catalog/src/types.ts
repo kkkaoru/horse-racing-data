@@ -98,7 +98,7 @@ export interface Env extends R2SqlCatalogConfig {
   ADMIN_TOKEN?: string;
   CACHE_TTL_SECONDS?: string;
   CATALOG_KV: KvStore;
-  ENTITY_HISTORY_OBJECTS?: ObjectStore;
+  CATALOG_OBJECTS?: ObjectStore;
   FINISH_POSITION_ATTESTATION_TOKEN?: string;
   KV_TTL_SECONDS?: string;
   RACE_ENTITY_CURSOR_SECRET?: string;

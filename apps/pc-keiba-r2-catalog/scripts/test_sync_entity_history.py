@@ -46,14 +46,6 @@ class EntityHistorySyncTest(unittest.TestCase):
             query,
         )
 
-    def test_target_query_includes_unfinished_runners(self) -> None:
-        history_query = subject.history_query("2026")
-        target_query = subject.target_query("2026")
-        self.assertIn("'0') <> '0'", history_query)
-        self.assertNotIn("'0') <> '0'", target_query)
-        self.assertIn("source_pg.public.jvd_se", target_query)
-        self.assertIn("source_pg.public.nvd_se", target_query)
-
     def test_table_spec_has_stable_primary_key(self) -> None:
         self.assertEqual(
             subject.table_spec().primary_key,

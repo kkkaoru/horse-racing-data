@@ -25,7 +25,7 @@
   ],
   "r2_buckets": [
     {
-      "binding": "ENTITY_HISTORY_OBJECTS",
+      "binding": "CATALOG_OBJECTS",
       "bucket_name": "pc-keiba-r2-catalog",
     },
   ],

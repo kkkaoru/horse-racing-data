@@ -34,10 +34,10 @@ import { normaliseRunningStyleRows, numberOrNull } from "./running-style-respons
 import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import {
-  readEntityGenerationManifest,
-  readEntityObjectHistory,
-  readEntityObjectTarget,
-} from "./race-entity-object-store";
+  readEntityCatalogHistory,
+  readEntityCatalogManifest,
+  readEntityCatalogTarget,
+} from "./race-entity-catalog-store";
 import {
   buildRaceEntityHistoryQuery,
   buildRaceEntityPage,
@@ -683,23 +683,21 @@ const handleRaceEntityRecentResults = async (
   const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRaceEntityPage);
   if (cached) return cached;
   const cursorSecret = raceEntityCursorSecret(env);
-  const objectManifest =
-    env.ENTITY_HISTORY_OBJECTS === undefined
+  const catalogManifest =
+    env.CATALOG_OBJECTS === undefined ? null : await readEntityCatalogManifest(env.CATALOG_OBJECTS);
+  const catalogTarget =
+    env.CATALOG_OBJECTS === undefined || catalogManifest === null
       ? null
-      : await readEntityGenerationManifest(env.ENTITY_HISTORY_OBJECTS);
-  const objectTarget =
-    env.ENTITY_HISTORY_OBJECTS === undefined || objectManifest === null
-      ? null
-      : await readEntityObjectTarget(env.ENTITY_HISTORY_OBJECTS, objectManifest, filters);
+      : await readEntityCatalogTarget(env.CATALOG_OBJECTS, catalogManifest, filters);
   const targetRows =
-    objectTarget === null
+    catalogManifest === null
       ? await executeR2Sql(env, buildRaceEntityTargetQuery(env, filters), dependencies.fetchImpl)
       : [];
   const targetRow = targetRows[0];
-  if (objectTarget === null && targetRow === undefined) {
+  if (catalogTarget === null && targetRow === undefined) {
     throw new RaceEntityRequestError("RACE_NOT_FOUND", "The target race was not found.", 404);
   }
-  const target = objectTarget ?? normaliseRaceEntityTarget(targetRow ?? {});
+  const target = catalogTarget ?? normaliseRaceEntityTarget(targetRow ?? {});
   if (!target.runnerFound) {
     throw new RaceEntityRequestError("RUNNER_NOT_FOUND", "The target runner was not found.", 404);
   }
@@ -741,10 +739,10 @@ const handleRaceEntityRecentResults = async (
     );
   }
   const rows =
-    env.ENTITY_HISTORY_OBJECTS !== undefined && objectManifest !== null
-      ? await readEntityObjectHistory(
-          env.ENTITY_HISTORY_OBJECTS,
-          objectManifest,
+    env.CATALOG_OBJECTS !== undefined && catalogManifest !== null
+      ? await readEntityCatalogHistory(
+          env.CATALOG_OBJECTS,
+          catalogManifest,
           filters,
           resolvedTarget,
           cursor,
@@ -777,7 +775,7 @@ const handleRaceEntityRecentResults = async (
     RACE_ENTITY_CACHE_API_TTL_SECONDS,
     RACE_ENTITY_KV_TTL_SECONDS,
   );
-  return jsonRowsResponse(body, objectManifest === null ? "r2-sql" : "r2-object");
+  return jsonRowsResponse(body, catalogManifest === null ? "r2-sql" : "r2-catalog-parquet");
 };
 
 const conditionHistoryStatsBody = async (

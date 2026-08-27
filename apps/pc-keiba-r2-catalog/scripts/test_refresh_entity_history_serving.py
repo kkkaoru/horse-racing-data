@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the fail-fast entity-history serving refresh orchestrator."""
+"""Tests for the fail-fast direct-Catalog serving refresh orchestrator."""
 
 from __future__ import annotations
 
@@ -13,57 +13,47 @@ from refresh_entity_history_serving import commands, parse_args, run
 
 
 class RefreshEntityHistoryServingTest(unittest.TestCase):
-    def test_commands_publish_catalog_before_manifest(self) -> None:
+    def test_commands_refresh_raw_and_history_before_manifest(self) -> None:
         args = argparse.Namespace(
-            concurrency=4,
-            output=Path("/tmp/objects"),
+            output=Path("/tmp/entity-catalog-manifest.json"),
             skip_upload=False,
             year=2026,
         )
         self.assertEqual(
             commands(args),
             [
+                ["uv", "run", "scripts/sync_r2_catalog.py"],
                 ["uv", "run", "scripts/sync_entity_history.py", "--year", "2026"],
                 [
                     "uv",
                     "run",
-                    "scripts/build_entity_history_objects.py",
-                    "--year",
-                    "2026",
+                    "scripts/publish_entity_catalog_manifest.py",
                     "--output",
-                    "/tmp/objects",
-                ],
-                [
-                    "uv",
-                    "run",
-                    "scripts/pack_entity_history_objects.py",
-                    "/tmp/objects",
-                    "--year",
-                    "2026",
-                ],
-                [
-                    "uv",
-                    "run",
-                    "scripts/upload_entity_history_objects.py",
-                    "/tmp/objects",
-                    "--year",
-                    "2026",
-                    "--concurrency",
-                    "4",
+                    "/tmp/entity-catalog-manifest.json",
                 ],
             ],
         )
 
-    def test_skip_upload_stops_before_publication(self) -> None:
+    def test_skip_upload_builds_manifest_without_publication(self) -> None:
         args = parse_args(["--year", "2026", "--skip-upload"])
-        self.assertEqual(len(commands(args)), 3)
+        self.assertEqual(
+            commands(args)[2],
+            [
+                "uv",
+                "run",
+                "scripts/publish_entity_catalog_manifest.py",
+                "--output",
+                "tmp/entity-catalog-manifest.json",
+                "--skip-upload",
+            ],
+        )
 
     def test_run_is_fail_fast(self) -> None:
         args = parse_args(["--year", "2026", "--skip-upload"])
         with (
             patch(
                 "refresh_entity_history_serving.subprocess.run",
-                side_effect=[None, subprocess.CalledProcessError(1, "build")],
+                side_effect=[None, subprocess.CalledProcessError(1, "history")],
             ) as run_mock,
             self.assertRaises(subprocess.CalledProcessError),
         ):
@@ -71,6 +61,7 @@ class RefreshEntityHistoryServingTest(unittest.TestCase):
         self.assertEqual(
             run_mock.call_args_list,
             [
+                call(["uv", "run", "scripts/sync_r2_catalog.py"], check=True),
                 call(
                     [
                         "uv",
@@ -81,26 +72,14 @@ class RefreshEntityHistoryServingTest(unittest.TestCase):
                     ],
                     check=True,
                 ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "scripts/build_entity_history_objects.py",
-                        "--year",
-                        "2026",
-                        "--output",
-                        "tmp/entity-history-objects",
-                    ],
-                    check=True,
-                ),
             ],
         )
 
-    def test_parse_args_validates_bounds(self) -> None:
+    def test_parse_args_validates_year_bounds(self) -> None:
         with self.assertRaises(SystemExit):
             parse_args(["--year", "1985"])
         with self.assertRaises(SystemExit):
-            parse_args(["--year", "2026", "--concurrency", "0"])
+            parse_args(["--year", "9999"])
 
 
 if __name__ == "__main__":

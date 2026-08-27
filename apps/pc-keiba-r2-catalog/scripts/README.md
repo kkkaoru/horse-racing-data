@@ -54,14 +54,11 @@ uv run sync_r2_catalog.py --full --tables oversea_runner_identity,oversea_runner
 uv run test_sync_r2_catalog.py
 uv run sync_entity_history.py --full
 uv run sync_entity_history.py --year 2026
-uv run build_entity_history_objects.py --full --output tmp/entity-history-objects
-uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
-uv run pack_entity_history_objects.py tmp/entity-history-objects
-uv run upload_entity_history_objects.py tmp/entity-history-objects
+uv run publish_entity_catalog_manifest.py --skip-upload
+uv run refresh_entity_history_serving.py --year 2026
 uv run test_sync_entity_history.py
-uv run test_build_entity_history_objects.py
-uv run test_pack_entity_history_objects.py
-uv run test_upload_entity_history_objects.py
+uv run test_publish_entity_catalog_manifest.py
+uv run test_refresh_entity_history_serving.py
 ```
 
 `sync_entity_history.py` is the sole materialized serving-table exception. It
@@ -73,29 +70,27 @@ a small entity/year partition without imposing a two-year history ceiling.
 year succeeds; `--year` atomically refreshes one year and should run after the
 corresponding raw `jvd_ra/jvd_se/nvd_ra/nvd_se` refresh.
 
-`build_entity_history_objects.py` removes R2 SQL from the latency-sensitive
-entity-history read path. It writes gzip-compressed, bounded objects for each
-entity type/source/hash bucket/entity-ID-last-digit/year plus target rows per
-race day. The latest source year includes unfinished runners so upcoming races
-also avoid an R2 SQL target lookup.
-Each year uses an immutable generation directory. The pack step concatenates
-gzip members into three range-readable objects per year (history, target, and
-index), reducing a full publication from about 50,000 writes to 123 without
-increasing the bytes fetched for one entity. Daily maintenance uploads only the
-selected year's three immutable objects and then publishes the manifest:
+The latency-sensitive API reads those same Catalog-managed Parquet files
+directly through the native R2 binding. Target resolution reads the selected
+year from the raw `jvd_ra/jvd_se/nvd_ra/nvd_se` snapshots; history reads only
+the entity/source/hash/year partitions from `race_entity_history_v1`.
+`publish_entity_catalog_manifest.py` derives a compact index from the five
+current Iceberg snapshot IDs and data-file paths. It publishes only the small
+`entity-catalog-serving-v1/manifest.json` pointer; it never copies table data.
+The manifest is written last, so every API request observes one complete set of
+immutable Catalog files.
 
 ```bash
-uv run refresh_entity_history_serving.py --year 2026 --output tmp/entity-history-objects
+uv run refresh_entity_history_serving.py --year 2026 \
+  --output tmp/entity-catalog-manifest.json
 ```
 
-The orchestrator is fail-fast and always refreshes the Catalog partition before
-building, packing, and uploading the same year's serving generation. Use
-`--skip-upload` to validate all local stages without publishing. Upload packed generation data first with `upload_entity_history_objects.py`; its
-final single `generations.json` write atomically publishes the new generation. The Worker
-reads these objects through the native R2 binding, preserving the same signed
-cursor and point-in-time filters without R2 SQL scheduling variance. Keep the
-local output directory between yearly refreshes because `--year` carries
-forward the other year-generation mappings.
+The orchestrator is fail-fast. It refreshes the raw Catalog tables, atomically
+refreshes the selected history year, and then publishes the snapshot-derived
+manifest. Use `--skip-upload` to build and validate the manifest locally without
+changing the API pointer. The Worker preserves the existing signed cursor and
+future-leakage filters while avoiding R2 SQL scheduling and any duplicate
+`history.pack` or `target.pack` dataset.
 
 The `oversea_*` tables are small source-separated raw tables. They are treated
 as explicit full-table snapshots: local PostgreSQL remains the sole authority,
