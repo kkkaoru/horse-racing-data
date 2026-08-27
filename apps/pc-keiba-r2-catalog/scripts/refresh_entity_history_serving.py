@@ -38,7 +38,15 @@ def commands(args: argparse.Namespace) -> list[list[str]]:
     if args.skip_upload:
         publish.append("--skip-upload")
     return [
-        ["uv", "run", "scripts/sync_r2_catalog.py"],
+        [
+            "uv",
+            "run",
+            "scripts/sync_r2_catalog.py",
+            "--date",
+            f"{year}0101",
+            "--tables",
+            "jvd_se,nvd_se,jvd_ra,nvd_ra",
+        ],
         ["uv", "run", "scripts/sync_entity_history.py", "--year", year],
         publish,
     ]

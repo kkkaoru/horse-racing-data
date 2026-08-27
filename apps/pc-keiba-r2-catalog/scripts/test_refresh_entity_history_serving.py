@@ -22,7 +22,15 @@ class RefreshEntityHistoryServingTest(unittest.TestCase):
         self.assertEqual(
             commands(args),
             [
-                ["uv", "run", "scripts/sync_r2_catalog.py"],
+                [
+                    "uv",
+                    "run",
+                    "scripts/sync_r2_catalog.py",
+                    "--date",
+                    "20260101",
+                    "--tables",
+                    "jvd_se,nvd_se,jvd_ra,nvd_ra",
+                ],
                 ["uv", "run", "scripts/sync_entity_history.py", "--year", "2026"],
                 [
                     "uv",
@@ -61,7 +69,18 @@ class RefreshEntityHistoryServingTest(unittest.TestCase):
         self.assertEqual(
             run_mock.call_args_list,
             [
-                call(["uv", "run", "scripts/sync_r2_catalog.py"], check=True),
+                call(
+                    [
+                        "uv",
+                        "run",
+                        "scripts/sync_r2_catalog.py",
+                        "--date",
+                        "20260101",
+                        "--tables",
+                        "jvd_se,nvd_se,jvd_ra,nvd_ra",
+                    ],
+                    check=True,
+                ),
                 call(
                     [
                         "uv",
