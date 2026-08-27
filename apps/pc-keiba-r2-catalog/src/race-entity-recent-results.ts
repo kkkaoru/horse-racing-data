@@ -85,7 +85,6 @@ interface HistorySelectInput {
   entityId: string;
   env: R2SqlCatalogConfig;
   filters: RaceEntityRecentResultsFilters;
-  tables: HistoryTableSet;
   targetStartTime: string | null;
 }
 
@@ -261,12 +260,6 @@ const trimSql = (expression: string): string =>
 
 const sqlLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const historyTables = (
-  entityType: RaceEntityType,
-  source: CatalogSource,
-): readonly HistoryTableSet[] =>
-  entityType === "horse" ? [JRA_TABLES, NAR_TABLES] : [currentTables(source)];
-
 const historyLowerYear = (filters: RaceEntityRecentResultsFilters, entityId: string): string => {
   const targetYear = Number(filters.date.slice(0, 4));
   const fallback = targetYear - HORSE_FALLBACK_HISTORY_YEARS + 1;
@@ -282,6 +275,32 @@ const historyUpperYear = (
   filters: RaceEntityRecentResultsFilters,
   cursor: RaceEntityCursorKey | null,
 ): string => cursor?.raceStartSortKey.slice(0, 4) ?? filters.date.slice(0, 4);
+
+export const buildRaceEntityIndexedTargetQuery = (
+  env: R2SqlCatalogConfig,
+  filters: RaceEntityRecentResultsFilters,
+): string => {
+  const entityIdColumn = requiredMapValue(ENTITY_ID_COLUMNS, filters.entityType);
+  const entityNameColumn = requiredMapValue(ENTITY_NAME_COLUMNS, filters.entityType);
+  return `SELECT
+  substr(md5(${trimSql(`se.${entityIdColumn}`)}), 1, 1) AS entity_bucket,
+  ${trimSql(`se.${entityIdColumn}`)} AS entity_id,
+  ${trimSql(`se.${entityNameColumn}`)} AS entity_name,
+  ${trimSql("se.ketto_toroku_bango")} AS horse_id,
+  ${trimSql("se.bamei")} AS horse_name,
+  ${trimSql("se.kyosomei_hondai")} AS race_name,
+  ${trimSql("se.hasso_jikoku")} AS race_start_time,
+  true AS runner_found
+FROM ${tableName(env, ENTITY_HISTORY_TABLE)} se
+WHERE se.entity_type = 'horse'
+  AND se.source = ${sqlLiteral(filters.source)}
+  AND se.kaisai_nen = ${sqlLiteral(filters.date.slice(0, 4))}
+  AND se.kaisai_tsukihi = ${sqlLiteral(filters.date.slice(4))}
+  AND se.keibajo_code = ${sqlLiteral(filters.keibajoCode)}
+  AND se.race_bango = ${sqlLiteral(filters.raceBango)}
+  AND try_cast(${trimSql("se.umaban")} AS INT) = ${String(Number(filters.horseNumber))}
+LIMIT 1`;
+};
 
 export const buildRaceEntityTargetQuery = (
   env: R2SqlCatalogConfig,
@@ -344,7 +363,6 @@ const historySelect = ({
   entityId,
   env,
   filters,
-  tables,
   targetStartTime,
 }: HistorySelectInput): string => {
   const targetYear = filters.date.slice(0, 4);
@@ -355,7 +373,11 @@ const historySelect = ({
   const lowerYearSql = sqlLiteral(lowerYear);
   const startTimeSql = sqlLiteral(targetStartTime ?? "");
   const startSortKey = `concat(se.kaisai_nen, se.kaisai_tsukihi, coalesce(${trimSql("se.hasso_jikoku")}, '0000'))`;
-  const resultId = `concat(${sqlLiteral(tables.source)}, ':', se.kaisai_nen, se.kaisai_tsukihi, ':', se.keibajo_code, ':', se.race_bango, ':', coalesce(${trimSql("se.umaban")}, ''), ':', coalesce(${trimSql("se.ketto_toroku_bango")}, ''))`;
+  const resultId = "se.result_id";
+  const sourcePredicate =
+    filters.entityType === "horse"
+      ? "se.source IN ('jra', 'nar')"
+      : `se.source = ${sqlLiteral(filters.source)}`;
   const cursorPredicate =
     cursor === null
       ? "true"
@@ -370,7 +392,7 @@ const historySelect = ({
           AND ${trimSql("se.hasso_jikoku")} < ${startTimeSql}
         )
         OR (
-          ${sqlLiteral(tables.source)} = ${sqlLiteral(filters.source)}
+          se.source = ${sqlLiteral(filters.source)}
           AND se.keibajo_code = ${sqlLiteral(filters.keibajoCode)}
           AND se.race_bango < ${sqlLiteral(filters.raceBango)}
           AND (
@@ -385,9 +407,9 @@ const historySelect = ({
       )
     )`;
   return `SELECT
-  ${sqlLiteral(tables.source)} AS source,
+  se.source,
   ${startSortKey} AS race_start_sort_key,
-  concat(${sqlLiteral(tables.source)}, ':', se.kaisai_nen, se.kaisai_tsukihi, ':', se.keibajo_code, ':', se.race_bango) AS race_id,
+  concat(se.source, ':', se.kaisai_nen, se.kaisai_tsukihi, ':', se.keibajo_code, ':', se.race_bango) AS race_id,
   ${resultId} AS result_id,
   se.kaisai_nen,
   se.kaisai_tsukihi,
@@ -433,7 +455,7 @@ const historySelect = ({
   END AS horse_weight_diff
 FROM ${tableName(env, ENTITY_HISTORY_TABLE)} se
 WHERE se.entity_type = ${sqlLiteral(filters.entityType)}
-  AND se.source = ${sqlLiteral(tables.source)}
+  AND ${sourcePredicate}
   AND se.entity_bucket = ${sqlLiteral(entityBucket)}
   AND se.kaisai_nen >= ${lowerYearSql}
   AND se.kaisai_nen <= ${sqlLiteral(upperYear)}
@@ -458,19 +480,16 @@ export const buildRaceEntityHistoryQuery = (
   if (!ENTITY_ID_PATTERN.test(target.entityId)) throw new Error("entityId is malformed");
   if (!ENTITY_BUCKET_PATTERN.test(target.entityBucket))
     throw new Error("entityBucket is malformed");
-  const selects = historyTables(filters.entityType, filters.source).map((tables) =>
-    historySelect({
-      cursor,
-      entityBucket: target.entityBucket,
-      entityId: target.entityId,
-      env,
-      filters,
-      tables,
-      targetStartTime: target.raceStartTime,
-    }),
-  );
+  const select = historySelect({
+    cursor,
+    entityBucket: target.entityBucket,
+    entityId: target.entityId,
+    env,
+    filters,
+    targetStartTime: target.raceStartTime,
+  });
   return `WITH history AS (
-${selects.join("\nUNION ALL\n")}
+${select}
 )
 SELECT * FROM history
 ORDER BY race_start_sort_key DESC, result_id DESC

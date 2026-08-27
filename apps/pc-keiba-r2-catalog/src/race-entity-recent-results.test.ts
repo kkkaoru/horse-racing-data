@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 
 import {
   buildRaceEntityHistoryQuery,
+  buildRaceEntityIndexedTargetQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
   createRaceEntityCursor,
@@ -89,6 +90,12 @@ const rawHistory = (resultId: string, startKey: string): Record<string, unknown>
 });
 
 it("builds target queries with canonical horse, jockey, trainer, and owner IDs", () => {
+  expect(buildRaceEntityIndexedTargetQuery(env, filters("jockey"))).toMatch(
+    /catalog\.race_entity_history_v1/u,
+  );
+  expect(buildRaceEntityIndexedTargetQuery(env, filters("jockey"))).toMatch(
+    /se\.entity_type = 'horse'/u,
+  );
   expect(buildRaceEntityTargetQuery(env, filters("horse"))).toMatch(/se\.ketto_toroku_bango/u);
   expect(buildRaceEntityTargetQuery(env, filters("jockey"))).toMatch(/se\.kishu_code/u);
   expect(buildRaceEntityTargetQuery(env, filters("trainer"))).toMatch(/se\.chokyoshi_code/u);
@@ -183,8 +190,7 @@ it("prunes recent year partitions and scopes non-horse IDs to the target source"
     null,
   );
   expect(horseQuery).toMatch(/se\.kaisai_nen >= '2024'/u);
-  expect(horseQuery).toMatch(/se\.source = 'jra'/u);
-  expect(horseQuery).toMatch(/se\.source = 'nar'/u);
+  expect(horseQuery).toMatch(/se\.source IN \('jra', 'nar'\)/u);
 });
 
 it("uses keyset cursor predicates and rejects malformed canonical IDs", () => {
@@ -193,7 +199,7 @@ it("uses keyset cursor predicates and rejects malformed canonical IDs", () => {
       raceStartSortKey: "202608271210",
       resultId: "nar:20260827:50:04:07:2022103916",
     }),
-  ).toMatch(/AND concat\('nar'/u);
+  ).toMatch(/AND se\.result_id </u);
   expect(
     buildRaceEntityHistoryQuery(env, filters("jockey"), target, {
       raceStartSortKey: "202512311500",

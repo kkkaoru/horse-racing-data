@@ -35,6 +35,7 @@ import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-traini
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import {
   buildRaceEntityHistoryQuery,
+  buildRaceEntityIndexedTargetQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
   normaliseRaceEntityHistoryRow,
@@ -678,11 +679,15 @@ const handleRaceEntityRecentResults = async (
   const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRaceEntityPage);
   if (cached) return cached;
   const cursorSecret = raceEntityCursorSecret(env);
-  const targetRows = await executeR2Sql(
+  const indexedTargetRows = await executeR2Sql(
     env,
-    buildRaceEntityTargetQuery(env, filters),
+    buildRaceEntityIndexedTargetQuery(env, filters),
     dependencies.fetchImpl,
   );
+  const targetRows =
+    indexedTargetRows.length === 0
+      ? await executeR2Sql(env, buildRaceEntityTargetQuery(env, filters), dependencies.fetchImpl)
+      : indexedTargetRows;
   const targetRow = targetRows[0];
   if (targetRow === undefined) {
     throw new RaceEntityRequestError("RACE_NOT_FOUND", "The target race was not found.", 404);
