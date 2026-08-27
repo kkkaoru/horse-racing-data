@@ -130,7 +130,14 @@ def normalized_sql(expression: str) -> str:
     return f"trim(replace(coalesce({expression}, ''), chr(12288), ''))"
 
 
-def source_select(source: str, race_table: str, runner_table: str, year: str) -> str:
+def source_select(
+    source: str,
+    race_table: str,
+    runner_table: str,
+    year: str,
+    *,
+    completed_only: bool = True,
+) -> str:
     race_columns = projected_columns("ra", RACE_COLUMNS)
     runner_columns = projected_columns("se", RUNNER_COLUMNS)
     entity_id = normalized_sql("entity.entity_id")
@@ -139,6 +146,14 @@ def source_select(source: str, race_table: str, runner_table: str, year: str) ->
     horse_id = normalized_sql("se.ketto_toroku_bango")
     finish_position = normalized_sql("se.kakutei_chakujun")
     abnormality = normalized_sql("se.ijo_kubun_code")
+    completion_predicate = (
+        f"""AND (
+    coalesce(nullif({finish_position}, ''), '00') <> '00'
+    OR coalesce(nullif({abnormality}, ''), '0') <> '0'
+  )"""
+        if completed_only
+        else ""
+    )
     return f"""SELECT
   entity.entity_type,
   {sql_string(source)} AS source,
@@ -164,21 +179,26 @@ CROSS JOIN LATERAL (
 WHERE se.kaisai_nen = {sql_string(year)}
   AND nullif({entity_id}, '') IS NOT NULL
   AND regexp_matches({entity_id}, '[^0]')
-  AND (
-    coalesce(nullif({finish_position}, ''), '00') <> '00'
-    OR coalesce(nullif({abnormality}, ''), '0') <> '0'
-  )"""
+  {completion_predicate}"""
 
 
-def history_query(year: str) -> str:
+def entity_query(year: str, *, completed_only: bool) -> str:
     selects = (
-        source_select("jra", "jvd_ra", "jvd_se", year),
-        source_select("nar", "nvd_ra", "nvd_se", year),
+        source_select("jra", "jvd_ra", "jvd_se", year, completed_only=completed_only),
+        source_select("nar", "nvd_ra", "nvd_se", year, completed_only=completed_only),
     )
     return (
         "\nUNION ALL\n".join(selects)
         + "\nORDER BY entity_type, source, entity_bucket, kaisai_nen, entity_id, result_id"
     )
+
+
+def history_query(year: str) -> str:
+    return entity_query(year, completed_only=True)
+
+
+def target_query(year: str) -> str:
+    return entity_query(year, completed_only=False)
 
 
 def connect_source(settings: Settings) -> duckdb.DuckDBPyConnection:
@@ -208,15 +228,25 @@ ORDER BY kaisai_nen"""
     return [str(row[0]) for row in rows]
 
 
-def extract_year(connection: duckdb.DuckDBPyConnection, year: str) -> pa.Table:
-    reader = connection.execute(history_query(year)).to_arrow_reader(ARROW_BATCH_SIZE)
+def extract_query(
+    connection: duckdb.DuckDBPyConnection, year: str, query: str, label: str
+) -> pa.Table:
+    reader = connection.execute(query).to_arrow_reader(ARROW_BATCH_SIZE)
     data = collect_arrow_batches(
         reader,
-        f"{TABLE_NAME}:{year}",
+        f"{TABLE_NAME}:{label}:{year}",
         max_rows=DEFAULT_MASTER_MAX_ROWS * 4,
         max_bytes=DEFAULT_MASTER_MAX_BYTES * 2,
     )
     return require_primary_key_fields(data, table_spec())
+
+
+def extract_year(connection: duckdb.DuckDBPyConnection, year: str) -> pa.Table:
+    return extract_query(connection, year, history_query(year), "history")
+
+
+def extract_target_year(connection: duckdb.DuckDBPyConnection, year: str) -> pa.Table:
+    return extract_query(connection, year, target_query(year), "target")
 
 
 def partition_spec(data: pa.Table) -> PartitionSpec:

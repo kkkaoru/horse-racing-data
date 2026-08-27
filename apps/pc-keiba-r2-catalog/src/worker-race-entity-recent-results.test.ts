@@ -1,7 +1,7 @@
 // Run with bun (bunx vitest).
 import { expect, it } from "vitest";
 
-import type { CacheStore, Env, Fetcher, KvStore, WorkerDependencies } from "./types";
+import type { CacheStore, Env, Fetcher, KvStore, ObjectStore, WorkerDependencies } from "./types";
 import { handleRequest } from "./worker";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -85,6 +85,77 @@ const harness = (queryRows: (unknown[] | Error)[]) => {
 
 const url =
   "https://catalog.test/v1/race-entity-recent-results?date=20260827&keibajoCode=50&raceBango=05&source=nar&horseNumber=7&entityType=jockey&limit=1";
+
+const gzipObjectStore = async (entries: Record<string, unknown>): Promise<ObjectStore> => {
+  const objects = new Map<string, Uint8Array>();
+  for (const [key, value] of Object.entries(entries)) {
+    const body = JSON.stringify(value);
+    const bytes = key.endsWith(".gz")
+      ? new Uint8Array(
+          await new Response(
+            new Blob([body]).stream().pipeThrough(new CompressionStream("gzip")),
+          ).arrayBuffer(),
+        )
+      : new TextEncoder().encode(body);
+    objects.set(key, bytes);
+  }
+  return {
+    async get(key) {
+      const bytes = objects.get(key);
+      return bytes === undefined
+        ? null
+        : { body: new Blob([bytes]).stream(), size: bytes.byteLength };
+    },
+  };
+};
+
+it("serves a cold page entirely through native R2 objects", async () => {
+  const test = harness([]);
+  const prefix = "entity-serving-v1";
+  const raw = {
+    bamei: "Horse",
+    entity_bucket: "a",
+    entity_id: "21379",
+    entity_name: "Jockey",
+    entity_type: "jockey",
+    hasso_jikoku: "1210",
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0820",
+    keibajo_code: "50",
+    ketto_toroku_bango: "2022103916",
+    kishu_code: "21379",
+    kishumei_ryakusho: "Jockey",
+    race_bango: "04",
+    result_id: "nar:20260820:50:04:07:2022103916",
+    source: "nar",
+    umaban: "07",
+  };
+  test.env.ENTITY_HISTORY_OBJECTS = await gzipObjectStore({
+    [`${prefix}/generations.json`]: { version: 1, years: { "2026": "current" } },
+    [`${prefix}/data/2026/current/target/nar/0827.json.gz`]: {
+      version: 1,
+      rows: [
+        {
+          ...raw,
+          hasso_jikoku: "1240",
+          kaisai_tsukihi: "0827",
+          kyosomei_hondai: "Target",
+          race_bango: "05",
+        },
+      ],
+    },
+    [`${prefix}/data/2026/current/history/jockey/nar/a-9.json.gz`]: {
+      version: 1,
+      rows: [raw],
+    },
+  });
+  const response = await handleRequest(new Request(url), test.env, test.dependencies);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Catalog-Cache")).toBe("r2-object");
+  expect(test.queries).toEqual([]);
+  const payload = (await response.json()) as { results: unknown[] };
+  expect(payload.results).toHaveLength(1);
+});
 
 it("serves canonical jockey history from the indexed R2 SQL table and populates both caches", async () => {
   const test = harness([

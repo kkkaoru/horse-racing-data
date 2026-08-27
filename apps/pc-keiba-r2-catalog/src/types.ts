@@ -71,6 +71,15 @@ export interface CacheStore {
   put(request: Request, response: Response): Promise<void>;
 }
 
+export interface ObjectBody {
+  body: ReadableStream<Uint8Array>;
+  size: number;
+}
+
+export interface ObjectStore {
+  get(key: string): Promise<ObjectBody | null>;
+}
+
 export type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface R2SqlCatalogConfig {
@@ -84,6 +93,7 @@ export interface Env extends R2SqlCatalogConfig {
   ADMIN_TOKEN?: string;
   CACHE_TTL_SECONDS?: string;
   CATALOG_KV: KvStore;
+  ENTITY_HISTORY_OBJECTS?: ObjectStore;
   FINISH_POSITION_ATTESTATION_TOKEN?: string;
   KV_TTL_SECONDS?: string;
   RACE_ENTITY_CURSOR_SECRET?: string;

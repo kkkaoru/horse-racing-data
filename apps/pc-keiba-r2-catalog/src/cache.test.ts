@@ -61,7 +61,7 @@ it("compacts signed entity cursors below the KV key limit", () => {
     raceBango: "05",
     source: "nar",
   });
-  expect(cacheRequestFor(descriptor).url).toMatch(/history=index-v1/u);
+  expect(cacheRequestFor(descriptor).url).toMatch(/history=object-v1/u);
   expect(cacheRequestFor(descriptor).url).toMatch(/cursor=x{64}$/u);
   expect(new TextEncoder().encode(kvKeyFor(descriptor)).byteLength).toBeLessThan(512);
 });

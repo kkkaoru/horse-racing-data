@@ -54,7 +54,11 @@ uv run sync_r2_catalog.py --full --tables oversea_runner_identity,oversea_runner
 uv run test_sync_r2_catalog.py
 uv run sync_entity_history.py --full
 uv run sync_entity_history.py --year 2026
+uv run build_entity_history_objects.py --full --output tmp/entity-history-objects
+uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
+scripts/upload_entity_history_objects.sh tmp/entity-history-objects
 uv run test_sync_entity_history.py
+uv run test_build_entity_history_objects.py
 ```
 
 `sync_entity_history.py` is the sole materialized serving-table exception. It
@@ -65,6 +69,19 @@ a small entity/year partition without imposing a two-year history ceiling.
 `--full` builds a temporary table and swaps it into service only after every
 year succeeds; `--year` atomically refreshes one year and should run after the
 corresponding raw `jvd_ra/jvd_se/nvd_ra/nvd_se` refresh.
+
+`build_entity_history_objects.py` removes R2 SQL from the latency-sensitive
+entity-history read path. It writes gzip-compressed, bounded objects for each
+entity type/source/hash bucket/entity-ID-last-digit/year plus target rows per
+race day. The latest source year includes unfinished runners so upcoming races
+also avoid an R2 SQL target lookup.
+Each year uses an immutable generation directory. Upload generation data first
+with `upload_entity_history_objects.sh`; its final single
+`generations.json` write atomically publishes the new generation. The Worker
+reads these objects through the native R2 binding, preserving the same signed
+cursor and point-in-time filters without R2 SQL scheduling variance. Keep the
+local output directory between yearly refreshes because `--year` carries
+forward the other year-generation mappings.
 
 The `oversea_*` tables are small source-separated raw tables. They are treated
 as explicit full-table snapshots: local PostgreSQL remains the sole authority,

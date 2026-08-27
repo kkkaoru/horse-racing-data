@@ -23,4 +23,10 @@
       "id": "357d43e67aa24dcd87e883e3b241d901",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "ENTITY_HISTORY_OBJECTS",
+      "bucket_name": "pc-keiba-r2-catalog",
+    },
+  ],
 }
