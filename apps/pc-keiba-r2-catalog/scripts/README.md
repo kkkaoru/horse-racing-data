@@ -56,9 +56,11 @@ uv run sync_entity_history.py --full
 uv run sync_entity_history.py --year 2026
 uv run build_entity_history_objects.py --full --output tmp/entity-history-objects
 uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
+uv run pack_entity_history_objects.py tmp/entity-history-objects
 uv run upload_entity_history_objects.py tmp/entity-history-objects
 uv run test_sync_entity_history.py
 uv run test_build_entity_history_objects.py
+uv run test_pack_entity_history_objects.py
 uv run test_upload_entity_history_objects.py
 ```
 
@@ -76,7 +78,10 @@ entity-history read path. It writes gzip-compressed, bounded objects for each
 entity type/source/hash bucket/entity-ID-last-digit/year plus target rows per
 race day. The latest source year includes unfinished runners so upcoming races
 also avoid an R2 SQL target lookup.
-Each year uses an immutable generation directory. Upload generation data first
+Each year uses an immutable generation directory. The pack step concatenates
+gzip members into three range-readable objects per year (history, target, and
+index), reducing a full publication from about 50,000 writes to 123 without
+increasing the bytes fetched for one entity. Upload packed generation data first
 with `upload_entity_history_objects.py`; its final single
 `generations.json` write atomically publishes the new generation. The Worker
 reads these objects through the native R2 binding, preserving the same signed

@@ -30,6 +30,11 @@ interface GenerationManifest {
   years: Record<string, string>;
 }
 
+interface PackIndex {
+  history: Record<string, [number, number]>;
+  target: Record<string, [number, number]>;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -80,6 +85,62 @@ const readEnvelope = async (store: ObjectStore, key: string): Promise<ObjectEnve
   }
   if (!value.rows.every(isRecord)) throw new Error("entity object rows are malformed");
   return { rows: value.rows, version: OBJECT_VERSION };
+};
+
+const packRoot = (year: string, generation: string): string =>
+  `${PREFIX}/packed/${year}/${generation}`;
+
+const readPackIndex = async (
+  store: ObjectStore,
+  year: string,
+  generation: string,
+): Promise<PackIndex | null> => {
+  const object = await store.get(`${packRoot(year, generation)}/index.json`);
+  if (object === null) return null;
+  if (object.size > 1024 * 1024) throw new Error("entity pack index exceeded size limit");
+  const value = parseJson(await new Response(object.body).text());
+  if (
+    !isRecord(value) ||
+    value.version !== OBJECT_VERSION ||
+    !isRecord(value.history) ||
+    !isRecord(value.target)
+  ) {
+    throw new Error("entity pack index is malformed");
+  }
+  const parseEntries = (entries: Record<string, unknown>): Record<string, [number, number]> =>
+    Object.fromEntries(
+      Object.entries(entries).filter(
+        (entry): entry is [string, [number, number]] =>
+          Array.isArray(entry[1]) &&
+          entry[1].length === 2 &&
+          entry[1].every((number) => Number.isInteger(number) && number >= 0),
+      ),
+    );
+  return { history: parseEntries(value.history), target: parseEntries(value.target) };
+};
+
+const readPackedEnvelope = async (
+  store: ObjectStore,
+  year: string,
+  generation: string,
+  kind: "history" | "target",
+  member: string,
+): Promise<{ available: boolean; envelope: ObjectEnvelope | null }> => {
+  const index = await readPackIndex(store, year, generation);
+  if (index === null) return { available: false, envelope: null };
+  const range = index[kind][member];
+  if (range === undefined) return { available: true, envelope: null };
+  const object = await store.get(`${packRoot(year, generation)}/${kind}.pack`, {
+    range: { offset: range[0], length: range[1] },
+  });
+  if (object === null) throw new Error("entity pack member is unavailable");
+  const decompressed = object.body.pipeThrough(new DecompressionStream("gzip"));
+  const value = parseJson(await new Response(decompressed).text());
+  if (!isRecord(value) || value.version !== OBJECT_VERSION || !Array.isArray(value.rows)) {
+    throw new Error("entity packed envelope is malformed");
+  }
+  if (!value.rows.every(isRecord)) throw new Error("entity packed rows are malformed");
+  return { available: true, envelope: { rows: value.rows, version: OBJECT_VERSION } };
 };
 
 export const readEntityGenerationManifest = async (
@@ -133,10 +194,19 @@ export const readEntityObjectTarget = async (
   const year = filters.date.slice(0, 4);
   const generation = manifest.years[year];
   if (generation === undefined) return null;
-  const envelope = await readEnvelope(
+  const packed = await readPackedEnvelope(
     store,
-    targetObjectKey(year, generation, filters.source, filters.date.slice(4)),
+    year,
+    generation,
+    "target",
+    `${filters.source}/${filters.date.slice(4)}`,
   );
+  const envelope = packed.available
+    ? packed.envelope
+    : await readEnvelope(
+        store,
+        targetObjectKey(year, generation, filters.source, filters.date.slice(4)),
+      );
   if (envelope === null) return null;
   const row = envelope.rows.find(
     (candidate) =>
@@ -292,19 +362,23 @@ export const readEntityObjectHistory = async (
     const generation = manifest.years[yearText];
     if (generation === undefined) continue;
     const envelopes = await Promise.all(
-      sources.map((source) =>
-        readEnvelope(
-          store,
-          historyObjectKey(
-            yearText,
-            generation,
-            filters.entityType,
-            source,
-            target.entityBucket,
-            target.entityId.slice(-1),
-          ),
-        ),
-      ),
+      sources.map(async (source) => {
+        const member = `${filters.entityType}/${source}/${target.entityBucket}-${target.entityId.slice(-1)}`;
+        const packed = await readPackedEnvelope(store, yearText, generation, "history", member);
+        return packed.available
+          ? packed.envelope
+          : readEnvelope(
+              store,
+              historyObjectKey(
+                yearText,
+                generation,
+                filters.entityType,
+                source,
+                target.entityBucket,
+                target.entityId.slice(-1),
+              ),
+            );
+      }),
     );
     for (const envelope of envelopes) {
       if (envelope === null) continue;

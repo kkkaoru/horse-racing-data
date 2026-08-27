@@ -82,11 +82,14 @@ const objectStore = async (entries: Record<string, unknown>): Promise<ObjectStor
     values.set(key, bytes);
   }
   return {
-    async get(key) {
+    async get(key, options) {
       const value = values.get(key);
-      return value === undefined
-        ? null
-        : { body: new Blob([value]).stream(), size: value.byteLength };
+      if (value === undefined) return null;
+      const selected =
+        options === undefined
+          ? value
+          : value.slice(options.range.offset, options.range.offset + options.range.length);
+      return { body: new Blob([selected]).stream(), size: selected.byteLength };
     },
   };
 };
@@ -113,6 +116,50 @@ describe("race entity object serving", () => {
       horseId: "2022100001",
       runnerFound: true,
     });
+  });
+
+  it("reads target and history members through bounded pack ranges", async () => {
+    const targetBody = await gzip({
+      version: 1,
+      rows: [rawRow({ kaisai_tsukihi: "0827", race_bango: "05" })],
+    });
+    const historyBody = await gzip({ version: 1, rows: [rawRow()] });
+    const index = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        target: { "nar/0827": [0, targetBody.byteLength] },
+        history: { "owner/nar/f-3": [0, historyBody.byteLength] },
+      }),
+    );
+    const values = new Map<string, Uint8Array>([
+      [`${prefix}/packed/2026/current/index.json`, index],
+      [`${prefix}/packed/2026/current/target.pack`, targetBody],
+      [`${prefix}/packed/2026/current/history.pack`, historyBody],
+    ]);
+    const store: ObjectStore = {
+      async get(key, options) {
+        const value = values.get(key);
+        if (value === undefined) return null;
+        const selected =
+          options === undefined
+            ? value
+            : value.slice(options.range.offset, options.range.offset + options.range.length);
+        return { body: new Blob([selected]).stream(), size: selected.byteLength };
+      },
+    };
+    const target = await readEntityObjectTarget(store, manifestValue, filters);
+    expect(target).toMatchObject({ entityId: "018803" });
+    if (target?.entityBucket === null || target?.entityId === null || target === null) {
+      throw new Error("expected packed target");
+    }
+    const rows = await readEntityObjectHistory(
+      store,
+      manifestValue,
+      filters,
+      { ...target, entityBucket: target.entityBucket, entityId: target.entityId },
+      null,
+    );
+    expect(rows.map((row) => row.resultId)).toEqual(["nar:20260820:50:03:04:2022100001"]);
   });
 
   it("returns sorted point-in-time history and applies a cursor", async () => {
@@ -277,8 +324,10 @@ describe("race entity object serving", () => {
       ),
     ).rejects.toThrow("rows are malformed");
     const oversized: ObjectStore = {
-      async get() {
-        return { body: new Blob([]).stream(), size: 17 * 1024 * 1024 };
+      async get(key) {
+        return key.endsWith("/index.json")
+          ? null
+          : { body: new Blob([]).stream(), size: 17 * 1024 * 1024 };
       },
     };
     await expect(readEntityObjectTarget(oversized, manifestValue, filters)).rejects.toThrow(

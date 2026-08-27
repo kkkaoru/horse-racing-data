@@ -65,9 +65,9 @@ async def upload_one(
     path: Path,
     key: str,
 ) -> None:
-    body = path.read_bytes()
     url = object_url(account_id, bucket, key)
     async with semaphore:
+        body = path.read_bytes()
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 async with session.put(
@@ -101,7 +101,7 @@ async def upload_data(
     token: str,
     output: Path,
 ) -> int:
-    data_root = output / "data"
+    data_root = output / "packed"
     files = sorted(path for path in data_root.rglob("*") if path.is_file())
     for offset in range(0, len(files), 1000):
         batch = files[offset : offset + 1000]
@@ -114,7 +114,7 @@ async def upload_data(
                     bucket,
                     token,
                     path,
-                    f"{PREFIX}/data/{path.relative_to(data_root).as_posix()}",
+                    f"{PREFIX}/packed/{path.relative_to(data_root).as_posix()}",
                 )
                 for path in batch
             )
@@ -136,7 +136,7 @@ async def upload_data(
 async def upload(args: argparse.Namespace) -> int:
     output: Path = args.output
     manifest = output / "generations.json"
-    if not (output / "data").is_dir() or not manifest.is_file():
+    if not (output / "packed").is_dir() or not manifest.is_file():
         raise RuntimeError(
             "object data and generations.json must be built before upload"
         )

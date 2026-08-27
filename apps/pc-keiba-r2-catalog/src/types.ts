@@ -76,8 +76,13 @@ export interface ObjectBody {
   size: number;
 }
 
+export interface ObjectRange {
+  length: number;
+  offset: number;
+}
+
 export interface ObjectStore {
-  get(key: string): Promise<ObjectBody | null>;
+  get(key: string, options?: { range: ObjectRange }): Promise<ObjectBody | null>;
 }
 
 export type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
