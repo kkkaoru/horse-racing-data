@@ -56,9 +56,10 @@ uv run sync_entity_history.py --full
 uv run sync_entity_history.py --year 2026
 uv run build_entity_history_objects.py --full --output tmp/entity-history-objects
 uv run build_entity_history_objects.py --year 2026 --output tmp/entity-history-objects
-scripts/upload_entity_history_objects.sh tmp/entity-history-objects
+uv run upload_entity_history_objects.py tmp/entity-history-objects
 uv run test_sync_entity_history.py
 uv run test_build_entity_history_objects.py
+uv run test_upload_entity_history_objects.py
 ```
 
 `sync_entity_history.py` is the sole materialized serving-table exception. It
@@ -76,7 +77,7 @@ entity type/source/hash bucket/entity-ID-last-digit/year plus target rows per
 race day. The latest source year includes unfinished runners so upcoming races
 also avoid an R2 SQL target lookup.
 Each year uses an immutable generation directory. Upload generation data first
-with `upload_entity_history_objects.sh`; its final single
+with `upload_entity_history_objects.py`; its final single
 `generations.json` write atomically publishes the new generation. The Worker
 reads these objects through the native R2 binding, preserving the same signed
 cursor and point-in-time filters without R2 SQL scheduling variance. Keep the
