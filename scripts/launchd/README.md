@@ -1,4 +1,29 @@
-# Deprecated Mac launchd local/manual race-prediction tooling
+# macOS launchd operations
+
+## PC-KEIBA data acquisition and production synchronization
+
+`com.kkk4oru.pc-keiba-update-and-sync` is the production data-acquisition
+LaunchAgent. It runs daily at **03:15 JST**, starts the Parallels VM, performs
+the PC-KEIBA update, stops the VM, and runs the resumable PostgreSQL → R2
+Catalog/Neon → direct-Catalog manifest → realtime discovery/readiness flow.
+The wrapper uses an atomic host lock, loads ignored environment files at
+runtime, and never embeds credentials in the plist.
+
+Install or replace it with:
+
+```sh
+mkdir -p ~/Library/Logs/pc-keiba-update-and-sync
+launchctl bootout gui/$(id -u)/com.kkk4oru.pc-keiba-update-and-sync 2>/dev/null || true
+cp scripts/launchd/com.kkk4oru.pc-keiba-update-and-sync.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.pc-keiba-update-and-sync.plist
+launchctl print gui/$(id -u)/com.kkk4oru.pc-keiba-update-and-sync
+```
+
+The Windows `PC-KEIBA Auto Update` task remains a VM-local fallback. It cannot
+start a stopped Parallels VM and does not publish replicas, so it is not the
+end-to-end production scheduler.
+
+## Deprecated local/manual race-prediction tooling
 
 > Production prediction scheduling is Cloudflare-only. These LaunchAgents are
 > retained for historical reference and optional local/manual smoke operation;

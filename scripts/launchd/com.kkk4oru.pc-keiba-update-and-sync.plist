@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily local data-acquisition authority. Starts the Parallels PC-KEIBA update,
+  stops the VM, publishes R2 Catalog/Neon replicas and the direct-Catalog entity
+  manifest, then triggers production discovery/readiness checks.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.pc-keiba-update-and-sync</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/pc-keiba-update-and-sync-daily.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <!-- JST 03:15 daily, leaving time before the 06:00 same-day cache warm. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/pc-keiba-update-and-sync/launchd-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/pc-keiba-update-and-sync/launchd-stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

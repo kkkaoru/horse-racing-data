@@ -761,15 +761,63 @@ def test_reveal_registration_ui_swallows_focus_errors(
 # ---------------------------------------------------------------------------
 # is_update_in_progress / safe_close_app
 # ---------------------------------------------------------------------------
-def test_dismiss_completed_progress_clicks_close(
+def test_dismiss_completed_progress_invokes_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    window = MagicMock()
+    status = _mk_element(
+        automation_id="StatusLabel", control_type="Text", name="完了しました"
+    )
+    current = _mk_element(automation_id="ValueLabel1", control_type="Text", name="22")
+    maximum = _mk_element(automation_id="MaximumLabel1", control_type="Text", name="22")
+    close = _mk_element(automation_id="CloseButton", name="閉じる")
+    window = _mk_element(descendants=[status, current, maximum, close])
     monkeypatch.setattr(
         mod, "find_progress_window", lambda pid: window if pid == 7 else None
     )
-    monkeypatch.setattr(mod, "_try_click_label", lambda _w, label: label == "閉じる")
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+
+    assert mod.is_progress_completed(window) is True
     assert mod.dismiss_completed_progress(7) is True
+    close.invoke.assert_called_once()
+
+
+def test_dismiss_completed_progress_rejects_busy_or_incomplete_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status = _mk_element(
+        automation_id="StatusLabel", control_type="Text", name="処理中"
+    )
+    current = _mk_element(automation_id="ValueLabel1", control_type="Text", name="21")
+    maximum = _mk_element(automation_id="MaximumLabel1", control_type="Text", name="22")
+    close = _mk_element(automation_id="CloseButton", name="閉じる")
+    window = _mk_element(descendants=[status, current, maximum, close])
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: window)
+
+    assert mod.is_progress_completed(window) is False
+    assert mod.dismiss_completed_progress(7) is False
+    close.invoke.assert_not_called()
+
+
+def test_dismiss_completed_progress_raises_for_expired_data_lab_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status = _mk_element(
+        automation_id="StatusLabel", control_type="Text", name="完了しました"
+    )
+    current = _mk_element(automation_id="ValueLabel1", control_type="Text", name="22")
+    maximum = _mk_element(automation_id="MaximumLabel1", control_type="Text", name="22")
+    detail = _mk_element(
+        automation_id="RichTextBox1",
+        control_type="Document",
+        name="Data Lab.サービスの有効期限が切れています。サービスの再購入が必要です。",
+    )
+    close = _mk_element(automation_id="CloseButton", name="閉じる")
+    window = _mk_element(descendants=[status, current, maximum, detail, close])
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: window)
+
+    with pytest.raises(RuntimeError, match="Data Lab.*有効期限"):
+        mod.dismiss_completed_progress(7)
+    close.invoke.assert_not_called()
 
 
 def test_dismiss_completed_progress_false_when_missing(
@@ -947,6 +995,27 @@ def test_wait_for_completion_success_via_enabled(
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
 
+def test_wait_for_completion_uses_explicit_completed_progress_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 1
+    completed = MagicMock()
+    monkeypatch.setattr(
+        mod, "find_progress_window", MagicMock(side_effect=[completed, None])
+    )
+    monkeypatch.setattr(
+        mod, "is_progress_completed", lambda window: window is completed
+    )
+    monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: True)
+    monkeypatch.setattr(mod, "find_start_button", lambda _window: None)
+    dismiss_popups = MagicMock()
+    monkeypatch.setattr(mod, "_dismiss_popups", dismiss_popups)
+
+    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+    dismiss_popups.assert_called()
+
+
 def test_wait_for_completion_button_disappears_is_not_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1005,6 +1074,9 @@ def test_wait_for_completion_progress_vanishes_without_idle_button_times_out(
     main.element_info.process_id = 1
     progress = iter([MagicMock(), MagicMock(), None])
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress))
+    monkeypatch.setattr(
+        mod, "_close_explicitly_completed_progress", lambda _main, _pid: False
+    )
     monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod, "dismiss_completed_progress", lambda _pid: False)
@@ -1024,6 +1096,9 @@ def test_wait_for_completion_succeeds_when_completed_progress_is_closed(
     progress_states = iter([MagicMock(), MagicMock(), None])
     monkeypatch.setattr(mod, "find_start_button", lambda _w: next(button_states))
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress_states))
+    monkeypatch.setattr(
+        mod, "_close_explicitly_completed_progress", lambda _main, _pid: False
+    )
     monkeypatch.setattr(mod, "_dismiss_popups", dismiss_popups)
     dismiss_completed = MagicMock(return_value=True)
     monkeypatch.setattr(mod, "dismiss_completed_progress", dismiss_completed)
@@ -1050,6 +1125,9 @@ def test_wait_for_completion_does_not_close_clickable_progress_while_busy(
     dismiss_completed = MagicMock(return_value=True)
     monkeypatch.setattr(mod, "find_start_button", lambda _w: next(button_states))
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress_states))
+    monkeypatch.setattr(
+        mod, "_close_explicitly_completed_progress", lambda _main, _pid: False
+    )
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod, "dismiss_completed_progress", dismiss_completed)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)

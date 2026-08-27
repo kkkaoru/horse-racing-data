@@ -12,9 +12,11 @@ PC-KEIBA Database の「データ → 通常データ登録 → 開始」を pyw
 
 安全装置 (アプリ強制終了の防止):
   - 本スクリプトはどの実行パスでも、更新処理中のアプリを終了させない。
-  - --close-when-done が指定されていても、完了検出 (進捗ウィンドウ消滅、または
-    StartButton が disabled→enabled) を取れていなければクローズしない。
-  - StartButton 不在だけでは完了とみなさない (進捗ダイアログ中の偽完了を防止)。
+  - --close-when-done が指定されていても、完了検出 (StatusLabel='完了しました' かつ
+    処理件数=最大件数、または StartButton が disabled→enabled) を取れていなければ
+    クローズしない。
+  - StartButton 不在やクリック可能な CloseButton だけでは完了とみなさない。
+  - JRA Data Lab. の期限切れ/再購入要求を検出した場合は成功扱いにしない。
   - --wait タイムアウトは成功扱いにしない (非 0 exit)。
   - また close 直前に必ず is_update_in_progress() で再確認する。
 
@@ -88,6 +90,10 @@ CANCEL_BUTTON_TITLE = "中止"
 # - 含む要素: ProgressBar, CloseButton (auto_id)
 PROGRESS_WINDOW_TITLE = "通常データ登録"
 PROGRESS_CLOSE_BUTTON_AUTO_ID = "CloseButton"
+PROGRESS_FATAL_MESSAGES: tuple[str, ...] = (
+    "Data Lab.サービスの有効期限が切れています。",
+    "サービスの再購入が必要です。",
+)
 
 # 完了/確認ダイアログを閉じるための既定ボタンラベル候補。
 DEFAULT_DISMISS_LABELS: tuple[str, ...] = ("OK", "はい", "閉じる")
@@ -502,12 +508,52 @@ def find_progress_window(pid: int) -> UiWindow | None:
     return None
 
 
+def _progress_text_by_automation_id(window: UiWindow, automation_id: str) -> str:
+    try:
+        for element in window.descendants():
+            if _safe_automation_id(element) == automation_id:
+                return element.window_text() or ""
+    except Exception:
+        pass
+    return ""
+
+
+def is_progress_completed(window: UiWindow) -> bool:
+    """Require the explicit completed status and a fully processed file count."""
+    status = _progress_text_by_automation_id(window, "StatusLabel")
+    current = _progress_text_by_automation_id(window, "ValueLabel1")
+    maximum = _progress_text_by_automation_id(window, "MaximumLabel1")
+    return status == "完了しました" and current != "" and current == maximum
+
+
+def _progress_failure_message(window: UiWindow) -> str | None:
+    detail = _progress_text_by_automation_id(window, "RichTextBox1")
+    return next(
+        (message for message in PROGRESS_FATAL_MESSAGES if message in detail), None
+    )
+
+
 def dismiss_completed_progress(pid: int) -> bool:
-    """Click 閉じる when 通常データ登録 has finished processing files."""
+    """Invoke CloseButton only after the progress UI proves completion."""
     window = find_progress_window(pid)
-    if window is None:
+    if window is None or not is_progress_completed(window):
         return False
-    if not _try_click_label(window, "閉じる"):
+    failure = _progress_failure_message(window)
+    if failure is not None:
+        raise RuntimeError(f"PC-KEIBA source update failed: {failure}")
+    try:
+        button = next(
+            button
+            for button in window.descendants(control_type="Button")
+            if _safe_automation_id(button) == PROGRESS_CLOSE_BUTTON_AUTO_ID
+            and button.is_enabled()
+        )
+        invoke = getattr(button, "invoke", None)
+        if not callable(invoke):
+            return False
+        invoke()
+        time.sleep(0.5)
+    except (Exception, StopIteration):
         return False
     logging.info("完了ダイアログの閉じるを押下")
     return True
@@ -633,6 +679,21 @@ def wait_for_progress_window_to_finish(
     return False
 
 
+def _close_explicitly_completed_progress(
+    main_window: UiWindow, pid: int | None
+) -> bool:
+    if pid is None:
+        return False
+    progress_window = find_progress_window(pid)
+    if progress_window is None or not is_progress_completed(progress_window):
+        return False
+    if not dismiss_completed_progress(pid) or _progress_visible(pid):
+        return False
+    logging.info("Completed progress dialog closed -> complete")
+    _dismiss_popups(main_window)
+    return True
+
+
 def wait_for_completion(
     main_window: UiWindow, max_minutes: int = 180, poll_sec: int = 15
 ) -> bool:
@@ -653,6 +714,8 @@ def wait_for_completion(
         with contextlib.suppress(Exception):
             main_window.set_focus()
         _dismiss_popups(main_window)
+        if _close_explicitly_completed_progress(main_window, pid):
+            return True
         progress_visible = _progress_visible(pid)
         state = _probe_start_button(main_window)
         if state == "enabled" and (started_via_button or saw_progress):
