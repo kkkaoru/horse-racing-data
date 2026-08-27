@@ -196,7 +196,8 @@ Register-ScheduledTask `
     -Settings $settings `
     -Principal $principal `
     -Description 'PC-KEIBA Database 通常データ登録を自動実行' `
-    -Force | Out-Null
+    -Force `
+    -ErrorAction Stop | Out-Null
 
 Write-Ok "登録完了 (daily $DailyAt)"
 Write-Host ""
