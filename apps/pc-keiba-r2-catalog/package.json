@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
-    "hyparquet": "1.26.0",
+    "hyparquet": "1.29.2",
     "hyparquet-compressors": "1.1.1"
   },
   "devDependencies": {
