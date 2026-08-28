@@ -36,5 +36,7 @@ uses. Defaults match first paint (勝率, レース数 off).
 4. `get_win_rate_heatmap_display` — same display builder as the table.
 5. `get_json` for `/api/races/.../realtime?source=jra|nar` (odds) and `/trends`.
 6. `get_race_section` / `list_top_races` — same GET handlers the browser uses.
+7. `get_paddock_state` — same JSON as GET `/api/races/.../paddock`.
+8. `update_paddock_state` — same POST body as the paddock page (score or official-rank).
 
-Do not call cache-warm, internal, admin, or POST paddock endpoints.
+Do not call cache-warm, internal, admin, or paddock/discord endpoints.

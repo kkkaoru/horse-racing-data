@@ -244,3 +244,54 @@ it("mcp finish prediction summary propagates its bounded signal to OpenNext", as
   );
   expect(internalRequest?.signal.aborted).toBe(true);
 });
+
+it("mcp paddock update posts JSON to the paddock API", async () => {
+  fetchMock.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        history: [],
+        horses: {},
+        raceKey: "20260601:05:11",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      }),
+      { status: 200 },
+    ),
+  );
+  const env: CloudflareEnv = { MCP_AUTH_TOKEN: "mcp-token" };
+  const ctx = buildCtx();
+  const response = await worker.fetch(
+    new Request("https://example.com/mcp", {
+      body: JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          arguments: {
+            actionType: "score",
+            category: "paddock",
+            day: "01",
+            delta: 1,
+            horseName: "Alpha",
+            horseNumber: "01",
+            keibajoCode: "05",
+            month: "06",
+            raceNumber: "11",
+            year: "2026",
+          },
+          name: "update_paddock_state",
+        },
+      }),
+      headers: { Authorization: "Bearer mcp-token", "Content-Type": "application/json" },
+      method: "POST",
+    }),
+    env,
+    ctx,
+  );
+  const internalRequest = fetchMock.mock.calls[0]?.[0];
+  expect(response.status).toBe(200);
+  expect(internalRequest?.method).toBe("POST");
+  expect(internalRequest?.url).toBe("https://example.com/api/races/2026/06/01/05/11/paddock");
+  expect(await internalRequest?.text()).toBe(
+    '{"category":"paddock","delta":1,"horseName":"Alpha","horseNumber":"01"}',
+  );
+});

@@ -264,9 +264,9 @@ it("get_finish_prediction_summary applies a bounded AbortSignal to the internal 
       source: "nar",
       year: "2026",
     },
-    async (_pathWithQuery, signal) => {
-      if (signal !== undefined) {
-        signals.push(signal);
+    async (_pathWithQuery, init) => {
+      if (init?.signal !== undefined) {
+        signals.push(init.signal);
       }
       return new Response(
         JSON.stringify({
@@ -886,6 +886,267 @@ it("get_race_entity_recent_results forwards a bounded R2 Catalog page", async ()
   );
   expect(result.isError).toBe(false);
   expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual(page);
+});
+
+const paddockState = {
+  history: [],
+  horses: {},
+  raceKey: "20260601:05:11",
+  updatedAt: "2026-06-01T00:00:00.000Z",
+};
+
+it("get_json can read paddock evaluation state", async () => {
+  const result = await callMcpTool(
+    "get_json",
+    { path: "/api/races/2026/06/01/05/11/paddock" },
+    jsonFetch({ "/api/races/2026/06/01/05/11/paddock": paddockState }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    history: [],
+    horses: {},
+    raceKey: "20260601:05:11",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+  });
+});
+
+it("get_paddock_state reads paddock evaluation state", async () => {
+  const result = await callMcpTool(
+    "get_paddock_state",
+    {
+      day: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    jsonFetch({ "/api/races/2026/06/01/05/11/paddock": paddockState }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    history: [],
+    horses: {},
+    raceKey: "20260601:05:11",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+  });
+});
+
+it("get_paddock_state validates the race route", async () => {
+  const result = await callMcpTool("get_paddock_state", { year: "20" }, jsonFetch({}));
+  expect(result.content[0]?.text).toBe("year must be a 4-digit calendar year");
+});
+
+it("get_paddock_state reports upstream failure", async () => {
+  const result = await callMcpTool(
+    "get_paddock_state",
+    {
+      day: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    failingFetch,
+  );
+  expect(result.isError).toBe(true);
+});
+
+it("update_paddock_state posts a score action", async () => {
+  const posted: Array<{ body?: string; method?: string; path: string }> = [];
+  const result = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "score",
+      category: "paddock",
+      day: "01",
+      delta: 1,
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      userId: "user-1",
+      year: "2026",
+    },
+    async (path, init) => {
+      posted.push({ body: init?.body, method: init?.method, path });
+      return new Response(JSON.stringify(paddockState), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    },
+  );
+  expect(result.isError).toBe(false);
+  expect(posted[0]?.path).toBe("/api/races/2026/06/01/05/11/paddock");
+  expect(posted[0]?.method).toBe("POST");
+  expect(posted[0]?.body).toBe(
+    '{"category":"paddock","delta":1,"horseName":"Alpha","horseNumber":"01","userId":"user-1"}',
+  );
+});
+
+it("update_paddock_state posts an official-rank action", async () => {
+  const posted: Array<{ body?: string }> = [];
+  const result = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "official-rank",
+      day: "01",
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      rank: 3,
+      year: "2026",
+    },
+    async (path, init) => {
+      posted.push({ body: init?.body });
+      return new Response(JSON.stringify(paddockState), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    },
+  );
+  expect(result.isError).toBe(false);
+  expect(posted[0]?.body).toBe(
+    '{"horseName":"Alpha","horseNumber":"01","rank":3,"type":"official-rank"}',
+  );
+});
+
+it("update_paddock_state posts a null official rank to clear it", async () => {
+  const posted: Array<{ body?: string }> = [];
+  const result = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "official-rank",
+      day: "01",
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      rank: null,
+      year: "2026",
+    },
+    async (_path, init) => {
+      posted.push({ body: init?.body });
+      return new Response(JSON.stringify(paddockState), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    },
+  );
+  expect(result.isError).toBe(false);
+  expect(posted[0]?.body).toBe(
+    '{"horseName":"Alpha","horseNumber":"01","rank":null,"type":"official-rank"}',
+  );
+});
+
+it("update_paddock_state rejects an invalid action", async () => {
+  const missingType = await callMcpTool(
+    "update_paddock_state",
+    {
+      day: "01",
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  expect(missingType.content[0]?.text).toBe("actionType must be score or official-rank");
+  const badScore = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "score",
+      day: "01",
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  expect(badScore.content[0]?.text).toBe(
+    "score requires horseName, horseNumber, category, and delta 1 or -1",
+  );
+  const badRank = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "official-rank",
+      day: "01",
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      rank: 11,
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  expect(badRank.content[0]?.text).toBe(
+    "official-rank requires horseName, horseNumber, and rank 1-10 or null",
+  );
+});
+
+it("update_paddock_state validates the race route", async () => {
+  const result = await callMcpTool("update_paddock_state", { year: "20" }, jsonFetch({}));
+  expect(result.content[0]?.text).toBe("year must be a 4-digit calendar year");
+});
+
+it("update_paddock_state reports malformed JSON from the paddock API", async () => {
+  const result = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "score",
+      category: "kaeshi",
+      day: "01",
+      delta: 1,
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    async () => new Response("not-json", { status: 200 }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? '""')).toBe("not-json");
+});
+
+it("update_paddock_state reports upstream failure", async () => {
+  const result = await callMcpTool(
+    "update_paddock_state",
+    {
+      actionType: "score",
+      category: "attention",
+      day: "01",
+      delta: -1,
+      horseName: "Alpha",
+      horseNumber: "01",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      year: "2026",
+    },
+    failingFetch,
+  );
+  expect(result.isError).toBe(true);
+});
+
+it("exposes get_paddock_state and update_paddock_state tools", () => {
+  expect(
+    MCP_TOOL_DEFINITIONS.find((definition) => definition.name === "get_paddock_state")?.name,
+  ).toBe("get_paddock_state");
+  expect(
+    MCP_TOOL_DEFINITIONS.find((definition) => definition.name === "update_paddock_state")?.name,
+  ).toBe("update_paddock_state");
 });
 
 it("get_race_entity_recent_results preserves stable errors and validates arguments", async () => {

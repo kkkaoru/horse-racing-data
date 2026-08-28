@@ -7,7 +7,20 @@ const FAVORITES_PATH: string = "/api/mypage/favorites";
 
 const RACE_API_ROOT: RegExp =
   /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/(?:entity-recent-results|paddock|premium|realtime|recent-results|running-styles|trends|sections\/[a-z0-9-]+)$/;
+const PADDOCK_STATE_API: RegExp =
+  /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/paddock$/;
 const HORSE_RUNNING_STYLES_API: RegExp = /^\/api\/horses\/[0-9]{6,16}\/running-styles$/;
+
+const parseAbsoluteApiPath = (pathWithQuery: string): URL | null => {
+  if (!pathWithQuery.startsWith("/")) {
+    return null;
+  }
+  try {
+    return new URL(pathWithQuery, "https://mcp.invalid");
+  } catch {
+    return null;
+  }
+};
 
 export const isMcpAllowedApiPath = (pathname: string): boolean => {
   if (pathname === API_SPEC_PATH) {
@@ -29,16 +42,17 @@ export const isMcpAllowedApiPath = (pathname: string): boolean => {
 };
 
 export const resolveMcpApiPath = (pathWithQuery: string): string | null => {
-  if (!pathWithQuery.startsWith("/")) {
+  const resolved = parseAbsoluteApiPath(pathWithQuery);
+  if (resolved === null || !isMcpAllowedApiPath(resolved.pathname)) {
     return null;
   }
-  try {
-    const resolved = new URL(pathWithQuery, "https://mcp.invalid");
-    if (!isMcpAllowedApiPath(resolved.pathname)) {
-      return null;
-    }
-    return `${resolved.pathname}${resolved.search}`;
-  } catch {
+  return `${resolved.pathname}${resolved.search}`;
+};
+
+export const resolveMcpPaddockWritePath = (pathWithQuery: string): string | null => {
+  const resolved = parseAbsoluteApiPath(pathWithQuery);
+  if (resolved === null || !PADDOCK_STATE_API.test(resolved.pathname)) {
     return null;
   }
+  return `${resolved.pathname}${resolved.search}`;
 };

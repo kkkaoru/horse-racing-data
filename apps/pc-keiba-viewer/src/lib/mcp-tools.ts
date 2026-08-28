@@ -2,13 +2,14 @@
 
 import { KEIBAJO_NAMES } from "./codes";
 import { indexLiveHorseWeightKg, type LiveHorseWeight } from "./horse-weight-class";
-import { resolveMcpApiPath } from "./mcp-allowlist";
+import { resolveMcpApiPath, resolveMcpPaddockWritePath } from "./mcp-allowlist";
 import {
   buildFinishPredictionSummary,
   createFinishPredictionSummaryError,
   type FinishPredictionSummaryError,
   type FinishPredictionSummaryRoute,
 } from "./mcp-finish-prediction-summary";
+import { isPaddockAction, type PaddockAction } from "./paddock";
 import { inferRaceSourceFromKeibajoCode } from "./runner-format";
 import {
   buildWinRateHeatmapDisplay,
@@ -18,11 +19,17 @@ import {
 } from "./win-rate-heatmap";
 import { isWinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
 
-export type McpSiteFetch = (pathWithQuery: string, signal?: AbortSignal) => Promise<Response>;
+export interface McpSiteFetchInit {
+  body?: string;
+  method?: string;
+  signal?: AbortSignal;
+}
+
+export type McpSiteFetch = (pathWithQuery: string, init?: McpSiteFetchInit) => Promise<Response>;
 
 interface McpJsonSchemaProperty {
   description?: string;
-  enum?: readonly string[];
+  enum?: readonly (number | string | null)[];
   maximum?: number;
   minimum?: number;
   minLength?: number;
@@ -72,6 +79,12 @@ interface SearchKindRowsInput {
   query: string;
 }
 
+interface FetchSiteJsonWriteParams {
+  body: string;
+  fetchSite: McpSiteFetch;
+  pathWithQuery: string;
+}
+
 interface BoundedResponseText {
   byteLength: number;
   status: "ok";
@@ -114,6 +127,9 @@ const ENTITY_PAGE_PATH: ReadonlyMap<string, string> = new Map([
   ["owner", "/owners/"],
   ["trainer", "/trainers/"],
 ]);
+const PADDOCK_ACTION_SCORE: string = "score";
+const PADDOCK_ACTION_OFFICIAL_RANK: string = "official-rank";
+const PADDOCK_METRICS: readonly string[] = ["attention", "kaeshi", "paddock", "preference"];
 const RACE_SECTIONS: ReadonlySet<string> = new Set([
   "ability",
   "bloodline",
@@ -198,6 +214,73 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       type: "object",
     },
     name: "get_json",
+  },
+  {
+    description:
+      "GET paddock evaluation state for a race (horse scores, official ranks, history). Same JSON the paddock page loads.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: RACE_ROUTE_PROPERTIES,
+      required: ["year", "month", "day", "keibajoCode", "raceNumber"],
+      type: "object",
+    },
+    name: "get_paddock_state",
+  },
+  {
+    description:
+      "POST a paddock evaluation update for one horse. actionType score increments or decrements paddock, kaeshi, attention, or preference. actionType official-rank sets or clears the 1-10 official paddock rank. Same handler as the paddock page.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        ...RACE_ROUTE_PROPERTIES,
+        actionType: {
+          description: "score for metric counts, official-rank for the 1-10 official rank.",
+          enum: [PADDOCK_ACTION_OFFICIAL_RANK, PADDOCK_ACTION_SCORE],
+          type: "string",
+        },
+        category: {
+          description: "Score metric. Required when actionType is score.",
+          enum: PADDOCK_METRICS,
+          type: "string",
+        },
+        delta: {
+          description: "Score step. Required when actionType is score.",
+          enum: [-1, 1],
+          type: "integer",
+        },
+        horseName: {
+          description: "Horse name shown on the paddock page.",
+          minLength: 1,
+          type: "string",
+        },
+        horseNumber: STRING_ARG("Horse number, one or two digits.", "^\\d{1,2}$"),
+        rank: {
+          description:
+            "Official paddock rank 1-10, or null to clear. Required when actionType is official-rank.",
+          maximum: 10,
+          minimum: 1,
+          type: ["integer", "null"],
+        },
+        userId: {
+          description:
+            "Optional editor id recorded on score history (1-128 letters, digits, _ or -).",
+          minLength: 1,
+          type: "string",
+        },
+      },
+      required: [
+        "year",
+        "month",
+        "day",
+        "keibajoCode",
+        "raceNumber",
+        "horseNumber",
+        "horseName",
+        "actionType",
+      ],
+      type: "object",
+    },
+    name: "update_paddock_state",
   },
   {
     description: "Fetch a race-detail section JSON payload — the same payload React hydrates.",
@@ -531,7 +614,9 @@ const getFinishPredictionSummary = async (
     );
   }
   try {
-    const response = await fetchSite(allowed, AbortSignal.timeout(FINISH_PREDICTION_TIMEOUT_MS));
+    const response = await fetchSite(allowed, {
+      signal: AbortSignal.timeout(FINISH_PREDICTION_TIMEOUT_MS),
+    });
     if (!response.ok) {
       await response.body?.cancel();
       return finishPredictionErrorResult(finishPredictionUpstreamError(response.status));
@@ -638,10 +723,9 @@ const getRaceEntityRecentResults = async (
   if (typeof cursor === "string") query.set("cursor", cursor);
   const path = raceApiPath(parsed, "entity-recent-results").split("?")[0];
   try {
-    const response = await fetchSite(
-      `${path}?${query.toString()}`,
-      AbortSignal.timeout(RACE_ENTITY_TIMEOUT_MS),
-    );
+    const response = await fetchSite(`${path}?${query.toString()}`, {
+      signal: AbortSignal.timeout(RACE_ENTITY_TIMEOUT_MS),
+    });
     const text = await response.text();
     try {
       const value: unknown = JSON.parse(text);
@@ -672,6 +756,17 @@ const getRaceEntityRecentResults = async (
   }
 };
 
+const parseJsonResponse = async (
+  response: Response,
+): Promise<{ ok: boolean; status: number; value: unknown }> => {
+  const text = await response.text();
+  try {
+    return { ok: response.ok, status: response.status, value: JSON.parse(text) };
+  } catch {
+    return { ok: response.ok, status: response.status, value: text };
+  }
+};
+
 const fetchSiteJson = async (
   fetchSite: McpSiteFetch,
   pathWithQuery: string,
@@ -680,13 +775,55 @@ const fetchSiteJson = async (
   if (allowed === null) {
     return { ok: false, status: 403, value: "Path is not allowlisted for MCP reads" };
   }
-  const response = await fetchSite(allowed);
-  const text = await response.text();
-  try {
-    return { ok: response.ok, status: response.status, value: JSON.parse(text) };
-  } catch {
-    return { ok: response.ok, status: response.status, value: text };
+  return parseJsonResponse(await fetchSite(allowed));
+};
+
+const postSiteJson = async (
+  input: FetchSiteJsonWriteParams,
+): Promise<{ ok: boolean; status: number; value: unknown }> => {
+  const allowed = resolveMcpPaddockWritePath(input.pathWithQuery);
+  if (allowed === null) {
+    return { ok: false, status: 403, value: "Path is not allowlisted for MCP writes" };
   }
+  const response = await input.fetchSite(allowed, { body: input.body, method: "POST" });
+  return parseJsonResponse(response);
+};
+
+const buildPaddockAction = (args: Record<string, unknown>): PaddockAction | string => {
+  const actionType = readString(args, "actionType");
+  if (actionType === PADDOCK_ACTION_OFFICIAL_RANK) {
+    const candidate = {
+      horseName: args.horseName,
+      horseNumber: args.horseNumber,
+      rank: args.rank,
+      type: PADDOCK_ACTION_OFFICIAL_RANK,
+    };
+    return isPaddockAction(candidate)
+      ? candidate
+      : "official-rank requires horseName, horseNumber, and rank 1-10 or null";
+  }
+  if (actionType !== PADDOCK_ACTION_SCORE) {
+    return "actionType must be score or official-rank";
+  }
+  const userId = args.userId;
+  const candidate =
+    typeof userId === "string"
+      ? {
+          category: args.category,
+          delta: args.delta,
+          horseName: args.horseName,
+          horseNumber: args.horseNumber,
+          userId,
+        }
+      : {
+          category: args.category,
+          delta: args.delta,
+          horseName: args.horseName,
+          horseNumber: args.horseNumber,
+        };
+  return isPaddockAction(candidate)
+    ? candidate
+    : "score requires horseName, horseNumber, category, and delta 1 or -1";
 };
 
 const readLiveWeights = (realtime: unknown): Map<string, number> => {
@@ -765,6 +902,42 @@ export const callMcpTool = async (
       return errorResult("path must start with /");
     }
     const fetched = await fetchSiteJson(fetchSite, path);
+    if (!fetched.ok) {
+      return {
+        content: [{ text: JSON.stringify(fetched.value), type: "text" }],
+        isError: true,
+      };
+    }
+    return okJson(fetched.value);
+  }
+  if (name === "get_paddock_state") {
+    const parsed = parseRaceRoute(args);
+    if (typeof parsed === "string") {
+      return errorResult(parsed);
+    }
+    const fetched = await fetchSiteJson(fetchSite, raceApiPath(parsed, "paddock"));
+    if (!fetched.ok) {
+      return {
+        content: [{ text: JSON.stringify(fetched.value), type: "text" }],
+        isError: true,
+      };
+    }
+    return okJson(fetched.value);
+  }
+  if (name === "update_paddock_state") {
+    const parsed = parseRaceRoute(args);
+    if (typeof parsed === "string") {
+      return errorResult(parsed);
+    }
+    const action = buildPaddockAction(args);
+    if (typeof action === "string") {
+      return errorResult(action);
+    }
+    const fetched = await postSiteJson({
+      body: JSON.stringify(action),
+      fetchSite,
+      pathWithQuery: raceApiPath(parsed, "paddock"),
+    });
     if (!fetched.ok) {
       return {
         content: [{ text: JSON.stringify(fetched.value), type: "text" }],

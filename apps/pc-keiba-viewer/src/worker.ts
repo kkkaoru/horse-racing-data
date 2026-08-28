@@ -9,6 +9,7 @@ import {
   readMcpAuthToken,
   readMcpOauthSigningKey,
 } from "./lib/mcp-request";
+import type { McpSiteFetchInit } from "./lib/mcp-tools";
 import type {
   DetailSectionCacheWarmMessage,
   RaceDetailSsrCacheWarmMessage,
@@ -45,9 +46,14 @@ export default {
       }
     }
     const mcpResponse = await handlePcKeibaMcpRequest({
-      fetchSite: (pathWithQuery: string, signal?: AbortSignal) =>
+      fetchSite: (pathWithQuery: string, init?: McpSiteFetchInit) =>
         openNextWorker.fetch(
-          new Request(new URL(pathWithQuery, request.url), { method: "GET", signal }),
+          new Request(new URL(pathWithQuery, request.url), {
+            body: init?.body,
+            headers: init?.body === undefined ? undefined : { "content-type": "application/json" },
+            method: init?.method === undefined ? "GET" : init.method,
+            signal: init?.signal,
+          }),
           env,
           ctx,
         ),
