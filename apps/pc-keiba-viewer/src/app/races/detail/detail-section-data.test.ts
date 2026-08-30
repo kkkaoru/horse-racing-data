@@ -8,7 +8,7 @@ import type {
   FinishPositionBucketFilter,
   FinishPositionBucketMetrics,
 } from "../../../lib/finish-prediction-dimensions";
-import type { RaceDetail, Runner } from "../../../lib/race-types";
+import type { RaceDetail, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import type {
   RunningStyleBucketFilter,
   RunningStyleBucketMetrics,
@@ -31,6 +31,11 @@ type GetRaceRunnersFn = (
   keibajoCode: string,
   raceNumber: string,
 ) => Promise<Runner[]>;
+
+type GetBloodlineStatsFn = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+) => Promise<unknown[]>;
 
 type GetRunningStyleBucketEvaluationFn = (args: {
   filter: RunningStyleBucketFilter;
@@ -72,7 +77,7 @@ const {
   getCachedDetailSectionResponseMock: vi.fn<() => Promise<Response | null>>(),
   getActiveFinishPositionPredictionsMock: vi.fn<() => Promise<unknown[]>>(),
   getDatabaseTargetMock: vi.fn<() => "cloudflare" | "local" | "neon">(),
-  getBloodlineStatsMock: vi.fn<() => Promise<unknown[]>>(),
+  getBloodlineStatsMock: vi.fn<GetBloodlineStatsFn>(),
   getCarriedWeightClassStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getFinishPositionStatsMock: vi.fn<() => Promise<unknown[]>>(),
   getFrameStatsMock: vi.fn<() => Promise<unknown[]>>(),
@@ -340,6 +345,7 @@ beforeEach(() => {
   getDatabaseTargetMock.mockReset();
   getDatabaseTargetMock.mockReturnValue("cloudflare");
   getBloodlineStatsMock.mockReset();
+  getBloodlineStatsMock.mockResolvedValue([]);
   getCarriedWeightClassStatsMock.mockReset();
   getFinishPositionStatsMock.mockReset();
   getFrameStatsMock.mockReset();
@@ -502,8 +508,12 @@ it("enables cell-matching grade for JRA G3 condition analysis", async () => {
 
   expect(context?.conditionAnalysisSettings).toMatchObject({
     cellMatching: true,
-    includeGrade: true,
-    includeTrackCode: true,
+    includeClass: false,
+    includeDistance: false,
+    includeGrade: false,
+    includeRaceTitle: true,
+    includeTrackCode: false,
+    includeVenue: true,
   });
 });
 
@@ -523,7 +533,8 @@ it("turns off the analysis cell venue flag from analysisCellKeibajo=0", async ()
 
   expect(context?.conditionAnalysisSettings.cellMatching).toBe(true);
   expect(context?.conditionAnalysisSettings.includeVenue).toBe(false);
-  expect(context?.conditionAnalysisSettings.includeClass).toBe(true);
+  expect(context?.conditionAnalysisSettings.includeClass).toBe(false);
+  expect(context?.conditionAnalysisSettings.includeRaceTitle).toBe(true);
   expect(context?.conditionAnalysisSettings.includeConditionKey).toBe(false);
 });
 
@@ -630,7 +641,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
     settings: {
       includeAge: false,
       includeClass: false,
-      includeDistance: false,
+      includeDistance: true,
       includeRaceTitle: false,
       includeSurface: false,
       includeTurn: false,
@@ -2632,15 +2643,15 @@ it("assembles heatmap payload from Catalog stats, results, and condition section
   expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(1);
   expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
     day: "28",
-    includeAge: true,
-    includeClass: true,
+    includeAge: false,
+    includeClass: false,
     includeConditionKey: false,
-    includeDistance: true,
-    includeGrade: true,
+    includeDistance: false,
+    includeGrade: false,
     includeJockeyFrame: true,
     includeRaceTitle: true,
     includeSurface: false,
-    includeTrackCode: true,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: true,
     keibajoCode: "06",
@@ -2783,15 +2794,15 @@ it("sends the 10-year Catalog window when similar stats years are all", async ()
 
   expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
     day: "28",
-    includeAge: true,
-    includeClass: true,
+    includeAge: false,
+    includeClass: false,
     includeConditionKey: false,
-    includeDistance: true,
-    includeGrade: true,
+    includeDistance: false,
+    includeGrade: false,
     includeJockeyFrame: true,
     includeRaceTitle: true,
     includeSurface: false,
-    includeTrackCode: true,
+    includeTrackCode: false,
     includeTurn: false,
     includeVenue: true,
     keibajoCode: "06",
@@ -2978,7 +2989,7 @@ it("similar payload falls back to Neon when Catalog binding is missing", async (
   expect(getBloodlineStatsMock).toHaveBeenCalled();
 });
 
-it("similar payload marks incomplete Catalog coverage without the Neon relax fallback", async () => {
+it("similar payload keeps incomplete person stats after the bloodline relax fallback exhausts", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
@@ -3398,6 +3409,53 @@ it("condition payload falls back to Neon when Catalog returns HTTP 502", async (
   expect(getFrameStatsMock.mock.calls.length > 0).toBe(true);
 });
 
+it("bloodline payload relaxes distance when Catalog coverage is incomplete", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockImplementation((query) =>
+    Promise.resolve({
+      bloodlineRows:
+        query.includeDistance === false
+          ? [
+              {
+                category: "sire",
+                currentHorseNumbers: "1",
+                details: [],
+                horseCount: 1,
+                name: "Sire",
+                quinellaCount: 1,
+                quinellaRate: 100,
+                showCount: 1,
+                showRate: 100,
+                starts: 1,
+                winCount: 1,
+                winRate: 100,
+              },
+            ]
+          : [],
+      similarRows: [],
+    }),
+  );
+
+  const payload = await getDetailSectionPayload("bloodline", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    rows: [{ currentHorseNumbers: "1", name: "Sire" }],
+    settings: { includeDistance: false, includeRaceTitle: false },
+    type: "bloodline",
+  });
+  expect(payload).not.toHaveProperty("bloodlineStatsIncomplete");
+  expect(getBloodlineStatsMock).not.toHaveBeenCalled();
+});
+
 it("time-score payload uses Catalog similar/bloodline and Catalog raceTimeStats", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
@@ -3673,8 +3731,8 @@ it("overall-score payload falls back to Neon bloodline when Catalog binding is m
     year: "2025",
   });
 
-  expect(payload).toMatchObject({ type: "overall-score" });
-  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+  expect(payload).toMatchObject({ bloodlineStatsIncomplete: true, type: "overall-score" });
+  expect(getBloodlineStatsMock).toHaveBeenCalled();
 });
 
 it("overall-score payload uses Catalog raceTimeStats when time-score cache is missing", async () => {
@@ -3743,7 +3801,7 @@ it("overall-score payload uses Neon time rows when time-score cache is missing",
     year: "2025",
   });
 
-  expect(payload).toMatchObject({ type: "overall-score" });
+  expect(payload).toMatchObject({ bloodlineStatsIncomplete: true, type: "overall-score" });
   expect(getTimeScoreRowsMock).toHaveBeenCalledOnce();
   expect(getBloodlineStatsMock).not.toHaveBeenCalled();
 });

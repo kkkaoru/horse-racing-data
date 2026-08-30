@@ -14,6 +14,10 @@ import {
   formatKohan3fTenthsLabel,
   formatRaceTimeChartTooltip,
   formatRaceTimeTenthsLabel,
+  clockNumberAt,
+  medianNumber,
+  parseRaceChartDateValue,
+  summariseNumbers,
   parseBanEiCarriedWeightKg,
   parseKohan3fTenths,
   parseRaceDistanceMeters,
@@ -165,6 +169,23 @@ it("uses finish rank instead of last 3F copy for Ban-ei charts", () => {
   expect(formatFinishRankAxisLabel(1)).toBe("1着");
   expect(formatFinishRankAxisLabel(8.4)).toBe("8着");
   expect(formatCarriedWeightKgLabel(610)).toBe("610kg");
+  expect(parseRaceChartDateValue("2026", "0322")).toBe(Date.UTC(2026, 2, 22));
+  expect(parseRaceChartDateValue("202", "0322")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "00")).toBe(null);
+  expect(parseRaceChartDateValue("xxxx", "0322")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "xx22")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "03xx")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "1322")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "0032")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "0232")).toBe(null);
+  expect(parseRaceChartDateValue("2026", "0300")).toBe(null);
+  expect(clockNumberAt([2, 4], 0)).toBe(2);
+  expect(clockNumberAt([2, 4], 5)).toBe(0);
+  expect(medianNumber([])).toBe(null);
+  expect(medianNumber([4])).toBe(4);
+  expect(medianNumber([1, 3])).toBe(2);
+  expect(summariseNumbers([])).toBe(null);
+  expect(summariseNumbers([1, 3, 5])).toStrictEqual({ average: 3, fastest: 1, median: 3 });
   expect(formatCarriedWeightDeltaLabel(0)).toBe("±0kg");
   expect(formatCarriedWeightDeltaLabel(10.4)).toBe("+10kg");
   expect(formatCarriedWeightDeltaLabel(-10.4)).toBe("-10kg");

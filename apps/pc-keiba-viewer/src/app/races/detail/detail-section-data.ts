@@ -56,7 +56,7 @@ import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/
 import {
   ANALYSIS_CELL_PARAM_NAMES,
   buildCellMatchingStatsSettings,
-  withDisabledCellDimensions,
+  toConditionAnalysisFallbackCell,
 } from "../../../lib/past-race-cell-matching";
 import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
 import {
@@ -211,6 +211,20 @@ interface CachedTimeScorePayload {
   rows: TimeScoreRow[];
 }
 
+interface ResolveBloodlineCoverageInput {
+  params: DetailSectionParams;
+  query: Record<string, string | string[] | undefined>;
+  race: RaceDetail;
+  rows: BloodlineStatsRow[];
+  runners: readonly Runner[];
+  settings: SimilarRaceStatsSettings;
+}
+
+interface BloodlineCoverageResolution {
+  rows: BloodlineStatsRow[];
+  settings: SimilarRaceStatsSettings;
+}
+
 const RUNNING_STYLE_KEIBAJO_ONLY_FLAGS: RunningStyleDimensionFlags = {
   condition: false,
   distance: false,
@@ -233,7 +247,21 @@ const RUNNING_STYLE_CATEGORY_ONLY_FLAGS: RunningStyleDimensionFlags = {
   track: false,
 };
 
-const CONDITION_ANALYSIS_RELAX_KEYS = [
+type ConditionAnalysisRelaxKey =
+  | "includeRaceTitle"
+  | "includeRaceSubtitle"
+  | "includeAge"
+  | "includeClass"
+  | "includeSex"
+  | "includeWeight"
+  | "includeSurface"
+  | "includeTurn"
+  | "includeRunnerCount"
+  | "includeFrame"
+  | "includeRaceNumber"
+  | "includeMonthWindow";
+
+const CONDITION_ANALYSIS_RELAX_KEYS: ReadonlyArray<ConditionAnalysisRelaxKey> = [
   "includeRaceTitle",
   "includeRaceSubtitle",
   "includeAge",
@@ -242,12 +270,11 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeWeight",
   "includeSurface",
   "includeTurn",
-  "includeDistance",
   "includeRunnerCount",
   "includeFrame",
   "includeRaceNumber",
   "includeMonthWindow",
-] as const;
+];
 
 const RATE_STATS_FALLBACK_TIMEOUT_MS = 6_000;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
@@ -819,7 +846,7 @@ const catalogHasCompleteConditionHistory = (catalog: ConditionHistoryCatalogStat
 
 const relaxAllConditionAnalysisSettings = <T extends SimilarRaceStatsSettings>(settings: T): T => {
   if (settings.cellMatching) {
-    return { ...settings, ...withDisabledCellDimensions(settings, false) };
+    return { ...settings, ...toConditionAnalysisFallbackCell(settings, false) };
   }
   const relaxedSettings = { ...settings };
   for (const key of CONDITION_ANALYSIS_RELAX_KEYS) {
@@ -835,8 +862,8 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
   if (settings.cellMatching) {
     return [
       settings,
-      { ...settings, ...withDisabledCellDimensions(settings, true) },
-      { ...settings, ...withDisabledCellDimensions(settings, false) },
+      { ...settings, ...toConditionAnalysisFallbackCell(settings, true) },
+      { ...settings, ...toConditionAnalysisFallbackCell(settings, false) },
     ];
   }
   const candidates = [settings];
@@ -851,6 +878,14 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
   }
 
   return candidates;
+};
+
+const getBloodlineSettingCandidates = <T extends SimilarRaceStatsSettings>(settings: T): T[] => {
+  const candidates = getConditionAnalysisSettingCandidates(settings);
+  const broadest = candidates.at(-1);
+  return broadest?.includeDistance
+    ? [...candidates, { ...broadest, includeDistance: false }]
+    : candidates;
 };
 
 const hasRateRows = (rows: readonly (BloodlineStatsRow | SimilarRaceStatsRow)[]): boolean =>
@@ -1003,16 +1038,26 @@ const findRateStatsCandidate = async <
     return { status: "exhausted" };
   }
 
-  const pending = candidates.map(async (settings) => ({
-    settings,
-    stats: await getStats(settings),
-  }));
+  const pending = new Map<number, Promise<{ settings: T; stats: R }>>();
+  const startCandidate = (index: number) => {
+    const settings = candidates[index];
+    if (settings === undefined || pending.has(index)) {
+      return;
+    }
+    pending.set(
+      index,
+      getStats(settings).then((stats) => ({ settings, stats })),
+    );
+  };
+  startCandidate(0);
+  startCandidate(1);
+
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"timedOut">((resolve) => {
     timeout = setTimeout(() => resolve("timedOut"), RATE_STATS_FALLBACK_TIMEOUT_MS);
   });
   const waitForCanonicalPrefix = async (index: number): Promise<RateStatsCandidateResult<T, R>> => {
-    const next = pending[index];
+    const next = pending.get(index);
     if (!next) {
       return { status: "exhausted" };
     }
@@ -1023,6 +1068,7 @@ const findRateStatsCandidate = async <
     if (hasEnoughStats(raced.stats)) {
       return { status: "matched", ...raced };
     }
+    startCandidate(index + 2);
     return waitForCanonicalPrefix(index + 1);
   };
   try {
@@ -1030,6 +1076,38 @@ const findRateStatsCandidate = async <
   } finally {
     clearTimeout(timeout);
   }
+};
+
+const resolveBloodlineCoverage = async (
+  input: ResolveBloodlineCoverageInput,
+): Promise<BloodlineCoverageResolution> => {
+  if (
+    isOverseasKeibajoCode(input.race.keibajoCode) ||
+    hasExplicitStatsState(input.query, "bloodline") ||
+    hasBloodlineScoreCoverage(input.rows, input.runners)
+  ) {
+    return { rows: input.rows, settings: input.settings };
+  }
+  const matched = await findRateStatsCandidate(
+    getBloodlineSettingCandidates(input.settings).slice(1),
+    async (candidate) => {
+      const catalogStats = await loadCatalogGroupedRateStats(
+        input.params,
+        candidate,
+        input.race.source,
+        false,
+      );
+      const rows =
+        catalogStats === null
+          ? await getBloodlineStats(input.race, candidate)
+          : catalogStats.bloodlineRows;
+      return getEligibleBloodlineRows(input.race, rows);
+    },
+    (stats) => hasBloodlineScoreCoverage(stats, input.runners),
+  );
+  return matched.status === "matched"
+    ? { rows: matched.stats, settings: matched.settings }
+    : { rows: input.rows, settings: input.settings };
 };
 
 export const getDetailStatsContext = async ({
@@ -1187,6 +1265,7 @@ export const getDetailStatsContext = async ({
   const analysisCellFlags = getFinishPredictionDimensionFlags({
     gradeCode: race.gradeCode ?? null,
     isBanEi: banEiRace,
+    kyosoJokenCode: race.kyosoJokenCode ?? null,
     paramNames: ANALYSIS_CELL_PARAM_NAMES,
     query,
     source: race.source,
@@ -1440,6 +1519,7 @@ export const getFinishPositionBucketSectionData = async (
   const flags = getFinishPredictionDimensionFlags({
     gradeCode: race.gradeCode ?? null,
     isBanEi,
+    kyosoJokenCode: race.kyosoJokenCode ?? null,
     query,
     source: race.source,
   });
@@ -1826,12 +1906,19 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
     );
     if (catalogStats !== null) {
       const similarRows = getEligibleSimilarStatsRows(race, catalogStats.similarRows);
-      const bloodlineRows = getEligibleBloodlineRows(race, catalogStats.bloodlineRows);
+      const bloodline = await resolveBloodlineCoverage({
+        params,
+        query,
+        race,
+        rows: getEligibleBloodlineRows(race, catalogStats.bloodlineRows),
+        runners,
+        settings: context.bloodlineStatsSettings,
+      });
       return {
-        bloodlineRows,
-        ...getBloodlineIncompletePayload(bloodlineRows, runners),
-        bloodlineSettings: context.bloodlineStatsSettings,
-        ...getBloodlineVenueFallbackPayload(race, context.bloodlineStatsSettings),
+        bloodlineRows: bloodline.rows,
+        ...getBloodlineIncompletePayload(bloodline.rows, runners),
+        bloodlineSettings: bloodline.settings,
+        ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
         conditionLabels: context.statsConditionLabels,
         correlationRows: raceTimeStats.correlationRows,
         rows: mappedRows,
@@ -1870,33 +1957,23 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         similarStatsIncomplete = true;
       }
     }
-    let resolvedBloodlineSettings = context.bloodlineStatsSettings;
-    let bloodlineRows = getEligibleBloodlineRows(
+    const initialBloodlineRows = getEligibleBloodlineRows(
       race,
-      await getBloodlineStats(race, resolvedBloodlineSettings),
+      await getBloodlineStats(race, context.bloodlineStatsSettings),
     );
-    if (
-      !isOverseasKeibajoCode(race.keibajoCode) &&
-      !hasExplicitStatsState(query, "bloodline") &&
-      !hasBloodlineScoreCoverage(bloodlineRows, runners)
-    ) {
-      const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineSettings).slice(1);
-      const matched = await findRateStatsCandidate(
-        candidates,
-        async (candidate) =>
-          getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
-        (stats) => hasBloodlineScoreCoverage(stats, runners),
-      );
-      if (matched.status === "matched") {
-        resolvedBloodlineSettings = matched.settings;
-        bloodlineRows = matched.stats;
-      }
-    }
+    const bloodline = await resolveBloodlineCoverage({
+      params,
+      query,
+      race,
+      rows: initialBloodlineRows,
+      runners,
+      settings: context.bloodlineStatsSettings,
+    });
     return {
-      bloodlineRows,
-      ...getBloodlineIncompletePayload(bloodlineRows, runners),
-      bloodlineSettings: resolvedBloodlineSettings,
-      ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
+      bloodlineRows: bloodline.rows,
+      ...getBloodlineIncompletePayload(bloodline.rows, runners),
+      bloodlineSettings: bloodline.settings,
+      ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
       conditionLabels: context.statsConditionLabels,
       correlationRows: raceTimeStats.correlationRows,
       rows: mappedRows,
@@ -2023,17 +2100,27 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       loadCatalogGroupedRateStats(params, context.bloodlineStatsSettings, race.source, false),
       loadCachedTimeScorePayload(params),
     ]);
-    const resolvedBloodlineSettings = context.bloodlineStatsSettings;
-    const bloodlineRows =
+    const initialBloodlineRows =
       catalogStats === null
-        ? getEligibleBloodlineRows(race, await getBloodlineStats(race, resolvedBloodlineSettings))
+        ? getEligibleBloodlineRows(
+            race,
+            await getBloodlineStats(race, context.bloodlineStatsSettings),
+          )
         : getEligibleBloodlineRows(race, catalogStats.bloodlineRows);
+    const bloodline = await resolveBloodlineCoverage({
+      params,
+      query,
+      race,
+      rows: initialBloodlineRows,
+      runners,
+      settings: context.bloodlineStatsSettings,
+    });
     if (cachedTimeScore !== null) {
       return {
-        ...getBloodlineIncompletePayload(bloodlineRows, runners),
-        ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
+        ...getBloodlineIncompletePayload(bloodline.rows, runners),
+        ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
         rows: buildOverallScoreRows({
-          bloodlineRows,
+          bloodlineRows: bloodline.rows,
           correlationRows: cachedTimeScore.correlationRows,
           runners,
           timeRows: cachedTimeScore.rows,
@@ -2055,10 +2142,10 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       ),
     ]);
     return {
-      ...getBloodlineIncompletePayload(bloodlineRows, runners),
-      ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
+      ...getBloodlineIncompletePayload(bloodline.rows, runners),
+      ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
       rows: buildOverallScoreRows({
-        bloodlineRows,
+        bloodlineRows: bloodline.rows,
         correlationRows: raceTimeStats.correlationRows,
         runners,
         timeRows,
@@ -2137,45 +2224,28 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       race.source,
       false,
     );
-    if (catalogStats !== null) {
-      const rows = getEligibleBloodlineRows(race, catalogStats.bloodlineRows);
-      return {
-        ...getBloodlineIncompletePayload(rows, runners),
-        ...getBloodlineVenueFallbackPayload(race, context.bloodlineStatsSettings),
-        conditionLabels: context.statsConditionLabels,
-        rows,
-        runners,
-        settings: context.bloodlineStatsSettings,
-        source: race.source,
-        type: section,
-      };
-    }
-    let resolvedSettings = context.bloodlineStatsSettings;
-    let rows = getEligibleBloodlineRows(race, await getBloodlineStats(race, resolvedSettings));
-    if (
-      !isOverseasKeibajoCode(race.keibajoCode) &&
-      !hasExplicitStatsState(query, "bloodline") &&
-      !hasBloodlineScoreCoverage(rows, runners)
-    ) {
-      const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
-      const matched = await findRateStatsCandidate(
-        candidates,
-        async (candidate) =>
-          getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
-        (stats) => hasBloodlineScoreCoverage(stats, runners),
-      );
-      if (matched.status === "matched") {
-        resolvedSettings = matched.settings;
-        rows = matched.stats;
-      }
-    }
-    return {
-      ...getBloodlineIncompletePayload(rows, runners),
-      ...getBloodlineVenueFallbackPayload(race, resolvedSettings),
-      conditionLabels: context.statsConditionLabels,
-      rows,
+    const initialRows =
+      catalogStats === null
+        ? getEligibleBloodlineRows(
+            race,
+            await getBloodlineStats(race, context.bloodlineStatsSettings),
+          )
+        : getEligibleBloodlineRows(race, catalogStats.bloodlineRows);
+    const bloodline = await resolveBloodlineCoverage({
+      params,
+      query,
+      race,
+      rows: initialRows,
       runners,
-      settings: resolvedSettings,
+      settings: context.bloodlineStatsSettings,
+    });
+    return {
+      ...getBloodlineIncompletePayload(bloodline.rows, runners),
+      ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
+      conditionLabels: context.statsConditionLabels,
+      rows: bloodline.rows,
+      runners,
+      settings: bloodline.settings,
       source: race.source,
       type: section,
     };
@@ -2189,12 +2259,19 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
   );
   if (catalogSimilarStats !== null) {
     const similarRows = getEligibleSimilarStatsRows(race, catalogSimilarStats.similarRows);
-    const bloodlineRows = getEligibleBloodlineRows(race, catalogSimilarStats.bloodlineRows);
+    const bloodline = await resolveBloodlineCoverage({
+      params,
+      query,
+      race,
+      rows: getEligibleBloodlineRows(race, catalogSimilarStats.bloodlineRows),
+      runners,
+      settings: context.bloodlineStatsSettings,
+    });
     return {
-      bloodlineRows,
-      ...getBloodlineIncompletePayload(bloodlineRows, runners),
-      bloodlineSettings: context.bloodlineStatsSettings,
-      ...getBloodlineVenueFallbackPayload(race, context.bloodlineStatsSettings),
+      bloodlineRows: bloodline.rows,
+      ...getBloodlineIncompletePayload(bloodline.rows, runners),
+      bloodlineSettings: bloodline.settings,
+      ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
       conditionLabels: context.statsConditionLabels,
       rows: similarRows,
       runners,
@@ -2225,33 +2302,24 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       similarStatsIncomplete = true;
     }
   }
-  let resolvedBloodlineSettings = context.bloodlineStatsSettings;
-  let bloodlineRows = getEligibleBloodlineRows(
+  const initialBloodlineRows = getEligibleBloodlineRows(
     race,
-    await getBloodlineStats(race, resolvedBloodlineSettings),
+    await getBloodlineStats(race, context.bloodlineStatsSettings),
   );
-  if (
-    !isOverseasKeibajoCode(race.keibajoCode) &&
-    !hasExplicitStatsState(query, "bloodline") &&
-    !hasBloodlineScoreCoverage(bloodlineRows, runners)
-  ) {
-    const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineSettings).slice(1);
-    const matched = await findRateStatsCandidate(
-      candidates,
-      async (candidate) => getEligibleBloodlineRows(race, await getBloodlineStats(race, candidate)),
-      (stats) => hasBloodlineScoreCoverage(stats, runners),
-    );
-    if (matched.status === "matched") {
-      resolvedBloodlineSettings = matched.settings;
-      bloodlineRows = matched.stats;
-    }
-  }
+  const bloodline = await resolveBloodlineCoverage({
+    params,
+    query,
+    race,
+    rows: initialBloodlineRows,
+    runners,
+    settings: context.bloodlineStatsSettings,
+  });
 
   return {
-    bloodlineRows,
-    ...getBloodlineIncompletePayload(bloodlineRows, runners),
-    bloodlineSettings: resolvedBloodlineSettings,
-    ...getBloodlineVenueFallbackPayload(race, resolvedBloodlineSettings),
+    bloodlineRows: bloodline.rows,
+    ...getBloodlineIncompletePayload(bloodline.rows, runners),
+    bloodlineSettings: bloodline.settings,
+    ...getBloodlineVenueFallbackPayload(race, bloodline.settings),
     conditionLabels: context.statsConditionLabels,
     rows,
     runners,

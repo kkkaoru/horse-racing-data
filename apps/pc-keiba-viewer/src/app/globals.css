@@ -9850,8 +9850,13 @@ fieldset.stats-section-toggle-wrap {
   width: var(--space-100pct-12);
 }
 
+/* Combined 勝率+連対率+複勝率 has 3 rate columns per entity.
+   table-layout:fixed + width:100% ignores cell min-width and clips "15.0".
+   Size to content, fill when there is room, then stop shrinking and scroll. */
 .stats-table.win-rate-heatmap-table-combined {
-  min-width: var(--number-0-2);
+  min-width: max(var(--space-100pct-12), max-content);
+  table-layout: auto;
+  width: max-content;
 }
 
 /* Combined 勝率+連対率+複勝率: hide "%" even if the suffix span is reintroduced. */
@@ -9895,6 +9900,11 @@ body .win-rate-heatmap-table .win-rate-heatmap-rate-heading,
 body .win-rate-heatmap-table td.win-rate-heatmap-swatch {
   min-width: var(--space-44px-23);
   width: auto;
+}
+
+body .win-rate-heatmap-table-combined .win-rate-heatmap-rate-heading,
+body .win-rate-heatmap-table-combined td.win-rate-heatmap-swatch {
+  min-width: var(--space-52px-63);
 }
 
 body .win-rate-heatmap-table .win-rate-heatmap-rate-heading {
@@ -10029,6 +10039,29 @@ body .win-rate-heatmap-table .win-rate-heatmap-swatch-starts {
     -webkit-overflow-scrolling: touch;
     overflow-x: auto;
     touch-action: pan-x pan-y;
+  }
+
+  .stats-table.win-rate-heatmap-table-combined {
+    min-width: max-content;
+    width: max-content;
+  }
+
+  body .win-rate-heatmap-table-combined th,
+  body .win-rate-heatmap-table-combined td {
+    font-size: var(--space-13px-92);
+  }
+
+  body .win-rate-heatmap-table-combined .win-rate-heatmap-rate-heading,
+  body .win-rate-heatmap-table-combined td.win-rate-heatmap-swatch {
+    min-width: var(--space-64px-48);
+  }
+
+  body .win-rate-heatmap-table-combined .win-rate-heatmap-swatch-value {
+    font-size: var(--space-13px-92);
+  }
+
+  body .win-rate-heatmap-table-combined .win-rate-heatmap-swatch-starts {
+    font-size: var(--space-12px-9);
   }
 
   .win-rate-heatmap-swatch:hover .win-rate-heatmap-tooltip,
@@ -10344,6 +10377,14 @@ fieldset.race-results-chart-view-toggle {
   width: var(--space-100pct-12);
 }
 
+.race-clock-gallery {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin: var(--number-0-2);
+  min-width: var(--number-0-2);
+  width: var(--space-100pct-12);
+}
+
 .training-chart-note {
   color: var(--muted);
   font-size: var(--space-15px-1);
@@ -10353,7 +10394,21 @@ fieldset.race-results-chart-view-toggle {
 
 .training-chart-frame {
   min-width: var(--number-0-2);
+  overflow: visible;
   position: relative;
+}
+
+.race-clock-legend-groups {
+  display: grid;
+  gap: var(--space-8px-28) var(--space-24px-50);
+  grid-template-columns: repeat(var(--number-2-1), minmax(var(--number-0-2), var(--space-1fr-51)));
+}
+
+.race-clock-legend-groups .training-chart-legend li {
+  color: var(--ink);
+  font-size: var(--space-16px-10);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-600-22);
 }
 
 .training-chart-svg {
@@ -10409,6 +10464,10 @@ fieldset.race-results-chart-view-toggle {
 }
 
 .training-chart-point {
+  cursor: pointer;
+}
+
+.training-chart-reference-hit {
   cursor: pointer;
 }
 

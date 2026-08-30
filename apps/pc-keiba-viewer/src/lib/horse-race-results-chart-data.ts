@@ -177,6 +177,33 @@ const HORSE_RACE_CHART_COLORS: string[] = [
 // Used only when the palette index falls outside the array (e.g. a malformed
 // negative or fractional umaban); keeps the series renderable instead of blank.
 const FALLBACK_CHART_COLOR = "#52525b";
+const WHITE_WAKUBAN_FILL: string = "#ffffff";
+const WHITE_WAKUBAN_OUTLINE: string = "#111111";
+const WAKUBAN_FILL: Record<string, string> = {
+  "1": WHITE_WAKUBAN_FILL,
+  "2": "#111111",
+  "3": "#d71920",
+  "4": "#005bac",
+  "5": "#ffd400",
+  "6": "#009944",
+  "7": "#f39800",
+  "8": "#f4a3c4",
+};
+
+export interface HorseRaceWakubanPaint {
+  fill: string;
+  outline: string;
+}
+
+export const horseRaceChartPaintForWakuban = (
+  wakuban: string | null | undefined,
+): HorseRaceWakubanPaint => {
+  const fill = WAKUBAN_FILL[cleanText(wakuban ?? "", "")] ?? FALLBACK_CHART_COLOR;
+  return {
+    fill,
+    outline: fill === WHITE_WAKUBAN_FILL ? WHITE_WAKUBAN_OUTLINE : fill,
+  };
+};
 
 export const HORSE_RACE_CHART_METRICS: HorseRaceChartMetric[] = [
   "finish",

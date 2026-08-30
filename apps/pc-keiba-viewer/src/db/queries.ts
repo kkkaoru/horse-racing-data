@@ -5936,6 +5936,44 @@ export const getTimeScoreRows = cache(
   },
 );
 
+const JRA_CELL_SPRINT_MAX_EXCLUSIVE_KYORI: number = 1200;
+const JRA_CELL_MILE_MAX_EXCLUSIVE_KYORI: number = 1600;
+const JRA_CELL_INTERMEDIATE_MAX_EXCLUSIVE_KYORI: number = 2000;
+const JRA_CELL_LONG_MAX_EXCLUSIVE_KYORI: number = 2400;
+const NAR_CELL_SPRINT_MAX_EXCLUSIVE_KYORI: number = 1400;
+const NAR_CELL_EXTENDED_SPRINT_MAX_KYORI: number = 1500;
+const NAR_CELL_MILE_MAX_KYORI: number = 1800;
+const NAR_CELL_INTERMEDIATE_MAX_KYORI: number = 2200;
+const NAR_CELL_LONG_MAX_KYORI: number = 2800;
+
+const kyoriIntSql = (kyoriSql: ReturnType<typeof sql>) =>
+  sql`nullif(btrim(coalesce(${kyoriSql}, '')), '')::int`;
+
+const cellRouterDistanceBandCaseSql = (input: {
+  kyoriSql: ReturnType<typeof sql>;
+  source: RaceDetail["source"];
+}) => {
+  const kyoriInt = kyoriIntSql(input.kyoriSql);
+  return input.source === "nar"
+    ? sql`case
+        when ${kyoriInt} is null then null
+        when ${kyoriInt} < ${NAR_CELL_SPRINT_MAX_EXCLUSIVE_KYORI} then 'sprint'
+        when ${kyoriInt} <= ${NAR_CELL_EXTENDED_SPRINT_MAX_KYORI} then 'extended_sprint'
+        when ${kyoriInt} <= ${NAR_CELL_MILE_MAX_KYORI} then 'mile'
+        when ${kyoriInt} <= ${NAR_CELL_INTERMEDIATE_MAX_KYORI} then 'intermediate'
+        when ${kyoriInt} <= ${NAR_CELL_LONG_MAX_KYORI} then 'long'
+        else 'extended'
+      end`
+    : sql`case
+        when ${kyoriInt} is null then null
+        when ${kyoriInt} < ${JRA_CELL_SPRINT_MAX_EXCLUSIVE_KYORI} then 'sprint'
+        when ${kyoriInt} < ${JRA_CELL_MILE_MAX_EXCLUSIVE_KYORI} then 'mile'
+        when ${kyoriInt} < ${JRA_CELL_INTERMEDIATE_MAX_EXCLUSIVE_KYORI} then 'intermediate'
+        when ${kyoriInt} < ${JRA_CELL_LONG_MAX_EXCLUSIVE_KYORI} then 'long'
+        else 'extended'
+      end`;
+};
+
 export const getRaceTimeStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<RaceTimeStats> => {
     return withDbQueryCache(["getRaceTimeStats", race, settings], async () => {
@@ -5943,6 +5981,14 @@ export const getRaceTimeStats = cache(
       const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
       const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+      const historyDistanceBandSql = cellRouterDistanceBandCaseSql({
+        kyoriSql: sql`ra.kyori`,
+        source: statsSource,
+      });
+      const currentDistanceBandSql = cellRouterDistanceBandCaseSql({
+        kyoriSql: sql`${race.kyori}`,
+        source: statsSource,
+      });
       const result = await getDb().execute<{
         raceCount: string;
         fastestRaceTime: string | null;
@@ -5983,6 +6029,8 @@ export const getRaceTimeStats = cache(
             runnerTable,
             settings,
           })}
+          and ra.kyori = ${race.kyori}
+          and ${historyDistanceBandSql} is not distinct from ${currentDistanceBandSql}
       ),
       winner_rows as (
         select

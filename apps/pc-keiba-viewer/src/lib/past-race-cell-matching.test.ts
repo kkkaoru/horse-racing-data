@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import {
   ANALYSIS_CELL_PARAM_NAMES,
   buildCellMatchingStatsSettings,
+  toConditionAnalysisFallbackCell,
   withDisabledCellDimensions,
 } from "./past-race-cell-matching";
 
@@ -136,6 +137,64 @@ it("keeps venue when disabling other cell dimensions", () => {
     includeRaceTitle: false,
     includeTrackCode: false,
     includeVenue: true,
+  });
+});
+
+it("keeps distance on condition-analysis fallback while other cell dimensions drop", () => {
+  const settings = buildCellMatchingStatsSettings({
+    classConditionName: null,
+    flags: {
+      condition: true,
+      distance: true,
+      grade: true,
+      keibajo: true,
+      kyosoJoken: true,
+      kyosoShubetsu: true,
+      raceName: true,
+      track: true,
+    },
+    sourceScope: "all",
+    years: null,
+  });
+  expect(toConditionAnalysisFallbackCell(settings, true)).toStrictEqual({
+    ...settings,
+    includeAge: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: true,
+    includeGrade: false,
+    includeRaceTitle: false,
+    includeTrackCode: false,
+    includeVenue: true,
+  });
+});
+
+it("keeps an explicit off distance flag on condition-analysis fallback", () => {
+  const settings = buildCellMatchingStatsSettings({
+    classConditionName: null,
+    flags: {
+      condition: false,
+      distance: false,
+      grade: false,
+      keibajo: true,
+      kyosoJoken: false,
+      kyosoShubetsu: false,
+      raceName: false,
+      track: false,
+    },
+    sourceScope: "nar",
+    years: 10,
+  });
+  expect(toConditionAnalysisFallbackCell(settings, false)).toStrictEqual({
+    ...settings,
+    includeAge: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeGrade: false,
+    includeRaceTitle: false,
+    includeTrackCode: false,
+    includeVenue: false,
   });
 });
 

@@ -325,6 +325,56 @@ export const formatRaceTimeTenthsLabel = (tenths: number): string => {
 
 export const formatKohan3fTenthsLabel = (tenths: number): string => (tenths / 10).toFixed(1);
 
+const compareNumberAsc = (left: number, right: number): number => left - right;
+
+export const parseRaceChartDateValue = (nen: string, tsukihi: string): number | null => {
+  if (nen.length < 4 || tsukihi.length < 4) {
+    return null;
+  }
+  const year = Number(nen);
+  const month = Number(tsukihi.slice(0, 2));
+  const day = Number(tsukihi.slice(2, 4));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day);
+};
+
+export const clockNumberAt = (values: number[], index: number): number => {
+  const value = values[index];
+  if (value === undefined) {
+    return 0;
+  }
+  return value;
+};
+
+export const medianNumber = (values: number[]): number | null => {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = values.toSorted(compareNumberAsc);
+  const midLow = Math.floor((values.length - 1) / 2);
+  const midHigh = Math.ceil((values.length - 1) / 2);
+  return (clockNumberAt(sorted, midLow) + clockNumberAt(sorted, midHigh)) / 2;
+};
+
+export const summariseNumbers = (
+  values: number[],
+): { average: number; fastest: number; median: number } | null => {
+  const median = medianNumber(values);
+  if (median === null) {
+    return null;
+  }
+  return {
+    average: values.reduce((total, value) => total + value, 0) / values.length,
+    fastest: Math.min(...values),
+    median,
+  };
+};
+
 export const formatFinishRankAxisLabel = (rank: number): string => `${Math.round(rank)}着`;
 
 export const formatCarriedWeightKgLabel = (kg: number): string => `${Math.round(kg)}kg`;

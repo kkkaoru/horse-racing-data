@@ -3,7 +3,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 
-import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
+import type {
+  HorseRaceResult,
+  RaceTimeStats,
+  RaceTimeTargetRace,
+  Runner,
+} from "../../../lib/race-types";
 import { HorseRaceTimeChart } from "./horse-race-time-charts";
 
 afterEach(cleanup);
@@ -59,6 +64,23 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   ...overrides,
 });
 
+const targetRace = (overrides: Partial<RaceTimeTargetRace>): RaceTimeTargetRace => ({
+  date: "20260301",
+  horseName: "1着馬",
+  horseNumber: "01",
+  jockeyName: "騎手",
+  keibajoCode: "43",
+  kohan3f: "357",
+  kyori: "1700",
+  ownerName: "馬主",
+  popularity: "01",
+  raceName: "一般",
+  raceNumber: "11",
+  raceTime: "1050",
+  trainerName: "調教師",
+  ...overrides,
+});
+
 const runner = (overrides: Partial<Runner>): Runner => ({
   bamei: "出走馬",
   banushimei: "馬主",
@@ -99,10 +121,13 @@ const stats = (): RaceTimeStats => ({
   medianKohan3f: 355,
   medianRaceTime: 1080,
   raceCount: 10,
-  targetRaces: [],
+  targetRaces: [
+    targetRace({ kyori: "1000", raceTime: "575" }),
+    targetRace({ date: "20260308", kyori: "1800", raceTime: "1100" }),
+  ],
 });
 
-it("renders the race-time scatter with finish colors and reference lines", () => {
+it("renders the non-Ban-ei scatter with same-condition fastest average and median lines", () => {
   render(
     <HorseRaceTimeChart
       currentDistance="1800"
@@ -115,24 +140,15 @@ it("renders the race-time scatter with finish colors and reference lines", () =>
     />,
   );
   expect(screen.getByRole("figure", { name: "競走成績タイム散布図" })).toBeDefined();
-  expect(screen.getByText("上がり3F（右が速い）")).toBeDefined();
-  expect(screen.getByText("換算レースタイム（今走距離、上が速い）")).toBeDefined();
-  expect(screen.getByText("1着")).toBeDefined();
-  expect(screen.getByText("最速")).toBeDefined();
+  expect(screen.getByText("換算タイム×上がり3F")).toBeDefined();
+  expect(screen.getByText("最速レースタイム 1:45.0")).toBeDefined();
+  expect(screen.getByText("平均レースタイム 1:52.0")).toBeDefined();
+  expect(screen.getByText("中央値レースタイム 1:48.0")).toBeDefined();
+  expect(screen.getByText("最速上がり3F 34.0")).toBeDefined();
+  expect(screen.getByText("平均上がり3F 36.0")).toBeDefined();
+  expect(screen.getByText("中央値上がり3F 35.5")).toBeDefined();
   expect(document.querySelectorAll("circle.training-chart-point").length).toBe(2);
-  expect(document.querySelector('[data-finish="2"]')?.getAttribute("r")).toBe("4.4");
-  expect(document.querySelectorAll("[data-reference]").length).toBe(6);
-  expect(document.querySelector("[data-reference]")?.getAttribute("stroke-opacity")).toBe("0.1");
-  expect(document.querySelector("[data-reference]")?.getAttribute("stroke-width")).toBe("0.45");
-  expect(
-    document.querySelector('[data-horse="チャートホース"]')?.getAttribute("fill-opacity"),
-  ).toBe("0.4");
-  expect(
-    document.querySelector('[data-horse="チャートホース"]')?.getAttribute("stroke-opacity"),
-  ).toBe("0.42");
-  expect(document.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("0.92");
-  expect(document.querySelector('[data-reference="fastestRaceTime"]') === null).toBe(false);
-  expect(document.querySelector('[data-reference="medianKohan3f"]') === null).toBe(false);
+  expect(screen.queryByText("換算レースタイム（今走距離、上が速い）")).toBeNull();
 });
 
 it("shows an empty message when clocks cannot be plotted", () => {
@@ -222,7 +238,7 @@ it("shows a Ban-ei empty message when finish ranks are missing", () => {
   expect(screen.queryByRole("figure", { name: "競走成績タイム散布図" })).toBeNull();
 });
 
-it("follows the pointer with a tooltip of horse, clocks, and finish", () => {
+it("follows the pointer with a scaled-clock gallery tooltip", () => {
   render(
     <HorseRaceTimeChart currentDistance="1800" results={[result({})]} runners={[]} stats={null} />,
   );
@@ -233,17 +249,13 @@ it("follows the pointer with a tooltip of horse, clocks, and finish", () => {
   fireEvent.pointerEnter(hoverPoint, { clientX: 40, clientY: 48 });
   expect(screen.getByRole("tooltip")).toBeDefined();
   expect(screen.getByText("1 チャートホース")).toBeDefined();
-  expect(screen.getByText("過去騎手 騎手")).toBeDefined();
-  expect(screen.getByText("予定騎手 騎手")).toBeDefined();
-  expect(screen.getByText("着順 1")).toBeDefined();
-  expect(screen.getByText("レースタイム 1:50.0")).toBeDefined();
-  expect(screen.getByText("距離 1800m")).toBeDefined();
+  expect(screen.getByText("換算タイム 1:50.0")).toBeDefined();
   expect(screen.getByText("上がり3F 35.1")).toBeDefined();
   fireEvent.pointerLeave(hoverPoint);
   expect(screen.queryByRole("tooltip")).toBeNull();
 });
 
-it("fades a point whose race distance is farther from the current race", () => {
+it("still plots both horses when the other horse ran a different distance", () => {
   render(
     <HorseRaceTimeChart
       currentDistance="1800"
@@ -260,15 +272,11 @@ it("fades a point whose race distance is farther from the current race", () => {
       stats={null}
     />,
   );
-  expect(document.querySelector('[data-horse="同距離"]')?.getAttribute("fill-opacity")).toBe("0.4");
-  expect(document.querySelector('[data-horse="短い距離"]')?.getAttribute("fill-opacity")).toBe(
-    "0.3",
-  );
-  expect(document.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("0.92");
-  expect(document.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.92");
+  expect(document.querySelector('[data-horse="同距離"]') === null).toBe(false);
+  expect(document.querySelector('[data-horse="短い距離"]') === null).toBe(false);
 });
 
-it("dims the other horse and enlarges the hovered point", () => {
+it("dims the other horse and enlarges the hovered gallery point", () => {
   render(
     <HorseRaceTimeChart
       currentDistance="1800"
@@ -285,19 +293,17 @@ it("dims the other horse and enlarges the hovered point", () => {
       stats={null}
     />,
   );
-  const hoverPoint = document.querySelector('[data-horse="ホバー馬"]');
-  const otherPoint = document.querySelector('[data-horse="別の馬"]');
+  const scatter = screen.getByRole("figure", { name: "競走成績タイム散布図" });
+  const hoverPoint = scatter.querySelector('[data-horse="ホバー馬"]');
+  const otherPoint = scatter.querySelector('[data-horse="別の馬"]');
   if (hoverPoint === null || otherPoint === null) {
     throw new Error("expected both scatter points");
   }
   fireEvent.pointerEnter(hoverPoint, { clientX: 40, clientY: 48 });
-  expect(hoverPoint.getAttribute("r")).toBe("6.2");
-  expect(hoverPoint.getAttribute("stroke-opacity")).toBe("0.7");
-  expect(otherPoint.getAttribute("fill-opacity")).toBe("0.1");
-  expect(otherPoint.getAttribute("stroke-opacity")).toBe("0.1");
-  expect(otherPoint.getAttribute("r")).toBe("3.2");
-  expect(document.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("1");
-  expect(document.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.26");
+  expect(hoverPoint.getAttribute("r")).toBe("7");
+  expect(otherPoint.getAttribute("fill-opacity")).toBe("0.08");
+  expect(scatter.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("1");
+  expect(scatter.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.22");
 });
 
 it("dims the other Ban-ei scheduled-weight mark while hovering a horse", () => {

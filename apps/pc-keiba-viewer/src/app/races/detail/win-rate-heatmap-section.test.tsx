@@ -609,6 +609,14 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(document.querySelector(".win-rate-heatmap-table")?.className).toBe(
     "stats-table win-rate-heatmap-table win-rate-heatmap-table-combined",
   );
+  expect(document.querySelector(".win-rate-heatmap-table-wrap")?.className).toBe(
+    "stats-table-wrap win-rate-heatmap-table-wrap",
+  );
+  expect(
+    document
+      .querySelector(".win-rate-heatmap-table-wrap")
+      ?.contains(document.querySelector(".win-rate-heatmap-table-combined")),
+  ).toBe(true);
   expect(document.querySelectorAll(".win-rate-heatmap-color-scale-bar").length).toBe(1);
   const combinedScaleBar = document.querySelector(".win-rate-heatmap-color-scale-bar");
   if (!(combinedScaleBar instanceof HTMLDivElement)) {

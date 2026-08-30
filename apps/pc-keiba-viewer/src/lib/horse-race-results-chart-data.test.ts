@@ -12,6 +12,7 @@ import {
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
+  horseRaceChartPaintForWakuban,
   type HorseRaceChartRunner,
   uniqueSortedDateValues,
 } from "./horse-race-results-chart-data";
@@ -2094,5 +2095,26 @@ describe("horse race results chart data", () => {
     expect(
       uniqueSortedDateValues([1775779200000, 1774137600000, 1774137600000, 1736640000000]),
     ).toStrictEqual([1736640000000, 1774137600000, 1775779200000]);
+  });
+
+  it("paints JRA frame 1 white with a dark outline", () => {
+    expect(horseRaceChartPaintForWakuban("1")).toStrictEqual({
+      fill: "#ffffff",
+      outline: "#111111",
+    });
+  });
+
+  it("paints JRA frame 3 red", () => {
+    expect(horseRaceChartPaintForWakuban("3")).toStrictEqual({
+      fill: "#d71920",
+      outline: "#d71920",
+    });
+  });
+
+  it("falls back when wakuban is blank", () => {
+    expect(horseRaceChartPaintForWakuban(" ")).toStrictEqual({
+      fill: "#52525b",
+      outline: "#52525b",
+    });
   });
 });

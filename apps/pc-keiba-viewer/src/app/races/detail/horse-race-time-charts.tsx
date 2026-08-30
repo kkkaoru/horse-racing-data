@@ -15,7 +15,6 @@ import {
   BAN_EI_SCHEDULED_GUIDE_STROKE,
   BAN_EI_WEIGHT_LINK_STROKE,
   buildDrawnBanEiAbilityChart,
-  buildDrawnRaceTimeChart,
   formatBanEiFinishMarkLabel,
   formatRaceTimeChartTooltip,
   raceTimeChartEmptyMessage,
@@ -32,6 +31,7 @@ import {
   trainingChartFrameOrigin,
   trainingChartTooltipPosition,
 } from "../../../lib/training-charts";
+import { HorseRaceClockGallery } from "./horse-race-clock-charts";
 
 interface HorseRaceTimeChartProps {
   currentDistance: string | null | undefined;
@@ -117,14 +117,6 @@ const SCHEDULED_GUIDE_LABEL_DY: number = 12;
 const SCHEDULED_MARK_FILL_OPACITY: number = 0.08;
 const SCHEDULED_MARK_STROKE_WIDTH: number = 1.5;
 const SCHEDULED_MARK_ACTIVE_STROKE_WIDTH: number = 2.1;
-
-const FINISH_LEGEND: RaceTimeChartLegendItem[] = [
-  { label: "1着", radius: null, shape: "swatch", stroke: raceTimeFinishStroke(1) },
-  { label: "2着", radius: null, shape: "swatch", stroke: raceTimeFinishStroke(2) },
-  { label: "3着", radius: null, shape: "swatch", stroke: raceTimeFinishStroke(3) },
-  { label: "4-5着", radius: null, shape: "swatch", stroke: raceTimeFinishStroke(4) },
-  { label: "着外", radius: null, shape: "swatch", stroke: raceTimeFinishStroke(6) },
-];
 
 const BAN_EI_FINISH_LEGEND: RaceTimeChartLegendItem[] = [
   {
@@ -553,18 +545,23 @@ export const HorseRaceTimeChart = ({
   const banEiDrawn = isBanEi
     ? buildDrawnBanEiAbilityChart({ currentDistance, keibajoCode, results, runners, stats })
     : null;
-  const timeDrawn = isBanEi
-    ? null
-    : buildDrawnRaceTimeChart({ currentDistance, keibajoCode, results, stats });
   const frameRef = useRef<HTMLDivElement | null>(null);
-  const [hoverId, setHoverId] = useState<string | null>(null);
   const [hoverUmaban, setHoverUmaban] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<RaceTimeChartTooltipView | null>(null);
-  if (banEiDrawn === null && timeDrawn === null) {
-    return <p className="empty-state">{raceTimeChartEmptyMessage(isBanEi)}</p>;
+  if (!isBanEi) {
+    return (
+      <HorseRaceClockGallery
+        currentDistance={currentDistance}
+        results={results}
+        runners={runners}
+        stats={stats}
+      />
+    );
+  }
+  if (banEiDrawn === null) {
+    return <p className="empty-state">{raceTimeChartEmptyMessage(true)}</p>;
   }
   const hideTooltip = () => {
-    setHoverId(null);
     setHoverUmaban(null);
     setTooltip(null);
   };
@@ -576,8 +573,7 @@ export const HorseRaceTimeChart = ({
       frameLeft: origin.left,
       frameTop: origin.top,
     });
-    setHoverId(isBanEi ? null : point.id);
-    setHoverUmaban(isBanEi ? point.umaban : null);
+    setHoverUmaban(point.umaban);
     setTooltip({
       lines: formatRaceTimeChartTooltip(point),
       x: location.x,
@@ -586,25 +582,23 @@ export const HorseRaceTimeChart = ({
   };
   return (
     <figure aria-label="競走成績タイム散布図" className="training-chart">
-      <p className="training-chart-note">{raceTimeChartNote(isBanEi)}</p>
+      <p className="training-chart-note">{raceTimeChartNote(true)}</p>
       <ul className="training-chart-legend">
-        {(isBanEi ? BAN_EI_FINISH_LEGEND : FINISH_LEGEND).map((item) => (
+        {BAN_EI_FINISH_LEGEND.map((item) => (
           <li key={item.label}>
             <LegendSwatch item={item} />
             {item.label}
           </li>
         ))}
       </ul>
-      {isBanEi ? (
-        <ul className="training-chart-legend">
-          {WEIGHT_ROLE_LEGEND.map((item) => (
-            <li key={item.label}>
-              <LegendSwatch item={item} />
-              {item.label}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <ul className="training-chart-legend">
+        {WEIGHT_ROLE_LEGEND.map((item) => (
+          <li key={item.label}>
+            <LegendSwatch item={item} />
+            {item.label}
+          </li>
+        ))}
+      </ul>
       <ul className="training-chart-legend">
         {REFERENCE_LEGEND.map((item) => (
           <li key={item.label}>
@@ -614,26 +608,14 @@ export const HorseRaceTimeChart = ({
         ))}
       </ul>
       <div className="training-chart-frame" ref={frameRef}>
-        {banEiDrawn === null ? null : (
-          <RaceTimeChartPlotView
-            chart={banEiDrawn}
-            hoverId={null}
-            hoverUmaban={hoverUmaban}
-            keyPrefix="banei-"
-            onLeavePoint={hideTooltip}
-            onMovePoint={moveTooltip}
-          />
-        )}
-        {timeDrawn === null ? null : (
-          <RaceTimeChartPlotView
-            chart={timeDrawn}
-            hoverId={hoverId}
-            hoverUmaban={null}
-            keyPrefix=""
-            onLeavePoint={hideTooltip}
-            onMovePoint={moveTooltip}
-          />
-        )}
+        <RaceTimeChartPlotView
+          chart={banEiDrawn}
+          hoverId={null}
+          hoverUmaban={hoverUmaban}
+          keyPrefix="banei-"
+          onLeavePoint={hideTooltip}
+          onMovePoint={moveTooltip}
+        />
         {tooltip === null ? null : (
           <div
             className="training-chart-tooltip"

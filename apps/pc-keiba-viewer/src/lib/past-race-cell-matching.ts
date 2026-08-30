@@ -64,3 +64,11 @@ export const withDisabledCellDimensions = (
   includeTrackCode: false,
   includeVenue: keepVenue,
 });
+
+export const toConditionAnalysisFallbackCell = (
+  settings: SimilarRaceStatsSettings,
+  keepVenue: boolean,
+): SimilarRaceStatsSettings => ({
+  ...withDisabledCellDimensions(settings, keepVenue),
+  includeDistance: settings.includeDistance,
+});

@@ -1334,6 +1334,10 @@ it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse histo
   expect(queryText).toMatch(
     /btrim\(coalesce\(current_entries\.ketto_toroku_bango, ''\)\) !~ '\^0\+\$'/u,
   );
+  expect(queryText).toMatch(/ra\.kyori = /u);
+  expect(queryText).toMatch(/< 1200 then 'sprint'/u);
+  expect(queryText).toMatch(/< 1600 then 'mile'/u);
+  expect(queryText).not.toMatch(/extended_sprint/u);
 });
 
 it("getTimeScoreRows matches past races with cell classification predicates", async () => {
@@ -1377,6 +1381,52 @@ it("getTimeScoreRows matches past races with cell classification predicates", as
     /else nullif\(split_part\(trim\(ra\.kyoso_joken_meisho\), ' ', 1\), ''\)/u,
   );
   expect(queryText).not.toMatch(/substring\(ra\.kaisai_tsukihi from 1 for 2\)/u);
+});
+
+it("getRaceTimeStats uses NAR canonical distance bands including extended_sprint", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+
+  await getRaceTimeStats(
+    {
+      ...PERCLASS_703_RACE,
+      keibajoCode: "43",
+      kyori: "1500",
+      source: "nar",
+    },
+    {
+      cellMatching: false,
+      classConditionName: null,
+      includeAge: false,
+      includeBloodlineAncestors: false,
+      includeClass: false,
+      includeConditionKey: false,
+      includeDistance: false,
+      includeFrame: false,
+      includeGrade: false,
+      includeMonthWindow: false,
+      includeNarOnly: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: false,
+      includeRunnerCount: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTrackCode: false,
+      includeTurn: false,
+      includeVenue: false,
+      includeWeight: false,
+      runnerCount: null,
+      sourceScope: "nar",
+      years: null,
+    },
+  );
+
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/ra\.kyori = /u);
+  expect(queryText).toMatch(/< 1400 then 'sprint'/u);
+  expect(queryText).toMatch(/<= 1500 then 'extended_sprint'/u);
+  expect(queryText).toMatch(/<= 1800 then 'mile'/u);
+  expect(queryText).not.toMatch(/< 1200 then 'sprint'/u);
 });
 
 it("getRaceTimeStats matches past races with cell track and grade predicates", async () => {
