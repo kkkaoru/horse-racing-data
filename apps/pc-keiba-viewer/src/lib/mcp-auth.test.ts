@@ -60,5 +60,5 @@ it("mcpUnauthorizedResponse challenges with Bearer and resource metadata", async
   );
   expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
   expect(response.headers.get("Access-Control-Expose-Headers")).toBe("WWW-Authenticate");
-  await expect(response.text()).resolves.toBe("Unauthorized");
+  await expect(response.json()).resolves.toStrictEqual({ error: { message: "Unauthorized" } });
 });

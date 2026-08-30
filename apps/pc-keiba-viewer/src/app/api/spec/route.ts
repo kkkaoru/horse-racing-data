@@ -143,6 +143,47 @@ const apiSpec = {
         tags: ["races"],
       },
     },
+    "/api/finish-predictions/daily": {
+      get: {
+        operationId: "getDailyFinishPredictions",
+        parameters: [
+          {
+            description: "開催年。例: 2026",
+            in: "query",
+            name: "year",
+            required: true,
+            schema: { pattern: "^\\d{4}$", type: "string" },
+          },
+          {
+            description: "開催月。例: 05",
+            in: "query",
+            name: "month",
+            required: true,
+            schema: { pattern: "^\\d{2}$", type: "string" },
+          },
+          {
+            description: "開催日。例: 24",
+            in: "query",
+            name: "day",
+            required: true,
+            schema: { pattern: "^\\d{2}$", type: "string" },
+          },
+          {
+            description: "予測対象。WIN5はjra、トリプル馬単はnar。",
+            in: "query",
+            name: "source",
+            required: true,
+            schema: { enum: ["jra", "nar"], type: "string" },
+          },
+        ],
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "指定日の着順予測をcanonical raceId付きで返します。",
+        tags: ["predictions"],
+      },
+    },
     "/api/cache-warm/race-detail-sections": {
       post: {
         operationId: "scheduleRaceDetailSectionCacheWarm",

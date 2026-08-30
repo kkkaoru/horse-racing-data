@@ -121,6 +121,12 @@ it("exposes get_finish_prediction_summary with source required in the MCP schema
           pattern: "^\\d{2}$",
           type: "string",
         },
+        responseCursor: {
+          description:
+            "Continuation cursor from nextResponseCursor. Repeat the same tool call and concatenate dataChunk values.",
+          minimum: 0,
+          type: "integer",
+        },
         source: {
           description: "jra or nar race source.",
           enum: ["jra", "nar"],
@@ -136,6 +142,45 @@ it("exposes get_finish_prediction_summary with source required in the MCP schema
       type: "object",
     },
     name: "get_finish_prediction_summary",
+  });
+});
+
+it("exposes get_daily_finish_predictions for one required JRA or NAR date", () => {
+  expect(
+    MCP_TOOL_DEFINITIONS.find((definition) => definition.name === "get_daily_finish_predictions"),
+  ).toStrictEqual({
+    description:
+      "Fetch all generated finish-position predictions for one JRA or NAR race day. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        day: { description: "Calendar day, two digits.", pattern: "^\\d{2}$", type: "string" },
+        month: {
+          description: "Calendar month, two digits.",
+          pattern: "^\\d{2}$",
+          type: "string",
+        },
+        responseCursor: {
+          description:
+            "Continuation cursor from nextResponseCursor. Repeat the same tool call and concatenate dataChunk values.",
+          minimum: 0,
+          type: "integer",
+        },
+        source: {
+          description: "jra for WIN5 or nar for Triple Uma-tan.",
+          enum: ["jra", "nar"],
+          type: "string",
+        },
+        year: {
+          description: "Calendar year, four digits.",
+          pattern: "^\\d{4}$",
+          type: "string",
+        },
+      },
+      required: ["year", "month", "day", "source"],
+      type: "object",
+    },
+    name: "get_daily_finish_predictions",
   });
 });
 
@@ -539,19 +584,27 @@ it("get_finish_prediction_summary rejects oversized upstream and compact respons
       },
     }),
   );
-  expect(JSON.parse(summary.content[0]?.text ?? "{}")).toStrictEqual({
-    error: {
-      code: "RESPONSE_TOO_LARGE",
-      message: "The compact finish prediction summary exceeds the MCP response size limit.",
-    },
+  const chunk = JSON.parse(summary.content[0]?.text ?? "{}");
+  expect(summary.isError).toBe(false);
+  expect(chunk).toMatchObject({
+    complete: false,
+    encoding: "json-text",
+    nextResponseCursor: 5000,
+    responseCursor: 0,
+    totalCharacters: 70316,
   });
+  expect(chunk.dataChunk).toHaveLength(5000);
 });
 
 it("search_entities validates kind and query", async () => {
   const kind = await callMcpTool("search_entities", { kind: "barn", q: "a" }, jsonFetch({}));
-  expect(kind.content[0]?.text).toBe("kind must be horse, jockey, owner, or trainer");
+  expect(JSON.parse(kind.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "kind must be horse, jockey, owner, or trainer" },
+  });
   const query = await callMcpTool("search_entities", { kind: "horse", q: "  " }, jsonFetch({}));
-  expect(query.content[0]?.text).toBe("q must be a non-empty search string");
+  expect(JSON.parse(query.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "q must be a non-empty search string" },
+  });
 });
 
 it("get_win_rate_heatmap_display uses the same display builder as the table", async () => {
@@ -609,7 +662,9 @@ it("get_win_rate_heatmap_display rejects an invalid viewMode", async () => {
     },
     jsonFetch({}),
   );
-  expect(result.content[0]?.text).toBe("viewMode must be winRate, quinellaRate, showRate, or all");
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "viewMode must be winRate, quinellaRate, showRate, or all" },
+  });
 });
 
 it("get_api_spec, list_top_races, get_json, and get_race_section read allowlisted Worker APIs", async () => {
@@ -643,9 +698,441 @@ it("get_api_spec, list_top_races, get_json, and get_race_section read allowliste
   expect(section.isError).toBe(false);
 });
 
+it("get_race_section returns lossless bounded JSON chunks", async () => {
+  const first = await callMcpTool(
+    "get_race_section",
+    {
+      day: "20",
+      keibajoCode: "05",
+      month: "08",
+      raceNumber: "01",
+      section: "results",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/20/05/01/sections/results?source=jra": {
+        rows: ["🏇".repeat(5_500)],
+      },
+    }),
+  );
+  const firstChunk = JSON.parse(first.content[0]?.text ?? "{}");
+  const second = await callMcpTool(
+    "get_race_section",
+    {
+      day: "20",
+      keibajoCode: "05",
+      month: "08",
+      raceNumber: "01",
+      responseCursor: 5000,
+      section: "results",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/20/05/01/sections/results?source=jra": {
+        rows: ["🏇".repeat(5_500)],
+      },
+    }),
+  );
+  const secondChunk = JSON.parse(second.content[0]?.text ?? "{}");
+  const reconstructed = JSON.parse(`${firstChunk.dataChunk}${secondChunk.dataChunk}`);
+
+  expect(firstChunk).toMatchObject({
+    complete: false,
+    encoding: "json-text",
+    nextResponseCursor: 5000,
+    responseCursor: 0,
+    totalCharacters: 5513,
+  });
+  expect(secondChunk).toMatchObject({
+    complete: true,
+    encoding: "json-text",
+    nextResponseCursor: null,
+    responseCursor: 5000,
+    totalCharacters: 5513,
+  });
+  expect(reconstructed.rows[0]).toHaveLength(11_000);
+  expect(Array.from(reconstructed.rows[0])[0]).toBe("🏇");
+  expect(Array.from(reconstructed.rows[0]).at(-1)).toBe("🏇");
+});
+
+it("get_latest_odds returns only a bounded page of numeric selection values", async () => {
+  const result = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "07",
+      limit: 2,
+      month: "08",
+      oddsType: "3rentan",
+      offset: 1,
+      raceNumber: "06",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/29/07/06/realtime?source=jra": {
+        odds: {
+          fetchedAt: "2026-08-29T05:44:00.000Z",
+          history: ["large history is deliberately ignored"],
+          latest: {
+            "3rentan": [
+              { combination: "1-2-3", odds: 12.3, rank: 1 },
+              {
+                averageOdds: 24.5,
+                combination: "1-3-2",
+                maxOdds: 25,
+                minOdds: 24,
+                rank: 2,
+              },
+              { combination: "2-1-3", odds: 30.1, rank: 3 },
+              { combination: "2-3-1", odds: 40.2, rank: 4 },
+            ],
+          },
+          trendsByType: { "3rentan": ["large trends are deliberately ignored"] },
+        },
+        raceKey: "jra:2026:0829:07:06",
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    fetchedAt: "2026-08-29T05:44:00.000Z",
+    items: [
+      {
+        averageOdds: 24.5,
+        combination: "1-3-2",
+        maxOdds: 25,
+        minOdds: 24,
+        odds: null,
+        rank: 2,
+      },
+      {
+        averageOdds: null,
+        combination: "2-1-3",
+        maxOdds: null,
+        minOdds: null,
+        odds: 30.1,
+        rank: 3,
+      },
+    ],
+    limit: 2,
+    nextOffset: 3,
+    oddsType: "3rentan",
+    offset: 1,
+    raceKey: "jra:2026:0829:07:06",
+    total: 4,
+  });
+});
+
+it("get_latest_odds can return one exact betting combination", async () => {
+  const result = await callMcpTool(
+    "get_latest_odds",
+    {
+      combination: "2-5",
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "umaren",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/29/04/08/realtime?source=jra": {
+        odds: {
+          fetchedAt: "2026-08-29T05:45:00.000Z",
+          latest: {
+            umaren: [
+              { combination: "1-2", odds: 8.8, rank: 1 },
+              { combination: "2-5", odds: 15.6, rank: 4 },
+            ],
+          },
+        },
+        raceKey: "jra:2026:0829:04:08",
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    fetchedAt: "2026-08-29T05:45:00.000Z",
+    items: [
+      {
+        averageOdds: null,
+        combination: "2-5",
+        maxOdds: null,
+        minOdds: null,
+        odds: 15.6,
+        rank: 4,
+      },
+    ],
+    limit: 20,
+    nextOffset: null,
+    oddsType: "umaren",
+    offset: 0,
+    raceKey: "jra:2026:0829:04:08",
+    total: 1,
+  });
+});
+
+it("get_latest_odds validates source, odds type, offset, and limit as JSON errors", async () => {
+  const source = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "tansho",
+      raceNumber: "08",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const oddsType = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "invalid",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const offset = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "tansho",
+      offset: -1,
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const limit = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      limit: 26,
+      month: "08",
+      oddsType: "tansho",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  expect(JSON.parse(source.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "source must be jra or nar" },
+  });
+  expect(JSON.parse(oddsType.content[0]?.text ?? "{}")).toStrictEqual({
+    error: {
+      message:
+        "oddsType must be 3renpuku, 3rentan, fukusho, tansho, umaren, umatan, wakuren, or wide",
+    },
+  });
+  expect(JSON.parse(offset.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "offset must be a non-negative integer" },
+  });
+  expect(JSON.parse(limit.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "limit must be an integer from 1 to 25" },
+  });
+});
+
+it("get_latest_odds returns an empty JSON page when current odds are unavailable", async () => {
+  const result = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "wide",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/29/04/08/realtime?source=jra": {
+        odds: null,
+        raceKey: "jra:2026:0829:04:08",
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    fetchedAt: null,
+    items: [],
+    limit: 20,
+    nextOffset: null,
+    oddsType: "wide",
+    offset: 0,
+    raceKey: "jra:2026:0829:04:08",
+    total: 0,
+  });
+});
+
+it("get_latest_odds ignores malformed selections and reports upstream JSON errors", async () => {
+  const malformed = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "tansho",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/29/04/08/realtime?source=jra": {
+        odds: {
+          fetchedAt: 123,
+          latest: {
+            tansho: [null, { combination: 1 }, { combination: "2", odds: "4.2", rank: "1" }],
+          },
+        },
+        raceKey: 123,
+      },
+    }),
+  );
+  const failed = await callMcpTool(
+    "get_latest_odds",
+    {
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      oddsType: "tansho",
+      raceNumber: "08",
+      source: "jra",
+      year: "2026",
+    },
+    failingFetch,
+  );
+  expect(JSON.parse(malformed.content[0]?.text ?? "{}")).toStrictEqual({
+    fetchedAt: null,
+    items: [
+      {
+        averageOdds: null,
+        combination: "2",
+        maxOdds: null,
+        minOdds: null,
+        odds: null,
+        rank: null,
+      },
+    ],
+    limit: 20,
+    nextOffset: null,
+    oddsType: "tansho",
+    offset: 0,
+    raceKey: null,
+    total: 1,
+  });
+  expect(JSON.parse(failed.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "get_latest_odds failed with status 500" },
+  });
+});
+
+it("rejects invalid and exhausted response cursors", async () => {
+  const invalid = await callMcpTool(
+    "get_api_spec",
+    { responseCursor: -1 },
+    jsonFetch({ "/api/spec": { ok: true } }),
+  );
+  const exhausted = await callMcpTool(
+    "get_api_spec",
+    { responseCursor: 20 },
+    jsonFetch({ "/api/spec": { ok: true } }),
+  );
+  expect(JSON.parse(invalid.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "responseCursor must be a non-negative integer" },
+  });
+  expect(JSON.parse(exhausted.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "responseCursor is outside the serialized JSON response" },
+  });
+});
+
+it("get_daily_finish_predictions fetches the complete selected day", async () => {
+  const result = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "05", source: "jra", year: "2026" },
+    jsonFetch({
+      "/api/finish-predictions/daily?day=24&month=05&source=jra&year=2026": {
+        availableRaceCount: 1,
+        date: "2026-05-24",
+        raceCount: 1,
+        races: [{ raceId: "jra:2026:0524:05:11" }],
+        source: "jra",
+        unavailableRaceIds: [],
+      },
+    }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    availableRaceCount: 1,
+    date: "2026-05-24",
+    raceCount: 1,
+    races: [{ raceId: "jra:2026:0524:05:11" }],
+    source: "jra",
+    unavailableRaceIds: [],
+  });
+});
+
+it("get_daily_finish_predictions validates its date and source", async () => {
+  const year = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "05", source: "jra", year: "26" },
+    jsonFetch({}),
+  );
+  const month = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "5", source: "jra", year: "2026" },
+    jsonFetch({}),
+  );
+  const day = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "2", month: "05", source: "jra", year: "2026" },
+    jsonFetch({}),
+  );
+  const source = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "05", source: "overseas", year: "2026" },
+    jsonFetch({}),
+  );
+  expect(JSON.parse(year.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "year must be a 4-digit calendar year" },
+  });
+  expect(JSON.parse(month.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "month must be a 2-digit calendar month" },
+  });
+  expect(JSON.parse(day.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "day must be a 2-digit calendar day" },
+  });
+  expect(JSON.parse(source.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "source must be jra or nar" },
+  });
+});
+
+it("get_daily_finish_predictions reports its Worker API failure", async () => {
+  const result = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "05", source: "nar", year: "2026" },
+    failingFetch,
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "get_daily_finish_predictions failed with status 500" },
+  });
+});
+
 it("get_race_section validates the race route and section name", async () => {
   const year = await callMcpTool("get_race_section", { year: "20" }, jsonFetch({}));
-  expect(year.content[0]?.text).toBe("year must be a 4-digit calendar year");
+  expect(JSON.parse(year.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "year must be a 4-digit calendar year" },
+  });
   const section = await callMcpTool(
     "get_race_section",
     {
@@ -658,7 +1145,9 @@ it("get_race_section validates the race route and section name", async () => {
     },
     jsonFetch({}),
   );
-  expect(section.content[0]?.text).toBe("section is not a supported race detail section");
+  expect(JSON.parse(section.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "section is not a supported race detail section" },
+  });
 });
 
 it("search_entities fetches the favorites search API", async () => {
@@ -672,9 +1161,13 @@ it("search_entities fetches the favorites search API", async () => {
 
 it("reports Worker API failures for spec, top-races, section, and heatmap", async () => {
   const spec = await callMcpTool("get_api_spec", {}, failingFetch);
-  expect(spec.content[0]?.text).toBe("get_api_spec failed with status 500");
+  expect(JSON.parse(spec.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "get_api_spec failed with status 500" },
+  });
   const top = await callMcpTool("list_top_races", {}, failingFetch);
-  expect(top.content[0]?.text).toBe("list_top_races failed with status 500");
+  expect(JSON.parse(top.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "list_top_races failed with status 500" },
+  });
   const heatmap = await callMcpTool(
     "get_win_rate_heatmap_display",
     {
@@ -686,30 +1179,40 @@ it("reports Worker API failures for spec, top-races, section, and heatmap", asyn
     },
     failingFetch,
   );
-  expect(heatmap.content[0]?.text).toBe("win-rate-heatmap section payload is unavailable");
+  expect(JSON.parse(heatmap.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "win-rate-heatmap section payload is unavailable" },
+  });
 });
 
 it("parseRaceRoute rejects month, day, venue, race number, and source", async () => {
   const month = await callMcpTool("get_race_section", { year: "2026", month: "8" }, jsonFetch({}));
-  expect(month.content[0]?.text).toBe("month must be a 2-digit calendar month");
+  expect(JSON.parse(month.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "month must be a 2-digit calendar month" },
+  });
   const day = await callMcpTool(
     "get_race_section",
     { year: "2026", month: "08", day: "2" },
     jsonFetch({}),
   );
-  expect(day.content[0]?.text).toBe("day must be a 2-digit calendar day");
+  expect(JSON.parse(day.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "day must be a 2-digit calendar day" },
+  });
   const venue = await callMcpTool(
     "get_race_section",
     { year: "2026", month: "08", day: "20", keibajoCode: "x" },
     jsonFetch({}),
   );
-  expect(venue.content[0]?.text).toBe("keibajoCode must be a 2-character venue code");
+  expect(JSON.parse(venue.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "keibajoCode must be a 2-character venue code" },
+  });
   const race = await callMcpTool(
     "get_race_section",
     { year: "2026", month: "08", day: "20", keibajoCode: "05", raceNumber: "1" },
     jsonFetch({}),
   );
-  expect(race.content[0]?.text).toBe("raceNumber must be a 2-digit race number");
+  expect(JSON.parse(race.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "raceNumber must be a 2-digit race number" },
+  });
   const source = await callMcpTool(
     "get_race_section",
     {
@@ -723,19 +1226,27 @@ it("parseRaceRoute rejects month, day, venue, race number, and source", async ()
     },
     jsonFetch({}),
   );
-  expect(source.content[0]?.text).toBe("source must be jra or nar when provided");
+  expect(JSON.parse(source.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "source must be jra or nar when provided" },
+  });
 });
 
 it("callMcpTool rejects unknown tools and non-object arguments", async () => {
   const unknown = await callMcpTool("drop_database", {}, jsonFetch({}));
-  expect(unknown.content[0]?.text).toBe("Unknown tool: drop_database");
+  expect(JSON.parse(unknown.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "Unknown tool: drop_database" },
+  });
   const args = await callMcpTool("get_api_spec", ["bad"], jsonFetch({}));
-  expect(args.content[0]?.text).toBe("Tool arguments must be an object");
+  expect(JSON.parse(args.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "Tool arguments must be an object" },
+  });
 });
 
 it("search requires a non-empty query", async () => {
   const empty = await callMcpTool("search", { query: "  " }, jsonFetch({}));
-  expect(empty.content[0]?.text).toBe("query must be a non-empty search string");
+  expect(JSON.parse(empty.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "query must be a non-empty search string" },
+  });
 });
 
 it("search returns ChatGPT id title url results from all entity kinds", async () => {
@@ -933,7 +1444,9 @@ it("get_paddock_state reads paddock evaluation state", async () => {
 
 it("get_paddock_state validates the race route", async () => {
   const result = await callMcpTool("get_paddock_state", { year: "20" }, jsonFetch({}));
-  expect(result.content[0]?.text).toBe("year must be a 4-digit calendar year");
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "year must be a 4-digit calendar year" },
+  });
 });
 
 it("get_paddock_state reports upstream failure", async () => {
@@ -1056,7 +1569,9 @@ it("update_paddock_state rejects an invalid action", async () => {
     },
     jsonFetch({}),
   );
-  expect(missingType.content[0]?.text).toBe("actionType must be score or official-rank");
+  expect(JSON.parse(missingType.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "actionType must be score or official-rank" },
+  });
   const badScore = await callMcpTool(
     "update_paddock_state",
     {
@@ -1071,9 +1586,11 @@ it("update_paddock_state rejects an invalid action", async () => {
     },
     jsonFetch({}),
   );
-  expect(badScore.content[0]?.text).toBe(
-    "score requires horseName, horseNumber, category, and delta 1 or -1",
-  );
+  expect(JSON.parse(badScore.content[0]?.text ?? "{}")).toStrictEqual({
+    error: {
+      message: "score requires horseName, horseNumber, category, and delta 1 or -1",
+    },
+  });
   const badRank = await callMcpTool(
     "update_paddock_state",
     {
@@ -1089,14 +1606,18 @@ it("update_paddock_state rejects an invalid action", async () => {
     },
     jsonFetch({}),
   );
-  expect(badRank.content[0]?.text).toBe(
-    "official-rank requires horseName, horseNumber, and rank 1-10 or null",
-  );
+  expect(JSON.parse(badRank.content[0]?.text ?? "{}")).toStrictEqual({
+    error: {
+      message: "official-rank requires horseName, horseNumber, and rank 1-10 or null",
+    },
+  });
 });
 
 it("update_paddock_state validates the race route", async () => {
   const result = await callMcpTool("update_paddock_state", { year: "20" }, jsonFetch({}));
-  expect(result.content[0]?.text).toBe("year must be a 4-digit calendar year");
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "year must be a 4-digit calendar year" },
+  });
 });
 
 it("update_paddock_state reports malformed JSON from the paddock API", async () => {
@@ -1210,11 +1731,17 @@ it("get_race_entity_recent_results preserves stable errors and validates argumen
 
 it("fetch rejects blank, malformed, missing, and failed ids", async () => {
   const blank = await callMcpTool("fetch", { id: "  " }, jsonFetch({}));
-  expect(blank.content[0]?.text).toBe("id must be a non-empty string");
+  expect(JSON.parse(blank.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "id must be a non-empty string" },
+  });
   const malformed = await callMcpTool("fetch", { id: "nocolon" }, jsonFetch({}));
-  expect(malformed.content[0]?.text).toBe("id must be kind:id from search, or an /api path");
+  expect(JSON.parse(malformed.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "id must be kind:id from search, or an /api path" },
+  });
   const badKind = await callMcpTool("fetch", { id: "barn:1" }, jsonFetch({}));
-  expect(badKind.content[0]?.text).toBe("id must be kind:id from search, or an /api path");
+  expect(JSON.parse(badKind.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "id must be kind:id from search, or an /api path" },
+  });
   const missing = await callMcpTool(
     "fetch",
     { id: "horse:missing" },
@@ -1222,7 +1749,11 @@ it("fetch rejects blank, malformed, missing, and failed ids", async () => {
       "/api/mypage/favorites/search?kind=horse&q=missing": { results: [] },
     }),
   );
-  expect(missing.content[0]?.text).toBe("fetch id was not found");
+  expect(JSON.parse(missing.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "fetch id was not found" },
+  });
   const failedApi = await callMcpTool("fetch", { id: "/api/spec" }, failingFetch);
-  expect(failedApi.content[0]?.text).toBe("fetch failed with status 500");
+  expect(JSON.parse(failedApi.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "fetch failed with status 500" },
+  });
 });

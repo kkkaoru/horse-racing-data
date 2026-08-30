@@ -2,6 +2,7 @@
 
 const API_SPEC_PATH: string = "/api/spec";
 const API_TOP_RACES_PATH: string = "/api/top-races";
+const DAILY_FINISH_PREDICTIONS_PATH: string = "/api/finish-predictions/daily";
 const FAVORITES_SEARCH_PATH: string = "/api/mypage/favorites/search";
 const FAVORITES_PATH: string = "/api/mypage/favorites";
 
@@ -27,6 +28,9 @@ export const isMcpAllowedApiPath = (pathname: string): boolean => {
     return true;
   }
   if (pathname === API_TOP_RACES_PATH) {
+    return true;
+  }
+  if (pathname === DAILY_FINISH_PREDICTIONS_PATH) {
     return true;
   }
   if (pathname === FAVORITES_SEARCH_PATH) {

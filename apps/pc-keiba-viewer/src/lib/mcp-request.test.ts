@@ -54,6 +54,7 @@ it("rejects /mcp without a bearer token even when Access already passed", async 
     request: new Request("https://viewer.example.test/mcp", { method: "POST", body: "{}" }),
   });
   expect(response?.status).toBe(401);
+  expect(await response?.json()).toStrictEqual({ error: { message: "Unauthorized" } });
 });
 
 it("rejects GET /mcp after bearer auth", async () => {
@@ -65,6 +66,7 @@ it("rejects GET /mcp after bearer auth", async () => {
     }),
   });
   expect(response?.status).toBe(405);
+  expect(await response?.json()).toStrictEqual({ error: { message: "Method Not Allowed" } });
 });
 
 it("rejects PUT /mcp after bearer auth", async () => {
@@ -77,6 +79,7 @@ it("rejects PUT /mcp after bearer auth", async () => {
     }),
   });
   expect(response?.status).toBe(405);
+  expect(await response?.json()).toStrictEqual({ error: { message: "Method Not Allowed" } });
 });
 
 it("handles tools/list over POST /mcp with bearer auth", async () => {

@@ -64,14 +64,14 @@ export const handlePcKeibaMcpRequest = async (
     return mcpUnauthorizedResponse(origin);
   }
   if (input.request.method === METHOD_GET) {
-    return new Response("Method Not Allowed", {
-      headers: { ...corsHeaders(), Allow: METHOD_POST },
+    return new Response(JSON.stringify({ error: { message: "Method Not Allowed" } }), {
+      headers: { ...jsonHeaders(), Allow: METHOD_POST },
       status: METHOD_NOT_ALLOWED,
     });
   }
   if (input.request.method !== METHOD_POST) {
-    return new Response("Method Not Allowed", {
-      headers: { ...corsHeaders(), Allow: METHOD_POST },
+    return new Response(JSON.stringify({ error: { message: "Method Not Allowed" } }), {
+      headers: { ...jsonHeaders(), Allow: METHOD_POST },
       status: METHOD_NOT_ALLOWED,
     });
   }

@@ -7,9 +7,10 @@ import {
   resolveMcpPaddockWritePath,
 } from "./mcp-allowlist";
 
-it("allows the spec, top-races, and favorites APIs", () => {
+it("allows the spec, top-races, daily predictions, and favorites APIs", () => {
   expect(isMcpAllowedApiPath("/api/spec")).toBe(true);
   expect(isMcpAllowedApiPath("/api/top-races")).toBe(true);
+  expect(isMcpAllowedApiPath("/api/finish-predictions/daily")).toBe(true);
   expect(isMcpAllowedApiPath("/api/mypage/favorites")).toBe(true);
   expect(isMcpAllowedApiPath("/api/mypage/favorites/search")).toBe(true);
 });
@@ -39,6 +40,9 @@ it("resolveMcpApiPath rejects relative paths and disallowed APIs", () => {
 it("resolveMcpApiPath keeps allowlisted paths and query strings", () => {
   expect(resolveMcpApiPath("/api/spec")).toBe("/api/spec");
   expect(resolveMcpApiPath("/api/top-races?debug=1")).toBe("/api/top-races?debug=1");
+  expect(
+    resolveMcpApiPath("/api/finish-predictions/daily?year=2026&month=05&day=24&source=jra"),
+  ).toBe("/api/finish-predictions/daily?year=2026&month=05&day=24&source=jra");
   expect(resolveMcpApiPath("/api/races/2026/08/20/45/12/paddock")).toBe(
     "/api/races/2026/08/20/45/12/paddock",
   );

@@ -95,6 +95,40 @@ interface OversizedResponseText {
   status: "too-large";
 }
 
+interface ChunkedJsonEnvelope {
+  complete: boolean;
+  dataChunk: string;
+  encoding: "json-text";
+  nextResponseCursor: number | null;
+  responseCursor: number;
+  totalCharacters: number;
+}
+
+interface LatestOddsRow {
+  averageOdds: number | null;
+  combination: string;
+  maxOdds: number | null;
+  minOdds: number | null;
+  odds: number | null;
+  rank: number | null;
+}
+
+interface LatestOddsPayload {
+  fetchedAt: string | null;
+  items: LatestOddsRow[];
+  limit: number;
+  nextOffset: number | null;
+  oddsType: string;
+  offset: number;
+  raceKey: string | null;
+  total: number;
+}
+
+interface GetLatestOddsInput {
+  args: Record<string, unknown>;
+  fetchSite: McpSiteFetch;
+}
+
 type ReadBoundedResponseResult = BoundedResponseText | OversizedResponseText;
 
 type FinishPredictionRouteParseResult =
@@ -107,10 +141,12 @@ const KEIBAJO_PATTERN: string = "^[0-9A-Z]{2}$";
 const SOURCE_JRA: string = "jra";
 const SOURCE_NAR: string = "nar";
 const MAX_FINISH_PREDICTION_UPSTREAM_BYTES: number = 16 * 1024 * 1024;
-const MAX_FINISH_PREDICTION_SUMMARY_BYTES: number = 64 * 1024;
+const MCP_JSON_CHUNK_CHARACTERS: number = 5_000;
 const FINISH_PREDICTION_TIMEOUT_MS: number = 15_000;
 const RACE_ENTITY_TIMEOUT_MS: number = 50_000;
 const MAX_RACE_NUMBER: number = 18;
+const DEFAULT_LATEST_ODDS_LIMIT: number = 20;
+const MAX_LATEST_ODDS_LIMIT: number = 25;
 const VIEW_MODE_LIST: readonly WinRateHeatmapViewMode[] = [
   "all",
   "quinellaRate",
@@ -121,6 +157,16 @@ const VIEW_MODE_LIST: readonly WinRateHeatmapViewMode[] = [
 const isHeatmapViewMode = (value: string): value is WinRateHeatmapViewMode =>
   VIEW_MODE_LIST.some((mode) => mode === value);
 const SEARCH_KINDS: ReadonlySet<string> = new Set(["horse", "jockey", "owner", "trainer"]);
+const LATEST_ODDS_TYPES: ReadonlySet<string> = new Set([
+  "3renpuku",
+  "3rentan",
+  "fukusho",
+  "tansho",
+  "umaren",
+  "umatan",
+  "wakuren",
+  "wide",
+]);
 const ENTITY_PAGE_PATH: ReadonlyMap<string, string> = new Map([
   ["horse", "/horses/"],
   ["jockey", "/jockeys/"],
@@ -145,9 +191,23 @@ const RACE_SECTIONS: ReadonlySet<string> = new Set([
   "win-rate-heatmap",
 ]);
 
+const RESPONSE_CURSOR_PROPERTY: McpJsonSchemaProperty = {
+  description:
+    "Continuation cursor from nextResponseCursor. Repeat the same tool call and concatenate dataChunk values.",
+  minimum: 0,
+  type: "integer",
+};
+
 const EMPTY_SCHEMA: McpJsonSchemaObject = {
   additionalProperties: false,
   properties: {},
+  required: [],
+  type: "object",
+};
+
+const CHUNKABLE_EMPTY_SCHEMA: McpJsonSchemaObject = {
+  additionalProperties: false,
+  properties: { responseCursor: RESPONSE_CURSOR_PROPERTY },
   required: [],
   type: "object",
 };
@@ -179,14 +239,37 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
     name: "authenticate",
   },
   {
-    description: "Fetch /api/spec from this Worker — the OpenAPI document the site publishes.",
-    inputSchema: EMPTY_SCHEMA,
+    description:
+      "Fetch /api/spec from this Worker. Large JSON uses lossless dataChunk pagination; repeat with nextResponseCursor and concatenate chunks.",
+    inputSchema: CHUNKABLE_EMPTY_SCHEMA,
     name: "get_api_spec",
   },
   {
-    description: "Fetch /api/top-races from this Worker.",
-    inputSchema: EMPTY_SCHEMA,
+    description:
+      "Fetch /api/top-races from this Worker. Large JSON uses lossless dataChunk pagination; repeat with nextResponseCursor and concatenate chunks.",
+    inputSchema: CHUNKABLE_EMPTY_SCHEMA,
     name: "list_top_races",
+  },
+  {
+    description:
+      "Fetch all generated finish-position predictions for one JRA or NAR race day. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        day: STRING_ARG("Calendar day, two digits.", MONTH_DAY_RACE_PATTERN),
+        month: STRING_ARG("Calendar month, two digits.", MONTH_DAY_RACE_PATTERN),
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
+        source: {
+          description: "jra for WIN5 or nar for Triple Uma-tan.",
+          enum: [SOURCE_JRA, SOURCE_NAR],
+          type: "string",
+        },
+        year: STRING_ARG("Calendar year, four digits.", YEAR_PATTERN),
+      },
+      required: ["year", "month", "day", "source"],
+      type: "object",
+    },
+    name: "get_daily_finish_predictions",
   },
   {
     description: "Search horses, jockeys, owners, or trainers via /api/mypage/favorites/search.",
@@ -199,6 +282,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
           type: "string",
         },
         q: { description: "Search string.", minLength: 1, type: "string" },
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
       },
       required: ["kind", "q"],
       type: "object",
@@ -209,7 +293,10 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
     description: "GET an allowlisted /api path on this Worker (same handlers the browser uses).",
     inputSchema: {
       additionalProperties: false,
-      properties: { path: STRING_ARG("Path beginning with /api/.", "^/") },
+      properties: {
+        path: STRING_ARG("Path beginning with /api/.", "^/"),
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
+      },
       required: ["path"],
       type: "object",
     },
@@ -220,7 +307,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       "GET paddock evaluation state for a race (horse scores, official ranks, history). Same JSON the paddock page loads.",
     inputSchema: {
       additionalProperties: false,
-      properties: RACE_ROUTE_PROPERTIES,
+      properties: { ...RACE_ROUTE_PROPERTIES, responseCursor: RESPONSE_CURSOR_PROPERTY },
       required: ["year", "month", "day", "keibajoCode", "raceNumber"],
       type: "object",
     },
@@ -288,6 +375,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       additionalProperties: false,
       properties: {
         ...RACE_ROUTE_PROPERTIES,
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
         section: { description: "Detail section id.", type: "string" },
       },
       required: ["year", "month", "day", "keibajoCode", "raceNumber", "section"],
@@ -297,10 +385,44 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
+      "Fetch only the latest numeric odds for one bet type. Returns at most 25 selections and excludes all odds history/trend data. Use combination for one exact selection or offset/limit to page through every selection.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        ...RACE_ROUTE_PROPERTIES,
+        combination: {
+          description: "Optional exact selection, such as 1, 1-2, or 1-2-3.",
+          minLength: 1,
+          type: "string",
+        },
+        limit: {
+          description: "Selections per page, maximum 25.",
+          maximum: MAX_LATEST_ODDS_LIMIT,
+          minimum: 1,
+          type: "integer",
+        },
+        oddsType: {
+          description: "Bet type whose latest selections should be returned.",
+          enum: ["3renpuku", "3rentan", "fukusho", "tansho", "umaren", "umatan", "wakuren", "wide"],
+          type: "string",
+        },
+        offset: {
+          description: "Zero-based selection offset from the previous nextOffset.",
+          minimum: 0,
+          type: "integer",
+        },
+      },
+      required: ["year", "month", "day", "keibajoCode", "raceNumber", "source", "oddsType"],
+      type: "object",
+    },
+    name: "get_latest_odds",
+  },
+  {
+    description:
       "Fetch a compact finish-position prediction summary for LLM use. Omits inputs.results and other UI-only history, joins current runner names by normalized horse number, and ranks lower predictedFinishNorm first.",
     inputSchema: {
       additionalProperties: false,
-      properties: RACE_ROUTE_PROPERTIES,
+      properties: { ...RACE_ROUTE_PROPERTIES, responseCursor: RESPONSE_CURSOR_PROPERTY },
       required: ["year", "month", "day", "keibajoCode", "raceNumber", "source"],
       type: "object",
     },
@@ -330,6 +452,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
           minimum: 1,
           type: "integer",
         },
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
       },
       required: [
         "year",
@@ -352,6 +475,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       additionalProperties: false,
       properties: {
         ...RACE_ROUTE_PROPERTIES,
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
         showStarts: {
           description:
             "When true, show (n) start counts on heatmap cells. Tooltips always include start counts.",
@@ -373,7 +497,10 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       "ChatGPT search tool. Searches horses, jockeys, owners, and trainers. Returns id/title/url results.",
     inputSchema: {
       additionalProperties: false,
-      properties: { query: { description: "Search string.", minLength: 1, type: "string" } },
+      properties: {
+        query: { description: "Search string.", minLength: 1, type: "string" },
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
+      },
       required: ["query"],
       type: "object",
     },
@@ -386,6 +513,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
       additionalProperties: false,
       properties: {
         id: { description: "Result id from search, or an /api path.", type: "string" },
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
       },
       required: ["id"],
       type: "object",
@@ -402,22 +530,63 @@ const readString = (args: Record<string, unknown>, key: string): string | null =
   return typeof value === "string" ? value : null;
 };
 
+const readResponseCursor = (args: Record<string, unknown>): number | null => {
+  const value = args.responseCursor;
+  if (value === undefined) {
+    return 0;
+  }
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+};
+
 const matches = (value: string, pattern: string): boolean => new RegExp(pattern, "u").test(value);
 
-const errorResult = (message: string): McpToolResult => ({
-  content: [{ text: message, type: "text" }],
-  isError: true,
-});
+const stringifyJson = (value: unknown): string => JSON.stringify(value) ?? "null";
+
+const errorResult = (message: string): McpToolResult => {
+  try {
+    const parsed: unknown = JSON.parse(message);
+    return { content: [{ text: stringifyJson(parsed), type: "text" }], isError: true };
+  } catch {
+    return {
+      content: [{ text: stringifyJson({ error: { message } }), type: "text" }],
+      isError: true,
+    };
+  }
+};
 
 const finishPredictionErrorResult = (error: FinishPredictionSummaryError): McpToolResult => ({
-  content: [{ text: JSON.stringify({ error }), type: "text" }],
+  content: [{ text: stringifyJson({ error }), type: "text" }],
   isError: true,
 });
 
 const okJson = (value: unknown): McpToolResult => ({
-  content: [{ text: JSON.stringify(value), type: "text" }],
+  content: [{ text: stringifyJson(value), type: "text" }],
   isError: false,
 });
+
+const okChunkedJson = (value: unknown, responseCursor: number): McpToolResult => {
+  const text = stringifyJson(value);
+  const characters = Array.from(text);
+  if (responseCursor === 0 && characters.length <= MCP_JSON_CHUNK_CHARACTERS) {
+    return { content: [{ text, type: "text" }], isError: false };
+  }
+  if (responseCursor >= characters.length) {
+    return errorResult("responseCursor is outside the serialized JSON response");
+  }
+  const nextResponseCursor = Math.min(
+    responseCursor + MCP_JSON_CHUNK_CHARACTERS,
+    characters.length,
+  );
+  const envelope: ChunkedJsonEnvelope = {
+    complete: nextResponseCursor === characters.length,
+    dataChunk: characters.slice(responseCursor, nextResponseCursor).join(""),
+    encoding: "json-text",
+    nextResponseCursor: nextResponseCursor === characters.length ? null : nextResponseCursor,
+    responseCursor,
+    totalCharacters: characters.length,
+  };
+  return okJson(envelope);
+};
 
 interface RaceRoute {
   day: string;
@@ -598,6 +767,7 @@ const finishPredictionUpstreamError = (status: number): FinishPredictionSummaryE
 const getFinishPredictionSummary = async (
   args: Record<string, unknown>,
   fetchSite: McpSiteFetch,
+  responseCursor: number,
 ): Promise<McpToolResult> => {
   const parsed = parseFinishPredictionSummaryRoute(args);
   if (parsed.status === "error") {
@@ -636,16 +806,7 @@ const getFinishPredictionSummary = async (
       if (built.status === "error") {
         return finishPredictionErrorResult(built.error);
       }
-      const summaryText = JSON.stringify(built.summary);
-      const summaryBytes = new TextEncoder().encode(summaryText).byteLength;
-      return summaryBytes <= MAX_FINISH_PREDICTION_SUMMARY_BYTES
-        ? { content: [{ text: summaryText, type: "text" }], isError: false }
-        : finishPredictionErrorResult(
-            createFinishPredictionSummaryError(
-              "RESPONSE_TOO_LARGE",
-              "The compact finish prediction summary exceeds the MCP response size limit.",
-            ),
-          );
+      return okChunkedJson(built.summary, responseCursor);
     } catch {
       return finishPredictionErrorResult(
         createFinishPredictionSummaryError(
@@ -669,6 +830,7 @@ const getFinishPredictionSummary = async (
 const getRaceEntityRecentResults = async (
   args: Record<string, unknown>,
   fetchSite: McpSiteFetch,
+  responseCursor: number,
 ): Promise<McpToolResult> => {
   const parsed = parseRaceRoute(args);
   if (typeof parsed === "string") {
@@ -730,8 +892,8 @@ const getRaceEntityRecentResults = async (
     try {
       const value: unknown = JSON.parse(text);
       return response.ok
-        ? okJson(value)
-        : { content: [{ text: JSON.stringify(value), type: "text" }], isError: true };
+        ? okChunkedJson(value, responseCursor)
+        : { content: [{ text: stringifyJson(value), type: "text" }], isError: true };
     } catch {
       return errorResult(
         JSON.stringify({
@@ -849,6 +1011,95 @@ const readLiveWeights = (realtime: unknown): Map<string, number> => {
   return indexLiveHorseWeightKg(horses);
 };
 
+const finiteNumberOrNull = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+const toLatestOddsRow = (value: unknown): LatestOddsRow | null => {
+  if (!isRecord(value) || typeof value.combination !== "string") {
+    return null;
+  }
+  return {
+    averageOdds: finiteNumberOrNull(value.averageOdds),
+    combination: value.combination,
+    maxOdds: finiteNumberOrNull(value.maxOdds),
+    minOdds: finiteNumberOrNull(value.minOdds),
+    odds: finiteNumberOrNull(value.odds),
+    rank: finiteNumberOrNull(value.rank),
+  };
+};
+
+const readLatestOddsRows = (payload: unknown, oddsType: string): LatestOddsRow[] => {
+  if (!isRecord(payload) || !isRecord(payload.odds) || !isRecord(payload.odds.latest)) {
+    return [];
+  }
+  const rows = payload.odds.latest[oddsType];
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  return rows.flatMap((row) => {
+    const parsed = toLatestOddsRow(row);
+    return parsed === null ? [] : [parsed];
+  });
+};
+
+const getLatestOdds = async (input: GetLatestOddsInput): Promise<McpToolResult> => {
+  const parsedRace = parseRaceRoute(input.args);
+  if (typeof parsedRace === "string") {
+    return errorResult(parsedRace);
+  }
+  if (parsedRace.source === null) {
+    return errorResult("source must be jra or nar");
+  }
+  const oddsType = readString(input.args, "oddsType");
+  if (oddsType === null || !LATEST_ODDS_TYPES.has(oddsType)) {
+    return errorResult(
+      "oddsType must be 3renpuku, 3rentan, fukusho, tansho, umaren, umatan, wakuren, or wide",
+    );
+  }
+  const combination = readString(input.args, "combination");
+  const offsetValue = input.args.offset;
+  const limitValue = input.args.limit;
+  if (
+    offsetValue !== undefined &&
+    (typeof offsetValue !== "number" || !Number.isInteger(offsetValue) || offsetValue < 0)
+  ) {
+    return errorResult("offset must be a non-negative integer");
+  }
+  if (
+    limitValue !== undefined &&
+    (typeof limitValue !== "number" ||
+      !Number.isInteger(limitValue) ||
+      limitValue < 1 ||
+      limitValue > MAX_LATEST_ODDS_LIMIT)
+  ) {
+    return errorResult("limit must be an integer from 1 to 25");
+  }
+  const offset = typeof offsetValue === "number" ? offsetValue : 0;
+  const limit = typeof limitValue === "number" ? limitValue : DEFAULT_LATEST_ODDS_LIMIT;
+  const fetched = await fetchSiteJson(input.fetchSite, raceApiPath(parsedRace, "realtime"));
+  if (!fetched.ok) {
+    return errorResult(`get_latest_odds failed with status ${fetched.status}`);
+  }
+  const allRows = readLatestOddsRows(fetched.value, oddsType);
+  const selectedRows =
+    combination === null ? allRows : allRows.filter((row) => row.combination === combination);
+  const items = selectedRows.slice(offset, offset + limit);
+  const fetchedAt =
+    isRecord(fetched.value) && isRecord(fetched.value.odds) ? fetched.value.odds.fetchedAt : null;
+  const raceKey = isRecord(fetched.value) ? fetched.value.raceKey : null;
+  const payload: LatestOddsPayload = {
+    fetchedAt: typeof fetchedAt === "string" ? fetchedAt : null,
+    items,
+    limit,
+    nextOffset: offset + items.length < selectedRows.length ? offset + items.length : null,
+    oddsType,
+    offset,
+    raceKey: typeof raceKey === "string" ? raceKey : null,
+    total: selectedRows.length,
+  };
+  return okJson(payload);
+};
+
 export const callMcpTool = async (
   name: string,
   rawArgs: unknown,
@@ -857,6 +1108,10 @@ export const callMcpTool = async (
   const args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
   if (!isRecord(args)) {
     return errorResult("Tool arguments must be an object");
+  }
+  const responseCursor = readResponseCursor(args);
+  if (responseCursor === null) {
+    return errorResult("responseCursor must be a non-negative integer");
   }
   if (name === "authenticate" || name === "get_api_spec") {
     const fetched = await fetchSiteJson(fetchSite, "/api/spec");
@@ -871,14 +1126,38 @@ export const callMcpTool = async (
     if (!fetched.ok) {
       return errorResult(`get_api_spec failed with status ${fetched.status}`);
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
   }
   if (name === "list_top_races") {
     const fetched = await fetchSiteJson(fetchSite, "/api/top-races");
     if (!fetched.ok) {
       return errorResult(`list_top_races failed with status ${fetched.status}`);
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
+  }
+  if (name === "get_daily_finish_predictions") {
+    const year = readString(args, "year");
+    const month = readString(args, "month");
+    const day = readString(args, "day");
+    const source = readString(args, "source");
+    if (year === null || !matches(year, YEAR_PATTERN)) {
+      return errorResult("year must be a 4-digit calendar year");
+    }
+    if (month === null || !matches(month, MONTH_DAY_RACE_PATTERN)) {
+      return errorResult("month must be a 2-digit calendar month");
+    }
+    if (day === null || !matches(day, MONTH_DAY_RACE_PATTERN)) {
+      return errorResult("day must be a 2-digit calendar day");
+    }
+    if (source !== SOURCE_JRA && source !== SOURCE_NAR) {
+      return errorResult("source must be jra or nar");
+    }
+    const query = new URLSearchParams({ day, month, source, year });
+    const fetched = await fetchSiteJson(fetchSite, `/api/finish-predictions/daily?${query}`);
+    if (!fetched.ok) {
+      return errorResult(`get_daily_finish_predictions failed with status ${fetched.status}`);
+    }
+    return okChunkedJson(fetched.value, responseCursor);
   }
   if (name === "search_entities") {
     const kind = readString(args, "kind");
@@ -894,7 +1173,7 @@ export const callMcpTool = async (
     if (!fetched.ok) {
       return errorResult(`search_entities failed with status ${fetched.status}`);
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
   }
   if (name === "get_json") {
     const path = readString(args, "path");
@@ -904,11 +1183,11 @@ export const callMcpTool = async (
     const fetched = await fetchSiteJson(fetchSite, path);
     if (!fetched.ok) {
       return {
-        content: [{ text: JSON.stringify(fetched.value), type: "text" }],
+        content: [{ text: stringifyJson(fetched.value), type: "text" }],
         isError: true,
       };
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
   }
   if (name === "get_paddock_state") {
     const parsed = parseRaceRoute(args);
@@ -918,11 +1197,11 @@ export const callMcpTool = async (
     const fetched = await fetchSiteJson(fetchSite, raceApiPath(parsed, "paddock"));
     if (!fetched.ok) {
       return {
-        content: [{ text: JSON.stringify(fetched.value), type: "text" }],
+        content: [{ text: stringifyJson(fetched.value), type: "text" }],
         isError: true,
       };
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
   }
   if (name === "update_paddock_state") {
     const parsed = parseRaceRoute(args);
@@ -940,7 +1219,7 @@ export const callMcpTool = async (
     });
     if (!fetched.ok) {
       return {
-        content: [{ text: JSON.stringify(fetched.value), type: "text" }],
+        content: [{ text: stringifyJson(fetched.value), type: "text" }],
         isError: true,
       };
     }
@@ -959,13 +1238,16 @@ export const callMcpTool = async (
     if (!fetched.ok) {
       return errorResult(`get_race_section failed with status ${fetched.status}`);
     }
-    return okJson(fetched.value);
+    return okChunkedJson(fetched.value, responseCursor);
+  }
+  if (name === "get_latest_odds") {
+    return getLatestOdds({ args, fetchSite });
   }
   if (name === "get_finish_prediction_summary") {
-    return getFinishPredictionSummary(args, fetchSite);
+    return getFinishPredictionSummary(args, fetchSite, responseCursor);
   }
   if (name === "get_race_entity_recent_results") {
-    return getRaceEntityRecentResults(args, fetchSite);
+    return getRaceEntityRecentResults(args, fetchSite, responseCursor);
   }
   if (name === "get_win_rate_heatmap_display") {
     const parsed = parseRaceRoute(args);
@@ -1006,13 +1288,13 @@ export const callMcpTool = async (
       viewMode,
       weightClassStats: section.value.weightClassStats,
     });
-    return okJson(display);
+    return okChunkedJson(display, responseCursor);
   }
   if (name === "search") {
-    return searchForChatgpt(args, fetchSite);
+    return searchForChatgpt(args, fetchSite, responseCursor);
   }
   if (name === "fetch") {
-    return fetchForChatgpt(args, fetchSite);
+    return fetchForChatgpt(args, fetchSite, responseCursor);
   }
   return errorResult(`Unknown tool: ${name}`);
 };
@@ -1065,6 +1347,7 @@ const searchKindRows = async (input: SearchKindRowsInput): Promise<FavoriteSearc
 const searchForChatgpt = async (
   args: Record<string, unknown>,
   fetchSite: McpSiteFetch,
+  responseCursor: number,
 ): Promise<McpToolResult> => {
   const query = readString(args, "query");
   if (query === null || query.trim().length === 0) {
@@ -1075,12 +1358,13 @@ const searchForChatgpt = async (
   const ownerRows = await searchKindRows({ fetchSite, kind: "owner", query });
   const trainerRows = await searchKindRows({ fetchSite, kind: "trainer", query });
   const results = [...horseRows, ...jockeyRows, ...ownerRows, ...trainerRows].map(toChatgptHit);
-  return okJson({ results });
+  return okChunkedJson({ results }, responseCursor);
 };
 
 const fetchForChatgpt = async (
   args: Record<string, unknown>,
   fetchSite: McpSiteFetch,
+  responseCursor: number,
 ): Promise<McpToolResult> => {
   const id = readString(args, "id");
   if (id === null || id.trim().length === 0) {
@@ -1091,13 +1375,16 @@ const fetchForChatgpt = async (
     if (!fetched.ok) {
       return errorResult(`fetch failed with status ${fetched.status}`);
     }
-    return okJson({
-      id,
-      metadata: { kind: "api" },
-      text: JSON.stringify(fetched.value),
-      title: id,
-      url: id,
-    });
+    return okChunkedJson(
+      {
+        id,
+        metadata: { kind: "api" },
+        text: JSON.stringify(fetched.value),
+        title: id,
+        url: id,
+      },
+      responseCursor,
+    );
   }
   const separator = id.indexOf(":");
   if (separator < 1) {
@@ -1114,11 +1401,14 @@ const fetchForChatgpt = async (
     return errorResult("fetch id was not found");
   }
   const hit = toChatgptHit(row);
-  return okJson({
-    id: hit.id,
-    metadata: { kind: row.kind, meta: row.meta },
-    text: JSON.stringify(row),
-    title: hit.title,
-    url: hit.url,
-  });
+  return okChunkedJson(
+    {
+      id: hit.id,
+      metadata: { kind: row.kind, meta: row.meta },
+      text: JSON.stringify(row),
+      title: hit.title,
+      url: hit.url,
+    },
+    responseCursor,
+  );
 };

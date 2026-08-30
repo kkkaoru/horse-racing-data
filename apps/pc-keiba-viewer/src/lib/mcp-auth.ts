@@ -2,7 +2,7 @@
 
 const AUTHORIZATION_HEADER_NAME: string = "Authorization";
 const BEARER_PREFIX: string = "Bearer ";
-const UNAUTHORIZED_BODY: string = "Unauthorized";
+const UNAUTHORIZED_BODY: string = JSON.stringify({ error: { message: "Unauthorized" } });
 const UNAUTHORIZED_STATUS: number = 401;
 const WWW_AUTHENTICATE_HEADER_NAME: string = "WWW-Authenticate";
 const WWW_AUTHENTICATE_REALM: string = "pc-keiba-viewer-mcp";
@@ -60,6 +60,7 @@ export const mcpUnauthorizedResponse = (origin: string): Response =>
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Expose-Headers": WWW_AUTHENTICATE_HEADER_NAME,
+      "Content-Type": "application/json; charset=utf-8",
       [WWW_AUTHENTICATE_HEADER_NAME]: buildMcpWwwAuthenticate(origin),
     },
     status: UNAUTHORIZED_STATUS,
