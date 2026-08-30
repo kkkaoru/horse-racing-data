@@ -32,9 +32,9 @@ A "focused per-race full" request (``mode=full`` with both ``keibajoCode`` and
 ``raceBango`` present -- one specific race) is serialized by a single
 per-process slot because the feature pipeline writes category-scoped work dirs.
 Once a request claims the slot, it starts the pipeline in a detached in-process
-thread and immediately returns ``accepted``. The Worker queue consumer polls
-Neon completion on redelivery instead of holding a Cloudflare request open for
-the whole 15+ minute feature chain.
+thread and immediately returns ``accepted``. The Worker queue consumer owns
+completion using Cloudflare KV/R2/DO state instead of holding a Cloudflare
+request open for the whole 15+ minute feature chain.
 
 Three non-success statuses are possible for focused full:
 
@@ -1629,10 +1629,18 @@ for the same reason as :data:`FocusedFullClaimFn`.
 """
 
 FocusedFullCompletionFn = Callable[[PredictParams], bool]
-"""Returns True when the focused per-race full prediction for these params
-already exists (complete) in Neon. Injected (like predict_fn / claim_fn) so
-serve.py stays I/O-free and unit-testable; the real Neon query lives in
-predict_upcoming.py. Must not raise (a raising fn is treated as 'not complete').
+"""Returns True when an embedding caller already knows the focused race is
+complete. Production does not install this callback: Cloudflare Worker state
+owns dedup before dispatch. It remains injectable for the generic HTTP guard
+unit tests. Must not raise (a raising fn is treated as 'not complete').
+"""
+
+FocusedFullTerminalFn = Callable[[PredictParams, Literal["success", "error"], str | None], None]
+"""Best-effort terminal nudge after authoritative in-process state is updated.
+
+Production uses this to wake the Cloudflare completion watcher immediately.
+The callback must never be the authority: a failure is ignored and the delayed
+status poll remains the durable fallback.
 """
 
 FocusedFullCachePopulateFn = Callable[[PredictParams], None]
@@ -1714,6 +1722,7 @@ class FocusedFullRunState:
     deadline_at_ms: int
     finished_at_ms: int | None = None
     error: str | None = None
+    progress_events: tuple[str, ...] = ()
 
 
 class FocusedFullStatusPayload(TypedDict):
@@ -1724,6 +1733,7 @@ class FocusedFullStatusPayload(TypedDict):
     finishedAtMs: int | None
     deadlineAtMs: int | None
     error: str | None
+    progressEvents: list[str]
 
 
 @final
@@ -1742,6 +1752,7 @@ class _FocusedFullStateRegistry:
             started_at_ms=now_ms,
             last_progress_at_ms=now_ms,
             deadline_at_ms=now_ms + round(timeout_seconds * 1000),
+            progress_events=(),
         )
         with self._lock:
             self._states[race_key] = state
@@ -1750,7 +1761,12 @@ class _FocusedFullStateRegistry:
                 self._states.popitem(last=False)
         return state
 
-    def progress(self, race_key: str, now_ms: int) -> FocusedFullRunState | None:
+    def progress(
+        self,
+        race_key: str,
+        now_ms: int,
+        detail: str | None = None,
+    ) -> FocusedFullRunState | None:
         with self._lock:
             current = self._states.get(race_key)
             if current is None or current.status != "running":
@@ -1761,6 +1777,11 @@ class _FocusedFullStateRegistry:
                 started_at_ms=current.started_at_ms,
                 last_progress_at_ms=now_ms,
                 deadline_at_ms=current.deadline_at_ms,
+                progress_events=(
+                    current.progress_events
+                    if detail is None
+                    else (*current.progress_events[-15:], detail[:512])
+                ),
             )
             self._states[race_key] = updated
             self._states.move_to_end(race_key)
@@ -1785,6 +1806,7 @@ class _FocusedFullStateRegistry:
                 deadline_at_ms=current.deadline_at_ms,
                 finished_at_ms=now_ms,
                 error=error,
+                progress_events=current.progress_events,
             )
             self._states[race_key] = updated
             self._states.move_to_end(race_key)
@@ -1804,9 +1826,13 @@ def _wall_time_ms(wall_time_fn: TimeFn = time.time) -> int:
     return round(wall_time_fn() * 1000)
 
 
-def mark_focused_full_progress(race_key: str, wall_time_fn: TimeFn = time.time) -> None:
+def mark_focused_full_progress(
+    race_key: str,
+    detail: str | None = None,
+    wall_time_fn: TimeFn = time.time,
+) -> None:
     """Advance actual pipeline progress without changing its absolute deadline."""
-    _FOCUSED_FULL_STATES.progress(race_key, _wall_time_ms(wall_time_fn))
+    _FOCUSED_FULL_STATES.progress(race_key, _wall_time_ms(wall_time_fn), detail)
 
 
 def get_focused_full_run_state(race_key: str) -> FocusedFullRunState | None:
@@ -1827,6 +1853,7 @@ def build_focused_full_status_response_body(params: PredictParams) -> bytes:
             "finishedAtMs": None,
             "deadlineAtMs": None,
             "error": None,
+            "progressEvents": [],
         }
     else:
         payload = {
@@ -1837,6 +1864,7 @@ def build_focused_full_status_response_body(params: PredictParams) -> bytes:
             "finishedAtMs": state.finished_at_ms,
             "deadlineAtMs": state.deadline_at_ms,
             "error": state.error,
+            "progressEvents": list(state.progress_events),
         }
     return json.dumps(payload, separators=(",", ":")).encode() + b"\n"
 
@@ -1971,10 +1999,10 @@ def _focused_full_is_complete(
 
     ``None`` (no check wired) and any exception both yield False so the pipeline
     still runs -- a completion-check failure must never block a prediction.
-    ``params.force`` also short-circuits to False (Defect H): *completion_fn*
-    (``_focused_full_prediction_complete`` in predict_upcoming.py) only counts
-    rows against the expected horse count, so it cannot distinguish a
-    genuinely finished race from one whose rows are present but garbage (see
+    ``params.force`` also short-circuits to False (Defect H): an injected
+    completion callback may only count rows against the expected horse count,
+    so it cannot distinguish a genuinely finished race from one whose rows are
+    present but garbage (see
     apps/pc-keiba-viewer/docs/probes/jra-serving-audit-jun-jul-2026-07-17.md
     Defect A/H) -- force lets an operator deliberately re-run such a race so
     the per-(model_version, horse) UPSERT overwrites the bad rows in place.
@@ -2027,6 +2055,7 @@ def iter_predict_chunks(
     focused_full_release_fn: FocusedFullReleaseFn | None = None,
     focused_full_completion_fn: FocusedFullCompletionFn | None = None,
     focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
+    focused_full_terminal_fn: FocusedFullTerminalFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -2227,8 +2256,8 @@ def iter_predict_chunks(
         # Focused full uses the single per-process slot because the feature
         # pipeline writes category-scoped work dirs. Once claimed, detach the
         # real pipeline from the HTTP response and return "accepted"; Worker /
-        # Queue callers poll Neon completion on redelivery. This avoids tying a
-        # 15+ minute feature chain to Cloudflare's request lifetime.
+        # Queue callers poll Cloudflare completion state on redelivery. This
+        # avoids tying a 15+ minute feature chain to Cloudflare's request lifetime.
         claim_fn: FocusedFullClaimFn = (
             focused_full_claim_fn if focused_full_claim_fn is not None else _claim_focused_full_slot
         )
@@ -2260,6 +2289,17 @@ def iter_predict_chunks(
                 return
             focused_full_cache_populate_fn(params)
 
+        def _notify_terminal(status: Literal["success", "error"], error: str | None) -> None:
+            if focused_full_terminal_fn is None:
+                return
+            try:
+                focused_full_terminal_fn(params, status, error)
+            except BaseException as callback_error:
+                debug_log(
+                    "[focused-full] terminal callback failed: "
+                    f"{type(callback_error).__name__}: {callback_error}"
+                )
+
         def _call_focused_and_release() -> int:
             try:
                 result = unguarded_first_call()
@@ -2278,6 +2318,7 @@ def iter_predict_chunks(
                     finished_at_ms,
                     None,
                 )
+                _notify_terminal("success", None)
                 return result
             except BaseException as focused_error:
                 safe_error = mask_error_message(f"{type(focused_error).__name__}: {focused_error}")[
@@ -2298,6 +2339,7 @@ def iter_predict_chunks(
                     finished_at_ms,
                     safe_error,
                 )
+                _notify_terminal("error", safe_error)
                 raise
             finally:
                 release_fn(focused_race_key)

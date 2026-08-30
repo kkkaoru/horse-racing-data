@@ -14,6 +14,8 @@ const RACE_CHAIN_DO_NAME_PREFIX = "race-chain-";
 
 interface EnqueueContainerStopForRoleParams {
   acceptableWorkKeys?: string[];
+  allowUnowned?: boolean;
+  delaySeconds?: number;
   env: Env;
   name: string;
   role: PredictionContainerRole;
@@ -107,6 +109,7 @@ export const isContainerControlMessage = (value: unknown): value is ContainerCon
       value.acceptableWorkKeys.every(
         (workKey) => typeof workKey === "string" && workKey.length > 0,
       ))) &&
+  (!("allowUnowned" in value) || typeof value.allowUnowned === "boolean") &&
   (!("workKey" in value) || (typeof value.workKey === "string" && value.workKey.length > 0)) &&
   (!("role" in value) || value.role === "legacy" || value.role === "race-chain") &&
   (!("force" in value) || typeof value.force === "boolean");
@@ -134,7 +137,7 @@ export const enqueueContainerStopForRole = async (
   params: EnqueueContainerStopForRoleParams,
 ): Promise<boolean> => {
   if (params.env.CONTAINER_CONTROL_QUEUE === undefined) return false;
-  await params.env.CONTAINER_CONTROL_QUEUE.send({
+  const message: ContainerControlMessage = {
     name: params.name,
     requestedAt: new Date().toISOString(),
     role: params.role,
@@ -142,8 +145,12 @@ export const enqueueContainerStopForRole = async (
     ...(params.acceptableWorkKeys === undefined
       ? {}
       : { acceptableWorkKeys: params.acceptableWorkKeys }),
+    ...(params.allowUnowned === undefined ? {} : { allowUnowned: params.allowUnowned }),
     ...(params.workKey === undefined ? {} : { workKey: params.workKey }),
-  });
+  };
+  if (params.delaySeconds === undefined) await params.env.CONTAINER_CONTROL_QUEUE.send(message);
+  else
+    await params.env.CONTAINER_CONTROL_QUEUE.send(message, { delaySeconds: params.delaySeconds });
   return true;
 };
 
@@ -159,6 +166,7 @@ export const consumeContainerStop = async (
     return false;
   }
   const claim = await claimContainerSlotStop({
+    allowUnowned: message.allowUnowned,
     doName: message.name,
     env,
     force: message.force,

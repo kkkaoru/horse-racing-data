@@ -2363,6 +2363,14 @@ test("one stop atomically accepts a stale day-base owner and rejects its lease-l
     workKey: stop.workKey,
   });
   await expect(coordinator.checkContainerSlotStop(stop)).resolves.toBe(false);
+  await expect(coordinator.checkContainerSlotStop({ ...stop, allowUnowned: true })).resolves.toBe(
+    true,
+  );
+  await coordinator.clearContainerSlot({
+    acceptableWorkKeys: stop.acceptableWorkKeys,
+    doName: stop.doName,
+    workKey: stop.workKey,
+  });
   vi.useRealTimers();
 });
 

@@ -84,6 +84,9 @@
       "class_name": "FinishPositionPredictContainer",
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
+      "image_vars": {
+        "SOURCE_CACHE_BUSTER": "20260830-named-chukyo-jul1600-ninki2-v5",
+      },
       "instance_type": "standard-4",
       // 12 stays as the platform ceiling, not as the scheduler. Unique DO
       // names in the worst overlap are 3 unsharded category DOs (rescore +
@@ -105,7 +108,8 @@
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
       "image_vars": {
-        "ARTIFACT_ROLLOUT_REV": "e8d925b4",
+        "ARTIFACT_ROLLOUT_REV": "0165dc58",
+        "SOURCE_CACHE_BUSTER": "20260830-named-chukyo-jul1600-ninki2-v5",
       },
       "instance_type": {
         "vcpu": 2,
@@ -318,6 +322,13 @@
     // missing day-base now falls through to the target-race scoped pipeline;
     // it never performs a whole-card build inside a focused pre-race request.
     "DAY_BASE_SPLIT_ENABLED": "jra,nar,ban-ei",
+    // Warm JRA market/odds-derived inputs in the Worker from Cloudflare edge
+    // data, publish an attested per-race R2 foundation, and make race-chain
+    // Containers consume it instead of recomputing the market layer. The hook
+    // fails closed to the existing Container path on any cache/artifact issue.
+    "WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED": "1",
+    "RACE_CHAIN_FUSED_ENABLED": "1",
+    "CONTAINER_REUSE_IDLE_SECONDS": "20",
     // venue-weather Worker base URL, forwarded into the container env so the
     // Python prediction path can fetch venue weather data over HTTP.
     "VENUE_WEATHER_URL": "https://venue-weather.kaoru.workers.dev",
@@ -343,6 +354,7 @@
     // legacy Queue-redelivery polling path remains authoritative until this is
     // explicitly changed to "1" after production observation.
     "FOCUSED_FULL_WATCH_ENABLED": "1",
+    "FOCUSED_FULL_CALLBACK_URL": "https://finish-position-cron.kaoru.workers.dev/api/internal/focused-full-completion-callback",
   },
   "queues": {
     "producers": [
@@ -522,6 +534,10 @@
     {
       "binding": "PC_KEIBA_R2_CATALOG",
       "service": "pc-keiba-r2-catalog",
+    },
+    {
+      "binding": "REALTIME_HOT",
+      "service": "sync-realtime-data-hot",
     },
   ],
 }

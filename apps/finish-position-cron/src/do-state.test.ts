@@ -634,6 +634,7 @@ test("checkContainerSlotStop returns coordinator ownership decision", async () =
 
   await expect(
     checkContainerSlotStop({
+      allowUnowned: true,
       doName: "predict-jra-1",
       env,
       requestedAt: "2026-08-22T00:00:00.000Z",
@@ -643,6 +644,7 @@ test("checkContainerSlotStop returns coordinator ownership decision", async () =
   const request = (fetchMock.mock.calls[0] as [Request])[0];
   expect(request.url).toBe("http://do/check-container-slot-stop");
   await expect(request.json()).resolves.toStrictEqual({
+    allowUnowned: true,
     doName: "predict-jra-1",
     requestedAt: "2026-08-22T00:00:00.000Z",
     workKey: "old-work",

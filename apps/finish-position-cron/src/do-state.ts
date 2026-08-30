@@ -146,6 +146,7 @@ interface ClearContainerSlotParams {
 
 interface CheckContainerSlotStopParams {
   acceptableWorkKeys?: string[];
+  allowUnowned?: boolean;
   doName: string;
   env: Env;
   force?: boolean;
@@ -312,6 +313,7 @@ export const claimContainerSlotStop = async (
     new Request(`${DO_HOST}${CHECK_CONTAINER_SLOT_STOP_PATH}`, {
       body: JSON.stringify({
         acceptableWorkKeys: params.acceptableWorkKeys,
+        allowUnowned: params.allowUnowned,
         doName: params.doName,
         force: params.force,
         requestedAt: params.requestedAt,

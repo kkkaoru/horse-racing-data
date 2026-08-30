@@ -52,13 +52,14 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, cast, final, get_args, override
+from typing import Final, Literal, cast, final, get_args, override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -77,7 +78,10 @@ from predict_lib.cell_router import (
     build_base_model_r2_key,
     card_max_race_bango_for_race_id,
     derive_card_max_race_bango_by_card,
+    entry_has_race_name,
     load_cell_router,
+    overlay_race_name_onto_entry,
+    overlay_race_names_on_races,
 )
 from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
 from predict_lib.debug_log import debug_log, query_debug_enabled
@@ -118,6 +122,7 @@ from predict_lib.jra_joint_alternate_scorer import (
     JraJointAlternateScorer,
 )
 from predict_lib.late_binding import OddsSnapshot
+from predict_lib.lock1_rerank import apply_lock1_rerank_rest
 from predict_lib.model_meta import (
     CATEGORIES,
     JRA_DIRT_HYBRID_ENABLED,
@@ -171,6 +176,7 @@ from predict_lib.serve import (
     CacheValidationError,
     FocusedFullCachePopulateFn,
     FocusedFullCompletionFn,
+    FocusedFullTerminalFn,
     ParquetPayloadFn,
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
@@ -207,6 +213,7 @@ from predict_lib.stage1_routing import (
     STAGE1_ROUTING_PATH,
     Stage1CategoryConfig,
     extract_predicted_scores,
+    is_named_race_cell_score,
     load_stage1_routing,
     race_passes_top1_swap_weather_gate,
     resolve_stage1_gate,
@@ -235,15 +242,25 @@ R2_ACCESS_KEY_ID_ENV: str = "R2_ACCESS_KEY_ID"
 R2_SECRET_ACCESS_KEY_ENV: str = "R2_SECRET_ACCESS_KEY"
 R2_BUCKET_ENV: str = "R2_BUCKET"
 NEON_DATABASE_URL_ENV: str = "NEON_DATABASE_URL"
-FOCUSED_FULL_COMPLETION_CONNECT_TIMEOUT_SECONDS: int = 10
-"""Connect timeout for the focused-full completion check against Neon.
-
-Kept short (vs. the retrying ``connect_postgres_with_retry`` used for the
-prediction UPSERT) because a completion-check failure is swallowed and
-treated as "not complete" -- a slow/unreachable Neon must never delay
-launching a genuine prediction pipeline."""
+"""Write-only destination for prediction UPSERTs and audit records."""
 FRESH_SNAPSHOT_MAX_WORKERS: Final[int] = 4
 """Maximum simultaneous odds/weight HTTP requests during rescore."""
+NEON_WRITE_STATEMENT_PREFIXES: Final[frozenset[str]] = frozenset(
+    {
+        "ALTER",
+        "COMMENT",
+        "CREATE",
+        "DELETE",
+        "DROP",
+        "GRANT",
+        "INSERT",
+        "MERGE",
+        "REVOKE",
+        "TRUNCATE",
+        "UPDATE",
+    }
+)
+"""Statements permitted on the Container's write-only Neon boundary."""
 # Required source URL for the DuckDB feature-build subprocess. Production uses
 # ``r2-catalog://pc-keiba`` and never falls back to Neon or local PostgreSQL.
 # Prediction UPSERT and audit writes continue to use ``NEON_DATABASE_URL``.
@@ -274,6 +291,9 @@ CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
 }
 HTTP_PORT: int = 8080
 """Port the HTTP server listens on in both CLI batch mode (liveness) and server mode."""
+FOCUSED_FULL_CALLBACK_HEADER: Final[str] = "x-focused-full-completion-callback"
+FOCUSED_FULL_CALLBACK_TIMEOUT_SECONDS: Final[float] = 5.0
+FOCUSED_FULL_CALLBACK_USER_AGENT: Final[str] = "horse-racing-prediction-container/1.0"
 # Cloudflare Containers reaps batch instances that receive no HTTP traffic
 # (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
 # is a long-running batch job, so we both (a) listen on a port so the start
@@ -512,13 +532,21 @@ def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
 
 
+def _require_neon_write_statement(sql: str) -> None:
+    first_token = sql.lstrip().partition(" ")[0].partition("\n")[0].upper()
+    if first_token not in NEON_WRITE_STATEMENT_PREFIXES:
+        raise ValueError(
+            f"Neon read/non-write statement prohibited in prediction Container: {first_token}"
+        )
+
+
 def execute(
     connection: ConnectionLike,
     sql: str,
     params: Sequence[object],
     database_url: str,
 ) -> ConnectionLike:
-    """Execute ``sql`` against ``connection``, reconnecting once on transient loss.
+    """Execute write-only ``sql`` against ``connection``, reconnecting once on transient loss.
 
     Returns the (possibly new) connection so callers can rebind after a
     reconnect. On AdminShutdown or "connection is lost/closed" mid-write,
@@ -530,19 +558,14 @@ def execute(
     default_transaction_read_only=on from a prior session (same root cause
     as the 2026-08-10 sync-realtime-data incident fixed in commit 171ed4d2).
     Without this, INSERT/UPSERT silently fails with SQLSTATE 25006 when the
-    pooler hands out a read-only session.
+    pooler hands out a read-only session. Read statements are rejected before
+    a cursor is opened; all prediction inputs must come from Cloudflare.
     """
+    _require_neon_write_statement(sql)
     try:
         cursor = connection.cursor()
         cursor.execute("BEGIN")
         cursor.execute("SET TRANSACTION READ WRITE")
-        cursor.execute("SHOW transaction_read_only")
-        row = cursor.fetchone()
-        if row and row[0] != "off":
-            raise RuntimeError(
-                f"Neon transaction_read_only is {row[0]}; refusing DML. "
-                "Pooler session inherited read-only — see commit 171ed4d2."
-            ) from None
         cursor.execute(sql, params)
         connection.commit()
         return connection
@@ -564,12 +587,6 @@ def execute(
         cursor = fresh.cursor()
         cursor.execute("BEGIN")
         cursor.execute("SET TRANSACTION READ WRITE")
-        cursor.execute("SHOW transaction_read_only")
-        row = cursor.fetchone()
-        if row and row[0] != "off":
-            raise RuntimeError(
-                f"Neon transaction_read_only is {row[0]} after reconnect; refusing DML."
-            ) from None
         cursor.execute(sql, params)
         fresh.commit()
         return fresh
@@ -699,6 +716,7 @@ class VariantModel:
     maximum_candidate_v2_rank: int | None = None
     consensus_members: tuple[VariantModel, ...] = ()
     consensus_required_votes: int | None = None
+    lock1_rerank_model: VariantModel | None = None
 
 
 @dataclass(frozen=True)
@@ -956,6 +974,7 @@ def _load_model_bundle(
             if routing_mode not in {
                 "direct",
                 "jra_variant_top1_swap",
+                "jra_lock1_rerank_rest",
                 "nar_transformer_top1_swap",
                 "nar_transformer_top2_swap",
                 "nar_transformer_top2_consensus_swap",
@@ -975,6 +994,20 @@ def _load_model_bundle(
                     )
                     continue
                 top1_swap_base = variant_pool[base_variant]
+            lock1_rerank_model: VariantModel | None = None
+            if routing_mode == "jra_lock1_rerank_rest":
+                rerank_variant = getattr(variant_spec, "rerank_variant", None)
+                if (
+                    category != "jra"
+                    or rerank_variant is None
+                    or rerank_variant not in variant_pool
+                ):
+                    debug_log(
+                        f"[cell-routing] variant={variant_name} category={category} "
+                        f"missing lock1 rerank_variant={rerank_variant} -> not loaded"
+                    )
+                    continue
+                lock1_rerank_model = variant_pool[rerank_variant]
             consensus_members: tuple[VariantModel, ...] = ()
             if routing_mode == "nar_transformer_top2_consensus_swap":
                 consensus_names = getattr(variant_spec, "consensus_variants", ())
@@ -997,6 +1030,7 @@ def _load_model_bundle(
                 maximum_candidate_v2_rank=getattr(variant_spec, "maximum_candidate_v2_rank", None),
                 consensus_members=consensus_members,
                 consensus_required_votes=getattr(variant_spec, "consensus_required_votes", None),
+                lock1_rerank_model=lock1_rerank_model,
             )
             debug_log(
                 f"[cell-routing] loaded variant={variant_name} category={category} "
@@ -1064,6 +1098,7 @@ def score_races(
     models_dir: Path,
     feature_names: Sequence[str] | None = None,
     card_max_race_bango: int | None = None,
+    race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
 
@@ -1081,7 +1116,11 @@ def score_races(
     odds-serving incident (freshness gate fails) or a collapsed within-race
     score spread (stddev safety net trips) re-scores that one race with the
     Stage-1 market-free fallback booster instead, overriding the Stage-2 rows.
-    A category absent from ``stage1_routing.json`` (or a fallback artifact
+    A successful dedicated named-race cell (catalog variant such as
+    ``niigata_bsn`` / ``sapporo_suzuran``, or ``jra-named-*`` model_version)
+    is exempt: Stage-1 must not clobber it. Uncatalogued open-class races
+    that stay on pooled ``joken_999`` remain eligible for the gate. A
+    category absent from ``stage1_routing.json`` (or a fallback artifact
     that fails to load) is a pure no-op -- unchanged Stage-2-only behaviour.
 
     ``card_max_race_bango`` feeds the ``is_final_race`` cell-routing dimension
@@ -1098,6 +1137,12 @@ def score_races(
       lone race in ``races`` cannot self-derive its card's size (it would
       trivially compute itself as the only, hence "final", race). This
       explicit value always wins over batch derivation when supplied.
+
+    ``race_names_by_race_id`` overlays ``kyosomei_*`` onto entries that lack
+    them. New feature parquets emit sidecar race-name columns; older caches
+    do not. Overlay fills blanks immediately before
+    ``cell_router.resolve_variant``. Named cells such as ``niigata_bsn`` /
+    ``sapporo_suzuran`` cannot be resolved from venue+class alone.
     """
     bundle = _get_model_bundle(models_dir, category, feature_names)
     fallback_booster = bundle.fallback_booster
@@ -1118,8 +1163,13 @@ def score_races(
         if variant_pool and card_max_race_bango is None
         else {}
     )
+    named_race_variants: frozenset[str] = frozenset()
+    if variant_pool and cell_router.has_routing(category):
+        named_race_index = getattr(cell_router.routing_for(category), "named_race_index", {})
+        named_race_variants = frozenset(cell.variant for cell in named_race_index.values())
     scored: list[list[list[object]]] = []
-    for race_id, entries in races.items():
+    routable_races = overlay_race_names_on_races(races, race_names_by_race_id)
+    for race_id, entries in routable_races.items():
         effective_booster = fallback_booster
         effective_feature_names = resolved_feature_names
         effective_architecture = architecture_for(category)
@@ -1150,6 +1200,13 @@ def score_races(
         if cell_variant_model is not None:
             if category == "jra" and cell_variant_model.routing_mode == "jra_variant_top1_swap":
                 rows = _score_one_race_variant_top1_swap(
+                    cell_variant_model,
+                    race_id,
+                    category,
+                    entries,
+                )
+            elif category == "jra" and cell_variant_model.routing_mode == "jra_lock1_rerank_rest":
+                rows = _score_one_race_lock1_rerank_rest(
                     cell_variant_model,
                     race_id,
                     category,
@@ -1240,11 +1297,22 @@ def score_races(
                 model_version_for(category),
             )
         if stage1_model is not None and stage1_config is not None and rows:
+            scored_named_cell = cell_variant_model is not None and is_named_race_cell_score(
+                model_version=cell_variant_model.model_version,
+                resolved_variant=resolved_variant,
+                named_race_variants=named_race_variants,
+            )
             gate = resolve_stage1_gate(
                 config=stage1_config,
                 entries=entries,
                 stage2_scores=extract_predicted_scores(rows),
+                skip_named_race_cell=scored_named_cell,
             )
+            if gate.reason == "named-race-cell" and cell_variant_model is not None:
+                debug_log(
+                    f"[stage1-gate] race={race_id} category={category} "
+                    f"reason={gate.reason} keep={cell_variant_model.model_version}"
+                )
             if gate.use_stage1:
                 debug_log(
                     f"[stage1-gate] race={race_id} category={category} "
@@ -1409,6 +1477,46 @@ def _score_one_race_direct(
         category,
         ranked,
         model_version,
+        _representative_entry(entries),
+        entries=entries,
+    )
+
+
+def _score_one_race_lock1_rerank_rest(
+    primary: VariantModel,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+) -> list[list[object]]:
+    """Lock the primary winner, then re-rank remaining horses by the rest model."""
+    rest = primary.lock1_rerank_model
+    if rest is None:
+        raise ValueError("Cell variant lock1 rerank requires a rest model")
+    if is_degenerate_feature_matrix(entries, primary.feature_names) or is_degenerate_feature_matrix(
+        entries, rest.feature_names
+    ):
+        debug_log(
+            f"[feature-guard] race_id={race_id} category={category} "
+            f"model_version={primary.model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)"
+        )
+        return []
+    lock_scores = score_matrix(
+        primary.booster,
+        build_feature_matrix(entries, primary.feature_names, primary.architecture),
+    )
+    rest_scores = score_matrix(
+        rest.booster,
+        build_feature_matrix(entries, rest.feature_names, rest.architecture),
+    )
+    horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    adjusted_scores = apply_lock1_rerank_rest(horse_ids, lock_scores, rest_scores)
+    ranked = rank_race_entries(entries, adjusted_scores)
+    return build_prediction_rows(
+        race_id,
+        category,
+        ranked,
+        primary.model_version,
         _representative_entry(entries),
         entries=entries,
     )
@@ -1995,6 +2103,44 @@ def _assert_before_race_start(race_start_at_jst: str) -> None:
         )
 
 
+def _race_ids_missing_race_name(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+) -> list[str]:
+    """Return race ids whose first entry has no usable kyosomei field."""
+    missing: list[str] = []
+    for race_id, entries in races.items():
+        if not entries:
+            continue
+        if not entry_has_race_name(entries[0]):
+            missing.append(race_id)
+    return missing
+
+
+def _load_race_names_by_race_id(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+    source_url: str | None,
+) -> dict[str, dict[str, object]]:
+    """Load official race names from the feature catalog for parquet rows that lack them."""
+    missing = _race_ids_missing_race_name(races)
+    if not missing:
+        return {}
+    if source_url is None or source_url.strip() == "" or not is_catalog_source_url(source_url):
+        debug_log(
+            f"[cell-routing] race-name overlay skipped; source_url missing races={len(missing)}"
+        )
+        return {}
+    from pipeline_runner import query_race_names
+
+    names = query_race_names(source_url, missing)
+    unresolved = [race_id for race_id in missing if race_id not in names]
+    if unresolved:
+        raise RuntimeError(
+            "race-name overlay failed; named-cell routing cannot fail closed to sim "
+            f"count={len(unresolved)} sample={unresolved[0]}"
+        )
+    return names
+
+
 def _score_and_flush_races(
     database_url: str,
     category: Category,
@@ -2002,6 +2148,7 @@ def _score_and_flush_races(
     races: Mapping[str, Sequence[Mapping[str, object]]],
     card_max_race_bango: int | None = None,
     race_start_at_jst: str | None = None,
+    source_url: str | None = None,
 ) -> int:
     """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
 
@@ -2013,12 +2160,14 @@ def _score_and_flush_races(
     """
     if race_start_at_jst is not None:
         _assert_before_race_start(race_start_at_jst)
+    race_names_by_race_id = _load_race_names_by_race_id(races, source_url)
     scored = score_races(
         races,
         category,
         models_dir,
         None,
         card_max_race_bango=card_max_race_bango,
+        race_names_by_race_id=race_names_by_race_id,
     )
     if race_start_at_jst is not None:
         _assert_before_race_start(race_start_at_jst)
@@ -2076,7 +2225,12 @@ def predict_category(
                 f"target_date={window.target_date} target_race={target_race}"
             )
     written = _score_and_flush_races(
-        database_url, category, models_dir, races, card_max_race_bango=card_max_race_bango
+        database_url,
+        category,
+        models_dir,
+        races,
+        card_max_race_bango=card_max_race_bango,
+        source_url=window.database_url,
     )
     if target_race is not None and written == 0:
         raise RuntimeError(
@@ -2553,8 +2707,8 @@ def _make_predict_fn(
         if target_race is not None:
             race_key = f"{category_str}:{run_date}:{target_race}"
 
-            def _mark_progress(_: str) -> None:
-                mark_focused_full_progress(race_key)
+            def _mark_progress(detail: str) -> None:
+                mark_focused_full_progress(race_key, detail)
 
             progress_fn = _mark_progress
 
@@ -3407,6 +3561,7 @@ def _make_rescore_fn(
             refreshed,
             card_max_race_bango=card_max_race_bango,
             race_start_at_jst=race_start_at_jst,
+            source_url=source_url,
         )
 
     def _per_race_payloads() -> list[dict[str, str]] | None:
@@ -3463,26 +3618,24 @@ def _scope_from_params(params: PredictParams) -> RaceScope:
     return RaceScope(keibajo_code=params.keibajo_code, race_bango=params.race_bango)
 
 
-def _expected_model_version_for_entries(
+def expected_model_version_for_entries(
     category: Category,
     entries: Sequence[Mapping[str, object]],
     card_max_race_bango: int | None = None,
+    race_name: Mapping[str, object] | None = None,
 ) -> str:
-    """Return the model_version current production routing should write.
+    """Resolve routing metadata without consulting Neon.
 
-    A focused full run must not be skipped just because an older per-class/base
-    model already scored the same race. Completion is tied to the same
-    per-cell-first routing contract used by ``score_races``. ``card_max_race_bango``
-    mirrors ``score_races``' single-race-scoped caller shape: this function is
-    always called for exactly one race (see ``_focused_full_prediction_complete``,
-    the only caller), so an explicit value -- never self-derivation, which
-    would be wrong for a lone race -- is the only correct source here.
+    The helper remains useful for routing-contract tests and Cloudflare-side
+    completion metadata. Production Container completion is not wired and does
+    not query Neon.
     """
     cell_router = load_cell_router()
+    routable_entries = [overlay_race_name_onto_entry(entry, race_name) for entry in entries]
     if cell_router.has_routing(category):
         routing = cell_router.routing_for(category)
         variant = cell_router.resolve_variant(
-            category, entries, card_max_race_bango=card_max_race_bango
+            category, routable_entries, card_max_race_bango=card_max_race_bango
         )
         spec = routing.variants.get(variant)
         if variant != routing.default_variant and spec is not None:
@@ -3492,147 +3645,42 @@ def _expected_model_version_for_entries(
     return model_version_for(category)
 
 
-def _focused_full_prediction_complete(database_url: str, params: PredictParams) -> bool:
-    """Return True when race *params* already has complete predictions in Neon.
-
-    Complete only when the model_version selected by current per-cell-first
-    routing has scored as many distinct horses (ketto_toroku_bango) as
-    race_entry_corner_features lists for the race. Best-effort: any error or
-    zero expected rows returns False so a genuine prediction still launches.
-    """
-    keibajo_code = params.keibajo_code
-    race_bango = params.race_bango
-    if keibajo_code is None or race_bango is None:
-        return False
-    source = "jra" if params.category == "jra" else "nar"
-    kaisai_nen = params.run_date[:4]
-    kaisai_tsukihi = params.run_date[4:8]
+def post_focused_full_completion_callback(
+    callback_url: str,
+    params: PredictParams,
+    status: Literal["success", "error"],
+    error: str | None,
+) -> None:
+    """Nudge the signed Worker callback without exposing its bearer URL in logs."""
+    body = json.dumps(
+        {
+            "raceKey": build_focused_full_race_key(params),
+            "status": status,
+            "error": error,
+        },
+        separators=(",", ":"),
+    ).encode()
+    request = urllib.request.Request(
+        callback_url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": FOCUSED_FULL_CALLBACK_USER_AGENT,
+        },
+        method="POST",
+    )
     try:
-        import psycopg
-
-        conn = psycopg.connect(
-            database_url, connect_timeout=FOCUSED_FULL_COMPLETION_CONNECT_TIMEOUT_SECONDS
+        with urllib.request.urlopen(
+            request,
+            timeout=FOCUSED_FULL_CALLBACK_TIMEOUT_SECONDS,
+        ) as response:
+            response.read()
+    except (OSError, ValueError):
+        print(
+            "[focused-full] completion callback unavailable; durable poll remains active",
+            file=sys.stderr,
+            flush=True,
         )
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                select distinct
-                  ketto_toroku_bango,
-                  grade_code,
-                  track_code,
-                  kyori,
-                  kyoso_joken_code,
-                  kaisai_tsukihi,
-                  keibajo_code,
-                  shusso_tosu
-                from race_entry_corner_features
-                where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
-                  and keibajo_code = %s and race_bango = %s
-                """,
-                (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango),
-            )
-            expected_rows = cursor.fetchall()
-            expected_horses = {str(row[0]).strip() for row in expected_rows if row[0] is not None}
-            category = cast(Category, params.category)
-            if not expected_horses:
-                expected_model_version = _expected_model_version_for_entries(
-                    category, [], card_max_race_bango=params.card_max_race_bango
-                )
-                cursor.execute(
-                    """
-                    select count(distinct ketto_toroku_bango)::int as actual_rows,
-                           min(predicted_rank)::int as min_rank,
-                           max(predicted_rank)::int as max_rank
-                    from race_finish_position_model_predictions
-                    where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
-                      and keibajo_code = %s and race_bango = %s
-                      and model_version = %s
-                    """,
-                    (
-                        source,
-                        kaisai_nen,
-                        kaisai_tsukihi,
-                        keibajo_code,
-                        race_bango,
-                        expected_model_version,
-                    ),
-                )
-                existing_row = cursor.fetchone()
-                if existing_row is None:
-                    return False
-                actual_rows = int(existing_row[0]) if existing_row[0] is not None else 0
-                min_rank = int(existing_row[1]) if existing_row[1] is not None else 0
-                max_rank = int(existing_row[2]) if existing_row[2] is not None else 0
-                return actual_rows > 0 and min_rank == 1 and max_rank == actual_rows
-            # race_id is synthesized (this table carries no such column) so the
-            # is_final_race cell-routing dimension can resolve here exactly as
-            # it would in score_races -- see resolve_dimension's race_id-based
-            # race_bango decode.
-            race_id = f"{source}:{kaisai_nen}:{kaisai_tsukihi}:{keibajo_code}:{race_bango}"
-            entries = [
-                {
-                    "ketto_toroku_bango": row[0],
-                    "grade_code": row[1],
-                    "track_code": row[2],
-                    "kyori": row[3],
-                    "kyoso_joken_code": row[4],
-                    "kaisai_tsukihi": row[5],
-                    "keibajo_code": row[6],
-                    "shusso_tosu": row[7],
-                    "race_id": race_id,
-                }
-                for row in expected_rows
-            ]
-            expected_model_version = _expected_model_version_for_entries(
-                category, entries, card_max_race_bango=params.card_max_race_bango
-            )
-            cursor.execute(
-                """
-                with expected as (
-                  select distinct ketto_toroku_bango
-                  from race_entry_corner_features
-                  where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
-                    and keibajo_code = %s and race_bango = %s
-                )
-                select count(distinct p.ketto_toroku_bango)::int as actual_rows
-                from race_finish_position_model_predictions p
-                join expected e on e.ketto_toroku_bango = p.ketto_toroku_bango
-                where p.source = %s and p.kaisai_nen = %s and p.kaisai_tsukihi = %s
-                  and p.keibajo_code = %s and p.race_bango = %s
-                  and p.model_version = %s
-                """,
-                (
-                    source,
-                    kaisai_nen,
-                    kaisai_tsukihi,
-                    keibajo_code,
-                    race_bango,
-                    source,
-                    kaisai_nen,
-                    kaisai_tsukihi,
-                    keibajo_code,
-                    race_bango,
-                    expected_model_version,
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return False
-            actual_rows = int(row[0]) if row[0] is not None else 0
-            return actual_rows >= len(expected_horses)
-        finally:
-            conn.close()
-    except Exception as exc:
-        debug_log(f"[predict-serve] completion check failed: {exc}")
-        return False
-
-
-def _make_focused_full_completion_fn(database_url: str) -> FocusedFullCompletionFn:
-    def _fn(params: PredictParams) -> bool:
-        return _focused_full_prediction_complete(database_url, params)
-
-    return _fn
 
 
 class _PredictHandler(http.server.BaseHTTPRequestHandler):
@@ -3706,6 +3754,18 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 if result.mode == "rescore" and rescore_per_race_fn is not None
                 else self.per_race_parquet_payload_fn
             )
+            callback_url = self.headers.get(FOCUSED_FULL_CALLBACK_HEADER)
+            terminal_fn: FocusedFullTerminalFn | None = None
+            if callback_url is not None:
+
+                def _notify_terminal(
+                    params: PredictParams,
+                    status: Literal["success", "error"],
+                    error: str | None,
+                ) -> None:
+                    post_focused_full_completion_callback(callback_url, params, status, error)
+
+                terminal_fn = _notify_terminal
             for chunk in iter_predict_chunks(
                 result,
                 self.predict_fn,
@@ -3714,6 +3774,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 per_race_parquet_payload_fn=effective_per_race_fn,
                 focused_full_completion_fn=self.focused_full_completion_fn,
                 focused_full_cache_populate_fn=self.focused_full_cache_populate_fn,
+                focused_full_terminal_fn=terminal_fn,
             ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()
@@ -4047,7 +4108,13 @@ def main() -> int:
             database_url, models_dir, source_url, r2, focused_full_cache_store
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
-        focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
+        # Production Container access to Neon is write-only. Completion/dedup
+        # belongs to the Cloudflare Worker, which has Catalog, R2, KV, and DO
+        # state available before dispatch. Never install the legacy completion
+        # callback here: it SELECTed source and prediction rows from Neon for
+        # every focused-full start, adding compute wakeups and several seconds
+        # to the critical path.
+        focused_full_completion_fn: FocusedFullCompletionFn | None = None
         prewarm_commit_fn = _make_prewarm_commit_fn(focused_full_cache_store)
         prewarm_fn = _make_prewarm_fn(source_url, r2, prewarm_commit_fn)
         print(
@@ -4081,14 +4148,9 @@ def main() -> int:
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
-        # Validate the Neon URL at startup (fail fast on bad credentials /
-        # unreachable host) but immediately close the probe connection. The
-        # write connection is opened lazily inside _predict_category, after the
-        # feature build, so Neon autosuspend during the long feature-build phase
-        # cannot kill the write connection before the first UPSERT.
-        print("[predict-startup] connecting to Neon", file=sys.stderr, flush=True)
-        probe = _connect(database_url)
-        probe.close()
+        # Do not wake Neon merely to probe credentials. The first connection is
+        # opened lazily at the output boundary and is used only for DDL/UPSERT
+        # writes after Cloudflare-hosted feature generation has completed.
     except BaseException as bootstrap_error:
         # Pre-connect failure (missing env var, bad URL, Neon down, etc). Nothing
         # to audit-write into yet — emit the full traceback so a future silent

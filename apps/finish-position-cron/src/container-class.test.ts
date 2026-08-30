@@ -101,6 +101,8 @@ const makeContainerHarness = (
     env: {
       value: {
         FEATURES_CACHE: { put: featureCachePutMock },
+        FOCUSED_FULL_CALLBACK_URL:
+          "https://finish-position-cron.example.workers.dev/api/internal/focused-full-completion-callback",
         FOCUSED_FULL_COMPLETION_QUEUE: queuePresent ? { send: queueSendMock } : undefined,
         FOCUSED_FULL_WATCH_ENABLED: watchEnabled,
         NEON_DATABASE_URL: "postgres://output/db",
@@ -247,7 +249,9 @@ test("buildRaceChainPredictContainerEnvVars fixes the role after inherited varia
       NEON_DATABASE_URL: "postgres://race-output/db",
       PIPELINE_TOTAL_TIMEOUT_SECONDS: "1800",
       PREDICT_DAYS_AHEAD: "0",
+      RACE_CHAIN_FUSED_ENABLED: "1",
       SOURCE_DATABASE_URL: "r2-catalog://pc-keiba",
+      WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
     },
     inheritedEnvVars: {
       PREDICT_CONTAINER_ROLE: "legacy",
@@ -257,6 +261,8 @@ test("buildRaceChainPredictContainerEnvVars fixes the role after inherited varia
   expect(envVars.PREDICT_CONTAINER_ROLE).toBe("race-chain");
   expect(envVars.DAY_BASE_SPLIT_ENABLED).toBe("jra,nar,ban-ei");
   expect(envVars.SOURCE_DATABASE_URL).toBe("r2-catalog://pc-keiba");
+  expect(envVars.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED).toBe("1");
+  expect(envVars.RACE_CHAIN_FUSED_ENABLED).toBe("1");
 });
 
 test("buildRaceChainPredictContainerEnvVars keeps production defaults fail closed", () => {
@@ -277,6 +283,8 @@ test("buildRaceChainPredictContainerEnvVars keeps production defaults fail close
   expect(envVars.PIPELINE_TOTAL_TIMEOUT_SECONDS).toBe("1800");
   expect(envVars.PYTHONUNBUFFERED).toBe("1");
   expect(envVars.SOURCE_DATABASE_URL).toBe("");
+  expect(envVars.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED).toBe("");
+  expect(envVars.RACE_CHAIN_FUSED_ENABLED).toBe("");
 });
 
 test("keeps the legacy accepted response unchanged while the watch gate is off", async () => {
@@ -419,6 +427,11 @@ test("enqueues the first durable watch tick and returns its ID for a gated accep
     { delaySeconds: 30 },
   );
   expect(harness.scheduleMock).not.toHaveBeenCalled();
+  const forwardedRequest = harness.containerFetchMock.mock.calls[0]?.[0];
+  expect(forwardedRequest).toBeInstanceOf(Request);
+  expect(forwardedRequest?.headers.get("x-focused-full-completion-callback")).toMatch(
+    /^https:\/\/finish-position-cron\.example\.workers\.dev\/api\/internal\/focused-full-completion-callback\?payload=/u,
+  );
 });
 
 test("reuses the source generation watch ID when an accepted response is delivered twice", async () => {

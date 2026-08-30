@@ -24,6 +24,10 @@ const ODDS_SCORE_DIFF_FIELD: string = "odds_score_diff_from_race_avg";
 const POPULARITY_SCORE_DIFF_FIELD: string = "popularity_score_diff_from_race_avg";
 const DISAGREEMENT_FIELD: string = "popularity_odds_disagreement";
 const FORM_MARKET_EDGE_FIELD: string = "form_market_edge";
+const FIELD_DOMINANCE_FIELD: string = "field_dominant_favorite_indicator";
+const HORSE_POPULARITY_FIELD: string = "horse_popularity_vs_field";
+const RUNNER_COUNT_FIELD: string = "shusso_tosu";
+const NEAR_MISS_RUNNER_COUNT_FIELD: string = "shusso_tosu_1";
 const MIN_HORSE_NUMBER: number = 1;
 const MAX_HORSE_NUMBER: number = 32;
 
@@ -66,6 +70,7 @@ interface NullableNumberResult {
 
 interface PreparedMarketRow {
   careerWinRate: number | null;
+  fieldSize: number;
   horseNumber: number;
   odds: number | null;
   oddsScore: number | null;
@@ -151,9 +156,15 @@ const competitionRankAscending = (
     ? values.filter((candidate) => candidate !== null).length + 1
     : values.filter((candidate) => candidate !== null && candidate < value).length + 1;
 
+const fieldSizeForRow = (row: MarketSignalFoundationRow, runnerCount: number): number => {
+  const value = finiteNumber(row[NEAR_MISS_RUNNER_COUNT_FIELD] ?? row[RUNNER_COUNT_FIELD]);
+  return value !== null && Number.isSafeInteger(value) && value > 0 ? value : runnerCount;
+};
+
 const prepareCachedRow = (
   row: MarketSignalFoundationRow,
   horseNumber: number,
+  runnerCount: number,
 ): PreparedMarketRowsResult => {
   const odds: NullableNumberResult = nullableNumber(row[ODDS_FIELD]);
   const popularity: NullableNumberResult = nullableNumber(row[POPULARITY_FIELD]);
@@ -174,6 +185,7 @@ const prepareCachedRow = (
     rows: [
       {
         careerWinRate: careerWinRate.value,
+        fieldSize: fieldSizeForRow(row, runnerCount),
         horseNumber,
         odds: odds.value,
         oddsScore: oddsScore.value,
@@ -209,6 +221,7 @@ const prepareLiveRow = (
     rows: [
       {
         careerWinRate: careerWinRate.value,
+        fieldSize: fieldSizeForRow(row, runnerCount),
         horseNumber,
         odds: odds.tanshoOdds,
         oddsScore: late.oddsScore,
@@ -226,7 +239,7 @@ const prepareRow = (
   liveOddsByHorseNumber: ReadonlyMap<number, RealtimeOdds>,
   runnerCount: number,
 ): PreparedMarketRowsResult => {
-  if (liveOddsByHorseNumber.size === 0) return prepareCachedRow(row, horseNumber);
+  if (liveOddsByHorseNumber.size === 0) return prepareCachedRow(row, horseNumber, runnerCount);
   const liveOdds: RealtimeOdds | undefined = liveOddsByHorseNumber.get(horseNumber);
   return liveOdds === undefined
     ? { reason: "partial-live-odds", status: "fallback" }
@@ -281,6 +294,18 @@ const appendMarketSignals = (
   const popularityScoreAverage: number | null = average(
     prepared.map(({ popularityScore }) => popularityScore),
   );
+  const favorites: PreparedMarketRow[] = prepared
+    .filter((entry) => entry.popularity !== null && entry.odds !== null)
+    .toSorted(
+      (left, right) =>
+        (left.popularity ?? 0) - (right.popularity ?? 0) || left.horseNumber - right.horseNumber,
+    );
+  const favoriteOdds: number | null = favorites[0]?.odds ?? null;
+  const secondFavoriteOdds: number | null = favorites[1]?.odds ?? null;
+  const fieldDominance: number | null =
+    favoriteOdds === null || secondFavoriteOdds === null || secondFavoriteOdds === 0
+      ? null
+      : favoriteOdds / secondFavoriteOdds;
   return prepared.map((entry, index) => {
     const impliedProbability: number | null = impliedProbabilities[index] ?? null;
     const marketShare: number | null =
@@ -298,6 +323,9 @@ const appendMarketSignals = (
         entry.careerWinRate === null || impliedProbability === null
           ? null
           : entry.careerWinRate - impliedProbability,
+      [FIELD_DOMINANCE_FIELD]: fieldDominance,
+      [HORSE_POPULARITY_FIELD]:
+        entry.popularity === null ? null : entry.popularity / entry.fieldSize,
       [IMPLIED_PROBABILITY_FIELD]: impliedProbability,
       [MARKET_SHARE_FIELD]: marketShare,
       [ODDS_FIELD]: entry.odds,

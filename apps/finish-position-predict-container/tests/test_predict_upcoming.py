@@ -38,7 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pipeline_runner
 import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
-from predict_lib.cell_router import CellRouter, build_base_model_r2_key
+from predict_lib.cell_router import (
+    CellRouter,
+    NamedRaceCell,
+    build_base_model_r2_key,
+    derive_race_name_token,
+)
 from predict_lib.dynamic_market_shadow import COMPARISON_CONTRACT
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.jra_joint_alternate_scorer import JointAlternateCandidate
@@ -212,10 +217,6 @@ class _StubCursor:
         return []
 
     def fetchone(self) -> tuple[object, ...] | None:
-        # Return ("off",) for SHOW transaction_read_only so the writable-txn
-        # guard in execute() passes in tests.
-        if self.last_sql == "SHOW transaction_read_only":
-            return ("off",)
         return None
 
 
@@ -347,9 +348,22 @@ _DB_URL = "postgresql://host/db"
 def test_execute_succeeds_on_happy_path() -> None:
     # Normal path: execute+commit returns the same connection unchanged.
     conn = _StubConnection()
-    result = execute(conn, "SELECT 1", [], _DB_URL)
+    result = execute(conn, "INSERT ...", [], _DB_URL)
     assert result is conn
     assert conn.committed == 1
+    assert conn.rolledback == 0
+
+
+def test_execute_rejects_neon_reads_before_opening_a_cursor() -> None:
+    conn = _StubConnection()
+
+    with pytest.raises(
+        ValueError,
+        match="Neon read/non-write statement prohibited in prediction Container: SELECT",
+    ):
+        execute(conn, "SELECT prediction FROM race_finish_position_model_predictions", [], _DB_URL)
+
+    assert conn.committed == 0
     assert conn.rolledback == 0
 
 
@@ -358,7 +372,7 @@ def test_execute_non_transient_error_propagates_without_reconnect() -> None:
     auth_exc = Exception("password authentication failed")
     conn = _StubConnection(raise_on_execute=auth_exc)
     try:
-        execute(conn, "SELECT 1", [], _DB_URL)
+        execute(conn, "INSERT ...", [], _DB_URL)
     except Exception as exc:
         assert exc is auth_exc
     else:
@@ -1051,6 +1065,7 @@ def test_focused_full_status_route_returns_missing_for_unknown_race() -> None:
             "finishedAtMs": None,
             "deadlineAtMs": None,
             "error": None,
+            "progressEvents": [],
         }
     finally:
         _stop_threading_server(httpd, thread)
@@ -2002,6 +2017,31 @@ def test_score_and_flush_rejects_when_deadline_passes_during_scoring() -> None:
 
     score_mock.assert_called_once()
     flush_mock.assert_not_called()
+
+
+def test_score_and_flush_forwards_catalog_race_names() -> None:
+    score_and_flush: Callable[..., int] = vars(predict_upcoming)["_score_and_flush_races"]
+    with (
+        patch(
+            "predict_upcoming._load_race_names_by_race_id",
+            return_value={"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}},
+        ),
+        patch("predict_upcoming.score_races", return_value=[]) as score_mock,
+        patch("predict_upcoming._flush_scored", return_value=0),
+        patch("predict_upcoming.score_dynamic_market_shadow", return_value=[]),
+        patch("predict_upcoming._flush_dynamic_market_shadow", return_value=0),
+    ):
+        written = score_and_flush(
+            _DB_URL,
+            "jra",
+            Path("/models"),
+            {"jra:2026:0829:04:08": [{"keibajo_code": "04"}]},
+            source_url="r2-catalog://pc-keiba",
+        )
+    assert written == 0
+    assert score_mock.call_args.kwargs["race_names_by_race_id"] == {
+        "jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}
+    }
 
 
 def test_flush_scored_checks_deadline_immediately_before_neon_upsert() -> None:
@@ -2991,6 +3031,51 @@ def test_score_races_routes_jra_variant_top1_swap(tmp_path: Path) -> None:
     assert {row[0] for row in rows} == {companion_version}
 
 
+def test_score_races_routes_jra_lock1_rerank_rest(tmp_path: Path) -> None:
+    lock_version = "jra-named-niigata-kinen-draw-v2"
+    rest_version = "jra-named-niigata-kinen-going-v2"
+    _write_variant_metadata(tmp_path, "jra", rest_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", lock_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "niigata_kinen_rerank": _FakeVariantSpec(rest_version, 1, "catboost"),
+            "niigata_kinen": _FakeVariantSpec(
+                lock_version,
+                1,
+                "catboost",
+                routing_mode="jra_lock1_rerank_rest",
+                rerank_variant="niigata_kinen_rerank",
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="niigata_kinen")
+    fallback = _ScoreByUmaban([0.8, 0.4, 0.2])
+    rest = _ScoreByUmaban([0.1, 0.4, 0.8])
+    lock = _ScoreByUmaban([0.9, 0.2, 0.1])
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[rest, lock],
+        ),
+        patch("predict_upcoming._load_jra_dirt_hybrid", return_value=None),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races(
+            {"jra:20260830:04:01:08": _nar_entries()},
+            "jra",
+            tmp_path,
+            ["feat"],
+        )[0]
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 1, 2: 3, 3: 2}
+    assert {row[0] for row in rows} == {lock_version}
+
+
 def test_score_races_routes_nar_top1_swap_variant(tmp_path: Path) -> None:
     version = "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1"
     _write_variant_metadata(tmp_path, "nar", version, ["feat"])
@@ -3306,6 +3391,7 @@ class _FakeVariantSpec:
         routing_mode: str = "direct",
         base_variant: str | None = None,
         minimum_candidate_margin: float | None = None,
+        rerank_variant: str | None = None,
     ) -> None:
         self.model_version = model_version
         self.feature_count = feature_count
@@ -3315,15 +3401,22 @@ class _FakeVariantSpec:
         self.routing_mode = routing_mode
         self.base_variant = base_variant
         self.minimum_candidate_margin = minimum_candidate_margin
+        self.rerank_variant = rerank_variant
 
 
 @final
 class _FakeRouting:
     """Stand-in for ``CategoryRouting`` carrying a variants map + default variant."""
 
-    def __init__(self, variants: dict[str, _FakeVariantSpec], default_variant: str) -> None:
+    def __init__(
+        self,
+        variants: dict[str, _FakeVariantSpec],
+        default_variant: str,
+        named_race_index: Mapping[tuple[str, str], NamedRaceCell] | None = None,
+    ) -> None:
         self.variants = variants
         self.default_variant = default_variant
+        self.named_race_index = {} if named_race_index is None else named_race_index
 
 
 @final
@@ -4241,6 +4334,386 @@ def test_score_races_stage1_absent_category_config_never_overrides(tmp_path: Pat
     assert all(row[0] == "jra-cb-v9-sim-2013-clean" for row in rows)
 
 
+def test_score_races_stage1_gate_does_not_clobber_named_race_cell(
+    tmp_path: Path,
+) -> None:
+    """A successful named-race cell must keep its dedicated model_version even
+    when the freshness gate would otherwise replace the race with Stage-1."""
+    named_version = "jra-named-niigata-bsn-v1"
+    _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "niigata_bsn": _FakeVariantSpec(named_version, 1, "catboost"),
+        },
+        default_variant="sim",
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                model_version=named_version,
+            )
+        },
+    )
+    router = _FakeRouter(routing, resolved="niigata_bsn")
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    named_booster = _ScoreByUmaban([3.0, -3.0])
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([9.0, 8.0])),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[named_booster, stage1_booster],
+        ),
+    ):
+        scored = score_races({"jra:20260829:04:08:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-named-niigata-bsn-v1" for row in rows)
+
+
+def test_score_races_stage1_gate_still_replaces_pooled_joken_999(
+    tmp_path: Path,
+) -> None:
+    """Uncatalogued open-class pooling stays eligible for the Stage-1 floor."""
+    joken_version = "jra-joken-999-pooled-yetirank-v2"
+    _write_variant_metadata(tmp_path, "jra", joken_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "joken_999": _FakeVariantSpec(joken_version, 1, "catboost"),
+        },
+        default_variant="sim",
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                model_version="jra-named-niigata-bsn-v1",
+            )
+        },
+    )
+    router = _FakeRouter(routing, resolved="joken_999")
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    joken_booster = _ScoreByUmaban([3.0, -3.0])
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([9.0, 8.0])),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[joken_booster, stage1_booster],
+        ),
+    ):
+        scored = score_races({"jra:20260829:04:07:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-stage1-marketfree235-2013" for row in rows)
+
+
+def test_score_races_stage1_gate_does_not_clobber_suzuran_named_cell(
+    tmp_path: Path,
+) -> None:
+    named_version = "jra-named-sapporo-suzuran-v2"
+    _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "sapporo_suzuran": _FakeVariantSpec(named_version, 1, "catboost"),
+        },
+        default_variant="sim",
+        named_race_index={
+            ("01", "すずらん賞"): NamedRaceCell(
+                variant="sapporo_suzuran",
+                venue="01",
+                race_name_token="すずらん賞",
+                base_variant="joken_999",
+                model_version=named_version,
+            )
+        },
+    )
+    router = _FakeRouter(routing, resolved="sapporo_suzuran")
+    entries = _jra_entries_with_ninkijun({1: 1, 2: 2})
+    named_booster = _ScoreByUmaban([0.5, 0.500001])
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([9.0, 8.0])),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[named_booster, stage1_booster],
+        ),
+    ):
+        scored = score_races({"jra:20260829:01:10:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-named-sapporo-suzuran-v2" for row in rows)
+
+
+def test_score_races_stage1_gate_replaces_unloaded_named_variant_fallback(
+    tmp_path: Path,
+) -> None:
+    """Routing to a named cell that is not in the variant pool is not a
+    successful named-cell score, so Stage-1 may still replace the fallback."""
+    _write_variant_metadata(tmp_path, "jra", "jra-joken-999-pooled-yetirank-v2", ["feat"])
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "joken_999": _FakeVariantSpec("jra-joken-999-pooled-yetirank-v2", 1, "catboost"),
+        },
+        default_variant="sim",
+        named_race_index={
+            ("01", "すずらん賞"): NamedRaceCell(
+                variant="sapporo_suzuran",
+                venue="01",
+                race_name_token="すずらん賞",
+                base_variant="joken_999",
+                model_version="jra-named-sapporo-suzuran-v2",
+            )
+        },
+    )
+    router = _FakeRouter(routing, resolved="sapporo_suzuran")
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    joken_booster = _ScoreByUmaban([3.0, -3.0])
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([9.0, 8.0])),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[joken_booster, stage1_booster],
+        ),
+    ):
+        scored = score_races({"jra:20260829:01:10:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-stage1-marketfree235-2013" for row in rows)
+
+
+def test_score_races_overlays_race_name_before_resolve_variant(tmp_path: Path) -> None:
+    named_version = "jra-named-niigata-bsn-v1"
+    _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean", 1, "catboost"),
+            "niigata_bsn": _FakeVariantSpec(named_version, 1, "catboost"),
+        },
+        default_variant="sim",
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                model_version=named_version,
+            )
+        },
+    )
+
+    @final
+    class _OverlayRouter:
+        def has_routing(self, category: str) -> bool:
+            return category == "jra"
+
+        def routing_for(self, category: str) -> _FakeRouting:
+            assert category == "jra"
+            return routing
+
+        def resolve_variant(
+            self,
+            category: str,
+            entries: Sequence[Mapping[str, object]],
+            card_max_race_bango: int | None = None,
+        ) -> str:
+            del card_max_race_bango
+            assert category == "jra"
+            token = derive_race_name_token(entries[0])
+            venue = str(entries[0].get("keibajo_code"))
+            if venue == "04" and token == "BSN賞":
+                return "niigata_bsn"
+            return "sim"
+
+    first = _jra_entries_with_ninkijun({1: None, 2: None})
+    first[0]["keibajo_code"] = "04"
+    first[1]["keibajo_code"] = "04"
+    named_booster = _ScoreByUmaban([3.0, -3.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=_OverlayRouter()),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([9.0, 8.0])),
+        patch("predict_upcoming._load_booster_by_arch", return_value=named_booster),
+    ):
+        scored = score_races(
+            {"jra:2026:0829:04:08": first},
+            "jra",
+            tmp_path,
+            ["feat"],
+            race_names_by_race_id={"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}},
+        )
+
+    assert scored[0][0][0] == "jra-named-niigata-bsn-v1"
+    assert scored[0][1][0] == "jra-named-niigata-bsn-v1"
+
+
+def test_expected_model_version_uses_overlay_for_niigata_bsn() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "L", "keibajo_code": "04", "kyoso_joken_code": "999"}],
+        race_name={"kyosomei_hondai": "ＢＳＮ賞"},
+    )
+    assert version == "jra-named-niigata-bsn-v1"
+
+
+def test_expected_model_version_uses_overlay_for_sapporo_suzuran() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "L", "keibajo_code": "01", "kyoso_joken_code": "999"}],
+        race_name={"kyosomei_hondai": "３歳オープン", "kyosomei_fukudai": "すずらん賞"},
+    )
+    assert version == "jra-named-sapporo-suzuran-v2"
+
+
+def test_expected_model_version_uses_overlay_for_chukyo_nisai_stakes() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "C", "keibajo_code": "07", "kyoso_joken_code": "999"}],
+        race_name={"kyosomei_hondai": "中京２歳ステークス"},
+    )
+    assert version == "jra-named-chukyo-nisai-stakes-focal-v3"
+
+
+def test_expected_model_version_chukyo_aug_1400_stays_on_focal_v3() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [
+            {
+                "grade_code": "C",
+                "kaisai_tsukihi": "0830",
+                "keibajo_code": "07",
+                "kyori": "1400",
+                "kyoso_joken_code": "999",
+            }
+        ],
+        race_name={"kyosomei_hondai": "中京２歳ステークス"},
+    )
+    assert version == "jra-named-chukyo-nisai-stakes-focal-v3"
+
+
+def test_expected_model_version_chukyo_jul_1600_uses_ninki2_v4() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [
+            {
+                "grade_code": "C",
+                "kaisai_tsukihi": "0712",
+                "keibajo_code": "07",
+                "kyori": "1600",
+                "kyoso_joken_code": "999",
+            }
+        ],
+        race_name={"kyosomei_hondai": "中京２歳ステークス"},
+    )
+    assert version == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4"
+
+
+def test_expected_model_version_chukyo_dec_1200_uses_largefield_v3() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [
+            {
+                "grade_code": "C",
+                "kaisai_tsukihi": "1213",
+                "keibajo_code": "07",
+                "kyori": "1200",
+                "kyoso_joken_code": "999",
+            }
+        ],
+        race_name={"kyosomei_hondai": "中京２歳ステークス"},
+    )
+    assert version == "jra-named-chukyo-nisai-stakes-largefield-v3"
+
+
+def test_expected_model_version_uses_overlay_for_niigata_kinen() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "C", "keibajo_code": "04", "kyoso_joken_code": "999"}],
+        race_name={
+            "kyosomei_fukudai": "サマー２０００シリーズ",
+            "kyosomei_hondai": "農林水産省賞典　新潟記念",
+        },
+    )
+    assert version == "jra-named-niigata-kinen-draw-v2"
+
+
+def test_expected_model_version_without_overlay_stays_on_pooled_joken_999() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "L", "keibajo_code": "04", "kyoso_joken_code": "999"}],
+    )
+    assert version == "jra-cb-v9-sim-2013-clean"
+
+
+def test_load_race_names_by_race_id_skips_catalog_when_parquet_has_hondai() -> None:
+    load_fn = predict_upcoming.__dict__["_load_race_names_by_race_id"]
+    with patch("pipeline_runner.query_race_names") as query_fn:
+        names = load_fn(
+            {"jra:2026:0829:04:08": [{"keibajo_code": "04", "kyosomei_hondai": "ＢＳＮ賞"}]},
+            "r2-catalog://pc-keiba",
+        )
+    assert names == {}
+    assert query_fn.call_count == 0
+
+
+def test_load_race_names_by_race_id_returns_catalog_row() -> None:
+    load_fn = predict_upcoming.__dict__["_load_race_names_by_race_id"]
+    with patch(
+        "pipeline_runner.query_race_names",
+        return_value={"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}},
+    ):
+        names = load_fn(
+            {"jra:2026:0829:04:08": [{"keibajo_code": "04"}]},
+            "r2-catalog://pc-keiba",
+        )
+    assert names == {"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}}
+
+
+def test_load_race_names_by_race_id_raises_when_catalog_misses() -> None:
+    load_fn = predict_upcoming.__dict__["_load_race_names_by_race_id"]
+    with (
+        patch("pipeline_runner.query_race_names", return_value={}),
+        pytest.raises(RuntimeError, match="race-name overlay failed"),
+    ):
+        load_fn(
+            {"jra:2026:0829:04:08": [{"keibajo_code": "04"}]},
+            "r2-catalog://pc-keiba",
+        )
+
+
 def test_score_races_stage1_broken_artifact_falls_back_to_champion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4299,343 +4772,6 @@ def test_score_races_warns_when_resolved_non_default_variant_missing(
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
-
-
-@pytest.mark.parametrize(("actual_rows", "expected"), [(0, False), (2, True)])
-def test_focused_full_prediction_complete_checks_expected_cell_model_version(
-    monkeypatch: pytest.MonkeyPatch,
-    actual_rows: int,
-    expected: bool,
-) -> None:
-    """Existing rows for another model_version must not skip a run.
-
-    Completion is tied to the model_version current routing would write. NAR
-    carries no cell routing after the a957 revert (2026-07-03), so a venue-54
-    grade-E race resolves to the category default
-    (``iter12-nar-xgb-hpo-v8-clean188``).
-    """
-
-    @final
-    class _FocusedCursor:
-        def __init__(self) -> None:
-            self.executed_params: list[object] = []
-
-        def execute(self, query: str, params: object = None) -> None:
-            del query
-            self.executed_params.append(params)
-
-        def fetchall(self) -> list[tuple[object, ...]]:
-            return [
-                ("H1", "E", "20", 1400, None, "0702", "54", 12),
-                ("H2", "E", "20", 1400, None, "0702", "54", 12),
-            ]
-
-        def fetchone(self) -> tuple[int]:
-            return (actual_rows,)
-
-    @final
-    class _FocusedConnection:
-        def __init__(self, cursor: _FocusedCursor) -> None:
-            self._cursor = cursor
-            self.closed = False
-
-        def cursor(self) -> _FocusedCursor:
-            return self._cursor
-
-        def close(self) -> None:
-            self.closed = True
-
-    cursor = _FocusedCursor()
-    connection = _FocusedConnection(cursor)
-
-    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
-        assert database_url == "postgresql://example"
-        assert connect_timeout > 0
-        return connection
-
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
-    params = PredictParams(
-        category="nar",
-        run_date="20260702",
-        days_ahead=0,
-        mode="full",
-        keibajo_code="54",
-        race_bango="03",
-    )
-
-    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
-    assert callable(completion_fn)
-    assert completion_fn("postgresql://example", params) is expected
-    final_params = cursor.executed_params[-1]
-    assert isinstance(final_params, tuple)
-    assert final_params[-1] == predict_upcoming.NAR_TRANSFORMER_MODEL_VERSION
-    assert connection.closed is True
-
-
-@pytest.mark.parametrize(
-    ("existing_row", "expected"),
-    [((5, 1, 5), True), ((5, 1, 4), False), ((0, None, None), False)],
-)
-def test_focused_full_prediction_complete_uses_existing_prediction_fallback_when_sources_empty(
-    monkeypatch: pytest.MonkeyPatch,
-    existing_row: tuple[int, int | None, int | None],
-    expected: bool,
-) -> None:
-    """A completed NAR iter40 race still counts when source rows aged out."""
-
-    @final
-    class _FocusedCursor:
-        def __init__(self) -> None:
-            self.executed_params: list[object] = []
-
-        def execute(self, query: str, params: object = None) -> None:
-            del query
-            self.executed_params.append(params)
-
-        def fetchall(self) -> list[tuple[object, ...]]:
-            return []
-
-        def fetchone(self) -> tuple[int, int | None, int | None]:
-            return existing_row
-
-    @final
-    class _FocusedConnection:
-        def __init__(self, cursor: _FocusedCursor) -> None:
-            self._cursor = cursor
-            self.closed = False
-
-        def cursor(self) -> _FocusedCursor:
-            return self._cursor
-
-        def close(self) -> None:
-            self.closed = True
-
-    cursor = _FocusedCursor()
-    connection = _FocusedConnection(cursor)
-
-    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
-        assert database_url == "postgresql://example"
-        assert connect_timeout > 0
-        return connection
-
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
-    params = PredictParams(
-        category="nar",
-        run_date="20260710",
-        days_ahead=0,
-        mode="full",
-        keibajo_code="45",
-        race_bango="03",
-    )
-
-    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
-    assert callable(completion_fn)
-    assert completion_fn("postgresql://example", params) is expected
-    final_params = cursor.executed_params[-1]
-    assert isinstance(final_params, tuple)
-    assert final_params[-1] == predict_upcoming.NAR_TRANSFORMER_MODEL_VERSION
-    assert connection.closed is True
-
-
-def test_focused_full_prediction_complete_uses_jra_kyoso_joken_code_for_model_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """JRA 703 focused completion must wait for the cell variant model_version."""
-
-    candidate_version = "jra-cb-v9-sim-2013-clean-jockey-pedigree269"
-    default_version = "jra-cb-v9-sim-2013-clean"
-
-    @final
-    class _Jra703Router:
-        def has_routing(self, category: str) -> bool:
-            return category == "jra"
-
-        def routing_for(self, category: str) -> _FakeRouting:
-            assert category == "jra"
-            return _FakeRouting(
-                variants={
-                    "default": _FakeVariantSpec(default_version, 250, "catboost"),
-                    "jra_kyoso_joken_703_jockey_pedigree269": _FakeVariantSpec(
-                        candidate_version, 269, "catboost"
-                    ),
-                },
-                default_variant="default",
-            )
-
-        def resolve_variant(
-            self,
-            category: str,
-            entries: Sequence[Mapping[str, object]],
-            card_max_race_bango: int | None = None,
-        ) -> str:
-            del card_max_race_bango
-            assert category == "jra"
-            class_codes = {str(entry.get("kyoso_joken_code", "")).strip() for entry in entries}
-            if "703" in class_codes:
-                return "jra_kyoso_joken_703_jockey_pedigree269"
-            return "default"
-
-    @final
-    class _FocusedCursor:
-        def __init__(self) -> None:
-            self.executed_params: list[object] = []
-
-        def execute(self, query: str, params: object = None) -> None:
-            if not self.executed_params:
-                assert "kyoso_joken_code" in query
-            self.executed_params.append(params)
-
-        def fetchall(self) -> list[tuple[object, ...]]:
-            return [
-                ("H1", "A", "24", 2000, "703", "0705", "10", 14),
-                ("H2", "A", "24", 2000, "703", "0705", "10", 14),
-            ]
-
-        def fetchone(self) -> tuple[int]:
-            return (2,)
-
-    @final
-    class _FocusedConnection:
-        def __init__(self, cursor: _FocusedCursor) -> None:
-            self._cursor = cursor
-            self.closed = False
-
-        def cursor(self) -> _FocusedCursor:
-            return self._cursor
-
-        def close(self) -> None:
-            self.closed = True
-
-    cursor = _FocusedCursor()
-    connection = _FocusedConnection(cursor)
-
-    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
-        assert database_url == "postgresql://example"
-        assert connect_timeout > 0
-        return connection
-
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
-    monkeypatch.setattr(predict_upcoming, "load_cell_router", lambda: _Jra703Router())
-    params = PredictParams(
-        category="jra",
-        run_date="20260705",
-        days_ahead=0,
-        mode="full",
-        keibajo_code="10",
-        race_bango="02",
-    )
-
-    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
-    assert callable(completion_fn)
-    assert completion_fn("postgresql://example", params) is True
-    final_params = cursor.executed_params[-1]
-    assert isinstance(final_params, tuple)
-    assert final_params[-1] == candidate_version
-    assert final_params[-1] != default_version
-    assert connection.closed is True
-
-
-def test_focused_full_prediction_complete_uses_jra_prior_corner_cell_model_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """JRA 005 dirt small-field focused completion must wait for the prior-corner variant."""
-
-    candidate_version = "jra-cb-v10-prior-corner274-2013"
-    default_version = "jra-cb-v9-sim-2013-clean"
-
-    @final
-    class _JraPriorCornerRouter:
-        def has_routing(self, category: str) -> bool:
-            return category == "jra"
-
-        def routing_for(self, category: str) -> _FakeRouting:
-            assert category == "jra"
-            return _FakeRouting(
-                variants={
-                    "default": _FakeVariantSpec(default_version, 250, "catboost"),
-                    "prior_corner_dirt_smallfield_005": _FakeVariantSpec(
-                        candidate_version, 274, "catboost"
-                    ),
-                },
-                default_variant="default",
-            )
-
-        def resolve_variant(
-            self,
-            category: str,
-            entries: Sequence[Mapping[str, object]],
-            card_max_race_bango: int | None = None,
-        ) -> str:
-            del card_max_race_bango
-            assert category == "jra"
-            for entry in entries:
-                track_code = str(entry.get("track_code", "")).strip()
-                class_code = str(entry.get("kyoso_joken_code", "")).strip()
-                runners = int(str(entry.get("shusso_tosu", "0")).strip() or "0")
-                if track_code.startswith("2") and class_code == "005" and runners <= 10:
-                    return "prior_corner_dirt_smallfield_005"
-            return "default"
-
-    @final
-    class _FocusedCursor:
-        def __init__(self) -> None:
-            self.executed_params: list[object] = []
-
-        def execute(self, query: str, params: object = None) -> None:
-            if not self.executed_params:
-                assert "kyoso_joken_code" in query
-                assert "track_code" in query
-                assert "shusso_tosu" in query
-            self.executed_params.append(params)
-
-        def fetchall(self) -> list[tuple[object, ...]]:
-            return [
-                ("H1", "A", "23", 1800, "005", "0705", "10", 10),
-                ("H2", "A", "23", 1800, "005", "0705", "10", 10),
-            ]
-
-        def fetchone(self) -> tuple[int]:
-            return (2,)
-
-    @final
-    class _FocusedConnection:
-        def __init__(self, cursor: _FocusedCursor) -> None:
-            self._cursor = cursor
-            self.closed = False
-
-        def cursor(self) -> _FocusedCursor:
-            return self._cursor
-
-        def close(self) -> None:
-            self.closed = True
-
-    cursor = _FocusedCursor()
-    connection = _FocusedConnection(cursor)
-
-    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
-        assert database_url == "postgresql://example"
-        assert connect_timeout > 0
-        return connection
-
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
-    monkeypatch.setattr(predict_upcoming, "load_cell_router", lambda: _JraPriorCornerRouter())
-    params = PredictParams(
-        category="jra",
-        run_date="20260705",
-        days_ahead=0,
-        mode="full",
-        keibajo_code="10",
-        race_bango="02",
-    )
-
-    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
-    assert callable(completion_fn)
-    assert completion_fn("postgresql://example", params) is True
-    final_params = cursor.executed_params[-1]
-    assert isinstance(final_params, tuple)
-    assert final_params[-1] == candidate_version
-    assert final_params[-1] != default_version
-    assert connection.closed is True
 
 
 # ---------------------------------------------------------------------------
@@ -4752,8 +4888,10 @@ def test_predict_category_filters_to_target_race_before_score_and_flush(
         models_dir: Path,
         races: Mapping[str, Sequence[Mapping[str, object]]],
         card_max_race_bango: int | None = None,
+        source_url: str | None = None,
     ) -> int:
         captured["races"] = dict(races)
+        captured["source_url"] = source_url
         return len(races)
 
     monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
@@ -4771,6 +4909,7 @@ def test_predict_category_filters_to_target_race_before_score_and_flush(
     scored = captured["races"]
     assert isinstance(scored, dict)
     assert list(scored.keys()) == ["jra:2026:0712:05:11"]
+    assert captured["source_url"] == _DB_URL
 
 
 def test_predict_category_scoped_empty_features_fail_closed(
@@ -4867,8 +5006,10 @@ def test_predict_category_without_target_race_keeps_all_races(
         models_dir: Path,
         races: Mapping[str, Sequence[Mapping[str, object]]],
         card_max_race_bango: int | None = None,
+        source_url: str | None = None,
     ) -> int:
         captured["races"] = dict(races)
+        captured["source_url"] = source_url
         return len(races)
 
     monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
@@ -4888,6 +5029,7 @@ def test_predict_category_without_target_race_keeps_all_races(
         "jra:2026:0712:05:11",
         "jra:2026:0712:05:12",
     ]
+    assert captured["source_url"] == _DB_URL
 
 
 # ---------------------------------------------------------------------------
@@ -5440,9 +5582,6 @@ def test_main_logs_serve_mode_before_binding(
             "predict_upcoming._make_rescore_factory",
             return_value=lambda scope, attestation: None,
         ),
-        patch(
-            "predict_upcoming._make_focused_full_completion_fn", return_value=lambda params: False
-        ),
         patch("predict_upcoming._make_prewarm_fn", return_value=empty_fn),
         patch("predict_upcoming.serve_http") as serve_mock,
     ):
@@ -5455,11 +5594,12 @@ def test_main_logs_serve_mode_before_binding(
     # Production must acknowledge prewarm immediately and let the existing
     # pickup flow persist the detached build without coupling it to one socket.
     assert len(serve_mock.call_args.args) == 13
+    assert serve_mock.call_args.args[5] is None
     assert serve_mock.call_args.args[-1] is predict_upcoming.run_prewarm_in_background
     assert serve_mock.call_args.kwargs == {}
 
 
-def test_main_logs_one_shot_mode_before_neon_connect(
+def test_main_one_shot_defers_neon_connection_until_output_write(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("PREDICT_SERVE_MODE", raising=False)
@@ -5467,16 +5607,83 @@ def test_main_logs_one_shot_mode_before_neon_connect(
     monkeypatch.setenv("SOURCE_DATABASE_URL", "r2-catalog://pc-keiba")
     monkeypatch.setenv("RUN_DATE", "20260815")
     monkeypatch.setattr(sys, "argv", ["predict_upcoming.py"])
-    probe = SimpleNamespace(close=lambda: None)
     with (
         patch("predict_upcoming._start_liveness_thread"),
-        patch("predict_upcoming._connect", return_value=probe) as connect_mock,
+        patch("predict_upcoming._connect") as connect_mock,
         patch("predict_upcoming._resolve_categories", return_value=()),
         patch("predict_upcoming._try_record_audit"),
     ):
         assert predict_upcoming.main() == 0
     stderr = capsys.readouterr().err
     assert "[predict-startup] mode=one-shot" in stderr
-    assert "[predict-startup] connecting to Neon" in stderr
+    assert "[predict-startup] connecting to Neon" not in stderr
     assert "secret" not in stderr
-    connect_mock.assert_called_once_with("postgresql://secret@host/db")
+    connect_mock.assert_not_called()
+
+
+def testpost_focused_full_completion_callback_posts_bounded_terminal_body() -> None:
+    params = PredictParams(
+        category="jra",
+        run_date="20260830",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="07",
+        race_bango="04",
+    )
+    requests: list[object] = []
+
+    @final
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok":true}'
+
+    def _urlopen(request: object, *, timeout: float) -> _Response:
+        requests.append((request, timeout))
+        return _Response()
+
+    with patch("predict_upcoming.urllib.request.urlopen", side_effect=_urlopen):
+        predict_upcoming.post_focused_full_completion_callback(
+            "https://finish-position-cron.example.workers.dev/callback?signed=1",
+            params,
+            "success",
+            None,
+        )
+
+    request, timeout = cast(tuple[object, float], requests[0])
+    assert isinstance(request, predict_upcoming.urllib.request.Request)
+    assert request.full_url.endswith("/callback?signed=1")
+    assert request.get_header("User-agent") == "horse-racing-prediction-container/1.0"
+    assert json.loads(cast(bytes, request.data)) == {
+        "error": None,
+        "raceKey": "jra:20260830:07:04",
+        "status": "success",
+    }
+    assert timeout == 5.0
+
+
+def testpost_focused_full_completion_callback_keeps_poll_fallback_on_network_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    params = PredictParams(
+        category="jra",
+        run_date="20260830",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="07",
+        race_bango="04",
+    )
+    with patch("predict_upcoming.urllib.request.urlopen", side_effect=OSError("offline")):
+        predict_upcoming.post_focused_full_completion_callback(
+            "https://finish-position-cron.example.workers.dev/callback?signed=1",
+            params,
+            "error",
+            "pipeline failed",
+        )
+
+    assert "durable poll remains active" in capsys.readouterr().err

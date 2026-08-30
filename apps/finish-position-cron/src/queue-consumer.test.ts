@@ -4,7 +4,10 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { RaceEntry } from "./cron-decision";
 import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
 import type { PredictionKvPublishResult } from "./prediction-kv-writer";
-import type { MarketSignalHookResult } from "./race-chain-market-signal-hook";
+import type {
+  MarketSignalHookResult,
+  PrepareMarketSignalFoundationInput,
+} from "./race-chain-market-signal-hook";
 import type {
   Env,
   FocusedFullCompletionMessage,
@@ -186,7 +189,7 @@ const consumeContainerStopMock = vi.hoisted(() =>
 
 const prepareMarketSignalFoundationBestEffortMock = vi.hoisted(() =>
   vi.fn(
-    async (): Promise<MarketSignalHookResult> => ({
+    async (_input: PrepareMarketSignalFoundationInput): Promise<MarketSignalHookResult> => ({
       reason: "disabled",
       status: "unavailable",
     }),
@@ -309,7 +312,7 @@ import {
   PER_RACE_SCOPE_INVALID_ERROR,
   PER_RACE_SCOPE_REQUIRED_ERROR,
 } from "./per-race-scope-guard";
-import { handleQueue } from "./queue-consumer";
+import { handleQueue, resolveContainerReuseIdleSeconds } from "./queue-consumer";
 
 const ackMock = vi.fn();
 const retryMock = vi.fn();
@@ -581,6 +584,13 @@ beforeEach(() => {
   );
 });
 
+test("container reuse idle grace is bounded and disabled by invalid config", () => {
+  expect(resolveContainerReuseIdleSeconds(undefined)).toBe(0);
+  expect(resolveContainerReuseIdleSeconds("invalid")).toBe(0);
+  expect(resolveContainerReuseIdleSeconds("20")).toBe(20);
+  expect(resolveContainerReuseIdleSeconds("999")).toBe(120);
+});
+
 test("does not use the D1 running-style mirror as a second cache authority", async () => {
   getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
     {
@@ -760,7 +770,12 @@ test("attaches the exact Worker artifact identity before focused-full Container 
     cacheHit: false,
     status: "ready",
   });
-  const env = { ...makeEnv(), WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1" };
+  const hotFetch = vi.fn(async () => Response.json({ latest: null }));
+  const env = {
+    ...makeEnv(),
+    REALTIME_HOT: { fetch: hotFetch },
+    WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
+  };
 
   await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), env);
 
@@ -770,11 +785,18 @@ test("attaches the exact Worker artifact identity before focused-full Container 
       FEATURES_CACHE: env.FEATURES_CACHE,
       WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
     },
-    fetchImpl: fetch,
+    fetchImpl: expect.any(Function),
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260603",
   });
+  const hookInput = prepareMarketSignalFoundationBestEffortMock.mock.calls[0]?.[0];
+  if (hookInput === undefined) throw new Error("expected market-signal hook input");
+  await hookInput.fetchImpl("https://sync-realtime-data-hot.internal/api/odds/test");
+  expect(hotFetch).toHaveBeenCalledWith(
+    "https://sync-realtime-data-hot.internal/api/odds/test",
+    undefined,
+  );
   const request: Request | undefined = stubFetchMock.mock.calls[0]?.[0];
   if (request === undefined) throw new Error("expected Container request");
   expect(Object.fromEntries(new URL(request.url).searchParams)).toMatchObject({
@@ -1683,7 +1705,7 @@ test("stops and retries a Neon-complete cache miss whose detached status is erro
   expect(sendMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
   expect(retryMock).toHaveBeenCalledTimes(1);
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   warnSpy.mockRestore();
 });
 
@@ -4205,6 +4227,38 @@ test("finalizes one watched focused-full success and acknowledges its terminal d
   expect(retryMock).not.toHaveBeenCalled();
 });
 
+test("keeps a successful shard warm briefly with a work-key-fenced delayed stop", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
+
+  await handleQueue(makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]), {
+    ...makeEnv(),
+    CONTAINER_REUSE_IDLE_SECONDS: "20",
+  });
+
+  expect(releaseContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      doName: "predict-jra",
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+    }),
+  );
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      allowUnowned: true,
+      name: "predict-jra",
+      role: "legacy",
+      type: "container-stop",
+      workKey: "focused-full:20260603:jra:05:11",
+    }),
+    { delaySeconds: 20 },
+  );
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  log.mockRestore();
+});
+
 test("stops a watched success before repairing its missing cache", async () => {
   isPerRaceFeatureCachePresentMock.mockResolvedValue(false);
   stubFetchMock
@@ -5936,7 +5990,7 @@ test("recovers immediately when focused-full status is absent and the Container 
       workKey: "focused-full:20260628:jra:02:01",
     }),
   );
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   expect(touchContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
@@ -6051,9 +6105,9 @@ test("persists detached errors and stops the exact container before retry", asyn
     null,
     3,
   );
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full status error; cleanup handed off before retry category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01; error=RuntimeError: Catalog unavailable",
+    "[predict-queue] focused-full status error; cleanup handed off before retry category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01; error=RuntimeError: Catalog unavailable delaySeconds=70",
   );
   warnSpy.mockRestore();
 });
@@ -6108,12 +6162,12 @@ test("retries detached DAY_BASE_REQUIRED fail-closed after scheduling repair", a
   );
   expect(sendMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   expect(enqueueDayBaseRepairOnceMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "jra", force: true, runYmd: "20260628" }),
   );
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DayBaseRequiredError: DAY_BASE_REQUIRED: layer subprocess terminated delaySeconds=30",
+    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DayBaseRequiredError: DAY_BASE_REQUIRED: layer subprocess terminated delaySeconds=70",
   );
   warnSpy.mockRestore();
 });
@@ -6163,9 +6217,9 @@ test("retries detached DAY_BASE_REQUIRED without enqueueing a legacy fallback", 
   );
 
   expect(ackMock).not.toHaveBeenCalled();
-  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DAY_BASE_REQUIRED: transient source failure delaySeconds=30",
+    "[predict-queue] detached race-chain cache HIT lost; retrying fail-closed category=jra runYmd=20260628 mode=full daysAhead=0 skipDedup=true busyRequeueCount=0 keibajo=02 race=01 error=DAY_BASE_REQUIRED: transient source failure delaySeconds=70",
   );
   warnSpy.mockRestore();
 });

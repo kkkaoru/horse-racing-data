@@ -494,6 +494,17 @@ const adminMaterializeDayBaseRequest = (token: string | null, body: string): Req
     method: "POST",
   });
 
+test("focused-full completion callback route fails closed without a signed payload", async () => {
+  const response = await handleFetch(
+    new Request("https://cron.example/api/internal/focused-full-completion-callback", {
+      method: "POST",
+    }),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(400);
+});
+
 test("admin materialize route is authenticated, scoped, and returns the idempotent result", async () => {
   expect(await handleFetch(adminMaterializeDayBaseRequest(null, "{}"), makeEnv())).toMatchObject({
     status: 401,
@@ -2197,7 +2208,7 @@ test("admin run focused full race endpoint omits optional debug and force fields
   });
 });
 
-test("admin direct focused full race endpoint starts the scoped Container request", async () => {
+test("admin direct focused full race endpoint uses the coordinated Queue path", async () => {
   const response = await handleFetch(
     adminRunFocusedFullRaceDirectRequest(
       "secret-token",
@@ -2211,8 +2222,18 @@ test("admin direct focused full race endpoint starts the scoped Container reques
     makeEnv(),
   );
   expect(response.status).toBe(202);
-  expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
-  expect(containerDoFetchMock.mock.calls[0]?.[0].url).toContain("/predict?");
+  expect(enqueueMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    env: expect.any(Object),
+    keibajoCode: "30",
+    mode: "full",
+    raceBango: "02",
+    runDate: "2026-08-26",
+    runYmd: "20260826",
+    skipDedup: true,
+  });
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
 });
 
 test("admin direct focused full race endpoint rejects unauthenticated requests", async () => {

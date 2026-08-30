@@ -191,10 +191,13 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 #
 # A script is RACE_CHAIN when its output cannot be safely frozen at the
 # day-base build time:
-#   * MARKET_SIGNAL_SCRIPT / NEAR_MISS_SCRIPT — read odds/near-miss signals
-#     that are still moving right up to post time.
-#   * RELATIONSHIP_SCRIPT — race-grain interaction features keyed on the
-#     target race's own field composition.
+#   * MARKET_SIGNAL_SCRIPT — reads odds that move right up to post time.
+#
+# NEAR_MISS_SCRIPT and RELATIONSHIP_SCRIPT are precomputed in DAY_CHAIN. Their
+# historical joins are strict-prior-date and field-composition inputs are bound
+# by the day-base source/entry watermark. The two near-miss columns that depend
+# on live popularity are overwritten by the attested Worker market foundation.
+#
 #   * JRA_JOCKEY_PEDIGREE_CELL_SCRIPT — SAME-DAY-CUMULATIVE by design: it sums
 #     EARLIER-TODAY races via its own live PG query, independent of the input
 #     parquet. This is the one deliberate exception that must stay per-race
@@ -214,23 +217,27 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         SECTIONAL_WEIGHT_SCRIPT,
         FUTAN_JURYO_SCRIPT,
         WORKOUT_SCRIPT,
+        NEAR_MISS_SCRIPT,
         LINEAGE_SCRIPT,
         HEAD_TO_HEAD_SCRIPT,
         BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         COURSE_NUMERICAL_SCRIPT,
+        RELATIONSHIP_SCRIPT,
         KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
+        NEAR_MISS_SCRIPT,
         LINEAGE_SCRIPT,
         HEAD_TO_HEAD_SCRIPT,
         BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
     ),
@@ -247,14 +254,9 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 RACE_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
     "jra": (
         MARKET_SIGNAL_SCRIPT,
-        NEAR_MISS_SCRIPT,
-        RELATIONSHIP_SCRIPT,
         JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     ),
-    "nar": (
-        NEAR_MISS_SCRIPT,
-        RELATIONSHIP_SCRIPT,
-    ),
+    "nar": (),
     "ban-ei": (BABA_PEDIGREE_SCRIPT,),
 }
 

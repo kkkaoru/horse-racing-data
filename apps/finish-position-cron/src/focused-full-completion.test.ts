@@ -39,7 +39,7 @@ const buildCatalogRows = (count = 12): Record<string, unknown>[] =>
     track_code: null,
   }));
 
-const { cacheHeadMock, catalogFetchMock, neonMock, queryMock } = vi.hoisted(() => {
+const { cacheHeadMock, catalogFetchMock, kvGetMock, neonMock, queryMock } = vi.hoisted(() => {
   const query = vi.fn(
     async (_query: string, _params: readonly unknown[]): Promise<unknown> => [{ actual_rows: 12 }],
   );
@@ -59,6 +59,7 @@ const { cacheHeadMock, catalogFetchMock, neonMock, queryMock } = vi.hoisted(() =
   return {
     cacheHeadMock: vi.fn(),
     catalogFetchMock: catalogFetch,
+    kvGetMock: vi.fn(),
     neonMock: vi.fn(() => ({ query })),
     queryMock: query,
   };
@@ -71,6 +72,7 @@ import { isFocusedFullPredictionComplete, isPerRaceRescoreReady } from "./focuse
 const makeEnv = (): Env =>
   Object.assign(Object.create(null), {
     NEON_DATABASE_URL: "postgres://example",
+    DETAIL_SECTION_CACHE_KV: { get: kvGetMock } as unknown as KVNamespace,
     FEATURES_CACHE: { head: cacheHeadMock } as unknown as R2Bucket,
     PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
   });
@@ -83,9 +85,79 @@ beforeEach(() => {
   cacheHeadMock.mockReset();
   catalogFetchMock.mockReset();
   queryMock.mockReset();
+  kvGetMock.mockReset();
+  kvGetMock.mockResolvedValue(null);
   setCatalogRows(buildCatalogRows());
   queryMock.mockResolvedValue([{ actual_rows: 12 }]);
   neonMock.mockClear();
+});
+
+test("focused completion uses a fresh single-generation KV payload without reading Neon", async () => {
+  kvGetMock.mockResolvedValue(
+    Array.from({ length: 12 }, (_, index) => ({
+      horseNumber: String(index + 1),
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictionGeneratedAt: "2026-08-29T20:00:00.000Z",
+    })),
+  );
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "1",
+      notBefore: "2026-08-29T19:00:00.000Z",
+      raceBango: "4",
+      runYmd: "20260830",
+    }),
+  ).resolves.toBe(true);
+
+  expect(kvGetMock).toHaveBeenCalledWith("pred:fp:v1:20260830:01:04", "json");
+  expect(neonMock).not.toHaveBeenCalled();
+});
+
+test("focused completion falls back to Neon when the KV generation is stale", async () => {
+  kvGetMock.mockResolvedValue(
+    Array.from({ length: 12 }, (_, index) => ({
+      horseNumber: String(index + 1),
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictionGeneratedAt: "2026-08-29T18:00:00.000Z",
+    })),
+  );
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "1",
+      notBefore: "2026-08-29T19:00:00.000Z",
+      raceBango: "4",
+      runYmd: "20260830",
+    }),
+  ).resolves.toBe(true);
+
+  expect(neonMock).toHaveBeenCalledWith("postgres://example");
+});
+
+test("focused completion falls back to Neon when KV preflight throws", async () => {
+  kvGetMock.mockRejectedValue(new Error("KV unavailable"));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "1",
+      raceBango: "4",
+      runYmd: "20260830",
+    }),
+  ).resolves.toBe(true);
+
+  expect(neonMock).toHaveBeenCalledWith("postgres://example");
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[focused-full-completion] KV preflight failed category=jra runYmd=20260830 keibajo=1 race=4: Error: KV unavailable",
+  );
+  warnSpy.mockRestore();
 });
 
 test("rescore is ready only after Neon completion and the per-race R2 cache both exist", async () => {
@@ -624,7 +696,7 @@ test("still reports incomplete when primary, stage1, and cell models lack the fu
     }),
   ).resolves.toBe(false);
 
-  expect(queryMock).toHaveBeenCalledTimes(8);
+  expect(queryMock).toHaveBeenCalledTimes(10);
 });
 
 test("accepts a complete promoted NAR cell model after primary and stage1 misses", async () => {
@@ -643,7 +715,7 @@ test("accepts a complete promoted NAR cell model after primary and stage1 misses
     }),
   ).resolves.toBe(true);
 
-  expect(queryMock).toHaveBeenCalledTimes(8);
+  expect(queryMock).toHaveBeenCalledTimes(10);
   expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1");
 });
 

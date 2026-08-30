@@ -14,6 +14,7 @@ from catboost_adapter import load_catboost_booster
 from predict_lib.foundation_cache import FoundationFeatureField, FoundationRow
 from predict_lib.market_signal_foundation import (
     MARKET_SIGNAL_ADDED_COLUMNS,
+    MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS,
     MarketSignalBaseEvidence,
     validate_market_signal_foundation,
 )
@@ -170,6 +171,8 @@ def _attested_worker_rows(
         source_identity=R2ObjectIdentity("source-etag", "source-version"),
         source_key="feat-daybase/catalog-v1/jra/20260824/features.parquet",
     )
+    output_names = (*input_names, *MARKET_SIGNAL_ADDED_COLUMNS)
+    projected_worker_rows = [{name: row[name] for name in output_names} for row in worker_rows]
     artifact = {
         "base": {
             "foundationEtag": "foundation-etag",
@@ -187,11 +190,12 @@ def _attested_worker_rows(
             "inputFeatureHash": _sha256("\n".join(input_names)),
             "oddsSnapshotHash": _sha256("1:2:1\n2:4:2"),
             "outputFeatureHash": _sha256("\n".join((*input_names, *MARKET_SIGNAL_ADDED_COLUMNS))),
+            "overwrittenColumns": [],
             "raceId": RACE_ID,
             "rowCount": 2,
             "schemaVersion": "1",
         },
-        "rows": worker_rows,
+        "rows": projected_worker_rows,
         "source": {
             "etag": "source-etag",
             "key": evidence.source_key,
@@ -227,7 +231,7 @@ def test_worker_foundation_matches_legacy_layer_and_production_model(tmp_path: P
     legacy_start = perf_counter()
     legacy_rows = _legacy_rows(base_rows, tmp_path)
     legacy_layer_seconds = perf_counter() - legacy_start
-    market_columns = list(MARKET_SIGNAL_ADDED_COLUMNS)
+    market_columns = list(MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS)
     worker_market = pd.DataFrame(attested_rows).sort_values("umaban")[market_columns]
     legacy_market = pd.DataFrame(legacy_rows).sort_values("umaban")[market_columns]
     pd.testing.assert_frame_equal(

@@ -2790,8 +2790,18 @@ def test_focused_full_status_records_running_progress_and_success(
         release.wait(timeout=2.0)
         return 1
 
+    terminal_calls: list[tuple[str, str | None]] = []
     params = _make_focused_full_params(keibajo_code="05", race_bango="11")
-    chunks = list(iter_predict_chunks(params, _predict, focused_full_timeout_seconds=60.0))
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_timeout_seconds=60.0,
+            focused_full_terminal_fn=lambda _params, status, error: terminal_calls.append(
+                (status, error)
+            ),
+        )
+    )
     assert json.loads(chunks[-1].decode())["status"] == "accepted"
     assert started.wait(timeout=2.0)
 
@@ -2803,11 +2813,18 @@ def test_focused_full_status_records_running_progress_and_success(
     assert running["finishedAtMs"] is None
     assert running["error"] is None
 
-    mark_focused_full_progress("jra:20260619:05:11", wall_time_fn=lambda: 1234567.0)
+    mark_focused_full_progress(
+        "jra:20260619:05:11",
+        "step=racechain-layer status=done elapsed_seconds=12.345",
+        wall_time_fn=lambda: 1234567.0,
+    )
     progressed = json.loads(build_focused_full_status_response_body(params))
     assert progressed["startedAtMs"] == running["startedAtMs"]
     assert progressed["lastProgressAtMs"] == 1234567000
     assert progressed["deadlineAtMs"] == running["deadlineAtMs"]
+    assert progressed["progressEvents"] == [
+        "step=racechain-layer status=done elapsed_seconds=12.345"
+    ]
 
     release.set()
     deadline = time.monotonic() + 2.0
@@ -2817,6 +2834,9 @@ def test_focused_full_status_records_running_progress_and_success(
     assert terminal["status"] == "success"
     assert terminal["finishedAtMs"] is not None
     assert terminal["error"] is None
+    while not terminal_calls and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert terminal_calls == [("success", None)]
     lifecycle = [
         json.loads(line)
         for line in capsys.readouterr().err.splitlines()
@@ -2838,6 +2858,40 @@ def test_focused_full_status_records_running_progress_and_success(
     assert lifecycle[1]["error"] is None
 
 
+def test_focused_full_terminal_callback_failure_keeps_durable_status_successful() -> None:
+    completed = threading.Event()
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        completed.set()
+        return 1
+
+    def _raise_callback(_params: PredictParams, _status: str, _error: str | None) -> None:
+        raise RuntimeError("callback unavailable")
+
+    params = _make_focused_full_params(keibajo_code="05", race_bango="13")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_terminal_fn=_raise_callback,
+        )
+    )
+    assert json.loads(chunks[-1].decode())["status"] == "accepted"
+    assert completed.wait(timeout=2.0)
+    deadline = time.monotonic() + 2.0
+    terminal = json.loads(build_focused_full_status_response_body(params))
+    while terminal["status"] == "running" and time.monotonic() < deadline:
+        terminal = json.loads(build_focused_full_status_response_body(params))
+    assert terminal["status"] == "success"
+
+
 def test_focused_full_status_records_masked_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -2854,8 +2908,17 @@ def test_focused_full_status_records_masked_error(
         failed.set()
         raise RuntimeError("postgresql://user:secret@host/db failed")
 
+    terminal_calls: list[tuple[str, str | None]] = []
     params = _make_focused_full_params(keibajo_code="05", race_bango="12")
-    chunks = list(iter_predict_chunks(params, _predict))
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_terminal_fn=lambda _params, status, error: terminal_calls.append(
+                (status, error)
+            ),
+        )
+    )
     assert json.loads(chunks[-1].decode())["status"] == "accepted"
     assert failed.wait(timeout=2.0)
     deadline = time.monotonic() + 2.0
@@ -2865,6 +2928,7 @@ def test_focused_full_status_records_masked_error(
     assert terminal["status"] == "error"
     assert terminal["error"] == "RuntimeError: postgresql://[REDACTED]@host/db failed"
     assert terminal["finishedAtMs"] is not None
+    assert terminal_calls == [("error", "RuntimeError: postgresql://[REDACTED]@host/db failed")]
     captured = capsys.readouterr().err
     assert "user:secret" not in captured
     lifecycle = [

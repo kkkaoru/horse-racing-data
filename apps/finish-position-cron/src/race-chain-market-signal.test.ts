@@ -16,6 +16,7 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
         odds_score: 0.5,
         popularity_score: 0,
         race_id: "jra:2026:0824:05:11",
+        shusso_tosu_1: 10,
         tansho_ninkijun: 1,
         tansho_odds: 5,
         umaban: 1,
@@ -26,6 +27,7 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
         odds_score: 0.3,
         popularity_score: 0.5,
         race_id: "jra:2026:0824:05:11",
+        shusso_tosu_1: 10,
         tansho_ninkijun: 2,
         tansho_odds: 8,
         umaban: 2,
@@ -36,6 +38,7 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
         odds_score: 0.2,
         popularity_score: 1,
         race_id: "jra:2026:0824:05:11",
+        shusso_tosu_1: 10,
         tansho_ninkijun: 3,
         tansho_odds: 20,
         umaban: 3,
@@ -53,6 +56,8 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
   expect(result.rows[0]?.popularity_score_diff_from_race_avg).toBeCloseTo(-0.5, 12);
   expect(result.rows[0]?.popularity_odds_disagreement).toBeCloseTo(0.5, 12);
   expect(result.rows[0]?.form_market_edge).toBeCloseTo(0.1, 12);
+  expect(result.rows[0]?.field_dominant_favorite_indicator).toBeCloseTo(0.625, 12);
+  expect(result.rows[0]?.horse_popularity_vs_field).toBeCloseTo(0.1, 12);
   expect(result.rows[1]?.inverse_odds_implied_prob).toBeCloseTo(0.125, 12);
   expect(result.rows[1]?.inverse_odds_market_share).toBeCloseTo(0.3333333333333333, 12);
   expect(result.rows[1]?.inverse_odds_rank_in_race).toBe(2);
@@ -61,6 +66,7 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
   expect(result.rows[1]?.popularity_score_diff_from_race_avg).toBeCloseTo(0, 12);
   expect(result.rows[1]?.popularity_odds_disagreement).toBeCloseTo(0.2, 12);
   expect(result.rows[1]?.form_market_edge).toBeCloseTo(0.075, 12);
+  expect(result.rows[1]?.horse_popularity_vs_field).toBeCloseTo(0.2, 12);
   expect(result.rows[2]?.inverse_odds_implied_prob).toBeCloseTo(0.05, 12);
   expect(result.rows[2]?.inverse_odds_market_share).toBeCloseTo(0.1333333333333333, 12);
   expect(result.rows[2]?.inverse_odds_rank_in_race).toBe(3);
@@ -69,6 +75,7 @@ test("materializeRaceMarketSignals matches the canonical DuckDB focused-race gol
   expect(result.rows[2]?.popularity_score_diff_from_race_avg).toBeCloseTo(0.5, 12);
   expect(result.rows[2]?.popularity_odds_disagreement).toBeCloseTo(0.8, 12);
   expect(result.rows[2]?.form_market_edge).toBeCloseTo(0.05, 12);
+  expect(result.rows[2]?.horse_popularity_vs_field).toBeCloseTo(0.3, 12);
 });
 
 test("materializeRaceMarketSignals preserves DuckDB competition ties and NULLS LAST ranks", () => {

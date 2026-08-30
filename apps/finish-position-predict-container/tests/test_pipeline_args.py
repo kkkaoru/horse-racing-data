@@ -1312,6 +1312,15 @@ def test_jra_day_stable_lineage_stays_on_whole_day_base() -> None:
     assert LINEAGE_SCRIPT not in race_chain_for("jra")
 
 
+def test_static_near_miss_and_relationship_layers_are_r2_warmed_in_day_base() -> None:
+    assert "add-near-miss-features.py" in day_chain_for("jra")
+    assert "add-relationship-r1-features.py" in day_chain_for("jra")
+    assert "add-near-miss-features.py" in day_chain_for("nar")
+    assert "add-relationship-r1-features.py" in day_chain_for("nar")
+    assert "add-near-miss-features.py" not in race_chain_for("jra")
+    assert "add-relationship-r1-features.py" not in race_chain_for("jra")
+
+
 def test_baba_pedigree_runs_once_per_day_for_flat_racing_categories() -> None:
     assert BABA_PEDIGREE_SCRIPT in day_chain_for("jra")
     assert BABA_PEDIGREE_SCRIPT not in race_chain_for("jra")
@@ -1325,10 +1334,10 @@ def test_baba_pedigree_remains_per_race_for_banei() -> None:
 
 
 def test_race_chain_counts_match_architecture_spec() -> None:
-    assert len(day_chain_for("jra")) == 13
-    assert len(race_chain_for("jra")) == 4
-    assert len(day_chain_for("nar")) == 8
-    assert len(race_chain_for("nar")) == 2
+    assert len(day_chain_for("jra")) == 15
+    assert len(race_chain_for("jra")) == 2
+    assert len(day_chain_for("nar")) == 10
+    assert len(race_chain_for("nar")) == 0
     assert len(day_chain_for("ban-ei")) == 6
     assert len(race_chain_for("ban-ei")) == 1
 

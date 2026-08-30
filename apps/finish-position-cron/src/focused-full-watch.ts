@@ -29,6 +29,8 @@ export interface FocusedFullWatchTickDependencies {
 
 interface FocusedFullStatusPayload {
   error: string | null;
+  lastProgressAtMs: number | null;
+  progressEvents: string[];
   raceKey: string;
   status: "error" | "missing" | "running" | "success";
 }
@@ -43,6 +45,7 @@ export const WATCH_RESPONSE_HEADER: string = "x-focused-full-watch-id";
 export const FOCUSED_FULL_WATCH_POLL_SECONDS: number = 30;
 export const FOCUSED_FULL_WATCH_BACKUP_SECONDS: number = 150;
 export const FOCUSED_FULL_WATCH_TIMEOUT_MS: number = 31 * 60 * 1000;
+export const FOCUSED_FULL_WATCH_PROGRESS_STALE_MS: number = 4 * 60 * 1000;
 
 const PREDICT_PATH: string = "/predict";
 const STATUS_PATH: string = "/focused-full-status";
@@ -86,6 +89,11 @@ const isFocusedFullWatchPayload = (value: unknown): value is ValidatedFocusedFul
   );
 };
 
+export const parseFocusedFullWatchPayloadValue = (
+  value: unknown,
+): ValidatedFocusedFullWatchPayload | undefined =>
+  isFocusedFullWatchPayload(value) ? value : undefined;
+
 const expectedRaceKey = (body: PredictQueueMessage): string =>
   `${body.category}:${body.runYmd}:${body.keibajoCode}:${body.raceBango}`;
 
@@ -108,7 +116,29 @@ const parseStatusPayload = (
   if (value.error !== null && typeof value.error !== "string") {
     throw new Error("Focused-full status response has an invalid error");
   }
-  return { error: value.error, raceKey: value.raceKey, status: value.status };
+  const rawLastProgressAtMs = value.lastProgressAtMs;
+  if (
+    rawLastProgressAtMs !== undefined &&
+    rawLastProgressAtMs !== null &&
+    (typeof rawLastProgressAtMs !== "number" || !Number.isFinite(rawLastProgressAtMs))
+  ) {
+    throw new Error("Focused-full status response has an invalid lastProgressAtMs");
+  }
+  const rawProgressEvents = value.progressEvents;
+  if (
+    rawProgressEvents !== undefined &&
+    (!Array.isArray(rawProgressEvents) ||
+      !rawProgressEvents.every((event) => typeof event === "string"))
+  ) {
+    throw new Error("Focused-full status response has invalid progressEvents");
+  }
+  return {
+    error: value.error,
+    lastProgressAtMs: rawLastProgressAtMs === undefined ? null : rawLastProgressAtMs,
+    progressEvents: rawProgressEvents === undefined ? [] : rawProgressEvents,
+    raceKey: value.raceKey,
+    status: value.status,
+  };
 };
 
 const readStatus = async (
@@ -132,7 +162,28 @@ const terminalResult = async (
     return { error: "Focused-full completion watch timed out", outcome: "timeout" };
   }
   const status = await readStatus(await dependencies.pollStatus(payload.body), payload.body);
-  if (status.status === "running") return undefined;
+  if (status.status === "running") {
+    if (
+      status.lastProgressAtMs !== null &&
+      dependencies.now() - status.lastProgressAtMs > FOCUSED_FULL_WATCH_PROGRESS_STALE_MS
+    ) {
+      return {
+        error: `Focused-full detached pipeline heartbeat stale: ${status.raceKey}`,
+        outcome: "error",
+      };
+    }
+    return undefined;
+  }
+  if (status.progressEvents.length > 0) {
+    console.log(
+      JSON.stringify({
+        event: "focused-full-pipeline-timings",
+        progressEvents: status.progressEvents,
+        raceKey: status.raceKey,
+        status: status.status,
+      }),
+    );
+  }
   if (status.status === "error") {
     return {
       error: status.error ?? `Focused-full detached pipeline failed: ${status.raceKey}`,
@@ -162,10 +213,9 @@ export const parseFocusedFullWatchHeader = (request: Request): ValidatedFocusedF
   const header = request.headers.get(WATCH_REQUEST_HEADER);
   if (header === null) throw new Error(`Missing ${WATCH_REQUEST_HEADER} header`);
   const value: unknown = JSON.parse(header);
-  if (!isFocusedFullWatchPayload(value)) {
-    throw new Error(`Invalid ${WATCH_REQUEST_HEADER} header`);
-  }
-  return value;
+  const payload = parseFocusedFullWatchPayloadValue(value);
+  if (payload === undefined) throw new Error(`Invalid ${WATCH_REQUEST_HEADER} header`);
+  return payload;
 };
 
 export const isFocusedFullPredictUrl = (url: URL): boolean =>

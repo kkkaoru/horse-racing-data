@@ -1,6 +1,7 @@
 // Run with bun. Raw-Catalog-backed completion guard for focused per-race full messages.
 
 import { neon } from "@neondatabase/serverless";
+import { buildFinishPositionPredictionKvKey } from "./prediction-kv-keys";
 import { buildPerRaceFeatCacheKey } from "./scoring/feature-cache";
 import type { Env, PredictCategory } from "./types";
 
@@ -103,6 +104,8 @@ const NAR_CELL_TOP1_MODEL_VERSIONS: readonly string[] = [
   "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
   "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
   "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
 ];
 const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011";
 const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y";
@@ -470,6 +473,12 @@ const expectedModelVersion = (params: ExpectedModelVersionParams): string => {
   return JRA_DEFAULT_MODEL_VERSION;
 };
 
+interface CachedPredictionFeature {
+  horseNumber: string;
+  modelVersion: string;
+  predictionGeneratedAt: string;
+}
+
 interface CountMatchParams {
   env: Env;
   source: string;
@@ -504,6 +513,53 @@ const resolveCompletionNotBefore = (runYmd: string, notBefore?: string): string 
   if (notBefore === undefined) return buildRunDateStartUtc(runYmd);
   const parsed = new Date(notBefore);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 19);
+};
+
+const parseCachedPredictionFeature = (value: unknown): CachedPredictionFeature | null => {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.horseNumber !== "string" ||
+    value.horseNumber.length === 0 ||
+    typeof value.modelVersion !== "string" ||
+    value.modelVersion.length === 0 ||
+    typeof value.predictionGeneratedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.predictionGeneratedAt))
+  ) {
+    return null;
+  }
+  return {
+    horseNumber: value.horseNumber,
+    modelVersion: value.modelVersion,
+    predictionGeneratedAt: value.predictionGeneratedAt,
+  };
+};
+
+const kvMatchesCompletion = async (
+  params: CompletionParams,
+  expectedCount: number,
+  modelVersions: ReadonlySet<string>,
+  notBefore: string,
+): Promise<boolean> => {
+  const kv = params.env.DETAIL_SECTION_CACHE_KV;
+  if (kv === undefined) return false;
+  const key = buildFinishPositionPredictionKvKey({
+    keibajoCode: params.keibajoCode,
+    mmdd: params.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_DAY_END),
+    raceBango: params.raceBango,
+    year: params.runYmd.slice(0, RUN_YMD_YEAR_END),
+  });
+  const value: unknown = await kv.get(key, "json");
+  if (!Array.isArray(value) || value.length !== expectedCount) return false;
+  const rows = value.map(parseCachedPredictionFeature);
+  if (rows.some((row) => row === null)) return false;
+  const features = rows.filter((row): row is CachedPredictionFeature => row !== null);
+  if (new Set(features.map((row) => row.horseNumber)).size !== expectedCount) return false;
+  if (new Set(features.map((row) => row.predictionGeneratedAt)).size !== 1) return false;
+  const notBeforeMs = Date.parse(`${notBefore}Z`);
+  return features.every(
+    (row) =>
+      modelVersions.has(row.modelVersion) && Date.parse(row.predictionGeneratedAt) >= notBeforeMs,
+  );
 };
 
 const countMatchesModelVersion = async (params: CountMatchParams): Promise<boolean> => {
@@ -560,6 +616,24 @@ export const isFocusedFullPredictionComplete = async (
     keibajoCode: params.keibajoCode,
     runYmd: params.runYmd,
   });
+  const stage1ModelVersion = STAGE1_MARKET_FREE_MODEL_VERSIONS[params.category];
+  const acceptableModelVersions = new Set([
+    modelVersion,
+    ...(stage1ModelVersion === undefined ? [] : [stage1ModelVersion]),
+    ...(params.category === "nar" ? NAR_CELL_TOP1_MODEL_VERSIONS : []),
+  ]);
+  const kvComplete = await kvMatchesCompletion(
+    params,
+    entries.length,
+    acceptableModelVersions,
+    notBefore,
+  ).catch((error: unknown) => {
+    console.warn(
+      `[focused-full-completion] KV preflight failed category=${params.category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}: ${String(error)}`,
+    );
+    return false;
+  });
+  if (kvComplete) return true;
   const shared = {
     env: params.env,
     expectedCount: entries.length,
@@ -578,7 +652,6 @@ export const isFocusedFullPredictionComplete = async (
   // category's stage1_routing.json fallback model_version instead. Without
   // this second check, such a race can never be observed "complete" here:
   // see STAGE1_MARKET_FREE_MODEL_VERSIONS' comment for the full incident.
-  const stage1ModelVersion = STAGE1_MARKET_FREE_MODEL_VERSIONS[params.category];
   if (
     stage1ModelVersion !== undefined &&
     (await countMatchesModelVersion({ ...shared, modelVersion: stage1ModelVersion }))

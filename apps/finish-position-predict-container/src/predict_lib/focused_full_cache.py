@@ -13,9 +13,12 @@ and ``serve.iter_predict_chunks``'s focused-full branch) -- by the time that
 detached pipeline finishes, the HTTP response that would have carried the
 payload bytes has already ended. This store lets the detached thread hand the
 computed payload off to a *later*, separate HTTP request: the Worker's queue
-consumer polls Neon for completion on redelivery, and once it observes a
-race is done, it makes a follow-up call to fetch this race's
-cached payload so it can still be proxied to R2 through the normal channel.
+consumer observes completion through Cloudflare-owned state and fetches this
+race's cached payload so it can still be proxied to R2 through the normal
+channel.
+The production Container no longer queries Neon to decide completion; the
+Worker owns completion using Cloudflare KV/R2/DO state and uses Neon only as a
+repair fallback outside the Container runtime.
 
 Population is part of focused-full semantic completion: a prediction without
 its exact-race cache is recorded as an error and retried. A missed later pickup

@@ -366,6 +366,7 @@ test("a resumed fence destroys a Container that is still running", async () => {
 
 test("validates container control messages and queue wrappers", () => {
   expect(isContainerControlMessage(message)).toBe(true);
+  expect(isContainerControlMessage({ ...message, allowUnowned: true })).toBe(true);
   expect(
     isContainerControlMessage({
       ...message,
@@ -386,6 +387,7 @@ test("validates container control messages and queue wrappers", () => {
     { ...message, acceptableWorkKeys: [] },
     { ...message, acceptableWorkKeys: [""] },
     { ...message, acceptableWorkKeys: [1] },
+    { ...message, allowUnowned: "yes" },
     { ...message, role: "unknown" },
   ]) {
     expect(isContainerControlMessage(invalid)).toBe(false);
@@ -440,5 +442,24 @@ test("enqueueContainerStopForRole records an unambiguous binding role", async ()
       type: "container-stop",
       workKey: "work-2",
     }),
+  );
+
+  await expect(
+    enqueueContainerStopForRole({
+      allowUnowned: true,
+      delaySeconds: 20,
+      env,
+      name: "race-chain-predict-jra-1",
+      role: "race-chain",
+      workKey: "work-2",
+    }),
+  ).resolves.toBe(true);
+  expect(send).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      allowUnowned: true,
+      name: "race-chain-predict-jra-1",
+      workKey: "work-2",
+    }),
+    { delaySeconds: 20 },
   );
 });

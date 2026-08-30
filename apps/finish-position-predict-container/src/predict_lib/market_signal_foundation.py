@@ -23,7 +23,7 @@ from .r2_client import R2ObjectIdentity
 SCHEMA_VERSION: Final[str] = "1"
 MARKET_SIGNAL_CONTRACT_VERSION: Final[str] = "race-chain-market-signal-foundation-v1"
 MARKET_SIGNAL_FOUNDATION_MAX_BYTES: Final[int] = 2 * 1024 * 1024
-MARKET_SIGNAL_ADDED_COLUMNS: Final[tuple[str, ...]] = (
+MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS: Final[tuple[str, ...]] = (
     "tansho_odds_raw",
     "tansho_ninkijun_raw",
     "inverse_odds_implied_prob",
@@ -35,6 +35,11 @@ MARKET_SIGNAL_ADDED_COLUMNS: Final[tuple[str, ...]] = (
     "popularity_odds_disagreement",
     "form_market_edge",
 )
+MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS: Final[tuple[str, ...]] = (
+    "field_dominant_favorite_indicator",
+    "horse_popularity_vs_field",
+)
+MARKET_SIGNAL_ADDED_COLUMNS: Final[tuple[str, ...]] = MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS
 MARKET_SIGNAL_FLOAT_COLUMNS: Final[frozenset[str]] = frozenset(
     {
         "tansho_odds_raw",
@@ -44,6 +49,8 @@ MARKET_SIGNAL_FLOAT_COLUMNS: Final[frozenset[str]] = frozenset(
         "popularity_score_diff_from_race_avg",
         "popularity_odds_disagreement",
         "form_market_edge",
+        "field_dominant_favorite_indicator",
+        "horse_popularity_vs_field",
     }
 )
 MARKET_SIGNAL_INTEGER_COLUMNS: Final[frozenset[str]] = frozenset(
@@ -58,7 +65,7 @@ _FEATURE_PREFIX: Final[str] = "feat-racechain-market-signal"
 _GENERATION: Final[str] = "catalog-v1"
 _FEATURE_FILE: Final[str] = "foundation.json"
 _MAX_ROWS: Final[int] = 32
-_MAX_FEATURES: Final[int] = 522
+_MAX_FEATURES: Final[int] = 524
 _RACE_ID: Final[str] = "race_id"
 _KETTO: Final[str] = "ketto_toroku_bango"
 _UMABAN: Final[str] = "umaban"
@@ -67,8 +74,16 @@ _POPULARITY: Final[str] = "tansho_ninkijun"
 _ODDS_SCORE: Final[str] = "odds_score"
 _POPULARITY_SCORE: Final[str] = "popularity_score"
 _CAREER_WIN_RATE: Final[str] = "career_win_rate"
+_RUNNER_COUNT: Final[str] = "shusso_tosu"
+_NEAR_MISS_RUNNER_COUNT: Final[str] = "shusso_tosu_1"
 _CANONICAL_OVERWRITES: Final[frozenset[str]] = frozenset(
-    {_ODDS, _POPULARITY, _ODDS_SCORE, _POPULARITY_SCORE}
+    {
+        _ODDS,
+        _POPULARITY,
+        _ODDS_SCORE,
+        _POPULARITY_SCORE,
+        *MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS,
+    }
 )
 
 
@@ -287,12 +302,14 @@ def _average(values: Sequence[float]) -> float:
 
 def _expected_market_values(
     rows: Sequence[Mapping[str, object]],
-) -> list[dict[str, float | int]] | None:
+) -> list[dict[str, float | int | None]] | None:
     odds: list[float] = []
     popularity: list[int] = []
     odds_scores: list[float] = []
     popularity_scores: list[float] = []
     career_rates: list[float | None] = []
+    horse_numbers: list[int] = []
+    field_sizes: list[float] = []
     for row in rows:
         odds_value = _positive_number(row.get(_ODDS))
         popularity_value = _positive_int(row.get(_POPULARITY))
@@ -300,11 +317,14 @@ def _expected_market_values(
         popularity_score = _finite_number(row.get(_POPULARITY_SCORE))
         career_raw = row.get(_CAREER_WIN_RATE)
         career_rate = None if career_raw is None else _finite_number(career_raw)
+        horse_number = _positive_int(row.get(_UMABAN))
+        field_size = _positive_number(row.get(_NEAR_MISS_RUNNER_COUNT, row.get(_RUNNER_COUNT)))
         if (
             odds_value is None
             or popularity_value is None
             or odds_score is None
             or popularity_score is None
+            or horse_number is None
             or (career_raw is not None and career_rate is None)
         ):
             return None
@@ -313,6 +333,8 @@ def _expected_market_values(
         odds_scores.append(odds_score)
         popularity_scores.append(popularity_score)
         career_rates.append(career_rate)
+        horse_numbers.append(horse_number)
+        field_sizes.append(field_size if field_size is not None else float(len(rows)))
     runner_count = len(rows)
     expected_odds_scores = [
         min(1.0, max(0.0, math.log(max(value, 1.0)) / math.log(300.0))) for value in odds
@@ -327,10 +349,16 @@ def _expected_market_values(
     total_implied = sum(implied)
     odds_score_average = _average(odds_scores)
     popularity_score_average = _average(popularity_scores)
-    expected: list[dict[str, float | int]] = []
+    favorite_indexes = sorted(
+        range(runner_count), key=lambda index: (popularity[index], horse_numbers[index])
+    )
+    field_dominance = (
+        None if len(favorite_indexes) < 2 else odds[favorite_indexes[0]] / odds[favorite_indexes[1]]
+    )
+    expected: list[dict[str, float | int | None]] = []
     for index, implied_probability in enumerate(implied):
         form_market_edge = career_rates[index]
-        values: dict[str, float | int] = {
+        values: dict[str, float | int | None] = {
             "tansho_odds_raw": odds[index],
             "tansho_ninkijun_raw": popularity[index],
             "inverse_odds_implied_prob": implied_probability,
@@ -344,6 +372,8 @@ def _expected_market_values(
                 popularity_scores[index] - popularity_score_average
             ),
             "popularity_odds_disagreement": abs(popularity_scores[index] - odds_scores[index]),
+            "field_dominant_favorite_indicator": field_dominance,
+            "horse_popularity_vs_field": popularity[index] / field_sizes[index],
         }
         if form_market_edge is not None:
             values["form_market_edge"] = form_market_edge - implied_probability
@@ -397,7 +427,15 @@ def _rows_match(
         for name in (field.name for field in evidence.base_schema):
             if name not in _CANONICAL_OVERWRITES and row.get(name) != base_row.get(name):
                 return None
-        for name in MARKET_SIGNAL_ADDED_COLUMNS:
+        market_columns = (
+            *MARKET_SIGNAL_ADDED_COLUMNS,
+            *(
+                name
+                for name in MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS
+                if name in output_name_set
+            ),
+        )
+        for name in market_columns:
             expected = market_values.get(name)
             if name == "form_market_edge" and name not in market_values:
                 expected = None
@@ -445,14 +483,24 @@ def validate_market_signal_foundation(
     if not _base_identity_matches(artifact.get("base"), evidence):
         return MarketSignalLoadResult("base-identity-mismatch", None)
     input_names = tuple(field.name for field in evidence.base_schema)
-    if len(input_names) + len(MARKET_SIGNAL_ADDED_COLUMNS) > _MAX_FEATURES or any(
-        name in input_names for name in MARKET_SIGNAL_ADDED_COLUMNS
-    ):
+    if any(name in input_names for name in MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS):
         return MarketSignalLoadResult("schema-collision", None)
-    output_names = input_names + MARKET_SIGNAL_ADDED_COLUMNS
+    overwritten_columns = tuple(
+        name for name in MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS if name in input_names
+    )
+    expected_added_columns = MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS
+    if len(input_names) + len(expected_added_columns) > _MAX_FEATURES:
+        return MarketSignalLoadResult("schema-collision", None)
+    output_names = input_names + expected_added_columns
     added_columns = contract.get("addedColumns")
-    if not isinstance(added_columns, list) or tuple(added_columns) != MARKET_SIGNAL_ADDED_COLUMNS:
+    if not isinstance(added_columns, list) or tuple(added_columns) != expected_added_columns:
         return MarketSignalLoadResult("added-columns-mismatch", None)
+    raw_overwritten_columns = contract.get("overwrittenColumns")
+    if (
+        not isinstance(raw_overwritten_columns, list)
+        or tuple(raw_overwritten_columns) != overwritten_columns
+    ):
+        return MarketSignalLoadResult("overwritten-columns-mismatch", None)
     input_feature_hash = _sha256("\n".join(input_names))
     output_feature_hash = _sha256("\n".join(output_names))
     row_count = _positive_integer(contract, "rowCount", _MAX_ROWS)

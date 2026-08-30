@@ -258,6 +258,10 @@ JRA / NAR の deployed model が 4 つの **within-race leak 列**（`target_cor
 
 特徴量は DuckDB ベースの builder が raw Iceberg table から構築する。本番 Container は R2 Data Catalog を read-only attach し、加工済み特徴量 table や Neon を入力にしない。raw Iceberg の唯一の転送元は local PostgreSQL である。local PG の直接参照はオフライン学習・検証に限定し、本番 batch の fallback にはしない。
 
+**2026-08-30 Neon write-only / Cloudflare warm 境界**: 着順予測 Container から focused-full completion 用の Neon `SELECT` と起動時接続 probe を撤去し、Neon 接続境界は `CREATE` / `ALTER` / `INSERT` / `UPDATE` 等の明示的 write allowlist だけを受け付ける。`SELECT` / `SHOW` 等は cursor を開く前に拒否する。入力は R2 Catalog、attested R2 day-base/per-race foundation、Cloudflare realtime service に限定する。Worker の completion guard は共有 KV `pred:fp:v1:*` の単一世代・頭数・model version・生成時刻を先に検証し、KV miss/error の repair 時だけ Neon を参照する。また `REALTIME_HOT` service binding から取得した最新オッズと per-race R2 foundation を Worker で market-signal artifact に materialize し、race-chain Container は attestation が一致した artifact を HIT して market layer subprocess を省略する。R2 Catalog の raw schema 追加は不要であり、既存の Catalog source contractを維持する。
+
+**2026-08-30 race-chain latency 第2段**: detached Container は完了時にwatch payloadでスコープされたHMAC署名callbackをWorkerへ送る。callbackは完了結果を信用せず、署名検証後にContainer statusの即時tickを起動するだけであり、30秒pollはcallback障害時のdurable fallbackとして残す。race-chain各層の秒数はNeonへ書かず、bounded `progressEvents` と `racechain-pipeline-timing`構造化ログへ記録する。near-missとrelationshipはstrict-prior-date/source-entry watermarkで固定できる部分をDAY_CHAINへ移し、日次R2 foundationで一度だけ生成する。JRAのlive人気依存2列はWorker market artifactで上書きし、artifact miss時だけnear-missをper-race fallback実行する。残り複数層は`race_chain_runner.py`が単一のkill可能Python/DuckDB processで順序実行し、成功後はworkKey fencing付き20秒idle graceで同一shardの次レースにprocess/model/extension cacheを再利用する。
+
 - メインビルダー: `apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py`
 - 本番は DuckDB の Iceberg extension で Catalog を読む。Catalog 障害時は fail-closed とし、PostgreSQL / Hyperdrive / D1 へ切り替えない。
 

@@ -54,10 +54,11 @@ export const CONTAINER_GENERAL_SLOT_MAX = CONTAINER_MAX_INSTANCES - CONTAINER_RE
 // One shared category DO per rescore category (jra/nar/ban-ei). Combined with
 // unsharded rescore DO names this is also the max concurrent rescore instances.
 export const CONTAINER_RESCORE_SLOT_MAX = 3;
-// Matches FinishPositionRaceChainContainer.max_instances in wrangler.jsonc.
-// Race-chain DO names share this coordinator with legacy DOs, so they need an
-// explicit software ceiling instead of relying on a platform start failure.
-export const RACE_CHAIN_CONTAINER_SLOT_MAX = 3;
+// Keep one slot below FinishPositionRaceChainContainer.max_instances in
+// wrangler.jsonc. A terminal lease can be released before Cloudflare finishes
+// stopping its Container, so filling all three software slots races a fourth
+// start against that stopping instance and returns max_instances exceeded.
+export const RACE_CHAIN_CONTAINER_SLOT_MAX = 2;
 export const CONTAINER_SLOT_STALE_MS = 20 * 60 * 1000;
 export const CONTAINER_DAY_BASE_SLOT_STALE_MS = 60 * 60 * 1000;
 export const CONTAINER_SLOT_RETRY_DELAY_SECONDS = 30;
@@ -223,13 +224,13 @@ export const isContainerSlotStopAllowed = (
   workKey: string | undefined,
   now: number,
   acceptableWorkKeys?: readonly string[],
+  allowUnowned: boolean = false,
 ): boolean => {
   const ownerKeys = acceptableWorkKeys ?? (workKey === undefined ? undefined : [workKey]);
   if (ownerKeys === undefined) return true;
   const existing = pruneStaleContainerSlots(leases, now).find((lease) => lease.doName === doName);
-  return (
-    existing !== undefined && existing.workKey !== undefined && ownerKeys.includes(existing.workKey)
-  );
+  if (existing === undefined) return allowUnowned;
+  return existing.workKey !== undefined && ownerKeys.includes(existing.workKey);
 };
 
 export const releaseContainerSlotLease = (

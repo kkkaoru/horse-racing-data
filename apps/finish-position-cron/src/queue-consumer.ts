@@ -25,7 +25,7 @@ import {
   CONTAINER_SLOT_STALE_MS,
   type ContainerSlotKind,
 } from "./container-slot-cap";
-import { consumeContainerStop } from "./container-control";
+import { consumeContainerStop, enqueueContainerStopForRole } from "./container-control";
 import {
   consumeContainerCleanup,
   handOffContainerStopOrCleanup,
@@ -59,6 +59,7 @@ import {
   buildFocusedFullStatusUrl as buildWatchStatusUrl,
   FOCUSED_FULL_WATCH_BACKUP_SECONDS,
   FOCUSED_FULL_WATCH_POLL_SECONDS,
+  FOCUSED_FULL_WATCH_PROGRESS_STALE_MS,
   pollFocusedFullWatchTick,
   sendFocusedFullWatchMessageDurably,
   WATCH_REQUEST_HEADER,
@@ -133,19 +134,31 @@ const RESCORE_MODE = "rescore";
 const RESULT_SUCCESS_STATUS = "success";
 const DAY_BASE_REQUIRED_ERROR_CODE = "DAY_BASE_REQUIRED:";
 const ENABLED_FLAG = "1";
+const resolveMarketSignalFetch = (env: Env): typeof fetch => {
+  const realtimeHot = env.REALTIME_HOT;
+  if (realtimeHot === undefined) return fetch;
+  return (input, init) => realtimeHot.fetch(input, init);
+};
 // A terminal Worker invocation can legally run for up to 15 minutes. Keep the
 // ownership lease beyond that bound so the watchdog chain never steals while
 // the original cache/stop finalizer can still be executing.
 const FOCUSED_FULL_TERMINAL_CLAIM_STALE_MS = 16 * 60 * 1000;
 // Focused full returns "accepted" when the container either launched a detached
 // pipeline for this race or observed the same race already in flight. The queue
-// consumer polls Neon completion on delayed redeliveries instead of holding a
-// Cloudflare request open for the whole feature chain.
+// consumer polls Cloudflare-owned completion state on delayed redeliveries
+// (KV first; Neon only as a repair fallback) instead of holding a Cloudflare
+// request open for the whole feature chain.
 const FOCUSED_FULL_ACCEPTED_STATUS = "accepted";
 const FOCUSED_FULL_BUSY_STATUS = "busy";
 const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
 const PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS = 30;
+const CONTAINER_REUSE_IDLE_SECONDS_MAX = 120;
 const CONTAINER_SLOT_STOPPING_STATE = "stopping";
+
+export const resolveContainerReuseIdleSeconds = (value: string | undefined): number => {
+  if (value === undefined || !/^\d+$/u.test(value)) return 0;
+  return Math.min(Number(value), CONTAINER_REUSE_IDLE_SECONDS_MAX);
+};
 // Status written to the focused-full DO claim (predict-run-coordinator.ts)
 // when a message is skipped for carrying an old runYmd (old-date-guard.ts).
 // Not a TERMINAL_STATUSES entry there, so it does not itself block a future
@@ -158,11 +171,11 @@ const OLD_DATE_SKIP_STATUS = "skipped-old-date";
 // identity and delivery-attempt budget remain intact and a permanently stuck
 // slot eventually reaches the DLQ. The retry delay grows with message.attempts
 // (see computeRetryDelaySeconds below) rather than staying fixed: each
-// redelivery re-runs the Neon focused-full
-// completion guard, so a short delay while the slot is likely to free up soon
+// redelivery re-runs the KV-first focused-full completion guard, so a short
+// delay while the slot is likely to free up soon
 // and a longer delay once many races are already queued ahead keeps
-// slot-pickup latency low without scaling Neon query volume linearly with
-// how deep in a same-day burst this message sits.
+// slot-pickup latency low without scaling completion-check volume linearly
+// with how deep in a same-day burst this message sits.
 const BUSY_RETRY_DELAY_BASE_SECONDS = 30;
 const BUSY_RETRY_DELAY_STEP_SECONDS = 20;
 const BUSY_RETRY_DELAY_MAX_SECONDS = 300;
@@ -190,10 +203,6 @@ const FOCUSED_FULL_RETRY_DELAY_SECONDS = 30;
 // never rotate a healthy owner before that authoritative deadline; one extra
 // minute lets the next status poll observe deadlineExpired and recycle it.
 const FOCUSED_FULL_IN_FLIGHT_STALE_MS = 31 * 60 * 1000;
-// Python emits a heartbeat while the detached pipeline is alive. A running
-// status without that heartbeat is a crashed/evicted Container, not evidence
-// that the 31-minute absolute deadline should be extended indefinitely.
-const FOCUSED_FULL_PROGRESS_STALE_MS = 4 * 60 * 1000;
 const RESCORE_EXECUTION_STALE_MS = 31 * 60 * 1000;
 const RESCORE_NEAR_POST_THRESHOLD_SECONDS = 5 * 60;
 const RESCORE_NEAR_POST_RETRY_MAX_SECONDS = 15;
@@ -240,6 +249,7 @@ type FocusedFullPollStatus = "error" | "missing" | "running" | "success";
 interface FocusedFullStatusPayload {
   error: string | null;
   lastProgressAtMs: number | null;
+  progressEvents: string[];
   raceKey: string;
   status: FocusedFullPollStatus;
 }
@@ -1219,9 +1229,17 @@ const parseFocusedFullStatus = (
     (typeof rawLastProgressAtMs !== "number" || !Number.isFinite(rawLastProgressAtMs))
   )
     throw new Error("Focused-full status response has an invalid lastProgressAtMs");
+  const rawProgressEvents = value.progressEvents;
+  if (
+    rawProgressEvents !== undefined &&
+    (!Array.isArray(rawProgressEvents) ||
+      !rawProgressEvents.every((event) => typeof event === "string"))
+  )
+    throw new Error("Focused-full status response has invalid progressEvents");
   return {
     error,
     lastProgressAtMs: rawLastProgressAtMs === undefined ? null : rawLastProgressAtMs,
+    progressEvents: rawProgressEvents === undefined ? [] : rawProgressEvents,
     raceKey,
     status,
   };
@@ -1277,21 +1295,22 @@ const recoverFocusedFullStatus = async (params: RecoverFocusedFullStatusParams):
       workKey: params.workKey,
     });
   }
+  const delaySeconds = computeRetryDelaySeconds(params.message.attempts);
   if (params.role === "race-chain" && params.error.includes(DAY_BASE_REQUIRED_ERROR_CODE)) {
     await repairDayBaseAfterContainerMiss(params.body, params.env);
-    params.message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+    params.message.retry({ delaySeconds });
     console.warn(
       `[predict-queue] detached race-chain cache HIT lost; retrying fail-closed ${describePredictMessage(
         params.message.body,
-      )} error=${params.error} delaySeconds=${CONTAINER_SLOT_RETRY_DELAY_SECONDS}`,
+      )} error=${params.error} delaySeconds=${delaySeconds}`,
     );
     return;
   }
-  params.message.retry({ delaySeconds: CONTAINER_SLOT_RETRY_DELAY_SECONDS });
+  params.message.retry({ delaySeconds });
   console.warn(
     `[predict-queue] focused-full status error; cleanup handed off before retry ${describePredictMessage(
       params.message.body,
-    )}; error=${params.error}`,
+    )}; error=${params.error} delaySeconds=${delaySeconds}`,
   );
 };
 
@@ -1362,7 +1381,7 @@ const pollFocusedFullStatus = async (
     if (status.status === "running") {
       if (
         status.lastProgressAtMs !== null &&
-        Date.now() - status.lastProgressAtMs > FOCUSED_FULL_PROGRESS_STALE_MS
+        Date.now() - status.lastProgressAtMs > FOCUSED_FULL_WATCH_PROGRESS_STALE_MS
       ) {
         await recoverFocusedFullStatus({
           body,
@@ -1383,6 +1402,16 @@ const pollFocusedFullStatus = async (
       });
       retryFocusedFullAlreadyInFlight(message);
       return false;
+    }
+    if (status.progressEvents.length > 0) {
+      console.log(
+        JSON.stringify({
+          event: "focused-full-pipeline-timings",
+          progressEvents: status.progressEvents,
+          raceKey: status.raceKey,
+          status: status.status,
+        }),
+      );
     }
     if (status.status === "success") {
       await completeFocusedFullFromStatus({
@@ -1499,7 +1528,7 @@ const claimFocusedFullOrRetry = async (
     return pollFocusedFullStatus(message, body, env);
   }
   // A status probe is itself a Container request and starts an inactive
-  // instance. Neon completion has already been checked before this claim, so
+  // instance. KV-first completion has already been checked before this claim, so
   // unresolved work stays on the Queue until the coordinator's 31-minute
   // stale deadline permits an intentional restart.
   retryFocusedFullAlreadyInFlight(message);
@@ -2482,7 +2511,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
           FEATURES_CACHE: env.FEATURES_CACHE,
           WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: env.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED,
         },
-        fetchImpl: fetch,
+        fetchImpl: resolveMarketSignalFetch(env),
         keibajoCode: message.body.keibajoCode,
         raceBango: message.body.raceBango,
         runYmd,
@@ -2889,12 +2918,38 @@ export const consumeFocusedFullCompletion = async (
     }
     stopped = true;
   };
+  const scheduleReusableTerminalContainer = async (): Promise<boolean> => {
+    const delaySeconds = resolveContainerReuseIdleSeconds(env.CONTAINER_REUSE_IDLE_SECONDS);
+    if (delaySeconds === 0 || env.CONTAINER_CONTROL_QUEUE === undefined) return false;
+    await releaseContainerSlotBestEffort({
+      doName: message.body.doName,
+      env,
+      kind: FOCUSED_FULL_SLOT_KIND,
+      workKey: message.body.workKey,
+    });
+    const scheduled = await enqueueContainerStopForRole({
+      allowUnowned: true,
+      delaySeconds,
+      env,
+      name: message.body.doName,
+      role: message.body.role,
+      workKey: message.body.workKey,
+    });
+    if (!scheduled) return false;
+    await markWatchStopped();
+    stopped = true;
+    console.log(
+      `[predict-queue] focused-full warm reuse grace scheduled doName=${message.body.doName} workKey=${message.body.workKey} delaySeconds=${delaySeconds}`,
+    );
+    return true;
+  };
   if (stopped) {
     await consumeContainerStop(env, terminalStopMessage, markWatchStopped);
   }
   if (message.body.outcome === "success") {
     try {
       await completeFocusedFullFromStatus(common);
+      if (!stopped) await scheduleReusableTerminalContainer();
     } catch (error) {
       if (
         !(error instanceof Error) ||

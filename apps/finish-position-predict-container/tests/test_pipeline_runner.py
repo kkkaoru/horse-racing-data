@@ -858,6 +858,8 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
 
     assert captured_connect_kwargs["url"] == "postgresql://u:p@h/db"
     assert captured_connect_kwargs["connect_timeout"] == 5
+    assert executed_sql[:2] == ["BEGIN", "SET TRANSACTION READ WRITE"]
+    assert "SHOW transaction_read_only" not in executed_sql
     assert any(
         "CREATE TABLE IF NOT EXISTS _debug_finish_position_layer_timing" in sql
         for sql in executed_sql
@@ -984,7 +986,7 @@ def test_daybase_layer_timing_is_operational_without_debug(
     }
 
 
-def test_non_daybase_progress_stays_quiet_without_debug(
+def test_racechain_timing_is_operational_without_debug(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -992,7 +994,10 @@ def test_non_daybase_progress_stays_quiet_without_debug(
 
     _log_pipeline_progress("step=racechain-layer status=done category=nar")
 
-    assert capsys.readouterr().err == ""
+    assert json.loads(capsys.readouterr().err) == {
+        "detail": "step=racechain-layer status=done category=nar",
+        "event": "racechain-pipeline-timing",
+    }
 
 
 def test_record_layer_timing_row_logs_connect_error_when_debug_enabled(
@@ -1073,114 +1078,6 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
     assert "debug-timing write failed" in captured.err
     assert "boom-execute" in captured.err
     assert state["closed"] is True
-
-
-def test_record_layer_timing_row_refuses_read_only_transaction(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
-    import psycopg
-
-    state = {"committed": False, "rolled_back": False, "closed": False, "inserted": False}
-
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            if params is not None:
-                state["inserted"] = True
-
-        def fetchone(self) -> tuple[object, ...] | None:
-            return ("on",)
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def commit(self) -> None:
-            state["committed"] = True
-
-        def rollback(self) -> None:
-            state["rolled_back"] = True
-
-        def close(self) -> None:
-            state["closed"] = True
-
-    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
-
-    wrote = pipeline_runner.record_layer_timing_row(
-        "postgresql://u:p@h/db",
-        "jra:20260702:all:abcd1234",
-        "jra",
-        "20260702",
-        None,
-        0,
-        3,
-        "__base_build__",
-        "done",
-        1.0,
-        1.0,
-    )
-    assert wrote is False
-    assert state["inserted"] is False
-    assert state["committed"] is False
-    assert state["rolled_back"] is True
-    assert state["closed"] is True
-    captured = capsys.readouterr()
-    assert "debug-timing write failed" in captured.err
-    assert "transaction_read_only='on'" in captured.err
-
-
-def test_record_layer_timing_row_refuses_missing_read_only_row(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-):
-    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
-    import psycopg
-
-    state = {"committed": False, "inserted": False}
-
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            if params is not None:
-                state["inserted"] = True
-
-        def fetchone(self) -> tuple[object, ...] | None:
-            return None
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def commit(self) -> None:
-            state["committed"] = True
-
-        def rollback(self) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
-
-    wrote = pipeline_runner.record_layer_timing_row(
-        "postgresql://u:p@h/db",
-        "jra:20260702:all:abcd1234",
-        "jra",
-        "20260702",
-        None,
-        0,
-        3,
-        "__base_build__",
-        "done",
-        1.0,
-        1.0,
-    )
-    assert wrote is False
-    assert state["inserted"] is False
-    assert state["committed"] is False
-    captured = capsys.readouterr()
-    assert "debug-timing write failed" in captured.err
-    assert "transaction_read_only=None" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -3434,6 +3331,7 @@ def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
         pipeline_runner, "race_chain_for", lambda _category: ("script-a.py", "script-b.py")
     )
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
 
     captured_inputs: list[Path] = []
@@ -3473,6 +3371,78 @@ def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
     assert captured_target_races == ["05:11", "05:11"]
 
 
+def test_build_pipeline_from_day_base_fuses_multiple_layers_in_one_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "work"
+    layer_dir = tmp_path / "layers"
+    layer_dir.mkdir()
+    monkeypatch.setenv("RACE_CHAIN_FUSED_ENABLED", "1")
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", layer_dir)
+    monkeypatch.setattr(
+        pipeline_runner, "race_chain_for", lambda _category: ("script-a.py", "script-b.py")
+    )
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
+
+    def fake_layer_argv(
+        script: str,
+        _category: str,
+        _layer_dir: Path,
+        _input_dir: Path,
+        output_dir: Path,
+        _database_url: str,
+        **_kwargs: object,
+    ) -> list[str]:
+        return ["python", str(layer_dir / script), "--output-dir", str(output_dir)]
+
+    def fake_run(args: list[str]) -> None:
+        plan_path = Path(args[args.index("--plan") + 1])
+        timings_path = Path(args[args.index("--timings") + 1])
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        Path(plan[-1][-1]).mkdir(parents=True)
+        timings_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "elapsedSeconds": 1.25,
+                        "index": 1,
+                        "script": "script-a.py",
+                        "status": "done",
+                        "total": 2,
+                    },
+                    {
+                        "elapsedSeconds": 2.5,
+                        "index": 2,
+                        "script": "script-b.py",
+                        "status": "done",
+                        "total": 2,
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    final_dir = work_dir / "feat-jra-v7-final"
+
+    assert pipeline_runner.build_pipeline_from_day_base(
+        "jra",
+        "20260712",
+        0,
+        "r2-catalog://pc-keiba",
+        day_base_dir,
+        final_dir,
+        "05:11",
+    )
+    assert final_dir.exists()
+    assert not list(work_dir.glob("racechain-*.json"))
+
+
 def test_build_pipeline_from_day_base_records_racechain_layer_step(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3485,6 +3455,7 @@ def test_build_pipeline_from_day_base_records_racechain_layer_step(
     monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
     monkeypatch.setattr(pipeline_runner, "race_chain_for", lambda _category: ("script-a.py",))
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
 
     def fake_layer_argv(
@@ -3651,6 +3622,7 @@ def test_current_jra_day_base_uses_reduced_race_chain(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
     )
@@ -3659,8 +3631,6 @@ def test_current_jra_day_base_uses_reduced_race_chain(
 
     assert result == (
         "add-market-signal-features.py",
-        "add-near-miss-features.py",
-        "add-relationship-r1-features.py",
         "add-jra-jockey-pedigree-cell-features.py",
     )
 
@@ -3669,6 +3639,7 @@ def test_current_jra_day_base_skips_unused_relationship_layer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: True
     )
@@ -3677,25 +3648,22 @@ def test_current_jra_day_base_skips_unused_relationship_layer(
 
     assert result == (
         "add-market-signal-features.py",
-        "add-near-miss-features.py",
         "add-jra-jockey-pedigree-cell-features.py",
     )
 
 
-def test_current_nar_day_base_keeps_relationship_layer_when_usage_is_unknown(
+def test_current_nar_day_base_needs_no_per_race_layers_when_static_contract_is_warm(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
     )
 
     result = _race_chain_for_day_base("nar", tmp_path)
 
-    assert result == (
-        "add-near-miss-features.py",
-        "add-relationship-r1-features.py",
-    )
+    assert result == ()
 
 
 def test_banei_race_chain_does_not_inspect_baba_day_base(
@@ -4352,3 +4320,32 @@ def test_group_parquet_rows_with_target_race_keeps_only_that_race() -> None:
 def test_group_parquet_rows_rejects_non_dataframe() -> None:
     with pytest.raises(TypeError, match=r"pandas\.DataFrame"):
         _group_parquet_rows([{"race_id": "jra:2026:0712:05:11"}])
+
+
+def test_query_race_names_maps_catalog_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_query(
+        _database_url: str, _sql: str, _params: Sequence[object] = ()
+    ) -> list[tuple[object, ...]]:
+        return [("農林水産省賞典　新潟記念", "サマー２０００シリーズ", "")]
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query)
+    names = pipeline_runner.query_race_names(
+        "r2-catalog://pc-keiba",
+        ["jra:2026:0830:04:08"],
+    )
+    assert names == {
+        "jra:2026:0830:04:08": {
+            "kyosomei_hondai": "農林水産省賞典　新潟記念",
+            "kyosomei_fukudai": "サマー２０００シリーズ",
+            "kyosomei_kakkonai": "",
+        }
+    }
+
+
+def test_query_race_names_skips_empty_catalog_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _database_url, _sql, _params=(): [],
+    )
+    assert pipeline_runner.query_race_names("r2-catalog://pc-keiba", ["jra:2026:0830:04:08"]) == {}

@@ -17,6 +17,7 @@ const {
   controlSendMock,
   enumerateTodaysRacesMock,
   fanOutPredictionsAfterDayBaseHitMock,
+  getDayBaseDiscoveryReadinessMock,
   getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadinessMock,
   headDayBaseObjectMock,
@@ -37,6 +38,7 @@ const {
   controlSendMock: vi.fn(async () => undefined),
   enumerateTodaysRacesMock: vi.fn(async (): Promise<RaceEntry[]> => []),
   fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
+  getDayBaseDiscoveryReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   getDayBasePrewarmHitReadinessMock: vi.fn(async () => ({
     ready: false,
     reason: "day-base-missing-or-invalid",
@@ -73,6 +75,9 @@ vi.mock("./day-base-prewarm-pickup", () => ({
 }));
 vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,
+}));
+vi.mock("./day-base-discovery-readiness", () => ({
+  getDayBaseDiscoveryReadiness: getDayBaseDiscoveryReadinessMock,
 }));
 vi.mock("./focused-full-day-base-readiness", () => ({
   getDayBasePrewarmHitReadiness: getDayBasePrewarmHitReadinessMock,
@@ -194,6 +199,8 @@ test("enqueueDayBasePrewarm rejects historical work even when forced", async () 
 beforeEach(() => {
   enumerateTodaysRacesMock.mockClear();
   fanOutPredictionsAfterDayBaseHitMock.mockClear();
+  getDayBaseDiscoveryReadinessMock.mockReset();
+  getDayBaseDiscoveryReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   getDayBasePrewarmHitReadinessMock.mockReset();
   getDayBasePrewarmHitReadinessMock.mockResolvedValue({
     ready: false,
@@ -222,6 +229,52 @@ beforeEach(() => {
   releaseContainerSlotMock.mockResolvedValue(undefined);
   enumerateTodaysRacesMock.mockResolvedValue([]);
   containerDoFetchMock.mockImplementation(() => Promise.resolve(new Response("", { status: 200 })));
+});
+
+test("prewarm defers before claiming a Container while discovery is partial", async () => {
+  getDayBaseDiscoveryReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "discovery-race-count-2-of-36",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "jra",
+      daysAhead: 0,
+      env: makeEnv(),
+      runYmd: "20990101",
+    }),
+  ).resolves.toBe("busy");
+
+  expect(claimDayBaseGenerationMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] discovery deferred category=jra runYmd=20990101 reason=discovery-race-count-2-of-36",
+  );
+  warnSpy.mockRestore();
+});
+
+test("prewarm fails closed when discovery completeness cannot be checked", async () => {
+  getDayBaseDiscoveryReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      runYmd: "20990101",
+    }),
+  ).resolves.toBe("failed");
+
+  expect(claimDayBaseGenerationMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] discovery readiness failed category=nar runYmd=20990101: Error: Catalog unavailable",
+  );
+  errorSpy.mockRestore();
 });
 
 test("runDayBasePrewarm skips dispatch and logs when no races are scheduled today", async () => {
@@ -412,7 +465,7 @@ test("prewarmCategory Worker HIT reports fanout failure without starting Contain
   errorSpy.mockRestore();
 });
 
-test("prewarmCategory keeps stale and forced work on the Container generation path", async () => {
+test("prewarmCategory keeps stale and forced misses on the Container generation path", async () => {
   getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({
     ready: false,
     reason: "rs-row-count-368-of-479",
@@ -429,7 +482,7 @@ test("prewarmCategory keeps stale and forced work on the Container generation pa
     runYmd: "20260824",
   });
 
-  expect(getDayBasePrewarmHitReadinessMock).toHaveBeenCalledTimes(1);
+  expect(getDayBasePrewarmHitReadinessMock).toHaveBeenCalledTimes(2);
   expect(claimContainerSlotMock).toHaveBeenCalledTimes(2);
   expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
   expect(logSpy).toHaveBeenCalledWith(
@@ -437,6 +490,27 @@ test("prewarmCategory keeps stale and forced work on the Container generation pa
   );
   logSpy.mockRestore();
   warnSpy.mockRestore();
+});
+
+test("a delayed forced prewarm reuses a foundation already landed by a newer generation", async () => {
+  getDayBasePrewarmHitReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "jra",
+      daysAhead: 0,
+      env: makeEnv(),
+      force: true,
+      runYmd: "20260824",
+    }),
+  ).resolves.toBe("landed");
+
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledTimes(1);
+  expect(claimDayBaseGenerationMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
 });
 
 test("prewarmCategory falls back to Container freshness when the Worker probe fails", async () => {
@@ -488,8 +562,29 @@ test("prewarmCategory forwards a verified Worker miss as an internal rebuild", a
   warnSpy.mockRestore();
 });
 
-test("prewarmCategory forwards an explicit force flag to the Container", async () => {
+test("prewarmCategory uses rebuild instead of mutually exclusive force after a verified miss", async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await prewarmCategory({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    force: true,
+    runYmd: "20260826",
+  });
+  const firstCall = containerDoFetchMock.mock.calls[0];
+  if (firstCall === undefined) throw new Error("expected a fetch");
+  const request = firstCall[0];
+  if (!isRequest(request)) throw new Error("expected a Request");
+  expect(request.url).toBe(
+    "http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260826&rebuild=1",
+  );
+  logSpy.mockRestore();
+  warnSpy.mockRestore();
+});
+
+test("prewarmCategory forwards force without rebuild when the Worker probe fails", async () => {
+  getDayBasePrewarmHitReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await prewarmCategory({
     category: "nar",
@@ -505,7 +600,6 @@ test("prewarmCategory forwards an explicit force flag to the Container", async (
   expect(request.url).toBe(
     "http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260826&force=1",
   );
-  logSpy.mockRestore();
   warnSpy.mockRestore();
 });
 

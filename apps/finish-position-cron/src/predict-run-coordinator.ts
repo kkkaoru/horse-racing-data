@@ -251,6 +251,7 @@ interface ClearContainerSlotParams {
 
 interface CheckContainerSlotStopParams {
   acceptableWorkKeys?: string[];
+  allowUnowned?: boolean;
   doName: string;
   force?: boolean;
   requestedAt: string;
@@ -1350,6 +1351,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.workKey,
         Date.now(),
         params.acceptableWorkKeys,
+        params.allowUnowned,
       );
       if (!allowed) return false;
       const requestedAtMs = Date.parse(params.requestedAt);

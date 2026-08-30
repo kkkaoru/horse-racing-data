@@ -36,7 +36,7 @@ const KETTO_FIELD: string = "ketto_toroku_bango";
 const HORSE_NUMBER_FIELD: string = "umaban";
 const encoder: TextEncoder = new TextEncoder();
 
-export const MARKET_SIGNAL_ADDED_COLUMNS: ReadonlyArray<string> = [
+const MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS: ReadonlyArray<string> = [
   "tansho_odds_raw",
   "tansho_ninkijun_raw",
   "inverse_odds_implied_prob",
@@ -48,6 +48,14 @@ export const MARKET_SIGNAL_ADDED_COLUMNS: ReadonlyArray<string> = [
   "popularity_odds_disagreement",
   "form_market_edge",
 ];
+
+const MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS: ReadonlyArray<string> = [
+  "field_dominant_favorite_indicator",
+  "horse_popularity_vs_field",
+];
+
+export const MARKET_SIGNAL_ADDED_COLUMNS: ReadonlyArray<string> =
+  MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS;
 
 export interface MarketSignalFoundationObject {
   customMetadata?: Record<string, string>;
@@ -147,6 +155,7 @@ interface ValidatedBaseFoundation {
 
 interface MarketSignalContract {
   addedColumns: ReadonlyArray<string>;
+  overwrittenColumns: ReadonlyArray<string>;
   baseGenerationId: string;
   contractVersion: string;
   entrySetHash: string;
@@ -425,10 +434,28 @@ const validateBaseFoundation = async (
   };
 };
 
-const outputFeatureNames = (baseFeatureNames: ReadonlyArray<string>): string[] | null =>
-  MARKET_SIGNAL_ADDED_COLUMNS.some((name) => baseFeatureNames.includes(name))
-    ? null
-    : [...baseFeatureNames, ...MARKET_SIGNAL_ADDED_COLUMNS];
+interface MarketSignalOutputContract {
+  addedColumns: string[];
+  featureNames: string[];
+  overwrittenColumns: string[];
+}
+
+const outputContract = (
+  baseFeatureNames: ReadonlyArray<string>,
+): MarketSignalOutputContract | null => {
+  if (MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS.some((name) => baseFeatureNames.includes(name))) {
+    return null;
+  }
+  const overwrittenColumns = MARKET_SIGNAL_NEAR_MISS_OVERWRITE_COLUMNS.filter((name) =>
+    baseFeatureNames.includes(name),
+  );
+  const addedColumns = [...MARKET_SIGNAL_ALWAYS_ADDED_COLUMNS];
+  return {
+    addedColumns,
+    featureNames: [...baseFeatureNames, ...addedColumns],
+    overwrittenColumns,
+  };
+};
 
 const oddsSnapshotHashFor = (odds: ReadonlyMap<number, RealtimeOdds>): Promise<string> =>
   sha256(
@@ -446,8 +473,15 @@ const buildEnvelope = async (
   computeMs: number,
   totalMs: number,
 ): Promise<MarketSignalEnvelope | null> => {
-  const featureNames: string[] | null = outputFeatureNames(base.featureNames);
-  if (featureNames === null) return null;
+  const output = outputContract(base.featureNames);
+  if (output === null) return null;
+  const projectedRows: MarketSignalFoundationRow[] = [];
+  for (const row of rows) {
+    if (output.featureNames.some((name) => !(name in row))) return null;
+    projectedRows.push(
+      Object.fromEntries(output.featureNames.map((name) => [name, row[name] ?? null])),
+    );
+  }
   return {
     base: {
       foundationEtag: base.foundationIdentity.etag,
@@ -458,18 +492,19 @@ const buildEnvelope = async (
       manifestVersion: base.manifestIdentity.version,
     },
     contract: {
-      addedColumns: MARKET_SIGNAL_ADDED_COLUMNS,
+      addedColumns: output.addedColumns,
+      overwrittenColumns: output.overwrittenColumns,
       baseGenerationId: base.generationId,
       contractVersion: CONTRACT_VERSION,
       entrySetHash: base.entrySetHash,
       inputFeatureHash: base.inputFeatureHash,
       oddsSnapshotHash: await oddsSnapshotHashFor(odds),
-      outputFeatureHash: await sha256(featureNames.join("\n")),
+      outputFeatureHash: await sha256(output.featureNames.join("\n")),
       raceId,
-      rowCount: rows.length,
+      rowCount: projectedRows.length,
       schemaVersion: SCHEMA_VERSION,
     },
-    rows,
+    rows: projectedRows,
     source: base.sourceIdentity,
     telemetry: { totalMs, workerComputeMs: computeMs },
   };

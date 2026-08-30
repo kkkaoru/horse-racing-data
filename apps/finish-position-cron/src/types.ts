@@ -57,6 +57,9 @@ export interface Env {
   // falls back to 0 (no backward window, matching the pre-lookback behavior).
   CORNER_FEATURES_LOOKBACK_DAYS?: string;
   PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
+  // Direct Cloudflare service binding for live odds warm-up. Avoids a public
+  // hostname/WAF round trip before materializing the market-signal R2 artifact.
+  REALTIME_HOT?: { fetch: typeof fetch };
   // Bearer credential for the catalog's fresh race-entry attestation endpoint.
   // Rescore retries fail closed before Container dispatch when this is absent.
   FINISH_POSITION_ATTESTATION_TOKEN?: string;
@@ -126,10 +129,21 @@ export interface Env {
   // Default-off Worker producer for the attested per-race market-signal
   // foundation. A miss keeps the legacy Container layer active.
   WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED?: string;
+  // Run remaining race-chain layer entrypoints in one killable Python/DuckDB
+  // process. Unset keeps the legacy one-subprocess-per-layer fallback.
+  RACE_CHAIN_FUSED_ENABLED?: string;
+  // Short successful-run idle grace that lets the next same-shard race reuse
+  // the warm process. Delayed stop remains workKey-fenced and is rejected once
+  // a new owner claims the slot.
+  CONTAINER_REUSE_IDLE_SECONDS?: string;
   // Default-off rollout gate for Durable Object scheduled completion watches.
   // Exactly "1" lets a focused-full accepted response acknowledge its source
   // Queue delivery after the Container DO durably registers the watch.
   FOCUSED_FULL_WATCH_ENABLED?: string;
+  // Public Worker endpoint used only with a per-watch HMAC-signed callback URL.
+  // The Container sends a terminal nudge; the Worker still polls authoritative
+  // Container status before finalizing, and the delayed watch remains fallback.
+  FOCUSED_FULL_CALLBACK_URL?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
@@ -251,6 +265,9 @@ export interface ContainerControlMessage {
   // consumer accepts exactly one currently-active owner from this list and
   // still destroys the DO only once.
   acceptableWorkKeys?: string[];
+  // A reusable Container releases its capacity lease before the delayed idle
+  // stop. The stop may proceed only while no newer owner has claimed the DO.
+  allowUnowned?: boolean;
   force?: boolean;
   name: string;
   requestedAt: string;

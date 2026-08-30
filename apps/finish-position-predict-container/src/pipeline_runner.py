@@ -87,6 +87,7 @@ from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
     BABA_PEDIGREE_SCRIPT,
     MARKET_SIGNAL_SCRIPT,
+    NEAR_MISS_SCRIPT,
     RELATIONSHIP_SCRIPT,
     build_base_argv,
     build_layer_argv,
@@ -114,6 +115,8 @@ PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline")
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
 LAYER_DIR: Final[Path] = PIPELINE_DIR / "finish-position-features"
 WORK_DIR: Final[Path] = Path("/tmp/predict-upcoming")
+RACE_CHAIN_RUNNER: Final[Path] = Path(__file__).with_name("race_chain_runner.py")
+RACE_CHAIN_FUSED_ENABLED_ENV: Final[str] = "RACE_CHAIN_FUSED_ENABLED"
 RACE_ID_FIELD: Final[str] = "race_id"
 _ABSENT_WATERMARK_TOKEN: Final[str] = "none"
 """Non-empty token for a missing RS ``predicted_at`` or a NULL
@@ -147,6 +150,9 @@ _BABA_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
         "damsire_baba_win_rate",
         "sire_horse_baba_combined_score",
     }
+)
+_STATIC_RACE_CHAIN_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
+    {"career_place2_rate", "horse_popularity_vs_field", "bataiju_futan_ratio"}
 )
 _YMD_YEAR_LENGTH: Final[int] = 4
 # jvd_se / nvd_se 取消・除外. Feature builder drops these; coverage must too.
@@ -334,9 +340,9 @@ def record_layer_timing_row(
     Debug-disabled production requests return False before importing psycopg or
     opening a Neon connection. A False return is therefore either an intentional
     disabled no-op or a visible debug-write failure.
-    2026-08-16: 48h of zero rows was a silent swallow on a read-only
-    pooler session. Force ``SET TRANSACTION READ WRITE`` and refuse when
-    ``SHOW transaction_read_only`` is not ``off``.
+    The write starts an explicit READ WRITE transaction. Do not issue a
+    ``SHOW``/``SELECT`` probe: production Container access to Neon is
+    write-only, and a read-only connection will fail visibly on DDL/INSERT.
     """
     if not debug_logs_enabled():
         return False
@@ -354,17 +360,6 @@ def record_layer_timing_row(
             cursor = conn.cursor()
             cursor.execute("BEGIN")
             cursor.execute("SET TRANSACTION READ WRITE")
-            cursor.execute("SHOW transaction_read_only")
-            row = cursor.fetchone()
-            if row is None or row[0] != "off":
-                shown = None if row is None else row[0]
-                debug_log(
-                    f"[pipeline] debug-timing write failed run_id={run_id} "
-                    f"layer_index={layer_index} status={status} "
-                    f"error=transaction_read_only={shown!r}"
-                )
-                conn.rollback()
-                return False
             cursor.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {DEBUG_LAYER_TIMING_TABLE} (
@@ -599,11 +594,23 @@ def _log_pipeline_progress(message: str) -> None:
     # the end; the time consumed by every completed layer is lost.  Emit only
     # the credential-free base/layer tokens (never argv, URLs, or exceptions)
     # so normal Container logs identify the actual SQL bottleneck.
-    if message.startswith(("step=daybase-base ", "step=daybase-layer ", "step=daybase-watermark ")):
+    operational_prefixes = (
+        "step=daybase-base ",
+        "step=daybase-layer ",
+        "step=daybase-watermark ",
+        "step=market-foundation ",
+        "step=racechain-layer ",
+    )
+    if message.startswith(operational_prefixes):
         record_operational_progress(message)
+        event = (
+            "racechain-pipeline-timing"
+            if message.startswith(("step=market-foundation ", "step=racechain-layer "))
+            else "daybase-pipeline-timing"
+        )
         print(
             json.dumps(
-                {"event": "daybase-pipeline-timing", "detail": message},
+                {"event": event, "detail": message},
                 separators=(",", ":"),
                 sort_keys=True,
             ),
@@ -702,6 +709,26 @@ def _query_source_rows(
         return connection.execute(sql, list(params)).fetchall()
     finally:
         connection.close()
+
+
+def query_race_names(source_url: str, race_ids: Sequence[str]) -> dict[str, dict[str, object]]:
+    """Load official kyosomei fields for races whose feature parquet omitted them."""
+    from predict_lib.cell_router import build_race_name_catalog_query
+    from predict_lib.race_id import parse_race_id
+
+    names: dict[str, dict[str, object]] = {}
+    for race_id in race_ids:
+        sql, params = build_race_name_catalog_query(parse_race_id(race_id))
+        rows = _query_source_rows(source_url, sql, params)
+        if not rows:
+            continue
+        hondai, fukudai, kakkonai = rows[0]
+        names[race_id] = {
+            "kyosomei_hondai": hondai,
+            "kyosomei_fukudai": fukudai,
+            "kyosomei_kakkonai": kakkonai,
+        }
+    return names
 
 
 def _se_table_and_filter(category: Category) -> tuple[str, str]:
@@ -2075,6 +2102,88 @@ def day_base_covers_entry_list(
         return False
 
 
+def _race_chain_fused_enabled() -> bool:
+    return os.environ.get(RACE_CHAIN_FUSED_ENABLED_ENV) == "1"
+
+
+def _run_fused_race_chain(
+    *,
+    category: Category,
+    target_date: str,
+    target_race: str,
+    database_url: str,
+    current: Path,
+    chain: Sequence[str],
+    final_dir: Path,
+    run_start: float,
+) -> bool:
+    """Run ordered layer entrypoints in one killable Python/DuckDB process."""
+    commands: list[list[str]] = []
+    source = current
+    for index, script in enumerate(chain):
+        destination = WORK_DIR / f"feat-{category}-layer-{index}"
+        commands.append(
+            build_layer_argv(
+                script,
+                category,
+                LAYER_DIR,
+                source,
+                destination,
+                database_url,
+                target_date=target_date,
+                target_race=target_race,
+            )
+        )
+        source = destination
+    safe_race = target_race.replace(":", "-")
+    plan_path = WORK_DIR / f"racechain-plan-{category}-{safe_race}.json"
+    timings_path = WORK_DIR / f"racechain-timings-{category}-{safe_race}.json"
+    plan_path.write_text(json.dumps(commands, separators=(",", ":")), encoding="utf-8")
+    timings_path.unlink(missing_ok=True)
+    try:
+        run_with_stderr_capture(
+            [
+                "python",
+                str(RACE_CHAIN_RUNNER),
+                "--plan",
+                str(plan_path),
+                "--allowed-root",
+                str(LAYER_DIR),
+                "--timings",
+                str(timings_path),
+            ]
+        )
+        raw_timings: object = json.loads(timings_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_timings, list) or len(raw_timings) != len(chain):
+            raise RuntimeError("fused race-chain timing contract mismatch")
+        for expected_index, timing in enumerate(raw_timings, start=1):
+            if not isinstance(timing, dict):
+                raise RuntimeError("fused race-chain timing row is invalid")
+            script = timing.get("script")
+            elapsed = timing.get("elapsedSeconds")
+            status = timing.get("status")
+            if (
+                not isinstance(script, str)
+                or not isinstance(elapsed, (int, float))
+                or status != "done"
+            ):
+                raise RuntimeError("fused race-chain timing fields are invalid")
+            _log_pipeline_progress(
+                f"step=racechain-layer index={expected_index}/{len(chain)} status=done "
+                f"category={category} script={script} target_race={target_race} "
+                f"elapsed_seconds={float(elapsed):.3f} execution=fused"
+            )
+        source.rename(final_dir)
+        _log_pipeline_progress(
+            f"done racechain category={category} target_race={target_race} output={final_dir} "
+            f"elapsed_seconds={perf_counter() - run_start:.3f} execution=fused"
+        )
+        return True
+    finally:
+        plan_path.unlink(missing_ok=True)
+        timings_path.unlink(missing_ok=True)
+
+
 def build_pipeline_from_day_base(
     category: Category,
     target_date: str,
@@ -2118,6 +2227,19 @@ def build_pipeline_from_day_base(
     run_id = f"{category}:{target_date}:{target_race}:racechain:{uuid.uuid4().hex[:8]}"
     run_start = perf_counter()
     current = day_base_dir
+    if (
+        category == "jra"
+        and market_signal_foundation_dir is None
+        and MARKET_SIGNAL_SCRIPT in chain
+        and NEAR_MISS_SCRIPT not in chain
+    ):
+        selected = {*chain, NEAR_MISS_SCRIPT}
+        chain = tuple(script for script in layer_chain_for(category) if script in selected)
+        _log_pipeline_progress(
+            f"step=racechain-layer status=fallback category={category} "
+            f"script={NEAR_MISS_SCRIPT} target_race={target_race} "
+            "reason=worker-market-foundation-missing"
+        )
     if market_signal_foundation_dir is not None and MARKET_SIGNAL_SCRIPT in chain:
         current = market_signal_foundation_dir
         chain = tuple(script for script in chain if script != MARKET_SIGNAL_SCRIPT)
@@ -2125,6 +2247,21 @@ def build_pipeline_from_day_base(
             f"step=racechain-layer status=skipped category={category} "
             f"script={MARKET_SIGNAL_SCRIPT} target_race={target_race} "
             "reason=worker-foundation-contract-match"
+        )
+    if _race_chain_fused_enabled() and len(chain) > 1:
+        _log_pipeline_progress(
+            f"step=racechain-layer status=start category={category} "
+            f"target_race={target_race} layers={len(chain)} execution=fused"
+        )
+        return _run_fused_race_chain(
+            category=category,
+            target_date=target_date,
+            target_race=target_race,
+            database_url=database_url,
+            current=current,
+            chain=chain,
+            final_dir=final_dir,
+            run_start=run_start,
         )
     for index, script in enumerate(chain):
         nxt = WORK_DIR / f"feat-{category}-layer-{index}"
@@ -2195,8 +2332,11 @@ def build_pipeline_from_day_base(
     return True
 
 
-def _day_base_has_baba_features(day_base_dir: Path) -> bool:
-    """Return whether a day-base carries the complete baba feature contract."""
+def _day_base_has_columns(
+    day_base_dir: Path,
+    required: frozenset[str],
+    contract: str,
+) -> bool:
     import duckdb
 
     glob_path = str(day_base_dir / HIVE_PARQUET_GLOB)
@@ -2207,12 +2347,28 @@ def _day_base_has_baba_features(day_base_dir: Path) -> bool:
             [glob_path],
         )
         columns = {description[0] for description in cursor.description}
-        return _BABA_DAY_BASE_COLUMNS.issubset(columns)
+        return required.issubset(columns)
     except duckdb.Error as exc:
-        debug_log(f"[day-base] baba contract inspection failed path={day_base_dir} error={exc}")
+        debug_log(
+            f"[day-base] {contract} contract inspection failed path={day_base_dir} error={exc}"
+        )
         return False
     finally:
         connection.close()
+
+
+def _day_base_has_baba_features(day_base_dir: Path) -> bool:
+    """Return whether a day-base carries the complete baba feature contract."""
+    return _day_base_has_columns(day_base_dir, _BABA_DAY_BASE_COLUMNS, "baba")
+
+
+def _day_base_has_static_race_features(day_base_dir: Path) -> bool:
+    """Return whether near-miss and relationship outputs were R2-prewarmed."""
+    return _day_base_has_columns(
+        day_base_dir,
+        _STATIC_RACE_CHAIN_DAY_BASE_COLUMNS,
+        "static-race",
+    )
 
 
 def _race_chain_for_day_base(category: Category, day_base_dir: Path) -> Sequence[str]:
@@ -2223,30 +2379,35 @@ def _race_chain_for_day_base(category: Category, day_base_dir: Path) -> Sequence
     freshly prewarmed objects skip it. Ban-ei still owns baba in RACE_CHAIN and
     needs no compatibility inspection.
     """
-    chain = tuple(race_chain_for(category))
+    selected = set(race_chain_for(category))
     models_dir = Path(os.environ.get("MODELS_DIR", "/models"))
-    if RELATIONSHIP_SCRIPT in chain and relationship_layer_is_provably_unused(
+    if category in _BABA_DAY_BASE_CATEGORIES and not _day_base_has_static_race_features(
+        day_base_dir
+    ):
+        selected.add(NEAR_MISS_SCRIPT)
+        selected.add(RELATIONSHIP_SCRIPT)
+        _log_pipeline_progress(
+            f"step=daybase-compat category={category} reason=static-race-columns-missing "
+            f"fallback_script={NEAR_MISS_SCRIPT},{RELATIONSHIP_SCRIPT}"
+        )
+    if RELATIONSHIP_SCRIPT in selected and relationship_layer_is_provably_unused(
         category, artifact_root=models_dir
     ):
-        chain = tuple(script for script in chain if script != RELATIONSHIP_SCRIPT)
+        selected.remove(RELATIONSHIP_SCRIPT)
         _log_pipeline_progress(
             f"step=racechain-layer status=skipped category={category} "
             f"script={RELATIONSHIP_SCRIPT} reason=unused-by-selected-models"
         )
-    if category not in _BABA_DAY_BASE_CATEGORIES:
-        return chain
-    if _day_base_has_baba_features(day_base_dir):
-        return chain
-    selected = set(chain)
-    selected.add(BABA_PEDIGREE_SCRIPT)
-    compatibility_chain = tuple(
-        script for script in layer_chain_for(category) if script in selected
-    )
-    _log_pipeline_progress(
-        f"step=daybase-compat category={category} reason=baba-columns-missing "
-        f"fallback_script={BABA_PEDIGREE_SCRIPT}"
-    )
-    return compatibility_chain
+    if category in _BABA_DAY_BASE_CATEGORIES and not _day_base_has_baba_features(day_base_dir):
+        selected.add(BABA_PEDIGREE_SCRIPT)
+        _log_pipeline_progress(
+            f"step=daybase-compat category={category} reason=baba-columns-missing "
+            f"fallback_script={BABA_PEDIGREE_SCRIPT}"
+        )
+    full_chain = layer_chain_for(category)
+    ordered = [script for script in full_chain if script in selected]
+    ordered.extend(script for script in race_chain_for(category) if script not in full_chain)
+    return tuple(ordered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2692,15 +2853,17 @@ def _materialize_r2_market_signal_foundation(
         base_fields = [
             pa.field(field.name, _foundation_arrow_type(field)) for field in evidence.base_schema
         ]
+        base_names = {field.name for field in evidence.base_schema}
+        added_names = [name for name in MARKET_SIGNAL_ADDED_COLUMNS if name not in base_names]
         added_fields = [
             pa.field(
                 name,
                 pa.float64() if name in MARKET_SIGNAL_FLOAT_COLUMNS else pa.int64(),
             )
-            for name in MARKET_SIGNAL_ADDED_COLUMNS
+            for name in added_names
             if name in MARKET_SIGNAL_FLOAT_COLUMNS or name in MARKET_SIGNAL_INTEGER_COLUMNS
         ]
-        if len(added_fields) != len(MARKET_SIGNAL_ADDED_COLUMNS):
+        if len(added_fields) != len(added_names):
             _log_operational_cache_event(
                 cache="market-signal-foundation",
                 status="miss",

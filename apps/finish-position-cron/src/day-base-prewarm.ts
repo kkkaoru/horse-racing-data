@@ -29,6 +29,7 @@ import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
+import { getDayBaseDiscoveryReadiness } from "./day-base-discovery-readiness";
 import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   getDayBasePrewarmHitReadiness,
@@ -348,16 +349,43 @@ export const prewarmCategoryWithOutcome = async (
   params: PrewarmCategoryParams,
 ): Promise<PrewarmCategoryOutcome> => {
   const { category, daysAhead, env, runYmd } = params;
+  // Discovery is populated incrementally. Starting from its first few races can
+  // produce a structurally valid but permanently partial day-base. Fail closed
+  // against the authoritative Catalog race count before claiming a generation
+  // or Container slot; Queue redelivery will retry after discovery catches up.
+  try {
+    const discovery = await getDayBaseDiscoveryReadiness({ category, env, runYmd });
+    if (!discovery.ready) {
+      console.warn(
+        `[day-base-prewarm] discovery deferred category=${category} runYmd=${runYmd} reason=${discovery.reason}`,
+      );
+      return "busy";
+    }
+  } catch (error) {
+    console.error(
+      `[day-base-prewarm] discovery readiness failed category=${category} runYmd=${runYmd}: ${String(error)}`,
+    );
+    return "failed";
+  }
   // A plain R2 HEAD is not enough: the explicit readiness probe compares the
   // canonical object's metadata with live Catalog and complete per-race
   // running-style state. Only that verified HIT may bypass Container startup.
-  const readinessProbe = params.force === true ? null : await probeExistingDayBaseHit(params);
+  // `force` may bypass a stale/missing artifact, but it must not rebuild a
+  // foundation that a newer generation has already landed. Delayed repair
+  // messages can outlive their original partial generation; re-probing here
+  // makes those messages idempotent and prevents them from replacing a now
+  // complete foundation or consuming a Container slot.
+  const readinessProbe = await probeExistingDayBaseHit(params);
   if (readinessProbe === "verified-hit") return useVerifiedDayBaseHit(params);
   const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   const url = buildPrewarmUrl({
     category,
     daysAhead,
-    ...(params.force === true ? { force: true } : {}),
+    // Container validation intentionally rejects force=1 together with
+    // rebuild=1. A verified Worker miss is the stronger internal attestation,
+    // so use rebuild alone; reserve force for a probe error where freshness
+    // could not be established by the Worker.
+    ...(params.force === true && readinessProbe !== "verified-miss" ? { force: true } : {}),
     ...(readinessProbe === "verified-miss" ? { rebuild: true } : {}),
     runYmd,
   });

@@ -51,8 +51,8 @@ test("rescore unique-DO cap is three so one category instance each", () => {
   expect(CONTAINER_RESCORE_SLOT_MAX).toBe(3);
 });
 
-test("race-chain software cap matches its platform ceiling of three", () => {
-  expect(RACE_CHAIN_CONTAINER_SLOT_MAX).toBe(3);
+test("race-chain software cap reserves one stopping-instance slot", () => {
+  expect(RACE_CHAIN_CONTAINER_SLOT_MAX).toBe(2);
 });
 
 test("slot heartbeat stale window is twenty minutes", () => {
@@ -264,6 +264,9 @@ test("terminal stop ownership rejects a newer owner but allows safe cleanup", ()
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "old-work", NOW_MS)).toBe(false);
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", "new-work", NOW_MS)).toBe(true);
   expect(isContainerSlotStopAllowed(owned, "predict-nar-1", "old-work", NOW_MS)).toBe(false);
+  expect(
+    isContainerSlotStopAllowed(owned, "predict-nar-1", "old-work", NOW_MS, undefined, true),
+  ).toBe(true);
   expect(isContainerSlotStopAllowed(owned, "predict-jra-1", undefined, NOW_MS)).toBe(true);
   expect(
     isContainerSlotStopAllowed(
@@ -472,24 +475,23 @@ test("a stale rescore lease is dropped so a later claim can reuse that unique DO
   ]);
 });
 
-test("a fourth race-chain DO is capped before the platform rejects its start", () => {
-  const three: ContainerSlotLease[] = [
+test("a third race-chain DO is capped while a stopping instance may still count", () => {
+  const two: ContainerSlotLease[] = [
     makeLease({ doName: "race-chain-predict-jra-0" }),
     makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
-    makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
   ];
-  const fourth = decideContainerSlotClaim(three, {
-    category: "jra",
-    doName: "race-chain-predict-jra-1",
+  const third = decideContainerSlotClaim(two, {
+    category: "ban-ei",
+    doName: "race-chain-predict-ban-ei-0",
     kind: "focused-full",
     now: NOW_MS,
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
-    workKey: "focused-full:20260826:jra:05:11",
+    workKey: "focused-full:20260826:ban-ei:83:11",
   });
 
-  expect(fourth.proceed).toBe(false);
-  expect(fourth.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
-  expect(fourth.leases).toStrictEqual(three);
+  expect(third.proceed).toBe(false);
+  expect(third.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
+  expect(third.leases).toStrictEqual(two);
 });
 
 test("a stale race-chain lease is pruned before the race-chain cap is counted", () => {
@@ -500,7 +502,6 @@ test("a stale race-chain lease is pruned before the race-chain cap is counted", 
         timestamp: NOW_MS - CONTAINER_SLOT_STALE_MS,
       }),
       makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
-      makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
     ],
     {
       category: "jra",
@@ -516,14 +517,6 @@ test("a stale race-chain lease is pruned before the race-chain cap is counted", 
     {
       category: "nar",
       doName: "race-chain-predict-nar-0",
-      holders: 1,
-      kind: "focused-full",
-      rescoreHolders: 0,
-      timestamp: 1_000_000,
-    },
-    {
-      category: "ban-ei",
-      doName: "race-chain-predict-ban-ei-0",
       holders: 1,
       kind: "focused-full",
       rescoreHolders: 0,

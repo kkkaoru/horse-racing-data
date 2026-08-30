@@ -15,6 +15,10 @@
 // otherwise idle instance into a permanent charge.
 
 import { Container } from "@cloudflare/containers";
+import {
+  buildFocusedFullCompletionCallbackUrl,
+  FOCUSED_FULL_CALLBACK_HEADER,
+} from "./focused-full-callback";
 import { proxyDayBaseParquetFromNdjson, proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import {
   createFocusedFullWatchTickMessage,
@@ -38,6 +42,7 @@ type PredictContainerEnvironment = Pick<
   | "NEON_DATABASE_URL"
   | "PIPELINE_TOTAL_TIMEOUT_SECONDS"
   | "PREDICT_DAYS_AHEAD"
+  | "RACE_CHAIN_FUSED_ENABLED"
   | "R2_ACCESS_KEY_ID"
   | "R2_ACCOUNT_ID"
   | "R2_BUCKET"
@@ -48,6 +53,7 @@ type PredictContainerEnvironment = Pick<
   | "SOURCE_DATABASE_URL"
   | "STAGE1_PRESERVED_ODDS_GATE_ENABLED"
   | "VENUE_WEATHER_URL"
+  | "WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED"
 >;
 
 export interface BuildPredictContainerEnvVarsOptions {
@@ -116,6 +122,13 @@ const mergePredictContainerEnvVars = (
   R2_CATALOG_URI: env.R2_CATALOG_URI ?? EMPTY_ENV_VALUE,
   R2_CATALOG_WAREHOUSE: env.R2_CATALOG_WAREHOUSE ?? EMPTY_ENV_VALUE,
   VENUE_WEATHER_URL: env.VENUE_WEATHER_URL ?? EMPTY_ENV_VALUE,
+  // The Queue consumer materializes live odds/market-derived columns from
+  // Cloudflare edge data into an attested R2 artifact before Container start.
+  // Forward the same gate so the race-chain consumes that warm artifact and
+  // skips its local market-signal subprocess.
+  WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED:
+    env.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED ?? EMPTY_ENV_VALUE,
+  RACE_CHAIN_FUSED_ENABLED: env.RACE_CHAIN_FUSED_ENABLED ?? EMPTY_ENV_VALUE,
   PYTHONUNBUFFERED: "1",
   // Role is authoritative class configuration. Keep it after inherited vars
   // so per-instance Container options cannot impersonate another resource role.
@@ -270,8 +283,21 @@ export class FinishPositionPredictContainer extends Container<Env> {
           Date.now() - startedAt
         }`,
       );
+      const callbackUrl =
+        watchPayload === undefined
+          ? undefined
+          : await buildFocusedFullCompletionCallbackUrl(this.env, watchPayload);
+      const forwardedRequest =
+        callbackUrl === undefined
+          ? request
+          : new Request(request, {
+              headers: new Headers([
+                ...request.headers.entries(),
+                [FOCUSED_FULL_CALLBACK_HEADER, callbackUrl],
+              ]),
+            });
       const response = await withHardTimeout(
-        this.containerFetch(request),
+        this.containerFetch(forwardedRequest),
         CONTAINER_DELIVERY_HARD_TIMEOUT_MS,
       );
       console.log(

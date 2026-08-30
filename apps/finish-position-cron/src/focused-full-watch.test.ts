@@ -4,6 +4,7 @@ import { expect, test, vi } from "vitest";
 import {
   buildFocusedFullStatusUrl,
   createFocusedFullWatchTickMessage,
+  FOCUSED_FULL_WATCH_PROGRESS_STALE_MS,
   FOCUSED_FULL_WATCH_TIMEOUT_MS,
   hasAcceptedResult,
   isFocusedFullPredictUrl,
@@ -173,14 +174,42 @@ test("builds the local focused-full status URL", () => {
   );
 });
 
-test("returns no terminal message while the pipeline is running", async () => {
+test("returns no terminal message while the pipeline heartbeat is fresh", async () => {
   const dependencies = makeDependencies(
-    Response.json({ error: null, raceKey: "jra:20260824:05:09", status: "running" }),
+    Response.json({
+      error: null,
+      lastProgressAtMs: 99_000,
+      raceKey: "jra:20260824:05:09",
+      status: "running",
+    }),
   );
 
   await expect(pollFocusedFullWatchTick(SCHEDULED, dependencies)).resolves.toBeUndefined();
 
   expect(dependencies.pollStatus).toHaveBeenCalledWith(BODY);
+});
+
+test("returns an error when a running pipeline heartbeat is stale", async () => {
+  const dependencies = makeDependencies(
+    Response.json({
+      error: null,
+      lastProgressAtMs: 100_000,
+      raceKey: "jra:20260824:05:09",
+      status: "running",
+    }),
+  );
+  dependencies.now = vi.fn(() => 100_000 + FOCUSED_FULL_WATCH_PROGRESS_STALE_MS + 1);
+
+  await expect(pollFocusedFullWatchTick(SCHEDULED, dependencies)).resolves.toStrictEqual({
+    body: BODY,
+    doName: "predict-jra-race-1",
+    error: "Focused-full detached pipeline heartbeat stale: jra:20260824:05:09",
+    outcome: "error",
+    role: "race-chain",
+    type: "focused-full-completion",
+    watchId: "watch-123",
+    workKey: "focused-full:20260824:jra:05:09",
+  });
 });
 
 test("returns success with the same watch ID", async () => {
@@ -267,6 +296,22 @@ test("throws malformed status variants while preserving an explicit null-error f
   const invalidError = makeDependencies(
     Response.json({ error: 42, raceKey: "jra:20260824:05:09", status: "error" }),
   );
+  const invalidProgress = makeDependencies(
+    Response.json({
+      error: null,
+      lastProgressAtMs: "yesterday",
+      raceKey: "jra:20260824:05:09",
+      status: "running",
+    }),
+  );
+  const invalidEvents = makeDependencies(
+    Response.json({
+      error: null,
+      progressEvents: [42],
+      raceKey: "jra:20260824:05:09",
+      status: "success",
+    }),
+  );
   const missingError = makeDependencies(
     Response.json({ error: null, raceKey: "jra:20260824:05:09", status: "error" }),
   );
@@ -280,6 +325,12 @@ test("throws malformed status variants while preserving an explicit null-error f
     "invalid status",
   );
   await expect(pollFocusedFullWatchTick(SCHEDULED, invalidError)).rejects.toThrow("invalid error");
+  await expect(pollFocusedFullWatchTick(SCHEDULED, invalidProgress)).rejects.toThrow(
+    "invalid lastProgressAtMs",
+  );
+  await expect(pollFocusedFullWatchTick(SCHEDULED, invalidEvents)).rejects.toThrow(
+    "invalid progressEvents",
+  );
   await expect(pollFocusedFullWatchTick(SCHEDULED, missingError)).resolves.toStrictEqual({
     body: BODY,
     doName: "predict-jra-race-1",

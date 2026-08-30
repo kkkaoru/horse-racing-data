@@ -28,12 +28,15 @@ import {
 } from "./delivery-canary";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 import {
+  FOCUSED_FULL_CALLBACK_PATH,
+  handleFocusedFullCompletionCallback,
+} from "./focused-full-callback";
+import {
   consumeContainerStop,
   isAllowedContainerDoName,
   isContainerControlQueueMessage,
 } from "./container-control";
 import { claimRescoreRace, completeFocusedFullRace, releaseRescoreRaceClaim } from "./do-state";
-import { recordPreweightGenerationStarted } from "./delivery-lifecycle";
 import { warmNeon } from "./neon-warm";
 import { resolvePredictDoName } from "./predict-do-shard";
 import {
@@ -51,7 +54,6 @@ import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readines
 import type { PredictionContainerRole } from "./race-container-routing";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
-import { WATCH_REQUEST_HEADER } from "./focused-full-watch";
 import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
 import {
   runRunningStyleKickMorningGap,
@@ -68,7 +70,6 @@ import type {
   PredictCategory,
   PredictMode,
   PredictQueueMessage,
-  FocusedFullWatchPayload,
   RunDates,
 } from "./types";
 
@@ -744,77 +745,13 @@ const guardedAdminRunFocusedFullRace = async (request: Request, env: Env): Promi
   }
 };
 
-const handleAdminRunFocusedFullRaceDirect = async (
-  request: Request,
-  env: Env,
-): Promise<Response> => {
-  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
-    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
-  }
-  const parsed = parseRaceScopedPredictBody(await parseBody(request));
-  if (parsed === null)
-    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
-  const doName = resolvePredictDoName({
-    category: parsed.category,
-    env,
-    keibajoCode: parsed.keibajoCode,
-    raceBango: parsed.raceBango,
-  });
-  const body = {
-    category: parsed.category,
-    daysAhead: RESCORE_DAYS_AHEAD,
-    force: true,
-    keibajoCode: parsed.keibajoCode,
-    mode: DEFAULT_MODE,
-    raceBango: parsed.raceBango,
-    runDate: parsed.runYmd,
-    runDateIso: buildRunDateFromYmd(parsed.runYmd),
-    runYmd: parsed.runYmd,
-    skipDedup: true,
-    deliveryTrackingId: `preweight:${parsed.runYmd}:${parsed.category}:${parsed.keibajoCode}:${parsed.raceBango}`,
-  } satisfies PredictQueueMessage;
-  const workKey = `focused-full:${body.runYmd}:${body.category}:${body.keibajoCode}:${body.raceBango}:direct`;
-  const watchPayload = {
-    body,
-    doName,
-    role: "legacy",
-    watchId: `${workKey}:direct-${crypto.randomUUID()}`,
-    workKey,
-  } satisfies FocusedFullWatchPayload;
-  const searchParams = new URLSearchParams({
-    category: body.category,
-    daysAhead: String(body.daysAhead),
-    force: "true",
-    keibajoCode: body.keibajoCode,
-    mode: body.mode,
-    raceBango: body.raceBango,
-    runDate: body.runDate,
-    runYmd: body.runYmd,
-  });
-  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
-  await recordPreweightGenerationStarted(env, body, new Date());
-  const response = await env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(
-    new Request(`http://predict-container-do/predict?${searchParams.toString()}`, {
-      headers: { [WATCH_REQUEST_HEADER]: JSON.stringify(watchPayload) },
-    }),
-  );
-  const responseBody = response.ok ? undefined : await response.text();
-  return Response.json(
-    { error: responseBody, ok: response.ok, status: response.status, queued: true },
-    { status: HTTP_ACCEPTED },
-  );
-};
-
-const guardedAdminRunFocusedFullRaceDirect = async (
-  request: Request,
-  env: Env,
-): Promise<Response> => {
-  try {
-    return await handleAdminRunFocusedFullRaceDirect(request, env);
-  } catch (error) {
-    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
-  }
-};
+// The former "direct" route bypassed the lane/slot coordinator and minted a
+// fresh terminal-watch UUID on every request. Retries could therefore create
+// multiple active watches and delayed stops for the same race. Preserve the
+// admin API for callers, but route it through the coordinated Queue path so
+// duplicate delivery is fenced by the focused-full race lane and work key.
+const guardedAdminRunFocusedFullRaceDirect = (request: Request, env: Env): Promise<Response> =>
+  guardedAdminRunFocusedFullRace(request, env);
 
 const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
@@ -1067,6 +1004,9 @@ const handleDeliveryCanaries = async (request: Request, env: Env): Promise<Respo
 
 export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
+  if (request.method === "POST" && url.pathname === FOCUSED_FULL_CALLBACK_PATH) {
+    return handleFocusedFullCompletionCallback(request, env);
+  }
   if (isTriggerRequest(request.method, url.pathname)) {
     return guardedTrigger(request, env);
   }
