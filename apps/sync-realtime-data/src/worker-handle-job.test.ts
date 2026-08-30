@@ -351,11 +351,35 @@ it("handleJob delegates plan-running-style-predictions to planRunningStylePredic
   expect(exportRunningStyleParquetsForDate).toHaveBeenCalledWith(expect.anything(), "20260512");
 });
 
-it("handleJob does not plan running-style predictions when feature warm is incomplete", async () => {
+it("handleJob falls back to the system clock when the injected clock is invalid", async () => {
+  vi.useFakeTimers();
+  const now = new Date("2026-05-12T12:34:56.000Z");
+  vi.setSystemTime(now);
+  try {
+    const { handleJob } = await import("./worker");
+    const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+
+    await handleJob(buildEnv({ REALTIME_TEST_NOW: "not-a-date" }), {
+      date: "20260512",
+      type: "plan-running-style-predictions",
+    });
+
+    expect(planRunningStylePredictionsForDate).toHaveBeenCalledWith(
+      expect.anything(),
+      "20260512",
+      now,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("handleJob continues running-style planning when feature warm is incomplete", async () => {
   const { handleJob } = await import("./worker");
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
   vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
     date: "20260512",
     materializeError: "feature warm failed",
@@ -363,10 +387,29 @@ it("handleJob does not plan running-style predictions when feature warm is incom
     scanned: 1,
     skipped: 1,
   });
-  await expect(
-    handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" }),
-  ).rejects.toThrow("feature warm failed");
-  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
+
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
+
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(logFetch).mock.calls.at(-1)?.[4]).toContain("feature warm failed");
+});
+
+it("handleJob continues running-style planning when feature warm throws", async () => {
+  const { handleJob } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockRejectedValueOnce(
+    new Error("feature warm crashed"),
+  );
+
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
+
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+  const detail = vi.mocked(logFetch).mock.calls.at(-1)?.[4];
+  expect(detail).toContain("feature warm crashed");
+  expect(detail).toContain('"scanned":0');
 });
 
 it("handleJob materialize-running-style-features logs the materialize summary on success", async () => {

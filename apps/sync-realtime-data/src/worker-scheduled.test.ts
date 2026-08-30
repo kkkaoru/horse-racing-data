@@ -282,7 +282,7 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   expect(runRunningStyleCronTick).toHaveBeenCalled();
 });
 
-it("scheduled inference cron fails closed before planning when feature warm is incomplete", async () => {
+it("scheduled inference cron still plans races when batch feature warm is incomplete", async () => {
   const { default: worker } = await import("./worker");
   const { runRunningStyleCronTick } = await import("./running-style-cron");
   const { materializeRunningStyleFeatureParquetsForDate } =
@@ -305,7 +305,68 @@ it("scheduled inference cron fails closed before planning when feature warm is i
     ctx,
   );
   await flushWaits(waits);
-  expect(runRunningStyleCronTick).not.toHaveBeenCalled();
+  expect(runRunningStyleCronTick).toHaveBeenCalled();
+});
+
+it("scheduled inference cron still plans races when batch feature warm rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockRejectedValueOnce(
+    new Error("Catalog unavailable"),
+  );
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/10 0-14 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(runRunningStyleCronTick).toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "error",
+    null,
+    JSON.stringify({
+      date: "20260512",
+      materializeError: "Catalog unavailable",
+      mode: "inference-cron",
+    }),
+  );
+});
+
+it("scheduled inference cron still plans when materialize result logging rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { logFetch } = await import("./storage");
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.mocked(logFetch).mockRejectedValueOnce(new Error("D1 log unavailable"));
+  const { ctx, waits } = buildCtx();
+
+  await worker.scheduled(
+    {
+      cron: "*/10 0-14 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+
+  expect(runRunningStyleCronTick).toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[sync-realtime-data] failed to log running-style materialize result",
+    new Error("D1 log unavailable"),
+  );
+  errorSpy.mockRestore();
 });
 
 it("scheduled prewarm path stringifies non-Error rejections from postgres", async () => {

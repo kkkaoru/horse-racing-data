@@ -1045,23 +1045,46 @@ export const getCronJob = (cron: string, now = new Date()): Job => {
   return { date: today, type: "plan-realtime-fetches" };
 };
 
+const logRunningStyleMaterializeBestEffort = async (
+  env: Env,
+  status: "error" | "ok" | "skipped",
+  detail: string,
+): Promise<void> => {
+  try {
+    await logFetch(env.REALTIME_DB, "materialize-running-style-features", status, null, detail);
+  } catch (error) {
+    console.error("[sync-realtime-data] failed to log running-style materialize result", error);
+  }
+};
+
+const materializeRunningStyleFeaturesBestEffort = async (env: Env, date: string): Promise<void> => {
+  try {
+    const materializeResult = await withHandlerTimeout({
+      label: `materialize-running-style-features:${date}`,
+      ms: QUEUE_HANDLER_TIMEOUT_MS,
+      task: materializeRunningStyleFeatureParquetsForDate(env, date),
+    });
+    await logRunningStyleMaterializeBestEffort(
+      env,
+      resolveMaterializeLogStatus(materializeResult),
+      JSON.stringify({ ...materializeResult, mode: "inference-cron" }),
+    );
+  } catch (error) {
+    await logRunningStyleMaterializeBestEffort(
+      env,
+      "error",
+      JSON.stringify({ date, materializeError: formatError(error), mode: "inference-cron" }),
+    );
+  }
+};
+
 const logRunningStylePlanResult = async (
   env: Env,
   scheduledAt: Date,
   ctx?: ExecutionContext,
 ): Promise<void> => {
   for (const date of resolveRunningStyleCronDates(scheduledAt)) {
-    const materializeResult = await materializeRunningStyleFeatureParquetsForDate(env, date);
-    await logFetch(
-      env.REALTIME_DB,
-      "materialize-running-style-features",
-      resolveMaterializeLogStatus(materializeResult),
-      null,
-      JSON.stringify({ ...materializeResult, mode: "inference-cron" }),
-    );
-    if (materializeResult.materializeError !== undefined) {
-      throw new Error(materializeResult.materializeError);
-    }
+    await materializeRunningStyleFeaturesBestEffort(env, date);
   }
   await runRunningStyleCronTick(env, scheduledAt, ctx)
     .then((summary) =>
@@ -2434,7 +2457,7 @@ const runMaterializeWhenReady = async (env: Env, targetDate: string) =>
 const resolveMaterializeLogStatus = (result: {
   materializeError?: string;
   scanned: number;
-}): string => {
+}): "error" | "ok" | "skipped" => {
   if (result.materializeError === undefined) return "ok";
   if (result.scanned === 0) return "skipped";
   return "error";
@@ -5781,10 +5804,22 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "plan-running-style-predictions") {
-      const materialize = await materializeRunningStyleFeatureParquetsForDate(env, job.date);
-      if (materialize.materializeError !== undefined) {
-        throw new Error(materialize.materializeError);
-      }
+      // Catalog materialization is an optimization, not a planner barrier.
+      // Discovery can finish after an earlier partial warm; stopping here left
+      // newly discovered races permanently unplanned. Preserve the failure in
+      // the fetch log while always letting the idempotent planner reconcile the
+      // complete date.
+      const materialize = await withHandlerTimeout({
+        label: `materialize-running-style-features:${job.date}`,
+        ms: QUEUE_HANDLER_TIMEOUT_MS,
+        task: materializeRunningStyleFeatureParquetsForDate(env, job.date),
+      }).catch((error: unknown) => ({
+        date: job.date,
+        materializeError: formatError(error),
+        materialized: 0,
+        scanned: 0,
+        skipped: 0,
+      }));
       const planSummary = await planRunningStylePredictionsForDate(
         env,
         job.date,
