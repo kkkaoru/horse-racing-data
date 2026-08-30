@@ -3,6 +3,7 @@ import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import {
   WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
   createWinRateHeatmapCacheRequest,
+  expandWinRateHeatmapCacheReadKeys,
   isWinRateHeatmapSectionPayload,
   type WinRateHeatmapSectionPayload,
 } from "./win-rate-heatmap-cache";
@@ -72,8 +73,9 @@ const readCacheApiPayload = async (
   return null;
 };
 
-export const getCachedWinRateHeatmapPayload = async (
+const readCachedWinRateHeatmapForKey = async (
   cacheKey: string,
+  populateCurrentCacheApi: boolean,
 ): Promise<WinRateHeatmapSectionPayload | null> => {
   const cacheRequest = createWinRateHeatmapCacheRequest(cacheKey);
   const defaultCache = getDefaultCache();
@@ -88,8 +90,8 @@ export const getCachedWinRateHeatmapPayload = async (
     return null;
   }
   const parsed = parseHeatmapPayload(tryParseJson(kvBody));
-  if (parsed === null) {
-    return null;
+  if (parsed === null || !populateCurrentCacheApi) {
+    return parsed;
   }
   const populateCacheApi = writeCacheApi(defaultCache, cacheRequest, kvBody);
   if (ctx !== null) {
@@ -98,6 +100,22 @@ export const getCachedWinRateHeatmapPayload = async (
     await populateCacheApi;
   }
   return parsed;
+};
+
+export const getCachedWinRateHeatmapPayload = async (
+  cacheKey: string,
+): Promise<WinRateHeatmapSectionPayload | null> => {
+  const readKeys = expandWinRateHeatmapCacheReadKeys(cacheKey);
+  const firstKey = readKeys[0];
+  if (firstKey === undefined) {
+    return null;
+  }
+  const currentHit = await readCachedWinRateHeatmapForKey(firstKey, true);
+  if (currentHit !== null) {
+    return currentHit;
+  }
+  const fallbackKey = readKeys[1];
+  return fallbackKey === undefined ? null : readCachedWinRateHeatmapForKey(fallbackKey, false);
 };
 
 export const putWinRateHeatmapCache = async ({

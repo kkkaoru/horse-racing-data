@@ -5,9 +5,12 @@ import {
   buildRaceEntityHistoryQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
+  buildRaceEntityWarmHistoryQuery,
+  buildRaceEntityWarmTargetsQuery,
   createRaceEntityCursor,
   normaliseRaceEntityHistoryRow,
   normaliseRaceEntityTarget,
+  normaliseRaceEntityWarmTarget,
   parseRaceEntityCursor,
 } from "./race-entity-recent-results";
 import type { RaceEntityRecentResultsFilters, RaceEntityType } from "./types";
@@ -88,6 +91,55 @@ const rawHistory = (resultId: string, startKey: string): Record<string, unknown>
   win_odds: 3.2,
 });
 
+it("builds and normalises one target query for every runner in a warm race", () => {
+  const sql = buildRaceEntityWarmTargetsQuery(env, {
+    date: "20260827",
+    keibajoCode: "50",
+    raceBango: "05",
+    source: "nar",
+  });
+  expect(sql).toMatch(/INNER JOIN catalog\.nvd_se/u);
+  expect(sql).toMatch(/ORDER BY try_cast/u);
+  expect(sql).toMatch(/kishu_code/u);
+  expect(sql).toMatch(/chokyoshi_code/u);
+  expect(sql).toMatch(/banushi_code/u);
+  expect(
+    normaliseRaceEntityWarmTarget({
+      horse_bucket: "a",
+      horse_id: "2022103916",
+      horse_name: "Horse",
+      horse_number: 7,
+      jockey_bucket: "b",
+      jockey_id: 21_379,
+      jockey_name: "Jockey",
+      owner_bucket: "c",
+      owner_id: "768006",
+      owner_name: "Owner",
+      race_name: "Race",
+      race_start_time: 1240,
+      trainer_bucket: "d",
+      trainer_id: "20692",
+      trainer_name: "Trainer",
+    }),
+  ).toStrictEqual({
+    horseBucket: "a",
+    horseId: "2022103916",
+    horseName: "Horse",
+    horseNumber: "7",
+    jockeyBucket: "b",
+    jockeyId: "21379",
+    jockeyName: "Jockey",
+    ownerBucket: "c",
+    ownerId: "768006",
+    ownerName: "Owner",
+    raceName: "Race",
+    raceStartTime: "1240",
+    trainerBucket: "d",
+    trainerId: "20692",
+    trainerName: "Trainer",
+  });
+});
+
 it("builds target queries with canonical horse, jockey, trainer, and owner IDs", () => {
   expect(buildRaceEntityTargetQuery(env, filters("horse"))).toMatch(/se\.ketto_toroku_bango/u);
   expect(buildRaceEntityTargetQuery(env, filters("jockey"))).toMatch(/se\.kishu_code/u);
@@ -139,6 +191,29 @@ it("normalises target values from R2 SQL scalar shapes", () => {
   });
 });
 
+it("builds one bounded window query for multiple warm entities", () => {
+  const sql = buildRaceEntityWarmHistoryQuery(env, filters("jockey"), [
+    target,
+    { ...target, entityBucket: "b", entityId: "05639" },
+  ]);
+  expect(sql).toMatch(/se\.entity_id IN \('21379', '05639'\)/u);
+  expect(sql).toMatch(/se\.entity_bucket IN \('a', 'b'\)/u);
+  expect(sql).toMatch(/PARTITION BY matched_entity_id/u);
+  expect(sql).toMatch(/<= 11/u);
+  expect(sql).toMatch(/ORDER BY matched_entity_id, race_start_sort_key DESC/u);
+  expect(() => buildRaceEntityWarmHistoryQuery(env, filters("jockey"), [])).toThrow(
+    "warm targets are required",
+  );
+  expect(() =>
+    buildRaceEntityWarmHistoryQuery(env, filters("jockey"), [
+      { ...target, entityId: "invalid-id" },
+    ]),
+  ).toThrow("entityId is malformed");
+  expect(() =>
+    buildRaceEntityWarmHistoryQuery(env, filters("jockey"), [{ ...target, entityBucket: "z" }]),
+  ).toThrow("entityBucket is malformed");
+});
+
 it("builds bounded N+1 history queries for all canonical entity columns", () => {
   expect(buildRaceEntityHistoryQuery(env, filters("horse"), target, null)).toMatch(
     /se\.ketto_toroku_bango/u,
@@ -162,8 +237,8 @@ it("builds bounded N+1 history queries for all canonical entity columns", () => 
 it("prunes recent year partitions and scopes non-horse IDs to the target source", () => {
   const jockeyQuery = buildRaceEntityHistoryQuery(env, filters("jockey"), target, null);
   expect(jockeyQuery).toMatch(/se\.kaisai_nen >= '1986'/u);
-  expect(jockeyQuery).toMatch(/se\.entity_id = '21379'/u);
-  expect(jockeyQuery).toMatch(/se\.entity_bucket = 'a'/u);
+  expect(jockeyQuery).toMatch(/se\.entity_id IN \('21379'\)/u);
+  expect(jockeyQuery).toMatch(/se\.entity_bucket IN \('a'\)/u);
   expect(jockeyQuery).toMatch(/catalog\.race_entity_history_v1/u);
   expect(jockeyQuery).toMatch(/se\.source = 'nar'/u);
 

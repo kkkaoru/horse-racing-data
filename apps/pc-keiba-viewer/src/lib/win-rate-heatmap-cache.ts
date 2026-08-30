@@ -22,7 +22,10 @@ export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 36 * 60 * 60;
 // Bumped v14->v15 because Ban-ei heatmap Catalog now drops age/condition-key
 // filters and matches 81-84 as one circuit. Empty Ban-ei jockey/sire cells
 // must not survive.
-export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v15";
+// Bumped v15->v16 because JRA listed/OP/G3+ heatmaps now match venue and
+// race name only. Cached mixed-class listed payloads must not survive.
+export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v16";
+export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v15";
 export const WIN_RATE_HEATMAP_CACHE_URL_BASE =
   "https://pc-keiba-viewer.local/win-rate-heatmap-cache/";
 const WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT = "default";
@@ -73,9 +76,12 @@ export const serializeWinRateHeatmapCacheQuery = (searchParams: URLSearchParams)
   return serialized === "" ? WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT : serialized;
 };
 
-export const buildWinRateHeatmapCacheKey = (input: WinRateHeatmapCacheKeyInput): string =>
+const joinWinRateHeatmapCacheKey = (
+  input: WinRateHeatmapCacheKeyInput,
+  namespace: string,
+): string =>
   [
-    WIN_RATE_HEATMAP_CACHE_NAMESPACE,
+    namespace,
     input.year,
     padCacheKeyPart(input.month),
     padCacheKeyPart(input.day),
@@ -83,6 +89,21 @@ export const buildWinRateHeatmapCacheKey = (input: WinRateHeatmapCacheKeyInput):
     padCacheKeyPart(input.raceNumber),
     input.query === "" ? WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT : input.query,
   ].join(":");
+
+export const buildWinRateHeatmapCacheKey = (input: WinRateHeatmapCacheKeyInput): string =>
+  joinWinRateHeatmapCacheKey(input, WIN_RATE_HEATMAP_CACHE_NAMESPACE);
+
+export const buildWinRateHeatmapCacheFallbackKeys = (
+  input: WinRateHeatmapCacheKeyInput,
+): string[] => [joinWinRateHeatmapCacheKey(input, WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE)];
+
+export const expandWinRateHeatmapCacheReadKeys = (cacheKey: string): string[] => {
+  const currentPrefix = `${WIN_RATE_HEATMAP_CACHE_NAMESPACE}:`;
+  const fallbackPrefix = `${WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE}:`;
+  return cacheKey.startsWith(currentPrefix)
+    ? [cacheKey, cacheKey.replace(currentPrefix, fallbackPrefix)]
+    : [cacheKey];
+};
 
 export const createWinRateHeatmapCacheRequest = (cacheKey: string): Request =>
   new Request(`${WIN_RATE_HEATMAP_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);

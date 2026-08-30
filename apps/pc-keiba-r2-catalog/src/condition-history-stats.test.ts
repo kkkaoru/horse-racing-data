@@ -97,9 +97,14 @@ it("builds finish-position horse-level SQL and race-time aggregate SQL without j
   expect(finish).not.toMatch("THEN '芝'");
   expect(finish).not.toMatch("jsonb_agg");
   expect(finish).not.toMatch("GROUP BY finish_position");
+  expect(finish).toMatch("WHEN cr.kyori_int < 1400 THEN 'sprint'");
+  expect(finish).toMatch("WHEN cr.kyori_int <= 1500 THEN 'extended_sprint'");
   expect(time).toMatch("AS race_count");
   expect(time).toMatch("AS INT) = 1");
+  expect(time).toMatch("AS INT) = cr.kyori_int");
   expect(time).toMatch("approx_percentile_cont(race_time, 0.5)");
+  expect(time).toMatch("WHEN cr.kyori_int < 1200 THEN 'sprint'");
+  expect(time).not.toMatch("scaled_race_time");
   expect(time).not.toMatch("jsonb_agg");
 });
 
@@ -107,9 +112,29 @@ it("builds winner target-race list SQL without jsonb_agg", () => {
   const sql = buildConditionTargetRacesQuery(config, jraFilters);
   expect(sql).toMatch("AS target_race_date");
   expect(sql).toMatch("AS INT) = 1");
+  expect(sql).toMatch("AS INT) = cr.kyori_int");
   expect(sql).toMatch("LIMIT 500");
   expect(sql).toMatch("FROM pc_keiba.jvd_se se");
   expect(sql).not.toMatch("jsonb_agg");
+});
+
+it("keeps exact kyori on race-time clocks when includeDistance is off", () => {
+  const time = buildConditionRaceTimeStatsQuery(config, {
+    ...jraFilters,
+    includeDistance: false,
+  });
+  const targets = buildConditionTargetRacesQuery(config, {
+    ...jraFilters,
+    includeDistance: false,
+  });
+  const finish = buildConditionFinishPositionStatsQuery(config, {
+    ...jraFilters,
+    includeDistance: false,
+  });
+  expect(time).toMatch("AS INT) = cr.kyori_int");
+  expect(targets).toMatch("AS INT) = cr.kyori_int");
+  expect(finish).not.toMatch("AS INT) = cr.kyori_int");
+  expect(finish).toMatch("WHEN cr.kyori_int < 1200 THEN 'sprint'");
 });
 
 it("skips includeGrade matching for unlisted current grades in condition history", () => {
@@ -117,10 +142,7 @@ it("skips includeGrade matching for unlisted current grades in condition history
     ...jraFilters,
     includeGrade: true,
   });
-  expect(sql).toMatch(
-    "btrim(coalesce(cr.grade_code, '')) NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')",
-  );
-  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
+  expect(sql).toMatch("END NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')");
 });
 
 it("applies class, age, condition-key, race-title, and ungraded-open filters to condition history", () => {
@@ -165,6 +187,7 @@ it("maps a target-race winner row onto the viewer camelCase shape", () => {
     jockeyName: "ルメール",
     keibajoCode: "05",
     kohan3f: "351",
+    kyori: "",
     ownerName: "シルク",
     popularity: "01",
     raceName: "天皇賞",

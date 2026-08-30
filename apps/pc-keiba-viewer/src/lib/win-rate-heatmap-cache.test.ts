@@ -2,17 +2,20 @@
 import { expect, it } from "vitest";
 
 import {
+  WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE,
   WIN_RATE_HEATMAP_CACHE_NAMESPACE,
   WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
   WIN_RATE_HEATMAP_CACHE_URL_BASE,
+  buildWinRateHeatmapCacheFallbackKeys,
   buildWinRateHeatmapCacheKey,
   createWinRateHeatmapCacheRequest,
+  expandWinRateHeatmapCacheReadKeys,
   isWinRateHeatmapSectionPayload,
   serializeWinRateHeatmapCacheQuery,
 } from "./win-rate-heatmap-cache";
 
 it("uses heatmap cache namespace v14", () => {
-  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v15");
+  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v16");
 });
 
 it("uses a 36 hour heatmap cache TTL", () => {
@@ -30,6 +33,29 @@ it("builds a per-race heatmap cache key with a default query token", () => {
       year: "2026",
     }),
   ).toBe(`${WIN_RATE_HEATMAP_CACHE_NAMESPACE}:2026:08:21:05:01:default`);
+});
+
+it("reads the previous heatmap namespace when the current key is cold", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v15");
+  expect(
+    buildWinRateHeatmapCacheFallbackKeys({
+      day: "29",
+      keibajoCode: "04",
+      month: "08",
+      query: "",
+      raceNumber: "08",
+      year: "2026",
+    }),
+  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v15:2026:08:29:04:08:default"]);
+  expect(
+    expandWinRateHeatmapCacheReadKeys(
+      "pc-keiba-viewer:win-rate-heatmap:v16:2026:08:29:04:08:default",
+    ),
+  ).toStrictEqual([
+    "pc-keiba-viewer:win-rate-heatmap:v16:2026:08:29:04:08:default",
+    "pc-keiba-viewer:win-rate-heatmap:v15:2026:08:29:04:08:default",
+  ]);
+  expect(expandWinRateHeatmapCacheReadKeys("other-key")).toStrictEqual(["other-key"]);
 });
 
 it("keeps an explicit query fingerprint on the heatmap cache key", () => {

@@ -18,6 +18,8 @@ import {
   finishPositionSql,
   historyTables,
   isBanEiKeibajo,
+  cellRouterDistanceBandFilterSql,
+  exactHistoryKyoriFilterSql,
   similarRaceFilterSql,
   tableName,
   unionHistorySql,
@@ -132,6 +134,7 @@ const matchedHistoryArmSql = (input: {
   CROSS JOIN current_race cr
   ${input.extraJoin}
   WHERE ${similarRaceFilterSql(input.filters)}
+    ${cellRouterDistanceBandFilterSql(input.filters)}
     AND ${finishPositionSql("se")} IS NOT NULL
     AND ${finishPositionSql("se")} > 0
     ${input.extraWhere}`;
@@ -308,7 +311,8 @@ matched_history AS (
         extraJoin: "",
         extraWhere: `AND ${finishPositionSql("se")} = 1
     AND ${doubleSelect("se.soha_time")} IS NOT NULL
-    AND ${doubleSelect("se.soha_time")} > 0`,
+    AND ${doubleSelect("se.soha_time")} > 0
+    ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
         selectList: `${doubleSelect("se.soha_time")} AS race_time,
     ${doubleSelect("se.kohan_3f")} AS kohan_3f`,
@@ -325,7 +329,8 @@ SELECT
   avg(kohan_3f) AS average_kohan_3f,
   approx_percentile_cont(race_time, 0.5) AS median_race_time,
   approx_percentile_cont(kohan_3f, 0.5) AS median_kohan_3f
-FROM matched_history`;
+FROM matched_history
+WHERE race_time IS NOT NULL`;
 };
 
 export const buildConditionTargetRacesQuery = (
@@ -343,7 +348,8 @@ matched_history AS (
         extraJoin: "",
         extraWhere: `AND ${finishPositionSql("se")} = 1
     AND ${doubleSelect("se.soha_time")} IS NOT NULL
-    AND ${doubleSelect("se.soha_time")} > 0`,
+    AND ${doubleSelect("se.soha_time")} > 0
+    ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
         selectList: `concat(ra.kaisai_nen, ra.kaisai_tsukihi) AS target_race_date,
     ${paddedCodeSql("ra.keibajo_code")} AS keibajo_code,
@@ -356,6 +362,7 @@ matched_history AS (
     ${trimmedNameSql("se.banushimei")} AS owner_name,
     ${doubleSelect("se.soha_time")} AS race_time,
     ${doubleSelect("se.kohan_3f")} AS kohan_3f,
+    coalesce(nullif(btrim(coalesce(ra.kyori, '')), ''), '') AS kyori,
     coalesce(nullif(btrim(coalesce(se.tansho_ninkijun, '')), ''), '') AS popularity`,
         tables,
       }),
@@ -374,6 +381,7 @@ SELECT
   owner_name,
   race_time,
   kohan_3f,
+  kyori,
   popularity
 FROM matched_history
 ORDER BY target_race_date DESC, race_bango ASC
@@ -588,6 +596,7 @@ export const normaliseTargetRaceRow = (raw: Record<string, unknown>): ConditionT
   jockeyName: requiredString(raw.jockey_name, "jockey_name"),
   keibajoCode: requiredString(raw.keibajo_code, "keibajo_code"),
   kohan3f: textOrEmpty(raw.kohan_3f),
+  kyori: textOrEmpty(raw.kyori),
   ownerName: requiredString(raw.owner_name, "owner_name"),
   popularity: textOrEmpty(raw.popularity),
   raceName: textOrEmpty(raw.race_name),

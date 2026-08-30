@@ -31,11 +31,19 @@ const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v5";
 // include horse-level details. Cached empty-details payloads must not survive.
 // Bumped v14->v15 because the viewer parser now keeps those details instead of
 // dropping them. Cached empty-details v14 payloads must not survive.
-const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v15";
+// Bumped v15->v16 because condition clocks now use exact kyori inside the
+// cell-router distance band. Cached mixed-distance 最速 (e.g. 1000m 57.5 on a
+// 1700m card) must not survive.
+// Bumped v16->v17 because JRA listed/OP/G3+ condition history now matches
+// venue and race name only. Cached mixed-class listed payloads must not survive.
+const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v17";
+const CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION = "v16";
 // Bumped v7->v9 on 2026-08-23 because similar/bloodline/time-score now prefer
 // R2 Catalog rows with empty details. Cached Neon jsonb payloads must not
 // survive. v8 remains the overseas history version.
-const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v9";
+// Bumped v9->v10 because incomplete Catalog bloodline coverage now runs the
+// bounded Neon relaxation fallback for every section that consumes it.
+const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v10";
 const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v8";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
@@ -94,7 +102,10 @@ const getDetailSectionCacheVersion = (
     return TRAINING_DETAIL_SECTION_CACHE_VERSION;
   }
   if (
-    (section === "bloodline" || section === "similar" || section === "time-score") &&
+    (section === "bloodline" ||
+      section === "overall-score" ||
+      section === "similar" ||
+      section === "time-score") &&
     !isOverseasKeibajoCode(keibajoCode)
   ) {
     return DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION;
@@ -130,27 +141,47 @@ export const isDetailSectionCacheableSection = (
 ): value is DetailSectionCacheableSection =>
   DETAIL_SECTION_CACHEABLE_SECTIONS.some((section) => section === value);
 
-export const buildDetailSectionCacheKey = ({
-  day,
-  keibajoCode,
-  month,
-  raceNumber,
-  section,
-  year,
-}: Omit<DetailSectionCacheWarmMessage, "section" | "source"> & {
+export interface DetailSectionCacheKeyInput {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
   section: DetailSectionCacheableSection;
-}): string =>
+  year: string;
+}
+
+const DETAIL_SECTION_CACHE_KEY_PREFIX = "race-detail-section";
+const DETAIL_SECTION_CACHE_KEY_QUERY = "default";
+
+const joinDetailSectionCacheKey = (input: DetailSectionCacheKeyInput, version: string): string =>
   [
-    "race-detail-section",
-    getDetailSectionCacheVersion(section, keibajoCode),
-    year,
-    month,
-    day,
-    keibajoCode,
-    raceNumber,
-    section,
-    "default",
+    DETAIL_SECTION_CACHE_KEY_PREFIX,
+    version,
+    input.year,
+    input.month,
+    input.day,
+    input.keibajoCode,
+    input.raceNumber,
+    input.section,
+    DETAIL_SECTION_CACHE_KEY_QUERY,
   ].join(":");
+
+export const buildDetailSectionCacheKey = (input: DetailSectionCacheKeyInput): string =>
+  joinDetailSectionCacheKey(input, getDetailSectionCacheVersion(input.section, input.keibajoCode));
+
+export const buildDetailSectionCacheFallbackKeys = (input: DetailSectionCacheKeyInput): string[] =>
+  input.section === "condition"
+    ? [joinDetailSectionCacheKey(input, CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION)]
+    : [];
+
+export const expandDetailSectionCacheReadKeys = (cacheKey: string): string[] => {
+  const currentPrefix = `${DETAIL_SECTION_CACHE_KEY_PREFIX}:${CONDITION_DETAIL_SECTION_CACHE_VERSION}:`;
+  const fallbackPrefix = `${DETAIL_SECTION_CACHE_KEY_PREFIX}:${CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION}:`;
+  const isConditionCurrent = cacheKey.startsWith(currentPrefix) && cacheKey.includes(":condition:");
+  return isConditionCurrent
+    ? [cacheKey, cacheKey.replace(currentPrefix, fallbackPrefix)]
+    : [cacheKey];
+};
 
 export const buildDetailSectionApiPath = ({
   day,

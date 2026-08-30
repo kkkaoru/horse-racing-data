@@ -123,15 +123,30 @@ it("exports a Cloudflare Worker entrypoint", async () => {
   expect(response.status).toBe(200);
 });
 
-it("queries R2 SQL for race keys and writes both cache tiers", async () => {
-  const harness = createHarness([
-    { keibajo_code: "5", race_bango: "1", race_date: "20260715", source: "jra" },
-    { keibajo_code: "83", race_bango: "9", race_date: "2026-07-15", source: "nar" },
-  ]);
+it("queries JRA and NAR race keys independently and writes both cache tiers", async () => {
+  const harness = createHarness();
+  const fetchImpl = vi
+    .fn<Fetcher>()
+    .mockResolvedValueOnce(
+      Response.json({
+        result: {
+          rows: [{ keibajo_code: "5", race_bango: "1", race_date: "20260715", source: "jra" }],
+        },
+        success: true,
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        result: {
+          rows: [{ keibajo_code: "83", race_bango: "9", race_date: "2026-07-15", source: "nar" }],
+        },
+        success: true,
+      }),
+    );
   const response = await handleRequest(
     new Request("https://catalog.test/v1/race-keys?date=20260715"),
     harness.env,
-    harness.dependencies,
+    { ...harness.dependencies, fetchImpl },
   );
   expect(response.status).toBe(200);
   expect(response.headers.get("X-Catalog-Cache")).toBe("r2-sql");
@@ -153,9 +168,50 @@ it("queries R2 SQL for race keys and writes both cache tiers", async () => {
       },
     ],
   });
-  expect(harness.fetchCalls).toHaveLength(1);
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+  expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).not.toMatch("UNION ALL");
+  expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toMatch("pc_keiba.jvd_ra");
+  expect(String(fetchImpl.mock.calls[1]?.[1]?.body)).toMatch("pc_keiba.nvd_ra");
   expect(harness.cacheCalls.puts).toHaveLength(1);
   expect(harness.kvCalls.puts).toHaveLength(1);
+});
+
+it("does not cache partial race keys when the second partition-local query fails", async () => {
+  const harness = createHarness();
+  const fetchImpl = vi
+    .fn<Fetcher>()
+    .mockResolvedValueOnce(
+      Response.json({
+        result: {
+          rows: [{ keibajo_code: "5", race_bango: "1", race_date: "20260715", source: "jra" }],
+        },
+        success: true,
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json(
+        { errors: [{ code: 70200, message: "execution resource exhausted" }], success: false },
+        { status: 500 },
+      ),
+    );
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-keys?date=20260715"),
+    harness.env,
+    { ...harness.dependencies, fetchImpl },
+  );
+
+  expect(response.status).toBe(502);
+  await expect(response.json()).resolves.toStrictEqual({
+    code: 70200,
+    detail: "R2 SQL HTTP 500: 70200 execution resource exhausted",
+    error: "r2_sql_unavailable",
+  });
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+  expect(harness.cacheCalls.puts).toHaveLength(0);
+  expect(harness.kvCalls.puts).toHaveLength(0);
+  consoleMock.mockRestore();
 });
 
 it("queries fixed race-feature SQL and returns DailyRaceEntryRow objects", async () => {

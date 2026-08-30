@@ -24,7 +24,7 @@ import {
   buildBulkFreshRaceEntriesQuery,
   buildFreshRaceEntriesQuery,
   buildRaceFeaturesQuery,
-  buildRaceKeysQuery,
+  buildRaceKeysQueries,
   executeR2Sql,
   normaliseBulkFreshRaceEntries,
   normaliseFreshRaceEntries,
@@ -42,8 +42,13 @@ import {
   buildRaceEntityHistoryQuery,
   buildRaceEntityPage,
   buildRaceEntityTargetQuery,
+  buildRaceEntityWarmHistoryQuery,
+  buildRaceEntityWarmTargetsQuery,
   normaliseRaceEntityHistoryRow,
   normaliseRaceEntityTarget,
+  normaliseRaceEntityWarmTarget,
+  type RaceEntityTarget,
+  type RaceEntityWarmTarget,
   parseRaceEntityCursor,
 } from "./race-entity-recent-results";
 import {
@@ -105,8 +110,16 @@ const RACE_ENTITY_MAX_LIMITS: ReadonlyMap<RaceEntityType, number> = new Map([
   ["trainer", 30],
   ["owner", 30],
 ]);
-const RACE_ENTITY_CACHE_API_TTL_SECONDS: number = 60 * 60;
-const RACE_ENTITY_KV_TTL_SECONDS: number = 6 * 60 * 60;
+const RACE_ENTITY_WARM_FIELDS: ReadonlyMap<RaceEntityType, RaceEntityWarmFieldNames> = new Map([
+  ["horse", { bucket: "horseBucket", id: "horseId", name: "horseName" }],
+  ["jockey", { bucket: "jockeyBucket", id: "jockeyId", name: "jockeyName" }],
+  ["trainer", { bucket: "trainerBucket", id: "trainerId", name: "trainerName" }],
+  ["owner", { bucket: "ownerBucket", id: "ownerId", name: "ownerName" }],
+]);
+const RACE_ENTITY_CACHE_API_TTL_SECONDS: number = 12 * 60 * 60;
+const RACE_ENTITY_KV_TTL_SECONDS: number = 36 * 60 * 60;
+const RACE_ENTITY_WARM_PATH: string = "/v1/internal/race-entity-recent-results/warm";
+const CACHE_WARM_HEADER: string = "X-PC-Keiba-Cache-Warm";
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
@@ -140,6 +153,32 @@ const SHA_256_ALGORITHM: string = "SHA-256";
 interface CatalogFailure {
   code: number | string | null;
   detail: string;
+}
+
+interface RaceEntityWarmFieldNames {
+  bucket: keyof RaceEntityWarmTarget;
+  id: keyof RaceEntityWarmTarget;
+  name: keyof RaceEntityWarmTarget;
+}
+
+interface RaceEntityWarmJob {
+  filters: RaceEntityRecentResultsFilters;
+  target: RaceEntityTarget & { entityBucket: string; entityId: string };
+}
+
+interface RaceEntityWarmResult {
+  pages: number;
+  runners: number;
+}
+
+interface RaceEntityWarmExecution {
+  cursorSecret: string;
+  dependencies: WorkerDependencies;
+  env: Env;
+}
+
+interface RaceEntityWarmTypeExecution extends RaceEntityWarmExecution {
+  jobs: readonly RaceEntityWarmJob[];
 }
 
 interface RunningStyleQueryParams {
@@ -273,8 +312,10 @@ const timingSafeEqualDigests = (left: ArrayBuffer, right: ArrayBuffer): boolean 
   return mismatch === 0;
 };
 
-const isFreshRaceEntriesAuthorized = async (request: Request, env: Env): Promise<boolean> => {
-  const expected = env.FINISH_POSITION_ATTESTATION_TOKEN;
+const isBearerTokenAuthorized = async (
+  request: Request,
+  expected: string | undefined,
+): Promise<boolean> => {
   const provided = parseBearerToken(request);
   if (expected === undefined || expected.length === 0 || provided === null || provided.length === 0)
     return false;
@@ -284,6 +325,9 @@ const isFreshRaceEntriesAuthorized = async (request: Request, env: Env): Promise
   ]);
   return timingSafeEqualDigests(providedDigest, expectedDigest);
 };
+
+const isFreshRaceEntriesAuthorized = (request: Request, env: Env): Promise<boolean> =>
+  isBearerTokenAuthorized(request, env.FINISH_POSITION_ATTESTATION_TOKEN);
 
 const compactUtcDate = (timestamp: number): string =>
   new Date(timestamp).toISOString().slice(0, 10).replaceAll("-", "");
@@ -414,7 +458,7 @@ const raceEntityLimit = (url: URL, entityType: RaceEntityType): number => {
 
 const parseRaceEntityFilters = (url: URL): RaceEntityRecentResultsFilters => {
   const entityType = parseRaceEntityType(url);
-  const horseNumber = requireCode(url, "horseNumber");
+  const horseNumber = requireCode(url, "horseNumber").padStart(2, "0");
   const cursor = url.searchParams.get("cursor");
   return {
     cursor: cursor === null || cursor.length === 0 ? null : cursor,
@@ -559,20 +603,34 @@ const queryAndCache = async (
 ): Promise<Response> =>
   queryAndCacheRows(descriptor, env, dependencies, query, (rows) => rows.map(normalise));
 
-const handleRaceKeys = (
+const handleRaceKeys = async (
   url: URL,
   env: Env,
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const date = requireDate(url);
   const descriptor: CacheDescriptor = { date, kind: "race-keys" };
-  return queryAndCache(
+  const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRows);
+  if (cached) return cached;
+  // R2 SQL's distributed planner can reject a UNION ALL across the independently
+  // partitioned JRA and NAR datasets (40004, "partition 1 not available"). Keep
+  // each scan partition-local and merge only after both queries succeed, so a
+  // partial source result is never cached.
+  const [jraQuery, narQuery] = buildRaceKeysQueries(env, date);
+  const jraRows = await executeR2Sql(env, jraQuery, dependencies.fetchImpl);
+  const narRows = await executeR2Sql(env, narQuery, dependencies.fetchImpl);
+  const body = JSON.stringify({
+    rows: [...jraRows, ...narRows].map(normaliseCatalogRaceKeyRow),
+  });
+  await populateCaches(
+    dependencies.cache,
+    env.CATALOG_KV,
     descriptor,
-    env,
-    dependencies,
-    buildRaceKeysQuery(env, date),
-    normaliseCatalogRaceKeyRow,
+    body,
+    parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60),
+    parsePositiveSeconds(env.KV_TTL_SECONDS, 600),
   );
+  return jsonRowsResponse(body, "r2-sql");
 };
 
 const handleRaceFeatures = (
@@ -673,6 +731,169 @@ const raceEntityCursorSecret = (env: Env): string => {
   return secret;
 };
 
+const validWarmIdentity = (id: string | null, bucket: string | null): boolean =>
+  id !== null && !/^0+$/u.test(id) && bucket !== null && ENTITY_BUCKET_PATTERN.test(bucket);
+
+const warmTargetForType = (
+  target: RaceEntityWarmTarget,
+  entityType: RaceEntityType,
+): (RaceEntityTarget & { entityBucket: string; entityId: string }) | null => {
+  const fields = RACE_ENTITY_WARM_FIELDS.get(entityType);
+  if (fields === undefined) return null;
+  const entityId = target[fields.id];
+  const entityBucket = target[fields.bucket];
+  const entityName = target[fields.name];
+  if (
+    !validWarmIdentity(entityId, entityBucket) ||
+    entityId === null ||
+    entityBucket === null ||
+    entityName === null ||
+    target.horseId === null
+  ) {
+    return null;
+  }
+  return {
+    entityBucket,
+    entityId,
+    entityName,
+    horseId: target.horseId,
+    horseName: target.horseName,
+    raceName: target.raceName,
+    raceStartTime: target.raceStartTime,
+    runnerFound: true,
+  };
+};
+
+const warmJobsForTarget = (
+  race: Omit<RaceEntityRecentResultsFilters, "cursor" | "entityType" | "horseNumber" | "limit">,
+  target: RaceEntityWarmTarget,
+): RaceEntityWarmJob[] => {
+  if (target.horseNumber === null) return [];
+  const horseNumber = target.horseNumber.padStart(2, "0");
+  return [...RACE_ENTITY_TYPES].flatMap((value): RaceEntityWarmJob[] => {
+    if (!isRaceEntityType(value)) return [];
+    const resolvedTarget = warmTargetForType(target, value);
+    if (resolvedTarget === null) return [];
+    const limit = RACE_ENTITY_DEFAULT_LIMITS.get(value);
+    if (limit === undefined) return [];
+    return [
+      {
+        filters: {
+          ...race,
+          cursor: null,
+          entityType: value,
+          horseNumber,
+          limit,
+        },
+        target: resolvedTarget,
+      },
+    ];
+  });
+};
+
+const writeRaceEntityWarmPage = async (
+  job: RaceEntityWarmJob,
+  rows: ReadonlyArray<Record<string, unknown>>,
+  execution: RaceEntityWarmExecution,
+): Promise<void> => {
+  const body = JSON.stringify(
+    await buildRaceEntityPage(
+      job.filters,
+      job.target,
+      rows.map(normaliseRaceEntityHistoryRow),
+      execution.cursorSecret,
+    ),
+  );
+  const descriptor = raceEntityRecentResultsDescriptor(job.filters);
+  await Promise.all([
+    populateCacheApi(
+      execution.dependencies.cache,
+      cacheRequestFor(descriptor),
+      body,
+      RACE_ENTITY_CACHE_API_TTL_SECONDS,
+    ),
+    execution.env.CATALOG_KV.put(kvKeyFor(descriptor), body, {
+      expirationTtl: RACE_ENTITY_KV_TTL_SECONDS,
+    }),
+  ]);
+};
+
+const warmRaceEntityType = async (execution: RaceEntityWarmTypeExecution): Promise<void> => {
+  const first = execution.jobs[0];
+  if (first === undefined) return;
+  const historyRows = await executeR2Sql(
+    execution.env,
+    buildRaceEntityWarmHistoryQuery(
+      execution.env,
+      first.filters,
+      execution.jobs.map((job) => job.target),
+    ),
+    execution.dependencies.fetchImpl,
+  );
+  await Promise.all(
+    execution.jobs.map((job) =>
+      writeRaceEntityWarmPage(
+        job,
+        historyRows.filter((row) => row.matched_entity_id === job.target.entityId),
+        execution,
+      ),
+    ),
+  );
+};
+
+const warmRaceEntityJobs = async (
+  jobs: readonly RaceEntityWarmJob[],
+  execution: RaceEntityWarmExecution,
+): Promise<void> => {
+  await Promise.all(
+    [...RACE_ENTITY_TYPES].map((entityType) =>
+      warmRaceEntityType({
+        ...execution,
+        jobs: jobs.filter((job) => job.filters.entityType === entityType),
+      }),
+    ),
+  );
+};
+
+const handleRaceEntityRecentResultsWarm = async (
+  request: Request,
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  if (
+    request.headers.get(CACHE_WARM_HEADER) !== "queue" ||
+    !(await isBearerTokenAuthorized(request, env.RACE_ENTITY_WARM_TOKEN))
+  ) {
+    return jsonResponse({ error: "not_found" }, 404);
+  }
+  const race = {
+    date: requireDate(url),
+    keibajoCode: requireCode(url, "keibajoCode"),
+    raceBango: parseRaceBangoOrNumber(url),
+    source: parseHeatmapSource(url),
+  } satisfies Omit<
+    RaceEntityRecentResultsFilters,
+    "cursor" | "entityType" | "horseNumber" | "limit"
+  >;
+  const targetRows = await executeR2Sql(
+    env,
+    buildRaceEntityWarmTargetsQuery(env, race),
+    dependencies.fetchImpl,
+  );
+  const targets = targetRows.map(normaliseRaceEntityWarmTarget);
+  const jobs = targets.flatMap((target) => warmJobsForTarget(race, target));
+  await warmRaceEntityJobs(jobs, {
+    cursorSecret: raceEntityCursorSecret(env),
+    dependencies,
+    env,
+  });
+  return jsonResponse({
+    pages: jobs.length,
+    runners: targets.length,
+  } satisfies RaceEntityWarmResult);
+};
+
 const handleRaceEntityRecentResults = async (
   url: URL,
   env: Env,
@@ -764,9 +985,19 @@ const handleRaceEntityRecentResults = async (
             );
           }
         });
-  const body = JSON.stringify(
-    await buildRaceEntityPage(filters, resolvedTarget, rows, cursorSecret),
-  );
+  let body: string;
+  try {
+    body = JSON.stringify(await buildRaceEntityPage(filters, resolvedTarget, rows, cursorSecret));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("response hard limit")) {
+      throw new RaceEntityRequestError(
+        "MALFORMED_HISTORY_DATA",
+        "A race entity history row exceeded the response hard size limit.",
+        502,
+      );
+    }
+    throw error;
+  }
   await populateCaches(
     dependencies.cache,
     env.CATALOG_KV,
@@ -1090,6 +1321,9 @@ export const handleRequest = async (
     }
     if (request.method === "GET" && url.pathname === "/v1/race-entity-recent-results") {
       return await handleRaceEntityRecentResults(url, env, dependencies);
+    }
+    if (request.method === "POST" && url.pathname === RACE_ENTITY_WARM_PATH) {
+      return await handleRaceEntityRecentResultsWarm(request, url, env, dependencies);
     }
     if (
       (request.method === "POST" || request.method === "DELETE") &&

@@ -335,11 +335,15 @@ FROM ${rawTableName(env, config.raceTable)}
 WHERE kaisai_nen = '${kaisaiNen}' AND kaisai_tsukihi = '${kaisaiTsukihi}'`;
 };
 
-export const buildRaceKeysQuery = (env: R2SqlCatalogConfig, date: string): string => `
-${buildRawRaceKeySelect(env, JRA_CONFIG, date)}
-UNION ALL
-${buildRawRaceKeySelect(env, NAR_CONFIG, date)}
-ORDER BY source, keibajo_code, race_bango`;
+export const buildRaceKeysQueries = (
+  env: R2SqlCatalogConfig,
+  date: string,
+): readonly [string, string] => [
+  `${buildRawRaceKeySelect(env, JRA_CONFIG, date)}
+ORDER BY keibajo_code, race_bango`,
+  `${buildRawRaceKeySelect(env, NAR_CONFIG, date)}
+ORDER BY keibajo_code, race_bango`,
+];
 
 export const buildRaceFeaturesQuery = (
   env: R2SqlCatalogConfig,

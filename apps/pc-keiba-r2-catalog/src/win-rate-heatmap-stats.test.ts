@@ -4,6 +4,7 @@ import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
   buildWinRateHeatmapBloodlineQuery,
   buildWinRateHeatmapSimilarQuery,
+  cellRouterDistanceBandFilterSql,
   isBanEiKeibajo,
   normaliseBloodlineRow,
   normaliseSimilarRow,
@@ -76,6 +77,20 @@ it("builds aggregate-only JRA bloodline SQL with heatmap default similar-section
   expect(sql).not.toMatch("jsonb_agg");
   expect(sql).not.toMatch("regexp_replace");
   expect(sql).not.toMatch("nvd_se");
+});
+
+it("builds finish-position cell-router distance bands for JRA and NAR", () => {
+  const jraBand = cellRouterDistanceBandFilterSql(jraFilters);
+  const narBand = cellRouterDistanceBandFilterSql({
+    ...jraFilters,
+    keibajoCode: "43",
+    source: "nar",
+  });
+  expect(jraBand).toMatch("WHEN cr.kyori_int < 1200 THEN 'sprint'");
+  expect(jraBand).toMatch("WHEN cr.kyori_int < 1600 THEN 'mile'");
+  expect(narBand).toMatch("WHEN cr.kyori_int < 1400 THEN 'sprint'");
+  expect(narBand).toMatch("WHEN cr.kyori_int <= 1500 THEN 'extended_sprint'");
+  expect(narBand).toMatch("WHEN cr.kyori_int <= 1800 THEN 'mile'");
 });
 
 it("treats historic Ban-ei venues as the same circuit", () => {
@@ -158,7 +173,12 @@ it("filters similar history by current-race grade and track when those flags are
     includeTrackCode: true,
     includeTurn: false,
   });
-  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
+  expect(sql).toMatch("coalesce(ra.grade_code, '')");
+  expect(sql).toMatch("coalesce(cr.grade_code, '')");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
+  expect(sql).toMatch("'JPN[[:space:]]*II([^I]|$)') THEN 'B'");
+  expect(sql).toMatch("'JPN[[:space:]]*I([^I]|$)') THEN 'A'");
+  expect(sql).toMatch("END = CASE");
   expect(sql).toMatch("btrim(coalesce(ra.track_code, '')) = btrim(coalesce(cr.track_code, ''))");
   expect(sql).not.toMatch("THEN '芝'");
 });
@@ -170,13 +190,9 @@ it("lets includeGrade skip matching when the current grade is not listed-or-high
     includeSurface: false,
     includeTurn: false,
   });
-  expect(sql).toMatch(
-    "btrim(coalesce(cr.grade_code, '')) NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')",
-  );
-  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))");
-  expect(sql).not.toMatch(
-    "btrim(coalesce(ra.grade_code, '')) = btrim(coalesce(cr.grade_code, ''))\n    AND btrim(coalesce(cr.grade_code, '')) <> ''",
-  );
+  expect(sql).toMatch("END NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
+  expect(sql).toMatch("END = CASE");
 });
 
 it("omits grade and exact track-code matching when those flags are off", () => {
@@ -196,7 +212,8 @@ it("always excludes graded races from ungraded open current races", () => {
   expect(sql).toMatch("kyosomei_hondai");
   expect(sql).toMatch("kyoso_shubetsu_code");
   expect(sql).toMatch("btrim(coalesce(cr.kyoso_joken_code, '')) <> '999'");
-  expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) = ''");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
+  expect(sql).toMatch("OR CASE");
 });
 
 it("compares condition keys as strings before combining the predicate with boolean filters", () => {

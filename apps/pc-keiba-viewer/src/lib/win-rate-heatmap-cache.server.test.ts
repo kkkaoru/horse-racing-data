@@ -158,6 +158,25 @@ it("returns null when KV heatmap JSON is invalid", async () => {
   expect(cache.put).not.toHaveBeenCalled();
 });
 
+it("serves the previous heatmap namespace without copying it onto the current key", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  kv.get.mockResolvedValueOnce(null).mockResolvedValueOnce(JSON.stringify(HEATMAP_PAYLOAD));
+  setDefaultCache(cache);
+  getCloudflareContextMock.mockResolvedValue({ ctx: null, env: { DETAIL_SECTION_CACHE_KV: kv } });
+
+  await expect(
+    getCachedWinRateHeatmapPayload("pc-keiba-viewer:win-rate-heatmap:v16:2026:08:29:04:08:default"),
+  ).resolves.toStrictEqual(HEATMAP_PAYLOAD);
+  expect(kv.get.mock.calls[0]?.[0]).toBe(
+    "pc-keiba-viewer:win-rate-heatmap:v16:2026:08:29:04:08:default",
+  );
+  expect(kv.get.mock.calls[1]?.[0]).toBe(
+    "pc-keiba-viewer:win-rate-heatmap:v15:2026:08:29:04:08:default",
+  );
+  expect(cache.put).not.toHaveBeenCalled();
+});
+
 it("returns null when both Cache API and KV miss", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();

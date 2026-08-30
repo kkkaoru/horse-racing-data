@@ -4,7 +4,7 @@ import {
   buildBulkFreshRaceEntriesQuery,
   buildFreshRaceEntriesQuery,
   buildRaceFeaturesQuery,
-  buildRaceKeysQuery,
+  buildRaceKeysQueries,
   executeR2Sql,
   normaliseBulkFreshRaceEntries,
   normaliseFreshRaceEntries,
@@ -26,9 +26,9 @@ const env = (): Env => ({
   R2_SQL_TOKEN: "secret-token",
 });
 
-it("builds race-key SQL from only the partition-pruned raw race tables", () => {
-  expect(buildRaceKeysQuery(env(), "20260715")).toBe(`
-SELECT
+it("builds independent partition-pruned race-key SQL for JRA and NAR", () => {
+  expect(buildRaceKeysQueries(env(), "20260715")).toStrictEqual([
+    `SELECT
   'jra' AS source,
   concat(kaisai_nen, kaisai_tsukihi) AS race_date,
   kaisai_nen,
@@ -38,8 +38,8 @@ SELECT
     nullif(btrim(grade_code), '') AS grade_code
 FROM pc_keiba.jvd_ra
 WHERE kaisai_nen = '2026' AND kaisai_tsukihi = '0715'
-UNION ALL
-SELECT
+ORDER BY keibajo_code, race_bango`,
+    `SELECT
   'nar' AS source,
   concat(kaisai_nen, kaisai_tsukihi) AS race_date,
   kaisai_nen,
@@ -49,7 +49,8 @@ SELECT
     nullif(btrim(grade_code), '') AS grade_code
 FROM pc_keiba.nvd_ra
 WHERE kaisai_nen = '2026' AND kaisai_tsukihi = '0715'
-ORDER BY source, keibajo_code, race_bango`);
+ORDER BY keibajo_code, race_bango`,
+  ]);
 });
 
 it("builds JRA features by joining partition-pruned jvd_se and jvd_ra", () => {
@@ -328,9 +329,9 @@ it("fails closed for empty, malformed, mismatched-source, or duplicate bulk entr
 
 it("rejects unsafe namespace, date, and race filters", () => {
   expect(() =>
-    buildRaceKeysQuery({ ...env(), R2_SQL_NAMESPACE: "pc_keiba;drop" }, "20260715"),
+    buildRaceKeysQueries({ ...env(), R2_SQL_NAMESPACE: "pc_keiba;drop" }, "20260715"),
   ).toThrow("R2_SQL_NAMESPACE must be an unquoted SQL identifier");
-  expect(() => buildRaceKeysQuery(env(), "2026-07-15")).toThrow("date must match YYYYMMDD");
+  expect(() => buildRaceKeysQueries(env(), "2026-07-15")).toThrow("date must match YYYYMMDD");
   expect(() =>
     buildRaceFeaturesQuery(env(), {
       date: "20260715",

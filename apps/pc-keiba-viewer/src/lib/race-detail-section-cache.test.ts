@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDetailSectionApiPath,
+  buildDetailSectionCacheFallbackKeys,
   buildDetailSectionCacheKey,
   DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS,
   DETAIL_SECTION_CACHEABLE_SECTIONS,
+  expandDetailSectionCacheReadKeys,
   getJstDateParts,
   getTomorrowJstDateParts,
   isDefaultDetailSectionCacheRequest,
@@ -74,28 +76,66 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "44",
         section: "bloodline",
       }),
-    ).toBe("race-detail-section:v9:2026:5:23:44:12:bloodline:default");
+    ).toBe("race-detail-section:v10:2026:5:23:44:12:bloodline:default");
+    expect(
+      buildDetailSectionCacheKey({
+        ...warmMessage,
+        keibajoCode: "44",
+        section: "overall-score",
+      }),
+    ).toBe("race-detail-section:v10:2026:5:23:44:12:overall-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "similar",
       }),
-    ).toBe("race-detail-section:v9:2026:5:23:44:12:similar:default");
+    ).toBe("race-detail-section:v10:2026:5:23:44:12:similar:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "44",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v9:2026:5:23:44:12:time-score:default");
+    ).toBe("race-detail-section:v10:2026:5:23:44:12:time-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "A8",
         section: "condition",
       }),
-    ).toBe("race-detail-section:v15:2026:5:23:A8:12:condition:default");
+    ).toBe("race-detail-section:v17:2026:5:23:A8:12:condition:default");
+    expect(
+      buildDetailSectionCacheFallbackKeys({
+        day: "29",
+        keibajoCode: "04",
+        month: "08",
+        raceNumber: "08",
+        section: "condition",
+        year: "2026",
+      }),
+    ).toStrictEqual(["race-detail-section:v16:2026:08:29:04:08:condition:default"]);
+    expect(
+      buildDetailSectionCacheFallbackKeys({
+        day: "29",
+        keibajoCode: "04",
+        month: "08",
+        raceNumber: "08",
+        section: "training",
+        year: "2026",
+      }),
+    ).toStrictEqual([]);
+    expect(
+      expandDetailSectionCacheReadKeys(
+        "race-detail-section:v17:2026:08:29:04:08:condition:default",
+      ),
+    ).toStrictEqual([
+      "race-detail-section:v17:2026:08:29:04:08:condition:default",
+      "race-detail-section:v16:2026:08:29:04:08:condition:default",
+    ]);
+    expect(
+      expandDetailSectionCacheReadKeys("race-detail-section:v5:2026:08:29:04:08:training:default"),
+    ).toStrictEqual(["race-detail-section:v5:2026:08:29:04:08:training:default"]);
   });
 
   it("validates cacheable sections and default warm targets", () => {

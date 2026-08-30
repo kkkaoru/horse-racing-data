@@ -275,6 +275,7 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
           jockeyName: "ルメール",
           keibajoCode: "05",
           kohan3f: "351",
+          kyori: "",
           ownerName: "シルク",
           popularity: "01",
           raceName: "天皇賞",

@@ -15,8 +15,9 @@
     "CACHE_TTL_SECONDS": "60",
     "KV_TTL_SECONDS": "600",
   },
-  // R2_SQL_TOKEN, ADMIN_TOKEN, FINISH_POSITION_ATTESTATION_TOKEN, and
-  // RACE_ENTITY_CURSOR_SECRET must be configured with `wrangler secret put`.
+  // R2_SQL_TOKEN, ADMIN_TOKEN, FINISH_POSITION_ATTESTATION_TOKEN,
+  // RACE_ENTITY_CURSOR_SECRET, and RACE_ENTITY_WARM_TOKEN must be configured
+  // with `wrangler secret put`.
   "kv_namespaces": [
     {
       "binding": "CATALOG_KV",

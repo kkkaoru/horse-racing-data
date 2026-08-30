@@ -3,6 +3,7 @@ import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import {
   DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
   buildDetailSectionCacheKey,
+  expandDetailSectionCacheReadKeys,
   type DetailSectionCacheableSection,
   type DetailSectionCacheWarmMessage,
 } from "./race-detail-section-cache";
@@ -16,7 +17,10 @@ import type { RaceDetail } from "./race-types";
 import { isBanEiKeibajoCode } from "./runner-format";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
-const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/";
+// v2 invalidates Cache API entries created before race cache busts could reliably
+// replace pre-race training data. KV keys remain stable, so existing valid payloads
+// can repopulate the new Cache API namespace without a full cache rebuild.
+const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/v2/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
 // Stale snapshots persist much longer than the fresh tier (which expires
@@ -98,8 +102,9 @@ const buildCachedResponse = (body: string, source: CacheSource): Response =>
     },
   });
 
-export const getCachedDetailSectionResponse = async (
+const readCachedDetailSectionForKey = async (
   cacheKey: string,
+  populateCurrentCacheApi: boolean,
 ): Promise<Response | null> => {
   const defaultCache = getDefaultCache();
   const cacheRequest = getCacheRequest(cacheKey);
@@ -125,8 +130,26 @@ export const getCachedDetailSectionResponse = async (
       }),
     );
   };
-  ctx?.waitUntil(putCache());
+  if (populateCurrentCacheApi) {
+    ctx?.waitUntil(putCache());
+  }
   return buildCachedResponse(kvBody, "kv");
+};
+
+export const getCachedDetailSectionResponse = async (
+  cacheKey: string,
+): Promise<Response | null> => {
+  const readKeys = expandDetailSectionCacheReadKeys(cacheKey);
+  const firstKey = readKeys[0];
+  if (firstKey === undefined) {
+    return null;
+  }
+  const currentHit = await readCachedDetailSectionForKey(firstKey, true);
+  if (currentHit !== null) {
+    return currentHit;
+  }
+  const fallbackKey = readKeys[1];
+  return fallbackKey === undefined ? null : readCachedDetailSectionForKey(fallbackKey, false);
 };
 
 const getStaleCacheKey = (cacheKey: string): string => `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
@@ -144,9 +167,9 @@ const isEnvelopeStillFresh = (writtenAt: number, nowMs: number): boolean => {
   return writtenAt >= getJstMidnightMsForToday(nowMs);
 };
 
-export const getStaleDetailSectionBody = async (
+const readStaleDetailSectionBodyForKey = async (
   cacheKey: string,
-  nowMs = Date.now(),
+  nowMs: number,
 ): Promise<string | null> => {
   const { env } = await safeGetCloudflareRuntime();
   const raw = await env?.DETAIL_SECTION_CACHE_KV?.get(getStaleCacheKey(cacheKey)).catch(() => null);
@@ -161,6 +184,23 @@ export const getStaleDetailSectionBody = async (
     return null;
   }
   return envelope.payload;
+};
+
+export const getStaleDetailSectionBody = async (
+  cacheKey: string,
+  nowMs = Date.now(),
+): Promise<string | null> => {
+  const readKeys = expandDetailSectionCacheReadKeys(cacheKey);
+  const firstKey = readKeys[0];
+  if (firstKey === undefined) {
+    return null;
+  }
+  const currentHit = await readStaleDetailSectionBodyForKey(firstKey, nowMs);
+  if (currentHit !== null) {
+    return currentHit;
+  }
+  const fallbackKey = readKeys[1];
+  return fallbackKey === undefined ? null : readStaleDetailSectionBodyForKey(fallbackKey, nowMs);
 };
 
 export const buildStaleDetailSectionResponse = (body: string): Response =>

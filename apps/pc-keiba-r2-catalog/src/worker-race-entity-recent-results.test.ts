@@ -1,14 +1,14 @@
 // Run with bun (bunx vitest).
 import { expect, it, vi } from "vitest";
 
-import type { CacheStore, Env, Fetcher, KvStore, ObjectStore, WorkerDependencies } from "./types";
-
 vi.mock("hyparquet", () => ({
   parquetReadObjects: vi.fn(async ({ file }: { file: ArrayBuffer }) => {
     const value: unknown = JSON.parse(new TextDecoder().decode(file));
     return Array.isArray(value) ? value : [];
   }),
 }));
+
+import type { CacheStore, Env, Fetcher, KvStore, ObjectStore, WorkerDependencies } from "./types";
 import { handleRequest } from "./worker";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -23,6 +23,24 @@ const targetRow = {
   race_name: "Target",
   race_start_time: "1240",
   runner_found: true,
+};
+
+const warmTargetRow = {
+  horse_bucket: "a",
+  horse_id: "2022103916",
+  horse_name: "Horse",
+  horse_number: "07",
+  jockey_bucket: "b",
+  jockey_id: "21379",
+  jockey_name: "Jockey",
+  owner_bucket: "c",
+  owner_id: "768006",
+  owner_name: "Owner",
+  race_name: "Target",
+  race_start_time: "1240",
+  trainer_bucket: "d",
+  trainer_id: "20692",
+  trainer_name: "Trainer",
 };
 
 const historyRow = {
@@ -85,6 +103,7 @@ const harness = (queryRows: (unknown[] | Error)[]) => {
     R2_SQL_NAMESPACE: "catalog",
     R2_SQL_TOKEN: "token",
     RACE_ENTITY_CURSOR_SECRET: "cursor-signing-secret-at-least-32-characters",
+    RACE_ENTITY_WARM_TOKEN: "warm-token",
   };
   const dependencies: WorkerDependencies = { cache, fetchImpl };
   return { cacheEntries, dependencies, env, kvEntries, queries };
@@ -93,8 +112,9 @@ const harness = (queryRows: (unknown[] | Error)[]) => {
 const url =
   "https://catalog.test/v1/race-entity-recent-results?date=20260827&keibajoCode=50&raceBango=05&source=nar&horseNumber=7&entityType=jockey&limit=1";
 
-const catalogObjectStore = (entries: Record<string, unknown>): ObjectStore => {
-  const encoder = new TextEncoder();
+const encoder = new TextEncoder();
+
+const objectStore = (entries: Record<string, unknown>): ObjectStore => {
   const objects = new Map(
     Object.entries(entries).map(([key, value]) => [key, encoder.encode(JSON.stringify(value))]),
   );
@@ -108,8 +128,43 @@ const catalogObjectStore = (entries: Record<string, unknown>): ObjectStore => {
   };
 };
 
-it("serves a cold page directly from Catalog-managed Parquet", async () => {
+const catalogTable = (key: string, rows: unknown[], partition: string) => ({
+  dataPrefix: "",
+  partitions: { [partition]: [[key, encoder.encode(JSON.stringify(rows)).byteLength]] },
+  snapshotId: `${key}-snapshot`,
+});
+
+it("serves a cold page entirely through native R2 objects", async () => {
   const test = harness([]);
+  const prefix = "entity-serving-v1";
+  const raw = {
+    bamei: "Horse",
+    entity_bucket: "a",
+    entity_id: "21379",
+    entity_name: "Jockey",
+    entity_type: "jockey",
+    hasso_jikoku: "1210",
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0820",
+    keibajo_code: "50",
+    ketto_toroku_bango: "2022103916",
+    kishu_code: "21379",
+    kishumei_ryakusho: "Jockey",
+    race_bango: "04",
+    result_id: "nar:20260820:50:04:07:2022103916",
+    source: "nar",
+    umaban: "07",
+  };
+  const raceRows = [
+    {
+      hasso_jikoku: "1240",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0827",
+      keibajo_code: "50",
+      kyosomei_hondai: "Target",
+      race_bango: "05",
+    },
+  ];
   const runnerRows = [
     {
       bamei: "Horse",
@@ -123,68 +178,112 @@ it("serves a cold page directly from Catalog-managed Parquet", async () => {
       umaban: "07",
     },
   ];
-  const raceRows = [
-    {
-      hasso_jikoku: "1240",
-      kaisai_nen: "2026",
-      kaisai_tsukihi: "0827",
-      keibajo_code: "50",
-      kyosomei_hondai: "Target",
-      race_bango: "05",
-    },
-  ];
-  const historyRows = [
-    {
-      bamei: "Horse",
-      entity_id: "21379",
-      hasso_jikoku: "1210",
-      kaisai_nen: "2026",
-      kaisai_tsukihi: "0820",
-      keibajo_code: "50",
-      ketto_toroku_bango: "2022103916",
-      kishu_code: "21379",
-      kishumei_ryakusho: "Jockey",
-      race_bango: "04",
-      result_id: "nar:20260820:50:04:07:2022103916",
-      source: "nar",
-      umaban: "07",
-    },
-  ];
-  const encoder = new TextEncoder();
-  const runnerSize = encoder.encode(JSON.stringify(runnerRows)).byteLength;
-  const raceSize = encoder.encode(JSON.stringify(raceRows)).byteLength;
-  const historySize = encoder.encode(JSON.stringify(historyRows)).byteLength;
-  test.env.CATALOG_OBJECTS = catalogObjectStore({
+  const historyRows = [raw];
+  const raceKey = `${prefix}/race.parquet`;
+  const runnerKey = `${prefix}/runner.parquet`;
+  const historyKey = `${prefix}/history.parquet`;
+  test.env.CATALOG_OBJECTS = objectStore({
     "entity-catalog-serving-v1/manifest.json": {
-      history: {
-        dataPrefix: "",
-        partitions: { "jockey/nar/a/2026": [["history.parquet", historySize]] },
-        snapshotId: "history-snapshot",
-      },
+      history: catalogTable(historyKey, historyRows, "jockey/nar/a/2026"),
       raw: {
-        nvd_ra: {
-          dataPrefix: "",
-          partitions: { "2026": [["race.parquet", raceSize]] },
-          snapshotId: "race-snapshot",
-        },
-        nvd_se: {
-          dataPrefix: "",
-          partitions: { "2026": [["runner.parquet", runnerSize]] },
-          snapshotId: "runner-snapshot",
-        },
+        nvd_ra: catalogTable(raceKey, raceRows, "2026"),
+        nvd_se: catalogTable(runnerKey, runnerRows, "2026"),
       },
       version: 1,
     },
-    "history.parquet": historyRows,
-    "race.parquet": raceRows,
-    "runner.parquet": runnerRows,
+    [historyKey]: historyRows,
+    [raceKey]: raceRows,
+    [runnerKey]: runnerRows,
   });
   const response = await handleRequest(new Request(url), test.env, test.dependencies);
   expect(response.status).toBe(200);
   expect(response.headers.get("X-Catalog-Cache")).toBe("r2-catalog-parquet");
-  expect(test.queries).toStrictEqual([]);
+  expect(test.queries).toEqual([]);
   const payload = (await response.json()) as { results: unknown[] };
   expect(payload.results).toHaveLength(1);
+});
+
+it("warms every canonical first page for a race into Cache API and KV", async () => {
+  const test = harness([
+    [warmTargetRow],
+    [{ ...historyRow, matched_entity_id: "2022103916" }],
+    [{ ...historyRow, matched_entity_id: "21379" }],
+    [{ ...historyRow, matched_entity_id: "20692" }],
+    [{ ...historyRow, matched_entity_id: "768006" }],
+  ]);
+  const warmUrl =
+    "https://catalog.test/v1/internal/race-entity-recent-results/warm?date=20260827&keibajoCode=50&raceBango=05&source=nar";
+  const denied = await handleRequest(
+    new Request(warmUrl, { method: "POST" }),
+    test.env,
+    test.dependencies,
+  );
+  expect(denied.status).toBe(404);
+  const response = await handleRequest(
+    new Request(warmUrl, {
+      headers: { Authorization: "Bearer warm-token", "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+    test.env,
+    test.dependencies,
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({ pages: 4, runners: 1 });
+  expect(test.queries).toHaveLength(5);
+  expect(test.queries[0]).toMatch(/ORDER BY try_cast/u);
+  expect(test.queries.slice(1)).toHaveLength(4);
+  expect(test.cacheEntries.size).toBe(4);
+  expect(test.kvEntries.size).toBe(4);
+
+  const warmedHorse = await handleRequest(
+    new Request(url.replace("entityType=jockey&limit=1", "entityType=horse")),
+    test.env,
+    test.dependencies,
+  );
+  expect(warmedHorse.headers.get("X-Catalog-Cache")).toBe("cache-api");
+  expect(test.queries).toHaveLength(5);
+});
+
+it("skips unavailable warm identities and handles races without runners", async () => {
+  const partial = harness([
+    [{ ...warmTargetRow, owner_id: "000000" }],
+    [{ ...historyRow, matched_entity_id: "2022103916" }],
+    [{ ...historyRow, matched_entity_id: "21379" }],
+    [{ ...historyRow, matched_entity_id: "20692" }],
+  ]);
+  const warmUrl =
+    "https://catalog.test/v1/internal/race-entity-recent-results/warm?date=20260827&keibajoCode=50&raceBango=05&source=nar";
+  const partialResponse = await handleRequest(
+    new Request(warmUrl, {
+      headers: { Authorization: "Bearer warm-token", "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+    partial.env,
+    partial.dependencies,
+  );
+  await expect(partialResponse.json()).resolves.toStrictEqual({ pages: 3, runners: 1 });
+
+  const empty = harness([[]]);
+  const emptyResponse = await handleRequest(
+    new Request(warmUrl, {
+      headers: { Authorization: "Bearer warm-token", "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+    empty.env,
+    empty.dependencies,
+  );
+  await expect(emptyResponse.json()).resolves.toStrictEqual({ pages: 0, runners: 0 });
+
+  const missingHorseNumber = harness([[{ ...warmTargetRow, horse_number: null }]]);
+  const missingHorseNumberResponse = await handleRequest(
+    new Request(warmUrl, {
+      headers: { Authorization: "Bearer warm-token", "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+    missingHorseNumber.env,
+    missingHorseNumber.dependencies,
+  );
+  await expect(missingHorseNumberResponse.json()).resolves.toStrictEqual({ pages: 0, runners: 1 });
 });
 
 it("serves canonical jockey history from the indexed R2 SQL table and populates both caches", async () => {
@@ -358,6 +457,15 @@ it("reports malformed rows, invalid route inputs, timeout, and upstream errors",
   expect(upstreamResponse.status).toBe(502);
   await expect(upstreamResponse.json()).resolves.toMatchObject({
     error: { code: "UPSTREAM_ERROR" },
+  });
+});
+
+it("maps an individually oversized result to malformed history data", async () => {
+  const test = harness([[targetRow], [{ ...historyRow, race_name: "x".repeat(70_000) }]]);
+  const response = await handleRequest(new Request(url), test.env, test.dependencies);
+  expect(response.status).toBe(502);
+  await expect(response.json()).resolves.toMatchObject({
+    error: { code: "MALFORMED_HISTORY_DATA" },
   });
 });
 

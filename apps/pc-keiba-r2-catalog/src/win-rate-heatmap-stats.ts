@@ -285,18 +285,59 @@ const conditionKeySql = (alias: string): string => {
     END`;
 };
 
+const normalizedGradeTitleSql = (alias: string): string =>
+  `replace(replace(replace(replace(replace(replace(upper(${trimmedSql(`${alias}.kyosomei_hondai`)}), 'Ｊ', 'J'), 'Ｐ', 'P'), 'Ｎ', 'N'), 'Ⅲ', 'III'), 'Ⅱ', 'II'), 'Ⅰ', 'I')`;
+
+const effectiveGradeCodeSql = (alias: string): string => `CASE
+    WHEN ${codeColumnSql(alias, "grade_code")} <> '' THEN ${codeColumnSql(alias, "grade_code")}
+    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*III([^I]|$)') THEN 'C'
+    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*II([^I]|$)') THEN 'B'
+    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*I([^I]|$)') THEN 'A'
+    ELSE ''
+  END`;
+
 const ungradedOpenFilterSql = (): string => `AND (
       ${codeColumnSql("cr", "kyoso_joken_code")} <> '${UNGRADED_OPEN_JOKEN_CODE}'
-      OR ${codeColumnSql("cr", "grade_code")} <> ''
-      OR ${codeColumnSql("ra", "grade_code")} = ''
+      OR ${effectiveGradeCodeSql("cr")} <> ''
+      OR ${effectiveGradeCodeSql("ra")} = ''
     )`;
+
+const historyKyoriIntSql = (): string =>
+  "try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT)";
+
+export const exactHistoryKyoriFilterSql = (): string =>
+  `AND ${historyKyoriIntSql()} = cr.kyori_int
+    AND cr.kyori_int IS NOT NULL`;
+
+const jraCellDistanceBandSql = (kyoriExpr: string): string => `CASE
+    WHEN ${kyoriExpr} IS NULL THEN NULL
+    WHEN ${kyoriExpr} < 1200 THEN 'sprint'
+    WHEN ${kyoriExpr} < 1600 THEN 'mile'
+    WHEN ${kyoriExpr} < 2000 THEN 'intermediate'
+    WHEN ${kyoriExpr} < 2400 THEN 'long'
+    ELSE 'extended'
+  END`;
+
+const narCellDistanceBandSql = (kyoriExpr: string): string => `CASE
+    WHEN ${kyoriExpr} IS NULL THEN NULL
+    WHEN ${kyoriExpr} < 1400 THEN 'sprint'
+    WHEN ${kyoriExpr} <= 1500 THEN 'extended_sprint'
+    WHEN ${kyoriExpr} <= 1800 THEN 'mile'
+    WHEN ${kyoriExpr} <= 2200 THEN 'intermediate'
+    WHEN ${kyoriExpr} <= 2800 THEN 'long'
+    ELSE 'extended'
+  END`;
+
+export const cellRouterDistanceBandFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
+  const bandSql = filters.source === "jra" ? jraCellDistanceBandSql : narCellDistanceBandSql;
+  return `AND cr.kyori_int IS NOT NULL
+    AND ${historyKyoriIntSql()} IS NOT NULL
+    AND ${bandSql(historyKyoriIntSql())} = ${bandSql("cr.kyori_int")}`;
+};
 
 export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
   const venueSql = venueFilterSql(filters);
-  const distanceSql = filters.includeDistance
-    ? `AND try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT) = cr.kyori_int
-    AND cr.kyori_int IS NOT NULL`
-    : "";
+  const distanceSql = filters.includeDistance ? exactHistoryKyoriFilterSql() : "";
   const surfaceSql = filters.includeSurface
     ? `AND (
       ${trackSurfaceSql("cr.track_code")} = ''
@@ -326,8 +367,8 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
   const gradeSql =
     filters.includeGrade === true
       ? `AND (
-      ${codeColumnSql("cr", "grade_code")} NOT IN ${LISTED_OR_HIGHER_GRADE_CODES}
-      OR ${codeColumnSql("ra", "grade_code")} = ${codeColumnSql("cr", "grade_code")}
+      ${effectiveGradeCodeSql("cr")} NOT IN ${LISTED_OR_HIGHER_GRADE_CODES}
+      OR ${effectiveGradeCodeSql("ra")} = ${effectiveGradeCodeSql("cr")}
     )`
       : "";
   const ageSql =

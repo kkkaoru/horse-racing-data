@@ -40,8 +40,13 @@ it("executes the production race-key and feature SQL builders", async () => {
     const body = String(init?.body);
     if (callState.count === 1) {
       expect(body).toMatch("FROM pc_keiba.jvd_ra");
-      expect(body).toMatch("FROM pc_keiba.nvd_ra");
+      expect(body).not.toMatch("UNION ALL");
       return Response.json({ result: { rows: [{ source: "jra" }] }, success: true });
+    }
+    if (callState.count === 2) {
+      expect(body).toMatch("FROM pc_keiba.nvd_ra");
+      expect(body).not.toMatch("UNION ALL");
+      return Response.json({ result: { rows: [{ source: "nar" }] }, success: true });
     }
     expect(body).toMatch("FROM pc_keiba.jvd_se");
     expect(body).toMatch("INNER JOIN jra_ra ra");
@@ -61,6 +66,6 @@ it("executes the production race-key and feature SQL builders", async () => {
       { date: "20260715", source: "jra" },
       fetchMock,
     ),
-  ).resolves.toStrictEqual({ featureRows: 2, raceKeyRows: 1 });
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  ).resolves.toStrictEqual({ featureRows: 2, raceKeyRows: 2 });
+  expect(fetchMock).toHaveBeenCalledTimes(3);
 });

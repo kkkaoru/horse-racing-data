@@ -102,6 +102,7 @@ export interface Env extends R2SqlCatalogConfig {
   FINISH_POSITION_ATTESTATION_TOKEN?: string;
   KV_TTL_SECONDS?: string;
   RACE_ENTITY_CURSOR_SECRET?: string;
+  RACE_ENTITY_WARM_TOKEN?: string;
 }
 
 export interface WorkerDependencies {
@@ -293,6 +294,7 @@ export interface ConditionTargetRace {
   jockeyName: string;
   keibajoCode: string;
   kohan3f: string;
+  kyori: string;
   ownerName: string;
   popularity: string;
   raceName: string;

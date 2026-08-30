@@ -1,4 +1,4 @@
-import { buildRaceFeaturesQuery, buildRaceKeysQuery, executeR2Sql } from "./r2-sql";
+import { buildRaceFeaturesQuery, buildRaceKeysQueries, executeR2Sql } from "./r2-sql";
 import type { Fetcher, R2SqlCatalogConfig, RaceFeatureFilters, SourceScope } from "./types";
 
 export interface R2SqlSmokeResult {
@@ -35,15 +35,16 @@ export const runR2SqlSmoke = async (
   filters: RaceFeatureFilters,
   fetchImpl: Fetcher,
 ): Promise<R2SqlSmokeResult> => {
-  const raceKeyRows = await executeR2Sql(
-    config,
-    buildRaceKeysQuery(config, filters.date),
-    fetchImpl,
-  );
+  const [jraRaceKeyQuery, narRaceKeyQuery] = buildRaceKeysQueries(config, filters.date);
+  const jraRaceKeyRows = await executeR2Sql(config, jraRaceKeyQuery, fetchImpl);
+  const narRaceKeyRows = await executeR2Sql(config, narRaceKeyQuery, fetchImpl);
   const featureRows = await executeR2Sql(
     config,
     buildRaceFeaturesQuery(config, filters),
     fetchImpl,
   );
-  return { featureRows: featureRows.length, raceKeyRows: raceKeyRows.length };
+  return {
+    featureRows: featureRows.length,
+    raceKeyRows: jraRaceKeyRows.length + narRaceKeyRows.length,
+  };
 };
