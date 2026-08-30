@@ -71,7 +71,9 @@ it("forces condition OFF and keeps grade ON for JRA graded races", () => {
     isBanEi: false,
   });
   expect(flags.condition).toBe(false);
-  expect(flags.grade).toBe(true);
+  expect(flags.grade).toBe(false);
+  expect(flags.raceName).toBe(true);
+  expect(flags.keibajo).toBe(true);
 });
 
 it("keeps grade ON by default for JRA G3", () => {
@@ -81,7 +83,12 @@ it("keeps grade ON by default for JRA G3", () => {
     gradeCode: "C",
     isBanEi: false,
   });
-  expect(flags.grade).toBe(true);
+  expect(flags.grade).toBe(false);
+  expect(flags.raceName).toBe(true);
+  expect(flags.keibajo).toBe(true);
+  expect(flags.distance).toBe(false);
+  expect(flags.kyosoJoken).toBe(false);
+  expect(flags.track).toBe(false);
 });
 
 it("turns grade OFF for JRA G3 when the query param equals 0", () => {
@@ -143,6 +150,26 @@ it("forces grade OFF when gradeCode is a space-padded empty JRA value", () => {
     isBanEi: false,
   });
   expect(flags.grade).toBe(false);
+});
+
+it("scopes JRA open class to venue and race name", () => {
+  const flags = getFinishPredictionDimensionFlags({
+    query: {},
+    source: "jra",
+    gradeCode: "",
+    isBanEi: false,
+    kyosoJokenCode: "999",
+  });
+  expect(flags).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: true,
+    track: false,
+  });
 });
 
 it("forces grade OFF when gradeCode is JRA 特別 E", () => {

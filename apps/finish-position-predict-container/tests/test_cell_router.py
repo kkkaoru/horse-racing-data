@@ -6,14 +6,21 @@ from pathlib import Path
 import pytest
 
 from predict_lib.cell_router import (
+    LOCK1_RERANK_REST_ROUTING_MODE,
     CategoryRouting,
     CellCondition,
     CellRouter,
     CellRouteRule,
+    NamedRaceCell,
+    NamedRacePreraceRoute,
+    NamedRacePreraceRouter,
+    NamedRacePreraceWhen,
     VariantSpec,
     all_conditions_match,
+    apply_named_race_cells,
     build_base_metadata_r2_key,
     build_base_model_r2_key,
+    build_race_name_catalog_query,
     card_max_race_bango_for_race_id,
     derive_canonical_distance_band,
     derive_canonical_field_size_band,
@@ -21,12 +28,19 @@ from predict_lib.cell_router import (
     derive_class,
     derive_distance_band,
     derive_field_band,
+    derive_race_name_token,
     derive_season,
     derive_surface,
+    entry_has_race_name,
+    is_blank_race_name_value,
     load_cell_router,
+    load_named_race_cells,
+    overlay_race_name_onto_entry,
+    overlay_race_names_on_races,
     resolve_dimension,
     rule_is_effective,
 )
+from predict_lib.race_id import RaceIdParts
 
 
 def _banei_router() -> CellRouter:
@@ -113,6 +127,1305 @@ def test_resolve_variant_unconfigured_category_returns_sim() -> None:
     router = _banei_router()
     entries = [{"grade_code": "E"}]
     assert router.resolve_variant("jra", entries) == "sim"
+
+
+def test_derive_race_name_token_from_fullwidth_hondai() -> None:
+    assert derive_race_name_token({"kyosomei_hondai": "ＢＳＮ賞"}) == "BSN賞"
+
+
+def test_derive_race_name_token_from_fukudai() -> None:
+    assert (
+        derive_race_name_token(
+            {"kyosomei_fukudai": "すずらん賞", "kyosomei_hondai": "３歳オープン"}
+        )
+        == "すずらん賞"
+    )
+
+
+def test_derive_race_name_token_from_stakes_hondai() -> None:
+    assert derive_race_name_token({"kyosomei_hondai": "中京２歳ステークス"}) == "中京2歳ステークス"
+
+
+def test_derive_race_name_token_uses_last_kinen_match() -> None:
+    assert (
+        derive_race_name_token(
+            {
+                "kyosomei_fukudai": "サマー２０００シリーズ",
+                "kyosomei_hondai": "農林水産省賞典　新潟記念",
+            }
+        )
+        == "新潟記念"
+    )
+
+
+def test_derive_race_name_token_converts_dash_marks_but_keeps_prolonged_sound() -> None:
+    assert derive_race_name_token({"kyosomei_hondai": "テスト\u2010賞"}) == "テスト-賞"
+
+
+def test_load_cell_router_routes_named_open_races() -> None:
+    router = load_cell_router()
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "L",
+                    "keibajo_code": "04",
+                    "kyosomei_hondai": "BSN賞",
+                    "kyoso_joken_code": "999",
+                }
+            ],
+        )
+        == "niigata_bsn"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "L",
+                    "keibajo_code": "01",
+                    "kyosomei_fukudai": "すずらん賞",
+                    "kyosomei_hondai": "３歳オープン",
+                    "kyoso_joken_code": "999",
+                }
+            ],
+        )
+        == "sapporo_suzuran"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "C",
+                    "keibajo_code": "07",
+                    "kyosomei_hondai": "中京２歳ステークス",
+                    "kyoso_joken_code": "999",
+                    "kyori": "1400",
+                    "track_code": "11",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "C",
+                    "kaisai_tsukihi": "0712",
+                    "keibajo_code": "07",
+                    "kyori": 1600,
+                    "kyosomei_hondai": "中京２歳ステークス",
+                    "kyoso_joken_code": "999",
+                    "track_code": "11",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes_jul1600_ninki2"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "C",
+                    "kaisai_tsukihi": "1213",
+                    "keibajo_code": "07",
+                    "kyori": 1200,
+                    "kyosomei_hondai": "中京２歳ステークス",
+                    "kyoso_joken_code": "999",
+                    "track_code": "11",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes_largefield"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "C",
+                    "kaisai_tsukihi": "0830",
+                    "keibajo_code": "07",
+                    "kyori": 1400,
+                    "kyosomei_hondai": "中京２歳ステークス",
+                    "kyoso_joken_code": "999",
+                    "track_code": "11",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "C",
+                    "keibajo_code": "04",
+                    "kyosomei_fukudai": "サマー２０００シリーズ",
+                    "kyosomei_hondai": "農林水産省賞典　新潟記念",
+                    "kyoso_joken_code": "999",
+                    "kyori": "2000",
+                    "track_code": "17",
+                }
+            ],
+        )
+        == "niigata_kinen"
+    )
+
+
+def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None:
+    routing = load_cell_router().routing_for("jra")
+    assert routing.variants["niigata_bsn"].model_version == "jra-named-niigata-bsn-v1"
+    assert routing.variants["niigata_bsn"].feature_count == 113
+    assert routing.variants["niigata_bsn"].architecture == "catboost"
+    assert routing.variants["niigata_bsn"].base_variant == "joken_999"
+    assert routing.variants["sapporo_suzuran"].model_version == "jra-named-sapporo-suzuran-v2"
+    assert routing.variants["chukyo_nisai_stakes"].model_version == (
+        "jra-named-chukyo-nisai-stakes-focal-v3"
+    )
+    assert routing.variants["chukyo_nisai_stakes"].feature_count == 113
+    assert routing.variants["chukyo_nisai_stakes"].architecture == "catboost"
+    assert routing.variants["chukyo_nisai_stakes"].base_variant == "joken_999"
+    assert routing.variants["chukyo_nisai_stakes"].routing_mode == LOCK1_RERANK_REST_ROUTING_MODE
+    assert routing.variants["chukyo_nisai_stakes"].rerank_variant == "chukyo_nisai_stakes_rerank"
+    assert routing.variants["chukyo_nisai_stakes_rerank"].model_version == (
+        "jra-named-chukyo-nisai-stakes-v2"
+    )
+    assert routing.variants["chukyo_nisai_stakes_rerank"].feature_count == 113
+    assert routing.variants["chukyo_nisai_stakes_rerank"].routing_mode == "direct"
+    assert routing.variants["chukyo_nisai_stakes_jul1600_ninki2"].model_version == (
+        "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4"
+    )
+    assert routing.variants["chukyo_nisai_stakes_jul1600_ninki2"].routing_mode == (
+        LOCK1_RERANK_REST_ROUTING_MODE
+    )
+    assert routing.variants["chukyo_nisai_stakes_jul1600_ninki2"].rerank_variant == (
+        "chukyo_nisai_stakes_rerank"
+    )
+    assert routing.variants["chukyo_nisai_stakes_largefield"].model_version == (
+        "jra-named-chukyo-nisai-stakes-largefield-v3"
+    )
+    assert routing.variants["chukyo_nisai_stakes_largefield"].routing_mode == (
+        LOCK1_RERANK_REST_ROUTING_MODE
+    )
+    assert routing.variants["chukyo_nisai_stakes_largefield"].rerank_variant == (
+        "chukyo_nisai_stakes_rerank"
+    )
+    assert routing.variants["niigata_kinen"].model_version == "jra-named-niigata-kinen-draw-v2"
+    assert routing.variants["niigata_kinen"].feature_count == 113
+    assert routing.variants["niigata_kinen"].architecture == "catboost"
+    assert routing.variants["niigata_kinen"].base_variant == "joken_999"
+    assert routing.variants["niigata_kinen"].routing_mode == LOCK1_RERANK_REST_ROUTING_MODE
+    assert routing.variants["niigata_kinen"].rerank_variant == "niigata_kinen_rerank"
+    assert routing.variants["niigata_kinen_rerank"].model_version == (
+        "jra-named-niigata-kinen-going-v2"
+    )
+    assert routing.variants["niigata_kinen_rerank"].feature_count == 114
+    assert routing.variants["niigata_kinen_rerank"].routing_mode == "direct"
+    assert ("04", "BSN賞") in routing.named_race_index
+    assert ("01", "すずらん賞") in routing.named_race_index
+    assert ("07", "中京2歳ステークス") in routing.named_race_index
+    assert ("04", "新潟記念") in routing.named_race_index
+    assert ("07", "長篠ステークス") not in routing.named_race_index
+    assert "chukyo_nagashino" not in routing.variants
+
+
+def test_load_cell_router_leaves_uncatalogued_named_races_on_class_rules() -> None:
+    router = load_cell_router()
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "A",
+                    "keibajo_code": "06",
+                    "kyosomei_hondai": "有馬記念",
+                    "kyoso_joken_code": "999",
+                }
+            ],
+        )
+        == "sim"
+    )
+
+
+def test_apply_named_race_cells_overrides_model_fields() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="jra-joken-999-pooled-yetirank-v2",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                model_version="jra-named-niigata-bsn-v1",
+                feature_count=200,
+                architecture="lightgbm",
+            ),
+        ),
+    )
+    assert applied.variants["niigata_bsn"] == VariantSpec(
+        model_version="jra-named-niigata-bsn-v1",
+        feature_count=200,
+        architecture="lightgbm",
+        base_variant="joken_999",
+    )
+
+
+def test_apply_named_race_cells_rejects_duplicate_venue_token() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="duplicate cell"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="niigata_bsn",
+                    venue="04",
+                    race_name_token="BSN賞",
+                    base_variant="joken_999",
+                ),
+                NamedRaceCell(
+                    variant="niigata_bsn_dup",
+                    venue="04",
+                    race_name_token="BSN賞",
+                    base_variant="joken_999",
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_injects_lock1_rerank_variant() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="jra-joken-999-pooled-yetirank-v2",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="niigata_kinen",
+                venue="04",
+                race_name_token="新潟記念",
+                base_variant="joken_999",
+                model_version="jra-named-niigata-kinen-draw-v2",
+                feature_count=113,
+                architecture="catboost",
+                rerank_feature_count=114,
+                rerank_model_version="jra-named-niigata-kinen-going-v2",
+                routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+            ),
+        ),
+    )
+    assert applied.variants["niigata_kinen"] == VariantSpec(
+        model_version="jra-named-niigata-kinen-draw-v2",
+        feature_count=113,
+        architecture="catboost",
+        routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+        base_variant="joken_999",
+        rerank_variant="niigata_kinen_rerank",
+    )
+    assert applied.variants["niigata_kinen_rerank"] == VariantSpec(
+        model_version="jra-named-niigata-kinen-going-v2",
+        feature_count=114,
+        architecture="catboost",
+        routing_mode="direct",
+        base_variant="joken_999",
+    )
+    assert list(applied.variants).index("niigata_kinen_rerank") < list(applied.variants).index(
+        "niigata_kinen"
+    )
+
+
+def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="jra-joken-999-pooled-yetirank-v2",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="chukyo_nisai_stakes",
+                venue="07",
+                race_name_token="中京2歳ステークス",
+                base_variant="joken_999",
+                model_version="jra-named-chukyo-nisai-stakes-focal-v3",
+                feature_count=113,
+                architecture="catboost",
+                rerank_feature_count=113,
+                rerank_model_version="jra-named-chukyo-nisai-stakes-v2",
+                routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+                prerace_router=NamedRacePreraceRouter(
+                    routes=(
+                        NamedRacePreraceRoute(
+                            when=NamedRacePreraceWhen(
+                                kyori=frozenset({"1600"}), month=frozenset({"07"})
+                            )
+                        ),
+                        NamedRacePreraceRoute(
+                            when=NamedRacePreraceWhen(
+                                kyori=frozenset({"1200"}), month=frozenset({"12"})
+                            ),
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3",
+                            variant="chukyo_nisai_stakes_largefield",
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+    assert applied.variants["chukyo_nisai_stakes_largefield"] == VariantSpec(
+        model_version="jra-named-chukyo-nisai-stakes-largefield-v3",
+        feature_count=113,
+        architecture="catboost",
+        routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+        base_variant="joken_999",
+        rerank_variant="chukyo_nisai_stakes_rerank",
+    )
+    router = CellRouter({"jra": applied})
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "keibajo_code": "07",
+                    "kyori": 1200,
+                    "kaisai_tsukihi": "1213",
+                    "kyosomei_hondai": "中京2歳ステークス",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes_largefield"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "keibajo_code": "07",
+                    "kyori": 1600,
+                    "kaisai_tsukihi": "0712",
+                    "kyosomei_hondai": "中京2歳ステークス",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes"
+    )
+
+
+def test_apply_named_race_cells_rejects_prerace_lock_variant_collision() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+            "chukyo_nisai_stakes_largefield": VariantSpec(
+                model_version="existing-lock",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="chukyo_nisai_stakes_largefield"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="chukyo_nisai_stakes",
+                    venue="07",
+                    race_name_token="中京2歳ステークス",
+                    base_variant="joken_999",
+                    model_version="jra-named-chukyo-nisai-stakes-focal-v3",
+                    rerank_model_version="jra-named-chukyo-nisai-stakes-v2",
+                    prerace_router=NamedRacePreraceRouter(
+                        routes=(
+                            NamedRacePreraceRoute(
+                                when=NamedRacePreraceWhen(
+                                    kyori=frozenset({"1200"}), month=frozenset({"12"})
+                                ),
+                                model_version="jra-named-chukyo-nisai-stakes-largefield-v3",
+                                variant="chukyo_nisai_stakes_largefield",
+                            ),
+                        )
+                    ),
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_rejects_lock1_rerank_variant_collision() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+            "niigata_kinen_rerank": VariantSpec(
+                model_version="existing-rerank",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="niigata_kinen_rerank"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="niigata_kinen",
+                    venue="04",
+                    race_name_token="新潟記念",
+                    base_variant="joken_999",
+                    rerank_model_version="jra-named-niigata-kinen-going-v2",
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_rejects_lock1_without_rerank_model() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="requires rerank_model_version"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="niigata_kinen",
+                    venue="04",
+                    race_name_token="新潟記念",
+                    base_variant="joken_999",
+                    routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_rejects_existing_variant_name() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="joken_999",
+                    venue="04",
+                    race_name_token="BSN賞",
+                    base_variant="joken_999",
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_rejects_missing_base_variant() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="missing base_variant"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="niigata_bsn",
+                    venue="04",
+                    race_name_token="BSN賞",
+                    base_variant="joken_999",
+                ),
+            ),
+        )
+
+
+def test_named_race_effective_after_falls_through_to_default() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "niigata_bsn": VariantSpec(
+                model_version="named-v",
+                feature_count=113,
+                architecture="catboost",
+                base_variant="joken_999",
+            ),
+        },
+        rules=(),
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                effective_after="2099-01-01",
+            )
+        },
+    )
+    router = CellRouter({"jra": routing})
+    assert (
+        router.resolve_variant(
+            "jra",
+            [{"keibajo_code": "04", "kyosomei_hondai": "BSN賞"}],
+        )
+        == "sim"
+    )
+
+
+def test_named_race_effective_after_matches_when_race_date_is_later() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "niigata_bsn": VariantSpec(
+                model_version="named-v",
+                feature_count=113,
+                architecture="catboost",
+                base_variant="joken_999",
+            ),
+        },
+        rules=(),
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                effective_after="2026-01-01",
+            )
+        },
+    )
+    router = CellRouter({"jra": routing})
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "kaisai_nen": "2026",
+                    "kaisai_tsukihi": "0829",
+                    "keibajo_code": "04",
+                    "kyosomei_hondai": "BSN賞",
+                }
+            ],
+        )
+        == "niigata_bsn"
+    )
+
+
+def test_named_race_lookup_skips_when_race_name_is_missing() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "niigata_bsn": VariantSpec(
+                model_version="named-v",
+                feature_count=113,
+                architecture="catboost",
+                base_variant="joken_999",
+            ),
+        },
+        rules=(),
+        named_race_index={
+            ("04", "BSN賞"): NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+            )
+        },
+    )
+    router = CellRouter({"jra": routing})
+    assert router.resolve_variant("jra", [{"keibajo_code": "04"}]) == "sim"
+
+
+def test_load_named_race_cells_rejects_unknown_prerace_when_key(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": [{"when": {"field_size": ["12"]}}]},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="only allows kyori and month"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_empty_prerace_when(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": [{"when": {}}]},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="requires kyori or month"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_prerace_variant_without_model(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {
+                            "routes": [
+                                {
+                                    "variant": "chukyo_nisai_stakes_largefield",
+                                    "when": {"kyori": ["1200"]},
+                                }
+                            ]
+                        },
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="both model_version and variant"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_empty_prerace_routes(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": []},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="routes must be non-empty"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_unknown_prerace_router_key(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {
+                            "dimensions": ["kyori"],
+                            "routes": [{"when": {"kyori": ["1200"]}}],
+                        },
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="prerace_router unknown keys"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_unknown_prerace_route_key(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {
+                            "routes": [{"note": "illegal", "when": {"kyori": ["1200"]}}]
+                        },
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="prerace_router route unknown keys"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_empty_prerace_kyori(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": [{"when": {"kyori": []}}]},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be non-empty"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_non_numeric_prerace_month(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": [{"when": {"month": ["July"]}}]},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="month must be numeric"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_non_numeric_prerace_kyori(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {"routes": [{"when": {"kyori": ["mile"]}}]},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kyori must be numeric"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_missing_prerace_when(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {
+                            "routes": [
+                                {
+                                    "model_version": "jra-named-chukyo-nisai-stakes-largefield-v3",
+                                    "variant": "chukyo_nisai_stakes_largefield",
+                                }
+                            ]
+                        },
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="route requires when"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_missing_prerace_routes(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {},
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="prerace_router requires routes"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_accepts_scalar_prerace_when(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "joken_999",
+                        "prerace_router": {
+                            "routes": [
+                                {"when": {"kyori": 1200, "month": 12}},
+                                {
+                                    "model_version": "jra-named-chukyo-nisai-stakes-largefield-v3",
+                                    "variant": "chukyo_nisai_stakes_largefield",
+                                    "when": {"kyori": ["1200"], "month": ["12"]},
+                                },
+                            ]
+                        },
+                        "race_name_token": "中京2歳ステークス",
+                        "variant": "chukyo_nisai_stakes",
+                        "venue": "07",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cells = load_named_race_cells(path)
+    router = cells["jra"][0].prerace_router
+    assert router is not None
+    assert router.routes[0].when.kyori == frozenset({"1200"})
+    assert router.routes[0].when.month == frozenset({"12"})
+    assert router.routes[0].variant is None
+    assert router.routes[1].variant == "chukyo_nisai_stakes_largefield"
+
+
+def test_apply_named_race_cells_reuses_identical_prerace_lock_variant() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
+            "joken_999": VariantSpec(
+                model_version="base-v",
+                feature_count=113,
+                architecture="catboost",
+            ),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="chukyo_nisai_stakes",
+                venue="07",
+                race_name_token="中京2歳ステークス",
+                base_variant="joken_999",
+                model_version="jra-named-chukyo-nisai-stakes-focal-v3",
+                rerank_model_version="jra-named-chukyo-nisai-stakes-v2",
+                prerace_router=NamedRacePreraceRouter(
+                    routes=(
+                        NamedRacePreraceRoute(
+                            when=NamedRacePreraceWhen(kyori=frozenset({"1200"})),
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3",
+                            variant="chukyo_nisai_stakes_largefield",
+                        ),
+                        NamedRacePreraceRoute(
+                            when=NamedRacePreraceWhen(month=frozenset({"12"})),
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3",
+                            variant="chukyo_nisai_stakes_largefield",
+                        ),
+                        NamedRacePreraceRoute(
+                            when=NamedRacePreraceWhen(
+                                kyori=frozenset({"1400"}), month=frozenset({"07", "08"})
+                            ),
+                            model_version="jra-named-chukyo-nisai-stakes-focal-v3",
+                            variant="chukyo_nisai_stakes",
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+    assert applied.variants["chukyo_nisai_stakes_largefield"].model_version == (
+        "jra-named-chukyo-nisai-stakes-largefield-v3"
+    )
+    router = CellRouter({"jra": applied})
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "keibajo_code": "07",
+                    "kyori": 1200,
+                    "kyosomei_hondai": "中京2歳ステークス",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes_largefield"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "keibajo_code": "07",
+                    "kaisai_tsukihi": "1213",
+                    "kyosomei_hondai": "中京2歳ステークス",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes_largefield"
+    )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "keibajo_code": "07",
+                    "kaisai_tsukihi": "0910",
+                    "kyori": 1800,
+                    "kyosomei_hondai": "中京2歳ステークス",
+                }
+            ],
+        )
+        == "chukyo_nisai_stakes"
+    )
+
+
+def test_is_blank_race_name_value_treats_nan_and_empty_as_missing() -> None:
+    assert is_blank_race_name_value(None) is True
+    assert is_blank_race_name_value("") is True
+    assert is_blank_race_name_value("  ") is True
+    assert is_blank_race_name_value("nan") is True
+    assert is_blank_race_name_value(float("nan")) is True
+    assert is_blank_race_name_value("ＢＳＮ賞") is False
+
+
+def test_entry_has_race_name_false_when_parquet_lacks_kyosomei() -> None:
+    assert entry_has_race_name({"keibajo_code": "04", "grade_code": "L"}) is False
+
+
+def test_overlay_race_name_onto_entry_fills_blank_hondai() -> None:
+    overlaid = overlay_race_name_onto_entry(
+        {"keibajo_code": "04", "kyosomei_hondai": float("nan")},
+        {"kyosomei_hondai": "ＢＳＮ賞"},
+    )
+    assert overlaid == {"keibajo_code": "04", "kyosomei_hondai": "ＢＳＮ賞"}
+
+
+def test_overlay_race_name_onto_entry_keeps_existing_hondai() -> None:
+    overlaid = overlay_race_name_onto_entry(
+        {"kyosomei_hondai": "すずらん賞"},
+        {"kyosomei_hondai": "ＢＳＮ賞"},
+    )
+    assert overlaid == {"kyosomei_hondai": "すずらん賞"}
+
+
+def test_overlay_race_names_on_races_attaches_per_race_fukudai() -> None:
+    overlaid = overlay_race_names_on_races(
+        {
+            "jra:2026:0829:01:10": [
+                {"keibajo_code": "01", "kyosomei_hondai": "３歳オープン"},
+            ]
+        },
+        {
+            "jra:2026:0829:01:10": {
+                "kyosomei_fukudai": "すずらん賞",
+            }
+        },
+    )
+    assert overlaid == {
+        "jra:2026:0829:01:10": [
+            {
+                "keibajo_code": "01",
+                "kyosomei_hondai": "３歳オープン",
+                "kyosomei_fukudai": "すずらん賞",
+            }
+        ]
+    }
+
+
+def test_overlay_then_resolve_variant_matches_niigata_bsn_without_parquet_kyosomei() -> None:
+    router = load_cell_router()
+    overlaid = overlay_race_names_on_races(
+        {
+            "jra:2026:0829:04:08": [
+                {
+                    "grade_code": "L",
+                    "keibajo_code": "04",
+                    "kyoso_joken_code": "999",
+                }
+            ]
+        },
+        {"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}},
+    )
+    assert router.resolve_variant("jra", overlaid["jra:2026:0829:04:08"]) == "niigata_bsn"
+
+
+def test_overlay_then_resolve_variant_matches_sapporo_suzuran_from_fukudai() -> None:
+    router = load_cell_router()
+    overlaid = overlay_race_names_on_races(
+        {
+            "jra:2026:0829:01:10": [
+                {
+                    "grade_code": "L",
+                    "keibajo_code": "01",
+                    "kyoso_joken_code": "999",
+                }
+            ]
+        },
+        {
+            "jra:2026:0829:01:10": {
+                "kyosomei_hondai": "３歳オープン",
+                "kyosomei_fukudai": "すずらん賞",
+            }
+        },
+    )
+    assert router.resolve_variant("jra", overlaid["jra:2026:0829:01:10"]) == "sapporo_suzuran"
+
+
+def test_build_race_name_catalog_query_uses_jvd_ra_for_jra() -> None:
+    sql, params = build_race_name_catalog_query(
+        RaceIdParts(
+            source="jra",
+            kaisai_nen="2026",
+            kaisai_tsukihi="0829",
+            keibajo_code="04",
+            race_bango="08",
+        )
+    )
+    assert sql == (
+        "select kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+        "from pg.jvd_ra "
+        "where kaisai_nen = ? and kaisai_tsukihi = ? "
+        "and keibajo_code = ? and race_bango = ? "
+        "limit 1"
+    )
+    assert params == ("2026", "0829", "04", "08")
+
+
+def test_build_race_name_catalog_query_uses_nvd_ra_for_ban_ei() -> None:
+    sql, params = build_race_name_catalog_query(
+        RaceIdParts(
+            source="ban-ei",
+            kaisai_nen="2026",
+            kaisai_tsukihi="0829",
+            keibajo_code="83",
+            race_bango="01",
+        )
+    )
+    assert sql == (
+        "select kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+        "from pg.nvd_ra "
+        "where kaisai_nen = ? and kaisai_tsukihi = ? "
+        "and keibajo_code = ? and race_bango = ? "
+        "limit 1"
+    )
+    assert params == ("2026", "0829", "83", "01")
+
+
+def test_overlay_race_names_on_races_without_lookup_still_copies_entries() -> None:
+    overlaid = overlay_race_names_on_races(
+        {"jra:2026:0829:04:07": [{"keibajo_code": "04"}]},
+        None,
+    )
+    assert overlaid == {"jra:2026:0829:04:07": [{"keibajo_code": "04"}]}
+
+
+def test_entry_has_race_name_true_for_hondai() -> None:
+    assert entry_has_race_name({"kyosomei_hondai": "ＢＳＮ賞"}) is True
+
+
+def test_build_race_name_catalog_query_uses_nvd_ra_for_nar() -> None:
+    sql, params = build_race_name_catalog_query(
+        RaceIdParts(
+            source="nar",
+            kaisai_nen="2026",
+            kaisai_tsukihi="0829",
+            keibajo_code="36",
+            race_bango="01",
+        )
+    )
+    assert sql == (
+        "select kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+        "from pg.nvd_ra "
+        "where kaisai_nen = ? and kaisai_tsukihi = ? "
+        "and keibajo_code = ? and race_bango = ? "
+        "limit 1"
+    )
+    assert params == ("2026", "0829", "36", "01")
+
+
+def test_build_race_name_catalog_query_rejects_unknown_source() -> None:
+    with pytest.raises(ValueError, match="unsupported race_id source"):
+        build_race_name_catalog_query(
+            RaceIdParts(
+                source="overseas",
+                kaisai_nen="2026",
+                kaisai_tsukihi="0829",
+                keibajo_code="01",
+                race_bango="01",
+            )
+        )
+
+
+def test_load_named_race_cells_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert load_named_race_cells(tmp_path / "named_race_cells.json") == {}
+
+
+def test_load_named_race_cells_parses_optional_fields(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        '{"jra":[{"variant":"niigata_bsn","venue":"04","race_name_token":"BSN賞",'
+        '"base_variant":"joken_999","model_version":"named-v","feature_count":200,'
+        '"architecture":"lightgbm","effective_after":"2026-01-01"}]}',
+        encoding="utf-8",
+    )
+    cells = load_named_race_cells(path)
+    assert cells == {
+        "jra": (
+            NamedRaceCell(
+                variant="niigata_bsn",
+                venue="04",
+                race_name_token="BSN賞",
+                base_variant="joken_999",
+                model_version="named-v",
+                feature_count=200,
+                architecture="lightgbm",
+                effective_after="2026-01-01",
+            ),
+        )
+    }
+
+
+def test_load_named_race_cells_requires_variant(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        '{"jra":[{"venue":"04","race_name_token":"BSN賞","base_variant":"joken_999"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="variant"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_empty_token(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        '{"jra":[{"variant":"niigata_bsn","venue":"04",'
+        '"race_name_token":" ","base_variant":"joken_999"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="race_name_token"):
+        load_named_race_cells(path)
 
 
 def test_load_cell_router_real_config_has_ban_ei_routing() -> None:
@@ -1630,6 +2943,49 @@ def testresolve_dimension_field_band_falls_back_to_entry_when_field_size_omitted
     assert resolve_dimension({"shusso_tosu": "16"}, "field_band", "jra") == "f16p"
 
 
+def testresolve_dimension_month_from_tsukihi() -> None:
+    assert resolve_dimension({"kaisai_tsukihi": "0728"}, "month", "jra") == "07"
+
+
+def testresolve_dimension_month_from_race_date() -> None:
+    assert resolve_dimension({"race_date": "2026-12-13"}, "month", "jra") == "12"
+
+
+def testresolve_dimension_month_from_race_id() -> None:
+    assert resolve_dimension({"race_id": "jra:2026:0830:07:07"}, "month", "jra") == "08"
+
+
+def testresolve_dimension_month_short_race_date_falls_back_to_race_id() -> None:
+    assert (
+        resolve_dimension(
+            {"race_date": "2026", "race_id": "jra:2026:0830:07:07"},
+            "month",
+            "jra",
+        )
+        == "08"
+    )
+
+
+def testresolve_dimension_month_missing_returns_none() -> None:
+    assert resolve_dimension({}, "month", "jra") is None
+
+
+def testresolve_dimension_kyori_normalizes_int() -> None:
+    assert resolve_dimension({"kyori": 1400}, "kyori", "jra") == "1400"
+
+
+def testresolve_dimension_kyori_normalizes_float_string() -> None:
+    assert resolve_dimension({"kyori": "1600.0"}, "kyori", "jra") == "1600"
+
+
+def testresolve_dimension_kyori_invalid_returns_none() -> None:
+    assert resolve_dimension({"kyori": "mile"}, "kyori", "jra") is None
+
+
+def testresolve_dimension_kyori_missing_returns_none() -> None:
+    assert resolve_dimension({}, "kyori", "jra") is None
+
+
 def testresolve_dimension_season_from_tsukihi() -> None:
     assert resolve_dimension({"kaisai_tsukihi": "0728"}, "season", "jra") == "summer"
 
@@ -1848,13 +3204,47 @@ def test_resolve_variant_kochi_final_rule_does_not_fire_at_other_venues() -> Non
     assert router.resolve_variant("nar", entries, card_max_race_bango=10) == "sim"
 
 
-def test_canonical_cell_boundaries() -> None:
-    assert derive_canonical_distance_band(1400) == "sprint"
-    assert derive_canonical_distance_band(1401) == "mile"
+def test_canonical_distance_band_sprint_at_1399() -> None:
+    assert derive_canonical_distance_band(1399) == "sprint"
+
+
+def test_canonical_distance_band_sprint_at_1200() -> None:
+    assert derive_canonical_distance_band(1200) == "sprint"
+
+
+def test_canonical_distance_band_extended_sprint_at_1400() -> None:
+    assert derive_canonical_distance_band(1400) == "extended_sprint"
+
+
+def test_canonical_distance_band_extended_sprint_at_1500() -> None:
+    assert derive_canonical_distance_band(1500) == "extended_sprint"
+
+
+def test_canonical_distance_band_mile_at_1600() -> None:
+    assert derive_canonical_distance_band(1600) == "mile"
+
+
+def test_canonical_distance_band_mile_at_1700() -> None:
+    assert derive_canonical_distance_band(1700) == "mile"
+
+
+def test_canonical_distance_band_mile_at_1800() -> None:
     assert derive_canonical_distance_band(1800) == "mile"
+
+
+def test_canonical_distance_band_intermediate_at_1801() -> None:
     assert derive_canonical_distance_band(1801) == "intermediate"
+
+
+def test_canonical_distance_band_long_at_2201() -> None:
     assert derive_canonical_distance_band(2201) == "long"
+
+
+def test_canonical_distance_band_extended_at_2801() -> None:
     assert derive_canonical_distance_band(2801) == "extended"
+
+
+def test_canonical_field_size_boundaries() -> None:
     assert derive_canonical_field_size_band(8) == "small"
     assert derive_canonical_field_size_band(9) == "medium"
     assert derive_canonical_field_size_band(14) == "medium"
@@ -1863,7 +3253,7 @@ def test_canonical_cell_boundaries() -> None:
 
 def test_resolve_canonical_dimensions_uses_live_field_size() -> None:
     entry = {"kyori": 1400, "shusso_tosu": None}
-    assert resolve_dimension(entry, "canonical_distance_band", "nar") == "sprint"
+    assert resolve_dimension(entry, "canonical_distance_band", "nar") == "extended_sprint"
     assert resolve_dimension(entry, "canonical_field_size_band", "nar", field_size=9) == "medium"
     assert resolve_dimension(entry, "canonical_field_size_band", "nar") is None
 
@@ -1946,3 +3336,63 @@ def test_real_nar_top1_routes_are_date_and_cell_gated() -> None:
     assert router.resolve_variant("nar", before) == "sim"
     assert router.resolve_variant("nar", after) == "c30_tc2_adaptive"
     assert router.resolve_variant("nar", after[:8]) == "sim"
+
+
+def test_funabashi_43_c_1700_summer_routes_to_mile_cell() -> None:
+    router = load_cell_router()
+    common = {
+        "keibajo_code": "43",
+        "nar_subclass": "C",
+        "kyori": 1700,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "0827",
+        "track_code": "24",
+        "current_baba_condition": "1",
+    }
+    medium = [common] * 12
+    assert router.resolve_variant("nar", medium) == "c43_mile_tc1_rolling"
+
+
+def test_funabashi_43_c_1500_summer_does_not_route_to_mile_cell() -> None:
+    router = load_cell_router()
+    common = {
+        "keibajo_code": "43",
+        "nar_subclass": "C",
+        "kyori": 1500,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "0827",
+        "track_code": "24",
+        "current_baba_condition": "1",
+    }
+    medium = [common] * 12
+    assert router.resolve_variant("nar", medium) == "c43_1400_1500_tc1_rolling"
+
+
+def test_funabashi_43_c_1400_winter_does_not_route_to_sprint_winter_cell() -> None:
+    router = load_cell_router()
+    common = {
+        "keibajo_code": "43",
+        "nar_subclass": "C",
+        "kyori": 1400,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "1201",
+        "track_code": "24",
+        "current_baba_condition": "1",
+    }
+    medium = [common] * 12
+    assert router.resolve_variant("nar", medium) == "c43_1400_1500_tc1_rolling"
+
+
+def test_funabashi_43_c_1200_winter_still_routes_to_sprint_winter_cell() -> None:
+    router = load_cell_router()
+    common = {
+        "keibajo_code": "43",
+        "nar_subclass": "C",
+        "kyori": 1200,
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": "1201",
+        "track_code": "24",
+        "current_baba_condition": "1",
+    }
+    medium = [common] * 12
+    assert router.resolve_variant("nar", medium) == "c43_tc1_rolling"

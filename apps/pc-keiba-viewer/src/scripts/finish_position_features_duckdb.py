@@ -160,6 +160,14 @@ JRA_KEIBAJO_CODES: tuple[str, ...] = (
 )
 JRA_KEIBAJO_CODES_SQL = "(" + ", ".join(f"'{code}'" for code in JRA_KEIBAJO_CODES) + ")"
 
+# Sidecar routing metadata, not CatBoost/LightGBM features. Named-race cells
+# read these from the serving parquet; catalog overlay fills older caches.
+RACE_NAME_SIDECAR_COLUMNS: tuple[str, str, str] = (
+    "kyosomei_hondai",
+    "kyosomei_fukudai",
+    "kyosomei_kakkonai",
+)
+
 
 DATE_FORMAT = "%Y%m%d"
 
@@ -505,6 +513,20 @@ def corner_feature_scratched_exclusion_sql(alias: str) -> str:
     )"""
 
 
+def race_name_sidecar_select_sql(alias: str) -> str:
+    hondai, fukudai, kakkonai = RACE_NAME_SIDECAR_COLUMNS
+    return f"{alias}.{hondai}, {alias}.{fukudai}, {alias}.{kakkonai}"
+
+
+def race_name_sidecar_null_sql() -> str:
+    hondai, fukudai, kakkonai = RACE_NAME_SIDECAR_COLUMNS
+    return (
+        f"cast(null as varchar) as {hondai}, "
+        f"cast(null as varchar) as {fukudai}, "
+        f"cast(null as varchar) as {kakkonai}"
+    )
+
+
 def _rec_select_from_raw_se_ra(
     source: str,
     history_start: str,
@@ -581,6 +603,7 @@ def _rec_select_from_raw_se_ra(
         se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
         try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
         ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+        {race_name_sidecar_select_sql("ra")},
         coalesce(
           nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
           count(*) over (
@@ -641,7 +664,8 @@ def _rec_select_from_raw_se_ra(
       kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
       ketto_toroku_bango, umaban,
       kishumei_ryakusho, chokyoshimei_ryakusho,
-      kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,
+      kyori, track_code, grade_code, kyoso_joken_code,
+      kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai, shusso_tosu,
       finish_position, finish_norm,
       time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
       babajotai_code_shiba, babajotai_code_dirt,
@@ -719,6 +743,7 @@ def _rec_select_from_corner_features(
       ketto_toroku_bango, umaban,
       kishumei_ryakusho, chokyoshimei_ryakusho,
       kyori, track_code, grade_code, kyoso_joken_code,
+      {race_name_sidecar_null_sql()},
       coalesce(
         nullif(shusso_tosu, 0),
         count(*) over (
@@ -786,6 +811,7 @@ def _rec_select_from_ban_ei(
             f" se.ketto_toroku_bango, se.umaban,"
             f" se.kishumei_ryakusho, se.chokyoshimei_ryakusho,"
             f" ra.kyori, ra.track_code, ra.grade_code, ra.kyoso_joken_code,"
+            f" ra.kyosomei_hondai, ra.kyosomei_fukudai, ra.kyosomei_kakkonai,"
             f" ra.shusso_tosu,"
             f" se.kakutei_chakujun,"
             f" se.time_sa, se.kohan_3f,"
@@ -810,6 +836,7 @@ def _rec_select_from_ban_ei(
       kishumei_ryakusho, chokyoshimei_ryakusho,
       try_cast(nullif(trim(cast(kyori as varchar)), '') as int) as kyori,
       track_code, grade_code, kyoso_joken_code,
+      kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
       coalesce(
         nullif(try_cast(nullif(trim(cast(shusso_tosu as varchar)), '') as int), 0),
         count(*) over (
@@ -850,6 +877,7 @@ def _rec_select_from_ban_ei(
       se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
       try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
       ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+      {race_name_sidecar_select_sql("ra")},
       coalesce(
         nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
         count(*) over (
@@ -948,6 +976,7 @@ def _rec_select_from_se_ra(
       se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
       try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
       ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+      {race_name_sidecar_select_sql("ra")},
       coalesce(
         nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
         count(*) over (
@@ -1941,6 +1970,9 @@ def build_target_table(
           rec.kishumei_ryakusho,
           rec.chokyoshimei_ryakusho,
           rec.kyoso_joken_code,
+          rec.kyosomei_hondai,
+          rec.kyosomei_fukudai,
+          rec.kyosomei_kakkonai,
           rec.babajotai_code_shiba,
           rec.babajotai_code_dirt,
           rec.corner1_norm as target_corner_1_norm,
@@ -3279,6 +3311,7 @@ def base_features_select_sql(category: str) -> str:
       t.ketto_toroku_bango, t.umaban, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
       t.finish_position, t.finish_norm,
       t.kyoso_joken_code as kyoso_joken_code,
+      t.kyosomei_hondai, t.kyosomei_fukudai, t.kyosomei_kakkonai,
       {nar_subclass_expr} as nar_subclass,
       t.target_corner_1_norm, t.target_corner_2_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
       hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,

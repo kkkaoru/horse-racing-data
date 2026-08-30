@@ -133,6 +133,17 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "jra-joken-703-turf-long-spring-qsm-gated-v1",
                 "jra-joken-703-turf-long-summer-yeti-gated-v1",
                 "jra-joken-999-pooled-yetirank-v2",
+                "jra-named-chukyo-nisai-stakes-v1",
+                "jra-named-chukyo-nisai-stakes-v2",
+                "jra-named-chukyo-nisai-stakes-focal-v3",
+                "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+                "jra-named-chukyo-nisai-stakes-largefield-v3",
+                "jra-named-niigata-bsn-v1",
+                "jra-named-niigata-kinen-v1",
+                "jra-named-niigata-kinen-draw-v2",
+                "jra-named-niigata-kinen-going-v2",
+                "jra-named-sapporo-suzuran-v1",
+                "jra-named-sapporo-suzuran-v2",
                 "iter12-nar-xgb-hpo-v8-clean188",
                 "iter40-nar-settransformer-blend-v1",
                 "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
@@ -146,6 +157,8 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
                 "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
                 "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+                "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+                "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
                 "banei-cb-v9-sim-2011",
                 "banei-cb-v8-window2011-wf-15y",
             }
@@ -380,6 +393,113 @@ def test_jra_joken_v2_artifacts_record_fixed_training_ranges() -> None:
         "703",
         "701",
     ]
+
+
+def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
+    artifact_root = Path(__file__).resolve().parent.parent / "models/finish-position/jra"
+    chukyo_v1 = json.loads(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-v1/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    chukyo_v2 = json.loads(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    chukyo_focal = json.loads(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-focal-v3/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    kinen = json.loads(
+        (artifact_root / "jra-named-niigata-kinen-v1/metadata.json").read_text(encoding="utf-8")
+    )
+    kinen_draw = json.loads(
+        (artifact_root / "jra-named-niigata-kinen-draw-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    kinen_going = json.loads(
+        (artifact_root / "jra-named-niigata-kinen-going-v2/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert chukyo_v1["model_version"] == "jra-named-chukyo-nisai-stakes-v1"
+    assert chukyo_v1["race_name_token"] == "中京2歳ステークス"
+    assert chukyo_v1["variant"] == "chukyo_nisai_stakes"
+    assert chukyo_v1["venue"] == "07"
+    assert chukyo_v1["feature_count"] == 113
+    assert chukyo_v1["loss_function"] == "QuerySoftMax"
+    assert chukyo_v2["model_version"] == "jra-named-chukyo-nisai-stakes-v2"
+    assert chukyo_v2["race_name_token"] == "中京2歳ステークス"
+    assert chukyo_v2["variant"] == "chukyo_nisai_stakes"
+    assert chukyo_v2["venue"] == "07"
+    assert chukyo_v2["feature_count"] == 113
+    assert chukyo_v2["loss_function"] == "YetiRank"
+    assert chukyo_v2["architecture"] == "catboost"
+    assert chukyo_focal["model_version"] == "jra-named-chukyo-nisai-stakes-focal-v3"
+    assert chukyo_focal["race_name_token"] == "中京2歳ステークス"
+    assert chukyo_focal["variant"] == "chukyo_nisai_stakes"
+    assert chukyo_focal["venue"] == "07"
+    assert chukyo_focal["feature_count"] == 113
+    assert chukyo_focal["loss_function"] == "YetiRank"
+    assert chukyo_focal["architecture"] == "catboost"
+    chukyo_largefield = json.loads(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-largefield-v3/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    chukyo_jul1600 = json.loads(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert chukyo_largefield["model_version"] == "jra-named-chukyo-nisai-stakes-largefield-v3"
+    assert chukyo_largefield["race_name_token"] == "中京2歳ステークス"
+    assert chukyo_largefield["variant"] == "chukyo_nisai_stakes"
+    assert chukyo_largefield["venue"] == "07"
+    assert chukyo_largefield["feature_count"] == 113
+    assert chukyo_largefield["loss_function"] == "YetiRank"
+    assert chukyo_largefield["architecture"] == "catboost"
+    assert chukyo_jul1600["model_version"] == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4"
+    assert chukyo_jul1600["race_name_token"] == "中京2歳ステークス"
+    assert chukyo_jul1600["variant"] == "chukyo_nisai_stakes"
+    assert chukyo_jul1600["venue"] == "07"
+    assert chukyo_jul1600["feature_count"] == 113
+    assert chukyo_jul1600["loss_function"] == "YetiRank"
+    assert chukyo_jul1600["architecture"] == "catboost"
+    assert kinen["model_version"] == "jra-named-niigata-kinen-v1"
+    assert kinen["race_name_token"] == "新潟記念"
+    assert kinen["variant"] == "niigata_kinen"
+    assert kinen["venue"] == "04"
+    assert kinen["feature_count"] == 113
+    assert kinen["loss_function"] == "QuerySoftMax"
+    assert kinen_draw["model_version"] == "jra-named-niigata-kinen-draw-v2"
+    assert kinen_draw["race_name_token"] == "新潟記念"
+    assert kinen_draw["variant"] == "niigata_kinen"
+    assert kinen_draw["venue"] == "04"
+    assert kinen_draw["feature_count"] == 113
+    assert kinen_draw["loss_function"] == "QuerySoftMax"
+    assert kinen_going["model_version"] == "jra-named-niigata-kinen-going-v2"
+    assert kinen_going["race_name_token"] == "新潟記念"
+    assert kinen_going["variant"] == "niigata_kinen"
+    assert kinen_going["venue"] == "04"
+    assert kinen_going["feature_count"] == 114
+    assert kinen_going["loss_function"] == "QuerySoftMax"
+    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-v1") is True
+    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-v2") is True
+    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-focal-v3") is True
+    assert (
+        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-largefield-v3") is True
+    )
+    assert (
+        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4")
+        is True
+    )
+    assert is_production_model_version_allowed("jra-named-niigata-kinen-v1") is True
+    assert is_production_model_version_allowed("jra-named-niigata-kinen-draw-v2") is True
+    assert is_production_model_version_allowed("jra-named-niigata-kinen-going-v2") is True
 
 
 def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:

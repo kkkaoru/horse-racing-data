@@ -1,0 +1,72 @@
+{
+  "jra": [
+    {
+      "architecture": "catboost",
+      "base_variant": "joken_999",
+      "feature_count": 113,
+      "model_version": "jra-named-niigata-bsn-v1",
+      "race_name_token": "BSN賞",
+      "variant": "niigata_bsn",
+      "venue": "04"
+    },
+    {
+      "architecture": "catboost",
+      "base_variant": "joken_999",
+      "feature_count": 113,
+      "model_version": "jra-named-sapporo-suzuran-v2",
+      "race_name_token": "すずらん賞",
+      "variant": "sapporo_suzuran",
+      "venue": "01"
+    },
+    {
+      "architecture": "catboost",
+      "base_variant": "joken_999",
+      "feature_count": 113,
+      "model_version": "jra-named-chukyo-nisai-stakes-focal-v3",
+      "race_name_token": "中京2歳ステークス",
+      "rerank_feature_count": 113,
+      "rerank_model_version": "jra-named-chukyo-nisai-stakes-v2",
+      "routing_mode": "jra_lock1_rerank_rest",
+      "prerace_router": {
+        "routes": [
+          {
+            "when": {
+              "month": ["07"],
+              "kyori": ["1600"]
+            },
+            "model_version": "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+            "variant": "chukyo_nisai_stakes_jul1600_ninki2"
+          },
+          {
+            "when": {
+              "month": ["12"],
+              "kyori": ["1200"]
+            },
+            "model_version": "jra-named-chukyo-nisai-stakes-largefield-v3",
+            "variant": "chukyo_nisai_stakes_largefield"
+          },
+          {
+            "when": {
+              "month": ["07", "08"],
+              "kyori": ["1400"]
+            }
+          }
+        ]
+      },
+      "variant": "chukyo_nisai_stakes",
+      "venue": "07"
+    },
+    {
+      "architecture": "catboost",
+      "base_variant": "joken_999",
+      "feature_count": 113,
+      "model_version": "jra-named-niigata-kinen-draw-v2",
+      "race_name_token": "新潟記念",
+      "rerank_feature_count": 114,
+      "rerank_model_version": "jra-named-niigata-kinen-going-v2",
+      "routing_mode": "jra_lock1_rerank_rest",
+      "variant": "niigata_kinen",
+      "venue": "04"
+    }
+  ]
+}

@@ -833,38 +833,38 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100001', 3, 'jockey_a', 'trainer_a',
               1600, '11', 'A', '99', 16, 1, 1.0/16,
-              'name_a', 'fukudai_a',
+              'name_a', 'fukudai_a', 'kakkonai_a',
               null::double, null::double, null::double, null::double,
               '1', '1', 1, 50.0, null::int, 0.00, 0.00, 1, 3),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100002', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 16, 2, 2.0/16,
-              'name_b', 'fukudai_b',
+              'name_b', 'fukudai_b', 'kakkonai_b',
               null::double, null::double, null::double, null::double,
               '1', '1', 2, 100.0, null::int, 0.20, 0.25, 1, 4),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100003', 8, 'jockey_c', 'trainer_c',
               1600, '11', 'A', '99', 16, 10, 10.0/16,
-              'name_c', 'fukudai_c',
+              'name_c', 'fukudai_c', 'kakkonai_c',
               null::double, null::double, null::double, null::double,
               '1', '1', 5, 500.0, null::int, 0.50, 0.55, 1, 5),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100004', 12, 'jockey_d', 'trainer_d',
               1600, '11', 'A', '99', 16, 15, 15.0/16,
-              'name_d', 'fukudai_d',
+              'name_d', 'fukudai_d', 'kakkonai_d',
               null::double, null::double, null::double, null::double,
               '1', '1', 12, 1500.0, null::int, 0.95, 0.90, 1, 6),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100005', 16, 'jockey_e', 'trainer_e',
               1600, '11', 'A', '99', 16, null::int, null::double,
-              'name_e', 'fukudai_e',
+              'name_e', 'fukudai_e', 'kakkonai_e',
               null::double, null::double, null::double, null::double,
               '1', '1', 16, 2000.0, null::int, null::double, null::double, 1, 7)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu, finish_position, finish_norm,
-          kyosomei_hondai, kyosomei_fukudai,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
           tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
@@ -1127,14 +1127,14 @@ def test_build_target_table_keeps_finish_position_intact():
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020999999', 7, 'jockey_x', 'trainer_x',
               1800, '11', 'A', '99', 12, 3, 3.0/12,
-              'name_x', 'fukudai_x',
+              'name_x', 'fukudai_x', 'kakkonai_x',
               null::double, null::double, null::double, null::double,
               '1', '1', 3, 250.0, null::int, 0.18, 0.28, 1, 4)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu, finish_position, finish_norm,
-          kyosomei_hondai, kyosomei_fukudai,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
           tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
@@ -1185,6 +1185,34 @@ def test_base_features_select_sql_includes_nar_subclass_alias():
 def test_base_features_select_sql_includes_kyoso_joken_code_passthrough():
     sql = subject.base_features_select_sql("jra")
     assert "t.kyoso_joken_code as kyoso_joken_code" in sql
+
+
+def test_base_features_select_sql_includes_race_name_sidecar_columns():
+    sql = subject.base_features_select_sql("jra")
+    assert "t.kyosomei_hondai" in sql
+    assert "t.kyosomei_fukudai" in sql
+    assert "t.kyosomei_kakkonai" in sql
+
+
+def test_upcoming_target_union_sql_jra_selects_race_name_sidecar():
+    sql = subject.upcoming_target_union_sql("jra", "20260829", "20260829")
+    assert "ra.kyosomei_hondai" in sql
+    assert "ra.kyosomei_fukudai" in sql
+    assert "ra.kyosomei_kakkonai" in sql
+
+
+def test_race_name_sidecar_select_sql_uses_alias():
+    sql = subject.race_name_sidecar_select_sql("ra")
+    assert sql == "ra.kyosomei_hondai, ra.kyosomei_fukudai, ra.kyosomei_kakkonai"
+
+
+def test_race_name_sidecar_null_sql_emits_varchar_nulls():
+    sql = subject.race_name_sidecar_null_sql()
+    assert sql == (
+        "cast(null as varchar) as kyosomei_hondai, "
+        "cast(null as varchar) as kyosomei_fukudai, "
+        "cast(null as varchar) as kyosomei_kakkonai"
+    )
 
 
 def _eval_nar_subclass(
@@ -1958,13 +1986,13 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
             ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
               'horse_a', 3, 'jockey_a', 'trainer_a',
               1600, '11', 'A', '99', 12, null::int, null::double,
-              'name_a', 'fukudai_a',
+              'name_a', 'fukudai_a', 'kakkonai_a',
               null::double, null::double, null::double, null::double,
               '1', '1', 2, 5.0, null::int, null::double, null::double, '1', 3),
             ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
               'horse_b', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 12, null::int, null::double,
-              'name_b', 'fukudai_b',
+              'name_b', 'fukudai_b', 'kakkonai_b',
               null::double, null::double, null::double, null::double,
               '1', '1', 1, 8.0, null::int, null::double, null::double, '2', 5)
         ) as v(
@@ -1972,7 +2000,7 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,
           finish_position, finish_norm,
-          kyosomei_hondai, kyosomei_fukudai,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
           tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
@@ -1993,6 +2021,12 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
     ).fetchall()
     assert rows[0] == ("horse_a", 5.0, 2)
     assert rows[1] == ("horse_b", 8.0, 1)
+    name_rows = con.execute(
+        "select ketto_toroku_bango, kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+        "from target order by ketto_toroku_bango"
+    ).fetchall()
+    assert name_rows[0] == ("horse_a", "name_a", "fukudai_a", "kakkonai_a")
+    assert name_rows[1] == ("horse_b", "name_b", "fukudai_b", "kakkonai_b")
     con.close()
 
 
@@ -4964,10 +4998,12 @@ def test_rec_select_from_raw_se_ra_counts_full_race_before_entity_filter() -> No
     )
     con.execute(
         "create table pg.nvd_ra as select * from (values "
-        "('2026', '0628', '30', '01', '1200', '24', ' ', '010', '1', '1', '00')"
+        "('2026', '0628', '30', '01', '1200', '24', ' ', '010', '1', '1', '00', "
+        "'名レース賞', '', '')"
         ") v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, kyori, "
         "track_code, grade_code, kyoso_joken_code, babajotai_code_shiba, "
-        "babajotai_code_dirt, shusso_tosu)"
+        "babajotai_code_dirt, shusso_tosu, kyosomei_hondai, kyosomei_fukudai, "
+        "kyosomei_kakkonai)"
     )
     sql = subject._rec_select_from_raw_se_ra(
         "nar",
@@ -4976,16 +5012,20 @@ def test_rec_select_from_raw_se_ra_counts_full_race_before_entity_filter() -> No
         " and ketto_toroku_bango = 'horse-a'",
     )
 
-    rows = con.execute(sql + " order by umaban").fetchall()
+    rows = con.execute(
+        "select ketto_toroku_bango, shusso_tosu, finish_norm, corner1_norm, "
+        "kyosomei_hondai from (" + sql + ") rec order by umaban"
+    ).fetchall()
     con.close()
 
-    assert len(rows) == 2
-    assert rows[0][7] == "horse-a"
-    assert rows[0][15] == 2
-    assert rows[0][17] == pytest.approx(0.0)
-    assert rows[0][20] == pytest.approx(0.0)
-    assert rows[1][7] == "horse-b"
-    assert rows[1][15] == 2
+    assert rows[0][0] == "horse-a"
+    assert rows[0][1] == 2
+    assert rows[0][2] == pytest.approx(0.0)
+    assert rows[0][3] == pytest.approx(0.0)
+    assert rows[0][4] == "名レース賞"
+    assert rows[1][0] == "horse-b"
+    assert rows[1][1] == 2
+    assert rows[1][4] == "名レース賞"
 
 
 def test_rec_select_from_corner_features_uses_pg_dot_without_entity_filter() -> None:

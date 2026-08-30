@@ -21,21 +21,28 @@ does not require touching the serve loop.
 from __future__ import annotations
 
 import json
+import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from .model_meta import (
     METADATA_FILE_NAME,
     R2_KEY_PREFIX,
 )
-from .race_id import parse_race_id
+from .race_id import RaceIdParts, parse_race_id
 
 CONFIG_FILE_NAME: Final[str] = "cell_routing.json"
+NAMED_RACE_CELLS_FILE_NAME: Final[str] = "named_race_cells.json"
 
 VARIANT_SIM: Final[str] = "sim"
 VARIANT_BASE: Final[str] = "base"
+LOCK1_RERANK_REST_ROUTING_MODE: Final[str] = "jra_lock1_rerank_rest"
+NAMED_RACE_RERANK_VARIANT_SUFFIX: Final[str] = "_rerank"
+NAMED_RACE_PRERACE_DIMENSIONS: Final[frozenset[str]] = frozenset({"kyori", "month"})
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,41 @@ class VariantSpec:
     maximum_candidate_v2_rank: int | None = None
     consensus_variants: tuple[str, ...] = ()
     consensus_required_votes: int | None = None
+    rerank_variant: str | None = None
+
+
+@dataclass(frozen=True)
+class NamedRacePreraceWhen:
+    kyori: frozenset[str] | None = None
+    month: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
+class NamedRacePreraceRoute:
+    when: NamedRacePreraceWhen
+    model_version: str | None = None
+    variant: str | None = None
+
+
+@dataclass(frozen=True)
+class NamedRacePreraceRouter:
+    routes: tuple[NamedRacePreraceRoute, ...]
+
+
+@dataclass(frozen=True)
+class NamedRaceCell:
+    variant: str
+    venue: str
+    race_name_token: str
+    base_variant: str
+    model_version: str | None = None
+    feature_count: int | None = None
+    architecture: str | None = None
+    effective_after: str | None = None
+    rerank_feature_count: int | None = None
+    rerank_model_version: str | None = None
+    routing_mode: str | None = None
+    prerace_router: NamedRacePreraceRouter | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +114,7 @@ class CategoryRouting:
     default_variant: str
     variants: dict[str, VariantSpec]
     rules: tuple[CellRouteRule, ...]
+    named_race_index: Mapping[tuple[str, str], NamedRaceCell] = field(default_factory=dict)
 
     @property
     def sim_model_version(self) -> str:
@@ -109,6 +152,42 @@ class CategoryRouting:
 _JRA_TURF_TRACK_CODES: Final[frozenset[str]] = frozenset(str(code) for code in range(10, 23))
 _JRA_DIRT_TRACK_CODES: Final[frozenset[str]] = frozenset(str(code) for code in range(23, 30))
 
+# NAR canonical distance bands (meters). Sprint is exclusive of 1400 so that
+# 1400-1500 is a first-class extended_sprint cell rather than a leftover hole.
+CANONICAL_DISTANCE_BAND_SPRINT: Final[str] = "sprint"
+CANONICAL_DISTANCE_BAND_EXTENDED_SPRINT: Final[str] = "extended_sprint"
+CANONICAL_DISTANCE_BAND_MILE: Final[str] = "mile"
+CANONICAL_DISTANCE_BAND_INTERMEDIATE: Final[str] = "intermediate"
+CANONICAL_DISTANCE_BAND_LONG: Final[str] = "long"
+CANONICAL_DISTANCE_BAND_EXTENDED: Final[str] = "extended"
+CANONICAL_SPRINT_MAX_EXCLUSIVE_METERS: Final[int] = 1400
+CANONICAL_EXTENDED_SPRINT_MAX_METERS: Final[int] = 1500
+CANONICAL_MILE_MAX_METERS: Final[int] = 1800
+CANONICAL_INTERMEDIATE_MAX_METERS: Final[int] = 2200
+CANONICAL_LONG_MAX_METERS: Final[int] = 2800
+_RACE_NAME_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[\w\u30fc\u30fb\uff0d-]+(?:杯|賞|記念|ステークス|カップ)",
+    re.UNICODE,
+)
+# U+30FC (ー) is a katakana vowel mark, not a dash; keep it so ステークス matches.
+_DASH_MARKS: Final[frozenset[str]] = frozenset({"\uff0d", "\u2015", "\u2010"})
+_JOCKEYS_CUP_TOKEN: Final[str] = "ジョッキーズカップ"
+_FULLWIDTH_OFFSET: Final[int] = 0xFEE0
+RACE_NAME_FIELD_NAMES: Final[tuple[str, ...]] = (
+    "kyosomei_hondai",
+    "kyosomei_norm",
+    "kyosomei_fukudai",
+    "kyosomei_kakkonai",
+)
+_RACE_NAME_TABLE_BY_SOURCE: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "jra": "jvd_ra",
+        "nar": "nvd_ra",
+        "ban-ei": "nvd_ra",
+    }
+)
+_BLANK_RACE_NAME_TOKENS: Final[frozenset[str]] = frozenset({"", "nan", "none", "<na>"})
+
 
 def derive_surface(track_code: str, category: str) -> str:
     if category != "jra":
@@ -143,15 +222,17 @@ def derive_field_band(shusso_tosu: int) -> str:
 
 
 def derive_canonical_distance_band(kyori: int) -> str:
-    if kyori <= 1400:
-        return "sprint"
-    if kyori <= 1800:
-        return "mile"
-    if kyori <= 2200:
-        return "intermediate"
-    if kyori <= 2800:
-        return "long"
-    return "extended"
+    if kyori < CANONICAL_SPRINT_MAX_EXCLUSIVE_METERS:
+        return CANONICAL_DISTANCE_BAND_SPRINT
+    if kyori <= CANONICAL_EXTENDED_SPRINT_MAX_METERS:
+        return CANONICAL_DISTANCE_BAND_EXTENDED_SPRINT
+    if kyori <= CANONICAL_MILE_MAX_METERS:
+        return CANONICAL_DISTANCE_BAND_MILE
+    if kyori <= CANONICAL_INTERMEDIATE_MAX_METERS:
+        return CANONICAL_DISTANCE_BAND_INTERMEDIATE
+    if kyori <= CANONICAL_LONG_MAX_METERS:
+        return CANONICAL_DISTANCE_BAND_LONG
+    return CANONICAL_DISTANCE_BAND_EXTENDED
 
 
 def derive_canonical_field_size_band(field_size: int) -> str:
@@ -170,6 +251,146 @@ def derive_season(month: int) -> str:
     if month in {9, 10, 11}:
         return "autumn"
     return "winter"
+
+
+def _calendar_month_token(entry: Mapping[str, object]) -> str | None:
+    tsukihi = entry.get("kaisai_tsukihi")
+    if tsukihi is not None:
+        month_str = str(tsukihi).strip()[:2]
+        if month_str.isdigit():
+            return month_str.zfill(2)
+    race_date = entry.get("race_date")
+    if race_date is not None:
+        date_str = str(race_date).strip().replace("-", "")
+        if len(date_str) >= 6 and date_str[4:6].isdigit():
+            return date_str[4:6]
+    race_id = entry.get("race_id")
+    if race_id is not None:
+        parts = str(race_id).split(":")
+        if len(parts) >= 3:
+            tsukihi_part = parts[2]
+            if len(tsukihi_part) >= 2 and tsukihi_part[:2].isdigit():
+                return tsukihi_part[:2]
+    return None
+
+
+def _kyori_token(value: object) -> str | None:
+    try:
+        return str(int(float(str(value).strip())))
+    except ValueError:
+        return None
+
+
+def _to_half_width_alnum(value: str) -> str:
+    converted: list[str] = []
+    for char in value:
+        code = ord(char)
+        if 0xFF01 <= code <= 0xFF5E:
+            converted.append(chr(code - _FULLWIDTH_OFFSET))
+        elif char in _DASH_MARKS:
+            converted.append("-")
+        else:
+            converted.append(char)
+    return " ".join("".join(converted).split())
+
+
+def _last_race_name_token(value: str) -> str | None:
+    matches = _RACE_NAME_TOKEN_PATTERN.findall(value)
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def derive_race_name_token(entry: Mapping[str, object]) -> str | None:
+    hondai_raw = entry.get("kyosomei_hondai")
+    if hondai_raw is None:
+        hondai_raw = entry.get("kyosomei_norm")
+    fukudai_raw = entry.get("kyosomei_fukudai")
+    kakkonai_raw = entry.get("kyosomei_kakkonai")
+    hondai = _to_half_width_alnum("" if hondai_raw is None else str(hondai_raw).strip())
+    fukudai = _to_half_width_alnum("" if fukudai_raw is None else str(fukudai_raw).strip())
+    kakkonai = _to_half_width_alnum("" if kakkonai_raw is None else str(kakkonai_raw).strip())
+    subtitle = f"{fukudai} {kakkonai}".strip()
+    combined = f"{hondai} {subtitle}".strip()
+    if _JOCKEYS_CUP_TOKEN in combined:
+        return _JOCKEYS_CUP_TOKEN
+    subtitle_token = _last_race_name_token(subtitle)
+    if subtitle_token is not None:
+        return subtitle_token
+    return _last_race_name_token(hondai)
+
+
+def is_blank_race_name_value(value: object) -> bool:
+    """Return True when a kyosomei field cannot contribute a race-name token."""
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    return str(value).strip().lower() in _BLANK_RACE_NAME_TOKENS
+
+
+def entry_has_race_name(entry: Mapping[str, object]) -> bool:
+    """Return True when any kyosomei field on ``entry`` is usable for routing."""
+    return any(not is_blank_race_name_value(entry.get(field)) for field in RACE_NAME_FIELD_NAMES)
+
+
+def overlay_race_name_onto_entry(
+    entry: Mapping[str, object],
+    race_name: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Copy blank kyosomei fields from ``race_name`` onto a shallow entry copy.
+
+    Existing non-blank values win so a parquet that already carries official
+    names is never overwritten. Blank / NaN parquet cells are treated as
+    missing so a catalog overlay can still attach ``jvd_ra`` / ``nvd_ra``
+    names before ``resolve_variant``.
+    """
+    overlaid = dict(entry)
+    if race_name is None:
+        return overlaid
+    for field_name in RACE_NAME_FIELD_NAMES:
+        if not is_blank_race_name_value(overlaid.get(field_name)):
+            continue
+        incoming = race_name.get(field_name)
+        if is_blank_race_name_value(incoming):
+            continue
+        overlaid[field_name] = incoming
+    return overlaid
+
+
+def overlay_race_names_on_races(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+    race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict[str, list[dict[str, object]]]:
+    """Attach per-race kyosomei fields onto every entry before cell routing."""
+    names = {} if race_names_by_race_id is None else race_names_by_race_id
+    return {
+        race_id: [overlay_race_name_onto_entry(entry, names.get(race_id)) for entry in entries]
+        for race_id, entries in races.items()
+    }
+
+
+def build_race_name_catalog_query(parts: RaceIdParts) -> tuple[str, tuple[object, ...]]:
+    """Return ``(sql, params)`` that reads official names from ``jvd_ra``/``nvd_ra``.
+
+    The table name is taken from a fixed source map so caller-supplied race ids
+    cannot inject SQL.
+    """
+    table = _RACE_NAME_TABLE_BY_SOURCE.get(parts.source)
+    if table is None:
+        message = f"unsupported race_id source for race-name lookup: {parts.source}"
+        raise ValueError(message)
+    sql = (
+        f"select kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+        f"from pg.{table} "
+        "where kaisai_nen = ? and kaisai_tsukihi = ? "
+        "and keibajo_code = ? and race_bango = ? "
+        "limit 1"
+    )
+    return (
+        sql,
+        (parts.kaisai_nen, parts.kaisai_tsukihi, parts.keibajo_code, parts.race_bango),
+    )
 
 
 def derive_class(grade_code: str, kyoso_joken_code: str = "") -> str:
@@ -242,24 +463,19 @@ def resolve_dimension(
             return None
         return derive_field_band(int(float(str(shusso_tosu))))
     if dimension == "season":
-        tsukihi = entry.get("kaisai_tsukihi")
-        if tsukihi is not None:
-            month_str = str(tsukihi).strip()[:2]
-            if month_str.isdigit():
-                return derive_season(int(month_str))
-        race_date = entry.get("race_date")
-        if race_date is not None:
-            date_str = str(race_date).strip().replace("-", "")
-            if len(date_str) >= 6 and date_str[4:6].isdigit():
-                return derive_season(int(date_str[4:6]))
-        race_id = entry.get("race_id")
-        if race_id is not None:
-            parts = str(race_id).split(":")
-            if len(parts) >= 3:
-                tsukihi_part = parts[2]
-                if len(tsukihi_part) >= 2 and tsukihi_part[:2].isdigit():
-                    return derive_season(int(tsukihi_part[:2]))
-        return None
+        month_token = _calendar_month_token(entry)
+        if month_token is None:
+            return None
+        return derive_season(int(month_token))
+    if dimension == "month":
+        return _calendar_month_token(entry)
+    if dimension == "kyori":
+        raw_kyori = entry.get("kyori")
+        if raw_kyori is None:
+            return None
+        return _kyori_token(raw_kyori)
+    if dimension == "race_name_token":
+        return derive_race_name_token(entry)
     if dimension == "class":
         grade_code = entry.get("grade_code")
         condition_code = entry.get("kyoso_joken_code")
@@ -367,6 +583,11 @@ class CellRouter:
         if not entries:
             return routing.default_variant
         first = entries[0]
+        named_variant = _lookup_named_race_variant(
+            entry=first, routing=routing, category=category
+        )
+        if named_variant is not None:
+            return named_variant
         # len(entries) is the count of rows actually being scored for this
         # race -- i.e. the real declared-runner count -- independent of any
         # feature-parquet column. See resolve_dimension's field_band branch
@@ -509,8 +730,7 @@ def _parse_variant_spec(value: object) -> VariantSpec:
         ),
         consensus_variants=(
             tuple(
-                str(name)
-                for name in _as_sequence(spec["consensus_variants"], "consensus_variants")
+                str(name) for name in _as_sequence(spec["consensus_variants"], "consensus_variants")
             )
             if "consensus_variants" in spec
             else ()
@@ -520,6 +740,7 @@ def _parse_variant_spec(value: object) -> VariantSpec:
             if "consensus_required_votes" in spec
             else None
         ),
+        rerank_variant=(str(spec["rerank_variant"]) if "rerank_variant" in spec else None),
     )
 
 
@@ -558,6 +779,358 @@ def _parse_category_routing(payload: Mapping[str, object]) -> CategoryRouting:
     )
 
 
+def _required_str(*, payload: Mapping[str, object], field: str, source: str) -> str:
+    if field not in payload:
+        raise ValueError(f"{source}: '{field}' is required")
+    value = str(payload[field]).strip()
+    if value == "":
+        raise ValueError(f"{source}: '{field}' must be a non-empty string")
+    return value
+
+
+def _optional_str(*, payload: Mapping[str, object], field: str) -> str | None:
+    if field not in payload:
+        return None
+    value = str(payload[field]).strip()
+    return value if value != "" else None
+
+
+def _optional_int(*, payload: Mapping[str, object], field: str) -> int | None:
+    if field not in payload:
+        return None
+    return int(str(payload[field]))
+
+
+def _normalize_prerace_kyori(value: object) -> str:
+    token = _kyori_token(value)
+    if token is None:
+        raise ValueError("named_race_cells.json: prerace_router.when.kyori must be numeric")
+    return token
+
+
+def _normalize_prerace_month(value: object) -> str:
+    text = str(value).strip()
+    if not text.isdigit():
+        raise ValueError("named_race_cells.json: prerace_router.when.month must be numeric")
+    return text.zfill(2)
+
+
+def _optional_prerace_value_set(
+    payload: Mapping[str, object], *, field: str
+) -> frozenset[str] | None:
+    if field not in payload:
+        return None
+    raw = payload[field]
+    values = raw if isinstance(raw, list) else [raw]
+    if not values:
+        raise ValueError(f"named_race_cells.json: prerace_router.when.{field} must be non-empty")
+    if field == "kyori":
+        return frozenset(_normalize_prerace_kyori(item) for item in values)
+    return frozenset(_normalize_prerace_month(item) for item in values)
+
+
+def _parse_named_race_prerace_when(value: object) -> NamedRacePreraceWhen:
+    payload = _as_mapping(value, "prerace_router.when")
+    extra = set(payload) - NAMED_RACE_PRERACE_DIMENSIONS
+    if extra:
+        raise ValueError(
+            "named_race_cells.json: prerace_router.when only allows kyori and month, "
+            f"got {sorted(extra)}"
+        )
+    kyori = _optional_prerace_value_set(payload, field="kyori")
+    month = _optional_prerace_value_set(payload, field="month")
+    if kyori is None and month is None:
+        raise ValueError("named_race_cells.json: prerace_router.when requires kyori or month")
+    return NamedRacePreraceWhen(kyori=kyori, month=month)
+
+
+def _parse_named_race_prerace_route(value: object) -> NamedRacePreraceRoute:
+    payload = _as_mapping(value, "prerace_router.route")
+    extra = set(payload) - {"when", "model_version", "variant"}
+    if extra:
+        raise ValueError(
+            "named_race_cells.json: prerace_router route unknown keys "
+            f"{sorted(extra)}"
+        )
+    if "when" not in payload:
+        raise ValueError("named_race_cells.json: prerace_router route requires when")
+    model_version = _optional_str(payload=payload, field="model_version")
+    variant = _optional_str(payload=payload, field="variant")
+    if (model_version is None) != (variant is None):
+        raise ValueError(
+            "named_race_cells.json: prerace_router route requires both "
+            "model_version and variant, or neither"
+        )
+    return NamedRacePreraceRoute(
+        when=_parse_named_race_prerace_when(payload["when"]),
+        model_version=model_version,
+        variant=variant,
+    )
+
+
+def _parse_named_race_prerace_router(value: object) -> NamedRacePreraceRouter:
+    payload = _as_mapping(value, "prerace_router")
+    extra = set(payload) - {"routes"}
+    if extra:
+        raise ValueError(
+            f"named_race_cells.json: prerace_router unknown keys {sorted(extra)}"
+        )
+    if "routes" not in payload:
+        raise ValueError("named_race_cells.json: prerace_router requires routes")
+    routes = tuple(
+        _parse_named_race_prerace_route(item)
+        for item in _as_sequence(payload["routes"], "prerace_router.routes")
+    )
+    if not routes:
+        raise ValueError("named_race_cells.json: prerace_router.routes must be non-empty")
+    return NamedRacePreraceRouter(routes=routes)
+
+
+def _parse_named_race_cell(value: object) -> NamedRaceCell:
+    cell = _as_mapping(value, "named_race_cell")
+    source = "named_race_cells.json"
+    prerace_payload = cell.get("prerace_router")
+    return NamedRaceCell(
+        variant=_required_str(payload=cell, field="variant", source=source),
+        venue=_required_str(payload=cell, field="venue", source=source),
+        race_name_token=_required_str(payload=cell, field="race_name_token", source=source),
+        base_variant=_required_str(payload=cell, field="base_variant", source=source),
+        model_version=_optional_str(payload=cell, field="model_version"),
+        feature_count=_optional_int(payload=cell, field="feature_count"),
+        architecture=_optional_str(payload=cell, field="architecture"),
+        effective_after=_optional_str(payload=cell, field="effective_after"),
+        rerank_feature_count=_optional_int(payload=cell, field="rerank_feature_count"),
+        rerank_model_version=_optional_str(payload=cell, field="rerank_model_version"),
+        routing_mode=_optional_str(payload=cell, field="routing_mode"),
+        prerace_router=(
+            None
+            if prerace_payload is None
+            else _parse_named_race_prerace_router(prerace_payload)
+        ),
+    )
+
+
+def _cells_for_named_race_category(*, category: str, value: object) -> tuple[NamedRaceCell, ...]:
+    return tuple(_parse_named_race_cell(item) for item in _as_sequence(value, category))
+
+
+def load_named_race_cells(path: Path) -> dict[str, tuple[NamedRaceCell, ...]]:
+    if not path.exists():
+        return {}
+    payload = _as_mapping(json.loads(path.read_text(encoding="utf-8")), "named_race_cells")
+    return {
+        category: _cells_for_named_race_category(category=category, value=value)
+        for category, value in payload.items()
+    }
+
+
+def named_race_rerank_variant_name(variant: str) -> str:
+    return f"{variant}{NAMED_RACE_RERANK_VARIANT_SUFFIX}"
+
+
+def _named_race_lock1_routing_mode(cell: NamedRaceCell) -> str:
+    if cell.routing_mode is not None:
+        return cell.routing_mode
+    if cell.rerank_model_version is None:
+        return "direct"
+    return LOCK1_RERANK_REST_ROUTING_MODE
+
+
+def _inherit_named_race_variant_spec(*, cell: NamedRaceCell, base: VariantSpec) -> VariantSpec:
+    rerank_variant = (
+        None if cell.rerank_model_version is None else named_race_rerank_variant_name(cell.variant)
+    )
+    return VariantSpec(
+        model_version=base.model_version if cell.model_version is None else cell.model_version,
+        feature_count=base.feature_count if cell.feature_count is None else cell.feature_count,
+        architecture=base.architecture if cell.architecture is None else cell.architecture,
+        routing_mode=_named_race_lock1_routing_mode(cell),
+        base_variant=cell.base_variant,
+        rerank_variant=rerank_variant,
+    )
+
+
+def _named_race_rerank_variant_spec(
+    *,
+    cell: NamedRaceCell,
+    base: VariantSpec,
+    rerank_model_version: str,
+) -> VariantSpec:
+    feature_count = (
+        base.feature_count if cell.rerank_feature_count is None else cell.rerank_feature_count
+    )
+    return VariantSpec(
+        model_version=rerank_model_version,
+        feature_count=feature_count,
+        architecture=base.architecture if cell.architecture is None else cell.architecture,
+        routing_mode="direct",
+        base_variant=cell.base_variant,
+    )
+
+
+def _named_race_lock_variant_spec(
+    *,
+    cell: NamedRaceCell,
+    base: VariantSpec,
+    model_version: str,
+) -> VariantSpec:
+    rerank_variant = (
+        None if cell.rerank_model_version is None else named_race_rerank_variant_name(cell.variant)
+    )
+    return VariantSpec(
+        model_version=model_version,
+        feature_count=base.feature_count if cell.feature_count is None else cell.feature_count,
+        architecture=base.architecture if cell.architecture is None else cell.architecture,
+        routing_mode=_named_race_lock1_routing_mode(cell),
+        base_variant=cell.base_variant,
+        rerank_variant=rerank_variant,
+    )
+
+
+def _register_named_race_prerace_lock_variants(
+    *,
+    cell: NamedRaceCell,
+    base: VariantSpec,
+    variants: dict[str, VariantSpec],
+) -> None:
+    if cell.prerace_router is None:
+        return
+    for route in cell.prerace_router.routes:
+        if route.variant is None or route.model_version is None:
+            continue
+        if route.variant == cell.variant:
+            continue
+        existing = variants.get(route.variant)
+        if existing is None:
+            variants[route.variant] = _named_race_lock_variant_spec(
+                cell=cell,
+                base=base,
+                model_version=route.model_version,
+            )
+            continue
+        if existing.model_version != route.model_version:
+            raise ValueError(
+                f"named_race_cells.json: variant '{route.variant}' already exists"
+            )
+
+
+def apply_named_race_cells(
+    *,
+    routing: CategoryRouting,
+    cells: tuple[NamedRaceCell, ...],
+) -> CategoryRouting:
+    variants = dict(routing.variants)
+    index: dict[tuple[str, str], NamedRaceCell] = {}
+    for cell in cells:
+        key = (cell.venue, cell.race_name_token)
+        if key in index:
+            raise ValueError(
+                "named_race_cells.json: duplicate cell for venue="
+                f"{cell.venue} token={cell.race_name_token}"
+            )
+        if cell.variant in variants:
+            raise ValueError(f"named_race_cells.json: variant '{cell.variant}' already exists")
+        base = variants.get(cell.base_variant)
+        if base is None:
+            raise ValueError(
+                f"named_race_cells.json: cell '{cell.variant}' references missing "
+                f"base_variant '{cell.base_variant}'"
+            )
+        routing_mode = _named_race_lock1_routing_mode(cell)
+        if routing_mode == LOCK1_RERANK_REST_ROUTING_MODE and cell.rerank_model_version is None:
+            raise ValueError(
+                f"named_race_cells.json: cell '{cell.variant}' routing_mode "
+                f"'{LOCK1_RERANK_REST_ROUTING_MODE}' requires rerank_model_version"
+            )
+        if cell.rerank_model_version is not None:
+            rerank_name = named_race_rerank_variant_name(cell.variant)
+            if rerank_name in variants:
+                raise ValueError(f"named_race_cells.json: variant '{rerank_name}' already exists")
+            variants[rerank_name] = _named_race_rerank_variant_spec(
+                cell=cell,
+                base=base,
+                rerank_model_version=cell.rerank_model_version,
+            )
+        _register_named_race_prerace_lock_variants(cell=cell, base=base, variants=variants)
+        if cell.variant in variants:
+            raise ValueError(f"named_race_cells.json: variant '{cell.variant}' already exists")
+        variants[cell.variant] = _inherit_named_race_variant_spec(cell=cell, base=base)
+        index[key] = cell
+    return CategoryRouting(
+        default_variant=routing.default_variant,
+        variants=variants,
+        rules=routing.rules,
+        named_race_index=index,
+    )
+
+
+def _attach_named_race_cells(
+    *,
+    routing: dict[str, CategoryRouting],
+    named_cells: Mapping[str, tuple[NamedRaceCell, ...]],
+) -> dict[str, CategoryRouting]:
+    return {
+        category: apply_named_race_cells(
+            routing=category_routing,
+            cells=named_cells.get(category, ()),
+        )
+        for category, category_routing in routing.items()
+    }
+
+
+def _prerace_when_matches(
+    *,
+    entry: Mapping[str, object],
+    when: NamedRacePreraceWhen,
+    category: str,
+) -> bool:
+    if when.month is not None:
+        month = resolve_dimension(entry, "month", category)
+        if month is None or month not in when.month:
+            return False
+    if when.kyori is not None:
+        kyori = resolve_dimension(entry, "kyori", category)
+        if kyori is None or kyori not in when.kyori:
+            return False
+    return True
+
+
+def _named_race_prerace_variant(
+    *,
+    cell: NamedRaceCell,
+    entry: Mapping[str, object],
+    category: str,
+) -> str:
+    router = cell.prerace_router
+    if router is None:
+        return cell.variant
+    for route in router.routes:
+        if not _prerace_when_matches(entry=entry, when=route.when, category=category):
+            continue
+        if route.variant is None:
+            return cell.variant
+        return route.variant
+    return cell.variant
+
+
+def _lookup_named_race_variant(
+    *,
+    entry: Mapping[str, object],
+    routing: CategoryRouting,
+    category: str,
+) -> str | None:
+    venue = resolve_dimension(entry, "venue", category)
+    token = derive_race_name_token(entry)
+    if venue is None or token is None:
+        return None
+    cell = routing.named_race_index.get((venue, token))
+    if cell is None:
+        return None
+    if not rule_is_effective(entry, cell.effective_after):
+        return None
+    return _named_race_prerace_variant(cell=cell, entry=entry, category=category)
+
+
 def load_cell_router(config_path: Path | None = None) -> CellRouter:
     path = config_path if config_path is not None else Path(__file__).parent / CONFIG_FILE_NAME
     if not path.exists():
@@ -567,7 +1140,8 @@ def load_cell_router(config_path: Path | None = None) -> CellRouter:
         category: _parse_category_routing(_as_mapping(entry, category))
         for category, entry in payload.items()
     }
-    return CellRouter(routing)
+    named_cells = load_named_race_cells(path.with_name(NAMED_RACE_CELLS_FILE_NAME))
+    return CellRouter(_attach_named_race_cells(routing=routing, named_cells=named_cells))
 
 
 def build_base_model_r2_key(category: str, base_model_version: str, file_name: str) -> str:

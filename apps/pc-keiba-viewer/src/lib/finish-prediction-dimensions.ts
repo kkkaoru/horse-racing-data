@@ -3,7 +3,7 @@ import {
   FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS,
   type V7LineageCategory,
 } from "../scripts/finish-position-features/v7-lineage-model-versions";
-import { isListedOrHigherGradeCode } from "./race-classification";
+import { isJraNamedRaceCell, isListedOrHigherGradeCode } from "./race-classification";
 import type { RaceListItem } from "./race-types";
 import { isBanEiKeibajoCode } from "./runner-format";
 
@@ -144,6 +144,7 @@ export interface GetFinishPredictionDimensionFlagsInput {
   source: "jra" | "nar";
   gradeCode: string | null;
   isBanEi: boolean;
+  kyosoJokenCode?: string | null;
   paramNames?: Record<keyof FinishPredictionDimensionFlags, string>;
 }
 
@@ -229,6 +230,23 @@ export const getFinishPredictionDimensionFlags = (
   const kyosoJoken = source === "nar" ? false : kyosoJokenRaw;
   const condition = source === "jra" ? false : conditionRaw;
   const track = isBanEi ? false : trackRaw;
+  const namedRaceCell = isJraNamedRaceCell({
+    gradeCode,
+    kyosoJokenCode: input.kyosoJokenCode ?? null,
+    source,
+  });
+  if (namedRaceCell) {
+    return {
+      condition: false,
+      distance: false,
+      grade: false,
+      keibajo,
+      kyosoJoken: false,
+      kyosoShubetsu: false,
+      raceName: raceNameRaw,
+      track: false,
+    };
+  }
   const gradeAllowed = isGradeEligible(gradeCode);
   const grade = gradeAllowed ? gradeRaw : false;
   const raceName = isRaceNameEligible(gradeCode) ? raceNameRaw : false;

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { expect, it } from "vitest";
 
 import {
+  FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS,
   FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS,
   getAllFinishPositionCellRoutingModelVersions,
   getAllFinishPositionCellRoutingOffLabelVariantModelVersions,
@@ -70,8 +71,29 @@ it("resolveDimension resolves jra surface to turf for trackCode starting with 1"
   expect(value).toBe("turf");
 });
 
-it("resolveDimension resolves jra surface to dirt for trackCode starting with 2", () => {
-  const race: RaceDetail = { ...BASE_RACE, trackCode: "20" };
+it("resolveDimension resolves jra turf track codes 20-22 as turf, not dirt", () => {
+  const track20 = resolveDimension({
+    category: "jra",
+    dimension: "surface",
+    race: { ...BASE_RACE, trackCode: "20" },
+  });
+  const track21 = resolveDimension({
+    category: "jra",
+    dimension: "surface",
+    race: { ...BASE_RACE, trackCode: "21" },
+  });
+  const track22 = resolveDimension({
+    category: "jra",
+    dimension: "surface",
+    race: { ...BASE_RACE, trackCode: "22" },
+  });
+  expect(track20).toBe("turf");
+  expect(track21).toBe("turf");
+  expect(track22).toBe("turf");
+});
+
+it("resolveDimension resolves jra surface to dirt for dirt track codes 23-29", () => {
+  const race: RaceDetail = { ...BASE_RACE, trackCode: "23" };
   const value = resolveDimension({ category: "jra", dimension: "surface", race });
   expect(value).toBe("dirt");
 });
@@ -309,39 +331,84 @@ it("resolveDimension resolves an unknown dimension name to null", () => {
   expect(value).toBe(null);
 });
 
-it("resolveDimension resolves canonical distance boundaries", () => {
-  const sprint = resolveDimension({
-    category: "nar",
-    dimension: "canonical_distance_band",
-    race: { ...BASE_RACE, kyori: "1400" },
-  });
-  const mile = resolveDimension({
-    category: "nar",
-    dimension: "canonical_distance_band",
-    race: { ...BASE_RACE, kyori: "1800" },
-  });
-  const intermediate = resolveDimension({
-    category: "nar",
-    dimension: "canonical_distance_band",
-    race: { ...BASE_RACE, kyori: "2200" },
-  });
-  const long = resolveDimension({
-    category: "nar",
-    dimension: "canonical_distance_band",
-    race: { ...BASE_RACE, kyori: "2800" },
-  });
-  const extended = resolveDimension({
-    category: "nar",
-    dimension: "canonical_distance_band",
-    race: { ...BASE_RACE, kyori: "2801" },
-  });
-  expect([sprint, mile, intermediate, long, extended]).toStrictEqual([
-    "sprint",
-    "mile",
-    "intermediate",
-    "long",
-    "extended",
-  ]);
+it("resolveCanonicalDistanceBand maps 1399 to sprint", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1399" },
+    }),
+  ).toStrictEqual("sprint");
+});
+
+it("resolveCanonicalDistanceBand maps 1200 to sprint", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1200" },
+    }),
+  ).toStrictEqual("sprint");
+});
+
+it("resolveCanonicalDistanceBand maps 1400 to extended_sprint", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1400" },
+    }),
+  ).toStrictEqual("extended_sprint");
+});
+
+it("resolveCanonicalDistanceBand maps 1500 to extended_sprint", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1500" },
+    }),
+  ).toStrictEqual("extended_sprint");
+});
+
+it("resolveCanonicalDistanceBand maps 1600 to mile", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1600" },
+    }),
+  ).toStrictEqual("mile");
+});
+
+it("resolveCanonicalDistanceBand maps 1700 to mile", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1700" },
+    }),
+  ).toStrictEqual("mile");
+});
+
+it("resolveCanonicalDistanceBand maps 1800 to mile", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1800" },
+    }),
+  ).toStrictEqual("mile");
+});
+
+it("resolveCanonicalDistanceBand maps 1801 to intermediate", () => {
+  expect(
+    resolveDimension({
+      category: "nar",
+      dimension: "canonical_distance_band",
+      race: { ...BASE_RACE, kyori: "1801" },
+    }),
+  ).toStrictEqual("intermediate");
 });
 
 it("resolveDimension resolves canonical field-size boundaries", () => {
@@ -456,7 +523,12 @@ it("resolveFinishPositionCellRoutingModelVersion returns null for a category wit
 });
 
 it("resolveFinishPositionCellRoutingModelVersion routes ungraded JRA class-703 races to the matching gated model", () => {
-  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "05", kyosoJokenCode: "703" };
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    keibajoCode: "05",
+    kyosoJokenCode: "703",
+    trackCode: "23",
+  };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
   expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1");
 });
@@ -467,16 +539,182 @@ it("resolveFinishPositionCellRoutingModelVersion routes ungraded class-005 races
     keibajoCode: "05",
     kyosoJokenCode: "005",
     shussoTosu: "9",
-    trackCode: "20",
+    trackCode: "23",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
   expect(value).toBe("jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion prioritizes the gated class model over Hakodate venue", () => {
-  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "02", kyosoJokenCode: "010" };
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    keibajoCode: "02",
+    kyosoJokenCode: "010",
+    trackCode: "23",
+  };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
   expect(value).toBe("jra-joken-010-dirt-intermediate-yeti-gated-v1");
+});
+
+it("routes Niigata BSN to the named open-class cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "L",
+    kaisaiTsukihi: "0829",
+    keibajoCode: "04",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "ＢＳＮ賞",
+    raceBango: "08",
+    trackCode: "17",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
+  expect(value).toBe("jra-named-niigata-bsn-v1");
+  expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe("BSN賞");
+});
+
+it("routes Sapporo Suzuran to the named open-class cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "L",
+    kaisaiTsukihi: "0829",
+    keibajoCode: "01",
+    kyosoJokenCode: "999",
+    kyosomeiFukudai: "すずらん賞",
+    kyosomeiHondai: "３歳オープン",
+    raceBango: "10",
+    trackCode: "10",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
+  expect(value).toBe("jra-named-sapporo-suzuran-v2");
+  expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
+    "すずらん賞",
+  );
+});
+
+it("routes Chukyo 2yo Stakes to the named open-class cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "C",
+    kaisaiTsukihi: "0830",
+    keibajoCode: "07",
+    kyori: "1400",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "中京２歳ステークス",
+    raceBango: "07",
+    trackCode: "11",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
+  expect(value).toBe("jra-named-chukyo-nisai-stakes-focal-v3");
+  expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
+    "中京2歳ステークス",
+  );
+  expect(resolveDimension({ category: "jra", dimension: "month", race })).toBe("08");
+});
+
+it("routes Chukyo 2yo Stakes July 1600 to the ninki2 lock cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "C",
+    kaisaiTsukihi: "0712",
+    keibajoCode: "07",
+    kyori: "1600",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "中京２歳ステークス",
+    raceBango: "07",
+    trackCode: "11",
+  };
+  expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+  );
+});
+
+it("routes Chukyo 2yo Stakes December 1200 to the large-field lock cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "C",
+    kaisaiTsukihi: "1213",
+    keibajoCode: "07",
+    kyori: "1200",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "中京２歳ステークス",
+    raceBango: "10",
+    trackCode: "11",
+  };
+  expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(
+    "jra-named-chukyo-nisai-stakes-largefield-v3",
+  );
+});
+
+it("routes Niigata Kinen from the last 記念 token in the official title", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "C",
+    kaisaiTsukihi: "0830",
+    keibajoCode: "04",
+    kyori: "2000",
+    kyosoJokenCode: "999",
+    kyosomeiFukudai: "サマー２０００シリーズ",
+    kyosomeiHondai: "農林水産省賞典　新潟記念",
+    raceBango: "08",
+    trackCode: "17",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
+  expect(value).toBe("jra-named-niigata-kinen-draw-v2");
+  expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
+    "新潟記念",
+  );
+});
+
+it("routes NAR Funabashi 43 1700 C summer to the mile cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "1",
+    kaisaiTsukihi: "0827",
+    keibajoCode: "43",
+    kyori: "1700",
+    kyosoJokenMeisho: "Ｃ１",
+    raceBango: "11",
+    shussoTosu: "12",
+    source: "nar",
+    trackCode: "24",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
+  expect(value).toStrictEqual("nar-cell-top1-43-c-mile-summer-tc1-rolling-v1");
+});
+
+it("does not route NAR Funabashi 43 1500 C summer to the mile cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "1",
+    kaisaiTsukihi: "0827",
+    keibajoCode: "43",
+    kyori: "1500",
+    kyosoJokenMeisho: "Ｃ１",
+    raceBango: "11",
+    shussoTosu: "12",
+    source: "nar",
+    trackCode: "24",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1");
+});
+
+it("does not route NAR Funabashi 43 1400 C winter to the sprint-winter cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    babajotaiCodeDirt: "1",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "1201",
+    keibajoCode: "43",
+    kyori: "1400",
+    kyosoJokenMeisho: "Ｃ１",
+    raceBango: "11",
+    shussoTosu: "12",
+    source: "nar",
+    trackCode: "24",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race matching no rule", () => {
@@ -551,7 +789,7 @@ it("resolveFinishPositionDisplayPriorityModelVersion prefers NAR cell then trans
     babajotaiCodeDirt: "1",
     kaisaiTsukihi: "0711",
     keibajoCode: "42",
-    kyori: "1400",
+    kyori: "1200",
     kyosoJokenMeisho: "Ｃ級",
     shussoTosu: "14",
     source: "nar",
@@ -662,7 +900,12 @@ it("resolveCellRoutingModelVersionForConfig fails closed without cardMaxRaceBang
 });
 
 it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango through to resolveDimension", () => {
-  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "02", kyosoJokenCode: "703" };
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    keibajoCode: "02",
+    kyosoJokenCode: "703",
+    trackCode: "23",
+  };
   const value = resolveFinishPositionCellRoutingModelVersion({
     cardMaxRaceBango: 12,
     category: "jra",
@@ -707,6 +950,12 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "jra-joken-703-turf-1400-qsm-gated-v1",
     "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
     "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+    "jra-named-niigata-bsn-v1",
+    "jra-named-sapporo-suzuran-v2",
+    "jra-named-chukyo-nisai-stakes-focal-v3",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+    "jra-named-chukyo-nisai-stakes-largefield-v3",
+    "jra-named-niigata-kinen-draw-v2",
     "banei-cb-v9-sim-2011",
     "banei-cb-v8-window2011-wf-15y",
     "iter12-nar-xgb-hpo-v8-clean188",
@@ -720,6 +969,8 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
     "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
     "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
   ]);
 });
 
@@ -758,6 +1009,12 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
     "jra-joken-703-turf-1400-qsm-gated-v1",
     "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
     "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+    "jra-named-niigata-bsn-v1",
+    "jra-named-sapporo-suzuran-v2",
+    "jra-named-chukyo-nisai-stakes-focal-v3",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+    "jra-named-chukyo-nisai-stakes-largefield-v3",
+    "jra-named-niigata-kinen-draw-v2",
     "banei-cb-v8-window2011-wf-15y",
     "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
     "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
@@ -769,6 +1026,8 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
     "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
     "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
     "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
   ]);
 });
 
@@ -779,11 +1038,91 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
 // container's real config, so it must read the real file. Mirrors the same
 // pattern already established on the Python side
 // (test_cell_router.py::test_load_cell_router_real_config_has_no_nar_routing).
-it("FINISH_POSITION_CELL_ROUTING_CONFIG mirrors the container's cell_routing.json exactly", () => {
+it("FINISH_POSITION_CELL_ROUTING_BASE_CONFIG mirrors the container's cell_routing.json exactly", () => {
   const containerConfigPath = resolve(
     process.cwd(),
     "../finish-position-predict-container/src/predict_lib/cell_routing.json",
   );
   const containerConfig: unknown = JSON.parse(readFileSync(containerConfigPath, "utf-8"));
-  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS).toStrictEqual(containerConfig);
+  expect(FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS).toStrictEqual(containerConfig);
+});
+
+it("named-race variants inherit the open-class model without joining the linear rule list", () => {
+  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.niigata_bsn).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "joken_999",
+    feature_count: 113,
+    model_version: "jra-named-niigata-bsn-v1",
+  });
+  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.sapporo_suzuran).toStrictEqual(
+    {
+      architecture: "catboost",
+      base_variant: "joken_999",
+      feature_count: 113,
+      model_version: "jra-named-sapporo-suzuran-v2",
+    },
+  );
+  expect(
+    FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.chukyo_nisai_stakes,
+  ).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "joken_999",
+    feature_count: 113,
+    model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    routing_mode: "jra_lock1_rerank_rest",
+  });
+  expect(
+    FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.chukyo_nisai_stakes_jul1600_ninki2,
+  ).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "joken_999",
+    feature_count: 113,
+    model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    routing_mode: "jra_lock1_rerank_rest",
+  });
+  expect(
+    FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.chukyo_nisai_stakes_largefield,
+  ).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "joken_999",
+    feature_count: 113,
+    model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    routing_mode: "jra_lock1_rerank_rest",
+  });
+  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.niigata_kinen).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "joken_999",
+    feature_count: 113,
+    model_version: "jra-named-niigata-kinen-draw-v2",
+    rerank_model_version: "jra-named-niigata-kinen-going-v2",
+    routing_mode: "jra_lock1_rerank_rest",
+  });
+  expect(
+    FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.variants.niigata_bsn,
+  ).toBeUndefined();
+  expect(
+    FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.variants.chukyo_nisai_stakes,
+  ).toBeUndefined();
+  expect(
+    FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.variants.niigata_kinen,
+  ).toBeUndefined();
+  expect(FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.rules).toHaveLength(31);
+  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.rules).toHaveLength(31);
+});
+
+it("does not route an uncatalogued named race through a venue-only named-race cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "A",
+    keibajoCode: "06",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "有馬記念",
+    raceBango: "11",
+    trackCode: "17",
+  };
+  const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
+  expect(value).toBe(null);
 });

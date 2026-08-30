@@ -1,16 +1,43 @@
 import type { RaceSource } from "./codes";
 import type { RaceListItem } from "./race-types";
 
+export interface RaceNameTokenSource {
+  fukudai: string | null | undefined;
+  hondai: string | null | undefined;
+  kakkonai: string | null | undefined;
+}
+
+export interface JraNamedRaceCellInput {
+  gradeCode: string | null | undefined;
+  kyosoJokenCode: string | null | undefined;
+  source: RaceSource | null | undefined;
+}
+
 const clean = (value: string | null | undefined): string => value?.trim() ?? "";
 
 const getFirstToken = (value: string): string => clean(value).split(/\s+/)[0] ?? "";
 
+const FULLWIDTH_LETTER_OR_DIGIT: RegExp = /[Ａ-Ｚａ-ｚ０-９]/g;
+const DASH_MARKS: RegExp = /[－ー―‐]/g;
+// Keep ー (katakana prolonged sound) so ステークス still matches.
+const RACE_NAME_DASH_MARKS: RegExp = /[－―‐]/g;
+
+const toHalfWidthLetterOrDigit = (char: string): string =>
+  String.fromCharCode(char.charCodeAt(0) - 0xfee0);
+
+const collapseSpaces = (value: string): string => value.replace(/\s+/g, " ").trim();
+
 const toHalfWidthAlphaNumeric = (value: string): string =>
-  value
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
-    .replace(/[－ー―‐]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
+  collapseSpaces(
+    value.replace(FULLWIDTH_LETTER_OR_DIGIT, toHalfWidthLetterOrDigit).replace(DASH_MARKS, "-"),
+  );
+
+const toRaceNameNormalized = (value: string): string =>
+  collapseSpaces(
+    value
+      .replace(FULLWIDTH_LETTER_OR_DIGIT, toHalfWidthLetterOrDigit)
+      .replace(RACE_NAME_DASH_MARKS, "-"),
+  );
 
 const AGE_LABELS: Record<string, string> = {
   "01": "2歳",
@@ -91,6 +118,10 @@ export const LISTED_OR_HIGHER_GRADE_CODES: ReadonlySet<string> = new Set([
   "S",
 ]);
 
+const JRA_OPEN_JOKEN_CODE: string = "999";
+const JOCKEYS_CUP_TOKEN: string = "ジョッキーズカップ";
+const RACE_NAME_TOKEN_PATTERN: RegExp = /[\p{L}\p{N}ー・－-]+(?:杯|賞|記念|ステークス|カップ)/gu;
+
 const NAR_GRADE_LABELS: Record<string, string> = {
   A: "Jpn1",
   B: "Jpn2",
@@ -106,6 +137,30 @@ const NAR_GRADE_LABELS: Record<string, string> = {
 
 export const isListedOrHigherGradeCode = (value: string | null | undefined): boolean =>
   LISTED_OR_HIGHER_GRADE_CODES.has(clean(value));
+
+export const isJraOpenClassCode = (value: string | null | undefined): boolean =>
+  clean(value) === JRA_OPEN_JOKEN_CODE;
+
+export const isJraNamedRaceCell = (input: JraNamedRaceCellInput): boolean =>
+  input.source === "jra" &&
+  (isListedOrHigherGradeCode(input.gradeCode) || isJraOpenClassCode(input.kyosoJokenCode));
+
+export const extractRaceNameToken = (source: RaceNameTokenSource): string | null => {
+  const hondai = toRaceNameNormalized(clean(source.hondai));
+  const fukudai = toRaceNameNormalized(clean(source.fukudai));
+  const kakkonai = toRaceNameNormalized(clean(source.kakkonai));
+  const subtitle = `${fukudai} ${kakkonai}`.trim();
+  const combined = `${hondai} ${subtitle}`.trim();
+  if (combined.includes(JOCKEYS_CUP_TOKEN)) {
+    return JOCKEYS_CUP_TOKEN;
+  }
+  const subtitleMatch = [...subtitle.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0];
+  if (subtitleMatch !== undefined) {
+    return subtitleMatch;
+  }
+  const titleMatch = [...hondai.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0];
+  return titleMatch === undefined ? null : titleMatch;
+};
 
 export const getGradeLabel = (
   value: string | null | undefined,

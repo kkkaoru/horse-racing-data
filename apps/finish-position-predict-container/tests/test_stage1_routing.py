@@ -16,6 +16,7 @@ from predict_lib.stage1_routing import (
     Stage1RoutingValidationError,
     compute_predicted_score_stddev,
     extract_predicted_scores,
+    is_named_race_cell_score,
     is_score_spread_degraded,
     load_stage1_routing,
     preserved_odds_gate_enabled,
@@ -787,6 +788,60 @@ _FRESH_ENTRIES = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": 2}, {"tansho_ninki
 _STALE_ENTRIES = [{"tansho_ninkijun": None}, {"tansho_ninkijun": None}]
 _HEALTHY_SCORES = [1.2, 0.4, -0.3, 0.9]
 _DEGENERATE_SCORES = [0.501, 0.500, 0.499]
+
+
+def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> None:
+    assert (
+        is_named_race_cell_score(
+            model_version="jra-named-niigata-kinen-draw-v2",
+            resolved_variant="niigata_kinen",
+            named_race_variants=("niigata_kinen",),
+        )
+        is True
+    )
+    assert (
+        is_named_race_cell_score(
+            model_version="jra-named-niigata-kinen-draw-v2",
+            resolved_variant="joken_999",
+            named_race_variants=("niigata_kinen",),
+        )
+        is True
+    )
+    assert (
+        is_named_race_cell_score(
+            model_version="jra-joken-999-pooled-yetirank-v2",
+            resolved_variant="joken_999",
+            named_race_variants=("niigata_kinen",),
+        )
+        is False
+    )
+    assert (
+        is_named_race_cell_score(
+            model_version="jra-named-niigata-kinen-draw-v2",
+            resolved_variant=None,
+            named_race_variants=(),
+        )
+        is True
+    )
+    assert (
+        is_named_race_cell_score(
+            model_version="jra-joken-999-pooled-yetirank-v2",
+            resolved_variant=None,
+            named_race_variants=(),
+        )
+        is False
+    )
+
+
+def test_resolve_stage1_gate_keeps_named_race_cell_when_odds_missing() -> None:
+    decision = resolve_stage1_gate(
+        config=_CONFIG,
+        entries=_STALE_ENTRIES,
+        stage2_scores=_HEALTHY_SCORES,
+        skip_named_race_cell=True,
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=False, reason="named-race-cell", stddev=None)
 
 
 def test_resolve_stage1_gate_disabled_when_config_none() -> None:

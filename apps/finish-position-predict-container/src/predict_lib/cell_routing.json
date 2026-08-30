@@ -869,6 +869,18 @@
         "feature_count": 16,
         "architecture": "xgboost",
         "routing_mode": "nar_transformer_top1_swap"
+      },
+      "c43_mile_tc1_rolling": {
+        "model_version": "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+        "feature_count": 16,
+        "architecture": "xgboost",
+        "routing_mode": "nar_transformer_top1_swap"
+      },
+      "c43_1400_1500_tc1_rolling": {
+        "model_version": "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+        "feature_count": 16,
+        "architecture": "xgboost",
+        "routing_mode": "nar_transformer_top1_swap"
       }
     },
     "rules": [
@@ -1137,6 +1149,70 @@
           }
         ],
         "variant": "c43_tc1_rolling",
+        "effective_after": "2026-08-23"
+      },
+      {
+        "conditions": [
+          {
+            "dimension": "venue",
+            "values": ["43"]
+          },
+          {
+            "dimension": "nar_subclass",
+            "values": ["C"]
+          },
+          {
+            "dimension": "canonical_distance_band",
+            "values": ["mile"]
+          },
+          {
+            "dimension": "season",
+            "values": ["summer"]
+          },
+          {
+            "dimension": "surface",
+            "values": ["dirt"]
+          },
+          {
+            "dimension": "canonical_field_size_band",
+            "values": ["medium"]
+          },
+          {
+            "dimension": "current_baba_condition",
+            "values": ["1"]
+          }
+        ],
+        "variant": "c43_mile_tc1_rolling",
+        "effective_after": "2026-08-23"
+      },
+      {
+        "conditions": [
+          {
+            "dimension": "venue",
+            "values": ["43"]
+          },
+          {
+            "dimension": "nar_subclass",
+            "values": ["C"]
+          },
+          {
+            "dimension": "canonical_distance_band",
+            "values": ["extended_sprint"]
+          },
+          {
+            "dimension": "surface",
+            "values": ["dirt"]
+          },
+          {
+            "dimension": "canonical_field_size_band",
+            "values": ["medium"]
+          },
+          {
+            "dimension": "current_baba_condition",
+            "values": ["1"]
+          }
+        ],
+        "variant": "c43_1400_1500_tc1_rolling",
         "effective_after": "2026-08-23"
       }
     ]

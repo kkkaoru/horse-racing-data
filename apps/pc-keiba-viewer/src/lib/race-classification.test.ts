@@ -10,6 +10,9 @@ import {
   getRaceTagText,
   getRaceTags,
   getWeightLabel,
+  extractRaceNameToken,
+  isJraNamedRaceCell,
+  isJraOpenClassCode,
   isListedOrHigherGradeCode,
 } from "./race-classification";
 
@@ -106,6 +109,46 @@ describe("race classification", () => {
     expect(isListedOrHigherGradeCode("")).toBe(false);
     expect(isListedOrHigherGradeCode(null)).toBe(false);
     expect(isListedOrHigherGradeCode(undefined)).toBe(false);
+  });
+
+  it("treats JRA 999 as open class", () => {
+    expect(isJraOpenClassCode("999")).toBe(true);
+    expect(isJraOpenClassCode("005")).toBe(false);
+  });
+
+  it("treats JRA listed OP G3 G2 G1 as named-race cells", () => {
+    expect(isJraNamedRaceCell({ gradeCode: "L", kyosoJokenCode: "999", source: "jra" })).toBe(true);
+    expect(isJraNamedRaceCell({ gradeCode: "C", kyosoJokenCode: "999", source: "jra" })).toBe(true);
+    expect(isJraNamedRaceCell({ gradeCode: "", kyosoJokenCode: "999", source: "jra" })).toBe(true);
+    expect(isJraNamedRaceCell({ gradeCode: "E", kyosoJokenCode: "005", source: "jra" })).toBe(
+      false,
+    );
+    expect(isJraNamedRaceCell({ gradeCode: "A", kyosoJokenCode: "000", source: "nar" })).toBe(
+      false,
+    );
+  });
+
+  it("extracts BSN and suzuran race-name tokens", () => {
+    expect(extractRaceNameToken({ fukudai: null, hondai: "ＢＳＮ賞", kakkonai: null })).toBe(
+      "BSN賞",
+    );
+    expect(
+      extractRaceNameToken({ fukudai: "すずらん賞", hondai: "３歳オープン", kakkonai: null }),
+    ).toBe("すずらん賞");
+    expect(
+      extractRaceNameToken({ fukudai: null, hondai: "中京２歳ステークス", kakkonai: null }),
+    ).toBe("中京2歳ステークス");
+    expect(
+      extractRaceNameToken({
+        fukudai: "サマー２０００シリーズ",
+        hondai: "農林水産省賞典　新潟記念",
+        kakkonai: null,
+      }),
+    ).toBe("新潟記念");
+    expect(extractRaceNameToken({ fukudai: null, hondai: "テスト‐賞", kakkonai: null })).toBe(
+      "テスト-賞",
+    );
+    expect(extractRaceNameToken({ fukudai: null, hondai: "新馬", kakkonai: null })).toBe(null);
   });
 
   it("keeps non-handicap weight labels out of tags", () => {

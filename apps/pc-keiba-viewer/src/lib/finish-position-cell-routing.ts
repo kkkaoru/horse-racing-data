@@ -11,14 +11,21 @@
 // prediction, and separately the NAR transformer blend, were both shadowed by
 // fallback writes of the plain champion model).
 //
-// FINISH_POSITION_CELL_ROUTING_CONFIG below is a hand-kept mirror of the
-// container's cell_routing.json contract, not a runtime import of it (the
-// container package is a separate deploy target with its own bundling, and
-// this viewer's tsconfig does not enable resolveJsonModule). Its
-// finish-position-cell-routing.test.ts parity test reads the real container
-// file at test time and fails the build if the two diverge, so this mirror
-// can never silently drift the way the 2026-07-03 hardcoded single-rule
-// mechanism did before it was deleted wholesale on 2026-07-07.
+// FINISH_POSITION_CELL_ROUTING_BASE_CONFIG below is a hand-kept mirror of the
+// container's cell_routing.json contract (class/venue rules only), not a
+// runtime import of it (the container package is a separate deploy target
+// with its own bundling, and this viewer's tsconfig does not enable
+// resolveJsonModule). Named venue+race-name cells live in
+// finish-position-named-race-cells.ts and named_race_cells.json so hundreds
+// of those races never inflate this file or linearly scan ahead of class
+// rules. The parity test reads both container files at test time.
+import {
+  NAMED_RACE_CELLS_BY_CATEGORY,
+  lookupNamedRaceCell,
+  namedRaceVariantsForCategory,
+  type NamedRacePreraceRoute,
+} from "./finish-position-named-race-cells";
+import { extractRaceNameToken } from "./race-classification";
 import type { RaceDetail } from "./race-types";
 
 // Mirrors predict_lib.model_meta.NAR_TRANSFORMER_MODEL_VERSION exactly. Unlike
@@ -56,6 +63,8 @@ export interface CellRoutingVariant {
   minimum_candidate_top_z?: number;
   consensus_variants?: string[];
   consensus_required_votes?: number;
+  rerank_model_version?: string;
+  rerank_variant?: string;
 }
 
 export interface CellRoutingCategoryConfig {
@@ -86,6 +95,10 @@ export interface ResolveCellRoutingParams {
   cardMaxRaceBango?: number | null;
 }
 
+export interface ResolveCellRoutingForConfigParams extends ResolveCellRoutingParams {
+  config: CellRoutingConfig;
+}
+
 const SPRINT_MAX_KYORI = 1200;
 const MILE_MAX_KYORI = 1600;
 const INTERMEDIATE_MAX_KYORI = 2000;
@@ -93,10 +106,35 @@ const LONG_MAX_KYORI = 2400;
 const SMALL_FIELD_MAX_SHUSSO_TOSU = 10;
 const MEDIUM_FIELD_MAX_SHUSSO_TOSU = 13;
 const LARGE_FIELD_MAX_SHUSSO_TOSU = 15;
-const CANONICAL_SPRINT_MAX_KYORI = 1400;
-const CANONICAL_MILE_MAX_KYORI = 1800;
-const CANONICAL_INTERMEDIATE_MAX_KYORI = 2200;
-const CANONICAL_LONG_MAX_KYORI = 2800;
+const CANONICAL_SPRINT_MAX_EXCLUSIVE_KYORI: number = 1400;
+const CANONICAL_EXTENDED_SPRINT_MAX_KYORI: number = 1500;
+const CANONICAL_MILE_MAX_KYORI: number = 1800;
+const CANONICAL_INTERMEDIATE_MAX_KYORI: number = 2200;
+const CANONICAL_LONG_MAX_KYORI: number = 2800;
+const JRA_TURF_TRACK_CODES: ReadonlySet<string> = new Set([
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15",
+  "16",
+  "17",
+  "18",
+  "19",
+  "20",
+  "21",
+  "22",
+]);
+const JRA_DIRT_TRACK_CODES: ReadonlySet<string> = new Set([
+  "23",
+  "24",
+  "25",
+  "26",
+  "27",
+  "28",
+  "29",
+]);
 const CANONICAL_SMALL_FIELD_MAX = 8;
 const CANONICAL_MEDIUM_FIELD_MAX = 14;
 const MONTH_PREFIX_LENGTH = 2;
@@ -105,11 +143,9 @@ const SPRING_MONTHS = new Set([3, 4, 5]);
 const SUMMER_MONTHS = new Set([6, 7, 8]);
 const AUTUMN_MONTHS = new Set([9, 10, 11]);
 
-// Mirrors cell_routing.json exactly (jra / ban-ei rules currently deployed).
-// See the module comment above for why this is a hand-kept copy rather than
-// a runtime import, and finish-position-cell-routing.test.ts for the parity
-// guard that keeps it honest.
-const FINISH_POSITION_CELL_ROUTING_CONFIG: CellRoutingConfig = {
+// Mirrors cell_routing.json exactly (jra / ban-ei class and venue rules).
+// Named-race cells are applied after this object via the compact catalog.
+const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
   jra: {
     default_variant: "sim",
     variants: {
@@ -981,6 +1017,18 @@ const FINISH_POSITION_CELL_ROUTING_CONFIG: CellRoutingConfig = {
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
       },
+      c43_mile_tc1_rolling: {
+        model_version: "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+        feature_count: 16,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
+      c43_1400_1500_tc1_rolling: {
+        model_version: "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+        feature_count: 16,
+        architecture: "xgboost",
+        routing_mode: "nar_transformer_top1_swap",
+      },
     },
     rules: [
       {
@@ -1250,9 +1298,98 @@ const FINISH_POSITION_CELL_ROUTING_CONFIG: CellRoutingConfig = {
         variant: "c43_tc1_rolling",
         effective_after: "2026-08-23",
       },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["43"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["mile"],
+          },
+          {
+            dimension: "season",
+            values: ["summer"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c43_mile_tc1_rolling",
+        effective_after: "2026-08-23",
+      },
+      {
+        conditions: [
+          {
+            dimension: "venue",
+            values: ["43"],
+          },
+          {
+            dimension: "nar_subclass",
+            values: ["C"],
+          },
+          {
+            dimension: "canonical_distance_band",
+            values: ["extended_sprint"],
+          },
+          {
+            dimension: "surface",
+            values: ["dirt"],
+          },
+          {
+            dimension: "canonical_field_size_band",
+            values: ["medium"],
+          },
+          {
+            dimension: "current_baba_condition",
+            values: ["1"],
+          },
+        ],
+        variant: "c43_1400_1500_tc1_rolling",
+        effective_after: "2026-08-23",
+      },
     ],
   },
 };
+
+const applyNamedRaceCellsToConfig = (config: CellRoutingConfig): CellRoutingConfig =>
+  Object.fromEntries(
+    Object.entries(config).map(([category, categoryConfig]) => {
+      const cells = NAMED_RACE_CELLS_BY_CATEGORY[category];
+      if (cells === undefined) return [category, categoryConfig];
+      return [
+        category,
+        {
+          ...categoryConfig,
+          variants: {
+            ...categoryConfig.variants,
+            ...namedRaceVariantsForCategory({
+              cells,
+              variants: categoryConfig.variants,
+            }),
+          },
+        },
+      ];
+    }),
+  );
+
+const FINISH_POSITION_CELL_ROUTING_CONFIG: CellRoutingConfig = applyNamedRaceCellsToConfig(
+  FINISH_POSITION_CELL_ROUTING_BASE_CONFIG,
+);
 
 const parseIntOrNull = (value: string | null): number | null => {
   if (value === null) return null;
@@ -1279,7 +1416,8 @@ const resolveDistanceBand = (kyori: string | null): string | null => {
 const resolveCanonicalDistanceBand = (kyori: string | null): string | null => {
   const parsed = parseIntOrNull(kyori);
   if (parsed === null) return null;
-  if (parsed <= CANONICAL_SPRINT_MAX_KYORI) return "sprint";
+  if (parsed < CANONICAL_SPRINT_MAX_EXCLUSIVE_KYORI) return "sprint";
+  if (parsed <= CANONICAL_EXTENDED_SPRINT_MAX_KYORI) return "extended_sprint";
   if (parsed <= CANONICAL_MILE_MAX_KYORI) return "mile";
   if (parsed <= CANONICAL_INTERMEDIATE_MAX_KYORI) return "intermediate";
   if (parsed <= CANONICAL_LONG_MAX_KYORI) return "long";
@@ -1307,8 +1445,8 @@ const resolveSurface = (race: RaceDetail, category: string): string | null => {
   if (category !== "jra") return "dirt";
   const trackCode = trimmedOrNull(race.trackCode);
   if (trackCode === null) return null;
-  if (trackCode.startsWith("1")) return "turf";
-  if (trackCode.startsWith("2")) return "dirt";
+  if (JRA_TURF_TRACK_CODES.has(trackCode)) return "turf";
+  if (JRA_DIRT_TRACK_CODES.has(trackCode)) return "dirt";
   return "other";
 };
 
@@ -1319,11 +1457,14 @@ const deriveSeasonFromMonth = (month: number): string => {
   return "winter";
 };
 
-const resolveSeason = (kaisaiTsukihi: string): string | null => {
+const resolveMonth = (kaisaiTsukihi: string): string | null => {
   const monthText = kaisaiTsukihi.trim().slice(0, MONTH_PREFIX_LENGTH);
-  return MONTH_PATTERN.test(monthText)
-    ? deriveSeasonFromMonth(Number.parseInt(monthText, 10))
-    : null;
+  return MONTH_PATTERN.test(monthText) ? monthText : null;
+};
+
+const resolveSeason = (kaisaiTsukihi: string): string | null => {
+  const monthText = resolveMonth(kaisaiTsukihi);
+  return monthText === null ? null : deriveSeasonFromMonth(Number.parseInt(monthText, 10));
 };
 
 const resolveClass = (race: RaceDetail): string | null => {
@@ -1376,11 +1517,21 @@ const SPECIAL_DIMENSION_RESOLVERS = new Map<
   ["field_band", (race) => resolveFieldBand(race.shussoTosu)],
   ["canonical_field_size_band", (race) => resolveCanonicalFieldSizeBand(race.shussoTosu)],
   ["season", (race) => resolveSeason(race.kaisaiTsukihi)],
+  ["month", (race) => resolveMonth(race.kaisaiTsukihi)],
   ["class", (race) => resolveClass(race)],
   ["nar_subclass", (race) => resolveNarSubclass(race)],
   [
     "is_final_race",
     (race, _category, cardMaxRaceBango) => resolveIsFinalRace(race.raceBango, cardMaxRaceBango),
+  ],
+  [
+    "race_name_token",
+    (race) =>
+      extractRaceNameToken({
+        fukudai: race.kyosomeiFukudai,
+        hondai: race.kyosomeiHondai,
+        kakkonai: race.kyosomeiKakkonai,
+      }),
   ],
 ]);
 
@@ -1424,11 +1575,70 @@ const allConditionsMatch = (params: AllConditionsMatchParams): boolean =>
     return value !== null && condition.values.includes(value);
   });
 
-const isRuleEffective = (race: RaceDetail, rule: CellRoutingRule): boolean => {
-  if (rule.effective_after === undefined) return true;
+const isEffectiveAfter = (race: RaceDetail, effectiveAfter: string | undefined): boolean => {
+  if (effectiveAfter === undefined) return true;
   const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-  const threshold = rule.effective_after.replaceAll("-", "");
+  const threshold = effectiveAfter.replaceAll("-", "");
   return raceDate.length === 8 && threshold.length === 8 && raceDate > threshold;
+};
+
+const isRuleEffective = (race: RaceDetail, rule: CellRoutingRule): boolean =>
+  isEffectiveAfter(race, rule.effective_after);
+
+const preraceAllowedMatches = (actual: string | null, allowed: string[] | undefined): boolean =>
+  allowed === undefined || (actual !== null && allowed.includes(actual));
+
+const namedRacePreraceRouteMatches = (
+  route: NamedRacePreraceRoute,
+  params: ResolveCellRoutingForConfigParams,
+): boolean =>
+  preraceAllowedMatches(
+    resolveDimension({
+      cardMaxRaceBango: params.cardMaxRaceBango,
+      category: params.category,
+      dimension: "month",
+      race: params.race,
+    }),
+    route.when.month,
+  ) &&
+  preraceAllowedMatches(
+    resolveDimension({
+      cardMaxRaceBango: params.cardMaxRaceBango,
+      category: params.category,
+      dimension: "kyori",
+      race: params.race,
+    }),
+    route.when.kyori,
+  );
+
+const resolveNamedRaceVariantName = (params: ResolveCellRoutingForConfigParams): string | null => {
+  const categoryConfig = params.config[params.category];
+  if (categoryConfig === undefined) return null;
+  const venue = resolveDimension({
+    cardMaxRaceBango: params.cardMaxRaceBango,
+    category: params.category,
+    dimension: "venue",
+    race: params.race,
+  });
+  const raceNameToken = resolveDimension({
+    cardMaxRaceBango: params.cardMaxRaceBango,
+    category: params.category,
+    dimension: "race_name_token",
+    race: params.race,
+  });
+  if (venue === null || raceNameToken === null) return null;
+  const cell = lookupNamedRaceCell({
+    category: params.category,
+    raceNameToken,
+    venue,
+  });
+  if (cell === undefined) return null;
+  const matchedRoute = (cell.prerace_router?.routes ?? []).find((route) =>
+    namedRacePreraceRouteMatches(route, params),
+  );
+  const variantName = matchedRoute?.variant ?? cell.variant;
+  if (categoryConfig.variants[variantName] === undefined) return null;
+  return isEffectiveAfter(params.race, cell.effective_after) ? variantName : null;
 };
 
 const findMatchingRule = (
@@ -1446,10 +1656,6 @@ const findMatchingRule = (
       }),
   );
 
-export interface ResolveCellRoutingForConfigParams extends ResolveCellRoutingParams {
-  config: CellRoutingConfig;
-}
-
 /**
  * Config-parameterized core of resolveFinishPositionCellRoutingModelVersion,
  * exported so finish-position-cell-routing.test.ts can exercise the
@@ -1464,8 +1670,9 @@ export const resolveCellRoutingModelVersionForConfig = (
 ): string | null => {
   const categoryConfig = params.config[params.category];
   if (categoryConfig === undefined) return null;
+  const namedVariantName = resolveNamedRaceVariantName(params);
   const matchedRule = findMatchingRule(params, categoryConfig.rules);
-  const variantName = matchedRule?.variant ?? categoryConfig.default_variant;
+  const variantName = namedVariantName ?? matchedRule?.variant ?? categoryConfig.default_variant;
   if (variantName === categoryConfig.default_variant) return null;
   return categoryConfig.variants[variantName]?.model_version ?? null;
 };
@@ -1566,3 +1773,6 @@ export const getAllFinishPositionDisplayPriorityModelVersions = (): string[] =>
 
 export const FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS: CellRoutingConfig =
   FINISH_POSITION_CELL_ROUTING_CONFIG;
+
+export const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS: CellRoutingConfig =
+  FINISH_POSITION_CELL_ROUTING_BASE_CONFIG;

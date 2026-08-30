@@ -12,7 +12,7 @@ import pytest
 
 import finish_position_features_duckdb as subject
 
-REC_COLUMNS = [
+CORNER_REC_COLUMNS = [
     "source",
     "race_date",
     "kaisai_nen",
@@ -44,17 +44,52 @@ REC_COLUMNS = [
     "barei",
 ]
 
+REC_COLUMNS = [
+    "source",
+    "race_date",
+    "kaisai_nen",
+    "kaisai_tsukihi",
+    "keibajo_code",
+    "race_bango",
+    "ketto_toroku_bango",
+    "umaban",
+    "kishumei_ryakusho",
+    "chokyoshimei_ryakusho",
+    "kyori",
+    "track_code",
+    "grade_code",
+    "kyoso_joken_code",
+    "kyosomei_hondai",
+    "kyosomei_fukudai",
+    "kyosomei_kakkonai",
+    "shusso_tosu",
+    "finish_position",
+    "finish_norm",
+    "time_sa",
+    "kohan_3f",
+    "corner1_norm",
+    "corner2_norm",
+    "corner3_norm",
+    "corner4_norm",
+    "babajotai_code_shiba",
+    "babajotai_code_dirt",
+    "tansho_ninkijun",
+    "tansho_odds",
+    "seibetsu_code",
+    "barei",
+]
+
 REC_DATA: list[tuple[object, ...]] = [
-    ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 5.0, 1, 3),
-    ("jra", "20180601", "2018", "0601", "02", "01", "h001", 2, "j1", "t1", 1800, "11", "A", "005", 12, 1, 0.0, 0.0, 34.5, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.5, 1, 3),
-    ("jra", "20190101", "2019", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 4),
-    ("jra", "20190101", "2019", "0101", "01", "01", "h002", 2, "j2", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 34.5, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 2, 4),
-    ("jra", "20190601", "2019", "0601", "02", "01", "h001", 1, "j1", "t1", 1800, "11", "A", "005", 12, 3, 0.7, 1.5, 36.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 4),
-    ("jra", "20190601", "2019", "0601", "02", "01", "h002", 2, "j2", "t2", 1800, "11", "A", "005", 12, 1, 0.0, 0.0, 35.5, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 2, 4),
-    ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 5),
-    ("jra", "20200101", "2020", "0101", "01", "01", "h002", 2, "j2", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 34.5, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 2, 5),
-    ("nar", "20190601", "2019", "0601", "01", "02", "h003", 1, "j3", "t3", 1200, "20", "B", "000", 8, 1, 0.0, 0.0, 25.5, 0.3, 0.35, 0.4, 0.5, None, "1", 1, 2.0, 3, 3),
-    ("nar", "20200601", "2020", "0601", "01", "02", "h003", 1, "j3", "t3", 1200, "20", "B", "000", 8, 1, 0.0, 0.0, 25.0, 0.3, 0.35, 0.4, 0.5, None, "1", 1, 2.0, 3, 4),
+    ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 5.0, 1, 3),
+    ("jra", "20180601", "2018", "0601", "02", "01", "h001", 2, "j1", "t1", 1800, "11", "A", "005", "サブ賞", "", "", 12, 1, 0.0, 0.0, 34.5, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.5, 1, 3),
+    ("jra", "20190101", "2019", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 4),
+    ("jra", "20190101", "2019", "0101", "01", "01", "h002", 2, "j2", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 34.5, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 2, 4),
+    ("jra", "20190601", "2019", "0601", "02", "01", "h001", 1, "j1", "t1", 1800, "11", "A", "005", "サブ賞", "", "", 12, 3, 0.7, 1.5, 36.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 4),
+    ("jra", "20190601", "2019", "0601", "02", "01", "h002", 2, "j2", "t2", 1800, "11", "A", "005", "サブ賞", "", "", 12, 1, 0.0, 0.0, 35.5, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 2, 4),
+    ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 5),
+    ("jra", "20200101", "2020", "0101", "01", "01", "h002", 2, "j2", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 34.5, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 2, 5),
+    ("nar", "20190601", "2019", "0601", "01", "02", "h003", 1, "j3", "t3", 1200, "20", "B", "000", "地方賞", "", "", 8, 1, 0.0, 0.0, 25.5, 0.3, 0.35, 0.4, 0.5, None, "1", 1, 2.0, 3, 3),
+    ("nar", "20200601", "2020", "0601", "01", "02", "h003", 1, "j3", "t3", 1200, "20", "B", "000", "地方賞", "", "", 8, 1, 0.0, 0.0, 25.0, 0.3, 0.35, 0.4, 0.5, None, "1", 1, 2.0, 3, 4),
 ]
 
 
@@ -70,6 +105,7 @@ def _seed_rec(con: duckdb.DuckDBPyConnection) -> None:
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position, finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
@@ -336,15 +372,16 @@ def test_whole_day_rec_cohort_matches_full_history_for_all_feature_consumers():
         "create table pg.nvd_ra (kaisai_nen varchar, kaisai_tsukihi varchar, "
         "keibajo_code varchar, race_bango varchar, kyori varchar, track_code varchar, "
         "grade_code varchar, kyoso_joken_code varchar, babajotai_code_shiba varchar, "
-        "babajotai_code_dirt varchar, shusso_tosu varchar)"
+        "babajotai_code_dirt varchar, shusso_tosu varchar, "
+        "kyosomei_hondai varchar, kyosomei_fukudai varchar, kyosomei_kakkonai varchar)"
     )
     con.execute(
         "insert into pg.nvd_ra values "
-        "('2026','0801','44','01','1200','24',' ','010','1','1','02'),"
-        "('2026','0822','43','02','1200','24',' ','010','1','1','00'),"
-        "('2026','0810','44','03','1200','24',' ','010','1','1','02'),"
-        "('2026','0811','44','04','1200','24',' ','010','1','1','02'),"
-        "('2026','0805','45','05','1200','24',' ','010','1','1','01')"
+        "('2026','0801','44','01','1200','24',' ','010','1','1','02','地方賞','',''),"
+        "('2026','0822','43','02','1200','24',' ','010','1','1','00','地方賞','',''),"
+        "('2026','0810','44','03','1200','24',' ','010','1','1','02','地方賞','',''),"
+        "('2026','0811','44','04','1200','24',' ','010','1','1','02','地方賞','',''),"
+        "('2026','0805','45','05','1200','24',' ','010','1','1','01','地方賞','','')"
     )
     entity_filter = (
         " and (ketto_toroku_bango in ('target', 'sibling') "
@@ -415,7 +452,7 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
                 "1", None, 2, 5.0, 1, 3,
             ),
         ],
-        schema=REC_COLUMNS,
+        schema=CORNER_REC_COLUMNS,
         orient="row",
     )
     con.register("corner_df", corner_df)
@@ -449,13 +486,14 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
         [
             (
                 "2026", "0627", "02", "01", "1600", "10", "A", "703",
-                "10", "1", None,
+                "10", "1", None, "メイン賞", "", "",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "kyori", "track_code", "grade_code", "kyoso_joken_code",
             "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
         ],
         orient="row",
     )
@@ -521,7 +559,7 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
                 "1", None, 2, 5.0, 1, 3,
             ),
         ],
-        schema=REC_COLUMNS,
+        schema=CORNER_REC_COLUMNS,
         orient="row",
     )
     con.register("corner_df", corner_df)
@@ -559,13 +597,14 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
         [
             (
                 "2026", "0627", "02", "01", "1600", "10", "A", "703",
-                "10", "1", None,
+                "10", "1", None, "メイン賞", "", "",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "kyori", "track_code", "grade_code", "kyoso_joken_code",
             "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
         ],
         orient="row",
     )
@@ -660,13 +699,14 @@ def test_upcoming_target_union_sql_jra_excludes_scratched_and_excluded_entrants(
         [
             (
                 "2026", "0718", "05", "01", "1600", "10", "A", "703",
-                "8", "1", None,
+                "8", "1", None, "メイン賞", "", "",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "kyori", "track_code", "grade_code", "kyoso_joken_code",
             "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
         ],
         orient="row",
     )
@@ -727,13 +767,14 @@ def test_upcoming_target_union_sql_nar_excludes_scratched_entrant():
         [
             (
                 "2026", "0718", "30", "01", "1400", "20", "B", "000",
-                "2", None, "1",
+                "2", None, "1", "地方賞", "", "",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "kyori", "track_code", "grade_code", "kyoso_joken_code",
             "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
         ],
         orient="row",
     )
@@ -804,13 +845,14 @@ def test_build_rec_select_sql_ban_ei_upcoming_window_excludes_scratched_entrant_
         [
             (
                 "2026", "0718", "83", "01", "820", "23", "A", "000",
-                "4", None, "1",
+                "4", None, "1", "ばんえい賞", "", "",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "kyori", "track_code", "grade_code", "kyoso_joken_code",
             "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
         ],
         orient="row",
     )
@@ -1155,9 +1197,9 @@ def test_pedigree_rec_um_has_precomputed_race_year_month(
 def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
     con = duckdb.connect(":memory:")
     rows = [
-        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180102", "2018", "0102", "01", "01", "h001", 2, "j1", "t1", 1600, "10", "A", "000", 10, 2, None, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
-        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 5),
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180102", "2018", "0102", "01", "01", "h001", 2, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, None, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 5),
     ]
     df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_null_df", df)
@@ -1170,6 +1212,7 @@ def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position,
           cast(finish_norm as double) as finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
@@ -1528,8 +1571,8 @@ def test_prepare_output_dir_removes_existing_partition(tmp_path: Path):
 
 
 UPCOMING_REC_DATA: list[tuple[object, ...]] = [
-    ("jra", "20250101", "2025", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 5.0, 1, 3),
-    ("jra", "20260603", "2026", "0603", "05", "11", "h001", 3, "j1", "t1", 1600, "10", "A", "000", 9, None, None, None, None, None, None, None, None, "1", None, None, None, 1, 4),
+    ("jra", "20250101", "2025", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 5.0, 1, 3),
+    ("jra", "20260603", "2026", "0603", "05", "11", "h001", 3, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 9, None, None, None, None, None, None, None, None, "1", None, None, None, 1, 4),
 ]
 
 
@@ -1545,6 +1588,7 @@ def _seed_upcoming_rec(con: duckdb.DuckDBPyConnection) -> None:
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu,
           cast(finish_position as integer) as finish_position,
           cast(finish_norm as double) as finish_norm,
@@ -1699,6 +1743,9 @@ def test_write_parquet_emits_kyoso_joken_code_column(
     ]
     reader.close()
     assert "kyoso_joken_code" in columns
+    assert "kyosomei_hondai" in columns
+    assert "kyosomei_fukudai" in columns
+    assert "kyosomei_kakkonai" in columns
 
 
 def test_count_output_rows_counts_written_parquet(
@@ -2078,12 +2125,12 @@ def test_heartbeat_supports_repeated_stage_changes():
 def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
     con = duckdb.connect(":memory:")
     rows = [
-        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
-        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
-        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
-        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
     df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_keibajo_df", df)
@@ -2096,6 +2143,7 @@ def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position,
           cast(finish_norm as double) as finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
@@ -2121,12 +2169,12 @@ def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
 def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
     con = duckdb.connect(":memory:")
     rows = [
-        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
-        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
-        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
-        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
     df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_damsire_keibajo_df", df)
@@ -2139,6 +2187,7 @@ def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position,
           cast(finish_norm as double) as finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
@@ -2165,10 +2214,10 @@ def test_keibajo_win_rate_null_when_race_count_below_min_races():
     con = duckdb.connect(":memory:")
     # Only 3 history races at keibajo 01 (< PEDIGREE_MIN_RACES=5) → final value NULL.
     rows = [
-        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
-        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
     df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_below_min_df", df)
@@ -2181,6 +2230,7 @@ def test_keibajo_win_rate_null_when_race_count_below_min_races():
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position,
           cast(finish_norm as double) as finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
@@ -2215,12 +2265,12 @@ def test_keibajo_win_rate_present_in_final_output_value():
     con = duckdb.connect(":memory:")
     # 5 history races at keibajo 01, 2 wins → win rate 0.4 surfaces in final output.
     rows = [
-        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
-        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
-        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
-        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
-        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 1, 2.0, 1, 3),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 3, 4.0, 1, 3),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.35, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", "メイン賞", "", "", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.25, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
     df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_value_df", df)
@@ -2233,6 +2283,7 @@ def test_keibajo_win_rate_present_in_final_output_value():
           ketto_toroku_bango, umaban,
           kishumei_ryakusho, chokyoshimei_ryakusho,
           kyori, track_code, grade_code, kyoso_joken_code,
+          kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai,
           shusso_tosu, finish_position,
           cast(finish_norm as double) as finish_norm,
           time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,

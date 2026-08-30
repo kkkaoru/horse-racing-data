@@ -137,19 +137,27 @@ def test_classify_rs_one_is_oikomi() -> None:
 
 
 def test_classify_distance_band_sprint_boundary() -> None:
-    assert subject.classify_distance_band(1400) == "sprint"
+    assert subject.classify_distance_band(1399) == "sprint"
 
 
 def test_classify_distance_band_sprint_low() -> None:
     assert subject.classify_distance_band(1000) == "sprint"
 
 
+def test_classify_distance_band_extended_sprint_at_1400() -> None:
+    assert subject.classify_distance_band(1400) == "extended_sprint"
+
+
+def test_classify_distance_band_extended_sprint_at_1500() -> None:
+    assert subject.classify_distance_band(1500) == "extended_sprint"
+
+
 def test_classify_distance_band_mile_boundary() -> None:
     assert subject.classify_distance_band(1800) == "mile"
 
 
-def test_classify_distance_band_mile_just_above_sprint() -> None:
-    assert subject.classify_distance_band(1401) == "mile"
+def test_classify_distance_band_mile_just_above_extended_sprint() -> None:
+    assert subject.classify_distance_band(1501) == "mile"
 
 
 def test_classify_distance_band_intermediate_boundary() -> None:

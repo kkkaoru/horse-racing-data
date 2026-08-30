@@ -92,7 +92,7 @@ import json
 import math
 import os
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -111,6 +111,7 @@ from .upsert_sql import INSERT_COLUMNS
 STAGE1_ROUTING_PATH: Final[Path] = Path(__file__).parent / "stage1_routing.json"
 STAGE1_ROUTING_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "nar", "ban-ei"})
 STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV: Final[str] = "STAGE1_PRESERVED_ODDS_GATE_ENABLED"
+NAMED_RACE_MODEL_VERSION_PREFIX: Final[str] = "jra-named-"
 _REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
     {
         "enabled",
@@ -133,7 +134,13 @@ value tuple -- derived from the tracked column-name list rather than a magic
 number so a future reordering of ``upsert_sql.INSERT_COLUMNS`` cannot silently
 desync this module's row-reading from the real layout."""
 
-Stage1GateReason = Literal["disabled", "fresh", "odds-missing", "score-spread-degraded"]
+Stage1GateReason = Literal[
+    "disabled",
+    "fresh",
+    "named-race-cell",
+    "odds-missing",
+    "score-spread-degraded",
+]
 
 
 class Stage1RoutingValidationError(ValueError):
@@ -421,11 +428,24 @@ def extract_predicted_scores(rows: Sequence[Sequence[object]]) -> list[float]:
     return [_coerce_score(row[PREDICTED_SCORE_COLUMN_INDEX]) for row in rows]
 
 
+def is_named_race_cell_score(
+    *,
+    model_version: str,
+    resolved_variant: str | None,
+    named_race_variants: Collection[str],
+) -> bool:
+    """Return True when Stage-2 wrote a dedicated named-race catalog cell."""
+    if resolved_variant is not None and resolved_variant in named_race_variants:
+        return True
+    return model_version.startswith(NAMED_RACE_MODEL_VERSION_PREFIX)
+
+
 def resolve_stage1_gate(
     *,
     config: Stage1CategoryConfig | None,
     entries: Sequence[Mapping[str, object]],
     stage2_scores: Sequence[float],
+    skip_named_race_cell: bool = False,
 ) -> Stage1GateDecision:
     """Decide whether a race should be (re)scored with the Stage-1 fallback.
 
@@ -454,6 +474,8 @@ def resolve_stage1_gate(
     """
     if config is None or not config.enabled:
         return Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
+    if skip_named_race_cell:
+        return Stage1GateDecision(use_stage1=False, reason="named-race-cell", stddev=None)
     if not race_has_fresh_odds(entries):
         return Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
     if not config.enable_stddev_safety_net:

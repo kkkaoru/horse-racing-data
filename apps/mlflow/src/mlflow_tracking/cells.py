@@ -20,10 +20,19 @@ CATEGORY_BANEI: Final[str] = "banei"
 CATEGORIES: Final[tuple[str, str, str]] = (CATEGORY_JRA, CATEGORY_NAR, CATEGORY_BANEI)
 
 DISTANCE_BAND_SPRINT: Final[str] = "sprint"
+DISTANCE_BAND_EXTENDED_SPRINT: Final[str] = "extended_sprint"
 DISTANCE_BAND_MILE: Final[str] = "mile"
 DISTANCE_BAND_INTERMEDIATE: Final[str] = "intermediate"
 DISTANCE_BAND_LONG: Final[str] = "long"
 DISTANCE_BAND_EXTENDED: Final[str] = "extended"
+
+# NAR canonical distance-band cutoffs (meters). Sprint is exclusive of 1400;
+# extended_sprint is inclusive of 1400 and 1500.
+DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS: Final[int] = 1400
+DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS: Final[int] = 1500
+DISTANCE_BAND_MILE_MAX_METERS: Final[int] = 1800
+DISTANCE_BAND_INTERMEDIATE_MAX_METERS: Final[int] = 2200
+DISTANCE_BAND_LONG_MAX_METERS: Final[int] = 2800
 
 FIELD_SIZE_SMALL: Final[str] = "small"
 FIELD_SIZE_MEDIUM: Final[str] = "medium"
@@ -51,13 +60,15 @@ OBSTACLE_TRACK_CODES: Final[frozenset[str]] = frozenset(
 def classify_distance_band(kyori: int | None) -> str | None:
     if kyori is None:
         return None
-    if kyori <= 1400:
+    if kyori < DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS:
         return DISTANCE_BAND_SPRINT
-    if kyori <= 1800:
+    if kyori <= DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS:
+        return DISTANCE_BAND_EXTENDED_SPRINT
+    if kyori <= DISTANCE_BAND_MILE_MAX_METERS:
         return DISTANCE_BAND_MILE
-    if kyori <= 2200:
+    if kyori <= DISTANCE_BAND_INTERMEDIATE_MAX_METERS:
         return DISTANCE_BAND_INTERMEDIATE
-    if kyori <= 2800:
+    if kyori <= DISTANCE_BAND_LONG_MAX_METERS:
         return DISTANCE_BAND_LONG
     return DISTANCE_BAND_EXTENDED
 

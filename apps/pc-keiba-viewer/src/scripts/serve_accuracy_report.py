@@ -71,6 +71,18 @@ JRA_BASELINE_FULL: Final[dict[str, float]] = {
 
 VALID_CATEGORIES: Final[tuple[str, str]] = ("jra", "nar")
 
+DISTANCE_BAND_SPRINT: Final[str] = "sprint"
+DISTANCE_BAND_EXTENDED_SPRINT: Final[str] = "extended_sprint"
+DISTANCE_BAND_MILE: Final[str] = "mile"
+DISTANCE_BAND_INTERMEDIATE: Final[str] = "intermediate"
+DISTANCE_BAND_LONG: Final[str] = "long"
+DISTANCE_BAND_EXTENDED: Final[str] = "extended"
+DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS: Final[int] = 1400
+DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS: Final[int] = 1500
+DISTANCE_BAND_MILE_MAX_METERS: Final[int] = 1800
+DISTANCE_BAND_INTERMEDIATE_MAX_METERS: Final[int] = 2200
+DISTANCE_BAND_LONG_MAX_METERS: Final[int] = 2800
+
 DEFAULT_PG_URL: Final[str] = (
     "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
 )
@@ -302,20 +314,23 @@ def classify_running_style(corner1_norm: float | None) -> int | None:
 
 
 def classify_distance_band(kyori: int) -> str:
-    """Map race distance (meters) to a band label.
+    """Map race distance (meters) to the NAR canonical band label.
 
-    Mirrors the CASE semantics used across the finish-position feature SQL:
-      <=1400 sprint / <=1800 mile / <=2200 intermediate / <=2800 long / else extended.
+    Mirrors predict_lib.subgroup.classify_distance_band:
+      <1400 sprint / <=1500 extended_sprint / <=1800 mile / <=2200 intermediate /
+      <=2800 long / else extended.
     """
-    if kyori <= 1400:
-        return "sprint"
-    if kyori <= 1800:
-        return "mile"
-    if kyori <= 2200:
-        return "intermediate"
-    if kyori <= 2800:
-        return "long"
-    return "extended"
+    if kyori < DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS:
+        return DISTANCE_BAND_SPRINT
+    if kyori <= DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS:
+        return DISTANCE_BAND_EXTENDED_SPRINT
+    if kyori <= DISTANCE_BAND_MILE_MAX_METERS:
+        return DISTANCE_BAND_MILE
+    if kyori <= DISTANCE_BAND_INTERMEDIATE_MAX_METERS:
+        return DISTANCE_BAND_INTERMEDIATE
+    if kyori <= DISTANCE_BAND_LONG_MAX_METERS:
+        return DISTANCE_BAND_LONG
+    return DISTANCE_BAND_EXTENDED
 
 
 def classify_field_size_band(shusso_tosu: int) -> str:

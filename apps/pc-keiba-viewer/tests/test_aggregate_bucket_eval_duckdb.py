@@ -787,7 +787,12 @@ def test_build_distance_band_case_sql_emits_null_branch():
 
 def test_build_distance_band_case_sql_emits_sprint_threshold():
     sql = subject.build_distance_band_case_sql("d.kyori")
-    assert "when d.kyori <= 1400 then 'sprint'" in sql
+    assert "when d.kyori < 1400 then 'sprint'" in sql
+
+
+def test_build_distance_band_case_sql_emits_extended_sprint_threshold():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "when d.kyori <= 1500 then 'extended_sprint'" in sql
 
 
 def test_build_distance_band_case_sql_emits_mile_threshold():

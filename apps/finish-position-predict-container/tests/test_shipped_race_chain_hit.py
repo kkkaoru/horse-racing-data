@@ -65,8 +65,6 @@ class _RecordingCursor:
         return []
 
     def fetchone(self) -> tuple[object, ...] | None:
-        if self.last_sql == "SHOW transaction_read_only":
-            return ("off",)
         return None
 
 
@@ -320,7 +318,9 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
         models_dir: Path,
         feature_names: Sequence[str] | None = None,
         card_max_race_bango: int | None = None,
+        race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
     ) -> list[list[list[object]]]:
+        del race_names_by_race_id
         if "ban-ei:2026:0816:83:02" in races:
             return [
                 [

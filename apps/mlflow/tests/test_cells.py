@@ -10,7 +10,23 @@ def test_classify_distance_band_returns_none_for_none() -> None:
 
 
 def test_classify_distance_band_sprint_at_upper_boundary() -> None:
-    assert cells.classify_distance_band(1400) == cells.DISTANCE_BAND_SPRINT
+    assert cells.classify_distance_band(1399) == cells.DISTANCE_BAND_SPRINT
+
+
+def test_classify_distance_band_extended_sprint_at_1400() -> None:
+    assert cells.classify_distance_band(1400) == cells.DISTANCE_BAND_EXTENDED_SPRINT
+
+
+def test_classify_distance_band_extended_sprint_typical_1500() -> None:
+    assert cells.classify_distance_band(1500) == cells.DISTANCE_BAND_EXTENDED_SPRINT
+
+
+def test_classify_distance_band_mile_just_above_extended_sprint() -> None:
+    assert cells.classify_distance_band(1501) == cells.DISTANCE_BAND_MILE
+
+
+def test_classify_distance_band_mile_at_lower_boundary() -> None:
+    assert cells.classify_distance_band(1600) == cells.DISTANCE_BAND_MILE
 
 
 def test_classify_distance_band_mile_at_upper_boundary() -> None:
@@ -107,7 +123,7 @@ def test_classify_all_combines_every_dimension() -> None:
         keibajo_code="05",
     )
     assert result == {
-        "distance_band": cells.DISTANCE_BAND_MILE,
+        "distance_band": cells.DISTANCE_BAND_EXTENDED_SPRINT,
         "field_size_band": cells.FIELD_SIZE_MEDIUM,
         "season_band": cells.SEASON_SUMMER,
         "surface": cells.SURFACE_DIRT,

@@ -82,7 +82,7 @@ FROM runtime-base AS runtime
 
 # Bump when runtime orchestration changes so a remote Wrangler build cannot
 # reuse a stale source-copy layer from a previous container rollout.
-ARG SOURCE_CACHE_BUSTER=20260825-prewarm-deadline-v1
+ARG SOURCE_CACHE_BUSTER=20260830-named-chukyo-jul1600-ninki2-v5
 RUN echo "source-cache-buster=${SOURCE_CACHE_BUSTER}"
 
 # Copy only installed runtime packages and pre-installed DuckDB extensions.

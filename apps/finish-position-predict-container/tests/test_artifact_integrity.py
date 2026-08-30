@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "9dd150083b282eb8652fb004ee6cbf547f62bceccc4fb1cca8ce84d3bb673a0d"
+EXPECTED_MANIFEST_ROOT = "4a6963f9ad41b7d11f35485fae9a7561d5ef1052ed0cdbe79c659e7508804332"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,13 +80,45 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 124
-    assert len(selected) == 124
+    assert len(manifest.artifacts) == 148
+    assert len(selected) == 144
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
     assert report.findings == ()
-    assert report.warnings == ()
+    assert report.warnings == (
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json",
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json",
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-named-niigata-kinen-v1/metadata.json",
+        "unselected manifest artifact: finish-position/jra/jra-named-niigata-kinen-v1/model.json",
+    )
+    manifested = {artifact.serving_key for artifact in manifest.artifacts}
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json" in manifested
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json" in manifested
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2/metadata.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2/model.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3/metadata.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3/model.json" in selected
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3/metadata.json" in selected
+    )
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3/model.json" in selected
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/metadata.json"
+        in selected
+    )
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/model.json" in selected
+    )
+    assert "finish-position/jra/jra-named-niigata-kinen-v1/metadata.json" in manifested
+    assert "finish-position/jra/jra-named-niigata-kinen-v1/model.json" in manifested
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2/model.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2/model.json" in selected
 
 
 def test_manifest_records_exact_jra_running_style_pair() -> None:
@@ -143,12 +175,26 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 120
+    assert len(selected) == 140
     assert report.status == "MATCH"
-    assert len(report.warnings) == 4
+    assert len(report.warnings) == 8
     assert (
         "unselected manifest artifact: "
         "finish-position/nar/iter40-nar-settransformer-blend-v1/norm.json"
+    ) in report.warnings
+    assert (
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json"
+    ) in report.warnings
+    assert (
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json"
+    ) in report.warnings
+    assert (
+        "unselected manifest artifact: finish-position/jra/jra-named-niigata-kinen-v1/metadata.json"
+    ) in report.warnings
+    assert (
+        "unselected manifest artifact: finish-position/jra/jra-named-niigata-kinen-v1/model.json"
     ) in report.warnings
 
 
@@ -964,7 +1010,15 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":124,"status":"MATCH","warnings":[]}'
+        '"observed_count":0,"selected_count":144,"status":"MATCH","warnings":['
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-named-niigata-kinen-v1/metadata.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-named-niigata-kinen-v1/model.json"]}'
     )
 
 
@@ -974,7 +1028,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 124
+    assert output["selected_count"] == 144
 
 
 def test_main_missing_local_artifacts_fail(
@@ -1001,7 +1055,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 124
+    assert output["selected_count"] == 144
 
 
 def test_main_stage_requires_artifact_root_and_system(
@@ -1110,7 +1164,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 120
+    assert output["selected_count"] == 140
 
 
 # ---------------------------------------------------------------------------

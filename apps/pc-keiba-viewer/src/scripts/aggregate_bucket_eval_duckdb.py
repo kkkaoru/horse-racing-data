@@ -301,11 +301,17 @@ def build_race_name_sql(grade_column: str, hondai_column: str) -> str:
 # Subgroup band labels — mirror predict_lib/subgroup.py exactly (cannot import: cross-app,
 # not on pythonpath). These are emitted as DuckDB CASE expressions so the aggregate runs
 # columnar, but the mapping (thresholds + labels) is byte-identical to the Python classifier.
-DISTANCE_BAND_SPRINT = "sprint"
-DISTANCE_BAND_MILE = "mile"
-DISTANCE_BAND_INTERMEDIATE = "intermediate"
-DISTANCE_BAND_LONG = "long"
-DISTANCE_BAND_EXTENDED = "extended"
+DISTANCE_BAND_SPRINT: Final[str] = "sprint"
+DISTANCE_BAND_EXTENDED_SPRINT: Final[str] = "extended_sprint"
+DISTANCE_BAND_MILE: Final[str] = "mile"
+DISTANCE_BAND_INTERMEDIATE: Final[str] = "intermediate"
+DISTANCE_BAND_LONG: Final[str] = "long"
+DISTANCE_BAND_EXTENDED: Final[str] = "extended"
+DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS: Final[int] = 1400
+DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS: Final[int] = 1500
+DISTANCE_BAND_MILE_MAX_METERS: Final[int] = 1800
+DISTANCE_BAND_INTERMEDIATE_MAX_METERS: Final[int] = 2200
+DISTANCE_BAND_LONG_MAX_METERS: Final[int] = 2800
 
 FIELD_SIZE_SMALL = "small"
 FIELD_SIZE_MEDIUM = "medium"
@@ -368,14 +374,20 @@ CROSS_DIMENSION_SEPARATOR = "×"
 
 
 def build_distance_band_case_sql(kyori_column: str) -> str:
-    """distance_band CASE, mirroring classify_distance_band: NULL→NULL, <=1400 sprint,
-    <=1800 mile, <=2200 intermediate, <=2800 long, else extended."""
+    """distance_band CASE, mirroring classify_distance_band: NULL→NULL, <1400 sprint,
+    <=1500 extended_sprint, <=1800 mile, <=2200 intermediate, <=2800 long, else extended."""
     return (
         f"case when {kyori_column} is null then null::text "
-        f"when {kyori_column} <= 1400 then '{DISTANCE_BAND_SPRINT}' "
-        f"when {kyori_column} <= 1800 then '{DISTANCE_BAND_MILE}' "
-        f"when {kyori_column} <= 2200 then '{DISTANCE_BAND_INTERMEDIATE}' "
-        f"when {kyori_column} <= 2800 then '{DISTANCE_BAND_LONG}' "
+        f"when {kyori_column} < {DISTANCE_BAND_SPRINT_MAX_EXCLUSIVE_METERS} "
+        f"then '{DISTANCE_BAND_SPRINT}' "
+        f"when {kyori_column} <= {DISTANCE_BAND_EXTENDED_SPRINT_MAX_METERS} "
+        f"then '{DISTANCE_BAND_EXTENDED_SPRINT}' "
+        f"when {kyori_column} <= {DISTANCE_BAND_MILE_MAX_METERS} "
+        f"then '{DISTANCE_BAND_MILE}' "
+        f"when {kyori_column} <= {DISTANCE_BAND_INTERMEDIATE_MAX_METERS} "
+        f"then '{DISTANCE_BAND_INTERMEDIATE}' "
+        f"when {kyori_column} <= {DISTANCE_BAND_LONG_MAX_METERS} "
+        f"then '{DISTANCE_BAND_LONG}' "
         f"else '{DISTANCE_BAND_EXTENDED}' end"
     )
 
