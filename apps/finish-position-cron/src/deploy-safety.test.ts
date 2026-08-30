@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildDeploymentPredictionRequest,
   DEPLOYMENT_DRAIN_QUEUES,
+  findLiveContainerInstances,
   findUnsafeContainerInstances,
   finishPositionContainerApplications,
+  isLiveContainerState,
   parseContainerApplications,
   parseContainerInstances,
   parseDeploymentRaces,
@@ -67,6 +69,7 @@ describe("deployment safety", () => {
       { name: "race-chain-predict-nar-0", state: "running" },
       { name: "race-chain-predict-nar-1", state: "starting" },
       { name: "race-chain-predict-jra-0", state: "inactive" },
+      { name: "predict-jra-2", state: "stopped" },
     ]);
 
     expect(findUnsafeContainerInstances(application, instances)).toEqual([
@@ -80,7 +83,42 @@ describe("deployment safety", () => {
         name: "race-chain-predict-nar-1",
         state: "starting",
       },
+      {
+        applicationName: application.name,
+        name: "predict-jra-2",
+        state: "stopped",
+      },
     ]);
+  });
+
+  it("treats only running and starting instances as live drain blockers", () => {
+    const application = {
+      id: "predict",
+      name: "finish-position-cron-finishpositionpredictcontainer",
+    };
+    const instances = parseContainerInstances([
+      { name: "predict-jra-0", state: "running" },
+      { name: "predict-jra-1", state: "starting" },
+      { name: "predict-jra-2", state: "stopped" },
+      { name: "predict-jra-3", state: "inactive" },
+    ]);
+
+    expect(findLiveContainerInstances(application, instances)).toStrictEqual([
+      {
+        applicationName: "finish-position-cron-finishpositionpredictcontainer",
+        name: "predict-jra-0",
+        state: "running",
+      },
+      {
+        applicationName: "finish-position-cron-finishpositionpredictcontainer",
+        name: "predict-jra-1",
+        state: "starting",
+      },
+    ]);
+    expect(isLiveContainerState("running")).toBe(true);
+    expect(isLiveContainerState("starting")).toBe(true);
+    expect(isLiveContainerState("stopped")).toBe(false);
+    expect(isLiveContainerState("inactive")).toBe(false);
   });
 
   it("fails closed for malformed Wrangler JSON", () => {

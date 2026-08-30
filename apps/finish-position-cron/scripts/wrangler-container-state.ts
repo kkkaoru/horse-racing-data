@@ -3,6 +3,7 @@
 import {
   findUnsafeContainerInstances,
   finishPositionContainerApplications,
+  isLiveContainerState,
   parseContainerApplications,
   parseContainerInstances,
   type UnsafeContainerInstance,
@@ -50,6 +51,11 @@ export const listUnsafePredictionContainers = async (): Promise<UnsafeContainerI
     unsafe.push(...findUnsafeContainerInstances(application, instances));
   }
   return unsafe;
+};
+
+export const listLivePredictionContainers = async (): Promise<UnsafeContainerInstance[]> => {
+  const unsafe = await listUnsafePredictionContainers();
+  return unsafe.filter((instance) => isLiveContainerState(instance.state));
 };
 
 export const describeUnsafePredictionContainers = (

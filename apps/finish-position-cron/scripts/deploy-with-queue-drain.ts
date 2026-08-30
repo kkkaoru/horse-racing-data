@@ -11,6 +11,7 @@ import {
 } from "../src/deploy-safety";
 import {
   describeUnsafePredictionContainers,
+  listLivePredictionContainers,
   listUnsafePredictionContainers,
   runCommand,
   runWranglerJson,
@@ -18,6 +19,8 @@ import {
 
 const POLL_INTERVAL_MS = 10_000;
 const DRAIN_TIMEOUT_MS = 45 * 60 * 1000;
+const WRANGLER_DEPLOY_ATTEMPTS = 3;
+const WRANGLER_DEPLOY_RETRY_WAIT_MS = 15_000;
 const ADMIN_ORIGIN = "https://finish-position-cron.kaoru.workers.dev";
 const ADMIN_STOP_PATH = "/api/admin/stop-predict-containers";
 const ADMIN_RUN_PATH = "/api/admin/run-focused-full-race";
@@ -91,18 +94,32 @@ const stopSupersededContainers = async (): Promise<void> => {
 const waitForContainerDrain = async (): Promise<void> => {
   const deadline = Date.now() + DRAIN_TIMEOUT_MS;
   while (true) {
-    const unsafe = await listUnsafePredictionContainers();
-    if (unsafe.length === 0) {
+    const live = await listLivePredictionContainers();
+    if (live.length === 0) {
       console.log("[rolling-deploy] Container drain complete");
       return;
     }
     if (Date.now() >= deadline) {
-      throw new Error(`Container drain timed out: ${describeUnsafePredictionContainers(unsafe)}`);
+      throw new Error(`Container drain timed out: ${describeUnsafePredictionContainers(live)}`);
     }
+    await stopSupersededContainers();
     console.log(
-      `[rolling-deploy] waiting for Container drain: ${describeUnsafePredictionContainers(unsafe)}`,
+      `[rolling-deploy] waiting for Container drain: ${describeUnsafePredictionContainers(live)}`,
     );
     await Bun.sleep(POLL_INTERVAL_MS);
+  }
+};
+
+const deployWorkerAndContainers = async (attemptsRemaining: number): Promise<void> => {
+  try {
+    await runCommand(["bunx", "wrangler", "deploy"]);
+  } catch (error) {
+    if (attemptsRemaining <= 1) throw error;
+    console.log(
+      `[rolling-deploy] wrangler deploy failed, retrying remaining=${String(attemptsRemaining - 1)}`,
+    );
+    await Bun.sleep(WRANGLER_DEPLOY_RETRY_WAIT_MS);
+    await deployWorkerAndContainers(attemptsRemaining - 1);
   }
 };
 
@@ -161,7 +178,7 @@ try {
   );
   await stopSupersededContainers();
   await waitForContainerDrain();
-  await runCommand(["bunx", "wrangler", "deploy"]);
+  await deployWorkerAndContainers(WRANGLER_DEPLOY_ATTEMPTS);
   if (requeuePredictions) {
     await enqueueNewModelPredictions();
   } else {

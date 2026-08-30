@@ -98,10 +98,23 @@ export const finishPositionContainerApplications = (
     application.name.startsWith(FINISH_POSITION_CONTAINER_PREFIX),
   );
 
+const LIVE_CONTAINER_STATES: readonly string[] = ["running", "starting"];
+
+export const isLiveContainerState = (state: string): boolean =>
+  LIVE_CONTAINER_STATES.includes(state);
+
 export const findUnsafeContainerInstances = (
   application: ContainerApplicationSummary,
   instances: readonly ContainerInstanceSummary[],
 ): UnsafeContainerInstance[] =>
   instances.flatMap((instance) =>
     instance.state === "inactive" ? [] : [{ ...instance, applicationName: application.name }],
+  );
+
+export const findLiveContainerInstances = (
+  application: ContainerApplicationSummary,
+  instances: readonly ContainerInstanceSummary[],
+): UnsafeContainerInstance[] =>
+  findUnsafeContainerInstances(application, instances).filter((instance) =>
+    isLiveContainerState(instance.state),
   );
