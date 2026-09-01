@@ -1,0 +1,16 @@
+{
+  "name": "jra-van-datalab-wine-demo",
+  "private": true,
+  "scripts": {
+    "prepare-sdk": "./scripts/prepare-sdk.sh",
+    "setup:macos": "./scripts/setup-macos.sh",
+    "setup:native": "./scripts/setup-native-macos.sh",
+    "build:native-client": "./scripts/build-native-client.sh",
+    "build": "./scripts/build.sh",
+    "demo": "./scripts/run.sh",
+    "demo:native": "./scripts/run-native-macos.sh",
+    "test": "uv run pytest",
+    "format:check": "uv run ruff format --check src tests",
+    "lint": "uv run ruff check src tests"
+  }
+}

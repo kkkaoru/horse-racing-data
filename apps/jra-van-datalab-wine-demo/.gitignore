@@ -1,0 +1,14 @@
+data/*
+!data/.gitkeep
+sdk/*
+!sdk/.gitkeep
+native/*.exe
+.env*
+!.env.example
+.native-cache/
+.native-recovery/
+.pytest_cache/
+.ruff_cache/
+.coverage
+backtrace*.txt
+__pycache__/
