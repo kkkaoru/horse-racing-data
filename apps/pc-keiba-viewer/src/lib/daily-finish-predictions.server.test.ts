@@ -157,6 +157,65 @@ it("returns ranked JRA predictions with canonical race ids and unavailable races
   expect(mocks.getRaceRunners).toHaveBeenCalledTimes(2);
 });
 
+it("loads only the requested race when a race scope is supplied", async () => {
+  mocks.getRacesByDateWithoutJockeyNames.mockResolvedValue([
+    {
+      hassoJikoku: "1530",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0524",
+      keibajoCode: "05",
+      kyosomeiHondai: "対象外",
+      raceBango: "10",
+      source: "jra",
+    },
+    {
+      hassoJikoku: "1540",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0524",
+      keibajoCode: "05",
+      kyosomeiHondai: "対象競走",
+      raceBango: "11",
+      source: "jra",
+    },
+  ]);
+  mocks.getRaceDetail.mockResolvedValue({
+    hassoJikoku: "1540",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0524",
+    keibajoCode: "05",
+    kyori: "1600",
+    kyosomeiHondai: "対象競走",
+    raceBango: "11",
+    source: "jra",
+  });
+  mocks.getRaceRunners.mockResolvedValue([
+    { bamei: "アルファ", umaban: "1" },
+    { bamei: "ベータ", umaban: "2" },
+  ]);
+  mocks.getActiveFinishPositionPredictions.mockResolvedValue([
+    {
+      horseNumber: "1",
+      modelVersion: "jra-model",
+      predictedFinishNorm: 0.1,
+      showProbability: 0.8,
+      winProbability: 0.5,
+    },
+  ]);
+
+  const result = await getDailyFinishPredictions({
+    day: "24",
+    month: "05",
+    race: { keibajoCode: "05", raceNumber: "11" },
+    source: "jra",
+    year: "2026",
+  });
+
+  expect(result.raceCount).toBe(1);
+  expect(result.races.map((race) => race.raceId)).toStrictEqual(["jra:2026:0524:05:11"]);
+  expect(mocks.getRaceDetail).toHaveBeenCalledTimes(1);
+  expect(mocks.getRaceRunners).toHaveBeenCalledTimes(1);
+});
+
 it("marks malformed, missing, and entirely null prediction races unavailable", async () => {
   mocks.getRacesByDateWithoutJockeyNames.mockResolvedValue([
     {
