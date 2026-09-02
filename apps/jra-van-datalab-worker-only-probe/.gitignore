@@ -1,0 +1,4 @@
+.dev.vars
+.wrangler/
+/src/generated/jvlink-compatible/
+/src/generated/jvlink-artifact.ts

@@ -1,0 +1,31 @@
+{
+  "name": "jra-van-datalab-worker-only-probe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "artifact:upload": "wrangler r2 object put jra-van-jvlink-compatible-artifacts/artifacts/jvlink-compatible/0500-private-core-v2/core.wasm --remote --file src/generated/jvlink-compatible/jvlink_compatible_bg.wasm --content-type application/wasm && wrangler r2 object put jra-van-jvlink-compatible-artifacts/artifacts/jvlink-compatible/0500-private-core-v2/manifest.json --remote --file src/generated/jvlink-compatible/manifest.json --content-type application/json",
+    "core:prepare": "bun run scripts/fetch-private-core.ts && oxfmt --write src/generated/jvlink-compatible src/generated/jvlink-artifact.ts",
+    "deploy": "bun run verify:local && bun run artifact:upload && wrangler deploy",
+    "deploy:verified": "bun run deploy && bun --env-file=.dev.vars run test:e2e",
+    "format": "oxfmt --write src scripts package.json private-core.lock.json tsconfig.json vitest*.ts worker-configuration.d.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src scripts package.json private-core.lock.json tsconfig.json vitest*.ts worker-configuration.d.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "test:compatibility:local": "bun run scripts/check-deployable-compatibility.ts",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "bun ../../node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts",
+    "tsc": "tsc --noEmit",
+    "verify:local": "bun run core:prepare && bun run format:check && bun run lint && bun run tsc && bun run test:coverage && bun run test:compatibility:local",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
