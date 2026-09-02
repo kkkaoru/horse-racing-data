@@ -150,13 +150,23 @@ it("exposes get_daily_finish_predictions for one required JRA or NAR date", () =
     MCP_TOOL_DEFINITIONS.find((definition) => definition.name === "get_daily_finish_predictions"),
   ).toStrictEqual({
     description:
-      "Fetch all generated finish-position predictions for one JRA or NAR race day. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
+      "Fetch generated finish-position predictions for one JRA or NAR race day. For one race, supply both keibajoCode and raceNumber to keep the response bounded; prefer get_finish_prediction_summary when only that race's compact prediction is needed. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
     inputSchema: {
       additionalProperties: false,
       properties: {
         day: { description: "Calendar day, two digits.", pattern: "^\\d{2}$", type: "string" },
+        keibajoCode: {
+          description: "Optional venue code. Must be supplied together with raceNumber.",
+          pattern: "^[0-9A-Z]{2}$",
+          type: "string",
+        },
         month: {
           description: "Calendar month, two digits.",
+          pattern: "^\\d{2}$",
+          type: "string",
+        },
+        raceNumber: {
+          description: "Optional race number. Must be supplied together with keibajoCode.",
           pattern: "^\\d{2}$",
           type: "string",
         },
@@ -1079,6 +1089,125 @@ it("get_daily_finish_predictions fetches the complete selected day", async () =>
     races: [{ raceId: "jra:2026:0524:05:11" }],
     source: "jra",
     unavailableRaceIds: [],
+  });
+});
+
+it("get_daily_finish_predictions limits the response to a selected race", async () => {
+  const result = await callMcpTool(
+    "get_daily_finish_predictions",
+    {
+      day: "24",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "11",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/finish-predictions/daily?day=24&keibajoCode=05&month=05&raceNumber=11&source=jra&year=2026":
+        {
+          availableRaceCount: 1,
+          date: "2026-05-24",
+          raceCount: 1,
+          races: [{ raceId: "jra:2026:0524:05:11" }],
+          source: "jra",
+          unavailableRaceIds: [],
+        },
+    }),
+  );
+
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    availableRaceCount: 1,
+    date: "2026-05-24",
+    raceCount: 1,
+    races: [{ raceId: "jra:2026:0524:05:11" }],
+    source: "jra",
+    unavailableRaceIds: [],
+  });
+});
+
+it("get_daily_finish_predictions rejects a partial race scope", async () => {
+  const missingRaceNumber = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", keibajoCode: "05", month: "05", source: "jra", year: "2026" },
+    jsonFetch({}),
+  );
+  const missingVenue = await callMcpTool(
+    "get_daily_finish_predictions",
+    { day: "24", month: "05", raceNumber: "11", source: "jra", year: "2026" },
+    jsonFetch({}),
+  );
+
+  expect(JSON.parse(missingRaceNumber.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "keibajoCode and raceNumber must be supplied together" },
+  });
+  expect(JSON.parse(missingVenue.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "keibajoCode and raceNumber must be supplied together" },
+  });
+});
+
+it("get_daily_finish_predictions validates race scope types and values", async () => {
+  const venueType = await callMcpTool(
+    "get_daily_finish_predictions",
+    {
+      day: "24",
+      keibajoCode: 5,
+      month: "05",
+      raceNumber: "11",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const raceType = await callMcpTool(
+    "get_daily_finish_predictions",
+    {
+      day: "24",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: 11,
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const venue = await callMcpTool(
+    "get_daily_finish_predictions",
+    {
+      day: "24",
+      keibajoCode: "5",
+      month: "05",
+      raceNumber: "11",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  const race = await callMcpTool(
+    "get_daily_finish_predictions",
+    {
+      day: "24",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "1",
+      source: "jra",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+
+  expect(JSON.parse(venueType.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "keibajoCode must be a string when supplied" },
+  });
+  expect(JSON.parse(raceType.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "raceNumber must be a string when supplied" },
+  });
+  expect(JSON.parse(venue.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "keibajoCode must be a 2-character venue code" },
+  });
+  expect(JSON.parse(race.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "raceNumber must be a 2-digit race number" },
   });
 });
 

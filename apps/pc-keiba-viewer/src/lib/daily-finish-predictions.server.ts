@@ -14,6 +14,10 @@ import { getRunnerDisplayNames } from "./runner-display";
 export interface DailyFinishPredictionRequest {
   day: string;
   month: string;
+  race?: {
+    keibajoCode: string;
+    raceNumber: string;
+  };
   source: RaceSource;
   year: string;
 }
@@ -206,8 +210,16 @@ export const getDailyFinishPredictions = async (
 ): Promise<DailyFinishPredictionsPayload> => {
   const allRaces = await getRacesByDateWithoutJockeyNames(request.year, request.month, request.day);
   const sourceRaces = allRaces.filter((race) => race.source === request.source);
+  const scopedRace = request.race;
+  const selectedRaces =
+    scopedRace === undefined
+      ? sourceRaces
+      : sourceRaces.filter(
+          (race) =>
+            race.keibajoCode === scopedRace.keibajoCode && race.raceBango === scopedRace.raceNumber,
+        );
   const loaded = await loadRacePredictionBatch(
-    sourceRaces.map((race) => ({
+    selectedRaces.map((race) => ({
       day: request.day,
       month: request.month,
       race,
@@ -218,7 +230,7 @@ export const getDailyFinishPredictions = async (
   return {
     availableRaceCount: races.length,
     date: `${request.year}-${request.month}-${request.day}`,
-    raceCount: sourceRaces.length,
+    raceCount: selectedRaces.length,
     races,
     source: request.source,
     unavailableRaceIds: loaded.flatMap((entry) => (entry.race === null ? [entry.raceId] : [])),

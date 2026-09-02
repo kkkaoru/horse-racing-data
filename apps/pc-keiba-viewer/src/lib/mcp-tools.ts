@@ -252,12 +252,20 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
-      "Fetch all generated finish-position predictions for one JRA or NAR race day. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
+      "Fetch generated finish-position predictions for one JRA or NAR race day. For one race, supply both keibajoCode and raceNumber to keep the response bounded; prefer get_finish_prediction_summary when only that race's compact prediction is needed. Returns canonical raceId values, race metadata, ranked runners, model generation timestamps, and unavailable race ids for WIN5 or Triple Uma-tan analysis.",
     inputSchema: {
       additionalProperties: false,
       properties: {
         day: STRING_ARG("Calendar day, two digits.", MONTH_DAY_RACE_PATTERN),
+        keibajoCode: STRING_ARG(
+          "Optional venue code. Must be supplied together with raceNumber.",
+          KEIBAJO_PATTERN,
+        ),
         month: STRING_ARG("Calendar month, two digits.", MONTH_DAY_RACE_PATTERN),
+        raceNumber: STRING_ARG(
+          "Optional race number. Must be supplied together with keibajoCode.",
+          MONTH_DAY_RACE_PATTERN,
+        ),
         responseCursor: RESPONSE_CURSOR_PROPERTY,
         source: {
           description: "jra for WIN5 or nar for Triple Uma-tan.",
@@ -1140,6 +1148,14 @@ export const callMcpTool = async (
     const month = readString(args, "month");
     const day = readString(args, "day");
     const source = readString(args, "source");
+    if (args.keibajoCode !== undefined && typeof args.keibajoCode !== "string") {
+      return errorResult("keibajoCode must be a string when supplied");
+    }
+    if (args.raceNumber !== undefined && typeof args.raceNumber !== "string") {
+      return errorResult("raceNumber must be a string when supplied");
+    }
+    const keibajoCode = readString(args, "keibajoCode");
+    const raceNumber = readString(args, "raceNumber");
     if (year === null || !matches(year, YEAR_PATTERN)) {
       return errorResult("year must be a 4-digit calendar year");
     }
@@ -1152,7 +1168,23 @@ export const callMcpTool = async (
     if (source !== SOURCE_JRA && source !== SOURCE_NAR) {
       return errorResult("source must be jra or nar");
     }
-    const query = new URLSearchParams({ day, month, source, year });
+    if ((keibajoCode === null) !== (raceNumber === null)) {
+      return errorResult("keibajoCode and raceNumber must be supplied together");
+    }
+    if (keibajoCode !== null && !matches(keibajoCode, KEIBAJO_PATTERN)) {
+      return errorResult("keibajoCode must be a 2-character venue code");
+    }
+    if (raceNumber !== null && !matches(raceNumber, MONTH_DAY_RACE_PATTERN)) {
+      return errorResult("raceNumber must be a 2-digit race number");
+    }
+    const query = new URLSearchParams({ day });
+    if (keibajoCode !== null && raceNumber !== null) {
+      query.set("keibajoCode", keibajoCode);
+    }
+    query.set("month", month);
+    if (raceNumber !== null) query.set("raceNumber", raceNumber);
+    query.set("source", source);
+    query.set("year", year);
     const fetched = await fetchSiteJson(fetchSite, `/api/finish-predictions/daily?${query}`);
     if (!fetched.ok) {
       return errorResult(`get_daily_finish_predictions failed with status ${fetched.status}`);

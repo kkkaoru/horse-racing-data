@@ -34,9 +34,19 @@ uses. Defaults match first paint (勝率, レース数 off).
 2. `authenticate` — MCP bearer succeeded; Worker can read `/api/spec`.
 3. `search_entities` — horses, jockeys, owners, trainers.
 4. `get_win_rate_heatmap_display` — same display builder as the table.
-5. `get_finish_prediction_summary` — compact ranked finish predictions for an
-   LLM. Use this instead of the full `finish-prediction` race section unless the
-   user explicitly needs its historical inputs or UI-only intermediate data.
+5. For a specific race, never start with the day-wide prediction response:
+   - `get_finish_prediction_summary` — compact ranked finish predictions for an
+     LLM. Use this instead of the full `finish-prediction` race section unless the
+     user explicitly needs its historical inputs or UI-only intermediate data.
+   - `get_race_section` with `section=overall-score` — the selected race's overall
+     evaluation.
+   - `get_win_rate_heatmap_display` — the selected race's heatmap display.
+
+   Use `get_daily_finish_predictions` without a race scope only for genuine
+   multi-race day analysis. When one race must be read through that tool, supply
+   both `keibajoCode` and `raceNumber` so the response is bounded before MCP JSON
+   chunking.
+
 6. `get_race_entity_recent_results` — cursor-paged, point-in-time history for a
    selected runner's horse, current jockey, current trainer, or current owner.
    Start with `cursor: null`; pass the HMAC-signed `nextCursor` unchanged for the
