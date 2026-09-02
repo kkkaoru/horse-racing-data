@@ -44,4 +44,4 @@ jobs:
       - name: Deploy Worker
         run: bunx wrangler deploy
       - name: Verify production
-        run: bun run test:e2e
+        run: bun run test:smoke

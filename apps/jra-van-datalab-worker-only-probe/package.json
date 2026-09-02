@@ -14,6 +14,7 @@
     "test:compatibility:local": "bun run scripts/check-deployable-compatibility.ts",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "bun ../../node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts",
+    "test:smoke": "bun run scripts/smoke-production.ts",
     "tsc": "tsc --noEmit",
     "verify:local": "bun run core:prepare && bun run format:check && bun run lint && bun run tsc && bun run test:coverage && bun run test:compatibility:local",
     "types": "wrangler types"
