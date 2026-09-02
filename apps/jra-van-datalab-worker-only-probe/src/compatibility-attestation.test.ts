@@ -2,7 +2,7 @@
 import { expect, it, vi } from "vitest";
 import { assertCompatibilityAttestation } from "./compatibility-attestation";
 
-const EXPECTED_DIGEST: string = "fa7c9cd9dab2493ace4144d148cf8bf71a46cf3d4bbcee6ecc985e4225d1cb4b";
+const EXPECTED_DIGEST: string = "859951814a4353e7dd51ccbc6cc02e511f2a1244aec9f452cd6cc8f48f12dc7c";
 const MANIFEST_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v2/manifest.json";
 const ARTIFACT_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v2/core.wasm";
 const VALID_MANIFEST: string = JSON.stringify({
@@ -34,7 +34,7 @@ it("attests the R2 provenance copy against the statically bundled Rust Wasm", as
   await expect(assertCompatibilityAttestation({ get })).resolves.toStrictEqual({
     artifactKey: "artifacts/jvlink-compatible/0500-private-core-v2/core.wasm",
     coreVersion: "0500-private-core-v2",
-    sha256: "fa7c9cd9dab2493ace4144d148cf8bf71a46cf3d4bbcee6ecc985e4225d1cb4b",
+    sha256: "859951814a4353e7dd51ccbc6cc02e511f2a1244aec9f452cd6cc8f48f12dc7c",
     verified: true,
   });
   expect(get).toHaveBeenNthCalledWith(1, MANIFEST_KEY);
