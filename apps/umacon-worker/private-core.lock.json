@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "repository": "kkkaoru/horse-racing-data-private-core",
+  "releaseTag": "nvlink-core-0354-private-core-v1.2",
+  "coreVersion": "0354-private-core-v1.2",
+  "assets": {
+    "nvlink_compatible.js": "e9f2351d10022d4440c6d0cb20ef9de6d564ef31b0f549449aaf5359eb245fc2",
+    "nvlink_compatible.d.ts": "1451fc111928ea1799a91d4335fd768bb683822d697db8957bac898586351674",
+    "nvlink_compatible_bg.wasm": "c24baea58f8d2fd32c7a094ee24d1223f599e5a715b67fd919a241f59458423e",
+    "nvlink_compatible_bg.wasm.d.ts": "40ff4e9a7760cf0be948381161d84201d7548ccf6129933703d717bcbec10954",
+    "manifest.json": "fd31781b73e8d4796a9cbbe8a37fb9328622f3b4506192324ce960f4e47b0dfa"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "umacon-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "artifact:upload": "wrangler r2 object put jra-van-jvlink-compatible-artifacts/artifacts/nvlink-compatible/0354-private-core-v1.2/core.wasm --remote --file src/generated/nvlink-compatible/nvlink_compatible_bg.wasm --content-type application/wasm && wrangler r2 object put jra-van-jvlink-compatible-artifacts/artifacts/nvlink-compatible/0354-private-core-v1.2/manifest.json --remote --file src/generated/nvlink-compatible/manifest.json --content-type application/json",
+    "core:prepare": "bun run scripts/fetch-private-core.ts && oxfmt --write src/generated/nvlink-compatible src/generated/nvlink-artifact.ts",
+    "deploy": "bun run verify:local && bun run artifact:upload && wrangler deploy",
+    "format": "oxfmt --write src scripts package.json private-core.lock.json tsconfig.json vitest*.ts worker-configuration.d.ts wrangler.jsonc README.md",
+    "format:check": "oxfmt --check src scripts package.json private-core.lock.json tsconfig.json vitest*.ts worker-configuration.d.ts wrangler.jsonc README.md",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "test:smoke": "bun run scripts/smoke-production.ts",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit",
+    "types": "wrangler types",
+    "verify:local": "bun run core:prepare && bun run format:check && bun run lint && bun run tsc && bun run test:coverage"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
