@@ -170,6 +170,107 @@ test("mapFinishPositionPredictionFeatures computes finish norm, stddev, and high
   ]);
 });
 
+test("mapFinishPositionPredictionFeatures preserves provided probabilities including zero", () => {
+  const mapped = mapFinishPositionPredictionFeatures([
+    {
+      modelVersion: "v",
+      predictedRank: 1,
+      predictionGeneratedAt: "2026-08-09T01:15:00.000Z",
+      predictedScore: 1,
+      predictedTop1Prob: 0.25,
+      predictedTop3Prob: 0.75,
+      umaban: "1",
+    },
+    {
+      modelVersion: "v",
+      predictedRank: 2,
+      predictionGeneratedAt: "2026-08-09T01:15:00.000Z",
+      predictedScore: 0,
+      predictedTop1Prob: 0,
+      predictedTop3Prob: 1,
+      umaban: "2",
+    },
+  ]);
+  expect(mapped.map((row) => [row.winProbability, row.showProbability])).toStrictEqual([
+    [0.25, 0.75],
+    [0, 1],
+  ]);
+});
+
+test.each([null, undefined, "", " ", "invalid", "NaN", -0.1, 1.1, Number.NaN, Infinity, true, {}])(
+  "publishFinishPositionPredictionCache keeps invalid or absent probabilities null: %s",
+  async (probability) => {
+    queryMock.mockResolvedValue([
+      {
+        model_version: "v",
+        predicted_rank: 1,
+        predicted_score: 1,
+        predicted_top1_prob: probability,
+        predicted_top3_prob: probability,
+        prediction_generated_at: "2026-08-09T01:15:00.000Z",
+        umaban: 1,
+      },
+    ]);
+    const result = await publishFinishPositionPredictionCache({
+      bustCacheApi: false,
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      nowMs: NOON_JST_MS,
+      raceBango: "11",
+      runYmd: "20260809",
+    });
+    expect(result.status).toBe("written");
+    expect(JSON.parse(putMock.mock.calls[0]?.[1] ?? "[]")).toMatchObject([
+      {
+        showProbability: null,
+        winProbability: null,
+      },
+    ]);
+  },
+);
+
+test("publishFinishPositionPredictionCache selects numeric probabilities and retains them in KV", async () => {
+  queryMock.mockResolvedValue([
+    {
+      model_version: "v",
+      predicted_rank: 1,
+      predicted_score: 1,
+      predicted_top1_prob: "0.25",
+      predicted_top3_prob: "0.75",
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 1,
+    },
+    {
+      model_version: "v",
+      predicted_rank: 2,
+      predicted_score: 0,
+      predicted_top1_prob: "0",
+      predicted_top3_prob: "1",
+      prediction_generated_at: "2026-08-09T01:15:00.000Z",
+      umaban: 2,
+    },
+  ]);
+  const result = await publishFinishPositionPredictionCache({
+    bustCacheApi: true,
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    nowMs: NOON_JST_MS,
+    raceBango: "11",
+    runYmd: "20260809",
+  });
+  expect(result.status).toBe("written");
+  const query = queryMock.mock.calls[0]?.[0] ?? "";
+  expect(query).toMatch(/predicted_top1_prob/u);
+  expect(query).toMatch(/predicted_top3_prob/u);
+  expect(JSON.parse(putMock.mock.calls[0]?.[1] ?? "[]")).toMatchObject([
+    { showProbability: 0.75, winProbability: 0.25 },
+    { showProbability: 1, winProbability: 0 },
+  ]);
+  expect(triggerPredictionCacheBustMock).toHaveBeenCalledTimes(1);
+});
+
 test("mapFinishPositionPredictionFeatures uses low confidence below the 1.3 stddev cut", () => {
   const mapped = mapFinishPositionPredictionFeatures([
     {

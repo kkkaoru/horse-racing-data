@@ -121,6 +121,7 @@ it("builds a compact ranked prediction and joins zero-padded runner identities",
           winProbability: 0.2,
         },
       ],
+      probabilityAvailability: { show: "available", win: "available" },
       race: {
         distance: "1400",
         keibajoCode: "50",
@@ -230,6 +231,7 @@ it("uses legacy evaluation names and keeps null predictions after scored runners
           winProbability: null,
         },
       ],
+      probabilityAvailability: { show: "not_provided", win: "not_provided" },
       race: {
         distance: 1600,
         keibajoCode: "05",
@@ -440,6 +442,7 @@ it("omits unrecognized optional data and creates typed errors", () => {
           winProbability: null,
         },
       ],
+      probabilityAvailability: { show: "not_provided", win: "not_provided" },
       race: {
         keibajoCode: "50",
         raceDate: "2026-08-27",

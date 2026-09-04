@@ -1,6 +1,11 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 
 import type { RaceSource } from "./codes";
+import {
+  getPredictionProbabilityAvailability,
+  parsePredictionProbability,
+  type PredictionProbabilityAvailability,
+} from "./prediction-probability";
 
 export type FinishPredictionSummaryErrorCode =
   | "INVALID_ARGUMENT"
@@ -74,6 +79,7 @@ export interface FinishPredictionSummaryJockeyWin {
 export interface FinishPredictionSummary {
   evaluation?: FinishPredictionSummaryEvaluation;
   prediction: FinishPredictionSummaryItem[];
+  probabilityAvailability: PredictionProbabilityAvailability;
   race: FinishPredictionSummaryRace;
   sameDayVenueJockeyWins?: FinishPredictionSummaryJockeyWin[];
 }
@@ -185,8 +191,8 @@ const buildPredictionCandidate = (
     predictedFinishNorm,
     predictedScoreStddev: readNullableNumber(value.predictedScoreStddev),
     predictionGeneratedAt: readNullableString(value.predictionGeneratedAt),
-    showProbability: readNullableNumber(value.showProbability),
-    winProbability: readNullableNumber(value.winProbability),
+    showProbability: parsePredictionProbability(value.showProbability),
+    winProbability: parsePredictionProbability(value.winProbability),
   };
 };
 
@@ -377,6 +383,7 @@ export const buildFinishPredictionSummary = (
     summary: {
       evaluation,
       prediction,
+      probabilityAvailability: getPredictionProbabilityAvailability(prediction),
       race,
       sameDayVenueJockeyWins,
     },
