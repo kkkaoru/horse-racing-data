@@ -1,3 +1,4 @@
+// Run with bun.
 import "server-only";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { cache } from "react";
@@ -22,6 +23,7 @@ import {
   parsePredictionFinishPositionFeatures,
 } from "../lib/prediction-kv-cache";
 import { readPredictionKvText, writePredictionKvText } from "../lib/prediction-kv-cache.server";
+import { parsePredictionProbability } from "../lib/prediction-probability";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -3352,6 +3354,8 @@ export const getFinishPositionLambdarankPredictions = cache(
           model_version: string;
           predicted_rank: number;
           predicted_score: string | null;
+          predicted_top1_prob: number | string | null;
+          predicted_top3_prob: number | string | null;
           prediction_generated_at: Date | string | null;
           shusso_tosu: number | null;
           umaban: number;
@@ -3474,6 +3478,8 @@ export const getFinishPositionLambdarankPredictions = cache(
               p.umaban,
               p.predicted_score,
               p.predicted_rank,
+              p.predicted_top1_prob,
+              p.predicted_top3_prob,
               p.prediction_generated_at,
               (
                 select count(*)
@@ -3518,8 +3524,8 @@ export const getFinishPositionLambdarankPredictions = cache(
             predictedFinishNorm,
             predictedScoreStddev: stddev,
             predictionGeneratedAt: toPredictionGeneratedAt(row.prediction_generated_at),
-            showProbability: null,
-            winProbability: null,
+            showProbability: parsePredictionProbability(row.predicted_top3_prob),
+            winProbability: parsePredictionProbability(row.predicted_top1_prob),
           };
         });
         if (

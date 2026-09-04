@@ -144,6 +144,7 @@ it("returns ranked JRA predictions with canonical race ids and unavailable races
           },
         ],
         predictionGeneratedAt: "2026-05-24T01:00:00.000Z",
+        probabilityAvailability: { show: "not_provided", win: "not_provided" },
         raceId: "jra:2026:0524:05:11",
         raceName: "WIN5対象",
         raceNumber: "11",
@@ -198,7 +199,7 @@ it("loads only the requested race when a race scope is supplied", async () => {
       modelVersion: "jra-model",
       predictedFinishNorm: 0.1,
       showProbability: 0.8,
-      winProbability: 0.5,
+      winProbability: 0,
     },
   ]);
 
@@ -212,6 +213,14 @@ it("loads only the requested race when a race scope is supplied", async () => {
 
   expect(result.raceCount).toBe(1);
   expect(result.races.map((race) => race.raceId)).toStrictEqual(["jra:2026:0524:05:11"]);
+  expect(result.races[0]?.probabilityAvailability).toStrictEqual({
+    show: "available",
+    win: "available",
+  });
+  expect(result.races[0]?.prediction[0]).toMatchObject({
+    showProbability: 0.8,
+    winProbability: 0,
+  });
   expect(mocks.getRaceDetail).toHaveBeenCalledTimes(1);
   expect(mocks.getRaceRunners).toHaveBeenCalledTimes(1);
 });

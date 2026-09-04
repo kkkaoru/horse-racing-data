@@ -290,6 +290,7 @@ it("get_finish_prediction_summary returns only compact current predictions", asy
         winProbability: 0.5,
       },
     ],
+    probabilityAvailability: { show: "available", win: "available" },
     race: {
       distance: "1400",
       keibajoCode: "50",
@@ -601,7 +602,7 @@ it("get_finish_prediction_summary rejects oversized upstream and compact respons
     encoding: "json-text",
     nextResponseCursor: 5000,
     responseCursor: 0,
-    totalCharacters: 70316,
+    totalCharacters: 70387,
   });
   expect(chunk.dataChunk).toHaveLength(5000);
 });

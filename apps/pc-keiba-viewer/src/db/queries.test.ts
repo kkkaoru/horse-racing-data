@@ -2296,6 +2296,78 @@ it("getFinishPositionLambdarankPredictions translates execute rows into predicti
   expect(result[1]?.predictionGeneratedAt).toBe("2026-08-22T01:15:00.000Z");
 });
 
+it("getFinishPositionLambdarankPredictions selects and preserves stored model probabilities", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        predicted_top1_prob: "0.25",
+        predicted_top3_prob: "0.75",
+        prediction_generated_at: "2026-08-22T01:15:00.000Z",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "0.55",
+        predicted_top1_prob: 0,
+        predicted_top3_prob: 1,
+        prediction_generated_at: "2026-08-22T01:15:00.000Z",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(
+    result.map((row) => [row.predictedFinishNorm, row.winProbability, row.showProbability]),
+  ).toStrictEqual([
+    [0, 0.25, 0.75],
+    [1, 0, 1],
+  ]);
+  const query = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(query).toMatch(/p\.predicted_top1_prob/u);
+  expect(query).toMatch(/p\.predicted_top3_prob/u);
+});
+
+it("getActiveFinishPositionPredictions preserves stored probabilities through KV serialization", async () => {
+  readPredictionKvTextMock.mockResolvedValue(null);
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        predicted_top1_prob: "0",
+        predicted_top3_prob: "0.75",
+        prediction_generated_at: "2026-08-22T01:15:00.000Z",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+    ],
+  });
+  const result = await getActiveFinishPositionPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  expect(result[0]?.winProbability).toBe(0);
+  expect(result[0]?.showProbability).toBe(0.75);
+  expect(writePredictionKvTextMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      body: expect.stringMatching(/"winProbability":0/u),
+    }),
+  );
+  readPredictionKvTextMock.mockResolvedValue(JSON.stringify(result));
+  executeMock.mockClear();
+  const cached = await getActiveFinishPositionPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  expect(cached[0]?.winProbability).toBe(0);
+  expect(cached[0]?.showProbability).toBe(0.75);
+  expect(executeMock).not.toHaveBeenCalled();
+});
+
 it("getFinishPositionLambdarankPredictions drops empty or invalid generated timestamps", async () => {
   executeMock.mockResolvedValue({
     rows: [

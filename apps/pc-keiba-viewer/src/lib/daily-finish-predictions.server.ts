@@ -8,6 +8,11 @@ import {
   getRacesByDateWithoutJockeyNames,
 } from "../db/queries";
 import type { RaceSource } from "./codes";
+import {
+  getPredictionProbabilityAvailability,
+  parsePredictionProbability,
+  type PredictionProbabilityAvailability,
+} from "./prediction-probability";
 import type { FinishPositionModelPredictionFeature, RaceListItem, Runner } from "./race-types";
 import { getRunnerDisplayNames } from "./runner-display";
 
@@ -40,6 +45,7 @@ export interface DailyFinishPredictionRace {
   keibajoCode: string;
   modelVersion: string | null;
   prediction: DailyFinishPredictionItem[];
+  probabilityAvailability: PredictionProbabilityAvailability;
   predictionGeneratedAt: string | null;
   raceId: string;
   raceName: string | null;
@@ -130,8 +136,8 @@ const buildPredictionCandidate = (
     predictedFinishNorm: feature.predictedFinishNorm,
     predictedScoreStddev: feature.predictedScoreStddev ?? null,
     predictionGeneratedAt: feature.predictionGeneratedAt ?? null,
-    showProbability: feature.showProbability,
-    winProbability: feature.winProbability,
+    showProbability: parsePredictionProbability(feature.showProbability),
+    winProbability: parsePredictionProbability(feature.winProbability),
   };
 };
 
@@ -186,6 +192,7 @@ const loadRacePrediction = async (input: DailyRaceBuildInput): Promise<LoadedRac
       keibajoCode: detail.keibajoCode,
       modelVersion: uniqueValue(prediction.map((item) => item.modelVersion)),
       prediction,
+      probabilityAvailability: getPredictionProbabilityAvailability(prediction),
       predictionGeneratedAt: uniqueValue(prediction.map((item) => item.predictionGeneratedAt)),
       raceId,
       raceName: detail.kyosomeiHondai,

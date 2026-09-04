@@ -34,8 +34,8 @@ export interface FinishPositionPredictionFeature {
   predictedFinishNorm: number | null;
   predictionGeneratedAt: string | null;
   predictedScoreStddev: number | null;
-  showProbability: null;
-  winProbability: null;
+  showProbability: number | null;
+  winProbability: number | null;
 }
 
 export interface FinishPositionPredictionRow {
@@ -43,6 +43,8 @@ export interface FinishPositionPredictionRow {
   predictedRank: number;
   predictionGeneratedAt: string | null;
   predictedScore: number | null;
+  predictedTop1Prob?: number | null;
+  predictedTop3Prob?: number | null;
   umaban: string;
 }
 
@@ -98,6 +100,15 @@ const toUmabanString = (value: unknown): string | null => {
   return null;
 };
 
+// PostgreSQL numeric columns can arrive as strings. Do not turn missing values
+// into zero or substitute rank-derived estimates for unprovided probabilities.
+const toProbability = (value: unknown): number | null => {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim().length === 0) return null;
+  const probability: number = Number(value);
+  return Number.isFinite(probability) && probability >= 0 && probability <= 1 ? probability : null;
+};
+
 const toPredictionGeneratedAt = (value: unknown): string | null => {
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value.toISOString() : null;
@@ -149,8 +160,8 @@ export const mapFinishPositionPredictionFeatures = (
       predictedFinishNorm,
       predictionGeneratedAt: row.predictionGeneratedAt,
       predictedScoreStddev: stddev,
-      showProbability: null,
-      winProbability: null,
+      showProbability: toProbability(row.predictedTop3Prob),
+      winProbability: toProbability(row.predictedTop1Prob),
     };
   });
 };
@@ -165,6 +176,8 @@ const parsePredictionRow = (value: unknown): FinishPositionPredictionRow | null 
     predictedRank,
     predictionGeneratedAt: toPredictionGeneratedAt(value.prediction_generated_at),
     predictedScore: toFiniteNumber(value.predicted_score),
+    predictedTop1Prob: toProbability(value.predicted_top1_prob),
+    predictedTop3Prob: toProbability(value.predicted_top3_prob),
     umaban,
   };
 };
@@ -173,7 +186,7 @@ const parsePredictionRow = (value: unknown): FinishPositionPredictionRow | null 
 // Other categories retain the latest-model behavior until an independently
 // evaluated cell route satisfies the production accuracy gate.
 const SELECT_PREDICTIONS_SQL = `select umaban, model_version, predicted_rank, predicted_score,
-              prediction_generated_at
+              predicted_top1_prob, predicted_top3_prob, prediction_generated_at
        from race_finish_position_model_predictions
       where source = $1
         and kaisai_nen = $2
