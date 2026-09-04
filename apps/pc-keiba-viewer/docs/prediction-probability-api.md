@@ -23,14 +23,12 @@ not substituted into the API's model probability fields.
 Both `/api/finish-predictions/daily` (including a single-race request) and the MCP
 `get_finish_prediction_summary` response preserve these fields per horse:
 
-| Field                   | Meaning                                                     |
-| ----------------------- | ----------------------------------------------------------- |
-| `winProbability`        | Stored `predicted_top1_prob`, a number from 0 to 1, or null |
-| `showProbability`       | Stored `predicted_top3_prob`, a number from 0 to 1, or null |
-| `winProbabilityStatus`  | `available` or `not_provided`                               |
-| `showProbabilityStatus` | `available` or `not_provided`                               |
+| Field             | Meaning                                                     |
+| ----------------- | ----------------------------------------------------------- |
+| `winProbability`  | Stored `predicted_top1_prob`, a number from 0 to 1, or null |
+| `showProbability` | Stored `predicted_top3_prob`, a number from 0 to 1, or null |
 
-Each daily race object and MCP summary also includes a single
+Each daily race object and MCP summary includes a single
 `probabilityAvailability` object with `win` and `show` fields. Its values are
 `available` (all returned horses), `partial` (some returned horses), or
 `not_provided` (none). This is relative to the returned prediction rows, not a
