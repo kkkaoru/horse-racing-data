@@ -8,7 +8,7 @@
 # image_build_context set to the repo root, COPYing the viewer pipeline scripts
 # in. The wrangler.jsonc in apps/finish-position-cron references this Dockerfile.
 
-FROM python:3.12-slim AS runtime-base
+FROM python:3.14-slim AS runtime-base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
