@@ -172,6 +172,7 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
       keibajoCode="83"
       results={[
         result({
+          bataiju: "3E8",
           futanJuryo: "262",
           keibajoCode: "83",
           kohan3f: "000",
@@ -179,6 +180,7 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
           sohaTime: "3188",
         }),
         result({
+          bataiju: "3E8",
           futanJuryo: "26C",
           kaisaiTsukihi: "0401",
           keibajoCode: "83",
@@ -187,26 +189,26 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
           sohaTime: "3300",
         }),
       ]}
-      runners={[runner({ futanJuryo: "262" })]}
+      runners={[runner({ bataiju: "3E8", futanJuryo: "262" })]}
       stats={null}
     />,
   );
   expect(screen.getByRole("figure", { name: "競走成績タイム散布図" })).toBeDefined();
-  expect(screen.getByText("斤量（右が重い）")).toBeDefined();
+  expect(screen.getByText("馬体重−斤量の変化（右が今走より大きい）")).toBeDefined();
   expect(screen.queryByText("着順（右が上位）")).toBeNull();
   expect(
     screen.getByText(
-      "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。",
+      "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
     ),
   ).toBeDefined();
-  expect(screen.getByText("過去斤量")).toBeDefined();
-  expect(screen.getByText("予定斤量")).toBeDefined();
-  expect(screen.getByText("予定斤量 610kg")).toBeDefined();
+  expect(screen.queryByText("過去斤量")).toBeNull();
+  expect(screen.queryByText("予定斤量")).toBeNull();
   expect(screen.queryByText("上がり3F（右が速い）")).toBeNull();
   expect(document.querySelectorAll("[data-horse-link='1']").length).toBe(1);
-  expect(document.querySelectorAll("[data-weight-link='1']").length).toBe(1);
-  expect(document.querySelectorAll("[data-scheduled-weight='1']").length).toBe(1);
-  expect(document.querySelectorAll("[data-finish-label='1']").length).toBe(2);
+  expect(document.querySelectorAll("[data-weight-link='1']").length).toBe(0);
+  expect(document.querySelectorAll("[data-scheduled-weight='1']").length).toBe(0);
+  expect(document.querySelectorAll("[data-umaban-label='1']").length).toBe(2);
+  expect(document.querySelectorAll("[data-finish-label]").length).toBe(0);
   const firstMark = document.querySelector('[data-finish="1"]');
   expect(firstMark?.getAttribute("r")).toBe("10");
   if (firstMark === null) {
@@ -234,7 +236,9 @@ it("shows a Ban-ei empty message when finish ranks are missing", () => {
       stats={null}
     />,
   );
-  expect(screen.getByText("レースタイムと着順と斤量が揃った競走成績がありません。")).toBeDefined();
+  expect(
+    screen.getByText("レースタイムと着順と馬体重と斤量が揃った競走成績がありません。"),
+  ).toBeDefined();
   expect(screen.queryByRole("figure", { name: "競走成績タイム散布図" })).toBeNull();
 });
 
@@ -306,13 +310,14 @@ it("dims the other horse and enlarges the hovered gallery point", () => {
   expect(scatter.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.22");
 });
 
-it("dims the other Ban-ei scheduled-weight mark while hovering a horse", () => {
+it("dims the other Ban-ei horse while hovering a point", () => {
   render(
     <HorseRaceTimeChart
       currentDistance="200"
       keibajoCode="83"
       results={[
         result({
+          bataiju: "3E8",
           futanJuryo: "262",
           keibajoCode: "83",
           kohan3f: "000",
@@ -321,6 +326,7 @@ it("dims the other Ban-ei scheduled-weight mark while hovering a horse", () => {
         }),
         result({
           bamei: "別の馬",
+          bataiju: "3E8",
           currentUmaban: "02",
           futanJuryo: "262",
           keibajoCode: "83",
@@ -330,23 +336,20 @@ it("dims the other Ban-ei scheduled-weight mark while hovering a horse", () => {
           umaban: "02",
         }),
       ]}
-      runners={[runner({ futanJuryo: "26C" }), runner({ futanJuryo: "276", umaban: "02" })]}
+      runners={[
+        runner({ bataiju: "3E8", futanJuryo: "26C" }),
+        runner({ bataiju: "3E8", futanJuryo: "276", umaban: "02" }),
+      ]}
       stats={null}
     />,
   );
   const hoverPoint = document.querySelector('[data-horse="チャートホース"]');
-  const hoverLink = document.querySelector('[data-weight-link="1"]');
-  const otherLink = document.querySelector('[data-weight-link="2"]');
-  const otherMark = document.querySelector('[data-scheduled-weight="2"]');
-  if (hoverPoint === null || hoverLink === null || otherLink === null || otherMark === null) {
-    throw new Error("expected Ban-ei weight marks");
+  const otherPoint = document.querySelector('[data-horse="別の馬"]');
+  if (hoverPoint === null || otherPoint === null) {
+    throw new Error("expected Ban-ei horse marks");
   }
-  expect(hoverLink.getAttribute("stroke-opacity")).toBe("0.38");
   fireEvent.pointerEnter(hoverPoint, { clientX: 40, clientY: 48 });
-  expect(hoverLink.getAttribute("stroke-opacity")).toBe("0.62");
-  expect(otherLink.getAttribute("stroke-opacity")).toBe("0.08");
-  expect(otherMark.getAttribute("stroke-opacity")).toBe("0.1");
-  fireEvent.pointerEnter(otherMark, { clientX: 48, clientY: 52 });
-  expect(screen.getByText("予定斤量 630kg")).toBeDefined();
-  expect(screen.getByText("斤量差 -20kg")).toBeDefined();
+  expect(otherPoint.getAttribute("fill-opacity")).toBe("0.1");
+  expect(screen.getByText("斤量差 -10kg")).toBeDefined();
+  expect(screen.getByText("馬体重−斤量差 +10kg")).toBeDefined();
 });

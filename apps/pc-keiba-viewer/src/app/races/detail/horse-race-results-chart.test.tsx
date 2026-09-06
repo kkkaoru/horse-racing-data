@@ -13,11 +13,7 @@ import type {
 } from "../../../lib/horse-weight-stream-client";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
-import {
-  HorseRaceResultsChart,
-  OverviewChartDot,
-  RelativeDeltaTooltip,
-} from "./horse-race-results-chart";
+import { HorseRaceResultsChart, OverviewChartDot } from "./horse-race-results-chart";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimePayloadResult {
@@ -1324,7 +1320,7 @@ test("marks each chip with a data-active flag matching its pressed state", () =>
   ).toStrictEqual("false");
 });
 
-test("replaces the Ban-ei futan panel with a relative-delta scatter of finish", () => {
+test("hides the Ban-ei futan time-series panel", () => {
   render(
     <HorseRaceResultsChart
       keibajoCode="83"
@@ -1338,22 +1334,16 @@ test("replaces the Ban-ei futan panel with a relative-delta scatter of finish", 
           keibajoCode: "83",
         }),
       ]}
-      runners={[chartRunner({ bataiju: "5DC", futanJuryo: "1F4" })]}
       targetKeibajoCode="83"
-      targetRaceDate="20260906"
     />,
   );
   expect(
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
-  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "相対値変動"]);
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減"]);
   expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(4);
-  expect(screen.getAllByTestId("scatter-chart-stub").length).toStrictEqual(1);
   expect(screen.queryByText("斤量")).toStrictEqual(null);
+  expect(screen.queryByText("相対値変動")).toStrictEqual(null);
   expect(screen.queryByText("○ = ブリンカー装着")).toStrictEqual(null);
-  expect(screen.getAllByTestId("x-axis-stub").at(4)?.getAttribute("data-key")).toStrictEqual(
-    "relativeDelta",
-  );
-  expect(screen.getByTestId("scatter-stub").getAttribute("data-total-points")).toStrictEqual("1");
 });
 
 test("detects Ban-ei from the target keibajo when the page keibajo is omitted", () => {
@@ -1362,7 +1352,7 @@ test("detects Ban-ei from the target keibajo when the page keibajo is omitted", 
   );
   expect(
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
-  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "相対値変動"]);
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減"]);
 });
 
 test("hides the paddock futan series when Ban-ei correlation view is open", () => {
@@ -1379,43 +1369,4 @@ test("keeps the paddock futan series available for non-Ban-ei correlation view",
   expect(
     screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-hide-futan"),
   ).toStrictEqual("false");
-});
-
-test("RelativeDeltaTooltip returns nothing when inactive", () => {
-  const { container } = render(<RelativeDeltaTooltip active={false} payload={[]} />);
-  expect(container.textContent).toStrictEqual("");
-});
-
-test("RelativeDeltaTooltip returns nothing when payload is omitted", () => {
-  const { container } = render(<RelativeDeltaTooltip active />);
-  expect(container.textContent).toStrictEqual("");
-});
-
-test("RelativeDeltaTooltip returns nothing when the payload is empty", () => {
-  const { container } = render(<RelativeDeltaTooltip active payload={[]} />);
-  expect(container.textContent).toStrictEqual("");
-});
-
-test("RelativeDeltaTooltip shows finish and the relative-delta value", () => {
-  render(
-    <RelativeDeltaTooltip
-      active
-      payload={[
-        {
-          payload: {
-            dateValue: Date.UTC(2026, 7, 1),
-            jockey: "山田",
-            kyori: "200",
-            raceDate: "20260801",
-            relativeDelta: -1,
-            value: 1,
-          },
-          value: 1,
-        },
-      ]}
-    />,
-  );
-  expect(screen.getByText("2026/08/01").textContent).toStrictEqual("2026/08/01");
-  expect(screen.getByText("1着").textContent).toStrictEqual("1着");
-  expect(screen.getByText("相対値変動 -1").textContent).toStrictEqual("相対値変動 -1");
 });

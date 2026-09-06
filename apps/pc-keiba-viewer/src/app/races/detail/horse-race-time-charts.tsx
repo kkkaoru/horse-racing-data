@@ -15,7 +15,6 @@ import {
   BAN_EI_SCHEDULED_GUIDE_STROKE,
   BAN_EI_WEIGHT_LINK_STROKE,
   buildDrawnBanEiAbilityChart,
-  formatBanEiFinishMarkLabel,
   formatRaceTimeChartTooltip,
   raceTimeChartEmptyMessage,
   raceTimeChartNote,
@@ -44,7 +43,7 @@ interface HorseRaceTimeChartProps {
 interface RaceTimeChartLegendItem {
   label: string;
   radius: number | null;
-  shape: "circle" | "diamond" | "swatch";
+  shape: "circle" | "swatch";
   stroke: string;
 }
 
@@ -90,9 +89,6 @@ const ACTIVE_POINT_STROKE_OPACITY: number = 0.7;
 const UMABAN_OPACITY: number = 0.92;
 const DIMMED_UMABAN_OPACITY: number = 0.26;
 const ACTIVE_UMABAN_OPACITY: number = 1;
-const UMABAN_LABEL_DX: number = 9;
-const UMABAN_LABEL_DY: number = 4;
-const UMABAN_OUTSIDE_GAP: number = 5;
 const HORSE_LINK_OPACITY: number = 0.32;
 const HORSE_LINK_ACTIVE_OPACITY: number = 0.55;
 const HORSE_LINK_DIMMED_OPACITY: number = 0.08;
@@ -104,7 +100,6 @@ const ACTIVE_FINISH_LABEL_FONT_SIZE: number = 12;
 const LEGEND_MARK_CENTER: number = 12;
 const LEGEND_MARK_FILL_OPACITY: number = 0.4;
 const LEGEND_MARK_STROKE_WIDTH: number = 1.4;
-const LEGEND_DIAMOND_POINTS: string = "12,4 20,12 12,20 4,12";
 const WEIGHT_LINK_OPACITY: number = 0.38;
 const WEIGHT_LINK_ACTIVE_OPACITY: number = 0.62;
 const WEIGHT_LINK_DIMMED_OPACITY: number = 0.08;
@@ -157,26 +152,9 @@ const REFERENCE_LEGEND: RaceTimeChartLegendItem[] = [
   { label: "中央値", radius: null, shape: "swatch", stroke: "#4338ca" },
 ];
 
-const WEIGHT_ROLE_LEGEND: RaceTimeChartLegendItem[] = [
-  { label: "過去斤量", radius: 5.6, shape: "circle", stroke: "#64748b" },
-  { label: "予定斤量", radius: null, shape: "diamond", stroke: "#64748b" },
-];
-
 const LegendSwatch = ({ item }: LegendSwatchProps) => {
   if (item.shape === "swatch") {
     return <span className="training-chart-swatch" style={{ background: item.stroke }} />;
-  }
-  if (item.shape === "diamond") {
-    return (
-      <svg aria-hidden="true" className="training-chart-legend-mark" viewBox="0 0 24 24">
-        <polygon
-          fill="none"
-          points={LEGEND_DIAMOND_POINTS}
-          stroke={item.stroke}
-          strokeWidth={LEGEND_MARK_STROKE_WIDTH}
-        />
-      </svg>
-    );
   }
   return (
     <svg aria-hidden="true" className="training-chart-legend-mark" viewBox="0 0 24 24">
@@ -451,10 +429,7 @@ const RaceTimeChartPlotContents = ({
       const dimmed =
         (hoverId !== null && hoverId !== point.id) ||
         (hoverUmaban !== null && hoverUmaban !== point.umaban);
-      const showLabel = point.isLatest || active;
-      const finishLabel = formatBanEiFinishMarkLabel(point.finishRank);
       const pointRadius = raceTimePointRadius(active, point.finishRank, point.radius);
-      const umabanDx = point.radius === null ? UMABAN_LABEL_DX : pointRadius + UMABAN_OUTSIDE_GAP;
       return (
         <g key={`${keyPrefix}${point.id}`}>
           <circle
@@ -482,7 +457,7 @@ const RaceTimeChartPlotContents = ({
           {point.radius === null ? null : (
             <text
               className="training-chart-umaban"
-              data-finish-label={finishLabel}
+              data-umaban-label={point.umaban}
               fill={point.stroke}
               fontSize={active ? ACTIVE_FINISH_LABEL_FONT_SIZE : FINISH_LABEL_FONT_SIZE}
               fontWeight={800}
@@ -491,23 +466,9 @@ const RaceTimeChartPlotContents = ({
               x={point.x}
               y={point.y + FINISH_LABEL_DY}
             >
-              {finishLabel}
-            </text>
-          )}
-          {showLabel ? (
-            <text
-              className="training-chart-umaban"
-              data-umaban-label={point.umaban}
-              fill={point.stroke}
-              fontSize={active ? 14 : 11}
-              fontWeight={active ? 800 : 700}
-              opacity={raceTimeUmabanOpacity(active, dimmed)}
-              x={point.x + umabanDx}
-              y={point.y + UMABAN_LABEL_DY}
-            >
               {point.umaban}
             </text>
-          ) : null}
+          )}
         </g>
       );
     })}
@@ -585,14 +546,6 @@ export const HorseRaceTimeChart = ({
       <p className="training-chart-note">{raceTimeChartNote(true)}</p>
       <ul className="training-chart-legend">
         {BAN_EI_FINISH_LEGEND.map((item) => (
-          <li key={item.label}>
-            <LegendSwatch item={item} />
-            {item.label}
-          </li>
-        ))}
-      </ul>
-      <ul className="training-chart-legend">
-        {WEIGHT_ROLE_LEGEND.map((item) => (
           <li key={item.label}>
             <LegendSwatch item={item} />
             {item.label}

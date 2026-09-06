@@ -16,14 +16,17 @@ export interface RaceTimeChartPoint {
   distanceWeight: number;
   finishRank: number | null;
   horseName: string;
+  horseWeightKg: number | null;
   id: string;
   isLatest: boolean;
   keibajoLabel: string;
   kohan3fTenths: number | null;
   pastJockeyLabel: string;
   radius: number | null;
+  relativeDelta: number | null;
   scaledSohaTimeTenths: number;
   scheduledCarriedWeightKg: number | null;
+  scheduledHorseWeightKg: number | null;
   scheduledJockeyLabel: string;
   sortKey: string;
   sohaTimeTenths: number;
@@ -128,6 +131,7 @@ interface BuildLayoutParams {
 interface BanEiAbilityRow {
   carriedWeightKg: number;
   finishRank: number;
+  horseWeightKg: number;
   result: HorseRaceResult;
   scaledSohaTimeTenths: number;
   sohaTimeTenths: number;
@@ -142,9 +146,10 @@ interface ToBanEiAbilityPointParams {
   currentDistance: number | null;
   isLatest: boolean;
   layout: RaceTimeChartLayout;
+  relativeDelta: number;
   row: BanEiAbilityRow;
   scheduledCarriedWeightKg: number | null;
-  xValue: number;
+  scheduledHorseWeightKg: number | null;
 }
 
 interface ToReferenceLineParams {
@@ -203,12 +208,12 @@ export const RACE_TIME_CHART_NOTE: string =
   "各点は出走予定馬の過去レースです。レースタイムは今走の距離に比例換算しています。今走と同じ距離ほど点は濃く、距離が離れるほど薄くします。上ほど換算タイムが速く、右ほど上がり3Fが速い。点の色は着順、数字は馬番。最速・平均・中央値の線は目安です。";
 
 export const RACE_TIME_CHART_BAN_EI_NOTE: string =
-  "ばんえいには上がり3Fがありません。1つの図で斤量・換算タイム・着順を見ます。上ほど速く、右ほど斤量が重い。点の中の数字と色・大きさが着順、右の数字は馬番。◇は今走の予定斤量、横線は過去斤量との差。同じ馬の複数レースは薄い線でつなぎます。";
+  "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。";
 
 export const RACE_TIME_CHART_EMPTY: string = "レースタイムと上がり3Fが揃った競走成績がありません。";
 
 export const RACE_TIME_CHART_BAN_EI_EMPTY: string =
-  "レースタイムと着順と斤量が揃った競走成績がありません。";
+  "レースタイムと着順と馬体重と斤量が揃った競走成績がありません。";
 
 export const RACE_TIME_CHART_VIEW_WIDTH: number = 720;
 export const RACE_TIME_CHART_VIEW_HEIGHT: number = 400;
@@ -219,12 +224,12 @@ export const RACE_TIME_CHART_PLOT_BOTTOM: number = 332;
 export const RACE_TIME_CHART_TOOLTIP_OFFSET: number = 12;
 export const RACE_TIME_CHART_X_AXIS_TITLE: string = "上がり3F（右が速い）";
 export const RACE_TIME_CHART_BAN_EI_X_AXIS_TITLE: string = "着順（右が上位）";
-export const RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE: string = "斤量（右が重い）";
+export const RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE: string =
+  "馬体重−斤量の変化（右が今走より大きい）";
 export const RACE_TIME_CHART_Y_AXIS_TITLE: string = "換算レースタイム（今走距離、上が速い）";
 export const BAN_EI_ABILITY_HORSE_LINK_STROKE: string = "#d5ddd8";
 export const BAN_EI_WEIGHT_LINK_STROKE: string = "#c5cdc8";
 export const BAN_EI_SCHEDULED_GUIDE_STROKE: string = "#78716c";
-export const BAN_EI_SCHEDULED_MARK_SIZE: number = 6;
 export const BAN_EI_FINISH_FIRST_RADIUS: number = 10;
 export const BAN_EI_FINISH_SECOND_RADIUS: number = 8.6;
 export const BAN_EI_FINISH_THIRD_RADIUS: number = 7.6;
@@ -242,11 +247,11 @@ const PLOT_BOTTOM: number = RACE_TIME_CHART_PLOT_BOTTOM;
 const RATIO_PAD_ABS: number = 8;
 const RATIO_PAD_RATIO: number = 0.08;
 const TICK_FRACTIONS: number[] = [0, 0.25, 0.5, 0.75, 1];
-const FINISH_FIRST_STROKE: string = "#b45309";
-const FINISH_SECOND_STROKE: string = "#64748b";
-const FINISH_THIRD_STROKE: string = "#c2410c";
-const FINISH_PLACE_STROKE: string = "#355f9f";
-const FINISH_OTHER_STROKE: string = "#94a3b8";
+const FINISH_FIRST_STROKE: string = "#eab308";
+const FINISH_SECOND_STROKE: string = "#16a34a";
+const FINISH_THIRD_STROKE: string = "#dc2626";
+const FINISH_PLACE_STROKE: string = "#2563eb";
+const FINISH_OTHER_STROKE: string = "#9ca3af";
 const FASTEST_STROKE: string = "#be123c";
 const AVERAGE_STROKE: string = "#166534";
 const MEDIAN_STROKE: string = "#4338ca";
@@ -393,8 +398,8 @@ export const formatCarriedWeightDeltaLabel = (deltaKg: number): string => {
 export const formatBanEiFinishMarkLabel = (rank: number | null): string =>
   rank === null ? "-" : String(rank);
 
-export const scheduledWeightMarkPoints = (x: number, y: number): string =>
-  `${x},${y - BAN_EI_SCHEDULED_MARK_SIZE} ${x + BAN_EI_SCHEDULED_MARK_SIZE},${y} ${x},${y + BAN_EI_SCHEDULED_MARK_SIZE} ${x - BAN_EI_SCHEDULED_MARK_SIZE},${y}`;
+export const parseBanEiHorseWeightKg = (value: string | null | undefined): number | null =>
+  parseBanEiCarriedWeightKg(value);
 
 export const banEiFinishMarkRadius = (rank: number | null): number => {
   if (rank === 1) {
@@ -526,14 +531,17 @@ const toChartPoint = ({ currentDistance, layout, row }: ToChartPointParams): Rac
     distanceWeight: raceTimeDistanceWeight(distanceMeters, currentDistance),
     finishRank,
     horseName: cleanText(row.result.bamei),
+    horseWeightKg: null,
     id: `${umaban}-${row.result.kaisaiNen}${row.result.kaisaiTsukihi}-${row.result.keibajoCode}-${row.result.raceBango}`,
     isLatest: true,
     keibajoLabel: formatKeibajo(row.result.keibajoCode),
     kohan3fTenths: row.kohan3fTenths,
     pastJockeyLabel: cleanText(row.result.kishumeiRyakusho),
     radius: null,
+    relativeDelta: null,
     scaledSohaTimeTenths: row.scaledSohaTimeTenths,
     scheduledCarriedWeightKg: null,
+    scheduledHorseWeightKg: null,
     scheduledJockeyLabel: cleanText(row.result.currentJockey),
     sortKey: `${row.result.kaisaiNen}${row.result.kaisaiTsukihi}${row.result.keibajoCode}${row.result.raceBango}`,
     sohaTimeTenths: row.sohaTimeTenths,
@@ -700,9 +708,18 @@ export const formatRaceTimeChartTooltip = (point: RaceTimeChartPoint): string[] 
     ...(point.scheduledCarriedWeightKg === null
       ? []
       : [`予定斤量 ${formatCarriedWeightKgLabel(point.scheduledCarriedWeightKg)}`]),
+    ...(point.horseWeightKg === null
+      ? []
+      : [`馬体重 ${formatCarriedWeightKgLabel(point.horseWeightKg)}`]),
+    ...(point.scheduledHorseWeightKg === null
+      ? []
+      : [`予定馬体重 ${formatCarriedWeightKgLabel(point.scheduledHorseWeightKg)}`]),
     ...(point.carriedWeightDeltaKg === null
       ? []
       : [`斤量差 ${formatCarriedWeightDeltaLabel(point.carriedWeightDeltaKg)}`]),
+    ...(point.relativeDelta === null
+      ? []
+      : [`馬体重−斤量差 ${formatCarriedWeightDeltaLabel(point.relativeDelta)}`]),
     `レースタイム ${formatRaceTimeTenthsLabel(point.sohaTimeTenths)}`,
     ...scaledLine,
     ...(point.kohan3fTenths === null
@@ -812,7 +829,13 @@ const collectBanEiAbilityRows = ({
     );
     const finishRank = parseRaceFinishRank(result.kakuteiChakujun);
     const carriedWeightKg = parseBanEiCarriedWeightKg(result.futanJuryo);
-    if (sohaTimeTenths === null || finishRank === null || carriedWeightKg === null) {
+    const horseWeightKg = parseBanEiHorseWeightKg(result.bataiju);
+    if (
+      sohaTimeTenths === null ||
+      finishRank === null ||
+      carriedWeightKg === null ||
+      horseWeightKg === null
+    ) {
       return [];
     }
     const resultDistance = parseRaceDistanceMeters(result.kyori);
@@ -823,7 +846,16 @@ const collectBanEiAbilityRows = ({
       currentDistance === null || resultDistance === null
         ? sohaTimeTenths
         : scaleSohaTimeToDistance(sohaTimeTenths, resultDistance, currentDistance);
-    return [{ carriedWeightKg, finishRank, result, scaledSohaTimeTenths, sohaTimeTenths }];
+    return [
+      {
+        carriedWeightKg,
+        finishRank,
+        horseWeightKg,
+        result,
+        scaledSohaTimeTenths,
+        sohaTimeTenths,
+      },
+    ];
   });
 
 const latestSortKeyByUmaban = (rows: BanEiAbilityRow[]): Map<string, string> =>
@@ -841,9 +873,10 @@ const toBanEiAbilityPoint = ({
   currentDistance,
   isLatest,
   layout,
+  relativeDelta,
   row,
   scheduledCarriedWeightKg,
-  xValue,
+  scheduledHorseWeightKg,
 }: ToBanEiAbilityPointParams): RaceTimeChartPoint => {
   const umaban = formatRunnerNumber(row.result.currentUmaban);
   const distanceMeters = parseRaceDistanceMeters(row.result.kyori);
@@ -862,23 +895,58 @@ const toBanEiAbilityPoint = ({
     distanceWeight: raceTimeDistanceWeight(distanceMeters, currentDistance),
     finishRank: row.finishRank,
     horseName: cleanText(row.result.bamei),
+    horseWeightKg: row.horseWeightKg,
     id: `${umaban}-${row.result.kaisaiNen}${row.result.kaisaiTsukihi}-${row.result.keibajoCode}-${row.result.raceBango}`,
     isLatest,
     keibajoLabel: formatKeibajo(row.result.keibajoCode),
     kohan3fTenths: null,
     pastJockeyLabel: cleanText(row.result.kishumeiRyakusho),
     radius: banEiFinishMarkRadius(row.finishRank),
+    relativeDelta,
     scaledSohaTimeTenths: row.scaledSohaTimeTenths,
     scheduledCarriedWeightKg,
+    scheduledHorseWeightKg,
     scheduledJockeyLabel: cleanText(row.result.currentJockey),
     sortKey: banEiAbilityRowSortKey(row),
     sohaTimeTenths: row.sohaTimeTenths,
     stroke: raceTimeFinishStroke(row.finishRank),
     umaban,
-    x: layout.xScale(xValue),
+    x: layout.xScale(relativeDelta),
     y: layout.yScale(row.scaledSohaTimeTenths),
   };
 };
+
+const latestHorseWeightByUmaban = (rows: BanEiAbilityRow[]): Map<string, number> => {
+  const latestKeys = latestSortKeyByUmaban(rows);
+  return rows.reduce((index, row) => {
+    const umaban = formatRunnerNumber(row.result.currentUmaban);
+    if (latestKeys.get(umaban) !== banEiAbilityRowSortKey(row)) {
+      return index;
+    }
+    return new Map(index).set(umaban, row.horseWeightKg);
+  }, new Map<string, number>());
+};
+
+const upcomingWeightMinusFutanByUmaban = (
+  runners: Runner[],
+  latestWeights: Map<string, number>,
+): Map<string, number> =>
+  runners.reduce((index, runner) => {
+    const umaban = formatRunnerNumber(runner.umaban);
+    const futanKg = parseBanEiCarriedWeightKg(runner.futanJuryo);
+    if (umaban === "-" || futanKg === null) {
+      return index;
+    }
+    const announced = parseBanEiHorseWeightKg(runner.bataiju);
+    if (announced !== null) {
+      return new Map(index).set(umaban, announced - futanKg);
+    }
+    const latest = latestWeights.get(umaban);
+    if (latest === undefined) {
+      return index;
+    }
+    return new Map(index).set(umaban, latest - futanKg);
+  }, new Map<string, number>());
 
 const scheduledCarriedWeightByUmaban = (runners: Runner[]): Map<string, number> =>
   runners.reduce((index, runner) => {
@@ -890,80 +958,25 @@ const scheduledCarriedWeightByUmaban = (runners: Runner[]): Map<string, number> 
     return new Map(index).set(umaban, kg);
   }, new Map<string, number>());
 
-const uniqueScheduledWeights = (points: RaceTimeChartPoint[]): number[] =>
-  Array.from(
-    points
-      .reduce((index, point) => {
-        if (point.scheduledCarriedWeightKg === null) {
-          return index;
-        }
-        return new Map(index).set(point.scheduledCarriedWeightKg, true);
-      }, new Map<number, true>())
-      .keys(),
-  );
-
-const buildBanEiWeightLinks = (
-  layout: RaceTimeChartLayout,
-  points: RaceTimeChartPoint[],
-): RaceTimeWeightLink[] =>
-  points.flatMap((point) => {
-    if (point.scheduledCarriedWeightKg === null || point.carriedWeightKg === null) {
-      return [];
+const scheduledHorseWeightByUmaban = (
+  runners: Runner[],
+  latestWeights: Map<string, number>,
+): Map<string, number> =>
+  runners.reduce((index, runner) => {
+    const umaban = formatRunnerNumber(runner.umaban);
+    if (umaban === "-") {
+      return index;
     }
-    if (point.scheduledCarriedWeightKg === point.carriedWeightKg) {
-      return [];
+    const announced = parseBanEiHorseWeightKg(runner.bataiju);
+    if (announced !== null) {
+      return new Map(index).set(umaban, announced);
     }
-    return [
-      {
-        stroke: point.stroke,
-        umaban: point.umaban,
-        x1: point.x,
-        x2: layout.xScale(point.scheduledCarriedWeightKg),
-        y: point.y,
-      },
-    ];
-  });
-
-const buildBanEiScheduledMarks = (
-  layout: RaceTimeChartLayout,
-  points: RaceTimeChartPoint[],
-): RaceTimeScheduledMark[] =>
-  points.flatMap((point) => {
-    if (point.scheduledCarriedWeightKg === null || point.carriedWeightKg === null) {
-      return [];
+    const latest = latestWeights.get(umaban);
+    if (latest === undefined) {
+      return index;
     }
-    if (point.scheduledCarriedWeightKg === point.carriedWeightKg) {
-      return [];
-    }
-    const x = layout.xScale(point.scheduledCarriedWeightKg);
-    return [
-      {
-        id: point.id,
-        points: scheduledWeightMarkPoints(x, point.y),
-        stroke: point.stroke,
-        umaban: point.umaban,
-        x,
-        y: point.y,
-      },
-    ];
-  });
-
-const buildBanEiScheduledGuides = (
-  layout: RaceTimeChartLayout,
-  points: RaceTimeChartPoint[],
-): RaceTimeScheduledGuide[] => {
-  const unique = uniqueScheduledWeights(points);
-  const only = unique[0];
-  if (only === undefined || unique.length !== 1) {
-    return [];
-  }
-  return [
-    {
-      label: `予定斤量 ${formatCarriedWeightKgLabel(only)}`,
-      x: layout.xScale(only),
-    },
-  ];
-};
+    return new Map(index).set(umaban, latest);
+  }, new Map<string, number>());
 
 const buildBanEiHorseLinks = (points: RaceTimeChartPoint[]): RaceTimeHorseLink[] => {
   const grouped = points.reduce((index, point) => {
@@ -997,21 +1010,31 @@ export const buildDrawnBanEiAbilityChart = ({
   if (rows.length === 0) {
     return null;
   }
-  const scheduledByUmaban = scheduledCarriedWeightByUmaban(runners);
-  const plottedUmabans = new Set(rows.map((row) => formatRunnerNumber(row.result.currentUmaban)));
-  const scheduledValues = Array.from(scheduledByUmaban.entries()).flatMap(([umaban, kg]) =>
-    plottedUmabans.has(umaban) ? [kg] : [],
-  );
+  const latestWeights = latestHorseWeightByUmaban(rows);
+  const upcomingNetByUmaban = upcomingWeightMinusFutanByUmaban(runners, latestWeights);
+  const scheduledFutanByUmaban = scheduledCarriedWeightByUmaban(runners);
+  const scheduledWeightByUmaban = scheduledHorseWeightByUmaban(runners, latestWeights);
+  const latestKeys = latestSortKeyByUmaban(rows);
+  const plottedRows = rows.flatMap((row) => {
+    const umaban = formatRunnerNumber(row.result.currentUmaban);
+    const upcomingNet = upcomingNetByUmaban.get(umaban);
+    if (upcomingNet === undefined) {
+      return [];
+    }
+    return [{ relativeDelta: row.horseWeightKg - row.carriedWeightKg - upcomingNet, row }];
+  });
+  if (plottedRows.length === 0) {
+    return null;
+  }
   const specs = referenceSpecs(stats, false);
   const yValues = [
-    ...rows.map((row) => row.scaledSohaTimeTenths),
+    ...plottedRows.map((entry) => entry.row.scaledSohaTimeTenths),
     ...specs.flatMap((spec) =>
       spec.orientation === "horizontal" && spec.value !== null ? [spec.value] : [],
     ),
   ];
-  const xDomain = collectDomain([...rows.map((row) => row.carriedWeightKg), ...scheduledValues]);
+  const xDomain = collectDomain(plottedRows.map((entry) => entry.relativeDelta));
   const yDomain = collectDomain(yValues);
-  const latestKeys = latestSortKeyByUmaban(rows);
   const layout = buildLayout({
     invertX: false,
     plotBottom: PLOT_BOTTOM,
@@ -1019,17 +1042,19 @@ export const buildDrawnBanEiAbilityChart = ({
     xDomain,
     yDomain,
   });
-  const points = rows
-    .map((row) => {
-      const umaban = formatRunnerNumber(row.result.currentUmaban);
-      const scheduled = scheduledByUmaban.get(umaban);
+  const points = plottedRows
+    .map((entry) => {
+      const umaban = formatRunnerNumber(entry.row.result.currentUmaban);
+      const scheduledFutan = scheduledFutanByUmaban.get(umaban);
+      const scheduledWeight = scheduledWeightByUmaban.get(umaban);
       return toBanEiAbilityPoint({
         currentDistance: currentDistanceMeters,
-        isLatest: latestKeys.get(umaban) === banEiAbilityRowSortKey(row),
+        isLatest: latestKeys.get(umaban) === banEiAbilityRowSortKey(entry.row),
         layout,
-        row,
-        scheduledCarriedWeightKg: scheduled === undefined ? null : scheduled,
-        xValue: row.carriedWeightKg,
+        relativeDelta: entry.relativeDelta,
+        row: entry.row,
+        scheduledCarriedWeightKg: scheduledFutan === undefined ? null : scheduledFutan,
+        scheduledHorseWeightKg: scheduledWeight === undefined ? null : scheduledWeight,
       });
     })
     .toSorted(compareRaceTimeChartPoints);
@@ -1050,15 +1075,15 @@ export const buildDrawnBanEiAbilityChart = ({
       });
       return line === null ? [] : [line];
     }),
-    scheduledGuides: buildBanEiScheduledGuides(layout, points),
-    scheduledMarks: buildBanEiScheduledMarks(layout, points),
-    weightLinks: buildBanEiWeightLinks(layout, points),
+    scheduledGuides: [],
+    scheduledMarks: [],
+    weightLinks: [],
     width: RACE_TIME_CHART_VIEW_WIDTH,
     xAxisTitle: RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE,
     xTicks: TICK_FRACTIONS.map((fraction) => {
       const value = tickValue(xDomain, fraction, false);
       return {
-        label: formatCarriedWeightKgLabel(value),
+        label: formatCarriedWeightDeltaLabel(value),
         x: layout.xScale(value),
         y: PLOT_BOTTOM,
       };
