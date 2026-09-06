@@ -56,6 +56,7 @@ interface RunnersTableProps {
   initialRealtimePayload?: RealtimeRacePayload | null;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
+  showBlinkerColumn?: boolean;
   surfaceSwitches?: ReadonlyArray<SurfaceSwitchEntry>;
 }
 
@@ -196,6 +197,7 @@ export function RunnersTable({
   initialRealtimePayload = null,
   realtimeRequest,
   runners,
+  showBlinkerColumn = true,
   surfaceSwitches,
 }: RunnersTableProps) {
   const [sort, setSort] = useState<SortState | null>(null);
@@ -423,24 +425,26 @@ export function RunnersTable({
           )}
           {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
         </td>
-        <td className="runner-blinker-cell">
-          {blinkerPattern ? (
-            <span
-              className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
-              title={BLINKER_PATTERN_LABELS[blinkerPattern]}
-            >
-              {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
-            </span>
-          ) : null}
-          {surfaceSwitch ? (
-            <span
-              className={`runner-surface-switch-badge ${getSurfaceSwitchClassName(surfaceSwitch)}`}
-            >
-              <strong>{surfaceSwitch}</strong>
-            </span>
-          ) : null}
-          {!blinkerPattern && !surfaceSwitch ? "-" : null}
-        </td>
+        {showBlinkerColumn ? (
+          <td className="runner-blinker-cell">
+            {blinkerPattern ? (
+              <span
+                className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
+                title={BLINKER_PATTERN_LABELS[blinkerPattern]}
+              >
+                {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
+              </span>
+            ) : null}
+            {surfaceSwitch ? (
+              <span
+                className={`runner-surface-switch-badge ${getSurfaceSwitchClassName(surfaceSwitch)}`}
+              >
+                <strong>{surfaceSwitch}</strong>
+              </span>
+            ) : null}
+            {!blinkerPattern && !surfaceSwitch ? "-" : null}
+          </td>
+        ) : null}
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
         <td>
@@ -511,7 +515,7 @@ export function RunnersTable({
           <col className="runner-col-frame" />
           <col className="runner-col-number" />
           <col className="runner-col-horse" />
-          <col className="runner-col-blinker" />
+          {showBlinkerColumn ? <col className="runner-col-blinker" /> : null}
           <col className="runner-col-sex-age" />
           <col className="runner-col-weight" />
           <col className="runner-col-person" />
@@ -527,10 +531,12 @@ export function RunnersTable({
             <th className="runner-frame-header">枠</th>
             <th>{renderSortButton("umaban")}</th>
             <th>馬名</th>
-            <th className="runner-blinker-header">
-              <span>ブリンカー</span>
-              <span>転向</span>
-            </th>
+            {showBlinkerColumn ? (
+              <th className="runner-blinker-header">
+                <span>ブリンカー</span>
+                <span>転向</span>
+              </th>
+            ) : null}
             <th>性齢</th>
             <th>負担</th>
             <th>騎手</th>

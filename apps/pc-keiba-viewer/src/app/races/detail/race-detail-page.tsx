@@ -673,6 +673,7 @@ export async function RaceDetailView({
               initialRealtimePayload={initialRealtimePayload}
               realtimeRequest={realtimeRequest}
               runners={runners}
+              showBlinkerColumn={!decodeHexHorseWeight}
               surfaceSwitches={surfaceSwitches}
             />
           )}

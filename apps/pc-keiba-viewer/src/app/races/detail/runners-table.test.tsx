@@ -805,4 +805,24 @@ describe("runners table", () => {
     expect(screen.getByText("1198kg (+8)")).toBeTruthy();
     expect(screen.getByText("620")).toBeTruthy();
   });
+
+  it("hides the blinker-switch column for Ban-ei runners", () => {
+    render(
+      <RunnersTable
+        decodeHexHorseWeight
+        showBlinkerColumn={false}
+        runners={[
+          runner({
+            bamei: "ばんえい馬",
+            kettoTorokuBango: "2023100001",
+            umaban: "01",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByRole("columnheader", { name: "ブリンカー 転向" })).toStrictEqual(null);
+    expect(
+      screen.getByText("ばんえい馬").closest("tr")?.querySelector(".runner-blinker-cell"),
+    ).toBeNull();
+  });
 });
