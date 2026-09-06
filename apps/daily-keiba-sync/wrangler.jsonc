@@ -1,0 +1,125 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "daily-keiba-sync",
+  "main": "src/worker.ts",
+  "workers_dev": true,
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-06-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "limits": {
+    "cpu_ms": 300000,
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+  "triggers": {
+    "crons": [
+      "0 16 * * *", // NV-Link acquire/sync — JST 01:00
+      "0 17 * * *", // NV-Link monitor/recovery — JST 02:00
+      "0 11 * * *", // JV-Link acquire/sync — JST 20:00
+      "0 12 * * *", // JV-Link monitor/recovery — JST 21:00
+    ],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "daily-keiba-sync",
+      "database_id": "5d5caef0-cff7-40e2-b6e7-69769d28b8d1",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SYNC_CACHE",
+      "id": "3984400443dd4e52b2330c1bee9a2a1c",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "CATALOG_BUCKET",
+      "bucket_name": "pc-keiba-r2-catalog",
+    },
+    {
+      "binding": "SOURCE_STAGING",
+      "bucket_name": "pc-keiba-source-staging",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JV_RAW_STAGE_JOBS",
+        "queue": "daily-keiba-sync-jv-raw-stage-jobs",
+      },
+      {
+        "binding": "NV_RAW_STAGE_JOBS",
+        "queue": "daily-keiba-sync-nv-raw-stage-jobs",
+      },
+      {
+        "binding": "R2_CATALOG_JOBS",
+        "queue": "daily-keiba-sync-r2-catalog-jobs",
+      },
+      {
+        "binding": "NEON_JOBS",
+        "queue": "daily-keiba-sync-neon-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "daily-keiba-sync-jv-raw-stage-jobs",
+        "dead_letter_queue": "daily-keiba-sync-jv-raw-stage-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "retry_delay": 30,
+      },
+      {
+        "queue": "daily-keiba-sync-nv-raw-stage-jobs",
+        "dead_letter_queue": "daily-keiba-sync-nv-raw-stage-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "retry_delay": 30,
+      },
+      {
+        "queue": "daily-keiba-sync-r2-catalog-jobs",
+        "dead_letter_queue": "daily-keiba-sync-r2-catalog-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 4,
+        "retry_delay": 30,
+      },
+      {
+        "queue": "daily-keiba-sync-neon-jobs",
+        "dead_letter_queue": "daily-keiba-sync-neon-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 4,
+        "retry_delay": 30,
+      },
+    ],
+  },
+  "services": [
+    {
+      "binding": "JV_SOURCE",
+      "service": "jra-van-datalab-worker-only-probe",
+    },
+    {
+      "binding": "NV_SOURCE",
+      "service": "umacon-worker",
+    },
+    {
+      "binding": "REALTIME_SYNC",
+      "service": "sync-realtime-data",
+    },
+  ],
+  "vars": {
+    "R2_BUCKET_NAME": "pc-keiba-r2-catalog",
+    "R2_CATALOG_NAMESPACE": "pc_keiba",
+    "R2_CATALOG_URI": "https://catalog.cloudflarestorage.com/78109ec18c7c85b194b19fb32e3bb149/pc-keiba-r2-catalog",
+    "R2_CATALOG_WAREHOUSE": "78109ec18c7c85b194b19fb32e3bb149_pc-keiba-r2-catalog",
+  },
+}

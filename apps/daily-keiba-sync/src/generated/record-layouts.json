@@ -1,0 +1,6908 @@
+{
+  "formatVersion": 1,
+  "encoding": "cp932",
+  "tables": {
+    "jvd_av": {
+      "recordType": "AV",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "jiyu_kubun",
+          "width": 3
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "umaban"],
+      "recordBytes": 78
+    },
+    "jvd_cc": {
+      "recordType": "CC",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "kyori",
+          "width": 4
+        },
+        {
+          "name": "track_code",
+          "width": 2
+        },
+        {
+          "name": "kyori_henkomae",
+          "width": 4
+        },
+        {
+          "name": "track_code_henkomae",
+          "width": 2
+        },
+        {
+          "name": "jiyu_kubun",
+          "width": 1
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 50
+    },
+    "jvd_h1": {
+      "recordType": "H1",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "fukusho_chakubarai_key",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 28
+        },
+        {
+          "name": "henkan_wakuban_joho",
+          "width": 8
+        },
+        {
+          "name": "henkan_dowaku_joho",
+          "width": 8
+        },
+        {
+          "name": "hyosu_tansho",
+          "width": 420
+        },
+        {
+          "name": "hyosu_fukusho",
+          "width": 420
+        },
+        {
+          "name": "hyosu_wakuren",
+          "width": 540
+        },
+        {
+          "name": "hyosu_umaren",
+          "width": 2754
+        },
+        {
+          "name": "hyosu_wide",
+          "width": 2754
+        },
+        {
+          "name": "hyosu_umatan",
+          "width": 5508
+        },
+        {
+          "name": "hyosu_sanrenpuku",
+          "width": 16320
+        },
+        {
+          "name": "hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wakuren",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_umaren",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wide",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_umatan",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_sanrenpuku",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_wakuren",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_umaren",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_wide",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_umatan",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_sanrenpuku",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 28955
+    },
+    "jvd_h6": {
+      "recordType": "H6",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 18
+        },
+        {
+          "name": "hyosu_sanrentan",
+          "width": 102816
+        },
+        {
+          "name": "hyosu_gokei_sanrentan",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_sanrentan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 102890
+    },
+    "jvd_hr": {
+      "recordType": "HR",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "fuseiritsu_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "yobi_1",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "yobi_2",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "yobi_3",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 28
+        },
+        {
+          "name": "henkan_wakuban_joho",
+          "width": 8
+        },
+        {
+          "name": "henkan_dowaku_joho",
+          "width": 8
+        },
+        {
+          "name": "haraimodoshi_tansho_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_4a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_4c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_5a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_5c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_umaren_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umaren_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umaren_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_4a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_4c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_5a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_5c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_6a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_6c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_7a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_7b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_7c",
+          "width": 3
+        },
+        {
+          "name": "yobi_4_1a",
+          "width": 4
+        },
+        {
+          "name": "yobi_4_1b",
+          "width": 9
+        },
+        {
+          "name": "yobi_4_1c",
+          "width": 3
+        },
+        {
+          "name": "yobi_4_2a",
+          "width": 4
+        },
+        {
+          "name": "yobi_4_2b",
+          "width": 9
+        },
+        {
+          "name": "yobi_4_2c",
+          "width": 3
+        },
+        {
+          "name": "yobi_4_3a",
+          "width": 4
+        },
+        {
+          "name": "yobi_4_3b",
+          "width": 9
+        },
+        {
+          "name": "yobi_4_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_4a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_4c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_5a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_5c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_6a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_6c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6c",
+          "width": 4
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 719
+    },
+    "jvd_jc": {
+      "recordType": "JC",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "futan_juryo",
+          "width": 3
+        },
+        {
+          "name": "kishu_code",
+          "width": 5
+        },
+        {
+          "name": "kishumei",
+          "width": 34
+        },
+        {
+          "name": "kishu_minarai_code",
+          "width": 1
+        },
+        {
+          "name": "futan_juryo_henkomae",
+          "width": 3
+        },
+        {
+          "name": "kishu_code_henkomae",
+          "width": 5
+        },
+        {
+          "name": "kishumei_henkomae",
+          "width": 34
+        },
+        {
+          "name": "kishu_minarai_code_henkomae",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "happyo_tsukihi_jifun",
+        "umaban"
+      ],
+      "recordBytes": 161
+    },
+    "jvd_o1": {
+      "recordType": "O1",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "fukusho_chakubarai_key",
+          "width": 1
+        },
+        {
+          "name": "odds_tansho",
+          "width": 224
+        },
+        {
+          "name": "odds_fukusho",
+          "width": 336
+        },
+        {
+          "name": "odds_wakuren",
+          "width": 324
+        },
+        {
+          "name": "hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wakuren",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 962
+    },
+    "jvd_o2": {
+      "recordType": "O2",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "odds_umaren",
+          "width": 1989
+        },
+        {
+          "name": "hyosu_gokei_umaren",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 2042
+    },
+    "jvd_o3": {
+      "recordType": "O3",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "odds_wide",
+          "width": 2601
+        },
+        {
+          "name": "hyosu_gokei_wide",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 2654
+    },
+    "jvd_o4": {
+      "recordType": "O4",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "odds_umatan",
+          "width": 3978
+        },
+        {
+          "name": "hyosu_gokei_umatan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 4031
+    },
+    "jvd_o5": {
+      "recordType": "O5",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "odds_sanrenpuku",
+          "width": 12240
+        },
+        {
+          "name": "hyosu_gokei_sanrenpuku",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 12293
+    },
+    "jvd_o6": {
+      "recordType": "O6",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "odds_sanrentan",
+          "width": 83232
+        },
+        {
+          "name": "hyosu_gokei_sanrentan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 83285
+    },
+    "jvd_ra": {
+      "recordType": "RA",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "yobi_code",
+          "width": 1
+        },
+        {
+          "name": "tokubetsu_kyoso_bango",
+          "width": 4
+        },
+        {
+          "name": "kyosomei_hondai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_fukudai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_kakkonai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_hondai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_fukudai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_kakkonai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_ryakusho_10",
+          "width": 20
+        },
+        {
+          "name": "kyosomei_ryakusho_6",
+          "width": 12
+        },
+        {
+          "name": "kyosomei_ryakusho_3",
+          "width": 6
+        },
+        {
+          "name": "kyosomei_kubun",
+          "width": 1
+        },
+        {
+          "name": "jusho_kaiji",
+          "width": 3
+        },
+        {
+          "name": "grade_code",
+          "width": 1
+        },
+        {
+          "name": "grade_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "kyoso_shubetsu_code",
+          "width": 2
+        },
+        {
+          "name": "kyoso_kigo_code",
+          "width": 3
+        },
+        {
+          "name": "juryo_shubetsu_code",
+          "width": 1
+        },
+        {
+          "name": "kyoso_joken_code_2sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_3sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_4sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_5sai_ijo",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_meisho",
+          "width": 60
+        },
+        {
+          "name": "kyori",
+          "width": 4
+        },
+        {
+          "name": "kyori_henkomae",
+          "width": 4
+        },
+        {
+          "name": "track_code",
+          "width": 2
+        },
+        {
+          "name": "track_code_henkomae",
+          "width": 2
+        },
+        {
+          "name": "course_kubun",
+          "width": 2
+        },
+        {
+          "name": "course_kubun_henkomae",
+          "width": 2
+        },
+        {
+          "name": "honshokin",
+          "width": 56
+        },
+        {
+          "name": "honshokin_henkomae",
+          "width": 40
+        },
+        {
+          "name": "fukashokin",
+          "width": 40
+        },
+        {
+          "name": "fukashokin_henkomae",
+          "width": 24
+        },
+        {
+          "name": "hasso_jikoku",
+          "width": 4
+        },
+        {
+          "name": "hasso_jikoku_henkomae",
+          "width": 4
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "nyusen_tosu",
+          "width": 2
+        },
+        {
+          "name": "tenko_code",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt",
+          "width": 1
+        },
+        {
+          "name": "lap_time",
+          "width": 75
+        },
+        {
+          "name": "shogai_mile_time",
+          "width": 4
+        },
+        {
+          "name": "zenhan_3f",
+          "width": 3
+        },
+        {
+          "name": "zenhan_4f",
+          "width": 3
+        },
+        {
+          "name": "kohan_3f",
+          "width": 3
+        },
+        {
+          "name": "kohan_4f",
+          "width": 3
+        },
+        {
+          "name": "corner_tsuka_juni_1",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_2",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_3",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_4",
+          "width": 72
+        },
+        {
+          "name": "record_koshin_kubun",
+          "width": 1
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 1272
+    },
+    "jvd_se": {
+      "recordType": "SE",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "wakuban",
+          "width": 1
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "ketto_toroku_bango",
+          "width": 10
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "umakigo_code",
+          "width": 2
+        },
+        {
+          "name": "seibetsu_code",
+          "width": 1
+        },
+        {
+          "name": "hinshu_code",
+          "width": 1
+        },
+        {
+          "name": "moshoku_code",
+          "width": 2
+        },
+        {
+          "name": "barei",
+          "width": 2
+        },
+        {
+          "name": "tozai_shozoku_code",
+          "width": 1
+        },
+        {
+          "name": "chokyoshi_code",
+          "width": 5
+        },
+        {
+          "name": "chokyoshimei_ryakusho",
+          "width": 8
+        },
+        {
+          "name": "banushi_code",
+          "width": 6
+        },
+        {
+          "name": "banushimei",
+          "width": 64
+        },
+        {
+          "name": "fukushoku_hyoji",
+          "width": 60
+        },
+        {
+          "name": "yobi_1",
+          "width": 60
+        },
+        {
+          "name": "futan_juryo",
+          "width": 3
+        },
+        {
+          "name": "futan_juryo_henkomae",
+          "width": 3
+        },
+        {
+          "name": "blinker_shiyo_kubun",
+          "width": 1
+        },
+        {
+          "name": "yobi_2",
+          "width": 1
+        },
+        {
+          "name": "kishu_code",
+          "width": 5
+        },
+        {
+          "name": "kishu_code_henkomae",
+          "width": 5
+        },
+        {
+          "name": "kishumei_ryakusho",
+          "width": 8
+        },
+        {
+          "name": "kishumei_ryakusho_henkomae",
+          "width": 8
+        },
+        {
+          "name": "kishu_minarai_code",
+          "width": 1
+        },
+        {
+          "name": "kishu_minarai_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "bataiju",
+          "width": 3
+        },
+        {
+          "name": "zogen_fugo",
+          "width": 1
+        },
+        {
+          "name": "zogen_sa",
+          "width": 3
+        },
+        {
+          "name": "ijo_kubun_code",
+          "width": 1
+        },
+        {
+          "name": "nyusen_juni",
+          "width": 2
+        },
+        {
+          "name": "kakutei_chakujun",
+          "width": 2
+        },
+        {
+          "name": "dochaku_kubun",
+          "width": 1
+        },
+        {
+          "name": "dochaku_tosu",
+          "width": 1
+        },
+        {
+          "name": "soha_time",
+          "width": 4
+        },
+        {
+          "name": "chakusa_code_1",
+          "width": 3
+        },
+        {
+          "name": "chakusa_code_2",
+          "width": 3
+        },
+        {
+          "name": "chakusa_code_3",
+          "width": 3
+        },
+        {
+          "name": "corner_1",
+          "width": 2
+        },
+        {
+          "name": "corner_2",
+          "width": 2
+        },
+        {
+          "name": "corner_3",
+          "width": 2
+        },
+        {
+          "name": "corner_4",
+          "width": 2
+        },
+        {
+          "name": "tansho_odds",
+          "width": 4
+        },
+        {
+          "name": "tansho_ninkijun",
+          "width": 2
+        },
+        {
+          "name": "kakutoku_honshokin",
+          "width": 8
+        },
+        {
+          "name": "kakutoku_fukashokin",
+          "width": 8
+        },
+        {
+          "name": "yobi_3",
+          "width": 3
+        },
+        {
+          "name": "yobi_4",
+          "width": 3
+        },
+        {
+          "name": "kohan_4f",
+          "width": 3
+        },
+        {
+          "name": "kohan_3f",
+          "width": 3
+        },
+        {
+          "name": "aiteuma_joho_1",
+          "width": 46
+        },
+        {
+          "name": "aiteuma_joho_2",
+          "width": 46
+        },
+        {
+          "name": "aiteuma_joho_3",
+          "width": 46
+        },
+        {
+          "name": "time_sa",
+          "width": 4
+        },
+        {
+          "name": "record_koshin_kubun",
+          "width": 1
+        },
+        {
+          "name": "mining_kubun",
+          "width": 1
+        },
+        {
+          "name": "yoso_soha_time",
+          "width": 5
+        },
+        {
+          "name": "yoso_gosa_plus",
+          "width": 4
+        },
+        {
+          "name": "yoso_gosa_minus",
+          "width": 4
+        },
+        {
+          "name": "yoso_juni",
+          "width": 2
+        },
+        {
+          "name": "kyakushitsu_hantei",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "umaban",
+        "ketto_toroku_bango"
+      ],
+      "recordBytes": 555
+    },
+    "jvd_tc": {
+      "recordType": "TC",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "hasso_jikoku",
+          "width": 4
+        },
+        {
+          "name": "hasso_jikoku_henkomae",
+          "width": 4
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 45
+    },
+    "jvd_we": {
+      "recordType": "WE",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "henko_shikibetsu",
+          "width": 1
+        },
+        {
+          "name": "tenko_code",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt",
+          "width": 1
+        },
+        {
+          "name": "tenko_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba_henkomae",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt_henkomae",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "happyo_tsukihi_jifun",
+        "henko_shikibetsu"
+      ],
+      "recordBytes": 42
+    },
+    "jvd_wf": {
+      "recordType": "WF",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "yobi_1",
+          "width": 2
+        },
+        {
+          "name": "race_joho_1",
+          "width": 8
+        },
+        {
+          "name": "race_joho_2",
+          "width": 8
+        },
+        {
+          "name": "race_joho_3",
+          "width": 8
+        },
+        {
+          "name": "race_joho_4",
+          "width": 8
+        },
+        {
+          "name": "race_joho_5",
+          "width": 8
+        },
+        {
+          "name": "yobi_2",
+          "width": 6
+        },
+        {
+          "name": "win5_hyosu_gokei",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_1",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_2",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_3",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_4",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_5",
+          "width": 11
+        },
+        {
+          "name": "henkan_flag",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag",
+          "width": 1
+        },
+        {
+          "name": "tekichu_nashi_flag",
+          "width": 1
+        },
+        {
+          "name": "carry_over",
+          "width": 15
+        },
+        {
+          "name": "carry_over_zandaka",
+          "width": 15
+        },
+        {
+          "name": "haraimodoshi_win5_001",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_002",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_003",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_004",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_005",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_006",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_007",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_008",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_009",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_010",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_011",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_012",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_013",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_014",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_015",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_016",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_017",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_018",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_019",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_020",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_021",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_022",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_023",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_024",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_025",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_026",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_027",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_028",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_029",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_030",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_031",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_032",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_033",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_034",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_035",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_036",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_037",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_038",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_039",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_040",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_041",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_042",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_043",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_044",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_045",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_046",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_047",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_048",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_049",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_050",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_051",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_052",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_053",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_054",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_055",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_056",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_057",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_058",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_059",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_060",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_061",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_062",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_063",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_064",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_065",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_066",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_067",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_068",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_069",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_070",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_071",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_072",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_073",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_074",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_075",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_076",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_077",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_078",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_079",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_080",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_081",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_082",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_083",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_084",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_085",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_086",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_087",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_088",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_089",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_090",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_091",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_092",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_093",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_094",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_095",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_096",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_097",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_098",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_099",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_100",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_101",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_102",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_103",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_104",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_105",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_106",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_107",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_108",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_109",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_110",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_111",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_112",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_113",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_114",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_115",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_116",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_117",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_118",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_119",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_120",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_121",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_122",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_123",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_124",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_125",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_126",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_127",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_128",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_129",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_130",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_131",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_132",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_133",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_134",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_135",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_136",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_137",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_138",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_139",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_140",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_141",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_142",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_143",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_144",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_145",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_146",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_147",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_148",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_149",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_150",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_151",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_152",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_153",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_154",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_155",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_156",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_157",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_158",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_159",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_160",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_161",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_162",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_163",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_164",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_165",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_166",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_167",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_168",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_169",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_170",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_171",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_172",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_173",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_174",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_175",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_176",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_177",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_178",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_179",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_180",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_181",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_182",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_183",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_184",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_185",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_186",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_187",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_188",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_189",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_190",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_191",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_192",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_193",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_194",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_195",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_196",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_197",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_198",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_199",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_200",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_201",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_202",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_203",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_204",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_205",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_206",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_207",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_208",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_209",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_210",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_211",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_212",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_213",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_214",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_215",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_216",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_217",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_218",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_219",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_220",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_221",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_222",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_223",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_224",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_225",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_226",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_227",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_228",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_229",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_230",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_231",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_232",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_233",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_234",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_235",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_236",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_237",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_238",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_239",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_240",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_241",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_242",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_243",
+          "width": 29
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi"],
+      "recordBytes": 7215
+    },
+    "jvd_wh": {
+      "recordType": "WH",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "bataiju_joho_01",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_02",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_03",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_04",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_05",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_06",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_07",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_08",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_09",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_10",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_11",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_12",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_13",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_14",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_15",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_16",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_17",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_18",
+          "width": 45
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 847
+    },
+    "nvd_av": {
+      "recordType": "AV",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "jiyu_kubun",
+          "width": 3
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "umaban"],
+      "recordBytes": 78
+    },
+    "nvd_h1": {
+      "recordType": "H1",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "fukusho_chakubarai_key",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 28
+        },
+        {
+          "name": "henkan_wakuban_joho",
+          "width": 8
+        },
+        {
+          "name": "henkan_dowaku_joho",
+          "width": 8
+        },
+        {
+          "name": "hyosu_tansho",
+          "width": 420
+        },
+        {
+          "name": "hyosu_fukusho",
+          "width": 420
+        },
+        {
+          "name": "hyosu_wakuren",
+          "width": 540
+        },
+        {
+          "name": "hyosu_umaren",
+          "width": 2754
+        },
+        {
+          "name": "hyosu_wide",
+          "width": 2754
+        },
+        {
+          "name": "hyosu_umatan",
+          "width": 5508
+        },
+        {
+          "name": "hyosu_sanrenpuku",
+          "width": 16320
+        },
+        {
+          "name": "hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wakuren",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_umaren",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wide",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_umatan",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_sanrenpuku",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_wakuren",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_umaren",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_wide",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_umatan",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_sanrenpuku",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 28955
+    },
+    "nvd_h6": {
+      "recordType": "H6",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 18
+        },
+        {
+          "name": "hyosu_sanrentan",
+          "width": 102816
+        },
+        {
+          "name": "hyosu_gokei_sanrentan",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_sanrentan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 102890
+    },
+    "nvd_ha": {
+      "recordType": "HA",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_wakutan",
+          "width": 1
+        },
+        {
+          "name": "henkan_wakuban_joho",
+          "width": 8
+        },
+        {
+          "name": "henkan_dowaku_joho",
+          "width": 8
+        },
+        {
+          "name": "hyosu_wakutan",
+          "width": 960
+        },
+        {
+          "name": "hyosu_gokei_wakutan",
+          "width": 11
+        },
+        {
+          "name": "henkan_hyosu_gokei_wakutan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 1032
+    },
+    "nvd_hr": {
+      "recordType": "HR",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "fuseiritsu_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_wakutan",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_wakutan",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "tokubarai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_wakutan",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "henkan_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "henkan_umaban_joho",
+          "width": 28
+        },
+        {
+          "name": "henkan_wakuban_joho",
+          "width": 8
+        },
+        {
+          "name": "henkan_dowaku_joho",
+          "width": 8
+        },
+        {
+          "name": "haraimodoshi_tansho_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_tansho_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_tansho_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_4a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_4c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_5a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_fukusho_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_fukusho_5c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakuren_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakuren_3c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_umaren_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umaren_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umaren_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umaren_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umaren_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_4a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_4c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_5a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_5c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_6a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_6c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wide_7a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_wide_7b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wide_7c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_wakutan_1a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakutan_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakutan_1c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakutan_2a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakutan_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakutan_2c",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakutan_3a",
+          "width": 2
+        },
+        {
+          "name": "haraimodoshi_wakutan_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_wakutan_3c",
+          "width": 2
+        },
+        {
+          "name": "yobi_1",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_1a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_2a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_3a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_4a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_4c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_5a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_5c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_umatan_6a",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_umatan_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_umatan_6c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_1c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_2c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrenpuku_3c",
+          "width": 3
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_1c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_2c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_3c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_4c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_5c",
+          "width": 4
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6a",
+          "width": 6
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6b",
+          "width": 9
+        },
+        {
+          "name": "haraimodoshi_sanrentan_6c",
+          "width": 4
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 719
+    },
+    "nvd_jc": {
+      "recordType": "JC",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "futan_juryo",
+          "width": 3
+        },
+        {
+          "name": "kishu_code",
+          "width": 5
+        },
+        {
+          "name": "kishumei",
+          "width": 34
+        },
+        {
+          "name": "kishu_minarai_code",
+          "width": 1
+        },
+        {
+          "name": "futan_juryo_henkomae",
+          "width": 3
+        },
+        {
+          "name": "kishu_code_henkomae",
+          "width": 5
+        },
+        {
+          "name": "kishumei_henkomae",
+          "width": 34
+        },
+        {
+          "name": "kishu_minarai_code_henkomae",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "happyo_tsukihi_jifun",
+        "umaban"
+      ],
+      "recordBytes": 161
+    },
+    "nvd_o1": {
+      "recordType": "O1",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_tansho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_fukusho",
+          "width": 1
+        },
+        {
+          "name": "hatsubai_flag_wakuren",
+          "width": 1
+        },
+        {
+          "name": "fukusho_chakubarai_key",
+          "width": 1
+        },
+        {
+          "name": "odds_tansho",
+          "width": 224
+        },
+        {
+          "name": "odds_fukusho",
+          "width": 336
+        },
+        {
+          "name": "odds_wakuren",
+          "width": 324
+        },
+        {
+          "name": "hyosu_gokei_tansho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_fukusho",
+          "width": 11
+        },
+        {
+          "name": "hyosu_gokei_wakuren",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 962
+    },
+    "nvd_o2": {
+      "recordType": "O2",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_umaren",
+          "width": 1
+        },
+        {
+          "name": "odds_umaren",
+          "width": 1989
+        },
+        {
+          "name": "hyosu_gokei_umaren",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 2042
+    },
+    "nvd_o3": {
+      "recordType": "O3",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_wide",
+          "width": 1
+        },
+        {
+          "name": "odds_wide",
+          "width": 2601
+        },
+        {
+          "name": "hyosu_gokei_wide",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 2654
+    },
+    "nvd_o4": {
+      "recordType": "O4",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_umatan",
+          "width": 1
+        },
+        {
+          "name": "odds_umatan",
+          "width": 3978
+        },
+        {
+          "name": "hyosu_gokei_umatan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 4031
+    },
+    "nvd_o5": {
+      "recordType": "O5",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrenpuku",
+          "width": 1
+        },
+        {
+          "name": "odds_sanrenpuku",
+          "width": 12240
+        },
+        {
+          "name": "hyosu_gokei_sanrenpuku",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 12293
+    },
+    "nvd_o6": {
+      "recordType": "O6",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_sanrentan",
+          "width": 1
+        },
+        {
+          "name": "odds_sanrentan",
+          "width": 83232
+        },
+        {
+          "name": "hyosu_gokei_sanrentan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 83285
+    },
+    "nvd_oa": {
+      "recordType": "OA",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "hatsubai_flag_wakutan",
+          "width": 1
+        },
+        {
+          "name": "odds_wakutan",
+          "width": 640
+        },
+        {
+          "name": "hyosu_gokei_wakutan",
+          "width": 11
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 693
+    },
+    "nvd_ra": {
+      "recordType": "RA",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "yobi_code",
+          "width": 1
+        },
+        {
+          "name": "tokubetsu_kyoso_bango",
+          "width": 4
+        },
+        {
+          "name": "kyosomei_hondai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_fukudai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_kakkonai",
+          "width": 60
+        },
+        {
+          "name": "kyosomei_hondai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_fukudai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_kakkonai_eur",
+          "width": 120
+        },
+        {
+          "name": "kyosomei_ryakusho_10",
+          "width": 20
+        },
+        {
+          "name": "kyosomei_ryakusho_6",
+          "width": 12
+        },
+        {
+          "name": "kyosomei_ryakusho_3",
+          "width": 6
+        },
+        {
+          "name": "kyosomei_kubun",
+          "width": 1
+        },
+        {
+          "name": "jusho_kaiji",
+          "width": 3
+        },
+        {
+          "name": "grade_code",
+          "width": 1
+        },
+        {
+          "name": "grade_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "kyoso_shubetsu_code",
+          "width": 2
+        },
+        {
+          "name": "kyoso_kigo_code",
+          "width": 3
+        },
+        {
+          "name": "juryo_shubetsu_code",
+          "width": 1
+        },
+        {
+          "name": "kyoso_joken_code_2sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_3sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_4sai",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code_5sai_ijo",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_code",
+          "width": 3
+        },
+        {
+          "name": "kyoso_joken_meisho",
+          "width": 60
+        },
+        {
+          "name": "kyori",
+          "width": 4
+        },
+        {
+          "name": "kyori_henkomae",
+          "width": 4
+        },
+        {
+          "name": "track_code",
+          "width": 2
+        },
+        {
+          "name": "track_code_henkomae",
+          "width": 2
+        },
+        {
+          "name": "course_kubun",
+          "width": 2
+        },
+        {
+          "name": "course_kubun_henkomae",
+          "width": 2
+        },
+        {
+          "name": "honshokin",
+          "width": 56
+        },
+        {
+          "name": "honshokin_henkomae",
+          "width": 40
+        },
+        {
+          "name": "fukashokin",
+          "width": 40
+        },
+        {
+          "name": "fukashokin_henkomae",
+          "width": 24
+        },
+        {
+          "name": "hasso_jikoku",
+          "width": 4
+        },
+        {
+          "name": "hasso_jikoku_henkomae",
+          "width": 4
+        },
+        {
+          "name": "toroku_tosu",
+          "width": 2
+        },
+        {
+          "name": "shusso_tosu",
+          "width": 2
+        },
+        {
+          "name": "nyusen_tosu",
+          "width": 2
+        },
+        {
+          "name": "tenko_code",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt",
+          "width": 1
+        },
+        {
+          "name": "lap_time",
+          "width": 75
+        },
+        {
+          "name": "shogai_mile_time",
+          "width": 4
+        },
+        {
+          "name": "zenhan_3f",
+          "width": 3
+        },
+        {
+          "name": "zenhan_4f",
+          "width": 3
+        },
+        {
+          "name": "kohan_3f",
+          "width": 3
+        },
+        {
+          "name": "kohan_4f",
+          "width": 3
+        },
+        {
+          "name": "corner_tsuka_juni_1",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_2",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_3",
+          "width": 72
+        },
+        {
+          "name": "corner_tsuka_juni_4",
+          "width": 72
+        },
+        {
+          "name": "record_koshin_kubun",
+          "width": 1
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 1272
+    },
+    "nvd_se": {
+      "recordType": "SE",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "wakuban",
+          "width": 1
+        },
+        {
+          "name": "umaban",
+          "width": 2
+        },
+        {
+          "name": "ketto_toroku_bango",
+          "width": 10
+        },
+        {
+          "name": "bamei",
+          "width": 36
+        },
+        {
+          "name": "umakigo_code",
+          "width": 2
+        },
+        {
+          "name": "seibetsu_code",
+          "width": 1
+        },
+        {
+          "name": "hinshu_code",
+          "width": 1
+        },
+        {
+          "name": "moshoku_code",
+          "width": 2
+        },
+        {
+          "name": "barei",
+          "width": 2
+        },
+        {
+          "name": "tozai_shozoku_code",
+          "width": 1
+        },
+        {
+          "name": "chokyoshi_code",
+          "width": 5
+        },
+        {
+          "name": "chokyoshimei_ryakusho",
+          "width": 8
+        },
+        {
+          "name": "banushi_code",
+          "width": 6
+        },
+        {
+          "name": "banushimei",
+          "width": 64
+        },
+        {
+          "name": "fukushoku_hyoji",
+          "width": 60
+        },
+        {
+          "name": "yobi_1",
+          "width": 60
+        },
+        {
+          "name": "futan_juryo",
+          "width": 3
+        },
+        {
+          "name": "futan_juryo_henkomae",
+          "width": 3
+        },
+        {
+          "name": "blinker_shiyo_kubun",
+          "width": 1
+        },
+        {
+          "name": "yobi_2",
+          "width": 1
+        },
+        {
+          "name": "kishu_code",
+          "width": 5
+        },
+        {
+          "name": "kishu_code_henkomae",
+          "width": 5
+        },
+        {
+          "name": "kishumei_ryakusho",
+          "width": 8
+        },
+        {
+          "name": "kishumei_ryakusho_henkomae",
+          "width": 8
+        },
+        {
+          "name": "kishu_minarai_code",
+          "width": 1
+        },
+        {
+          "name": "kishu_minarai_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "bataiju",
+          "width": 3
+        },
+        {
+          "name": "zogen_fugo",
+          "width": 1
+        },
+        {
+          "name": "zogen_sa",
+          "width": 3
+        },
+        {
+          "name": "ijo_kubun_code",
+          "width": 1
+        },
+        {
+          "name": "nyusen_juni",
+          "width": 2
+        },
+        {
+          "name": "kakutei_chakujun",
+          "width": 2
+        },
+        {
+          "name": "dochaku_kubun",
+          "width": 1
+        },
+        {
+          "name": "dochaku_tosu",
+          "width": 1
+        },
+        {
+          "name": "soha_time",
+          "width": 4
+        },
+        {
+          "name": "chakusa_code_1",
+          "width": 3
+        },
+        {
+          "name": "chakusa_code_2",
+          "width": 3
+        },
+        {
+          "name": "chakusa_code_3",
+          "width": 3
+        },
+        {
+          "name": "corner_1",
+          "width": 2
+        },
+        {
+          "name": "corner_2",
+          "width": 2
+        },
+        {
+          "name": "corner_3",
+          "width": 2
+        },
+        {
+          "name": "corner_4",
+          "width": 2
+        },
+        {
+          "name": "tansho_odds",
+          "width": 4
+        },
+        {
+          "name": "tansho_ninkijun",
+          "width": 2
+        },
+        {
+          "name": "kakutoku_honshokin",
+          "width": 8
+        },
+        {
+          "name": "kakutoku_fukashokin",
+          "width": 8
+        },
+        {
+          "name": "yobi_3",
+          "width": 3
+        },
+        {
+          "name": "yobi_4",
+          "width": 3
+        },
+        {
+          "name": "kohan_4f",
+          "width": 3
+        },
+        {
+          "name": "kohan_3f",
+          "width": 3
+        },
+        {
+          "name": "aiteuma_joho_1",
+          "width": 46
+        },
+        {
+          "name": "aiteuma_joho_2",
+          "width": 46
+        },
+        {
+          "name": "aiteuma_joho_3",
+          "width": 46
+        },
+        {
+          "name": "time_sa",
+          "width": 4
+        },
+        {
+          "name": "record_koshin_kubun",
+          "width": 1
+        },
+        {
+          "name": "mining_kubun",
+          "width": 1
+        },
+        {
+          "name": "yoso_soha_time",
+          "width": 5
+        },
+        {
+          "name": "yoso_gosa_plus",
+          "width": 4
+        },
+        {
+          "name": "yoso_gosa_minus",
+          "width": 4
+        },
+        {
+          "name": "yoso_juni",
+          "width": 2
+        },
+        {
+          "name": "kyakushitsu_hantei",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "ketto_toroku_bango"
+      ],
+      "recordBytes": 555
+    },
+    "nvd_tc": {
+      "recordType": "TC",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "hasso_jikoku",
+          "width": 4
+        },
+        {
+          "name": "hasso_jikoku_henkomae",
+          "width": 4
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 45
+    },
+    "nvd_we": {
+      "recordType": "WE",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "henko_shikibetsu",
+          "width": 1
+        },
+        {
+          "name": "tenko_code",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt",
+          "width": 1
+        },
+        {
+          "name": "tenko_code_henkomae",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_shiba_henkomae",
+          "width": 1
+        },
+        {
+          "name": "babajotai_code_dirt_henkomae",
+          "width": 1
+        }
+      ],
+      "primaryKey": [
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "happyo_tsukihi_jifun",
+        "henko_shikibetsu"
+      ],
+      "recordBytes": 42
+    },
+    "nvd_wf": {
+      "recordType": "WF",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "yobi_1",
+          "width": 1
+        },
+        {
+          "name": "shikibetsu_code",
+          "width": 1
+        },
+        {
+          "name": "race_joho_1",
+          "width": 8
+        },
+        {
+          "name": "race_joho_2",
+          "width": 8
+        },
+        {
+          "name": "race_joho_3",
+          "width": 8
+        },
+        {
+          "name": "race_joho_4",
+          "width": 8
+        },
+        {
+          "name": "race_joho_5",
+          "width": 8
+        },
+        {
+          "name": "yobi_2",
+          "width": 6
+        },
+        {
+          "name": "win5_hyosu_gokei",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_1",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_2",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_3",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_4",
+          "width": 11
+        },
+        {
+          "name": "yuko_hyosu_5",
+          "width": 11
+        },
+        {
+          "name": "henkan_flag",
+          "width": 1
+        },
+        {
+          "name": "fuseiritsu_flag",
+          "width": 1
+        },
+        {
+          "name": "tekichu_nashi_flag",
+          "width": 1
+        },
+        {
+          "name": "carry_over",
+          "width": 15
+        },
+        {
+          "name": "carry_over_zandaka",
+          "width": 15
+        },
+        {
+          "name": "haraimodoshi_win5_001",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_002",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_003",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_004",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_005",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_006",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_007",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_008",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_009",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_010",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_011",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_012",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_013",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_014",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_015",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_016",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_017",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_018",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_019",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_020",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_021",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_022",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_023",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_024",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_025",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_026",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_027",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_028",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_029",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_030",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_031",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_032",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_033",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_034",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_035",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_036",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_037",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_038",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_039",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_040",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_041",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_042",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_043",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_044",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_045",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_046",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_047",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_048",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_049",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_050",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_051",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_052",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_053",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_054",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_055",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_056",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_057",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_058",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_059",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_060",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_061",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_062",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_063",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_064",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_065",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_066",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_067",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_068",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_069",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_070",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_071",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_072",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_073",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_074",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_075",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_076",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_077",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_078",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_079",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_080",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_081",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_082",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_083",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_084",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_085",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_086",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_087",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_088",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_089",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_090",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_091",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_092",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_093",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_094",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_095",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_096",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_097",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_098",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_099",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_100",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_101",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_102",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_103",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_104",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_105",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_106",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_107",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_108",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_109",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_110",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_111",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_112",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_113",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_114",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_115",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_116",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_117",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_118",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_119",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_120",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_121",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_122",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_123",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_124",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_125",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_126",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_127",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_128",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_129",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_130",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_131",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_132",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_133",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_134",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_135",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_136",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_137",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_138",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_139",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_140",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_141",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_142",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_143",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_144",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_145",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_146",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_147",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_148",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_149",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_150",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_151",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_152",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_153",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_154",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_155",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_156",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_157",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_158",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_159",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_160",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_161",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_162",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_163",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_164",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_165",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_166",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_167",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_168",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_169",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_170",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_171",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_172",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_173",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_174",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_175",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_176",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_177",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_178",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_179",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_180",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_181",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_182",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_183",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_184",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_185",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_186",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_187",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_188",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_189",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_190",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_191",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_192",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_193",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_194",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_195",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_196",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_197",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_198",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_199",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_200",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_201",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_202",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_203",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_204",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_205",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_206",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_207",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_208",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_209",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_210",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_211",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_212",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_213",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_214",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_215",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_216",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_217",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_218",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_219",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_220",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_221",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_222",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_223",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_224",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_225",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_226",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_227",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_228",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_229",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_230",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_231",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_232",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_233",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_234",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_235",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_236",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_237",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_238",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_239",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_240",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_241",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_242",
+          "width": 29
+        },
+        {
+          "name": "haraimodoshi_win5_243",
+          "width": 29
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi"],
+      "recordBytes": 7215
+    },
+    "nvd_wh": {
+      "recordType": "WH",
+      "columns": [
+        {
+          "name": "record_id",
+          "width": 2
+        },
+        {
+          "name": "data_kubun",
+          "width": 1
+        },
+        {
+          "name": "data_sakusei_nengappi",
+          "width": 8
+        },
+        {
+          "name": "kaisai_nen",
+          "width": 4
+        },
+        {
+          "name": "kaisai_tsukihi",
+          "width": 4
+        },
+        {
+          "name": "keibajo_code",
+          "width": 2
+        },
+        {
+          "name": "kaisai_kai",
+          "width": 2
+        },
+        {
+          "name": "kaisai_nichime",
+          "width": 2
+        },
+        {
+          "name": "race_bango",
+          "width": 2
+        },
+        {
+          "name": "happyo_tsukihi_jifun",
+          "width": 8
+        },
+        {
+          "name": "bataiju_joho_01",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_02",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_03",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_04",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_05",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_06",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_07",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_08",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_09",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_10",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_11",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_12",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_13",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_14",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_15",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_16",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_17",
+          "width": 45
+        },
+        {
+          "name": "bataiju_joho_18",
+          "width": 45
+        }
+      ],
+      "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
+      "recordBytes": 847
+    }
+  }
+}

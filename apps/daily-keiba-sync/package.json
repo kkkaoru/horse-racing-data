@@ -1,0 +1,37 @@
+{
+  "name": "daily-keiba-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "bun run d1:migrate && wrangler deploy",
+    "dev": "wrangler dev --test-scheduled",
+    "d1:migrate": "wrangler d1 migrations apply daily-keiba-sync --remote",
+    "d1:migrate:local": "wrangler d1 migrations apply daily-keiba-sync --local",
+    "format": "oxfmt --write src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit",
+    "verify": "bun run format:check && bun run lint && bun run tsc && bun run test:coverage"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "catalog:",
+    "hyparquet": "1.29.2",
+    "hyparquet-compressors": "1.1.1",
+    "hyparquet-writer": "0.16.8",
+    "icebird": "0.8.27",
+    "iconv-lite": "0.7.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "miniflare": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

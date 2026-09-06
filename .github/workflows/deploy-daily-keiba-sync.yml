@@ -1,0 +1,50 @@
+name: Deploy Daily Keiba Sync Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-daily-keiba-sync-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: apps/daily-keiba-sync
+    env:
+      ADMIN_TOKEN: ${{ secrets.DAILY_KEIBA_SYNC_ADMIN_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      JRA_VAN_WORKER_API_TOKEN: ${{ secrets.JRA_VAN_WORKER_API_TOKEN }}
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      R2_CATALOG_TOKEN: ${{ secrets.R2_CATALOG_TOKEN }}
+      UMMACON_WORKER_API_TOKEN: ${{ secrets.UMMACON_WORKER_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install workspace dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+      - name: Verify Worker
+        run: bun run verify
+      - name: Apply D1 migrations
+        run: bunx wrangler d1 migrations apply daily-keiba-sync --remote
+      - name: Upload Worker secrets
+        run: |
+          trap 'rm -f .production-secrets.json' EXIT
+          bun -e 'import { writeFileSync } from "node:fs"; const names = ["ADMIN_TOKEN", "JRA_VAN_WORKER_API_TOKEN", "NEON_DATABASE_URL", "R2_CATALOG_TOKEN", "UMMACON_WORKER_API_TOKEN"]; const values = Object.fromEntries(names.map((name) => { const value = process.env[name]; if (!value) throw new Error(`Missing production secret: ${name}`); return [name, value]; })); writeFileSync(".production-secrets.json", JSON.stringify(values), { mode: 0o600 });'
+          bunx wrangler secret bulk .production-secrets.json
+      - name: Deploy Worker
+        run: bunx wrangler deploy
+      - name: Verify health
+        run: |
+          response="$(curl --fail --silent --show-error https://daily-keiba-sync.kaoru.workers.dev/health)"
+          test "$response" = '{"ok":true,"runtime":"cloudflare-workers-native-daily-keiba-sync"}'
