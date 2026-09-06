@@ -866,10 +866,71 @@ it("getWeightClassStats maps win, quinella, and show rates per body-weight class
   expect(queryText).toMatch(/se\.keibajo_code not in \('81', '82', '83', '84'\)/u);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
     "getWeightClassStats",
-    "v1",
+    "v2",
     PERCLASS_703_RACE,
     settings,
   ]);
+});
+
+it("getWeightClassStats decodes Ban-ei hex horse weights into Ban-ei classes", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        classKey: "1000-1049",
+        quinellaCount: "8",
+        quinellaRate: "20.0",
+        showCount: "12",
+        showRate: "30.0",
+        starts: "40",
+        winCount: "4",
+        winRate: "10.0",
+      },
+    ],
+  });
+  const settings: SimilarRaceStatsSettings = {
+    cellMatching: false,
+    classConditionName: null,
+    includeAge: false,
+    includeBloodlineAncestors: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeFrame: false,
+    includeGrade: false,
+    includeMonthWindow: false,
+    includeNarOnly: false,
+    includeRaceNumber: false,
+    includeRaceSubtitle: false,
+    includeRaceTitle: false,
+    includeRunnerCount: false,
+    includeSex: false,
+    includeSurface: false,
+    includeTrackCode: false,
+    includeTurn: false,
+    includeVenue: true,
+    includeWeight: false,
+    runnerCount: null,
+    sourceScope: "all",
+    years: 10,
+  };
+  const race: RaceDetail = { ...PERCLASS_703_RACE, keibajoCode: "83", source: "nar" };
+  await expect(getWeightClassStats(race, settings)).resolves.toStrictEqual([
+    {
+      key: "1000-1049",
+      quinellaCount: 8,
+      quinellaRate: 20,
+      showCount: 12,
+      showRate: 30,
+      starts: 40,
+      winCount: 4,
+      winRate: 10,
+    },
+  ]);
+  const queryText = stringifyQuery(executeMock.mock.calls.at(-1)?.[0]);
+  expect(queryText).toMatch(/::bit\(32\)::integer/u);
+  expect(queryText).toMatch(/when kg < 900 then 'le899'/u);
+  expect(queryText).toMatch(/se\.keibajo_code in \('81', '82', '83', '84'\)/u);
+  expect(queryText).not.toMatch(/se\.keibajo_code not in \('81', '82', '83', '84'\)/u);
 });
 
 it("getCarriedWeightClassStats maps win, quinella, and show rates per 斤量 class", async () => {

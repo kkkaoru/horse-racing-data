@@ -1413,6 +1413,38 @@ it("shows the 斤量 column when scheduled runners carry different weights", () 
   expect(screen.getByText("斤量")).toBeDefined();
 });
 
+it("shows Ban-ei horse-weight class win rates from hex bataiju", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[]}
+      frameStats={[frameOne]}
+      horseResults={[
+        {
+          ...horsePastWin,
+          bataiju: "3E8",
+          keibajoCode: "83",
+        },
+      ]}
+      keibajoCode="83"
+      realtimeRequest={{
+        apiBaseUrl: "https://realtime.test",
+        day: "06",
+        keibajoCode: "83",
+        month: "09",
+        raceNumber: "12",
+        source: "nar",
+        year: "2026",
+      }}
+      runners={[{ ...runner, bataiju: "3E8" }]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("馬体重")).toBeDefined();
+  expect(screen.getByText("1000-1049kg")).toBeDefined();
+  expect(screen.getAllByText("100.0").length).toBe(2);
+  expect(screen.queryByText("540kg以上")).toBeNull();
+});
+
 it("hides the 斤量 column for ばんえい races", () => {
   render(
     <WinRateHeatmapSection

@@ -701,7 +701,7 @@ const indexWeightClassRatesFromHorseResults = (
     if (kg === null || rank === null) {
       return index;
     }
-    const weightClass = getHorseWeightClass(kg);
+    const weightClass = getHorseWeightClass(kg, result.keibajoCode);
     const current = index.get(weightClass.key) ?? {
       quinellaCount: 0,
       showCount: 0,
@@ -734,10 +734,11 @@ const toClassHeatmapCell = (
 const toWeightHeatmapCell = (
   kg: number | null,
   ratesByClass: Map<string, WeightClassRateCounts>,
+  keibajoCode: string,
 ): WinRateHeatmapCell =>
   kg === null
     ? EMPTY_WIN_RATE_HEATMAP_CELL
-    : toClassHeatmapCell(getHorseWeightClass(kg), ratesByClass);
+    : toClassHeatmapCell(getHorseWeightClass(kg, keibajoCode), ratesByClass);
 
 const toCarriedWeightHeatmapCell = (
   kg: number | null,
@@ -869,7 +870,7 @@ export const buildWinRateHeatmapRows = (
             splitBloodlineLines,
           ),
           trainer: toHeatmapCell(similar?.get("trainer")),
-          weight: toWeightHeatmapCell(currentWeightKg, weightClassRates),
+          weight: toWeightHeatmapCell(currentWeightKg, weightClassRates, input.keibajoCode),
         },
         frameNumber,
         horseName,

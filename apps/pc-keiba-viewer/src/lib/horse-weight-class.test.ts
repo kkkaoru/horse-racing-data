@@ -2,6 +2,7 @@
 import { expect, it } from "vitest";
 
 import {
+  BAN_EI_HORSE_WEIGHT_CLASSES,
   getHorseWeightClass,
   HORSE_WEIGHT_CLASSES,
   indexLiveHorseWeightKg,
@@ -38,74 +39,105 @@ it("treats blank, 000, FFF, and non-positive horse weights as missing", () => {
   expect(parseHorseWeightKg({ bataiju: "abc", keibajoCode: "05" })).toBe(null);
 });
 
+it("classifies Ban-ei horse weights on 50kg class boundaries around 1000kg", () => {
+  expect(BAN_EI_HORSE_WEIGHT_CLASSES.map((weightClass) => weightClass.key)).toStrictEqual([
+    "le899",
+    "900-949",
+    "950-999",
+    "1000-1049",
+    "1050-1099",
+    "1100-1149",
+    "1150-1199",
+    "ge1200",
+  ]);
+  expect(getHorseWeightClass(899, "83")).toStrictEqual({
+    key: "le899",
+    label: "899kg以下",
+    maxKg: 900,
+    minKg: null,
+  });
+  expect(getHorseWeightClass(1000, "83")).toStrictEqual({
+    key: "1000-1049",
+    label: "1000-1049kg",
+    maxKg: 1050,
+    minKg: 1000,
+  });
+  expect(getHorseWeightClass(1200, "83")).toStrictEqual({
+    key: "ge1200",
+    label: "1200kg以上",
+    maxKg: null,
+    minKg: 1200,
+  });
+});
+
 it("classifies horse weights on the inclusive 20kg class boundaries", () => {
-  expect(getHorseWeightClass(399)).toStrictEqual({
+  expect(getHorseWeightClass(399, "05")).toStrictEqual({
     key: "le399",
     label: "399kg以下",
     maxKg: 400,
     minKg: null,
   });
-  expect(getHorseWeightClass(400)).toStrictEqual({
+  expect(getHorseWeightClass(400, "05")).toStrictEqual({
     key: "400-419",
     label: "400-419kg",
     maxKg: 420,
     minKg: 400,
   });
-  expect(getHorseWeightClass(419)).toStrictEqual({
+  expect(getHorseWeightClass(419, "05")).toStrictEqual({
     key: "400-419",
     label: "400-419kg",
     maxKg: 420,
     minKg: 400,
   });
-  expect(getHorseWeightClass(420)).toStrictEqual({
+  expect(getHorseWeightClass(420, "05")).toStrictEqual({
     key: "420-439",
     label: "420-439kg",
     maxKg: 440,
     minKg: 420,
   });
-  expect(getHorseWeightClass(440)).toStrictEqual({
+  expect(getHorseWeightClass(440, "05")).toStrictEqual({
     key: "440-459",
     label: "440-459kg",
     maxKg: 460,
     minKg: 440,
   });
-  expect(getHorseWeightClass(460)).toStrictEqual({
+  expect(getHorseWeightClass(460, "05")).toStrictEqual({
     key: "460-479",
     label: "460-479kg",
     maxKg: 480,
     minKg: 460,
   });
-  expect(getHorseWeightClass(480)).toStrictEqual({
+  expect(getHorseWeightClass(480, "05")).toStrictEqual({
     key: "480-499",
     label: "480-499kg",
     maxKg: 500,
     minKg: 480,
   });
-  expect(getHorseWeightClass(500)).toStrictEqual({
+  expect(getHorseWeightClass(500, "05")).toStrictEqual({
     key: "500-519",
     label: "500-519kg",
     maxKg: 520,
     minKg: 500,
   });
-  expect(getHorseWeightClass(520)).toStrictEqual({
+  expect(getHorseWeightClass(520, "05")).toStrictEqual({
     key: "520-539",
     label: "520-539kg",
     maxKg: 540,
     minKg: 520,
   });
-  expect(getHorseWeightClass(539)).toStrictEqual({
+  expect(getHorseWeightClass(539, "05")).toStrictEqual({
     key: "520-539",
     label: "520-539kg",
     maxKg: 540,
     minKg: 520,
   });
-  expect(getHorseWeightClass(540)).toStrictEqual({
+  expect(getHorseWeightClass(540, "05")).toStrictEqual({
     key: "ge540",
     label: "540kg以上",
     maxKg: null,
     minKg: 540,
   });
-  expect(getHorseWeightClass(Number.NaN)).toStrictEqual({
+  expect(getHorseWeightClass(Number.NaN, "05")).toStrictEqual({
     key: "ge540",
     label: "540kg以上",
     maxKg: null,

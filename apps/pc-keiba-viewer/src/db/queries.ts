@@ -61,7 +61,11 @@ import type {
   TimeScoreRow,
   WeightClassStatsRow,
 } from "../lib/race-types";
-import { inferRaceSourceFromKeibajoCode, isOverseasKeibajoCode } from "../lib/runner-format";
+import {
+  inferRaceSourceFromKeibajoCode,
+  isBanEiKeibajoCode,
+  isOverseasKeibajoCode,
+} from "../lib/runner-format";
 import {
   type RunningStyleBucketFilter,
   type RunningStyleBucketMetrics,
@@ -207,7 +211,17 @@ const filteredHorseKeyUnions = (
   );
 
 const FRAME_STATS_QUERY_VERSION = "v2-rates";
-const WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
+const WEIGHT_CLASS_STATS_QUERY_VERSION = "v2";
+const BAN_EI_BODY_WEIGHT_KG_SQL =
+  "case when upper(btrim(se.bataiju)) in ('', '000', 'FFF') then null when upper(btrim(se.bataiju)) ~ '^[0-9A-F]+$' then ('x' || lpad(upper(btrim(se.bataiju)), 8, '0'))::bit(32)::integer else null end";
+const NON_BAN_EI_BODY_WEIGHT_KG_SQL =
+  "nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric";
+const BAN_EI_WEIGHT_VENUE_SQL = "se.keibajo_code in ('81', '82', '83', '84')";
+const NON_BAN_EI_WEIGHT_VENUE_SQL = "se.keibajo_code not in ('81', '82', '83', '84')";
+const BAN_EI_WEIGHT_CLASS_SQL =
+  "case when kg < 900 then 'le899' when kg < 950 then '900-949' when kg < 1000 then '950-999' when kg < 1050 then '1000-1049' when kg < 1100 then '1050-1099' when kg < 1150 then '1100-1149' when kg < 1200 then '1150-1199' else 'ge1200' end";
+const NON_BAN_EI_WEIGHT_CLASS_SQL =
+  "case when kg < 400 then 'le399' when kg < 420 then '400-419' when kg < 440 then '420-439' when kg < 460 then '440-459' when kg < 480 then '460-479' when kg < 500 then '480-499' when kg < 520 then '500-519' when kg < 540 then '520-539' else 'ge540' end";
 const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
 const RATE_PERCENT_DIVISOR = 10;
@@ -7027,6 +7041,10 @@ export const getWeightClassStats = cache(
         const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
         const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
         const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const isBanEi = isBanEiKeibajoCode(race.keibajoCode);
+        const kgSql = isBanEi ? BAN_EI_BODY_WEIGHT_KG_SQL : NON_BAN_EI_BODY_WEIGHT_KG_SQL;
+        const venueSql = isBanEi ? BAN_EI_WEIGHT_VENUE_SQL : NON_BAN_EI_WEIGHT_VENUE_SQL;
+        const classSql = isBanEi ? BAN_EI_WEIGHT_CLASS_SQL : NON_BAN_EI_WEIGHT_CLASS_SQL;
         const result = await getDb().execute<{
           classKey: string;
           quinellaCount: string;
@@ -7054,7 +7072,7 @@ export const getWeightClassStats = cache(
       ),
       weight_rows as (
         select
-          nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric as kg,
+          ${sql.raw(kgSql)} as kg,
           nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '')::numeric
             as finish_position
         from matched_races
@@ -7064,23 +7082,13 @@ export const getWeightClassStats = cache(
           and se.keibajo_code = matched_races.keibajo_code
           and se.race_bango = matched_races.race_bango
         where
-          se.keibajo_code not in ('81', '82', '83', '84')
-          and nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric > 0
+          ${sql.raw(venueSql)}
+          and ${sql.raw(kgSql)} > 0
           and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
       ),
       classed as (
         select
-          case
-            when kg < 400 then 'le399'
-            when kg < 420 then '400-419'
-            when kg < 440 then '420-439'
-            when kg < 460 then '440-459'
-            when kg < 480 then '460-479'
-            when kg < 500 then '480-499'
-            when kg < 520 then '500-519'
-            when kg < 540 then '520-539'
-            else 'ge540'
-          end as "classKey",
+          ${sql.raw(classSql)} as "classKey",
           finish_position
         from weight_rows
       )

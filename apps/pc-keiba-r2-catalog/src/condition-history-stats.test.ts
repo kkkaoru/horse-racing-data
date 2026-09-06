@@ -79,6 +79,18 @@ it("builds body and carried weight class SQL with Ban'ei venue excluded", () => 
   expect(carried).not.toMatch("jsonb_agg");
 });
 
+it("builds Ban-ei body-weight class SQL with hex decode and Ban-ei buckets", () => {
+  const body = buildConditionWeightClassStatsQuery({
+    env: config,
+    filters: { ...jraFilters, keibajoCode: "83", source: "nar" },
+    kind: "body",
+  });
+  expect(body).toMatch("0x");
+  expect(body).toMatch("'le899'");
+  expect(body).toMatch("'ge1200'");
+  expect(body).not.toMatch("NOT IN ('81', '82', '83', '84')");
+});
+
 it("builds finish-position horse-level SQL and race-time aggregate SQL without jsonb_agg", () => {
   const finish = buildConditionFinishPositionStatsQuery(config, {
     ...jraFilters,

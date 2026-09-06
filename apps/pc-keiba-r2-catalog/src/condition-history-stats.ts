@@ -50,6 +50,56 @@ const BODY_WEIGHT_CLASS_SQL: string = `CASE
     ELSE 'ge540'
   END`;
 
+const BAN_EI_BODY_WEIGHT_CLASS_SQL: string = `CASE
+    WHEN body_weight < 900 THEN 'le899'
+    WHEN body_weight < 950 THEN '900-949'
+    WHEN body_weight < 1000 THEN '950-999'
+    WHEN body_weight < 1050 THEN '1000-1049'
+    WHEN body_weight < 1100 THEN '1050-1099'
+    WHEN body_weight < 1150 THEN '1100-1149'
+    WHEN body_weight < 1200 THEN '1150-1199'
+    ELSE 'ge1200'
+  END`;
+
+const BAN_EI_HEX_BODY_WEIGHT_SQL: string =
+  "try_cast(concat('0x', upper(btrim(coalesce(se.bataiju, '')))) AS INTEGER)";
+
+interface WeightClassSqlParts {
+  classExpr: string;
+  venueExclude: string;
+  weightExpr: string;
+  weightFilter: string;
+}
+
+const weightClassSqlParts = (input: {
+  isBody: boolean;
+  keibajoCode: string;
+}): WeightClassSqlParts => {
+  if (input.isBody && isBanEiKeibajo(input.keibajoCode)) {
+    return {
+      classExpr: BAN_EI_BODY_WEIGHT_CLASS_SQL,
+      venueExclude: "",
+      weightExpr: `${BAN_EI_HEX_BODY_WEIGHT_SQL} AS body_weight`,
+      weightFilter: `AND ${BAN_EI_HEX_BODY_WEIGHT_SQL} > 0 AND upper(btrim(coalesce(se.bataiju, ''))) NOT IN ('', '000', 'FFF')`,
+    };
+  }
+  if (input.isBody) {
+    return {
+      classExpr: BODY_WEIGHT_CLASS_SQL,
+      venueExclude: "AND se.keibajo_code NOT IN ('81', '82', '83', '84')",
+      weightExpr: `${integerSelect("se.bataiju", "000")} AS body_weight`,
+      weightFilter: "AND try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0",
+    };
+  }
+  return {
+    classExpr: CARRIED_WEIGHT_CLASS_SQL,
+    venueExclude: "AND se.keibajo_code NOT IN ('81', '82', '83', '84')",
+    weightExpr: `${doubleSelect("se.futan_juryo")} / 10.0 AS carried_weight`,
+    weightFilter:
+      "AND try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0 > 0",
+  };
+};
+
 const CARRIED_WEIGHT_CLASS_SQL: string = `CASE
     WHEN carried_weight <= 49 THEN 'le49'
     WHEN carried_weight <= 51 THEN '49.5-51'
@@ -206,14 +256,10 @@ export const buildConditionWeightClassStatsQuery = (input: {
   kind: WeightClassKind;
 }): string => {
   const checked = validateFilters(input.filters);
-  const isBody = input.kind === "body";
-  const weightExpr = isBody
-    ? `${integerSelect("se.bataiju", "000")} AS body_weight`
-    : `${doubleSelect("se.futan_juryo")} / 10.0 AS carried_weight`;
-  const classExpr = isBody ? BODY_WEIGHT_CLASS_SQL : CARRIED_WEIGHT_CLASS_SQL;
-  const weightFilter = isBody
-    ? "AND try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0"
-    : "AND try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0 > 0";
+  const parts = weightClassSqlParts({
+    isBody: input.kind === "body",
+    keibajoCode: checked.keibajoCode,
+  });
   return `
 WITH ${currentRaceCteSql(input.env, checked)},
 matched_history AS (
@@ -222,11 +268,11 @@ matched_history AS (
       matchedHistoryArmSql({
         env: input.env,
         extraJoin: "",
-        extraWhere: `AND se.keibajo_code NOT IN ('81', '82', '83', '84')
-    ${weightFilter}`,
+        extraWhere: `${parts.venueExclude}
+    ${parts.weightFilter}`,
         filters: checked,
         selectList: `${finishPositionSql("se")} AS finish_position,
-    ${weightExpr}`,
+    ${parts.weightExpr}`,
         tables,
       }),
     ),
@@ -234,7 +280,7 @@ matched_history AS (
 ),
 classed AS (
   SELECT
-    ${classExpr} AS class_key,
+    ${parts.classExpr} AS class_key,
     finish_position
   FROM matched_history
 )

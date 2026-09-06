@@ -3300,7 +3300,7 @@ it("decodes Ban-ei hex horse weights when classifying heatmap weight cells", () 
     }).map((row) => row.cells.weight),
   ).toStrictEqual([
     {
-      name: "540kg以上",
+      name: "1150-1199kg",
       quinellaCount: 1,
       quinellaRate: 50,
       showCount: 2,

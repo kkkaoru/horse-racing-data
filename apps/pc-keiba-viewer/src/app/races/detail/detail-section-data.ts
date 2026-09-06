@@ -1830,7 +1830,10 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         settings: context.conditionAnalysisSettings,
         source: race.source,
         type: section,
-        weightClassStats: catalogCondition.weightClassStats,
+        weightClassStats:
+          isBanEiKeibajoCode(race.keibajoCode) && catalogCondition.weightClassStats.length === 0
+            ? await getWeightClassStats(race, context.conditionAnalysisSettings)
+            : catalogCondition.weightClassStats,
       };
     }
     let resolvedSettings = context.conditionAnalysisSettings;
