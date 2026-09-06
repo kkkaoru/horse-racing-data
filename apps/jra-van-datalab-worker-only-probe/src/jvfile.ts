@@ -2,5 +2,9 @@
 
 import { decodeJvFileInRust } from "./rust-core";
 
-export const decodeJvFile = async (file: Uint8Array): Promise<Uint8Array> =>
-  decodeJvFileInRust(file);
+const ORACLE_FILENAME = "JGDW2026083020260829112816.jvd";
+
+export const decodeJvFile = async (
+  file: Uint8Array,
+  filename: string = ORACLE_FILENAME,
+): Promise<Uint8Array> => decodeJvFileInRust(file, filename);

@@ -2,12 +2,12 @@
 import { expect, it, vi } from "vitest";
 import { assertCompatibilityAttestation } from "./compatibility-attestation";
 
-const EXPECTED_DIGEST: string = "859951814a4353e7dd51ccbc6cc02e511f2a1244aec9f452cd6cc8f48f12dc7c";
-const MANIFEST_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v2/manifest.json";
-const ARTIFACT_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v2/core.wasm";
+const EXPECTED_DIGEST: string = "ac89bd184b9932a585f496bedf182cd7bfb941532329406dabcd96013f32881b";
+const MANIFEST_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v3.3/manifest.json";
+const ARTIFACT_KEY: string = "artifacts/jvlink-compatible/0500-private-core-v3.3/core.wasm";
 const VALID_MANIFEST: string = JSON.stringify({
   artifactKey: ARTIFACT_KEY,
-  coreVersion: "0500-private-core-v2",
+  coreVersion: "0500-private-core-v3.3",
   credentialsEmbedded: false,
   schemaVersion: 1,
   sha256: EXPECTED_DIGEST,
@@ -32,9 +32,9 @@ it("attests the R2 provenance copy against the statically bundled Rust Wasm", as
     key === MANIFEST_KEY ? object(VALID_MANIFEST) : object(new Uint8Array(8)),
   );
   await expect(assertCompatibilityAttestation({ get })).resolves.toStrictEqual({
-    artifactKey: "artifacts/jvlink-compatible/0500-private-core-v2/core.wasm",
-    coreVersion: "0500-private-core-v2",
-    sha256: "859951814a4353e7dd51ccbc6cc02e511f2a1244aec9f452cd6cc8f48f12dc7c",
+    artifactKey: "artifacts/jvlink-compatible/0500-private-core-v3.3/core.wasm",
+    coreVersion: "0500-private-core-v3.3",
+    sha256: "ac89bd184b9932a585f496bedf182cd7bfb941532329406dabcd96013f32881b",
     verified: true,
   });
   expect(get).toHaveBeenNthCalledWith(1, MANIFEST_KEY);

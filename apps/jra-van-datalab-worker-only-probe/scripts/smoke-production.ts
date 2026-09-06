@@ -16,10 +16,10 @@ const compatibility = (await compatibilityResponse.json()) as {
 if (
   !compatibilityResponse.ok ||
   !compatibility.attestation.verified ||
-  compatibility.attestation.coreVersion !== "0500-private-core-v2" ||
+  compatibility.attestation.coreVersion !== "0500-private-core-v3.3" ||
   !compatibility.deploymentCompatibility ||
   compatibility.fullCompatibility ||
-  compatibility.rustCoreVersion !== "0500-private-core-v2"
+  compatibility.rustCoreVersion !== "0500-private-core-v3.3"
 )
   throw new Error("Production compatibility attestation failed");
 

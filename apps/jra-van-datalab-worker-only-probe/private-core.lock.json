@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "kkkaoru/horse-racing-data-private-core",
-  "releaseTag": "jvlink-core-0500-private-core-v2.1",
-  "coreVersion": "0500-private-core-v2",
+  "releaseTag": "jvlink-core-0500-private-core-v3.3",
+  "coreVersion": "0500-private-core-v3.3",
   "assets": {
-    "jvlink_compatible.js": "19a42e27f388684706293a93283210f23ec645caca75c0fe75f05ee923767e36",
-    "jvlink_compatible.d.ts": "57b2c79b666ef97d0e37d0631c06c32a4bb8d851a0897e3e0a16a71fc886e3ad",
-    "jvlink_compatible_bg.wasm": "859951814a4353e7dd51ccbc6cc02e511f2a1244aec9f452cd6cc8f48f12dc7c",
-    "jvlink_compatible_bg.wasm.d.ts": "b76b5c380f82b0999b038b8cb11118d2e15eaa75e69b5a546aa3c543533995f1",
-    "manifest.json": "43d870104f3916ba113aefe363917bedfc471b57536b9f705c96d5cac3e8e178"
+    "jvlink_compatible.js": "629c330ddf85d40081823dba68a7086ab0b6f20074f0df277bb9d9ccf2756b96",
+    "jvlink_compatible.d.ts": "b02fb8938a5816212b8ea4861269262ba2ac74ab6bf60c5733373adec7bdb507",
+    "jvlink_compatible_bg.wasm": "ac89bd184b9932a585f496bedf182cd7bfb941532329406dabcd96013f32881b",
+    "jvlink_compatible_bg.wasm.d.ts": "bbdc97c13aaadbe67fd04ebfc585bfca757600d1e00f559a6f5ed9619c6a07a3",
+    "manifest.json": "702ab4148cb403c7531f8df55b281a1b18a403c84ee49713db38fbf54c157872"
   }
 }

@@ -44,8 +44,8 @@ const WINE_COMMAND: string = "wine";
 const WINE_VERSION_ARGUMENTS: string[] = ["--version"];
 const MAX_REQUEST_BYTES: number = 4096;
 const JV_FILE_VECTOR: Uint8Array = new Uint8Array([
-  32, 32, 32, 32, 32, 32, 32, 32, 32, 53, 120, 156, 155, 228, 170, 250, 112, 26, 59, 0, 9, 53, 2,
-  123,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 53, 120, 156, 155, 228, 170, 250, 112, 26, 3, 0, 9, 46, 2,
+  116,
 ]);
 
 const isAuthorized = (request: Request, token: string): boolean => {

@@ -115,8 +115,8 @@ export const openJvData = async (
       cause: error,
     });
   }
-  if (fileList.status !== 0) throw new Error("JV file-list request was rejected");
-  if (fileList.files.length === 0) throw new Error("JV file-list returned no files");
+  if (fileList.status !== -1 && fileList.status !== 0 && fileList.status !== 1)
+    throw new Error("JV file-list request was rejected");
   for (const entry of fileList.files)
     if (entry.bytes < 1 || entry.bytes > MAX_FILE_BYTES)
       throw new Error("JV file-list size is outside the bounded limit");
@@ -143,7 +143,7 @@ export const downloadJvFile = async (
   if (file.length !== entry.bytes)
     throw new Error("JV data size does not match its file-list entry");
   return {
-    decoded: await decodeJvFile(file),
+    decoded: await decodeJvFile(file, entry.filename),
     fileBytes: file.length,
     filename: entry.filename,
   };

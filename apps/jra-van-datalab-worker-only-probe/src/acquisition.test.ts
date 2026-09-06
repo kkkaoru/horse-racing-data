@@ -10,10 +10,6 @@ import { TEST_CORE_CONFIG } from "./test-fixtures";
 
 const encoder = new TextEncoder();
 const BOOTSTRAP_OK = encoder.encode("0200100700005000\r\n0\r\n\r\n");
-const SHORT_JV_FILE: Uint8Array = new Uint8Array([
-  32, 32, 32, 32, 32, 32, 32, 32, 32, 53, 120, 156, 155, 228, 170, 250, 112, 26, 59, 0, 9, 53, 2,
-  123,
-]);
 const SOURCES = TEST_CORE_CONFIG;
 const QUERY = { dataSpec: "RACE", from: "20260829000000", to: "20260830235959" };
 const FILENAME = "JGAA00000000000000000000.jvd";
@@ -31,7 +27,7 @@ const fileListEntries = (
   status: number = 0,
 ): Uint8Array =>
   encoder.encode(
-    `02001002${String(status).padStart(3, "0")}05000\r\n` +
+    `02001002${status < 0 ? `-${String(Math.abs(status)).padStart(2, "0")}` : String(status).padStart(3, "0")}05000\r\n` +
       `CD20260829\r\nIT20260829112816\r\nRM1\r\nRT2\r\nTO12345\r\n` +
       entries.map(({ filename, size }) => `FN${filename}\r\nFS${size}\r\n`).join(""),
   );
@@ -69,10 +65,10 @@ const swapNibbles = (value: number): number => ((value >>> 4) | (value << 4)) & 
 const makeJvFile = async (
   decodedLength: number,
   terminated: boolean = true,
+  recordType: string = "JG",
 ): Promise<Uint8Array> => {
   const decoded = new Uint8Array(decodedLength + 1).fill(0x20);
-  decoded[0] = 0x4a;
-  decoded[1] = 0x47;
+  if (decodedLength >= 2) decoded.set(encoder.encode(recordType), 0);
   if (terminated) {
     decoded[decodedLength - 2] = 0x0d;
     decoded[decodedLength - 1] = 0x0a;
@@ -200,16 +196,13 @@ describe("Worker-native acquisition", () => {
       "file-list framing",
     );
 
-    const list = sequenceFetcher([response(BOOTSTRAP_OK), response(fileList(FILENAME, 10, 1))]);
+    const list = sequenceFetcher([response(BOOTSTRAP_OK), response(fileList(FILENAME, 10, 2))]);
     await expect(acquireJvData(SOURCES, QUERY, list.fetcher)).rejects.toThrow("file-list request");
   });
 
-  it("rejects missing and unbounded file entries", async () => {
-    const missing = sequenceFetcher([
-      response(BOOTSTRAP_OK),
-      response(encoder.encode("0200100200005000\r\nRM1\r\nRT2\r\n")),
-    ]);
-    await expect(acquireJvData(SOURCES, QUERY, missing.fetcher)).rejects.toThrow("no files");
+  it("distinguishes a valid empty file-list from unbounded file entries", async () => {
+    const missing = sequenceFetcher([response(BOOTSTRAP_OK), response(fileListEntries([], 1))]);
+    await expect(acquireJvData(SOURCES, QUERY, missing.fetcher)).rejects.toThrow("no records");
 
     for (const size of [0, 20 * 1024 * 1024 + 1]) {
       const mock = sequenceFetcher([response(BOOTSTRAP_OK), response(fileList(FILENAME, size))]);
@@ -234,10 +227,11 @@ describe("Worker-native acquisition", () => {
   });
 
   it("supports every CRLF-framed record prefix and rejects incomplete framing", async () => {
+    const genericFile = await makeJvFile(80, true, "ZZ");
     const generic = sequenceFetcher([
       response(BOOTSTRAP_OK),
-      response(fileList("ZZAA00000000000000000000.jvd", SHORT_JV_FILE.length)),
-      response(SHORT_JV_FILE),
+      response(fileList("ZZAA00000000000000000000.jvd", genericFile.length)),
+      response(genericFile),
     ]);
     await expect(acquireJvData(SOURCES, QUERY, generic.fetcher)).resolves.toMatchObject({
       recordCount: 1,
@@ -257,6 +251,8 @@ describe("Worker-native acquisition", () => {
       response(fileList(FILENAME, emptyFile.length)),
       response(emptyFile),
     ]);
-    await expect(acquireJvData(SOURCES, QUERY, empty.fetcher)).rejects.toThrow("no records");
+    await expect(acquireJvData(SOURCES, QUERY, empty.fetcher)).rejects.toThrow(
+      "shorter than its record type",
+    );
   });
 });

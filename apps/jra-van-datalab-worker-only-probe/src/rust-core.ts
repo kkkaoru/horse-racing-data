@@ -82,4 +82,5 @@ export const decodeFileListInRust = (response: Uint8Array): RustFileListResponse
 export const deriveDownloadPathInRust = (filename: string): string =>
   deriveDownloadPathWasm(filename);
 
-export const decodeJvFileInRust = (file: Uint8Array): Uint8Array => decodeJvFileWasm(file);
+export const decodeJvFileInRust = (file: Uint8Array, filename: string): Uint8Array =>
+  decodeJvFileWasm(file, filename);

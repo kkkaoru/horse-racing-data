@@ -46,9 +46,9 @@ const makeJvFile = async (length: number): Promise<Uint8Array> => {
   return result;
 };
 
-const fileList = (files: readonly { bytes: number; filename: string }[]): Uint8Array =>
+const fileList = (files: readonly { bytes: number; filename: string }[], status = 0): Uint8Array =>
   encoder.encode(
-    "0200100200005000\r\nCD20260829\r\nIT20260829112816\r\nRM1\r\nRT2\r\nTO123\r\n" +
+    `02001002${status < 0 ? `-${String(Math.abs(status)).padStart(2, "0")}` : String(status).padStart(3, "0")}05000\r\nCD20260829\r\nIT20260829112816\r\nRM1\r\nRT2\r\nTO123\r\n` +
       files.map((file) => `FN${file.filename}\r\nFS${file.bytes}\r\n`).join(""),
   );
 
@@ -98,6 +98,16 @@ describe("complete JV-Data streaming", () => {
       expect.objectContaining({ 0: 0x4a, 1: 0x47, 78: 0x0d, 79: 0x0a }),
     );
     expect(events[5]).toMatchObject({ files: 2, records: 2 });
+  });
+
+  it("streams a valid close event when no updates are available", async () => {
+    const fetcher = sequenceFetcher([response(BOOTSTRAP_OK), response(fileList([], 1))]);
+
+    const events = await parseLines(await createJvDataStream(SOURCES, QUERY, fetcher));
+
+    expect(events.map(({ event }) => event)).toEqual(["open", "close"]);
+    expect(events[0]).toMatchObject({ readCount: 0 });
+    expect(events[1]).toMatchObject({ files: 0, records: 0 });
   });
 
   it("errors the response stream when a listed file cannot be downloaded", async () => {

@@ -192,7 +192,7 @@ const compatibility = (await compatibilityResponse.json()) as {
 };
 if (
   !compatibilityResponse.ok ||
-  compatibility.attestation.coreVersion !== "0500-private-core-v2" ||
+  compatibility.attestation.coreVersion !== "0500-private-core-v3.3" ||
   !compatibility.attestation.verified ||
   !compatibility.deploymentCompatibility ||
   compatibility.deployedMethods.length !== 18 ||
@@ -201,7 +201,7 @@ if (
   compatibility.methods.length !== 27 ||
   compatibility.properties.length !== 9 ||
   compatibility.events.length !== 7 ||
-  compatibility.rustCoreVersion !== "0500-private-core-v2"
+  compatibility.rustCoreVersion !== "0500-private-core-v3.3"
 )
   throw new Error("Deployed compatibility ledger does not match the official API surface");
 
