@@ -1,0 +1,863 @@
+{
+  "contract": {
+    "years": [2024, 2025],
+    "weight": 0.05,
+    "decision": "enabled unless adjusted_top1 < baseline_top1",
+    "effective_after_ignored_for_historical_support": true,
+    "baseline_models": {
+      "jra": "iter14-jra-cb-pacestyle-course-v8",
+      "nar": "iter12-nar-xgb-hpo-v8",
+      "ban-ei": "ban-ei-trans-lgbm-ensemble-v1.0"
+    },
+    "decision_note": "Equal and no-support cells remain ON because default behavior is ON; only negative Top1 delta is OFF.",
+    "identity": "Current production cell dimensions; effective_after ignored only to obtain historical support for new rules."
+  },
+  "categories": {
+    "jra": {
+      "default_enabled": true,
+      "cells": {
+        "chukyo_nisai_stakes": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "chukyo_nisai_stakes_jul1600_ninki2": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "chukyo_nisai_stakes_largefield": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "chukyo_nisai_stakes_rerank": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "jockey_pedigree_703": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 65,
+          "baseline_top1_hits": 28,
+          "adjusted_top1_hits": 28,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.4307692307692308,
+          "adjusted_top1_accuracy": 0.4307692307692308,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 31,
+            "2025": 34
+          },
+          "support": "observed"
+        },
+        "joken_005": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 444,
+          "baseline_top1_hits": 205,
+          "adjusted_top1_hits": 207,
+          "top1_delta_hits": 2,
+          "baseline_top1_accuracy": 0.4617117117117117,
+          "adjusted_top1_accuracy": 0.46621621621621623,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 217,
+            "2025": 227
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_1200_winter_summer_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 70,
+          "baseline_top1_hits": 27,
+          "adjusted_top1_hits": 28,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.38571428571428573,
+          "adjusted_top1_accuracy": 0.4,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 34,
+            "2025": 36
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_1700_summer_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 62,
+          "baseline_top1_hits": 26,
+          "adjusted_top1_hits": 29,
+          "top1_delta_hits": 3,
+          "baseline_top1_accuracy": 0.41935483870967744,
+          "adjusted_top1_accuracy": 0.46774193548387094,
+          "winner_top3_delta_hits": 2,
+          "years": {
+            "2024": 32,
+            "2025": 30
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_1800_nonautumn_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 188,
+          "baseline_top1_hits": 77,
+          "adjusted_top1_hits": 75,
+          "top1_delta_hits": -2,
+          "baseline_top1_accuracy": 0.4095744680851064,
+          "adjusted_top1_accuracy": 0.39893617021276595,
+          "winner_top3_delta_hits": -2,
+          "years": {
+            "2024": 90,
+            "2025": 98
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_intermediate_autumn_yeti_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 114,
+          "baseline_top1_hits": 45,
+          "adjusted_top1_hits": 44,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.39473684210526316,
+          "adjusted_top1_accuracy": 0.38596491228070173,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 65,
+            "2025": 49
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_mile_autumn_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 97,
+          "baseline_top1_hits": 37,
+          "adjusted_top1_hits": 37,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.38144329896907214,
+          "adjusted_top1_accuracy": 0.38144329896907214,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 54,
+            "2025": 43
+          },
+          "support": "observed"
+        },
+        "joken_005_dirt_mile_spring_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 107,
+          "baseline_top1_hits": 44,
+          "adjusted_top1_hits": 42,
+          "top1_delta_hits": -2,
+          "baseline_top1_accuracy": 0.411214953271028,
+          "adjusted_top1_accuracy": 0.3925233644859813,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 55,
+            "2025": 52
+          },
+          "support": "observed"
+        },
+        "joken_005_turf_intermediate_spring_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 68,
+          "baseline_top1_hits": 24,
+          "adjusted_top1_hits": 27,
+          "top1_delta_hits": 3,
+          "baseline_top1_accuracy": 0.35294117647058826,
+          "adjusted_top1_accuracy": 0.39705882352941174,
+          "winner_top3_delta_hits": 2,
+          "years": {
+            "2024": 34,
+            "2025": 34
+          },
+          "support": "observed"
+        },
+        "joken_005_turf_long_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 116,
+          "baseline_top1_hits": 50,
+          "adjusted_top1_hits": 51,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.43103448275862066,
+          "adjusted_top1_accuracy": 0.4396551724137931,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 57,
+            "2025": 59
+          },
+          "support": "observed"
+        },
+        "joken_005_turf_mile_yeti_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 174,
+          "baseline_top1_hits": 70,
+          "adjusted_top1_hits": 68,
+          "top1_delta_hits": -2,
+          "baseline_top1_accuracy": 0.40229885057471265,
+          "adjusted_top1_accuracy": 0.39080459770114945,
+          "winner_top3_delta_hits": -1,
+          "years": {
+            "2024": 84,
+            "2025": 90
+          },
+          "support": "observed"
+        },
+        "joken_010": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 238,
+          "baseline_top1_hits": 105,
+          "adjusted_top1_hits": 104,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.4411764705882353,
+          "adjusted_top1_accuracy": 0.4369747899159664,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 118,
+            "2025": 120
+          },
+          "support": "observed"
+        },
+        "joken_010_dirt_intermediate_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 71,
+          "baseline_top1_hits": 38,
+          "adjusted_top1_hits": 38,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.5352112676056338,
+          "adjusted_top1_accuracy": 0.5352112676056338,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 35,
+            "2025": 36
+          },
+          "support": "observed"
+        },
+        "joken_016": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "joken_701": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 178,
+          "baseline_top1_hits": 87,
+          "adjusted_top1_hits": 82,
+          "top1_delta_hits": -5,
+          "baseline_top1_accuracy": 0.4887640449438202,
+          "adjusted_top1_accuracy": 0.4606741573033708,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 86,
+            "2025": 92
+          },
+          "support": "observed"
+        },
+        "joken_701_turf_intermediate_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 176,
+          "baseline_top1_hits": 81,
+          "adjusted_top1_hits": 80,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.4602272727272727,
+          "adjusted_top1_accuracy": 0.45454545454545453,
+          "winner_top3_delta_hits": 5,
+          "years": {
+            "2024": 88,
+            "2025": 88
+          },
+          "support": "observed"
+        },
+        "joken_701_turf_long_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 70,
+          "baseline_top1_hits": 37,
+          "adjusted_top1_hits": 36,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.5285714285714286,
+          "adjusted_top1_accuracy": 0.5142857142857142,
+          "winner_top3_delta_hits": -1,
+          "years": {
+            "2024": 35,
+            "2025": 35
+          },
+          "support": "observed"
+        },
+        "joken_701_turf_mile_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 115,
+          "baseline_top1_hits": 48,
+          "adjusted_top1_hits": 44,
+          "top1_delta_hits": -4,
+          "baseline_top1_accuracy": 0.41739130434782606,
+          "adjusted_top1_accuracy": 0.3826086956521739,
+          "winner_top3_delta_hits": 1,
+          "years": {
+            "2024": 61,
+            "2025": 54
+          },
+          "support": "observed"
+        },
+        "joken_703": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 607,
+          "baseline_top1_hits": 317,
+          "adjusted_top1_hits": 315,
+          "top1_delta_hits": -2,
+          "baseline_top1_accuracy": 0.5222405271828665,
+          "adjusted_top1_accuracy": 0.5189456342668863,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 300,
+            "2025": 307
+          },
+          "support": "observed"
+        },
+        "joken_703_dirt_intermediate_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 610,
+          "baseline_top1_hits": 302,
+          "adjusted_top1_hits": 296,
+          "top1_delta_hits": -6,
+          "baseline_top1_accuracy": 0.49508196721311476,
+          "adjusted_top1_accuracy": 0.4852459016393443,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 303,
+            "2025": 307
+          },
+          "support": "observed"
+        },
+        "joken_703_dirt_mile_summer_qsm_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 69,
+          "baseline_top1_hits": 31,
+          "adjusted_top1_hits": 28,
+          "top1_delta_hits": -3,
+          "baseline_top1_accuracy": 0.4492753623188406,
+          "adjusted_top1_accuracy": 0.4057971014492754,
+          "winner_top3_delta_hits": -1,
+          "years": {
+            "2024": 34,
+            "2025": 35
+          },
+          "support": "observed"
+        },
+        "joken_703_dirt_sprint_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 74,
+          "baseline_top1_hits": 45,
+          "adjusted_top1_hits": 45,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.6081081081081081,
+          "adjusted_top1_accuracy": 0.6081081081081081,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 37,
+            "2025": 37
+          },
+          "support": "observed"
+        },
+        "joken_703_other_extended_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 95,
+          "baseline_top1_hits": 76,
+          "adjusted_top1_hits": 76,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.8,
+          "adjusted_top1_accuracy": 0.8,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 48,
+            "2025": 47
+          },
+          "support": "observed"
+        },
+        "joken_703_turf_1200_largefield_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 125,
+          "baseline_top1_hits": 46,
+          "adjusted_top1_hits": 48,
+          "top1_delta_hits": 2,
+          "baseline_top1_accuracy": 0.368,
+          "adjusted_top1_accuracy": 0.384,
+          "winner_top3_delta_hits": -1,
+          "years": {
+            "2024": 59,
+            "2025": 66
+          },
+          "support": "observed"
+        },
+        "joken_703_turf_1400_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 80,
+          "baseline_top1_hits": 25,
+          "adjusted_top1_hits": 28,
+          "top1_delta_hits": 3,
+          "baseline_top1_accuracy": 0.3125,
+          "adjusted_top1_accuracy": 0.35,
+          "winner_top3_delta_hits": -2,
+          "years": {
+            "2024": 40,
+            "2025": 40
+          },
+          "support": "observed"
+        },
+        "joken_703_turf_intermediate_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 358,
+          "baseline_top1_hits": 149,
+          "adjusted_top1_hits": 144,
+          "top1_delta_hits": -5,
+          "baseline_top1_accuracy": 0.41620111731843573,
+          "adjusted_top1_accuracy": 0.4022346368715084,
+          "winner_top3_delta_hits": -2,
+          "years": {
+            "2024": 173,
+            "2025": 185
+          },
+          "support": "observed"
+        },
+        "joken_703_turf_long_spring_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 80,
+          "baseline_top1_hits": 31,
+          "adjusted_top1_hits": 30,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.3875,
+          "adjusted_top1_accuracy": 0.375,
+          "winner_top3_delta_hits": -2,
+          "years": {
+            "2024": 43,
+            "2025": 37
+          },
+          "support": "observed"
+        },
+        "joken_703_turf_long_summer_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 77,
+          "baseline_top1_hits": 36,
+          "adjusted_top1_hits": 36,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.4675324675324675,
+          "adjusted_top1_accuracy": 0.4675324675324675,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 35,
+            "2025": 42
+          },
+          "support": "observed"
+        },
+        "joken_999": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 30,
+          "baseline_top1_hits": 24,
+          "adjusted_top1_hits": 25,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.8,
+          "adjusted_top1_accuracy": 0.8333333333333334,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 15,
+            "2025": 15
+          },
+          "support": "observed"
+        },
+        "niigata_bsn": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "niigata_kinen": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "niigata_kinen_rerank": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "prior_corner_dirt_smallfield_005": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 9,
+          "baseline_top1_hits": 4,
+          "adjusted_top1_hits": 4,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.4444444444444444,
+          "adjusted_top1_accuracy": 0.4444444444444444,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 6,
+            "2025": 3
+          },
+          "support": "observed"
+        },
+        "sapporo_suzuran": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "sim": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 1609,
+          "baseline_top1_hits": 639,
+          "adjusted_top1_hits": 641,
+          "top1_delta_hits": 2,
+          "baseline_top1_accuracy": 0.3971410814170292,
+          "adjusted_top1_accuracy": 0.3983840894965817,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 801,
+            "2025": 808
+          },
+          "support": "observed"
+        }
+      }
+    },
+    "nar": {
+      "default_enabled": true,
+      "cells": {
+        "c30_tc1": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 122,
+          "baseline_top1_hits": 66,
+          "adjusted_top1_hits": 68,
+          "top1_delta_hits": 2,
+          "baseline_top1_accuracy": 0.5409836065573771,
+          "adjusted_top1_accuracy": 0.5573770491803278,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 49,
+            "2025": 73
+          },
+          "support": "observed"
+        },
+        "c30_tc2_adaptive": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 95,
+          "baseline_top1_hits": 45,
+          "adjusted_top1_hits": 46,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.47368421052631576,
+          "adjusted_top1_accuracy": 0.4842105263157895,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 56,
+            "2025": 39
+          },
+          "support": "observed"
+        },
+        "c42_tc1": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 14,
+          "baseline_top1_hits": 13,
+          "adjusted_top1_hits": 12,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.9285714285714286,
+          "adjusted_top1_accuracy": 0.8571428571428571,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 4,
+            "2025": 10
+          },
+          "support": "observed"
+        },
+        "c43_1400_1500_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 68,
+          "baseline_top1_hits": 29,
+          "adjusted_top1_hits": 32,
+          "top1_delta_hits": 3,
+          "baseline_top1_accuracy": 0.4264705882352941,
+          "adjusted_top1_accuracy": 0.47058823529411764,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 32,
+            "2025": 36
+          },
+          "support": "observed"
+        },
+        "c43_mile_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 12,
+          "baseline_top1_hits": 4,
+          "adjusted_top1_hits": 5,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.3333333333333333,
+          "adjusted_top1_accuracy": 0.4166666666666667,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 2,
+            "2025": 10
+          },
+          "support": "observed"
+        },
+        "c43_tc1_rolling": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 68,
+          "baseline_top1_hits": 35,
+          "adjusted_top1_hits": 33,
+          "top1_delta_hits": -2,
+          "baseline_top1_accuracy": 0.5147058823529411,
+          "adjusted_top1_accuracy": 0.4852941176470588,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 27,
+            "2025": 41
+          },
+          "support": "observed"
+        },
+        "c50_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 18,
+          "baseline_top1_hits": 8,
+          "adjusted_top1_hits": 9,
+          "top1_delta_hits": 1,
+          "baseline_top1_accuracy": 0.4444444444444444,
+          "adjusted_top1_accuracy": 0.5,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 8,
+            "2025": 10
+          },
+          "support": "observed"
+        },
+        "c50_tc2_consensus": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 16,
+          "baseline_top1_hits": 9,
+          "adjusted_top1_hits": 9,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.5625,
+          "adjusted_top1_accuracy": 0.5625,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 4,
+            "2025": 12
+          },
+          "support": "observed"
+        },
+        "c50_tc2_consensus_market": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "c50_tc2_consensus_pedigree": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 0,
+          "baseline_top1_hits": 0,
+          "adjusted_top1_hits": 0,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": null,
+          "adjusted_top1_accuracy": null,
+          "winner_top3_delta_hits": 0,
+          "years": {},
+          "support": "no_historical_support_default_on"
+        },
+        "mukatsu30": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 42,
+          "baseline_top1_hits": 27,
+          "adjusted_top1_hits": 26,
+          "top1_delta_hits": -1,
+          "baseline_top1_accuracy": 0.6428571428571429,
+          "adjusted_top1_accuracy": 0.6190476190476191,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 12,
+            "2025": 30
+          },
+          "support": "observed"
+        },
+        "mukatsu30_tc2_top2": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 40,
+          "baseline_top1_hits": 23,
+          "adjusted_top1_hits": 23,
+          "top1_delta_hits": 0,
+          "baseline_top1_accuracy": 0.575,
+          "adjusted_top1_accuracy": 0.575,
+          "winner_top3_delta_hits": 0,
+          "years": {
+            "2024": 28,
+            "2025": 12
+          },
+          "support": "observed"
+        },
+        "sim": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 23059,
+          "baseline_top1_hits": 13609,
+          "adjusted_top1_hits": 13531,
+          "top1_delta_hits": -78,
+          "baseline_top1_accuracy": 0.5901817077930526,
+          "adjusted_top1_accuracy": 0.586799080619281,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 11711,
+            "2025": 11348
+          },
+          "support": "observed"
+        }
+      }
+    },
+    "ban-ei": {
+      "default_enabled": true,
+      "cells": {
+        "base": {
+          "enabled": true,
+          "weight": 0.05,
+          "races": 222,
+          "baseline_top1_hits": 88,
+          "adjusted_top1_hits": 92,
+          "top1_delta_hits": 4,
+          "baseline_top1_accuracy": 0.3963963963963964,
+          "adjusted_top1_accuracy": 0.4144144144144144,
+          "winner_top3_delta_hits": -3,
+          "years": {
+            "2024": 114,
+            "2025": 108
+          },
+          "support": "observed"
+        },
+        "sim": {
+          "enabled": false,
+          "weight": 0.05,
+          "races": 2867,
+          "baseline_top1_hits": 1007,
+          "adjusted_top1_hits": 989,
+          "top1_delta_hits": -18,
+          "baseline_top1_accuracy": 0.35123822811301014,
+          "adjusted_top1_accuracy": 0.3449598883850715,
+          "winner_top3_delta_hits": -9,
+          "years": {
+            "2024": 1483,
+            "2025": 1384
+          },
+          "support": "observed"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,69 @@
+[project]
+name = "timesfm-finish-position"
+version = "0.1.0"
+description = "Local-only TimesFM 3.0 finish-position routing experiment"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "mlx>=0.31.0; platform_system == 'Darwin'",
+  "numpy>=2.0.0",
+  "pyarrow>=17.0.0",
+  "timesfm[torch]==3.0.0",
+]
+
+[dependency-groups]
+lab = [
+  "catboost>=1.2.10",
+  "chronos-forecasting>=2.0.0",
+  "duckdb==1.5.5",
+  "lightgbm>=4.6.0",
+  "pandas>=2.2.0",
+  "polars>=1.42.0",
+  "prophet>=1.4.0",
+  "psycopg[binary]>=3.2.0",
+  "scikit-learn>=1.6.0",
+  "tabm>=0.0.3",
+  "xgboost>=3.2.0",
+]
+dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.8.0", "ty>=0.0.35"]
+
+[project.scripts]
+timesfm-finish-position = "timesfm_finish_position.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/timesfm_finish_position"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "PGH"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportAny = "none"
+reportExplicitAny = "error"
+reportMissingTypeStubs = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+
+[tool.ty.environment]
+python = ".venv/bin/python"
+
+[tool.pytest.ini_options]
+addopts = "--cov=timesfm_finish_position --cov-report=term-missing --cov-fail-under=90"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

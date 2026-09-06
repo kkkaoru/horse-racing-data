@@ -1,0 +1,11 @@
+{
+  "name": "timesfm-finish-position",
+  "private": true,
+  "scripts": {
+    "check": "uv run ruff format --check . && uv run ruff check . && uv run basedpyright -p pyproject.toml && uv run ty check && uv run pytest",
+    "evaluate:prophet-cell-weights": "PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_cell_policy.py",
+    "evaluate:prophet-served-branches": "PROPHET_SCORE_ADJUSTMENT_ENABLED=off PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_served_branch_policy.py",
+    "evaluate:prophet-maximum-branches": "PROPHET_SCORE_ADJUSTMENT_ENABLED=off PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_maximum_branch_policy.py",
+    "experiment": "uv run timesfm-finish-position"
+  }
+}

@@ -1,0 +1,2964 @@
+{
+  "contract": {
+    "years": [2024, 2025, 2026],
+    "search": "analytic winner-score crossing event sweep over stable intervals",
+    "complexity": "O(E log E) per cell; no fixed grid, linear weight scan, binary search, or Cartesian cell search",
+    "parallel_workers": 1,
+    "metric": "lexicographic aggregate winner-in-Top1 through winner-in-Top5 hits",
+    "tie_break": "earliest lower-weight stable interval representative",
+    "decision": "ON when a positive stable interval improves over weight 0; otherwise OFF",
+    "2026": "partial persisted prediction ledger"
+  },
+  "categories": {
+    "jra": {
+      "default_enabled": true,
+      "default_weight": 0.05,
+      "cells": {
+        "chukyo_nisai_stakes": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 1,
+          "years": {
+            "2025": 1
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "chukyo_nisai_stakes_jul1600_ninki2": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "chukyo_nisai_stakes_largefield": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "chukyo_nisai_stakes_rerank": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "jockey_pedigree_703": {
+          "enabled": true,
+          "weight": 0.14213735231084337,
+          "effective_weight": 0.14213735231084337,
+          "selected_weight": 0.14213735231084337,
+          "races": 74,
+          "years": {
+            "2024": 37,
+            "2025": 37
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 32,
+              "adjusted_hits": 32,
+              "delta_hits": 0,
+              "baseline_rate": 0.43243243243243246,
+              "adjusted_rate": 0.43243243243243246,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 42,
+              "adjusted_hits": 44,
+              "delta_hits": 2,
+              "baseline_rate": 0.5675675675675675,
+              "adjusted_rate": 0.5945945945945946,
+              "delta_pp": 2.7027027027027026
+            },
+            "top3": {
+              "baseline_hits": 52,
+              "adjusted_hits": 51,
+              "delta_hits": -1,
+              "baseline_rate": 0.7027027027027027,
+              "adjusted_rate": 0.6891891891891891,
+              "delta_pp": -1.3513513513513513
+            },
+            "top4": {
+              "baseline_hits": 58,
+              "adjusted_hits": 57,
+              "delta_hits": -1,
+              "baseline_rate": 0.7837837837837838,
+              "adjusted_rate": 0.7702702702702703,
+              "delta_pp": -1.3513513513513513
+            },
+            "top5": {
+              "baseline_hits": 64,
+              "adjusted_hits": 62,
+              "delta_hits": -2,
+              "baseline_rate": 0.8648648648648649,
+              "adjusted_rate": 0.8378378378378378,
+              "delta_pp": -2.7027027027027026
+            }
+          }
+        },
+        "joken_005": {
+          "enabled": true,
+          "weight": 0.05848383657468546,
+          "effective_weight": 0.05848383657468546,
+          "selected_weight": 0.05848383657468546,
+          "races": 586,
+          "years": {
+            "2024": 239,
+            "2025": 246,
+            "2026": 101
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 269,
+              "adjusted_hits": 273,
+              "delta_hits": 4,
+              "baseline_rate": 0.4590443686006826,
+              "adjusted_rate": 0.4658703071672355,
+              "delta_pp": 0.6825938566552902
+            },
+            "top2": {
+              "baseline_hits": 391,
+              "adjusted_hits": 382,
+              "delta_hits": -9,
+              "baseline_rate": 0.6672354948805461,
+              "adjusted_rate": 0.6518771331058021,
+              "delta_pp": -1.5358361774744027
+            },
+            "top3": {
+              "baseline_hits": 452,
+              "adjusted_hits": 446,
+              "delta_hits": -6,
+              "baseline_rate": 0.7713310580204779,
+              "adjusted_rate": 0.7610921501706485,
+              "delta_pp": -1.023890784982935
+            },
+            "top4": {
+              "baseline_hits": 496,
+              "adjusted_hits": 493,
+              "delta_hits": -3,
+              "baseline_rate": 0.8464163822525598,
+              "adjusted_rate": 0.841296928327645,
+              "delta_pp": -0.5119453924914675
+            },
+            "top5": {
+              "baseline_hits": 540,
+              "adjusted_hits": 537,
+              "delta_hits": -3,
+              "baseline_rate": 0.9215017064846417,
+              "adjusted_rate": 0.9163822525597269,
+              "delta_pp": -0.5119453924914675
+            }
+          }
+        },
+        "joken_005_dirt_1200_winter_summer_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.03597368118384755,
+          "effective_weight": 0.03597368118384755,
+          "selected_weight": 0.03597368118384755,
+          "races": 88,
+          "years": {
+            "2024": 38,
+            "2025": 38,
+            "2026": 12
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 33,
+              "adjusted_hits": 35,
+              "delta_hits": 2,
+              "baseline_rate": 0.375,
+              "adjusted_rate": 0.3977272727272727,
+              "delta_pp": 2.272727272727273
+            },
+            "top2": {
+              "baseline_hits": 55,
+              "adjusted_hits": 54,
+              "delta_hits": -1,
+              "baseline_rate": 0.625,
+              "adjusted_rate": 0.6136363636363636,
+              "delta_pp": -1.1363636363636365
+            },
+            "top3": {
+              "baseline_hits": 66,
+              "adjusted_hits": 67,
+              "delta_hits": 1,
+              "baseline_rate": 0.75,
+              "adjusted_rate": 0.7613636363636364,
+              "delta_pp": 1.1363636363636365
+            },
+            "top4": {
+              "baseline_hits": 77,
+              "adjusted_hits": 74,
+              "delta_hits": -3,
+              "baseline_rate": 0.875,
+              "adjusted_rate": 0.8409090909090909,
+              "delta_pp": -3.4090909090909087
+            },
+            "top5": {
+              "baseline_hits": 80,
+              "adjusted_hits": 80,
+              "delta_hits": 0,
+              "baseline_rate": 0.9090909090909091,
+              "adjusted_rate": 0.9090909090909091,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_005_dirt_1700_summer_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.035577445602995306,
+          "effective_weight": 0.035577445602995306,
+          "selected_weight": 0.035577445602995306,
+          "races": 70,
+          "years": {
+            "2024": 35,
+            "2025": 35
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 30,
+              "adjusted_hits": 33,
+              "delta_hits": 3,
+              "baseline_rate": 0.42857142857142855,
+              "adjusted_rate": 0.4714285714285714,
+              "delta_pp": 4.285714285714286
+            },
+            "top2": {
+              "baseline_hits": 43,
+              "adjusted_hits": 43,
+              "delta_hits": 0,
+              "baseline_rate": 0.6142857142857143,
+              "adjusted_rate": 0.6142857142857143,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 55,
+              "adjusted_hits": 56,
+              "delta_hits": 1,
+              "baseline_rate": 0.7857142857142857,
+              "adjusted_rate": 0.8,
+              "delta_pp": 1.4285714285714286
+            },
+            "top4": {
+              "baseline_hits": 62,
+              "adjusted_hits": 61,
+              "delta_hits": -1,
+              "baseline_rate": 0.8857142857142857,
+              "adjusted_rate": 0.8714285714285714,
+              "delta_pp": -1.4285714285714286
+            },
+            "top5": {
+              "baseline_hits": 64,
+              "adjusted_hits": 64,
+              "delta_hits": 0,
+              "baseline_rate": 0.9142857142857143,
+              "adjusted_rate": 0.9142857142857143,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_005_dirt_1800_nonautumn_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.10568089460173255,
+          "effective_weight": 0.10568089460173255,
+          "selected_weight": 0.10568089460173255,
+          "races": 282,
+          "years": {
+            "2024": 104,
+            "2025": 109,
+            "2026": 69
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 116,
+              "adjusted_hits": 117,
+              "delta_hits": 1,
+              "baseline_rate": 0.41134751773049644,
+              "adjusted_rate": 0.4148936170212766,
+              "delta_pp": 0.3546099290780142
+            },
+            "top2": {
+              "baseline_hits": 183,
+              "adjusted_hits": 187,
+              "delta_hits": 4,
+              "baseline_rate": 0.648936170212766,
+              "adjusted_rate": 0.6631205673758865,
+              "delta_pp": 1.4184397163120568
+            },
+            "top3": {
+              "baseline_hits": 218,
+              "adjusted_hits": 215,
+              "delta_hits": -3,
+              "baseline_rate": 0.7730496453900709,
+              "adjusted_rate": 0.7624113475177305,
+              "delta_pp": -1.0638297872340425
+            },
+            "top4": {
+              "baseline_hits": 235,
+              "adjusted_hits": 235,
+              "delta_hits": 0,
+              "baseline_rate": 0.8333333333333334,
+              "adjusted_rate": 0.8333333333333334,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 259,
+              "adjusted_hits": 259,
+              "delta_hits": 0,
+              "baseline_rate": 0.9184397163120568,
+              "adjusted_rate": 0.9184397163120568,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_005_dirt_intermediate_autumn_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.029516942755921247,
+          "effective_weight": 0.029516942755921247,
+          "selected_weight": 0.029516942755921247,
+          "races": 125,
+          "years": {
+            "2024": 72,
+            "2025": 53
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 50,
+              "adjusted_hits": 51,
+              "delta_hits": 1,
+              "baseline_rate": 0.4,
+              "adjusted_rate": 0.408,
+              "delta_pp": 0.8
+            },
+            "top2": {
+              "baseline_hits": 82,
+              "adjusted_hits": 80,
+              "delta_hits": -2,
+              "baseline_rate": 0.656,
+              "adjusted_rate": 0.64,
+              "delta_pp": -1.6
+            },
+            "top3": {
+              "baseline_hits": 101,
+              "adjusted_hits": 99,
+              "delta_hits": -2,
+              "baseline_rate": 0.808,
+              "adjusted_rate": 0.792,
+              "delta_pp": -1.6
+            },
+            "top4": {
+              "baseline_hits": 110,
+              "adjusted_hits": 110,
+              "delta_hits": 0,
+              "baseline_rate": 0.88,
+              "adjusted_rate": 0.88,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 116,
+              "adjusted_hits": 117,
+              "delta_hits": 1,
+              "baseline_rate": 0.928,
+              "adjusted_rate": 0.936,
+              "delta_pp": 0.8
+            }
+          }
+        },
+        "joken_005_dirt_mile_autumn_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.0897250705488148,
+          "effective_weight": 0.0897250705488148,
+          "selected_weight": 0.0897250705488148,
+          "races": 102,
+          "years": {
+            "2024": 57,
+            "2025": 45
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 42,
+              "adjusted_hits": 44,
+              "delta_hits": 2,
+              "baseline_rate": 0.4117647058823529,
+              "adjusted_rate": 0.43137254901960786,
+              "delta_pp": 1.9607843137254901
+            },
+            "top2": {
+              "baseline_hits": 54,
+              "adjusted_hits": 56,
+              "delta_hits": 2,
+              "baseline_rate": 0.5294117647058824,
+              "adjusted_rate": 0.5490196078431373,
+              "delta_pp": 1.9607843137254901
+            },
+            "top3": {
+              "baseline_hits": 74,
+              "adjusted_hits": 75,
+              "delta_hits": 1,
+              "baseline_rate": 0.7254901960784313,
+              "adjusted_rate": 0.7352941176470589,
+              "delta_pp": 0.9803921568627451
+            },
+            "top4": {
+              "baseline_hits": 86,
+              "adjusted_hits": 84,
+              "delta_hits": -2,
+              "baseline_rate": 0.8431372549019608,
+              "adjusted_rate": 0.8235294117647058,
+              "delta_pp": -1.9607843137254901
+            },
+            "top5": {
+              "baseline_hits": 93,
+              "adjusted_hits": 90,
+              "delta_hits": -3,
+              "baseline_rate": 0.9117647058823529,
+              "adjusted_rate": 0.8823529411764706,
+              "delta_pp": -2.941176470588235
+            }
+          }
+        },
+        "joken_005_dirt_mile_spring_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.0030148566844405357,
+          "effective_weight": 0.0030148566844405357,
+          "selected_weight": 0.0030148566844405357,
+          "races": 163,
+          "years": {
+            "2024": 58,
+            "2025": 57,
+            "2026": 48
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 69,
+              "adjusted_hits": 70,
+              "delta_hits": 1,
+              "baseline_rate": 0.4233128834355828,
+              "adjusted_rate": 0.4294478527607362,
+              "delta_pp": 0.6134969325153374
+            },
+            "top2": {
+              "baseline_hits": 95,
+              "adjusted_hits": 96,
+              "delta_hits": 1,
+              "baseline_rate": 0.5828220858895705,
+              "adjusted_rate": 0.588957055214724,
+              "delta_pp": 0.6134969325153374
+            },
+            "top3": {
+              "baseline_hits": 123,
+              "adjusted_hits": 123,
+              "delta_hits": 0,
+              "baseline_rate": 0.754601226993865,
+              "adjusted_rate": 0.754601226993865,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 133,
+              "adjusted_hits": 133,
+              "delta_hits": 0,
+              "baseline_rate": 0.8159509202453987,
+              "adjusted_rate": 0.8159509202453987,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 143,
+              "adjusted_hits": 143,
+              "delta_hits": 0,
+              "baseline_rate": 0.8773006134969326,
+              "adjusted_rate": 0.8773006134969326,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_005_turf_intermediate_spring_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.12633591351347484,
+          "effective_weight": 0.12633591351347484,
+          "selected_weight": 0.12633591351347484,
+          "races": 101,
+          "years": {
+            "2024": 35,
+            "2025": 36,
+            "2026": 30
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 38,
+              "adjusted_hits": 46,
+              "delta_hits": 8,
+              "baseline_rate": 0.37623762376237624,
+              "adjusted_rate": 0.45544554455445546,
+              "delta_pp": 7.920792079207921
+            },
+            "top2": {
+              "baseline_hits": 62,
+              "adjusted_hits": 63,
+              "delta_hits": 1,
+              "baseline_rate": 0.6138613861386139,
+              "adjusted_rate": 0.6237623762376238,
+              "delta_pp": 0.9900990099009901
+            },
+            "top3": {
+              "baseline_hits": 73,
+              "adjusted_hits": 74,
+              "delta_hits": 1,
+              "baseline_rate": 0.7227722772277227,
+              "adjusted_rate": 0.7326732673267327,
+              "delta_pp": 0.9900990099009901
+            },
+            "top4": {
+              "baseline_hits": 81,
+              "adjusted_hits": 82,
+              "delta_hits": 1,
+              "baseline_rate": 0.801980198019802,
+              "adjusted_rate": 0.8118811881188119,
+              "delta_pp": 0.9900990099009901
+            },
+            "top5": {
+              "baseline_hits": 90,
+              "adjusted_hits": 90,
+              "delta_hits": 0,
+              "baseline_rate": 0.8910891089108911,
+              "adjusted_rate": 0.8910891089108911,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_005_turf_long_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.05740852142637267,
+          "effective_weight": 0.05740852142637267,
+          "selected_weight": 0.05740852142637267,
+          "races": 153,
+          "years": {
+            "2024": 60,
+            "2025": 62,
+            "2026": 31
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 66,
+              "adjusted_hits": 68,
+              "delta_hits": 2,
+              "baseline_rate": 0.43137254901960786,
+              "adjusted_rate": 0.4444444444444444,
+              "delta_pp": 1.3071895424836601
+            },
+            "top2": {
+              "baseline_hits": 99,
+              "adjusted_hits": 101,
+              "delta_hits": 2,
+              "baseline_rate": 0.6470588235294118,
+              "adjusted_rate": 0.6601307189542484,
+              "delta_pp": 1.3071895424836601
+            },
+            "top3": {
+              "baseline_hits": 120,
+              "adjusted_hits": 122,
+              "delta_hits": 2,
+              "baseline_rate": 0.7843137254901961,
+              "adjusted_rate": 0.7973856209150327,
+              "delta_pp": 1.3071895424836601
+            },
+            "top4": {
+              "baseline_hits": 131,
+              "adjusted_hits": 129,
+              "delta_hits": -2,
+              "baseline_rate": 0.8562091503267973,
+              "adjusted_rate": 0.8431372549019608,
+              "delta_pp": -1.3071895424836601
+            },
+            "top5": {
+              "baseline_hits": 137,
+              "adjusted_hits": 138,
+              "delta_hits": 1,
+              "baseline_rate": 0.8954248366013072,
+              "adjusted_rate": 0.9019607843137255,
+              "delta_pp": 0.6535947712418301
+            }
+          }
+        },
+        "joken_005_turf_mile_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.0036946037007848814,
+          "effective_weight": 0.0036946037007848814,
+          "selected_weight": 0.0036946037007848814,
+          "races": 226,
+          "years": {
+            "2024": 93,
+            "2025": 99,
+            "2026": 34
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 89,
+              "adjusted_hits": 90,
+              "delta_hits": 1,
+              "baseline_rate": 0.3938053097345133,
+              "adjusted_rate": 0.39823008849557523,
+              "delta_pp": 0.4424778761061947
+            },
+            "top2": {
+              "baseline_hits": 135,
+              "adjusted_hits": 136,
+              "delta_hits": 1,
+              "baseline_rate": 0.5973451327433629,
+              "adjusted_rate": 0.6017699115044248,
+              "delta_pp": 0.4424778761061947
+            },
+            "top3": {
+              "baseline_hits": 165,
+              "adjusted_hits": 165,
+              "delta_hits": 0,
+              "baseline_rate": 0.7300884955752213,
+              "adjusted_rate": 0.7300884955752213,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 182,
+              "adjusted_hits": 182,
+              "delta_hits": 0,
+              "baseline_rate": 0.8053097345132744,
+              "adjusted_rate": 0.8053097345132744,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 192,
+              "adjusted_hits": 193,
+              "delta_hits": 1,
+              "baseline_rate": 0.8495575221238938,
+              "adjusted_rate": 0.8539823008849557,
+              "delta_pp": 0.4424778761061947
+            }
+          }
+        },
+        "joken_010": {
+          "enabled": true,
+          "weight": 0.015598871241216268,
+          "effective_weight": 0.015598871241216268,
+          "selected_weight": 0.015598871241216268,
+          "races": 328,
+          "years": {
+            "2024": 134,
+            "2025": 128,
+            "2026": 66
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 144,
+              "adjusted_hits": 146,
+              "delta_hits": 2,
+              "baseline_rate": 0.43902439024390244,
+              "adjusted_rate": 0.4451219512195122,
+              "delta_pp": 0.6097560975609756
+            },
+            "top2": {
+              "baseline_hits": 196,
+              "adjusted_hits": 196,
+              "delta_hits": 0,
+              "baseline_rate": 0.5975609756097561,
+              "adjusted_rate": 0.5975609756097561,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 241,
+              "adjusted_hits": 242,
+              "delta_hits": 1,
+              "baseline_rate": 0.7347560975609756,
+              "adjusted_rate": 0.7378048780487805,
+              "delta_pp": 0.3048780487804878
+            },
+            "top4": {
+              "baseline_hits": 267,
+              "adjusted_hits": 267,
+              "delta_hits": 0,
+              "baseline_rate": 0.8140243902439024,
+              "adjusted_rate": 0.8140243902439024,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 287,
+              "adjusted_hits": 286,
+              "delta_hits": -1,
+              "baseline_rate": 0.875,
+              "adjusted_rate": 0.8719512195121951,
+              "delta_pp": -0.3048780487804878
+            }
+          }
+        },
+        "joken_010_dirt_intermediate_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.01899686062678911,
+          "effective_weight": 0.01899686062678911,
+          "selected_weight": 0.01899686062678911,
+          "races": 99,
+          "years": {
+            "2024": 39,
+            "2025": 39,
+            "2026": 21
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 53,
+              "adjusted_hits": 54,
+              "delta_hits": 1,
+              "baseline_rate": 0.5353535353535354,
+              "adjusted_rate": 0.5454545454545454,
+              "delta_pp": 1.0101010101010102
+            },
+            "top2": {
+              "baseline_hits": 70,
+              "adjusted_hits": 70,
+              "delta_hits": 0,
+              "baseline_rate": 0.7070707070707071,
+              "adjusted_rate": 0.7070707070707071,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 77,
+              "adjusted_hits": 77,
+              "delta_hits": 0,
+              "baseline_rate": 0.7777777777777778,
+              "adjusted_rate": 0.7777777777777778,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 85,
+              "adjusted_hits": 85,
+              "delta_hits": 0,
+              "baseline_rate": 0.8585858585858586,
+              "adjusted_rate": 0.8585858585858586,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 89,
+              "adjusted_hits": 89,
+              "delta_hits": 0,
+              "baseline_rate": 0.898989898989899,
+              "adjusted_rate": 0.898989898989899,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_016": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "joken_701": {
+          "enabled": true,
+          "weight": 0.04472752402506616,
+          "effective_weight": 0.04472752402506616,
+          "selected_weight": 0.04472752402506616,
+          "races": 232,
+          "years": {
+            "2024": 104,
+            "2025": 102,
+            "2026": 26
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 110,
+              "adjusted_hits": 110,
+              "delta_hits": 0,
+              "baseline_rate": 0.47413793103448276,
+              "adjusted_rate": 0.47413793103448276,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 157,
+              "adjusted_hits": 157,
+              "delta_hits": 0,
+              "baseline_rate": 0.6767241379310345,
+              "adjusted_rate": 0.6767241379310345,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 185,
+              "adjusted_hits": 186,
+              "delta_hits": 1,
+              "baseline_rate": 0.7974137931034483,
+              "adjusted_rate": 0.8017241379310345,
+              "delta_pp": 0.43103448275862066
+            },
+            "top4": {
+              "baseline_hits": 201,
+              "adjusted_hits": 201,
+              "delta_hits": 0,
+              "baseline_rate": 0.8663793103448276,
+              "adjusted_rate": 0.8663793103448276,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 208,
+              "adjusted_hits": 208,
+              "delta_hits": 0,
+              "baseline_rate": 0.896551724137931,
+              "adjusted_rate": 0.896551724137931,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_701_turf_intermediate_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 209,
+          "years": {
+            "2024": 98,
+            "2025": 99,
+            "2026": 12
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 98,
+              "adjusted_hits": 98,
+              "delta_hits": 0,
+              "baseline_rate": 0.4688995215311005,
+              "adjusted_rate": 0.4688995215311005,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 139,
+              "adjusted_hits": 139,
+              "delta_hits": 0,
+              "baseline_rate": 0.6650717703349283,
+              "adjusted_rate": 0.6650717703349283,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 168,
+              "adjusted_hits": 168,
+              "delta_hits": 0,
+              "baseline_rate": 0.8038277511961722,
+              "adjusted_rate": 0.8038277511961722,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 190,
+              "adjusted_hits": 190,
+              "delta_hits": 0,
+              "baseline_rate": 0.9090909090909091,
+              "adjusted_rate": 0.9090909090909091,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 195,
+              "adjusted_hits": 195,
+              "delta_hits": 0,
+              "baseline_rate": 0.9330143540669856,
+              "adjusted_rate": 0.9330143540669856,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_701_turf_long_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.1900255782785395,
+          "effective_weight": 0.1900255782785395,
+          "selected_weight": 0.1900255782785395,
+          "races": 86,
+          "years": {
+            "2024": 37,
+            "2025": 42,
+            "2026": 7
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 44,
+              "adjusted_hits": 44,
+              "delta_hits": 0,
+              "baseline_rate": 0.5116279069767442,
+              "adjusted_rate": 0.5116279069767442,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 61,
+              "adjusted_hits": 63,
+              "delta_hits": 2,
+              "baseline_rate": 0.7093023255813954,
+              "adjusted_rate": 0.7325581395348837,
+              "delta_pp": 2.3255813953488373
+            },
+            "top3": {
+              "baseline_hits": 69,
+              "adjusted_hits": 69,
+              "delta_hits": 0,
+              "baseline_rate": 0.8023255813953488,
+              "adjusted_rate": 0.8023255813953488,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 78,
+              "adjusted_hits": 75,
+              "delta_hits": -3,
+              "baseline_rate": 0.9069767441860465,
+              "adjusted_rate": 0.872093023255814,
+              "delta_pp": -3.488372093023256
+            },
+            "top5": {
+              "baseline_hits": 81,
+              "adjusted_hits": 81,
+              "delta_hits": 0,
+              "baseline_rate": 0.9418604651162791,
+              "adjusted_rate": 0.9418604651162791,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_701_turf_mile_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 127,
+          "years": {
+            "2024": 63,
+            "2025": 61,
+            "2026": 3
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 51,
+              "adjusted_hits": 51,
+              "delta_hits": 0,
+              "baseline_rate": 0.4015748031496063,
+              "adjusted_rate": 0.4015748031496063,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 85,
+              "adjusted_hits": 85,
+              "delta_hits": 0,
+              "baseline_rate": 0.6692913385826772,
+              "adjusted_rate": 0.6692913385826772,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 101,
+              "adjusted_hits": 101,
+              "delta_hits": 0,
+              "baseline_rate": 0.7952755905511811,
+              "adjusted_rate": 0.7952755905511811,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 108,
+              "adjusted_hits": 108,
+              "delta_hits": 0,
+              "baseline_rate": 0.8503937007874016,
+              "adjusted_rate": 0.8503937007874016,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 116,
+              "adjusted_hits": 116,
+              "delta_hits": 0,
+              "baseline_rate": 0.9133858267716536,
+              "adjusted_rate": 0.9133858267716536,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703": {
+          "enabled": true,
+          "weight": 0.0010006350019396671,
+          "effective_weight": 0.0010006350019396671,
+          "selected_weight": 0.0010006350019396671,
+          "races": 833,
+          "years": {
+            "2024": 334,
+            "2025": 328,
+            "2026": 171
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 428,
+              "adjusted_hits": 428,
+              "delta_hits": 0,
+              "baseline_rate": 0.5138055222088835,
+              "adjusted_rate": 0.5138055222088835,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 609,
+              "adjusted_hits": 610,
+              "delta_hits": 1,
+              "baseline_rate": 0.7310924369747899,
+              "adjusted_rate": 0.7322929171668667,
+              "delta_pp": 0.12004801920768307
+            },
+            "top3": {
+              "baseline_hits": 701,
+              "adjusted_hits": 701,
+              "delta_hits": 0,
+              "baseline_rate": 0.8415366146458584,
+              "adjusted_rate": 0.8415366146458584,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 760,
+              "adjusted_hits": 760,
+              "delta_hits": 0,
+              "baseline_rate": 0.9123649459783914,
+              "adjusted_rate": 0.9123649459783914,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 787,
+              "adjusted_hits": 787,
+              "delta_hits": 0,
+              "baseline_rate": 0.9447779111644657,
+              "adjusted_rate": 0.9447779111644657,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_dirt_intermediate_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.003981787190017926,
+          "effective_weight": 0.003981787190017926,
+          "selected_weight": 0.003981787190017926,
+          "races": 856,
+          "years": {
+            "2024": 347,
+            "2025": 350,
+            "2026": 159
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 426,
+              "adjusted_hits": 427,
+              "delta_hits": 1,
+              "baseline_rate": 0.4976635514018692,
+              "adjusted_rate": 0.49883177570093457,
+              "delta_pp": 0.11682242990654204
+            },
+            "top2": {
+              "baseline_hits": 611,
+              "adjusted_hits": 611,
+              "delta_hits": 0,
+              "baseline_rate": 0.7137850467289719,
+              "adjusted_rate": 0.7137850467289719,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 711,
+              "adjusted_hits": 710,
+              "delta_hits": -1,
+              "baseline_rate": 0.830607476635514,
+              "adjusted_rate": 0.8294392523364486,
+              "delta_pp": -0.11682242990654204
+            },
+            "top4": {
+              "baseline_hits": 758,
+              "adjusted_hits": 758,
+              "delta_hits": 0,
+              "baseline_rate": 0.8855140186915887,
+              "adjusted_rate": 0.8855140186915887,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 803,
+              "adjusted_hits": 802,
+              "delta_hits": -1,
+              "baseline_rate": 0.9380841121495327,
+              "adjusted_rate": 0.9369158878504673,
+              "delta_pp": -0.11682242990654204
+            }
+          }
+        },
+        "joken_703_dirt_mile_summer_qsm_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 76,
+          "years": {
+            "2024": 38,
+            "2025": 38
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 37,
+              "adjusted_hits": 37,
+              "delta_hits": 0,
+              "baseline_rate": 0.4868421052631579,
+              "adjusted_rate": 0.4868421052631579,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 58,
+              "adjusted_hits": 58,
+              "delta_hits": 0,
+              "baseline_rate": 0.7631578947368421,
+              "adjusted_rate": 0.7631578947368421,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 66,
+              "adjusted_hits": 66,
+              "delta_hits": 0,
+              "baseline_rate": 0.868421052631579,
+              "adjusted_rate": 0.868421052631579,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 68,
+              "adjusted_hits": 68,
+              "delta_hits": 0,
+              "baseline_rate": 0.8947368421052632,
+              "adjusted_rate": 0.8947368421052632,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 71,
+              "adjusted_hits": 71,
+              "delta_hits": 0,
+              "baseline_rate": 0.9342105263157895,
+              "adjusted_rate": 0.9342105263157895,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_dirt_sprint_yeti_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 97,
+          "years": {
+            "2024": 44,
+            "2025": 42,
+            "2026": 11
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 59,
+              "adjusted_hits": 59,
+              "delta_hits": 0,
+              "baseline_rate": 0.6082474226804123,
+              "adjusted_rate": 0.6082474226804123,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 86,
+              "adjusted_hits": 86,
+              "delta_hits": 0,
+              "baseline_rate": 0.8865979381443299,
+              "adjusted_rate": 0.8865979381443299,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 91,
+              "adjusted_hits": 91,
+              "delta_hits": 0,
+              "baseline_rate": 0.9381443298969072,
+              "adjusted_rate": 0.9381443298969072,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 93,
+              "adjusted_hits": 93,
+              "delta_hits": 0,
+              "baseline_rate": 0.9587628865979382,
+              "adjusted_rate": 0.9587628865979382,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 96,
+              "adjusted_hits": 96,
+              "delta_hits": 0,
+              "baseline_rate": 0.9896907216494846,
+              "adjusted_rate": 0.9896907216494846,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_other_extended_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.08938367696123595,
+          "effective_weight": 0.08938367696123595,
+          "selected_weight": 0.08938367696123595,
+          "races": 194,
+          "years": {
+            "2024": 84,
+            "2025": 79,
+            "2026": 31
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 150,
+              "adjusted_hits": 151,
+              "delta_hits": 1,
+              "baseline_rate": 0.7731958762886598,
+              "adjusted_rate": 0.7783505154639175,
+              "delta_pp": 0.5154639175257731
+            },
+            "top2": {
+              "baseline_hits": 180,
+              "adjusted_hits": 180,
+              "delta_hits": 0,
+              "baseline_rate": 0.9278350515463918,
+              "adjusted_rate": 0.9278350515463918,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 190,
+              "adjusted_hits": 190,
+              "delta_hits": 0,
+              "baseline_rate": 0.979381443298969,
+              "adjusted_rate": 0.979381443298969,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 191,
+              "adjusted_hits": 191,
+              "delta_hits": 0,
+              "baseline_rate": 0.9845360824742269,
+              "adjusted_rate": 0.9845360824742269,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 194,
+              "adjusted_hits": 194,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_turf_1200_largefield_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.08865994834452853,
+          "effective_weight": 0.08865994834452853,
+          "selected_weight": 0.08865994834452853,
+          "races": 157,
+          "years": {
+            "2024": 65,
+            "2025": 70,
+            "2026": 22
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 65,
+              "adjusted_hits": 69,
+              "delta_hits": 4,
+              "baseline_rate": 0.4140127388535032,
+              "adjusted_rate": 0.4394904458598726,
+              "delta_pp": 2.547770700636943
+            },
+            "top2": {
+              "baseline_hits": 92,
+              "adjusted_hits": 97,
+              "delta_hits": 5,
+              "baseline_rate": 0.5859872611464968,
+              "adjusted_rate": 0.6178343949044586,
+              "delta_pp": 3.1847133757961785
+            },
+            "top3": {
+              "baseline_hits": 118,
+              "adjusted_hits": 116,
+              "delta_hits": -2,
+              "baseline_rate": 0.7515923566878981,
+              "adjusted_rate": 0.7388535031847133,
+              "delta_pp": -1.2738853503184715
+            },
+            "top4": {
+              "baseline_hits": 128,
+              "adjusted_hits": 128,
+              "delta_hits": 0,
+              "baseline_rate": 0.8152866242038217,
+              "adjusted_rate": 0.8152866242038217,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 136,
+              "adjusted_hits": 140,
+              "delta_hits": 4,
+              "baseline_rate": 0.8662420382165605,
+              "adjusted_rate": 0.89171974522293,
+              "delta_pp": 2.547770700636943
+            }
+          }
+        },
+        "joken_703_turf_1400_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.2470744186228711,
+          "effective_weight": 0.2470744186228711,
+          "selected_weight": 0.2470744186228711,
+          "races": 104,
+          "years": {
+            "2024": 42,
+            "2025": 48,
+            "2026": 14
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 32,
+              "adjusted_hits": 39,
+              "delta_hits": 7,
+              "baseline_rate": 0.3076923076923077,
+              "adjusted_rate": 0.375,
+              "delta_pp": 6.730769230769231
+            },
+            "top2": {
+              "baseline_hits": 62,
+              "adjusted_hits": 53,
+              "delta_hits": -9,
+              "baseline_rate": 0.5961538461538461,
+              "adjusted_rate": 0.5096153846153846,
+              "delta_pp": -8.653846153846153
+            },
+            "top3": {
+              "baseline_hits": 76,
+              "adjusted_hits": 71,
+              "delta_hits": -5,
+              "baseline_rate": 0.7307692307692307,
+              "adjusted_rate": 0.6826923076923077,
+              "delta_pp": -4.807692307692308
+            },
+            "top4": {
+              "baseline_hits": 83,
+              "adjusted_hits": 82,
+              "delta_hits": -1,
+              "baseline_rate": 0.7980769230769231,
+              "adjusted_rate": 0.7884615384615384,
+              "delta_pp": -0.9615384615384616
+            },
+            "top5": {
+              "baseline_hits": 89,
+              "adjusted_hits": 88,
+              "delta_hits": -1,
+              "baseline_rate": 0.8557692307692307,
+              "adjusted_rate": 0.8461538461538461,
+              "delta_pp": -0.9615384615384616
+            }
+          }
+        },
+        "joken_703_turf_intermediate_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.0003723483394773134,
+          "effective_weight": 0.0003723483394773134,
+          "selected_weight": 0.0003723483394773134,
+          "races": 460,
+          "years": {
+            "2024": 190,
+            "2025": 201,
+            "2026": 69
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 187,
+              "adjusted_hits": 188,
+              "delta_hits": 1,
+              "baseline_rate": 0.40652173913043477,
+              "adjusted_rate": 0.40869565217391307,
+              "delta_pp": 0.21739130434782608
+            },
+            "top2": {
+              "baseline_hits": 289,
+              "adjusted_hits": 289,
+              "delta_hits": 0,
+              "baseline_rate": 0.6282608695652174,
+              "adjusted_rate": 0.6282608695652174,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 347,
+              "adjusted_hits": 347,
+              "delta_hits": 0,
+              "baseline_rate": 0.7543478260869565,
+              "adjusted_rate": 0.7543478260869565,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 387,
+              "adjusted_hits": 387,
+              "delta_hits": 0,
+              "baseline_rate": 0.841304347826087,
+              "adjusted_rate": 0.841304347826087,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 401,
+              "adjusted_hits": 401,
+              "delta_hits": 0,
+              "baseline_rate": 0.8717391304347826,
+              "adjusted_rate": 0.8717391304347826,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_turf_long_spring_qsm_gated_top1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 134,
+          "years": {
+            "2024": 47,
+            "2025": 45,
+            "2026": 42
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 59,
+              "adjusted_hits": 59,
+              "delta_hits": 0,
+              "baseline_rate": 0.44029850746268656,
+              "adjusted_rate": 0.44029850746268656,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 90,
+              "adjusted_hits": 90,
+              "delta_hits": 0,
+              "baseline_rate": 0.6716417910447762,
+              "adjusted_rate": 0.6716417910447762,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 109,
+              "adjusted_hits": 109,
+              "delta_hits": 0,
+              "baseline_rate": 0.8134328358208955,
+              "adjusted_rate": 0.8134328358208955,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 114,
+              "adjusted_hits": 114,
+              "delta_hits": 0,
+              "baseline_rate": 0.8507462686567164,
+              "adjusted_rate": 0.8507462686567164,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 122,
+              "adjusted_hits": 122,
+              "delta_hits": 0,
+              "baseline_rate": 0.9104477611940298,
+              "adjusted_rate": 0.9104477611940298,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_703_turf_long_summer_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.031090320353796233,
+          "effective_weight": 0.031090320353796233,
+          "selected_weight": 0.031090320353796233,
+          "races": 90,
+          "years": {
+            "2024": 39,
+            "2025": 51
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 43,
+              "adjusted_hits": 45,
+              "delta_hits": 2,
+              "baseline_rate": 0.4777777777777778,
+              "adjusted_rate": 0.5,
+              "delta_pp": 2.2222222222222223
+            },
+            "top2": {
+              "baseline_hits": 69,
+              "adjusted_hits": 67,
+              "delta_hits": -2,
+              "baseline_rate": 0.7666666666666667,
+              "adjusted_rate": 0.7444444444444445,
+              "delta_pp": -2.2222222222222223
+            },
+            "top3": {
+              "baseline_hits": 74,
+              "adjusted_hits": 73,
+              "delta_hits": -1,
+              "baseline_rate": 0.8222222222222222,
+              "adjusted_rate": 0.8111111111111111,
+              "delta_pp": -1.1111111111111112
+            },
+            "top4": {
+              "baseline_hits": 80,
+              "adjusted_hits": 80,
+              "delta_hits": 0,
+              "baseline_rate": 0.8888888888888888,
+              "adjusted_rate": 0.8888888888888888,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 84,
+              "adjusted_hits": 84,
+              "delta_hits": 0,
+              "baseline_rate": 0.9333333333333333,
+              "adjusted_rate": 0.9333333333333333,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "joken_999": {
+          "enabled": true,
+          "weight": 0.07731493690174818,
+          "effective_weight": 0.07731493690174818,
+          "selected_weight": 0.07731493690174818,
+          "races": 57,
+          "years": {
+            "2024": 25,
+            "2025": 23,
+            "2026": 9
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 46,
+              "adjusted_hits": 48,
+              "delta_hits": 2,
+              "baseline_rate": 0.8070175438596491,
+              "adjusted_rate": 0.8421052631578947,
+              "delta_pp": 3.508771929824561
+            },
+            "top2": {
+              "baseline_hits": 53,
+              "adjusted_hits": 53,
+              "delta_hits": 0,
+              "baseline_rate": 0.9298245614035088,
+              "adjusted_rate": 0.9298245614035088,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 56,
+              "adjusted_hits": 56,
+              "delta_hits": 0,
+              "baseline_rate": 0.9824561403508771,
+              "adjusted_rate": 0.9824561403508771,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 56,
+              "adjusted_hits": 56,
+              "delta_hits": 0,
+              "baseline_rate": 0.9824561403508771,
+              "adjusted_rate": 0.9824561403508771,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 57,
+              "adjusted_hits": 57,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "niigata_bsn": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 2,
+          "years": {
+            "2024": 1,
+            "2025": 1
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "niigata_kinen": {
+          "enabled": true,
+          "weight": 0.18249169958969752,
+          "effective_weight": 0.18249169958969752,
+          "selected_weight": 0.18249169958969752,
+          "races": 2,
+          "years": {
+            "2024": 1,
+            "2025": 1
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 1,
+              "delta_hits": 1,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.5,
+              "delta_pp": 50.0
+            },
+            "top3": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 1,
+              "adjusted_hits": 1,
+              "delta_hits": 0,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "niigata_kinen_rerank": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "prior_corner_dirt_smallfield_005": {
+          "enabled": true,
+          "weight": 0.4534069646988177,
+          "effective_weight": 0.4534069646988177,
+          "selected_weight": 0.4534069646988177,
+          "races": 12,
+          "years": {
+            "2024": 6,
+            "2025": 4,
+            "2026": 2
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 5,
+              "adjusted_hits": 7,
+              "delta_hits": 2,
+              "baseline_rate": 0.4166666666666667,
+              "adjusted_rate": 0.5833333333333334,
+              "delta_pp": 16.666666666666664
+            },
+            "top2": {
+              "baseline_hits": 7,
+              "adjusted_hits": 9,
+              "delta_hits": 2,
+              "baseline_rate": 0.5833333333333334,
+              "adjusted_rate": 0.75,
+              "delta_pp": 16.666666666666664
+            },
+            "top3": {
+              "baseline_hits": 9,
+              "adjusted_hits": 10,
+              "delta_hits": 1,
+              "baseline_rate": 0.75,
+              "adjusted_rate": 0.8333333333333334,
+              "delta_pp": 8.333333333333332
+            },
+            "top4": {
+              "baseline_hits": 11,
+              "adjusted_hits": 10,
+              "delta_hits": -1,
+              "baseline_rate": 0.9166666666666666,
+              "adjusted_rate": 0.8333333333333334,
+              "delta_pp": -8.333333333333332
+            },
+            "top5": {
+              "baseline_hits": 12,
+              "adjusted_hits": 12,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "sapporo_suzuran": {
+          "enabled": true,
+          "weight": 0.6222548622864924,
+          "effective_weight": 0.6222548622864924,
+          "selected_weight": 0.6222548622864924,
+          "races": 1,
+          "years": {
+            "2025": 1
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 0.0,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 1,
+              "delta_hits": 1,
+              "baseline_rate": 0.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 100.0
+            }
+          }
+        },
+        "sim": {
+          "enabled": true,
+          "weight": 0.03283382535396677,
+          "effective_weight": 0.03283382535396677,
+          "selected_weight": 0.03283382535396677,
+          "races": 2123,
+          "years": {
+            "2024": 888,
+            "2025": 884,
+            "2026": 351
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 848,
+              "adjusted_hits": 853,
+              "delta_hits": 5,
+              "baseline_rate": 0.39943476212906265,
+              "adjusted_rate": 0.401789919924635,
+              "delta_pp": 0.23551577955723035
+            },
+            "top2": {
+              "baseline_hits": 1262,
+              "adjusted_hits": 1258,
+              "delta_hits": -4,
+              "baseline_rate": 0.5944418276024493,
+              "adjusted_rate": 0.5925577013659915,
+              "delta_pp": -0.18841262364578426
+            },
+            "top3": {
+              "baseline_hits": 1536,
+              "adjusted_hits": 1528,
+              "delta_hits": -8,
+              "baseline_rate": 0.7235044747998116,
+              "adjusted_rate": 0.7197362223268959,
+              "delta_pp": -0.3768252472915685
+            },
+            "top4": {
+              "baseline_hits": 1713,
+              "adjusted_hits": 1708,
+              "delta_hits": -5,
+              "baseline_rate": 0.8068770607630711,
+              "adjusted_rate": 0.8045219029674988,
+              "delta_pp": -0.23551577955723035
+            },
+            "top5": {
+              "baseline_hits": 1839,
+              "adjusted_hits": 1843,
+              "delta_hits": 4,
+              "baseline_rate": 0.8662270372114932,
+              "adjusted_rate": 0.868111163447951,
+              "delta_pp": 0.18841262364578426
+            }
+          }
+        }
+      }
+    },
+    "nar": {
+      "default_enabled": true,
+      "default_weight": 0.05,
+      "cells": {
+        "c30_tc1": {
+          "enabled": true,
+          "weight": 0.11058289743236982,
+          "effective_weight": 0.11058289743236982,
+          "selected_weight": 0.11058289743236982,
+          "races": 139,
+          "years": {
+            "2024": 55,
+            "2025": 84
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 74,
+              "adjusted_hits": 77,
+              "delta_hits": 3,
+              "baseline_rate": 0.5323741007194245,
+              "adjusted_rate": 0.5539568345323741,
+              "delta_pp": 2.158273381294964
+            },
+            "top2": {
+              "baseline_hits": 108,
+              "adjusted_hits": 111,
+              "delta_hits": 3,
+              "baseline_rate": 0.7769784172661871,
+              "adjusted_rate": 0.7985611510791367,
+              "delta_pp": 2.158273381294964
+            },
+            "top3": {
+              "baseline_hits": 122,
+              "adjusted_hits": 123,
+              "delta_hits": 1,
+              "baseline_rate": 0.8776978417266187,
+              "adjusted_rate": 0.8848920863309353,
+              "delta_pp": 0.7194244604316548
+            },
+            "top4": {
+              "baseline_hits": 132,
+              "adjusted_hits": 132,
+              "delta_hits": 0,
+              "baseline_rate": 0.9496402877697842,
+              "adjusted_rate": 0.9496402877697842,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 134,
+              "adjusted_hits": 134,
+              "delta_hits": 0,
+              "baseline_rate": 0.9640287769784173,
+              "adjusted_rate": 0.9640287769784173,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c30_tc2_adaptive": {
+          "enabled": true,
+          "weight": 0.14474599773284474,
+          "effective_weight": 0.14474599773284474,
+          "selected_weight": 0.14474599773284474,
+          "races": 105,
+          "years": {
+            "2024": 64,
+            "2025": 41
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 51,
+              "adjusted_hits": 54,
+              "delta_hits": 3,
+              "baseline_rate": 0.4857142857142857,
+              "adjusted_rate": 0.5142857142857142,
+              "delta_pp": 2.857142857142857
+            },
+            "top2": {
+              "baseline_hits": 70,
+              "adjusted_hits": 70,
+              "delta_hits": 0,
+              "baseline_rate": 0.6666666666666666,
+              "adjusted_rate": 0.6666666666666666,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 88,
+              "adjusted_hits": 88,
+              "delta_hits": 0,
+              "baseline_rate": 0.8380952380952381,
+              "adjusted_rate": 0.8380952380952381,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 91,
+              "adjusted_hits": 91,
+              "delta_hits": 0,
+              "baseline_rate": 0.8666666666666667,
+              "adjusted_rate": 0.8666666666666667,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 98,
+              "adjusted_hits": 98,
+              "delta_hits": 0,
+              "baseline_rate": 0.9333333333333333,
+              "adjusted_rate": 0.9333333333333333,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c42_tc1": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 14,
+          "years": {
+            "2024": 4,
+            "2025": 10
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 13,
+              "adjusted_hits": 13,
+              "delta_hits": 0,
+              "baseline_rate": 0.9285714285714286,
+              "adjusted_rate": 0.9285714285714286,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 13,
+              "adjusted_hits": 13,
+              "delta_hits": 0,
+              "baseline_rate": 0.9285714285714286,
+              "adjusted_rate": 0.9285714285714286,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 14,
+              "adjusted_hits": 14,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 14,
+              "adjusted_hits": 14,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 14,
+              "adjusted_hits": 14,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c43_1400_1500_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.09951650408902152,
+          "effective_weight": 0.09951650408902152,
+          "selected_weight": 0.09951650408902152,
+          "races": 107,
+          "years": {
+            "2024": 37,
+            "2025": 47,
+            "2026": 23
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 52,
+              "adjusted_hits": 58,
+              "delta_hits": 6,
+              "baseline_rate": 0.48598130841121495,
+              "adjusted_rate": 0.5420560747663551,
+              "delta_pp": 5.607476635514018
+            },
+            "top2": {
+              "baseline_hits": 77,
+              "adjusted_hits": 78,
+              "delta_hits": 1,
+              "baseline_rate": 0.719626168224299,
+              "adjusted_rate": 0.7289719626168224,
+              "delta_pp": 0.9345794392523363
+            },
+            "top3": {
+              "baseline_hits": 89,
+              "adjusted_hits": 90,
+              "delta_hits": 1,
+              "baseline_rate": 0.8317757009345794,
+              "adjusted_rate": 0.8411214953271028,
+              "delta_pp": 0.9345794392523363
+            },
+            "top4": {
+              "baseline_hits": 95,
+              "adjusted_hits": 93,
+              "delta_hits": -2,
+              "baseline_rate": 0.8878504672897196,
+              "adjusted_rate": 0.8691588785046729,
+              "delta_pp": -1.8691588785046727
+            },
+            "top5": {
+              "baseline_hits": 99,
+              "adjusted_hits": 99,
+              "delta_hits": 0,
+              "baseline_rate": 0.9252336448598131,
+              "adjusted_rate": 0.9252336448598131,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c43_mile_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.07370015562017573,
+          "effective_weight": 0.07370015562017573,
+          "selected_weight": 0.07370015562017573,
+          "races": 16,
+          "years": {
+            "2024": 2,
+            "2025": 14
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 8,
+              "adjusted_hits": 9,
+              "delta_hits": 1,
+              "baseline_rate": 0.5,
+              "adjusted_rate": 0.5625,
+              "delta_pp": 6.25
+            },
+            "top2": {
+              "baseline_hits": 11,
+              "adjusted_hits": 11,
+              "delta_hits": 0,
+              "baseline_rate": 0.6875,
+              "adjusted_rate": 0.6875,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 13,
+              "adjusted_hits": 14,
+              "delta_hits": 1,
+              "baseline_rate": 0.8125,
+              "adjusted_rate": 0.875,
+              "delta_pp": 6.25
+            },
+            "top4": {
+              "baseline_hits": 14,
+              "adjusted_hits": 14,
+              "delta_hits": 0,
+              "baseline_rate": 0.875,
+              "adjusted_rate": 0.875,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 16,
+              "adjusted_hits": 16,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c43_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.09114506589128002,
+          "effective_weight": 0.09114506589128002,
+          "selected_weight": 0.09114506589128002,
+          "races": 109,
+          "years": {
+            "2024": 28,
+            "2025": 49,
+            "2026": 32
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 49,
+              "adjusted_hits": 53,
+              "delta_hits": 4,
+              "baseline_rate": 0.44954128440366975,
+              "adjusted_rate": 0.48623853211009177,
+              "delta_pp": 3.669724770642202
+            },
+            "top2": {
+              "baseline_hits": 74,
+              "adjusted_hits": 73,
+              "delta_hits": -1,
+              "baseline_rate": 0.6788990825688074,
+              "adjusted_rate": 0.6697247706422018,
+              "delta_pp": -0.9174311926605505
+            },
+            "top3": {
+              "baseline_hits": 90,
+              "adjusted_hits": 89,
+              "delta_hits": -1,
+              "baseline_rate": 0.8256880733944955,
+              "adjusted_rate": 0.8165137614678899,
+              "delta_pp": -0.9174311926605505
+            },
+            "top4": {
+              "baseline_hits": 94,
+              "adjusted_hits": 92,
+              "delta_hits": -2,
+              "baseline_rate": 0.8623853211009175,
+              "adjusted_rate": 0.8440366972477065,
+              "delta_pp": -1.834862385321101
+            },
+            "top5": {
+              "baseline_hits": 96,
+              "adjusted_hits": 97,
+              "delta_hits": 1,
+              "baseline_rate": 0.8807339449541285,
+              "adjusted_rate": 0.8899082568807339,
+              "delta_pp": 0.9174311926605505
+            }
+          }
+        },
+        "c50_tc1_rolling": {
+          "enabled": true,
+          "weight": 0.048168529593931475,
+          "effective_weight": 0.048168529593931475,
+          "selected_weight": 0.048168529593931475,
+          "races": 23,
+          "years": {
+            "2024": 11,
+            "2025": 12
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 11,
+              "adjusted_hits": 13,
+              "delta_hits": 2,
+              "baseline_rate": 0.4782608695652174,
+              "adjusted_rate": 0.5652173913043478,
+              "delta_pp": 8.695652173913043
+            },
+            "top2": {
+              "baseline_hits": 18,
+              "adjusted_hits": 18,
+              "delta_hits": 0,
+              "baseline_rate": 0.782608695652174,
+              "adjusted_rate": 0.782608695652174,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 21,
+              "adjusted_hits": 21,
+              "delta_hits": 0,
+              "baseline_rate": 0.9130434782608695,
+              "adjusted_rate": 0.9130434782608695,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 22,
+              "adjusted_hits": 22,
+              "delta_hits": 0,
+              "baseline_rate": 0.9565217391304348,
+              "adjusted_rate": 0.9565217391304348,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 22,
+              "adjusted_hits": 22,
+              "delta_hits": 0,
+              "baseline_rate": 0.9565217391304348,
+              "adjusted_rate": 0.9565217391304348,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c50_tc2_consensus": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 16,
+          "years": {
+            "2024": 4,
+            "2025": 12
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 9,
+              "adjusted_hits": 9,
+              "delta_hits": 0,
+              "baseline_rate": 0.5625,
+              "adjusted_rate": 0.5625,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 10,
+              "adjusted_hits": 10,
+              "delta_hits": 0,
+              "baseline_rate": 0.625,
+              "adjusted_rate": 0.625,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 14,
+              "adjusted_hits": 14,
+              "delta_hits": 0,
+              "baseline_rate": 0.875,
+              "adjusted_rate": 0.875,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 15,
+              "adjusted_hits": 15,
+              "delta_hits": 0,
+              "baseline_rate": 0.9375,
+              "adjusted_rate": 0.9375,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 16,
+              "adjusted_hits": 16,
+              "delta_hits": 0,
+              "baseline_rate": 1.0,
+              "adjusted_rate": 1.0,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "c50_tc2_consensus_market": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "c50_tc2_consensus_pedigree": {
+          "enabled": true,
+          "weight": 0.05,
+          "effective_weight": 0.05,
+          "selected_weight": null,
+          "races": 0,
+          "years": {},
+          "support": "no_historical_support_default_on",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top2": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top3": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top4": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            },
+            "top5": {
+              "baseline_hits": 0,
+              "adjusted_hits": 0,
+              "delta_hits": 0,
+              "baseline_rate": null,
+              "adjusted_rate": null,
+              "delta_pp": null
+            }
+          }
+        },
+        "mukatsu30": {
+          "enabled": true,
+          "weight": 0.03000311252190473,
+          "effective_weight": 0.03000311252190473,
+          "selected_weight": 0.03000311252190473,
+          "races": 51,
+          "years": {
+            "2024": 13,
+            "2025": 38
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 31,
+              "adjusted_hits": 32,
+              "delta_hits": 1,
+              "baseline_rate": 0.6078431372549019,
+              "adjusted_rate": 0.6274509803921569,
+              "delta_pp": 1.9607843137254901
+            },
+            "top2": {
+              "baseline_hits": 43,
+              "adjusted_hits": 43,
+              "delta_hits": 0,
+              "baseline_rate": 0.8431372549019608,
+              "adjusted_rate": 0.8431372549019608,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 45,
+              "adjusted_hits": 45,
+              "delta_hits": 0,
+              "baseline_rate": 0.8823529411764706,
+              "adjusted_rate": 0.8823529411764706,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 47,
+              "adjusted_hits": 47,
+              "delta_hits": 0,
+              "baseline_rate": 0.9215686274509803,
+              "adjusted_rate": 0.9215686274509803,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 50,
+              "adjusted_hits": 50,
+              "delta_hits": 0,
+              "baseline_rate": 0.9803921568627451,
+              "adjusted_rate": 0.9803921568627451,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "mukatsu30_tc2_top2": {
+          "enabled": false,
+          "weight": 0.05,
+          "effective_weight": 0.0,
+          "selected_weight": 0.0,
+          "races": 47,
+          "years": {
+            "2024": 34,
+            "2025": 13
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 28,
+              "adjusted_hits": 28,
+              "delta_hits": 0,
+              "baseline_rate": 0.5957446808510638,
+              "adjusted_rate": 0.5957446808510638,
+              "delta_pp": 0.0
+            },
+            "top2": {
+              "baseline_hits": 38,
+              "adjusted_hits": 38,
+              "delta_hits": 0,
+              "baseline_rate": 0.8085106382978723,
+              "adjusted_rate": 0.8085106382978723,
+              "delta_pp": 0.0
+            },
+            "top3": {
+              "baseline_hits": 43,
+              "adjusted_hits": 43,
+              "delta_hits": 0,
+              "baseline_rate": 0.9148936170212766,
+              "adjusted_rate": 0.9148936170212766,
+              "delta_pp": 0.0
+            },
+            "top4": {
+              "baseline_hits": 44,
+              "adjusted_hits": 44,
+              "delta_hits": 0,
+              "baseline_rate": 0.9361702127659575,
+              "adjusted_rate": 0.9361702127659575,
+              "delta_pp": 0.0
+            },
+            "top5": {
+              "baseline_hits": 45,
+              "adjusted_hits": 45,
+              "delta_hits": 0,
+              "baseline_rate": 0.9574468085106383,
+              "adjusted_rate": 0.9574468085106383,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "sim": {
+          "enabled": true,
+          "weight": 0.00022546418631325156,
+          "effective_weight": 0.00022546418631325156,
+          "selected_weight": 0.00022546418631325156,
+          "races": 31336,
+          "years": {
+            "2024": 13425,
+            "2025": 13080,
+            "2026": 4831
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 18382,
+              "adjusted_hits": 18386,
+              "delta_hits": 4,
+              "baseline_rate": 0.5866096502425325,
+              "adjusted_rate": 0.5867372989532805,
+              "delta_pp": 0.012764871074802146
+            },
+            "top2": {
+              "baseline_hits": 25113,
+              "adjusted_hits": 25112,
+              "delta_hits": -1,
+              "baseline_rate": 0.8014105182537656,
+              "adjusted_rate": 0.8013786060760786,
+              "delta_pp": -0.0031912177687005365
+            },
+            "top3": {
+              "baseline_hits": 28224,
+              "adjusted_hits": 28225,
+              "delta_hits": 1,
+              "baseline_rate": 0.9006893030380393,
+              "adjusted_rate": 0.9007212152157263,
+              "delta_pp": 0.0031912177687005365
+            },
+            "top4": {
+              "baseline_hits": 29768,
+              "adjusted_hits": 29767,
+              "delta_hits": -1,
+              "baseline_rate": 0.9499617053867756,
+              "adjusted_rate": 0.9499297932090885,
+              "delta_pp": -0.0031912177687005365
+            },
+            "top5": {
+              "baseline_hits": 30566,
+              "adjusted_hits": 30567,
+              "delta_hits": 1,
+              "baseline_rate": 0.9754276231810058,
+              "adjusted_rate": 0.9754595353586929,
+              "delta_pp": 0.0031912177687005365
+            }
+          }
+        }
+      }
+    },
+    "ban-ei": {
+      "default_enabled": true,
+      "default_weight": 0.05,
+      "cells": {
+        "base": {
+          "enabled": true,
+          "weight": 0.08656703186270287,
+          "effective_weight": 0.08656703186270287,
+          "selected_weight": 0.08656703186270287,
+          "races": 270,
+          "years": {
+            "2024": 133,
+            "2025": 121,
+            "2026": 16
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 103,
+              "adjusted_hits": 109,
+              "delta_hits": 6,
+              "baseline_rate": 0.3814814814814815,
+              "adjusted_rate": 0.40370370370370373,
+              "delta_pp": 2.2222222222222223
+            },
+            "top2": {
+              "baseline_hits": 162,
+              "adjusted_hits": 159,
+              "delta_hits": -3,
+              "baseline_rate": 0.6,
+              "adjusted_rate": 0.5888888888888889,
+              "delta_pp": -1.1111111111111112
+            },
+            "top3": {
+              "baseline_hits": 188,
+              "adjusted_hits": 184,
+              "delta_hits": -4,
+              "baseline_rate": 0.6962962962962963,
+              "adjusted_rate": 0.6814814814814815,
+              "delta_pp": -1.4814814814814816
+            },
+            "top4": {
+              "baseline_hits": 209,
+              "adjusted_hits": 207,
+              "delta_hits": -2,
+              "baseline_rate": 0.774074074074074,
+              "adjusted_rate": 0.7666666666666667,
+              "delta_pp": -0.7407407407407408
+            },
+            "top5": {
+              "baseline_hits": 222,
+              "adjusted_hits": 222,
+              "delta_hits": 0,
+              "baseline_rate": 0.8222222222222222,
+              "adjusted_rate": 0.8222222222222222,
+              "delta_pp": 0.0
+            }
+          }
+        },
+        "sim": {
+          "enabled": true,
+          "weight": 0.0025431311448551354,
+          "effective_weight": 0.0025431311448551354,
+          "selected_weight": 0.0025431311448551354,
+          "races": 3412,
+          "years": {
+            "2024": 1655,
+            "2025": 1535,
+            "2026": 222
+          },
+          "support": "observed",
+          "metrics": {
+            "top1": {
+              "baseline_hits": 1172,
+              "adjusted_hits": 1176,
+              "delta_hits": 4,
+              "baseline_rate": 0.34349355216881594,
+              "adjusted_rate": 0.34466588511137164,
+              "delta_pp": 0.11723329425556857
+            },
+            "top2": {
+              "baseline_hits": 1829,
+              "adjusted_hits": 1824,
+              "delta_hits": -5,
+              "baseline_rate": 0.5360492379835874,
+              "adjusted_rate": 0.5345838218053928,
+              "delta_pp": -0.14654161781946073
+            },
+            "top3": {
+              "baseline_hits": 2306,
+              "adjusted_hits": 2305,
+              "delta_hits": -1,
+              "baseline_rate": 0.6758499413833529,
+              "adjusted_rate": 0.6755568581477139,
+              "delta_pp": -0.029308323563892142
+            },
+            "top4": {
+              "baseline_hits": 2652,
+              "adjusted_hits": 2655,
+              "delta_hits": 3,
+              "baseline_rate": 0.7772567409144197,
+              "adjusted_rate": 0.7781359906213364,
+              "delta_pp": 0.08792497069167644
+            },
+            "top5": {
+              "baseline_hits": 2885,
+              "adjusted_hits": 2885,
+              "delta_hits": 0,
+              "baseline_rate": 0.8455451348182884,
+              "adjusted_rate": 0.8455451348182884,
+              "delta_pp": 0.0
+            }
+          }
+        }
+      }
+    }
+  },
+  "non_adjusted_or_unavailable_counts": {
+    "ban-ei-2026-incomplete-predictions": 897,
+    "jra-2024-degenerate-spread": 24,
+    "jra-2025-degenerate-spread": 20,
+    "jra-2026-degenerate-spread": 7,
+    "nar-2024-degenerate-spread": 2382,
+    "nar-2025-degenerate-spread": 2347,
+    "nar-2025-incomplete-predictions": 26,
+    "nar-2026-degenerate-spread": 747
+  }
+}

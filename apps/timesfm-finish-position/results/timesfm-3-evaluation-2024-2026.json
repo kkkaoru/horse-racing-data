@@ -1,0 +1,427 @@
+{
+  "schema": "timesfm-finish-position-evaluation-v1",
+  "research_only": true,
+  "production_integration": false,
+  "checkpoint": "google/timesfm-3.0-pytorch",
+  "checkpoint_revision": "c71907076f28b1241d1fccc37efd183d0912cd13",
+  "checkpoint_license": "timesfm-non-commercial-license-v1.0",
+  "pretraining_definition": {
+    "timesfm3-pretrained": "official frozen TimesFM 3.0 checkpoint",
+    "scratch": "task-only pooled autoregression trained from prior-year race data; this is the no-foundation-pretraining ablation"
+  },
+  "runtime_backends": {
+    "timesfm3-pretrained": "pytorch-mps",
+    "scratch": "mlx"
+  },
+  "policy_optimizer_backend": "mlx",
+  "input": {
+    "path": "/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/apps/pc-keiba-viewer/tmp/candidate-prerace-weather-nar-banei-2026-08-24/nar_current_exact_race_rows.parquet",
+    "sha256": "9eac6154e75fb59c270fe0753b02898a0e52b4d35415ccaff7950af59aff0039",
+    "rows": 46119,
+    "years": {
+      "2023": 13607,
+      "2024": 13677,
+      "2025": 13426,
+      "2026": 5409
+    }
+  },
+  "chronology": "outer year uses only races strictly before that year",
+  "results": [
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4566790962930467,
+        "top2": 0.6609636616217006,
+        "top3": 0.7831395773927031,
+        "top4": 0.861958031732105,
+        "top5": 0.9119689990494991,
+        "top123_mean": 0.6335941117691503,
+        "mean_reciprocal_rank": 0.6417878740482382,
+        "mean_winner_rank": 2.4373766176793157,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": 0.0999244473690708,
+        "delta_ci95_low_pp": -0.08793607332173316,
+        "delta_ci95_high_pp": 0.2936987298195777,
+        "activation_rate": 0.9981721137676391,
+        "mean_selected_weight": 0.718516487533816
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4552899027564524,
+        "top2": 0.6592088908386342,
+        "top3": 0.7839438473349418,
+        "top4": 0.8599107991518607,
+        "top5": 0.9119689990494991,
+        "top123_mean": 0.6328142136433429,
+        "mean_reciprocal_rank": 0.6407763381606331,
+        "mean_winner_rank": 2.440813043796154,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": 0.02193463478833424,
+        "delta_ci95_low_pp": -0.059324859399738965,
+        "delta_ci95_high_pp": 0.1040916272313453,
+        "activation_rate": 0.22241719675367405,
+        "mean_selected_weight": 0.5391569788696352
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4552899027564524,
+        "top2": 0.6592088908386342,
+        "top3": 0.7832126928419975,
+        "top4": 0.8590334137603276,
+        "top5": 0.9118958836002047,
+        "top123_mean": 0.632570495479028,
+        "mean_reciprocal_rank": 0.6406549477672531,
+        "mean_winner_rank": 2.4430796227242815,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": -0.0024371816431556503,
+        "delta_ci95_low_pp": -0.007495240587993087,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.001754770783066462,
+        "mean_selected_weight": 0.5000877385391533
+      }
+    },
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "scratch",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4566790962930467,
+        "top2": 0.660524968925934,
+        "top3": 0.7825546537983475,
+        "top4": 0.8609344154419829,
+        "top5": 0.9114571909044381,
+        "top123_mean": 0.6332529063391095,
+        "mean_reciprocal_rank": 0.6416113735646528,
+        "mean_winner_rank": 2.439131388462382,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": 0.06580390436499162,
+        "delta_ci95_low_pp": -0.1098698131571161,
+        "delta_ci95_high_pp": 0.24974163466881014,
+        "activation_rate": 0.9958324193902172,
+        "mean_selected_weight": 0.6581158148716825
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "scratch",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4552899027564524,
+        "top2": 0.6591357753893398,
+        "top3": 0.7831395773927031,
+        "top4": 0.8589602983110332,
+        "top5": 0.9116765372523215,
+        "top123_mean": 0.6325217518461651,
+        "mean_reciprocal_rank": 0.6406259046860056,
+        "mean_winner_rank": 2.4435183154200484,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": -0.0073115449294447465,
+        "delta_ci95_low_pp": -0.030486143696225255,
+        "delta_ci95_high_pp": 0.014696346032111632,
+        "activation_rate": 0.016962784236309134,
+        "mean_selected_weight": 0.49856328142136436
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "scratch",
+      "year": 2024,
+      "metrics": {
+        "races": 13677,
+        "top1": 0.4553630182057469,
+        "top2": 0.6592088908386342,
+        "top3": 0.7832126928419975,
+        "top4": 0.8590334137603276,
+        "top5": 0.9118958836002047,
+        "top123_mean": 0.6325948672954596,
+        "mean_reciprocal_rank": 0.6406915054919002,
+        "mean_winner_rank": 2.4430065072749874,
+        "baseline_top123_mean": 0.6325948672954596,
+        "delta_top123_pp": 0.0,
+        "delta_ci95_low_pp": 0.0,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.0,
+        "mean_selected_weight": 0.5
+      }
+    },
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.45896022642633694,
+        "top2": 0.6637122002085506,
+        "top3": 0.7845225681513481,
+        "top4": 0.8624311038283927,
+        "top5": 0.9144197825115448,
+        "top123_mean": 0.6357316649287451,
+        "mean_reciprocal_rank": 0.6436717750362916,
+        "mean_winner_rank": 2.424028005362729,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.173792144595053,
+        "delta_ci95_low_pp": -0.01013664655016698,
+        "delta_ci95_high_pp": 0.3676860241265501,
+        "activation_rate": 0.9734098018769551,
+        "mean_selected_weight": 0.7815656189483092
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.45977953225085655,
+        "top2": 0.6613287650826754,
+        "top3": 0.7823625800685238,
+        "top4": 0.8620586920899747,
+        "top5": 0.9136004766870252,
+        "top123_mean": 0.634490292467352,
+        "mean_reciprocal_rank": 0.6434760412303985,
+        "mean_winner_rank": 2.428273499180694,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.049654898455742114,
+        "delta_ci95_low_pp": -0.03706863195869972,
+        "delta_ci95_high_pp": 0.14181465172187202,
+        "activation_rate": 0.3410546700431998,
+        "mean_selected_weight": 0.5695702368538657
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.46022642633695815,
+        "top2": 0.660286012215105,
+        "top3": 0.7814687918963206,
+        "top4": 0.8614628333085059,
+        "top5": 0.9130046179055564,
+        "top123_mean": 0.6339937434827946,
+        "mean_reciprocal_rank": 0.6434020264126029,
+        "mean_winner_rank": 2.4305824519588857,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.0,
+        "delta_ci95_low_pp": 0.0,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.00037241173841799495,
+        "mean_selected_weight": 0.5
+      }
+    },
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "scratch",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.45888574407865335,
+        "top2": 0.663637717860867,
+        "top3": 0.7835542976314613,
+        "top4": 0.8616862803515567,
+        "top5": 0.9137494413823923,
+        "top123_mean": 0.6353592531903272,
+        "mean_reciprocal_rank": 0.6434610883348407,
+        "mean_winner_rank": 2.427752122746909,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.1365509707532575,
+        "delta_ci95_low_pp": -0.045030682725029615,
+        "delta_ci95_high_pp": 0.3259661166079379,
+        "activation_rate": 0.9447340980187695,
+        "mean_selected_weight": 0.7013369581409206
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "scratch",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.46059883807537616,
+        "top2": 0.6603604945627887,
+        "top3": 0.781394309548637,
+        "top4": 0.8616862803515567,
+        "top5": 0.91307910025324,
+        "top123_mean": 0.6341178807289338,
+        "mean_reciprocal_rank": 0.6436052863749124,
+        "mean_winner_rank": 2.4300610755251006,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.012413724613924426,
+        "delta_ci95_low_pp": -0.012555645720639337,
+        "delta_ci95_high_pp": 0.04167356173941954,
+        "activation_rate": 0.009608222851184268,
+        "mean_selected_weight": 0.5003761358558022
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "scratch",
+      "year": 2025,
+      "metrics": {
+        "races": 13426,
+        "top1": 0.46022642633695815,
+        "top2": 0.660286012215105,
+        "top3": 0.7814687918963206,
+        "top4": 0.8614628333085059,
+        "top5": 0.9130046179055564,
+        "top123_mean": 0.6339937434827946,
+        "mean_reciprocal_rank": 0.6434020264126029,
+        "mean_winner_rank": 2.4305824519588857,
+        "baseline_top123_mean": 0.6339937434827946,
+        "delta_top123_pp": 0.0,
+        "delta_ci95_low_pp": 0.0,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.0,
+        "mean_selected_weight": 0.5
+      }
+    },
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.468663338879645,
+        "top2": 0.6659271584396377,
+        "top3": 0.7753743760399334,
+        "top4": 0.8580144204104271,
+        "top5": 0.9094102421889444,
+        "top123_mean": 0.6366549577864054,
+        "mean_reciprocal_rank": 0.6474759300189139,
+        "mean_winner_rank": 2.444814198557959,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": -0.2958032908116137,
+        "delta_ci95_low_pp": -0.5811318372938057,
+        "delta_ci95_high_pp": -0.01243021726258772,
+        "activation_rate": 0.9955629506378258,
+        "mean_selected_weight": 0.8028193751155484
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.4653355518580144,
+        "top2": 0.6685154372342392,
+        "top3": 0.7807358106858939,
+        "top4": 0.8596783139212424,
+        "top5": 0.9105195045294879,
+        "top123_mean": 0.6381955999260491,
+        "mean_reciprocal_rank": 0.6468895810132638,
+        "mean_winner_rank": 2.433166943982252,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": -0.14173907684723597,
+        "delta_ci95_low_pp": -0.3222563181398598,
+        "delta_ci95_high_pp": 0.04911712839351497,
+        "activation_rate": 0.3911998520983546,
+        "mean_selected_weight": 0.5599926049177297
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "timesfm3-pretrained",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.4655204289147717,
+        "top2": 0.6696246995747828,
+        "top3": 0.78369384359401,
+        "top4": 0.8600480680347569,
+        "top5": 0.9118136439267887,
+        "top123_mean": 0.6396129906945215,
+        "mean_reciprocal_rank": 0.6474798803833746,
+        "mean_winner_rank": 2.426881124052505,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": 0.0,
+        "delta_ci95_low_pp": 0.0,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.0,
+        "mean_selected_weight": 0.5
+      }
+    },
+    {
+      "pattern": "policy-and-data",
+      "pretraining": "scratch",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.46903309299315954,
+        "top2": 0.6677759290072102,
+        "top3": 0.7761138842669625,
+        "top4": 0.8576446662969126,
+        "top5": 0.9107043815862451,
+        "top123_mean": 0.6376409687557774,
+        "mean_reciprocal_rank": 0.648072225221421,
+        "mean_winner_rank": 2.4400073950822705,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": -0.19720219387441285,
+        "delta_ci95_low_pp": -0.47486672203695574,
+        "delta_ci95_high_pp": 0.07504629392873072,
+        "activation_rate": 0.9389905712701054,
+        "mean_selected_weight": 0.7220558328711407
+      }
+    },
+    {
+      "pattern": "router-only",
+      "pretraining": "scratch",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.4657053059715289,
+        "top2": 0.6688851913477537,
+        "top3": 0.78369384359401,
+        "top4": 0.8600480680347569,
+        "top5": 0.9116287668700315,
+        "top123_mean": 0.6394281136377642,
+        "mean_reciprocal_rank": 0.647443418519403,
+        "mean_winner_rank": 2.427620632279534,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": -0.018487705675729327,
+        "delta_ci95_low_pp": -0.07647456086210162,
+        "delta_ci95_high_pp": 0.0430651714404691,
+        "activation_rate": 0.028840820854132,
+        "mean_selected_weight": 0.5031059345535219
+      }
+    },
+    {
+      "pattern": "dynamic-ensemble",
+      "pretraining": "scratch",
+      "year": 2026,
+      "metrics": {
+        "races": 5409,
+        "top1": 0.4655204289147717,
+        "top2": 0.6696246995747828,
+        "top3": 0.78369384359401,
+        "top4": 0.8600480680347569,
+        "top5": 0.9118136439267887,
+        "top123_mean": 0.6396129906945215,
+        "mean_reciprocal_rank": 0.6474798803833746,
+        "mean_winner_rank": 2.426881124052505,
+        "baseline_top123_mean": 0.6396129906945215,
+        "delta_top123_pp": 0.0,
+        "delta_ci95_low_pp": 0.0,
+        "delta_ci95_high_pp": 0.0,
+        "activation_rate": 0.0,
+        "mean_selected_weight": 0.5
+      }
+    }
+  ]
+}

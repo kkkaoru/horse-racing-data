@@ -1,0 +1,61 @@
+{
+  "lookup_sha256": "6ccd299a15582ef481198b944c5e65bbe39cbf7629277faaca41abf4b12af630",
+  "policy_version": "prophet-served-branch-weight-policy-2024-2026-v4",
+  "branch_counts": {
+    "jra": 61,
+    "nar": 12,
+    "ban-ei": 2
+  },
+  "production_worker_version": "62b080f9-5453-4961-a1c8-db9e6c3a1caf",
+  "production_container_versions": {
+    "standard": 230,
+    "race_chain": 109
+  },
+  "production_container_tag": "62b080f9",
+  "verified_runtime_images": {
+    "standard": "sha256:a902db16656770364d90325876467f2700686e184296b77995af7d8d4ebee40a",
+    "race_chain": "sha256:acc247cc39dd099a657ac54488be1958fbb519f6ef8f905cfd56cf6608879267"
+  },
+  "runtime_contract": {
+    "prophet_dependency_installed": false,
+    "global_weight_binding_present": false,
+    "standard_and_race_chain_ready": true,
+    "live_prediction_containers_after_deploy": 0,
+    "prediction_queues_resumed": true
+  },
+  "cases": [
+    {
+      "category": "nar",
+      "race": "20260902:30:02",
+      "cell": "sim",
+      "branch": "iter40-nar-settransformer-blend-v1",
+      "policy": "on",
+      "effective_weight": 0.001778529223552035,
+      "reason": "applied",
+      "runners": 11,
+      "scores_changed": 11
+    },
+    {
+      "category": "jra",
+      "race": "20260816:01:03",
+      "cell": "joken_005",
+      "branch": "jra-cb-stage1-marketfree235-2013",
+      "policy": "off",
+      "effective_weight": 0.0,
+      "reason": "disabled",
+      "runners": 14,
+      "scores_changed": 0
+    },
+    {
+      "category": "ban-ei",
+      "race": "20260816:83:09",
+      "cell": "base",
+      "branch": "banei-cb-v8-window2011-wf-15y",
+      "policy": "on",
+      "effective_weight": 0.08656703186270287,
+      "reason": "applied",
+      "runners": 10,
+      "scores_changed": 10
+    }
+  ]
+}
