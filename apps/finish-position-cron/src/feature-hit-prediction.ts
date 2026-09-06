@@ -4,6 +4,7 @@
 import { enumerateTodaysRaces } from "./cron-decision";
 import { enqueuePredict } from "./queue-producer";
 import { warmNeon } from "./neon-warm";
+import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import { getRunYmdJst } from "./time";
 import type { Env, PredictCategory } from "./types";
 
@@ -29,20 +30,26 @@ export const fanOutPredictionsAfterDayBaseHit = async (
   params: FanOutPredictionsAfterDayBaseHitParams,
 ): Promise<number> => {
   const races = await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd);
-  const now = new Date();
-  const currentRunYmd = params.runYmd === getRunYmdJst(now);
-  // A delayed day-base HIT must not spend Container capacity backfilling races
-  // that have already started. Historical/future explicit runs keep their
-  // existing behaviour; only today's live fan-out is fenced by post time.
-  const categoryRaces = races.filter((race) => {
-    if (race.category !== params.category) return false;
-    if (!currentRunYmd) return true;
-    const raceStartMs = Date.parse(race.raceStartAtJst ?? "");
-    return !Number.isFinite(raceStartMs) || raceStartMs > now.getTime();
-  });
-  // The canonical day-base and its exact-race Worker foundation are the
-  // prediction inputs. D1 running-style rows are only a serving mirror and
-  // must not become a second freshness authority that can suppress an R2 HIT.
+  // Late source delivery must still produce predictions and Viewer cache for
+  // every scheduled race. Post time is display metadata, not a completion
+  // fence: skipping started races made a delayed daily run report success
+  // while most of that day's prediction and heatmap cache remained absent.
+  const categoryRaces = races.filter((race) => race.category === params.category);
+  const runningStyle =
+    params.category === "ban-ei"
+      ? categoryRaces.map((race) => ({ race, reason: null }))
+      : await getRunningStyleRaceReadiness({
+          category: params.category,
+          db: params.env.REALTIME_DB,
+          races: categoryRaces,
+          runYmd: params.runYmd,
+        });
+  const incomplete = runningStyle.filter((race) => race.reason !== null);
+  if (incomplete.length > 0) {
+    throw new Error(
+      `Running-style barrier incomplete category=${params.category} runYmd=${params.runYmd} ready=${String(categoryRaces.length - incomplete.length)} expected=${String(categoryRaces.length)}`,
+    );
+  }
   const readyRaces = categoryRaces;
   const runDate = buildRunDate(params.runYmd);
   const daysAhead = resolveDaysAhead(params.runYmd, params.env.PREDICT_DAYS_AHEAD);

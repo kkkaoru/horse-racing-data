@@ -17,7 +17,11 @@ import {
   shouldRunRescoreCron,
   shouldRunWarmCron,
 } from "./cron-decision";
-import { prewarmCategoryWithOutcome, runDayBasePrewarm } from "./day-base-prewarm";
+import {
+  enqueueDayBasePrewarm,
+  prewarmCategoryWithOutcome,
+  runDayBasePrewarm,
+} from "./day-base-prewarm";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { completeLandedDayBase } from "./day-base-pickup";
 import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
@@ -87,6 +91,7 @@ const SKIP_DEDUP_FIELD = "skipDedup";
 const DEBUG_FIELD = "debug";
 const FORCE_FIELD = "force";
 const RUN_YMD_FIELD = "runYmd";
+const GENERATION_ID_FIELD = "generationId";
 const RACE_START_AT_JST_FIELD = "raceStartAtJst";
 const WEIGHT_SNAPSHOT_COUNT_FIELD = "weightSnapshotCount";
 const WEIGHT_SNAPSHOT_FETCHED_AT_FIELD = "weightSnapshotFetchedAt";
@@ -113,6 +118,7 @@ const ADMIN_MATERIALIZE_DAY_BASE_PATH = "/api/admin/materialize-day-base-races";
 const ADMIN_PURGE_UNUSED_PREDICT_DO_STATE_PATH = "/api/admin/purge-unused-predict-do-state";
 export const CONTAINER_CONTROL_QUEUE_NAME = "finish-position-container-control-queue";
 const MAX_ADMIN_STOP_NAMES = 100;
+const DAY_BASE_GENERATION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,128}$/u;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
 const INTERNAL_READINESS_PATH = "/api/internal/prediction-readiness";
 const INTERNAL_CANARY_PATH = "/api/internal/delivery-canaries";
@@ -165,6 +171,7 @@ interface AdminPrewarmDayBaseRequest {
   category?: PredictCategory;
   force?: boolean;
   generatePredictionsAfterHit?: boolean;
+  generationId?: string;
   runYmd: string;
 }
 
@@ -447,14 +454,23 @@ const parseAdminPrewarmDayBaseBody = (
   const generatePredictionsAfterHit = body.generatePredictionsAfterHit;
   if (generatePredictionsAfterHit !== undefined && typeof generatePredictionsAfterHit !== "boolean")
     return null;
-  const generationFlag =
+  const generationId = body[GENERATION_ID_FIELD];
+  if (
+    generationId !== undefined &&
+    (typeof generationId !== "string" || !DAY_BASE_GENERATION_ID_PATTERN.test(generationId))
+  )
+    return null;
+  const predictionFlag =
     generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {};
+  const generationFlag = typeof generationId === "string" ? { generationId } : {};
   const forceFlag = force === true ? { force: true } : {};
   if (category === undefined) {
-    return generatePredictionsAfterHit === true || force === true ? null : { runYmd };
+    return generatePredictionsAfterHit === true || force === true || generationId !== undefined
+      ? null
+      : { runYmd };
   }
   if (!isValidRescoreCategory(category)) return null;
-  return { category, ...forceFlag, ...generationFlag, runYmd };
+  return { category, ...forceFlag, ...predictionFlag, ...generationFlag, runYmd };
 };
 
 const parseAdminCompleteFocusedFullRaceBody = (
@@ -774,15 +790,29 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
     `[predict-worker] admin-prewarm-day-base start runYmd=${parsed.runYmd} category=${parsed.category ?? "all"}`,
   );
   if (parsed.category !== undefined) {
+    const generationId = parsed.generationId ?? crypto.randomUUID();
     const outcome = await prewarmCategoryWithOutcome({
       category: parsed.category,
       daysAhead,
       env,
-      generationId: crypto.randomUUID(),
+      generationId,
       ...(parsed.force === true ? { force: true } : {}),
       ...(parsed.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
       runYmd: parsed.runYmd,
     });
+    const queueBusyIntent = outcome === "busy" && parsed.generatePredictionsAfterHit === true;
+    if (queueBusyIntent) {
+      await enqueueDayBasePrewarm({
+        category: parsed.category,
+        daysAhead,
+        env,
+        generationId,
+        generatePredictionsAfterHit: true,
+        ...(parsed.force === true ? { force: true } : {}),
+        requestedAt: new Date(),
+        runYmd: parsed.runYmd,
+      });
+    }
     const accepted = outcome !== "failed";
     const status =
       outcome === "landed" ? HTTP_OK : accepted ? HTTP_ACCEPTED : HTTP_SERVICE_UNAVAILABLE;
@@ -790,9 +820,10 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
       {
         accepted,
         category: parsed.category,
+        generationId,
         ok: accepted,
         outcome,
-        queued: false,
+        queued: queueBusyIntent,
         runYmd: parsed.runYmd,
       },
       { status },
@@ -886,6 +917,7 @@ const handleAdminPickupDayBase = async (request: Request, env: Env): Promise<Res
     ? await completeLandedDayBase({
         category: parsed.category,
         env,
+        ...(parsed.generationId === undefined ? {} : { generationId: parsed.generationId }),
         generatePredictionsAfterHit: parsed.generatePredictionsAfterHit === true,
         runYmd: parsed.runYmd,
       })

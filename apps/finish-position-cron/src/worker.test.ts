@@ -20,6 +20,7 @@ const {
   markContainerSlotStoppedMock,
   completeFocusedFullRaceMock,
   releaseContainerSlotMock,
+  enqueueDayBasePrewarmMock,
   runDayBasePrewarmMock,
   prewarmCategoryWithOutcomeMock,
   resolveCardMaxRaceBangoForKochiMock,
@@ -53,9 +54,11 @@ const {
   const clearContainerSlot = vi.fn(async () => undefined);
   const markContainerSlotStopped = vi.fn(async () => undefined);
   const releaseContainerSlot = vi.fn(async () => undefined);
+  const enqueueDayBasePrewarm = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => true);
   const prewarmCategoryWithOutcome = vi.fn(
-    async (): Promise<"failed" | "landed" | "pickup-scheduled"> => "landed",
+    async (): Promise<"busy" | "failed" | "landed" | "owned" | "pickup-scheduled" | "superseded"> =>
+      "landed",
   );
   const refreshCornerFeatures = vi.fn(async () => undefined);
   const runRunningStyleKickMorningGap = vi.fn(async () => undefined);
@@ -129,6 +132,7 @@ const {
     markContainerSlotStoppedMock: markContainerSlotStopped,
     completeFocusedFullRaceMock: completeFocusedFullRace,
     releaseContainerSlotMock: releaseContainerSlot,
+    enqueueDayBasePrewarmMock: enqueueDayBasePrewarm,
     runDayBasePrewarmMock: runDayBasePrewarm,
     prewarmCategoryWithOutcomeMock: prewarmCategoryWithOutcome,
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
@@ -194,6 +198,7 @@ vi.mock("./do-state", () => ({
 }));
 
 vi.mock("./day-base-prewarm", () => ({
+  enqueueDayBasePrewarm: enqueueDayBasePrewarmMock,
   prewarmCategoryWithOutcome: prewarmCategoryWithOutcomeMock,
   runDayBasePrewarm: runDayBasePrewarmMock,
 }));
@@ -360,6 +365,7 @@ beforeEach(() => {
   clearContainerSlotMock.mockClear();
   markContainerSlotStoppedMock.mockClear();
   releaseContainerSlotMock.mockClear();
+  enqueueDayBasePrewarmMock.mockClear();
   runDayBasePrewarmMock.mockClear();
   prewarmCategoryWithOutcomeMock.mockReset();
   prewarmCategoryWithOutcomeMock.mockResolvedValue("landed");
@@ -610,6 +616,7 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
       JSON.stringify({
         category: "jra",
         generatePredictionsAfterHit: true,
+        generationId: "generation-final-1",
         runYmd: "20260817",
       }),
     ),
@@ -627,6 +634,7 @@ test("admin pickup-day-base verifies R2 before ordered prediction fanout", async
   expect(completeLandedDayBaseMock).toHaveBeenCalledWith({
     category: "jra",
     env,
+    generationId: "generation-final-1",
     generatePredictionsAfterHit: true,
     runYmd: "20260817",
   });
@@ -748,6 +756,13 @@ test("admin prewarm-day-base rejects an invalid or unscoped generation intent", 
     ),
     makeEnv(),
   );
+  const invalidGeneration = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", generationId: "invalid:generation", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
   const unscopedFlag = await handleFetch(
     adminPrewarmDayBaseRequest(
       "secret-token",
@@ -755,8 +770,17 @@ test("admin prewarm-day-base rejects an invalid or unscoped generation intent", 
     ),
     makeEnv(),
   );
+  const unscopedGeneration = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ generationId: "generation-1", runYmd: "20260817" }),
+    ),
+    makeEnv(),
+  );
   expect(invalidFlag.status).toBe(400);
+  expect(invalidGeneration.status).toBe(400);
   expect(unscopedFlag.status).toBe(400);
+  expect(unscopedGeneration.status).toBe(400);
   expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
 });
 
@@ -772,6 +796,7 @@ test("admin prewarm-day-base directly lands one category without queue starvatio
   await expect(response.json()).resolves.toStrictEqual({
     accepted: true,
     category: "ban-ei",
+    generationId: expect.any(String),
     ok: true,
     outcome: "landed",
     queued: false,
@@ -804,6 +829,70 @@ test("admin prewarm-day-base forwards the feature-hit generation intent", async 
     generationId: expect.any(String),
     runYmd: "20260817",
   });
+});
+
+test("admin prewarm-day-base durably preserves fanout intent when the direct slot is busy", async () => {
+  prewarmCategoryWithOutcomeMock.mockResolvedValueOnce("busy");
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        generatePredictionsAfterHit: true,
+        generationId: "generation-final-1",
+        runYmd: "20990101",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toStrictEqual({
+    accepted: true,
+    category: "nar",
+    generationId: "generation-final-1",
+    ok: true,
+    outcome: "busy",
+    queued: true,
+    runYmd: "20990101",
+  });
+  expect(enqueueDayBasePrewarmMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    env: expect.any(Object),
+    generationId: "generation-final-1",
+    generatePredictionsAfterHit: true,
+    requestedAt: expect.any(Date),
+    runYmd: "20990101",
+  });
+});
+
+test("admin prewarm-day-base does not duplicate a Queue chain owned by the same generation", async () => {
+  prewarmCategoryWithOutcomeMock.mockResolvedValueOnce("owned");
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        generatePredictionsAfterHit: true,
+        generationId: "generation-final-1",
+        runYmd: "20990101",
+      }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toStrictEqual({
+    accepted: true,
+    category: "nar",
+    generationId: "generation-final-1",
+    ok: true,
+    outcome: "owned",
+    queued: false,
+    runYmd: "20990101",
+  });
+  expect(enqueueDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base preserves an explicit category-scoped historical force", async () => {
@@ -873,6 +962,7 @@ test("admin prewarm-day-base reports pickup ownership without requeueing the bui
   await expect(response.json()).resolves.toStrictEqual({
     accepted: true,
     category: "nar",
+    generationId: expect.any(String),
     ok: true,
     outcome: "pickup-scheduled",
     queued: false,
@@ -893,6 +983,7 @@ test("admin prewarm-day-base exposes a direct dispatch failure", async () => {
   await expect(response.json()).resolves.toStrictEqual({
     accepted: false,
     category: "jra",
+    generationId: expect.any(String),
     ok: false,
     outcome: "failed",
     queued: false,

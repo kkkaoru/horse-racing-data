@@ -151,13 +151,13 @@ test("accepts only matching Catalog and current running-style metadata", async (
   );
 });
 
-test("accepts a NAR artifact without consulting the D1 running-style mirror", async () => {
+test("accepts a NAR artifact only after the D1 running-style barrier is complete", async () => {
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 
-  expect(runningStyleReadinessAllMock).not.toHaveBeenCalled();
-  expect(realtimePrepareSqlMock).not.toHaveBeenCalled();
+  expect(runningStyleReadinessAllMock).toHaveBeenCalledTimes(1);
+  expect(runningStyleFirstMock).toHaveBeenCalledTimes(1);
 });
 
 test("rejects missing and malformed day-base metadata before live probes", async () => {
@@ -226,17 +226,17 @@ test("rejects malformed in-process candidate watermarks before live probes", asy
   expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
-test("leaves R2 running-style watermark validation to the Container authority", async () => {
+test("rejects a canonical artifact from an older running-style generation", async () => {
   featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-row-count": "1" }));
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-1-of-2" });
   featureHeadMock.mockResolvedValueOnce(
     metadataObject({ "rs-predicted-at-max": "2026-08-22T23:00:00Z" }),
   );
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "rs-predicted-at-max-mismatch" });
 });
 
 test("compares a live source watermark when the Catalog projection provides it", async () => {
@@ -251,7 +251,7 @@ test("compares a live source watermark when the Catalog projection provides it",
   ).resolves.toStrictEqual({ ready: false, reason: "source-watermark-mismatch" });
 });
 
-test("does not let an empty D1 running-style mirror reject an R2 artifact", async () => {
+test("rejects an artifact while the D1 running-style mirror is empty", async () => {
   runningStyleFirstMock.mockResolvedValueOnce({
     ...readyRunningStyleRow(),
     rs_predicted_at_max: null,
@@ -260,11 +260,11 @@ test("does not let an empty D1 running-style mirror reject an R2 artifact", asyn
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
-  expect(runningStyleFirstMock).not.toHaveBeenCalled();
+  ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-2-of-0" });
+  expect(runningStyleFirstMock).toHaveBeenCalledTimes(1);
 });
 
-test("does not mix per-race D1 inference state into artifact freshness", async () => {
+test("requires per-race D1 inference completion before artifact freshness", async () => {
   featureHeadMock.mockResolvedValueOnce(
     metadataObject({ "rs-predicted-at-max": "none", "rs-row-count": "0" }),
   );
@@ -277,10 +277,10 @@ test("does not mix per-race D1 inference state into artifact freshness", async (
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-0-of-1" });
 });
 
-test("does not block a category artifact on a later D1 race mirror", async () => {
+test("blocks a category artifact on a later incomplete D1 race mirror", async () => {
   runningStyleFirstMock.mockResolvedValueOnce({
     ...readyRunningStyleRow(),
     race_count: 2,
@@ -317,10 +317,10 @@ test("does not block a category artifact on a later D1 race mirror", async () =>
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-1-of-2" });
 });
 
-test("does not block an R2 artifact on a processing D1 mirror state", async () => {
+test("blocks an R2 artifact on a processing D1 mirror state", async () => {
   runningStyleReadinessAllMock.mockResolvedValueOnce({
     results: [
       {
@@ -337,10 +337,10 @@ test("does not block an R2 artifact on a processing D1 mirror state", async () =
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-0-of-1" });
 });
 
-test("does not block an R2 artifact on a short D1 prediction count", async () => {
+test("blocks an R2 artifact on a short D1 prediction count", async () => {
   runningStyleReadinessAllMock.mockResolvedValueOnce({
     results: [
       {
@@ -357,10 +357,10 @@ test("does not block an R2 artifact on a short D1 prediction count", async () =>
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-0-of-1" });
 });
 
-test("does not enumerate category races from D1 for artifact freshness", async () => {
+test("fails closed when category race enumeration is unavailable", async () => {
   raceSourceAllMock.mockResolvedValueOnce({
     results: [{ keibajo_code: "43", race_bango: "01", source: "nar" }],
   });
@@ -371,8 +371,8 @@ test("does not enumerate category races from D1 for artifact freshness", async (
   raceSourceAllMock.mockRejectedValueOnce(new Error("D1 enumeration unavailable"));
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
-  expect(raceSourceAllMock).not.toHaveBeenCalled();
+  ).rejects.toThrow("D1 enumeration unavailable");
+  expect(raceSourceAllMock).toHaveBeenCalledTimes(2);
 });
 
 test("uses the canonical no-running-style watermark for Ban-ei", async () => {

@@ -1,7 +1,9 @@
 // Run with bun. Canonical fail-closed day-base readiness for focused-full work.
 
 import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { enumerateTodaysRaces } from "./cron-decision";
 import type { DaybaseWatermark } from "./ndjson-stream";
+import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface FocusedFullDayBaseReadinessParams {
@@ -26,8 +28,18 @@ interface CatalogRowsPayload {
 }
 
 interface LiveDayBaseWatermark {
+  readyRunningStyleRaceCount: number;
   rowCount: number;
+  runningStyleRaceCount: number;
+  rsPredictedAtMax: string | null;
+  rsRowCount: number;
   sourceUpdatedMax: string | null;
+}
+
+interface RunningStyleAggregateRow {
+  race_count: number | null;
+  rs_predicted_at_max: string | null;
+  rs_row_count: number | null;
 }
 
 export interface FocusedFullDayBaseReadiness {
@@ -37,6 +49,13 @@ export interface FocusedFullDayBaseReadiness {
 
 const CATALOG_ORIGIN: string = "https://pc-keiba-r2-catalog.internal";
 const READY_REASON: string = "ready";
+const NO_RUNNING_STYLE_WATERMARK: string = "none";
+const RUNNING_STYLE_AGGREGATE_SQL: string = `select count(distinct race_key) as race_count,
+       count(*) as rs_row_count,
+       max(predicted_at) as rs_predicted_at_max
+  from race_running_styles
+ where race_key like ?1
+   and race_key not like ?2`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -106,11 +125,64 @@ const fetchCatalogWatermark = async (
   };
 };
 
+const runningStylePatterns = (
+  category: PredictCategory,
+  runYmd: string,
+): { include: string; exclude: string } => {
+  const source = category === "jra" ? "jra" : "nar";
+  const includeVenue = category === "ban-ei" ? "83:" : "";
+  const excludeVenue = category === "nar" ? "83:" : "__never__:";
+  return {
+    exclude: `${source}:${runYmd}:${excludeVenue}%`,
+    include: `${source}:${runYmd}:${includeVenue}%`,
+  };
+};
+
+const normalizedTimestamp = (value: string): number | null => {
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? milliseconds : null;
+};
+
+const fetchRunningStyleWatermark = async (
+  params: FocusedFullDayBaseReadinessParams,
+): Promise<Omit<LiveDayBaseWatermark, "rowCount" | "sourceUpdatedMax">> => {
+  if (params.category === "ban-ei") {
+    return {
+      readyRunningStyleRaceCount: 0,
+      runningStyleRaceCount: 0,
+      rsPredictedAtMax: NO_RUNNING_STYLE_WATERMARK,
+      rsRowCount: 0,
+    };
+  }
+  const races = (await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd)).filter(
+    (race) => race.category === params.category,
+  );
+  const readiness = await getRunningStyleRaceReadiness({
+    category: params.category,
+    db: params.env.REALTIME_DB,
+    races,
+    runYmd: params.runYmd,
+  });
+  const patterns = runningStylePatterns(params.category, params.runYmd);
+  const aggregate = await params.env.REALTIME_DB.prepare(RUNNING_STYLE_AGGREGATE_SQL)
+    .bind(patterns.include, patterns.exclude)
+    .first<RunningStyleAggregateRow>();
+  return {
+    readyRunningStyleRaceCount: readiness.filter((race) => race.reason === null).length,
+    runningStyleRaceCount: races.length,
+    rsPredictedAtMax: aggregate?.rs_predicted_at_max ?? null,
+    rsRowCount: Number(aggregate?.rs_row_count ?? 0),
+  };
+};
+
 const liveWatermark = async (
   params: FocusedFullDayBaseReadinessParams,
 ): Promise<LiveDayBaseWatermark | null> => {
-  const catalog = await fetchCatalogWatermark(params);
-  return catalog.rowCount === 0 ? null : catalog;
+  const [catalog, runningStyle] = await Promise.all([
+    fetchCatalogWatermark(params),
+    fetchRunningStyleWatermark(params),
+  ]);
+  return catalog.rowCount === 0 ? null : { ...catalog, ...runningStyle };
 };
 
 const compareWithLiveWatermark = async (
@@ -126,7 +198,27 @@ const compareWithLiveWatermark = async (
     };
   if (live.sourceUpdatedMax !== null && metadata.maxSourceUpdated !== live.sourceUpdatedMax)
     return { ready: false, reason: "source-watermark-mismatch" };
-  return { ready: true, reason: READY_REASON };
+  if (live.readyRunningStyleRaceCount !== live.runningStyleRaceCount)
+    return {
+      ready: false,
+      reason: `running-style-race-count-${String(live.readyRunningStyleRaceCount)}-of-${String(live.runningStyleRaceCount)}`,
+    };
+  if (metadata.rsRowCount !== live.rsRowCount)
+    return {
+      ready: false,
+      reason: `rs-row-count-${String(metadata.rsRowCount)}-of-${String(live.rsRowCount)}`,
+    };
+  const metadataTimestamp = normalizedTimestamp(metadata.rsPredictedAtMax);
+  const liveTimestamp =
+    live.rsPredictedAtMax === null ? null : normalizedTimestamp(live.rsPredictedAtMax);
+  if (params.category === "ban-ei") {
+    return metadata.rsPredictedAtMax === NO_RUNNING_STYLE_WATERMARK
+      ? { ready: true, reason: READY_REASON }
+      : { ready: false, reason: "rs-predicted-at-max-mismatch" };
+  }
+  return metadataTimestamp !== null && metadataTimestamp === liveTimestamp
+    ? { ready: true, reason: READY_REASON }
+    : { ready: false, reason: "rs-predicted-at-max-mismatch" };
 };
 
 export const getDayBaseCandidateReadiness = async (

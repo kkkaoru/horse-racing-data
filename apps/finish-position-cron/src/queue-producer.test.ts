@@ -8,11 +8,13 @@ import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 const {
   failFocusedFullRaceEnqueueMock,
   featureHeadMock,
+  focusedFullPredictionCompleteMock,
   reserveFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceRepairMock,
 } = vi.hoisted(() => ({
   failFocusedFullRaceEnqueueMock: vi.fn(async () => undefined),
   featureHeadMock: vi.fn(async (): Promise<R2Object | null> => null),
+  focusedFullPredictionCompleteMock: vi.fn(async (): Promise<boolean> => true),
   reserveFocusedFullRaceEnqueueMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
@@ -25,6 +27,11 @@ vi.mock("./do-state", () => ({
   failFocusedFullRaceEnqueue: failFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceEnqueue: reserveFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceRepair: reserveFocusedFullRaceRepairMock,
+}));
+
+vi.mock("./focused-full-completion", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./focused-full-completion")>()),
+  isFocusedFullPredictionComplete: focusedFullPredictionCompleteMock,
 }));
 
 const sendMock = vi.fn(async () => undefined);
@@ -59,6 +66,8 @@ beforeEach(() => {
   reserveFocusedFullRaceRepairMock.mockResolvedValue({ proceed: true });
   featureHeadMock.mockReset();
   featureHeadMock.mockResolvedValue(null);
+  focusedFullPredictionCompleteMock.mockReset();
+  focusedFullPredictionCompleteMock.mockResolvedValue(true);
   reserveFocusedFullRaceEnqueueMock.mockReset();
   reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: true });
   lifecyclePrepareMock.mockClear();
@@ -624,9 +633,159 @@ test("enqueuePredict reopens only a cacheless completed race and reserves its re
   expect(reserveFocusedFullRaceEnqueueMock).toHaveBeenCalledTimes(1);
   expect(sendMock).toHaveBeenCalledTimes(1);
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-producer] reopened cacheless focused-full success category=ban-ei runYmd=20260824 keibajo=83 race=01",
+    "[predict-producer] reopened stale focused-full success category=ban-ei runYmd=20260824 keibajo=83 race=01",
   );
   warnSpy.mockRestore();
+});
+
+test("enqueuePredict keeps a completed NAR race suppressed when FP is newer than canonical RS", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValueOnce({} as R2Object).mockResolvedValueOnce({
+    customMetadata: { "rs-predicted-at-max": "2026-08-24T03:00:00.000Z" },
+  } as unknown as R2Object);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual([]);
+
+  expect(focusedFullPredictionCompleteMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      keibajoCode: "48",
+      notBefore: "2026-08-24T03:00:00.000Z",
+      raceBango: "12",
+      runYmd: "20260824",
+    }),
+  );
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict reopens a completed NAR race whose FP predates canonical RS", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValueOnce({} as R2Object).mockResolvedValueOnce({
+    customMetadata: { "rs-predicted-at-max": "2026-08-24T03:00:00.000Z" },
+  } as unknown as R2Object);
+  focusedFullPredictionCompleteMock.mockResolvedValueOnce(false);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["nar"]);
+
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
+  expect(sendMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict reopens a completed NAR race when canonical metadata is missing", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValueOnce({} as R2Object).mockResolvedValueOnce(null);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["nar"]);
+
+  expect(focusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict reopens a completed NAR race with an invalid RS timestamp", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValueOnce({} as R2Object).mockResolvedValueOnce({
+    customMetadata: { "rs-predicted-at-max": "invalid" },
+  } as unknown as R2Object);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["nar"]);
+
+  expect(focusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict leaves a stale race suppressed when its repair lane is unavailable", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  reserveFocusedFullRaceRepairMock.mockResolvedValue({ proceed: false, state: "lane-conflict" });
+  featureHeadMock.mockResolvedValueOnce(null);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual([]);
+
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
+  expect(sendMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict reopens a stranded started lane after final canonical lands", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "started" });
+  featureHeadMock.mockResolvedValueOnce(null);
+
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "44",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["nar"]);
+
+  expect(focusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
+  expect(sendMock).toHaveBeenCalledTimes(1);
 });
 
 test("enqueuePredict releases its full enqueue reservation when Queue send fails", async () => {

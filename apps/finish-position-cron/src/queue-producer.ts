@@ -2,13 +2,17 @@
 // Production generation is per-race only: both keibajoCode and raceBango are
 // required on every enqueue (see per-race-scope-guard.ts).
 
+import { buildDayBaseObjectKey } from "./day-base-object-key";
 import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
 import {
   failFocusedFullRaceEnqueue,
   reserveFocusedFullRaceEnqueue,
   reserveFocusedFullRaceRepair,
 } from "./do-state";
-import { isPerRaceFeatureCachePresent } from "./focused-full-completion";
+import {
+  isFocusedFullPredictionComplete,
+  isPerRaceFeatureCachePresent,
+} from "./focused-full-completion";
 import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
@@ -38,6 +42,45 @@ interface EnqueueCategoryParams {
   params: EnqueuePredictParams & { keibajoCode: string; raceBango: string };
 }
 
+interface ExistingPredictionFreshParams {
+  category: PredictCategory;
+  params: EnqueuePredictParams & { keibajoCode: string; raceBango: string };
+}
+
+const currentRunningStyleGeneration = async (
+  params: ExistingPredictionFreshParams,
+): Promise<string | null> => {
+  const canonical = await params.params.env.FEATURES_CACHE.head(
+    buildDayBaseObjectKey({ category: params.category, runYmd: params.params.runYmd }),
+  );
+  const value = canonical?.customMetadata?.["rs-predicted-at-max"];
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+};
+
+const isExistingPredictionFresh = async (
+  params: ExistingPredictionFreshParams,
+): Promise<boolean> => {
+  const featureCachePresent = await isPerRaceFeatureCachePresent({
+    category: params.category,
+    env: params.params.env,
+    keibajoCode: params.params.keibajoCode,
+    raceBango: params.params.raceBango,
+    runYmd: params.params.runYmd,
+  });
+  if (!featureCachePresent) return false;
+  if (params.category === "ban-ei") return true;
+  const notBefore = await currentRunningStyleGeneration(params);
+  if (notBefore === null) return false;
+  return isFocusedFullPredictionComplete({
+    category: params.category,
+    env: params.params.env,
+    keibajoCode: params.params.keibajoCode,
+    notBefore,
+    raceBango: params.params.raceBango,
+    runYmd: params.params.runYmd,
+  });
+};
+
 const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> => {
   const { category, params } = input;
   const now = new Date();
@@ -57,37 +100,32 @@ const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> =
       staleAfterMs: FOCUSED_FULL_ENQUEUE_RESERVATION_STALE_MS,
     };
     let reservation = await reserveFocusedFullRaceEnqueue(reservationParams);
-    // Deployments before cache-confirmed completion could leave a durable
-    // `success` coordinator record even though the detached Container payload
-    // was never copied to the exact per-race R2 key. Treating that record as a
-    // permanent duplicate prevents every later day-base fanout from repairing
-    // the race and makes weight rescore defer forever. Current in-flight states
-    // remain untouched; only the impossible current-contract state
-    // (success + exact cache miss) is reopened and reserved atomically again.
-    if (!reservation.proceed && reservation.state === "success") {
-      const cachePresent = await isPerRaceFeatureCachePresent({
+    // A final canonical may land after an earlier race attempt failed or after
+    // an old prediction was marked success. Reopen both terminal success and
+    // a stranded started lane when the exact-race feature cache is absent or
+    // the KV/Neon prediction generation predates the canonical RS watermark.
+    // This makes one final day-base fanout repair late-data races without
+    // blindly duplicating races that already match the current generation.
+    if (
+      !reservation.proceed &&
+      (reservation.state === "success" || reservation.state === "started") &&
+      !(await isExistingPredictionFresh({ category, params }))
+    ) {
+      const reopenState = reservation.state;
+      reservation = await reserveFocusedFullRaceRepair({
         category,
         env: params.env,
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
+        raceStartAtJst: params.raceStartAtJst,
+        reservationId,
         runYmd: params.runYmd,
+        staleAfterMs: FOCUSED_FULL_ENQUEUE_RESERVATION_STALE_MS,
       });
-      if (!cachePresent) {
-        reservation = await reserveFocusedFullRaceRepair({
-          category,
-          env: params.env,
-          keibajoCode: params.keibajoCode,
-          raceBango: params.raceBango,
-          raceStartAtJst: params.raceStartAtJst,
-          reservationId,
-          runYmd: params.runYmd,
-          staleAfterMs: FOCUSED_FULL_ENQUEUE_RESERVATION_STALE_MS,
-        });
-        if (reservation.proceed) {
-          console.warn(
-            `[predict-producer] reopened cacheless focused-full success category=${category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}`,
-          );
-        }
+      if (reservation.proceed) {
+        console.warn(
+          `[predict-producer] reopened stale focused-full ${reopenState} category=${category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}`,
+        );
       }
     }
     if (!reservation.proceed) return false;

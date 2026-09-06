@@ -1,25 +1,9 @@
 // Run with bun. Tests for the fail-closed discovery barrier before day-base generation.
 
-import { beforeEach, expect, test, vi } from "vitest";
-
-const { getRunningStyleRaceReadinessMock } = vi.hoisted(() => ({
-  getRunningStyleRaceReadinessMock: vi.fn(
-    async (params: {
-      races: readonly { category: string; keibajoCode: string; raceBango: string }[];
-    }) => params.races.map((race) => ({ race, reason: null as string | null })),
-  ),
-}));
-
-vi.mock("./running-style-readiness", () => ({
-  getRunningStyleRaceReadiness: getRunningStyleRaceReadinessMock,
-}));
+import { expect, test, vi } from "vitest";
 
 import { getDayBaseDiscoveryReadiness } from "./day-base-discovery-readiness";
 import type { Env } from "./types";
-
-beforeEach(() => {
-  getRunningStyleRaceReadinessMock.mockClear();
-});
 
 const raceRows = [
   { keibajo_code: "01", race_bango: "01", source: "jra" },
@@ -79,25 +63,14 @@ test("rejects a partial JRA discovery before a Container can start", async () =>
   await expect(
     getDayBaseDiscoveryReadiness({ category: "jra", env, runYmd: "20260830" }),
   ).resolves.toStrictEqual({ ready: false, reason: "discovery-race-count-1-of-2" });
-  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
 });
 
-test("rejects complete discovery until running-style inference covers every race", async () => {
+test("accepts complete discovery without circularly requiring running-style inference", async () => {
   const { env } = makeEnv({ discoveredCount: 2 });
-  getRunningStyleRaceReadinessMock.mockResolvedValueOnce([
-    {
-      race: { category: "jra", keibajoCode: "01", raceBango: "01" },
-      reason: null,
-    },
-    {
-      race: { category: "jra", keibajoCode: "04", raceBango: "01" },
-      reason: "state-missing",
-    },
-  ]);
 
   await expect(
     getDayBaseDiscoveryReadiness({ category: "jra", env, runYmd: "20260830" }),
-  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-1-of-2" });
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 });
 
 test("separates ordinary NAR races from ban-ei venue 83", async () => {

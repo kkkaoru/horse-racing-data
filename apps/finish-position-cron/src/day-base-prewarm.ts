@@ -50,6 +50,7 @@ export type PrewarmCategoryOutcome =
   | "busy"
   | "failed"
   | "landed"
+  | "owned"
   | "pickup-scheduled"
   | "superseded";
 
@@ -409,6 +410,13 @@ export const prewarmCategoryWithOutcome = async (
     console.warn(
       `[day-base-prewarm] generation ${generation.state} doName=${doName} category=${category} runYmd=${runYmd} preemptedWorkKey=${generation.state === "preempting" ? generation.preemptedWorkKey : NONE_LABEL}`,
     );
+    // A busy generation is already owned by this exact generation identity.
+    // Treating it as retryable creates another prewarm Queue chain on every
+    // admin retry; once the active build finishes, that duplicate can start a
+    // rebuild and invalidate the completed in-process pickup payload before
+    // the original pickup commits it. Preemption remains retryable because the
+    // incoming generation still needs one delivery after the old owner stops.
+    if (generation.state === "busy") return "owned";
     return generation.state === "superseded" ? "superseded" : "busy";
   }
   const claim = await claimContainerSlot({

@@ -15,6 +15,7 @@
 // otherwise idle instance into a permanent charge.
 
 import { Container } from "@cloudflare/containers";
+import { shouldRenewFocusedFullActivity } from "./container-status-activity";
 import {
   buildFocusedFullCompletionCallbackUrl,
   FOCUSED_FULL_CALLBACK_HEADER,
@@ -42,6 +43,8 @@ type PredictContainerEnvironment = Pick<
   | "NEON_DATABASE_URL"
   | "PIPELINE_TOTAL_TIMEOUT_SECONDS"
   | "PREDICT_DAYS_AHEAD"
+  | "PROPHET_SCORE_ADJUSTMENT_ENABLED"
+  | "PROPHET_SCORE_ADJUSTMENT_WEIGHT"
   | "RACE_CHAIN_FUSED_ENABLED"
   | "R2_ACCESS_KEY_ID"
   | "R2_ACCOUNT_ID"
@@ -69,6 +72,10 @@ const CONTAINER_DESTROY_HARD_TIMEOUT_MS = 15_000;
 const CONTAINER_STATUS_HARD_TIMEOUT_MS = 5_000;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
 const SLEEP_AFTER = "45m";
+// Race-chain status is polled every 30 seconds while work is active. A two-
+// minute idle fallback survives those polls but bounds leaked/failed cleanup
+// to minutes instead of inheriting the day-base builder's 45-minute lease.
+export const RACE_CHAIN_SLEEP_AFTER = "2m";
 const MODELS_DIR_DEFAULT = "/models";
 const PIPELINE_TOTAL_TIMEOUT_SECONDS_DEFAULT = "1800";
 const EMPTY_ENV_VALUE = "";
@@ -76,6 +83,8 @@ const EMPTY_ENV_VARS: Readonly<Record<string, string>> = Object.freeze({});
 const ADMIN_STOP_PATH = "/__admin/stop-container";
 const PREWARM_DAY_BASE_PATH = "/prewarm-day-base";
 const PREWARM_DAY_BASE_STATUS_PATH = "/prewarm-day-base-status";
+const FOCUSED_FULL_STATUS_PATH = "/focused-full-status";
+const FOCUSED_FULL_CACHE_PATH = "/focused-full-cache";
 const AUTH_HEADER = "authorization";
 const BEARER_PREFIX = "Bearer ";
 const LEGACY_CONTAINER_ROLE: PredictContainerRole = "legacy";
@@ -111,6 +120,8 @@ const mergePredictContainerEnvVars = (
   PREDICT_DAYS_AHEAD: env.PREDICT_DAYS_AHEAD,
   PREDICT_SERVE_MODE: "http",
   NAR_TRANSFORMER_BLEND_ENABLED: env.NAR_TRANSFORMER_BLEND_ENABLED ?? EMPTY_ENV_VALUE,
+  PROPHET_SCORE_ADJUSTMENT_ENABLED: env.PROPHET_SCORE_ADJUSTMENT_ENABLED ?? EMPTY_ENV_VALUE,
+  PROPHET_SCORE_ADJUSTMENT_WEIGHT: env.PROPHET_SCORE_ADJUSTMENT_WEIGHT ?? EMPTY_ENV_VALUE,
   STAGE1_PRESERVED_ODDS_GATE_ENABLED: env.STAGE1_PRESERVED_ODDS_GATE_ENABLED ?? EMPTY_ENV_VALUE,
   DAY_BASE_SPLIT_ENABLED: env.DAY_BASE_SPLIT_ENABLED ?? EMPTY_ENV_VALUE,
   SOURCE_DATABASE_URL: env.SOURCE_DATABASE_URL ?? EMPTY_ENV_VALUE,
@@ -250,6 +261,35 @@ export class FinishPositionPredictContainer extends Container<Env> {
         return Response.json({ error: String(error), status: "unavailable" }, { status: 503 });
       }
     }
+    if (url.pathname === FOCUSED_FULL_STATUS_PATH || url.pathname === FOCUSED_FULL_CACHE_PATH) {
+      const runtimeContainer = this.ctx.container;
+      const raceKey = `${url.searchParams.get("category")}:${url.searchParams.get("runDate")?.replaceAll("-", "")}:${url.searchParams.get("keibajoCode")}:${url.searchParams.get("raceBango")}`;
+      if (runtimeContainer?.running !== true) {
+        return url.pathname === FOCUSED_FULL_CACHE_PATH
+          ? Response.json({ error: "Container is not running" }, { status: 404 })
+          : Response.json({ error: null, raceKey, status: "missing" });
+      }
+      try {
+        // A late watch/cache retry must not boot a fresh placement or refresh
+        // idle activity just to observe a completed/missing race.
+        const response = await withReadOnlyStatusTimeout(
+          runtimeContainer.getTcpPort(DEFAULT_PORT).fetch(
+            new Request(request, {
+              signal: AbortSignal.timeout(CONTAINER_STATUS_HARD_TIMEOUT_MS),
+            }),
+          ),
+        );
+        if (response.ok && url.pathname === FOCUSED_FULL_STATUS_PATH) {
+          const payload: unknown = await withReadOnlyStatusTimeout(response.clone().json());
+          if (shouldRenewFocusedFullActivity({ payload, raceKey, nowMs: Date.now() }))
+            this.renewActivityTimeout();
+        }
+        return response;
+      } catch (error: unknown) {
+        // Observation failure is not authority to destroy another active job.
+        return Response.json({ error: String(error), status: "unavailable" }, { status: 503 });
+      }
+    }
     const watchEnabled =
       this.env.FOCUSED_FULL_WATCH_ENABLED === "1" &&
       this.env.FOCUSED_FULL_COMPLETION_QUEUE !== undefined &&
@@ -358,6 +398,8 @@ export class FinishPositionPredictContainer extends Container<Env> {
 // Distinct Durable Object class gives Wrangler a separate Container
 // application/resource profile while preserving the proven request proxy.
 export class FinishPositionRaceChainContainer extends FinishPositionPredictContainer {
+  override sleepAfter = RACE_CHAIN_SLEEP_AFTER;
+
   protected override buildContainerEnvVars(): Record<string, string> {
     return buildRaceChainPredictContainerEnvVars({
       env: this.env,

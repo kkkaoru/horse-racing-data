@@ -47,6 +47,7 @@ export type DayBasePickupOutcome =
   | "landed"
   | "missing"
   | "rejected"
+  | "running-style-pending"
   | "stale"
   | "transient-error";
 
@@ -202,7 +203,9 @@ const pickUpPrewarmDayBaseFromDo = async (
     console.warn(
       `[day-base-prewarm-pickup] rejected stale candidate category=${category} runYmd=${runYmd} reason=${readiness.reason}`,
     );
-    return "stale";
+    return readiness.reason.startsWith("running-style-race-count-")
+      ? "running-style-pending"
+      : "stale";
   }
   await proxyResultParquetsToR2(
     toResultLine({

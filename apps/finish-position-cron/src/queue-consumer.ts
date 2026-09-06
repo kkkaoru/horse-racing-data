@@ -154,6 +154,10 @@ const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
 const PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS = 30;
 const CONTAINER_REUSE_IDLE_SECONDS_MAX = 120;
 const CONTAINER_SLOT_STOPPING_STATE = "stopping";
+const WARM_REUSE_WORK_KEY_PREFIX = "warm-reuse";
+
+export const buildWarmReusableContainerWorkKey = (doName: string): string =>
+  `${WARM_REUSE_WORK_KEY_PREFIX}:${doName}`;
 
 export const resolveContainerReuseIdleSeconds = (value: string | undefined): number => {
   if (value === undefined || !/^\d+$/u.test(value)) return 0;
@@ -417,6 +421,7 @@ interface ClaimContainerSlotOrRetryParams {
   env: Env;
   kind: ContainerSlotKind;
   message: Message<PredictQueueMessage>;
+  replaceWorkKey?: string;
   workKey: string;
 }
 
@@ -1170,6 +1175,7 @@ const claimContainerSlotOrRetry = async (
     doName: params.doName,
     env: params.env,
     kind: params.kind,
+    ...(params.replaceWorkKey === undefined ? {} : { replaceWorkKey: params.replaceWorkKey }),
     staleAfterMs: CONTAINER_SLOT_STALE_MS,
     workKey: params.workKey,
   });
@@ -2538,6 +2544,9 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       env,
       kind: FOCUSED_FULL_SLOT_KIND,
       message,
+      ...(containerRoute.role === "race-chain"
+        ? { replaceWorkKey: buildWarmReusableContainerWorkKey(predictDoName) }
+        : {}),
       workKey,
     }))
   ) {
@@ -2920,26 +2929,39 @@ export const consumeFocusedFullCompletion = async (
   };
   const scheduleReusableTerminalContainer = async (): Promise<boolean> => {
     const delaySeconds = resolveContainerReuseIdleSeconds(env.CONTAINER_REUSE_IDLE_SECONDS);
-    if (delaySeconds === 0 || env.CONTAINER_CONTROL_QUEUE === undefined) return false;
-    await releaseContainerSlotBestEffort({
+    if (
+      delaySeconds === 0 ||
+      env.CONTAINER_CONTROL_QUEUE === undefined ||
+      message.body.role !== "race-chain"
+    )
+      return false;
+    const idleWorkKey = buildWarmReusableContainerWorkKey(message.body.doName);
+    const idleClaim = await claimContainerSlot({
+      allowSameOwner: true,
+      category: message.body.body.category,
       doName: message.body.doName,
       env,
       kind: FOCUSED_FULL_SLOT_KIND,
-      workKey: message.body.workKey,
+      replaceWorkKey: message.body.workKey,
+      staleAfterMs: CONTAINER_SLOT_STALE_MS,
+      workKey: idleWorkKey,
     });
+    if (!idleClaim.proceed) return false;
+    // Enqueue only after the lease timestamp advances. Container stop fences
+    // reject messages older than the current lease, so the reverse order
+    // leaves every delayed idle stop permanently blocked.
     const scheduled = await enqueueContainerStopForRole({
-      allowUnowned: true,
       delaySeconds,
       env,
       name: message.body.doName,
       role: message.body.role,
-      workKey: message.body.workKey,
+      workKey: idleWorkKey,
     });
     if (!scheduled) return false;
     await markWatchStopped();
     stopped = true;
     console.log(
-      `[predict-queue] focused-full warm reuse grace scheduled doName=${message.body.doName} workKey=${message.body.workKey} delaySeconds=${delaySeconds}`,
+      `[predict-queue] focused-full warm reuse grace scheduled doName=${message.body.doName} workKey=${idleWorkKey} delaySeconds=${delaySeconds}`,
     );
     return true;
   };
@@ -3038,7 +3060,12 @@ export const handleQueue = async (
         ...(message.body.force === true ? { force: true } : {}),
         runYmd: message.body.runYmd,
       });
-      if (outcome === "landed" || outcome === "pickup-scheduled" || outcome === "superseded")
+      if (
+        outcome === "landed" ||
+        outcome === "owned" ||
+        outcome === "pickup-scheduled" ||
+        outcome === "superseded"
+      )
         message.ack();
       else message.retry({ delaySeconds: 30 });
     } else if (isPredictQueueMessage(message)) {

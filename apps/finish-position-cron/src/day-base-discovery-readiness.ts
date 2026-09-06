@@ -5,7 +5,6 @@
 // in D1 with the authoritative Catalog race keys before any Container starts.
 
 import type { RaceEntry } from "./cron-decision";
-import { getRunningStyleRaceReadiness } from "./running-style-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface DayBaseDiscoveryReadinessParams {
@@ -118,18 +117,8 @@ export const getDayBaseDiscoveryReadiness = async (
       reason: `discovery-race-count-${String(discoveredRaceCount)}-of-${String(expectedRaceCount)}`,
     };
   }
-  const runningStyle = await getRunningStyleRaceReadiness({
-    category: params.category,
-    db: params.env.REALTIME_DB,
-    races: expectedRaces,
-    runYmd: params.runYmd,
-  });
-  const readyRunningStyleRaceCount = runningStyle.filter((race) => race.reason === null).length;
-  if (readyRunningStyleRaceCount !== expectedRaceCount) {
-    return {
-      ready: false,
-      reason: `running-style-race-count-${String(readyRunningStyleRaceCount)}-of-${String(expectedRaceCount)}`,
-    };
-  }
+  // Do not gate the foundation on running-style completion: the running-style
+  // planner itself requires this foundation before it can enqueue inference.
+  // Catalog/D1 discovery parity is the complete pre-generation barrier.
   return { ready: true, reason: "ready" };
 };

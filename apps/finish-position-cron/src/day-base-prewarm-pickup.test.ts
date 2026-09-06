@@ -522,6 +522,38 @@ test("pickUpPrewarmDayBaseWithOutcome distinguishes a stale candidate from a mis
   warnSpy.mockRestore();
 });
 
+test("defers a candidate without restarting while running-style races are incomplete", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-daybase/catalog-v1/nar/20260824/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260824030000",
+        rowCount: 479,
+        rsPredictedAtMax: "2026-08-24T03:00:00Z",
+        rsRowCount: 368,
+      },
+    }),
+  );
+  getDayBaseCandidateReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "running-style-race-count-35-of-36",
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await pickUpPrewarmDayBaseWithOutcome({
+    category: "nar",
+    env: createPickupEnv({ head: headMock }),
+    runYmd: "20260824",
+  });
+
+  expect(outcome).toBe("running-style-pending");
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+});
+
 test("pickUpPrewarmDayBase cannot report success when canonical R2 PUT rejects", async () => {
   stubFetchMock.mockResolvedValueOnce(
     Response.json({

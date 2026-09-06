@@ -10,6 +10,7 @@ import {
   buildLegacyPredictContainerEnvVars,
   buildRaceChainPredictContainerEnvVars,
   FinishPositionPredictContainer,
+  RACE_CHAIN_SLEEP_AFTER,
 } from "./container-class";
 import { WATCH_REQUEST_HEADER, WATCH_RESPONSE_HEADER } from "./focused-full-watch";
 import type { FocusedFullWatchBody, ValidatedFocusedFullWatchPayload } from "./focused-full-watch";
@@ -26,6 +27,7 @@ interface ContainerHarness {
   destroyMock: ReturnType<typeof vi.fn>;
   featureCachePutMock: ReturnType<typeof vi.fn>;
   queueSendMock: ReturnType<typeof vi.fn>;
+  renewActivityTimeoutMock: ReturnType<typeof vi.fn>;
   runtimeContainer: RuntimeContainerHarness;
   scheduleMock: ReturnType<typeof vi.fn>;
   startAndWaitForPortsMock: ReturnType<typeof vi.fn>;
@@ -63,20 +65,27 @@ const makeContainerHarness = (
   watchEnabled: string,
   queuePresent: boolean,
 ): ContainerHarness => {
-  const containerFetchMock = vi.fn(
+  const containerFetchMock = vi.fn<() => Promise<Response>>(
     async () => new Response(responseBody, { headers: { "Content-Type": "application/x-ndjson" } }),
   );
-  const scheduleMock = vi.fn(async () => ({ taskId: "scheduled-watch" }));
-  const startAndWaitForPortsMock = vi.fn(async () => undefined);
-  const destroyMock = vi.fn(async () => undefined);
-  const featureCachePutMock = vi.fn(async () => undefined);
-  const storageDeleteMock = vi.fn(async () => true);
-  const storageGetMock = vi.fn(async () => undefined);
-  const storageListMock = vi.fn(async () => new Map());
-  const storagePutMock = vi.fn(async () => undefined);
-  const queueSendMock = vi.fn(async () => undefined);
+  const scheduleMock = vi.fn<() => Promise<{ taskId: string }>>(async () => ({
+    taskId: "scheduled-watch",
+  }));
+  const startAndWaitForPortsMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const destroyMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const featureCachePutMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const storageDeleteMock = vi.fn<() => Promise<boolean>>(async () => true);
+  const storageGetMock = vi.fn<() => Promise<undefined>>(async () => undefined);
+  const storageListMock = vi.fn<() => Promise<Map<string, unknown>>>(
+    async () => new Map<string, unknown>(),
+  );
+  const storagePutMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const queueSendMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const renewActivityTimeoutMock = vi.fn<() => void>();
   const runtimeContainer = {
-    getTcpPort: vi.fn(() => ({ fetch: containerFetchMock })),
+    getTcpPort: vi.fn<() => { fetch: typeof containerFetchMock }>(() => ({
+      fetch: containerFetchMock,
+    })),
     running: true,
   };
   const container = Reflect.construct(FinishPositionPredictContainer, []);
@@ -94,7 +103,7 @@ const makeContainerHarness = (
           list: storageListMock,
           put: storagePutMock,
         },
-        waitUntil: vi.fn(),
+        waitUntil: vi.fn<(promise: Promise<unknown>) => void>(),
       },
     },
     destroy: { value: destroyMock },
@@ -108,13 +117,17 @@ const makeContainerHarness = (
         NEON_DATABASE_URL: "postgres://output/db",
         PREDICT_DAYS_AHEAD: "0",
         PREDICT_RUN_COORDINATOR: {
-          get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ ok: true })) })),
-          idFromName: vi.fn(() => ({ name: "predict-run-coordinator" })),
+          get: vi.fn<() => { fetch: () => Promise<Response> }>(() => ({
+            fetch: vi.fn<() => Promise<Response>>(async () => Response.json({ ok: true })),
+          })),
+          idFromName: vi.fn<() => { name: string }>(() => ({
+            name: "predict-run-coordinator",
+          })),
         },
         TRIGGER_TOKEN: "secret-token",
       },
     },
-    renewActivityTimeout: { value: vi.fn() },
+    renewActivityTimeout: { value: renewActivityTimeoutMock },
     schedule: { value: scheduleMock },
     startAndWaitForPorts: { value: startAndWaitForPortsMock },
   });
@@ -124,6 +137,7 @@ const makeContainerHarness = (
     destroyMock,
     featureCachePutMock,
     queueSendMock,
+    renewActivityTimeoutMock,
     runtimeContainer,
     scheduleMock,
     startAndWaitForPortsMock,
@@ -134,11 +148,80 @@ const makeContainerHarness = (
   };
 };
 
+test.each(["/focused-full-status", "/focused-full-cache"])(
+  "does not start a stopped Container for %s",
+  async (path) => {
+    const harness = makeContainerHarness("", "0", false);
+    harness.runtimeContainer.running = false;
+    const response = await harness.container.fetch(
+      new Request(`http://do${path}?category=nar&runDate=20260906&keibajoCode=54&raceBango=09`),
+    );
+    expect(response.status).toBe(path === "/focused-full-status" ? 200 : 404);
+    expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+    expect(harness.containerFetchMock).not.toHaveBeenCalled();
+    expect(harness.renewActivityTimeoutMock).not.toHaveBeenCalled();
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["success", "missing", "error", "running"])(
+  "only renews ongoing work when status is %s",
+  async (status) => {
+    const harness = makeContainerHarness(
+      JSON.stringify({
+        status,
+        error: null,
+        raceKey: "nar:20260906:54:09",
+        startedAtMs: Date.now() - 60000,
+        lastProgressAtMs: Date.now(),
+      }),
+      "0",
+      false,
+    );
+    const response = await harness.container.fetch(
+      new Request(
+        "http://do/focused-full-status?category=nar&runDate=2026-09-06&keibajoCode=54&raceBango=09",
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+    expect(harness.renewActivityTimeoutMock).toHaveBeenCalledTimes(status === "running" ? 1 : 0);
+  },
+);
+
+test("cache observation neither renews activity nor starts a new placement", async () => {
+  const harness = makeContainerHarness("cached-result", "0", false);
+  const response = await harness.container.fetch(new Request("http://do/focused-full-cache"));
+  await expect(response.text()).resolves.toBe("cached-result");
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.renewActivityTimeoutMock).not.toHaveBeenCalled();
+});
+
+test.each(["bad json", "http failure"])(
+  "status observation %s does not destroy active work",
+  async (failure) => {
+    const harness = makeContainerHarness("not-json", "0", false);
+    if (failure === "http failure")
+      harness.containerFetchMock.mockResolvedValueOnce(new Response(null, { status: 502 }));
+    const response = await harness.container.fetch(new Request("http://do/focused-full-status"));
+    expect(response.status).toBe(failure === "http failure" ? 502 : 503);
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+    expect(harness.renewActivityTimeoutMock).not.toHaveBeenCalled();
+  },
+);
+
+test("bounds an idle race-chain Container independently from the day-base lease", () => {
+  expect(RACE_CHAIN_SLEEP_AFTER).toBe("2m");
+});
+
 test("returns missing prewarm status without starting a stopped Container", async () => {
   const harness = makeContainerHarness("", "0", false);
   harness.runtimeContainer.running = false;
   Object.defineProperty(harness.container, "getState", {
-    value: vi.fn(async () => ({ lastChange: 1, status: "running" })),
+    value: vi.fn<() => Promise<{ lastChange: number; status: string }>>(async () => ({
+      lastChange: 1,
+      status: "running",
+    })),
   });
 
   const response = await harness.container.fetch(
@@ -249,6 +332,8 @@ test("buildRaceChainPredictContainerEnvVars fixes the role after inherited varia
       NEON_DATABASE_URL: "postgres://race-output/db",
       PIPELINE_TOTAL_TIMEOUT_SECONDS: "1800",
       PREDICT_DAYS_AHEAD: "0",
+      PROPHET_SCORE_ADJUSTMENT_ENABLED: "nar",
+      PROPHET_SCORE_ADJUSTMENT_WEIGHT: "0.05",
       RACE_CHAIN_FUSED_ENABLED: "1",
       SOURCE_DATABASE_URL: "r2-catalog://pc-keiba",
       WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
@@ -262,6 +347,8 @@ test("buildRaceChainPredictContainerEnvVars fixes the role after inherited varia
   expect(envVars.DAY_BASE_SPLIT_ENABLED).toBe("jra,nar,ban-ei");
   expect(envVars.SOURCE_DATABASE_URL).toBe("r2-catalog://pc-keiba");
   expect(envVars.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED).toBe("1");
+  expect(envVars.PROPHET_SCORE_ADJUSTMENT_ENABLED).toBe("nar");
+  expect(envVars.PROPHET_SCORE_ADJUSTMENT_WEIGHT).toBe("0.05");
   expect(envVars.RACE_CHAIN_FUSED_ENABLED).toBe("1");
 });
 
@@ -284,6 +371,8 @@ test("buildRaceChainPredictContainerEnvVars keeps production defaults fail close
   expect(envVars.PYTHONUNBUFFERED).toBe("1");
   expect(envVars.SOURCE_DATABASE_URL).toBe("");
   expect(envVars.WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED).toBe("");
+  expect(envVars.PROPHET_SCORE_ADJUSTMENT_ENABLED).toBe("");
+  expect(envVars.PROPHET_SCORE_ADJUSTMENT_WEIGHT).toBe("");
   expect(envVars.RACE_CHAIN_FUSED_ENABLED).toBe("");
 });
 

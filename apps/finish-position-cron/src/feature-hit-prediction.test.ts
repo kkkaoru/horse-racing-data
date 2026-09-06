@@ -63,7 +63,7 @@ test("uses zero daysAhead for the current JST run date", async () => {
   );
 });
 
-test("today's delayed HIT fans out only races that have not started", async () => {
+test("today's delayed HIT fans out every race even after post time", async () => {
   vi.setSystemTime(new Date("2026-08-25T10:30:00.000Z"));
   enumerateTodaysRacesMock.mockResolvedValue([
     {
@@ -82,11 +82,16 @@ test("today's delayed HIT fans out only races that have not started", async () =
 
   await expect(
     fanOutPredictionsAfterDayBaseHit({ category: "nar", env, runYmd: "20260825" }),
-  ).resolves.toBe(1);
+  ).resolves.toBe(2);
 
-  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
-  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
-  expect(enqueuePredictMock).toHaveBeenCalledWith(
+  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledTimes(1);
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ keibajoCode: "30", raceBango: "10" }),
+  );
+  expect(enqueuePredictMock).toHaveBeenNthCalledWith(
+    2,
     expect.objectContaining({ keibajoCode: "43", raceBango: "10" }),
   );
 });
@@ -134,7 +139,25 @@ test("fans out one full prediction per category race after the caller proves a H
   );
 
   expect(enumerateTodaysRacesMock).toHaveBeenCalledWith(env.REALTIME_DB, "20260822");
-  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
+  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    db: env.REALTIME_DB,
+    races: [
+      {
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "01",
+        raceStartAtJst: "2026-08-22T09:50:00+09:00",
+      },
+      {
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "02",
+        raceStartAtJst: "2026-08-22T10:20:00+09:00",
+      },
+    ],
+    runYmd: "20260822",
+  });
   expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
   expect(enqueuePredictMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
@@ -223,7 +246,7 @@ test("reports only newly reserved races when another producer already owns one",
   logSpy.mockRestore();
 });
 
-test("does not let a stale D1 running-style mirror suppress a foundation HIT", async () => {
+test("fails closed before fanout when any running-style race is incomplete", async () => {
   const readyRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "01" };
   const incompleteRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "02" };
   enumerateTodaysRacesMock.mockResolvedValue([readyRace, incompleteRace]);
@@ -236,14 +259,14 @@ test("does not let a stale D1 running-style mirror suppress a foundation HIT", a
 
   await expect(
     fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
-  ).resolves.toBe(2);
-
-  expect(getRunningStyleRaceReadinessMock).not.toHaveBeenCalled();
-  expect(enqueuePredictMock).toHaveBeenCalledTimes(2);
-  expect(warnSpy).not.toHaveBeenCalled();
-  expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0",
+  ).rejects.toThrow(
+    "Running-style barrier incomplete category=jra runYmd=20260822 ready=1 expected=2",
   );
+
+  expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledTimes(1);
+  expect(enqueuePredictMock).not.toHaveBeenCalled();
+  expect(warnSpy).not.toHaveBeenCalled();
+  expect(logSpy).not.toHaveBeenCalled();
   warnSpy.mockRestore();
   logSpy.mockRestore();
 });

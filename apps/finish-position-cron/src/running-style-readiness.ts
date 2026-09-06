@@ -26,6 +26,7 @@ interface RunningStyleReadinessRow {
   entrant_count: number | null;
   expected_horse_count: number | null;
   features_r2_key: string | null;
+  matched_prediction_count: number | null;
   prediction_count: number | null;
   running_key: string;
   status: string | null;
@@ -85,26 +86,39 @@ const readinessReason = (row: RunningStyleReadinessRow | undefined): string | nu
   const entrantCount = mirroredEntrantCount > 0 ? mirroredEntrantCount : expectedCount;
   const writtenCount = Number(row.written_horse_count ?? 0);
   const predictionCount = Number(row.prediction_count ?? 0);
+  // Without a realtime/daily mirror there is no independent horse-number set
+  // for SQL to join, so matched_prediction_count is necessarily zero even
+  // when the Catalog-backed completed generation wrote every expected row.
+  // In that documented fallback shape, completion state plus the exact
+  // prediction count is the available identity authority. Keep the explicit
+  // match count fail-closed whenever a mirror does exist.
+  const matchedPredictionCount =
+    mirroredEntrantCount > 0
+      ? Number(row.matched_prediction_count ?? row.prediction_count ?? 0)
+      : predictionCount;
   if (entrantCount <= 0) return "entrants-missing";
   const artifactComplete =
     row.features_r2_key !== null &&
     row.features_r2_key.length > 0 &&
-    expectedCount >= entrantCount &&
-    writtenCount >= entrantCount &&
-    predictionCount >= entrantCount;
+    expectedCount === entrantCount &&
+    writtenCount === entrantCount &&
+    predictionCount === entrantCount &&
+    matchedPredictionCount === entrantCount;
   const statusIsUsable =
     row.status === COMPLETED_STATUS ||
     (row.status === ARTIFACT_COMPLETE_STALE_STATUS && artifactComplete);
   if (!statusIsUsable) return `status-${row.status ?? "missing"}`;
   if (row.features_r2_key === null || row.features_r2_key.length === 0)
     return "feature-artifact-missing";
-  if (expectedCount < entrantCount)
+  if (expectedCount !== entrantCount)
     return `feature-count-${String(expectedCount)}-of-${String(entrantCount)}`;
-  if (writtenCount < entrantCount)
+  if (writtenCount !== entrantCount)
     return `written-count-${String(writtenCount)}-of-${String(entrantCount)}`;
-  return predictionCount < entrantCount
-    ? `prediction-count-${String(predictionCount)}-of-${String(entrantCount)}`
-    : null;
+  if (predictionCount !== entrantCount)
+    return `prediction-count-${String(predictionCount)}-of-${String(entrantCount)}`;
+  return matchedPredictionCount === entrantCount
+    ? null
+    : `prediction-identity-count-${String(matchedPredictionCount)}-of-${String(entrantCount)}`;
 };
 
 const buildReadinessSql = (targetCount: number): string => {
@@ -145,7 +159,10 @@ const buildReadinessSql = (targetCount: number): string => {
            state.expected_horse_count,
            state.written_horse_count,
            count(distinct active.horse_number) as entrant_count,
-           count(distinct styles.horse_number) as prediction_count
+           count(distinct styles.horse_number) as prediction_count,
+           count(distinct case
+             when styles.horse_number = active.horse_number then styles.horse_number
+           end) as matched_prediction_count
       from target
       left join running_style_inference_state state
         on state.race_key = target.running_key
@@ -153,10 +170,6 @@ const buildReadinessSql = (targetCount: number): string => {
         on active.running_key = target.running_key
       left join race_running_styles styles
         on styles.race_key = target.running_key
-       and (
-         active.horse_number is null
-         or styles.horse_number = active.horse_number
-       )
      group by target.running_key, state.status, state.features_r2_key,
               state.expected_horse_count, state.written_horse_count`;
 };

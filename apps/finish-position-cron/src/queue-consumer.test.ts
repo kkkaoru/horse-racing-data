@@ -1062,6 +1062,13 @@ test("routes only an allowlisted focused-full R2 day-base hit to the race-chain 
   });
   expect(raceIdFromName).toHaveBeenCalledWith("race-chain-predict-jra");
   expect(raceGet).toHaveBeenCalledTimes(2);
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      doName: "race-chain-predict-jra",
+      replaceWorkKey: "warm-reuse:race-chain-predict-jra",
+      workKey: "focused-full:20260823:jra:01:03",
+    }),
+  );
   expect(idFromNameMock).not.toHaveBeenCalled();
 });
 
@@ -4231,29 +4238,68 @@ test("keeps a successful shard warm briefly with a work-key-fenced delayed stop"
   const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
   stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
 
-  await handleQueue(makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]), {
-    ...makeEnv(),
-    CONTAINER_REUSE_IDLE_SECONDS: "20",
-  });
-
-  expect(releaseContainerSlotMock).toHaveBeenCalledWith(
-    expect.objectContaining({
-      doName: "predict-jra",
-      kind: "focused-full",
-      workKey: "focused-full:20260603:jra:05:11",
-    }),
+  await handleQueue(
+    makeFocusedFullCompletionBatch([
+      makeFocusedFullCompletionMessage({
+        doName: "race-chain-predict-jra",
+        role: "race-chain",
+      }),
+    ]),
+    {
+      ...makeEnv(),
+      CONTAINER_REUSE_IDLE_SECONDS: "20",
+    },
   );
+
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(controlSendMock).toHaveBeenCalledWith(
     expect.objectContaining({
-      allowUnowned: true,
-      name: "predict-jra",
-      role: "legacy",
+      name: "race-chain-predict-jra",
+      role: "race-chain",
       type: "container-stop",
-      workKey: "focused-full:20260603:jra:05:11",
+      workKey: "warm-reuse:race-chain-predict-jra",
     }),
     { delaySeconds: 20 },
   );
+  expect(claimContainerSlotMock).toHaveBeenCalledWith({
+    allowSameOwner: true,
+    category: "jra",
+    doName: "race-chain-predict-jra",
+    env: expect.anything(),
+    kind: "focused-full",
+    replaceWorkKey: "focused-full:20260603:jra:05:11",
+    staleAfterMs: 1_200_000,
+    workKey: "warm-reuse:race-chain-predict-jra",
+  });
+  expect(claimContainerSlotMock.mock.invocationCallOrder[0]).toBeLessThan(
+    controlSendMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+  );
   expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  log.mockRestore();
+});
+
+test("falls back to an owner-fenced synchronous stop when warm-idle lease transfer loses", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+
+  await handleQueue(
+    makeFocusedFullCompletionBatch([
+      makeFocusedFullCompletionMessage({
+        doName: "race-chain-predict-jra",
+        role: "race-chain",
+      }),
+    ]),
+    {
+      ...makeEnv(),
+      CONTAINER_REUSE_IDLE_SECONDS: "20",
+    },
+  );
+
+  expect(controlSendMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
   expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
   log.mockRestore();
@@ -7216,6 +7262,17 @@ test("retries failed prewarms but acknowledges pickup ownership", async () => {
   );
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
   expect(ackMock).not.toHaveBeenCalled();
+  ackMock.mockClear();
+  retryMock.mockClear();
+  prewarmCategoryWithOutcomeMock.mockResolvedValue("owned");
+  await handleQueue(
+    { messages: [makePrewarm(true)] } as unknown as MessageBatch<
+      import("./types").PredictQueueBody
+    >,
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
 });
 
 test("acknowledges a superseded day-base generation without redelivery", async () => {

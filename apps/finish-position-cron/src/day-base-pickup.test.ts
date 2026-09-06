@@ -36,7 +36,13 @@ const {
   ),
   pickUpPrewarmDayBaseWithOutcomeMock: vi.fn(
     async (): Promise<
-      "foundation-landed" | "landed" | "missing" | "rejected" | "stale" | "transient-error"
+      | "foundation-landed"
+      | "landed"
+      | "missing"
+      | "rejected"
+      | "running-style-pending"
+      | "stale"
+      | "transient-error"
     > => "missing",
   ),
   releaseContainerSlotMock: vi.fn(async () => undefined),
@@ -991,6 +997,34 @@ test("consumeDayBasePickup does not rebuild for a transient readiness probe erro
     { delaySeconds: 180 },
   );
   logSpy.mockRestore();
+});
+
+test("consumeDayBasePickup polls without rebuild while running-style is incomplete", async () => {
+  pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValueOnce("running-style-pending");
+
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: {
+      attempt: 10,
+      category: "nar",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260824",
+      type: "day-base-pickup",
+    },
+  });
+
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerFetchMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 11,
+      category: "nar",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260824",
+      type: "day-base-pickup",
+    },
+    { delaySeconds: 180 },
+  );
 });
 
 test("consumeDayBasePickup rebuilds a stale candidate and resets the pickup window", async () => {

@@ -742,6 +742,31 @@ test("prewarmCategory does not multiply pickup chains when the category slot is 
   warnSpy.mockRestore();
 });
 
+test("prewarmCategory recognizes an active same-generation owner without another retry chain", async () => {
+  claimDayBaseGenerationMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(
+    prewarmCategoryWithOutcome({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      generatePredictionsAfterHit: true,
+      generationId: "generation-final-1",
+      runYmd: "20260825",
+    }),
+  ).resolves.toBe("owned");
+
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(queueSendMock).not.toHaveBeenCalled();
+  expect(controlSendMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] generation busy doName=predict-nar category=nar runYmd=20260825 preemptedWorkKey=-",
+  );
+  warnSpy.mockRestore();
+});
+
 test("prewarmCategory fences a later day-base owner before starting an earlier date", async () => {
   claimDayBaseGenerationMock.mockResolvedValueOnce({
     preemptedWorkKey: "day-base:20260827:nar",

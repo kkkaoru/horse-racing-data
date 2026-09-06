@@ -8,6 +8,7 @@ interface ReadinessTestRow {
   entrant_count: number | null;
   expected_horse_count: number | null;
   features_r2_key: string | null;
+  matched_prediction_count?: number | null;
   prediction_count: number | null;
   running_key: string;
   status: string | null;
@@ -108,9 +109,7 @@ test("marks only a completed feature and prediction set covering every active en
   const sql = String(prepare.mock.calls[0]?.[0]);
   expect(sql).toMatch("latest_entries");
   expect(sql).toMatch("join daily_race_entries daily");
-  expect(sql).toMatch(
-    "active.horse_number is null\n         or styles.horse_number = active.horse_number",
-  );
+  expect(sql).toMatch("when styles.horse_number = active.horse_number");
 });
 
 test("maps ban-ei to the NAR running-style and realtime source keys", async () => {
@@ -148,6 +147,7 @@ test("uses the completed Catalog inference expected count when realtime entrant 
         entrant_count: 0,
         expected_horse_count: 12,
         features_r2_key: "running-style/jra/20260823/01/01/features.parquet",
+        matched_prediction_count: 0,
         prediction_count: 12,
         running_key: "jra:20260823:01:01",
         status: "completed",
@@ -276,5 +276,9 @@ test("fails closed for state, feature, expected feature count, and written count
   statuses[0] = { ...base, prediction_count: null, status: "completed" };
   await expect(run()).resolves.toStrictEqual([
     { race: JRA_RACE, reason: "prediction-count-0-of-12" },
+  ]);
+  statuses[0] = { ...base, matched_prediction_count: 11, status: "completed" };
+  await expect(run()).resolves.toStrictEqual([
+    { race: JRA_RACE, reason: "prediction-identity-count-11-of-12" },
   ]);
 });
