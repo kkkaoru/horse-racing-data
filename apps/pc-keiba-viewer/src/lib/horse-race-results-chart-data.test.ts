@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildHorseRaceChartSeriesList,
+  buildHorseRaceRelativeDeltaSeriesList,
   countHorseRaceResultsSpanMonths,
   filterHorseRaceResultsToRecentMonths,
   filterHorseRaceResultsToRecentYears,
   formatHorseRaceChartDate,
   getCombinedWeightValue,
   getHorseRaceChartMetricValue,
+  getWeightFutanRelativeValue,
+  HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS,
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
@@ -2116,5 +2119,199 @@ describe("horse race results chart data", () => {
       fill: "#52525b",
       outline: "#52525b",
     });
+  });
+
+  it("keeps Ban-ei overview metrics without the carried-weight time series", () => {
+    expect(HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS).toStrictEqual([
+      "finish",
+      "popularity",
+      "weight",
+      "weightDelta",
+    ]);
+    expect(HORSE_RACE_CHART_METRICS).toStrictEqual([
+      "finish",
+      "popularity",
+      "weight",
+      "weightDelta",
+      "futan",
+    ]);
+  });
+
+  it("returns the weight-to-futan relative value", () => {
+    expect(getWeightFutanRelativeValue(1000, 500)).toBe(2);
+  });
+
+  it("returns null relative value when weight is missing", () => {
+    expect(getWeightFutanRelativeValue(null, 500)).toBeNull();
+  });
+
+  it("returns null relative value when futan is missing", () => {
+    expect(getWeightFutanRelativeValue(1000, null)).toBeNull();
+  });
+
+  it("returns null relative value when futan is zero", () => {
+    expect(getWeightFutanRelativeValue(1000, 0)).toBeNull();
+  });
+
+  it("plots Ban-ei finish against past minus upcoming weight/futan relative values", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          futanJuryo: "1F4",
+          kakuteiChakujun: "1",
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0801",
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      runners: [
+        buildRunner({
+          bataiju: "5DC",
+          futanJuryo: "1F4",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+    });
+    expect(series[0]?.points).toStrictEqual([
+      {
+        blinker: null,
+        dateValue: Date.UTC(2026, 7, 1),
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20260801",
+        relativeDelta: -1,
+        value: 1,
+      },
+    ]);
+  });
+
+  it("omits relative-delta points when the upcoming relative value cannot be resolved", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          futanJuryo: "1F4",
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      runners: [
+        buildRunner({
+          bataiju: "000",
+          futanJuryo: "1F4",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+    });
+    expect(series[0]?.points).toStrictEqual([]);
+  });
+
+  it("omits relative-delta points when the horse is not entered in the upcoming race", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          futanJuryo: "1F4",
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+    });
+    expect(series[0]?.points).toStrictEqual([]);
+  });
+
+  it("uses the realtime upcoming weight override for the relative-delta baseline", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          blinkerShiyoKubun: "1",
+          futanJuryo: "1F4",
+          kakuteiChakujun: "2",
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0801",
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      runners: [
+        buildRunner({
+          bataiju: "000",
+          futanJuryo: "1F4",
+          kettoTorokuBango: "2020000001",
+          umaban: "01",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+      upcomingWeights: [{ popularity: null, umaban: "01", weight: 1500, weightDelta: null }],
+    });
+    expect(series[0]?.points).toStrictEqual([
+      {
+        blinker: "1",
+        dateValue: Date.UTC(2026, 7, 1),
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20260801",
+        relativeDelta: -1,
+        value: 2,
+      },
+    ]);
+  });
+
+  it("omits a past relative-delta point when that race has no carried weight", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          futanJuryo: "000",
+          kakuteiChakujun: "1",
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      runners: [
+        buildRunner({
+          bataiju: "5DC",
+          futanJuryo: "1F4",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+    });
+    expect(series[0]?.points).toStrictEqual([]);
+  });
+
+  it("omits a past relative-delta point when that race has no finish", () => {
+    const series = buildHorseRaceRelativeDeltaSeriesList({
+      results: [
+        buildResult({
+          bataiju: "3E8",
+          futanJuryo: "1F4",
+          kakuteiChakujun: null,
+          keibajoCode: "83",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      runners: [
+        buildRunner({
+          bataiju: "5DC",
+          futanJuryo: "1F4",
+          kettoTorokuBango: "2020000001",
+        }),
+      ],
+      targetKeibajoCode: "83",
+      targetRaceDate: "20260906",
+    });
+    expect(series[0]?.points).toStrictEqual([]);
   });
 });

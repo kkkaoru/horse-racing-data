@@ -7,6 +7,8 @@ import {
   Line,
   LineChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -16,9 +18,11 @@ import { isWearingBlinker } from "../../../lib/blinker-pattern";
 import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
+  buildHorseRaceRelativeDeltaSeriesList,
   countHorseRaceResultsSpanMonths,
   filterHorseRaceResultsToRecentMonths,
   formatHorseRaceChartDate,
+  HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS,
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
@@ -34,7 +38,7 @@ import type {
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseWeightEntry } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
-import { formatRunnerNumber } from "../../../lib/runner-format";
+import { formatRunnerNumber, isBanEiKeibajoCode } from "../../../lib/runner-format";
 import { FRAME_COLORS, getFrameColor } from "./frame-number-badge";
 import { PaddockRecentResultsChart } from "./paddock-recent-results-chart";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -92,10 +96,24 @@ interface MetricTooltipProps {
   payload?: ChartTooltipPayloadEntry[];
 }
 
+interface RelativeDeltaTooltipProps {
+  active?: boolean;
+  payload?: ChartTooltipPayloadEntry[];
+}
+
 interface OverviewPanelsProps {
   hiddenHorses: ReadonlySet<string>;
   metricLabels: Record<HorseRaceChartMetric, string>;
+  metrics: readonly HorseRaceChartMetric[];
+  relativeDeltaSeries: HorseRaceChartSeries[];
   seriesListsByMetric: Record<HorseRaceChartMetric, HorseRaceChartSeries[]>;
+  showBlinkerHint: boolean;
+  showRelativeDeltaPanel: boolean;
+}
+
+interface RelativeDeltaPanelProps {
+  hiddenHorses: ReadonlySet<string>;
+  seriesList: HorseRaceChartSeries[];
 }
 
 interface SeriesListsInput {
@@ -212,6 +230,8 @@ const BLINKER_WORN_TOOLTIP_LABEL = "ブリンカー ○";
 // Heading shown on the weight panel while body weight + carried weight are summed,
 // so the reader can tell the plotted line is the combined value.
 const COMBINED_WEIGHT_HEADING = "馬体重+斤量";
+const RELATIVE_DELTA_HEADING = "相対値変動";
+const RELATIVE_DELTA_TICK_FRACTION_DIGITS = 2;
 // Rank metrics (finish / popularity) read best at the top, so their Y axis is
 // reversed and anchored at rank 1; value metrics use a plain auto domain.
 const RANK_AXIS_DOMAIN: [number, "auto"] = [1, "auto"];
@@ -494,6 +514,31 @@ export const OverviewChartDot = ({
   );
 };
 
+const formatRelativeDeltaTick = (value: number): string =>
+  value.toFixed(RELATIVE_DELTA_TICK_FRACTION_DIGITS);
+
+export const RelativeDeltaTooltip = ({ active, payload }: RelativeDeltaTooltipProps) => {
+  const entry = payload?.at(0);
+  if (active !== true || !entry?.payload) {
+    return null;
+  }
+  const point = entry.payload;
+  return (
+    <div className="race-results-chart-tooltip">
+      <p className="race-results-chart-tooltip-date">{formatHorseRaceChartDate(point.dateValue)}</p>
+      <p className="race-results-chart-tooltip-value">
+        {String(entry.value ?? point.value)}
+        {HORSE_RACE_CHART_METRIC_UNITS.finish}
+      </p>
+      <p className="race-results-chart-tooltip-meta">
+        {RELATIVE_DELTA_HEADING} {String(point.relativeDelta)}
+      </p>
+      <p className="race-results-chart-tooltip-meta">距離 {formatDistance(point.kyori)}</p>
+      <p className="race-results-chart-tooltip-meta">騎手 {point.jockey ?? "-"}</p>
+    </div>
+  );
+};
+
 const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
   const entry = payload?.at(0);
   if (active !== true || !entry?.payload) {
@@ -516,15 +561,54 @@ const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
   );
 };
 
+const RelativeDeltaPanel = ({ hiddenHorses, seriesList }: RelativeDeltaPanelProps) => (
+  <section className="race-results-chart-panel">
+    <h3>{RELATIVE_DELTA_HEADING}</h3>
+    <ResponsiveContainer
+      height={CHART_PANEL_HEIGHT}
+      initialDimension={CHART_INITIAL_DIMENSION}
+      width="100%"
+    >
+      <ScatterChart>
+        <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
+        <XAxis
+          dataKey="relativeDelta"
+          domain={VALUE_AXIS_DOMAIN}
+          tickFormatter={formatRelativeDeltaTick}
+          type="number"
+        />
+        <YAxis allowDecimals={false} dataKey="value" domain={RANK_AXIS_DOMAIN} reversed />
+        <Tooltip content={<RelativeDeltaTooltip />} />
+        {seriesList
+          .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
+          .map((series) => (
+            <Scatter
+              data={series.points}
+              fill={resolveSeriesStroke(series)}
+              isAnimationActive={false}
+              key={series.kettoTorokuBango}
+              name={getHorseChipLabel(series)}
+              shape={<OverviewChartDot />}
+            />
+          ))}
+      </ScatterChart>
+    </ResponsiveContainer>
+  </section>
+);
+
 const OverviewPanels = ({
   hiddenHorses,
   metricLabels,
+  metrics,
+  relativeDeltaSeries,
   seriesListsByMetric,
+  showBlinkerHint,
+  showRelativeDeltaPanel,
 }: OverviewPanelsProps) => (
   <>
-    <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>
+    {showBlinkerHint ? <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p> : null}
     <div className="race-results-chart-grid">
-      {HORSE_RACE_CHART_METRICS.map((metric) => (
+      {metrics.map((metric) => (
         <section className="race-results-chart-panel" key={metric}>
           <h3>{metricLabels[metric]}</h3>
           <ResponsiveContainer
@@ -575,6 +659,9 @@ const OverviewPanels = ({
           </ResponsiveContainer>
         </section>
       ))}
+      {showRelativeDeltaPanel ? (
+        <RelativeDeltaPanel hiddenHorses={hiddenHorses} seriesList={relativeDeltaSeries} />
+      ) : null}
     </div>
   </>
 );
@@ -641,6 +728,10 @@ export const HorseRaceResultsChart = ({
     () => filterHorseRaceResultsToRecentMonths(results, resolvedMonths),
     [results, resolvedMonths],
   );
+  const isBanEi = isBanEiKeibajoCode(keibajoCode) || isBanEiKeibajoCode(targetKeibajoCode);
+  const overviewMetrics = isBanEi
+    ? HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS
+    : HORSE_RACE_CHART_METRICS;
   const seriesListsByMetric = useMemo(
     () =>
       buildSeriesListsByMetric({
@@ -652,6 +743,19 @@ export const HorseRaceResultsChart = ({
         upcomingWeights,
       }),
     [combineFutan, filteredResults, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
+  );
+  const relativeDeltaSeries = useMemo(
+    () =>
+      isBanEi
+        ? buildHorseRaceRelativeDeltaSeriesList({
+            results: filteredResults,
+            runners,
+            targetKeibajoCode,
+            targetRaceDate,
+            upcomingWeights,
+          })
+        : [],
+    [filteredResults, isBanEi, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
   );
   const chipSeriesList = seriesListsByMetric.finish;
   const selectedKetto = selectedHorse ?? chipSeriesList.at(0)?.kettoTorokuBango ?? "";
@@ -795,10 +899,15 @@ export const HorseRaceResultsChart = ({
         <OverviewPanels
           hiddenHorses={hiddenHorses}
           metricLabels={metricLabels}
+          metrics={overviewMetrics}
+          relativeDeltaSeries={relativeDeltaSeries}
           seriesListsByMetric={seriesListsByMetric}
+          showBlinkerHint={!isBanEi}
+          showRelativeDeltaPanel={isBanEi}
         />
       ) : (
         <PaddockRecentResultsChart
+          hideFutanMetric={isBanEi}
           results={selectedHorseResults}
           upcomingBlinker={selectedUpcoming.blinker}
           upcomingPopularity={selectedUpcoming.popularity}

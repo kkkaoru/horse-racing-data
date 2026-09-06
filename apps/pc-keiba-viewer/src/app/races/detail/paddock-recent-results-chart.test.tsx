@@ -1302,6 +1302,18 @@ test("renders the futan chip swatch with the violet palette color", () => {
   expect(swatch?.style.backgroundColor).toStrictEqual("#7048e8");
 });
 
+test("hides the Ban-ei futan chip and blinker hint", () => {
+  render(<PaddockRecentResultsChart hideFutanMetric results={[chartResult({})]} />);
+  expect(screen.queryByRole("button", { name: "斤量" })).toStrictEqual(null);
+  expect(screen.queryByText("○ = ブリンカー装着")).toStrictEqual(null);
+  expect(screen.getAllByTestId("line-stub").map((line) => line.textContent)).toStrictEqual([
+    "着順",
+    "人気",
+    "馬体重",
+    "馬体重増減",
+  ]);
+});
+
 test("plots the upcoming popularity on the synthetic upcoming row when provided", () => {
   render(
     <PaddockRecentResultsChart

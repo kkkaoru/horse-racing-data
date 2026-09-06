@@ -23,6 +23,9 @@ export interface HorseRaceChartPoint {
   // metrics. Omitted/false for every past point.
   isUpcoming?: boolean;
   raceDate: string; // "YYYYMMDD"
+  // Ban-ei scatter X: past (weight/futan) minus upcoming (weight/futan). Omitted
+  // on every time-series point.
+  relativeDelta?: number;
   value: number;
 }
 
@@ -33,6 +36,7 @@ export interface HorseRaceChartPoint {
 export interface HorseRaceChartRunner {
   bataiju: string | null;
   blinkerShiyoKubun?: string | null;
+  futanJuryo?: string | null;
   kettoTorokuBango: string | null;
   umaban: string | null;
   wakuban: string | null;
@@ -113,6 +117,14 @@ export interface BuildHorseRaceChartSeriesListOptions {
   runners?: HorseRaceChartRunner[];
   targetKeibajoCode?: string | null;
   targetRaceDate?: string | null; // "YYYYMMDD"
+  upcomingWeights?: UpcomingWeightOverride[];
+}
+
+export interface BuildHorseRaceRelativeDeltaSeriesListOptions {
+  results: HorseRaceResult[];
+  runners?: HorseRaceChartRunner[];
+  targetKeibajoCode?: string | null;
+  targetRaceDate?: string | null;
   upcomingWeights?: UpcomingWeightOverride[];
 }
 
@@ -211,6 +223,15 @@ export const HORSE_RACE_CHART_METRICS: HorseRaceChartMetric[] = [
   "weight",
   "weightDelta",
   "futan",
+];
+
+// Ban-ei overview keeps the time-series panels except 斤量, which is replaced by
+// a scatter of finish against the weight/futan relative-value delta.
+export const HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS: HorseRaceChartMetric[] = [
+  "finish",
+  "popularity",
+  "weight",
+  "weightDelta",
 ];
 
 export const HORSE_RACE_CHART_METRIC_LABELS: Record<HorseRaceChartMetric, string> = {
@@ -355,17 +376,35 @@ const parseWeightDelta = (result: HorseRaceResult): number | null =>
 // Parse the carried weight (futanJuryo) to a number in kilograms, mirroring the
 // formatCarriedWeight decode in runner-format.ts: Ban-ei stores hex kilograms,
 // other keibajo store 0.1kg decigrams. 000/FFF/blank are missing-value sentinels.
-const parseFutan = (result: HorseRaceResult): number | null => {
-  const cleaned = cleanText(result.futanJuryo, "");
+const parseFutanFields = (
+  futanJuryo: string | null | undefined,
+  keibajoCode: string | null,
+): number | null => {
+  const cleaned = cleanText(futanJuryo, "");
   if (!cleaned || cleaned.toUpperCase() === INVALID_WEIGHT_FFF || ALL_ZERO_PATTERN.test(cleaned)) {
     return null;
   }
-  const decodeHex = isBanEiKeibajoCode(result.keibajoCode);
+  const decodeHex = isBanEiKeibajoCode(keibajoCode);
   const parsed = decodeHex ? Number.parseInt(cleaned, HEX_RADIX) : Number(cleaned);
   if (!Number.isFinite(parsed)) {
     return null;
   }
   return decodeHex ? parsed : parsed / FUTAN_DECIGRAM_DIVISOR;
+};
+
+const parseFutan = (result: HorseRaceResult): number | null =>
+  parseFutanFields(result.futanJuryo, result.keibajoCode);
+
+// Horse-weight / carried-weight relative value. Null when either side is missing
+// or the carried weight is zero (division would be undefined).
+export const getWeightFutanRelativeValue = (
+  weight: number | null,
+  futan: number | null,
+): number | null => {
+  if (weight === null || futan === null || futan === 0) {
+    return null;
+  }
+  return weight / futan;
 };
 
 // Body weight optionally combined with carried weight (馬体重 + 斤量). When
@@ -767,6 +806,98 @@ export const buildHorseRaceChartSeriesList = (
       results: draft.results,
       upcoming: resolveUpcomingContext(draft.kettoTorokuBango, upcomingInputs),
     }),
+    umaban: draft.umaban,
+  }));
+};
+
+const upcomingRelativeValue = (context: UpcomingRaceContext): number | null => {
+  const values = resolveUpcomingWeightValues(context);
+  if (values === null) {
+    return null;
+  }
+  return getWeightFutanRelativeValue(
+    values.weight,
+    parseFutanFields(context.runner.futanJuryo, context.keibajoCode),
+  );
+};
+
+const pastRelativeValue = (result: HorseRaceResult): number | null =>
+  getWeightFutanRelativeValue(parseWeight(result), parseFutan(result));
+
+const toRelativeDeltaPointSource = (
+  result: HorseRaceResult,
+  relativeDelta: number,
+  finish: number,
+): HorseRaceChartPointSource => {
+  const raceDate = toRaceDate(result);
+  const dateValue = toDateValue(raceDate);
+  return {
+    dateValue,
+    point: {
+      blinker: cleanText(result.blinkerShiyoKubun, "") || null,
+      dateValue,
+      jockey: cleanText(result.kishumeiRyakusho, "") || null,
+      kyori: cleanText(result.kyori, "") || null,
+      raceDate,
+      relativeDelta,
+      value: finish,
+    },
+    raceBango: result.raceBango,
+  };
+};
+
+const buildRelativeDeltaPoints = (
+  results: HorseRaceResult[],
+  upcoming: UpcomingRaceContext | null,
+): HorseRaceChartPoint[] => {
+  if (upcoming === null) {
+    return [];
+  }
+  const upcomingRelative = upcomingRelativeValue(upcoming);
+  if (upcomingRelative === null) {
+    return [];
+  }
+  return results
+    .filter(hasValidRaceDate)
+    .flatMap((result) => {
+      const finish = parseNumber(result.kakuteiChakujun);
+      const pastRelative = pastRelativeValue(result);
+      if (finish === null || pastRelative === null) {
+        return [];
+      }
+      return [toRelativeDeltaPointSource(result, pastRelative - upcomingRelative, finish)];
+    })
+    .toSorted(compareRaceDateOrderKeys)
+    .map((source) => source.point);
+};
+
+export const buildHorseRaceRelativeDeltaSeriesList = (
+  options: BuildHorseRaceRelativeDeltaSeriesListOptions,
+): HorseRaceChartSeries[] => {
+  const drafts = buildSeriesDrafts(options.results).toSorted(compareSeriesDrafts);
+  const umabanKeyedCount = drafts.filter(isUmabanKeyedDraft).length;
+  const unusedColors = collectUnusedColors(drafts);
+  const runnerMap = buildRunnerMap(options.runners ?? []);
+  const upcomingInputs: UpcomingContextInputs = {
+    runnerMap,
+    targetKeibajoCode: options.targetKeibajoCode ?? null,
+    targetRaceDate: options.targetRaceDate ?? null,
+    weightMap: buildUpcomingWeightMap(options.upcomingWeights ?? []),
+  };
+  return drafts.map((draft, index) => ({
+    bamei: draft.bamei,
+    color: resolveSeriesColor({
+      seriesIndex: index,
+      umaban: draft.umaban,
+      umabanKeyedCount,
+      unusedColors,
+    }),
+    frame: resolveSeriesFrame(runnerMap.get(draft.kettoTorokuBango)),
+    kettoTorokuBango: draft.kettoTorokuBango,
+    points: buildRelativeDeltaPoints(
+      draft.results,
+      resolveUpcomingContext(draft.kettoTorokuBango, upcomingInputs),
+    ),
     umaban: draft.umaban,
   }));
 };

@@ -41,6 +41,9 @@ import { getFrameColor } from "./frame-number-badge";
 type PaddockChartMetricKey = "finish" | "popularity" | "weight" | "weightDelta" | "futan";
 
 export interface PaddockRecentResultsChartProps {
+  // Ban-ei hides the 斤量 chip and line: that metric is shown as a relative-delta
+  // scatter on the race-results overview instead of a time-series overlay.
+  hideFutanMetric?: boolean;
   results: HorseRaceResult[];
   // Target-race blinker flag ("1" = wearing) for this horse; lets the synthetic
   // upcoming point render the blinker ring just like a worn past race.
@@ -324,6 +327,11 @@ const PADDOCK_METRIC_CHIPS: PaddockMetricChipConfig[] = [
     label: HORSE_RACE_CHART_METRIC_LABELS.futan,
   },
 ];
+
+const visiblePaddockMetricChips = (hideFutanMetric: boolean): PaddockMetricChipConfig[] =>
+  hideFutanMetric
+    ? PADDOCK_METRIC_CHIPS.filter((chip) => chip.key !== "futan")
+    : PADDOCK_METRIC_CHIPS;
 
 const toRaceDate = (result: HorseRaceResult): string => result.kaisaiNen + result.kaisaiTsukihi;
 
@@ -826,6 +834,8 @@ const PaddockChartCanvas = ({
 );
 
 export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps): ReactElement {
+  const hideFutanMetric = props.hideFutanMetric === true;
+  const metricChips = visiblePaddockMetricChips(hideFutanMetric);
   const total = countValidResults(props);
   const [hiddenMetrics, setHiddenMetrics] =
     useState<ReadonlySet<PaddockChartMetricKey>>(INITIAL_HIDDEN_METRICS);
@@ -854,7 +864,7 @@ export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps)
         className="paddock-chip-row"
         style={CHIP_ROW_STYLE}
       >
-        {PADDOCK_METRIC_CHIPS.map((config) => (
+        {metricChips.map((config) => (
           <PaddockMetricChip
             config={
               config.key === "weight"
@@ -873,7 +883,7 @@ export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps)
           }}
         />
       </fieldset>
-      <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>
+      {hideFutanMetric ? null : <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>}
       <PaddockChartCanvas
         combineWeightFutan={combineWeightFutan}
         hiddenMetrics={hiddenMetrics}

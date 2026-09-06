@@ -13,7 +13,11 @@ import type {
 } from "../../../lib/horse-weight-stream-client";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
-import { HorseRaceResultsChart, OverviewChartDot } from "./horse-race-results-chart";
+import {
+  HorseRaceResultsChart,
+  OverviewChartDot,
+  RelativeDeltaTooltip,
+} from "./horse-race-results-chart";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimePayloadResult {
@@ -44,6 +48,8 @@ interface LineStubProps {
 
 interface XAxisStubProps {
   allowDuplicatedCategory?: boolean;
+  dataKey?: string;
+  tickFormatter?: (value: number) => string;
   ticks?: number[];
 }
 
@@ -54,7 +60,13 @@ interface YAxisStubProps {
 interface MetricTooltipInjectedProps {
   active?: boolean;
   payload?: {
-    payload: { blinker: string | null; dateValue: number; jockey: string; kyori: string };
+    payload: {
+      blinker: string | null;
+      dateValue: number;
+      jockey: string;
+      kyori: string;
+      relativeDelta?: number;
+    };
     value: number;
   }[];
 }
@@ -64,6 +76,7 @@ interface TooltipStubProps {
 }
 
 interface PaddockChartStubProps {
+  hideFutanMetric?: boolean;
   results: HorseRaceResult[];
   upcomingBlinker?: string | null;
   upcomingPopularity?: number | null;
@@ -96,6 +109,14 @@ vi.mock("recharts", () => ({
       {children}
     </div>
   ),
+  Scatter: ({ data, name }: LineStubProps) => (
+    <div data-testid="scatter-stub" data-total-points={data?.length ?? 0}>
+      {name}
+    </div>
+  ),
+  ScatterChart: ({ children }: ChartChildrenStubProps) => (
+    <div data-testid="scatter-chart-stub">{children}</div>
+  ),
   ResponsiveContainer: ({ children }: ChartChildrenStubProps) => (
     <div data-testid="responsive-container-stub">{children}</div>
   ),
@@ -112,6 +133,7 @@ vi.mock("recharts", () => ({
                   dateValue: 0,
                   jockey: "ルメール",
                   kyori: "2000",
+                  relativeDelta: -1,
                 },
                 value: 1,
               },
@@ -119,12 +141,15 @@ vi.mock("recharts", () => ({
           })}
     </div>
   ),
-  XAxis: ({ allowDuplicatedCategory, ticks }: XAxisStubProps) => (
+  XAxis: ({ allowDuplicatedCategory, dataKey, tickFormatter, ticks }: XAxisStubProps) => (
     <div
       data-allow-duplicated-category={String(allowDuplicatedCategory)}
+      data-key={dataKey ?? ""}
       data-testid="x-axis-stub"
       data-ticks={(ticks ?? []).join(",")}
-    />
+    >
+      {dataKey === "relativeDelta" && tickFormatter !== undefined ? tickFormatter(-1) : null}
+    </div>
   ),
   YAxis: ({ reversed }: YAxisStubProps) => (
     <div data-testid="y-axis-stub">{reversed === true ? "reversed" : "normal"}</div>
@@ -133,6 +158,7 @@ vi.mock("recharts", () => ({
 
 vi.mock("./paddock-recent-results-chart", () => ({
   PaddockRecentResultsChart: ({
+    hideFutanMetric,
     results,
     upcomingBlinker,
     upcomingPopularity,
@@ -141,6 +167,7 @@ vi.mock("./paddock-recent-results-chart", () => ({
     upcomingWeightDelta,
   }: PaddockChartStubProps) => (
     <div
+      data-hide-futan={hideFutanMetric === true ? "true" : "false"}
       data-results-count={results.length}
       data-testid="paddock-recent-chart-stub"
       data-upcoming-blinker={upcomingBlinker ?? "none"}
@@ -1295,4 +1322,100 @@ test("marks each chip with a data-active flag matching its pressed state", () =>
   expect(
     screen.getByRole("button", { name: "1 アルファ" }).getAttribute("data-active"),
   ).toStrictEqual("false");
+});
+
+test("replaces the Ban-ei futan panel with a relative-delta scatter of finish", () => {
+  render(
+    <HorseRaceResultsChart
+      keibajoCode="83"
+      results={[
+        chartResult({
+          bataiju: "3E8",
+          futanJuryo: "1F4",
+          kakuteiChakujun: "01",
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0801",
+          keibajoCode: "83",
+        }),
+      ]}
+      runners={[chartRunner({ bataiju: "5DC", futanJuryo: "1F4" })]}
+      targetKeibajoCode="83"
+      targetRaceDate="20260906"
+    />,
+  );
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "相対値変動"]);
+  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(4);
+  expect(screen.getAllByTestId("scatter-chart-stub").length).toStrictEqual(1);
+  expect(screen.queryByText("斤量")).toStrictEqual(null);
+  expect(screen.queryByText("○ = ブリンカー装着")).toStrictEqual(null);
+  expect(screen.getAllByTestId("x-axis-stub").at(4)?.getAttribute("data-key")).toStrictEqual(
+    "relativeDelta",
+  );
+  expect(screen.getByTestId("scatter-stub").getAttribute("data-total-points")).toStrictEqual("1");
+});
+
+test("detects Ban-ei from the target keibajo when the page keibajo is omitted", () => {
+  render(
+    <HorseRaceResultsChart results={[chartResult({ keibajoCode: "83" })]} targetKeibajoCode="83" />,
+  );
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "相対値変動"]);
+});
+
+test("hides the paddock futan series when Ban-ei correlation view is open", () => {
+  render(<HorseRaceResultsChart keibajoCode="83" results={[chartResult({ keibajoCode: "83" })]} />);
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-hide-futan"),
+  ).toStrictEqual("true");
+});
+
+test("keeps the paddock futan series available for non-Ban-ei correlation view", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-hide-futan"),
+  ).toStrictEqual("false");
+});
+
+test("RelativeDeltaTooltip returns nothing when inactive", () => {
+  const { container } = render(<RelativeDeltaTooltip active={false} payload={[]} />);
+  expect(container.textContent).toStrictEqual("");
+});
+
+test("RelativeDeltaTooltip returns nothing when payload is omitted", () => {
+  const { container } = render(<RelativeDeltaTooltip active />);
+  expect(container.textContent).toStrictEqual("");
+});
+
+test("RelativeDeltaTooltip returns nothing when the payload is empty", () => {
+  const { container } = render(<RelativeDeltaTooltip active payload={[]} />);
+  expect(container.textContent).toStrictEqual("");
+});
+
+test("RelativeDeltaTooltip shows finish and the relative-delta value", () => {
+  render(
+    <RelativeDeltaTooltip
+      active
+      payload={[
+        {
+          payload: {
+            dateValue: Date.UTC(2026, 7, 1),
+            jockey: "山田",
+            kyori: "200",
+            raceDate: "20260801",
+            relativeDelta: -1,
+            value: 1,
+          },
+          value: 1,
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText("2026/08/01").textContent).toStrictEqual("2026/08/01");
+  expect(screen.getByText("1着").textContent).toStrictEqual("1着");
+  expect(screen.getByText("相対値変動 -1").textContent).toStrictEqual("相対値変動 -1");
 });
