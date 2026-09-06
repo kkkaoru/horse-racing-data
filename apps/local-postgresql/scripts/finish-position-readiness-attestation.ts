@@ -156,17 +156,19 @@ export const attestPreWeightPredictionReadiness = async (
         `Finish-position readiness date mismatch: expected ${options.runYmd}, received ${readiness.runYmd}`,
       );
     }
-    const upcoming = readiness.races.filter((race) => !race.started);
-    const incomplete = upcoming.filter(
+    // A late source import must finish the entire race day, including races
+    // whose post time already passed. Treating started races as out of scope
+    // let the orchestrator succeed while prediction and heatmap KV were absent.
+    const incomplete = readiness.races.filter(
       (race) => !race.preWeight.complete || !race.preWeight.kvComplete,
     );
     options.log(
-      `Finish-position readiness attempt ${attempt}: ${upcoming.length - incomplete.length}/${upcoming.length} upcoming races have complete pre-weight predictions and KV.`,
+      `Finish-position readiness attempt ${attempt}: ${readiness.races.length - incomplete.length}/${readiness.races.length} scheduled races have complete pre-weight predictions and KV.`,
     );
     if (incomplete.length === 0) return;
     if (options.nowMilliseconds() >= deadline) {
       throw new Error(
-        `Finish-position readiness timed out with incomplete upcoming races: ${incomplete.map((race) => race.raceKey).join(",")}`,
+        `Finish-position readiness timed out with incomplete scheduled races: ${incomplete.map((race) => race.raceKey).join(",")}`,
       );
     }
     const repairCandidates = incomplete

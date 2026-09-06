@@ -49,6 +49,8 @@ bun --cwd apps/local-postgresql stop
 bun --cwd apps/local-postgresql pc-keiba:update
 bun run --cwd apps/local-postgresql pc-keiba:update-and-sync
 bun run --cwd apps/local-postgresql scrape:netkeiba-training
+bun run --cwd apps/local-postgresql scrape:keiba-go -- --date 20260901 --dry-run
+bun run --cwd apps/local-postgresql scrape:keiba-go-and-sync -- --date 20260901
 bun --cwd apps/local-postgresql logs
 bun --cwd apps/local-postgresql psql
 bun --cwd apps/local-postgresql status
@@ -61,8 +63,7 @@ bun --cwd apps/local-postgresql indexes:repair
 ```
 
 `start` runs `indexes:repair:quick` after PostgreSQL is healthy.
-`replica:push` also runs `indexes:repair:quick` before R2/Neon sync so XX002
-corruption cannot silently break ingest or push.
+`replica:push` invokes the provider-specific authenticated `/admin/trigger` endpoint on `daily-keiba-sync` for NV and then JV, and waits for each exact run to reach `succeeded` or `succeeded_empty`. Set `DAILY_KEIBA_SYNC_BASE_URL` and `DAILY_KEIBA_SYNC_ADMIN_TOKEN`; the token must not be passed as a command-line argument. The old local PostgreSQL writer is available only as `replica:push:legacy` behind the explicit break-glass guard.
 
 `pc-keiba:update` starts local PostgreSQL, boots the configured Parallels VM
 (`PARALLELS_VM_NAME`, default `Windows 11`), and waits for the Windows-side
@@ -78,15 +79,16 @@ The Windows-side updater must already be installed with
 Set `LOCAL_POSTGRES_AUTO_START=0` when PostgreSQL is already managed by another
 process.
 
-`pc-keiba:update-and-sync` is the end-to-end orchestrator. It keeps the
-individual commands independent and runs them in this strict order:
+`pc-keiba:update-and-sync` is retained only as a manual disaster-recovery orchestrator. Production R2 Catalog and Neon authority is `apps/daily-keiba-sync`; the macOS LaunchAgent is disabled. Both `replica:push:r2-catalog` and `replica:push:neon` fail closed unless the operator explicitly sets `ALLOW_LEGACY_REPLICA_WRITE=break-glass`. Do not set it while the Worker Catalog targets or job Queues are enabled.
+
+The legacy orchestrator keeps the individual commands independent and runs them in this strict order:
 
 1. `pc-keiba:update`
 2. verify that the Parallels VM is `stopped`
 3. materialize local corner features for today through the seven-day publication horizon
 4. `scrape:netkeiba-training` for JRA runners without an official `jvd_hc` or
    `jvd_wc` workout in the preceding 14 days
-5. `replica:push` (R2 Catalog, then Neon)
+5. `replica:push` (NV/JVの順に`daily-keiba-sync` Workerの通常daily flowをtrigger。R2 Catalog→NeonはWorker内で実行)
 6. refresh the selected `race_entity_history_v1` year and atomically publish the
    direct-Catalog Parquet manifest
 7. enqueue authenticated `sync-realtime-data` jobs for JST today and tomorrow;
@@ -116,6 +118,66 @@ falls back to `apps/sync-realtime-data/.dev.vars`. Override the production base
 URL with `SYNC_REALTIME_DATA_BASE_URL`. `SYNC_REALTIME_DATA_DATE=YYYYMMDD`
 overrides the JST base date; the following date is always derived and processed
 as well.
+
+### keiba.go.jp NAR fallback import
+
+Use `scrape:keiba-go` when UmaConn has not delivered a published NAR race day.
+The command requires only `--date YYYYMMDD`. It performs the following
+fail-closed workflow:
+
+1. Fetch
+   `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop` for the
+   specified date and discover every listed venue and race number.
+2. Convert each official `babaCode` to the existing local `keibajo_code` and
+   generate the venue `RaceList` and per-race `DebaTable` URLs using the
+   official URL naming convention.
+3. Verify that `TodayRaceInfoTop` and `RaceList` enumerate the same races, then
+   parse every `DebaTable`. A missing venue, race, or entry aborts before any
+   existing rows are deleted.
+4. Resolve each horse against `nvd_nu` by exact name, age, and sex; use the
+   official rider/trainer profile identifiers and full profile names to resolve
+   `nvd_ks` and `nvd_ch`; and resolve the current owner against `nvd_bn`.
+5. Create missing person master rows from verified existing race codes. For an
+   owner without one unique local code, preserve the official owner name and
+   create the existing composite `(000000, banushimei)` relation instead of
+   guessing a code.
+6. Validate all horse, jockey, trainer, and composite owner relations, then
+   replace only the target date/venue rows in `nvd_ra` and `nvd_se` in one
+   transaction. Any missing relation rolls back the transaction.
+7. Write `scraped_summary.json`, the external-to-local mapping audit
+   `entity_relations.json`, and a deterministic `import_fingerprint.json` under
+   `tmp/keiba-go-scrape/<date>/`. Reusable rider and trainer profiles are cached
+   under `tmp/keiba-go-scrape/profiles/`. Repeating the same import produces the
+   same fingerprint and identical target rows; a corrected official card
+   produces a new fingerprint.
+
+Preview without modifying PostgreSQL:
+
+```sh
+bun run --cwd apps/local-postgresql scrape:keiba-go -- \
+  --date 20260901 --dry-run
+```
+
+Import and publish corner features, R2 Catalog, Neon, and direct-Catalog entity
+history in one command:
+
+```sh
+bun run --cwd apps/local-postgresql scrape:keiba-go-and-sync -- \
+  --date 20260901
+```
+
+HTML is cached so a failed run can be repeated without unnecessary requests.
+Venue count, race count, horse resolution, person-profile resolution, master
+creation, relation validation, and publication are data-driven; no per-date or
+per-person source change is required. Person-name variants are resolved by a
+bounded deterministic similarity score and newest local usage, while ambiguous
+results fail closed.
+Pass `--refresh` when the official page has been corrected since the previous
+scrape. `--baba 36,10` limits execution to a subset that must still be listed on
+the date's top page. Normally meeting metadata is inferred; if the surrounding
+local cards are insufficient or ambiguous, pass repeatable overrides such as
+`--meta 36=11:01`. The combined import-and-sync command rejects `--dry-run` and
+never begins synchronization unless the PostgreSQL transaction commits.
 
 `scrape:netkeiba-training` is also independently runnable. It idempotently
 applies `sql/20260822000000_create_netkeiba_training_workouts.sql`, queries JST

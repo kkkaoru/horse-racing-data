@@ -44,7 +44,7 @@ it("rejects invalid readiness envelopes and races", () => {
   ).toThrow("invalid race");
 });
 
-it("polls until every upcoming race has complete pre-weight Neon and KV data", async () => {
+it("polls until every scheduled race has complete pre-weight Neon and KV data", async () => {
   const fetcher = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(
@@ -64,7 +64,7 @@ it("polls until every upcoming race has complete pre-weight Neon and KV data", a
             raceKey: "nar:43:08",
             source: "nar",
             started: true,
-            preWeight: { complete: false, kvComplete: false },
+            preWeight: { complete: true, kvComplete: true },
           },
         ],
         runYmd: "20260825",
@@ -123,20 +123,19 @@ it("polls until every upcoming race has complete pre-weight Neon and KV data", a
   ]);
   expect(log.mock.calls).toStrictEqual([
     [
-      "Finish-position readiness attempt 1: 0/1 upcoming races have complete pre-weight predictions and KV.",
+      "Finish-position readiness attempt 1: 1/2 scheduled races have complete pre-weight predictions and KV.",
     ],
     ["Finish-position readiness requested repair for nar:43:09."],
     [
-      "Finish-position readiness attempt 2: 1/1 upcoming races have complete pre-weight predictions and KV.",
+      "Finish-position readiness attempt 2: 1/1 scheduled races have complete pre-weight predictions and KV.",
     ],
   ]);
 });
 
-it("succeeds when no races remain before post time", async () => {
-  const retryDelay = vi.fn<(milliseconds: number) => Promise<void>>().mockResolvedValue(undefined);
-  await attestPreWeightPredictionReadiness({
-    baseUrl: "https://finish-position-cron.example",
-    fetcher: vi.fn<typeof fetch>().mockResolvedValue(
+it("repairs a started race so late data still produces prediction and KV", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
       Response.json({
         races: [
           {
@@ -150,7 +149,28 @@ it("succeeds when no races remain before post time", async () => {
         ],
         runYmd: "20260825",
       }),
-    ),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 202 }))
+    .mockResolvedValueOnce(
+      Response.json({
+        races: [
+          {
+            keibajoCode: "43",
+            raceBango: "08",
+            raceKey: "nar:43:08",
+            source: "nar",
+            started: true,
+            preWeight: { complete: true, kvComplete: true },
+          },
+        ],
+        runYmd: "20260825",
+      }),
+    );
+  const retryDelay = vi.fn<(milliseconds: number) => Promise<void>>().mockResolvedValue(undefined);
+
+  await attestPreWeightPredictionReadiness({
+    baseUrl: "https://finish-position-cron.example",
+    fetcher,
     log: vi.fn(),
     nowMilliseconds: () => 1_000,
     pollIntervalMilliseconds: 10,
@@ -159,7 +179,18 @@ it("succeeds when no races remain before post time", async () => {
     runYmd: "20260825",
     token: "secret-token",
   });
-  expect(retryDelay).not.toHaveBeenCalled();
+
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(fetcher.mock.calls[1]?.[1]?.body).toBe(
+    JSON.stringify({
+      category: "nar",
+      force: true,
+      keibajoCode: "43",
+      raceBango: "08",
+      runYmd: "20260825",
+    }),
+  );
+  expect(retryDelay).toHaveBeenCalledWith(10);
 });
 
 it("fails closed on date mismatch and authorization failure", async () => {
@@ -236,7 +267,7 @@ it("bounds repeated readiness request failures", async () => {
   ).rejects.toThrow("timed out after request failure: Error: network down");
 });
 
-it("times out with the exact incomplete upcoming race keys", async () => {
+it("times out with the exact incomplete scheduled race keys", async () => {
   await expect(
     attestPreWeightPredictionReadiness({
       baseUrl: "https://finish-position-cron.example",
@@ -263,5 +294,5 @@ it("times out with the exact incomplete upcoming race keys", async () => {
       runYmd: "20260825",
       token: "secret-token",
     }),
-  ).rejects.toThrow("timed out with incomplete upcoming races: nar:43:09");
+  ).rejects.toThrow("timed out with incomplete scheduled races: nar:43:09");
 });
