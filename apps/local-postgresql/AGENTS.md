@@ -39,6 +39,29 @@ bun run --filter local-postgresql test                  # 高速テスト実行
 bun run --filter local-postgresql test:coverage         # しきい値含むフルチェック
 ```
 
+## keiba.go.jp NAR fallback importer
+
+UmaConnで指定日の地方競馬カードが配信されない場合は、再実装せず次を使う。
+
+```sh
+# 公式ページの検出・パースだけを検証
+bun run --cwd apps/local-postgresql scrape:keiba-go -- --date YYYYMMDD --dry-run
+
+# local PostgreSQL登録後、corner features・R2 Catalog・Neon・entity historyまで同期
+bun run --cwd apps/local-postgresql scrape:keiba-go-and-sync -- --date YYYYMMDD
+```
+
+- `TodayRaceInfoTop`を指定日付きで取得し、掲載された全`babaCode`とレース番号をauthorityにする。通常は`--baba`を手入力しない。
+- `TodayRaceInfoTop`と`RaceList`のレース集合が一致しない場合、または`DebaTable`の出走馬が空なら、既存行を削除せずfail-closedにする。
+- HTML cacheは`tmp/keiba-go-scrape/<date>/`。公式訂正を取り直す場合だけ`--refresh`を指定する。
+- 開催回・開催日目は周辺の`nvd_ra`から推定する。推定不能または曖昧と確認した場合だけ`--meta baba=kai:nichi`を明示する。
+- 当日異常区分は現在情報の`td.info`だけから判定し、過去走欄の取消・除外を当日の異常として扱わない。
+- 馬は馬名・年齢・性別で`nvd_nu`へ一意にrelationし、騎手・調教師は公式profile IDとfull nameから`nvd_ks`・`nvd_ch`へrelationする。名前の前方一致でコードを推測しない。
+- 馬主コードが一意でない場合は推測せず、公式名を保持した`(000000, banushimei)`の既存複合relationを`nvd_bn`へ作る。全entity relation検証に失敗した場合はtransactionをrollbackする。
+- `entity_relations.json`を外部ID→local codeの監査記録とし、profile cacheは`tmp/keiba-go-scrape/profiles/`で日付をまたいで再利用する。`import_fingerprint.json`で同一入力の再実行が同一結果になることを確認する。
+- 開催場数・レース数・entity数を固定せず、日付別・人物別のsource mapping追加を通常運用に要求しない。表記差はbounded similarityと最新local利用世代で機械的に解決し、scoreと最新世代の双方で一意にならない場合はfail-closedにする。
+- combined scriptはlocal transaction成功後だけ同期し、corner features → R2/Neon → entity historyの順序を変えない。
+
 ### テストコードのスタイル (`.claude/rules/typescript.md` の主要点)
 
 - `describe` の使用は最小化、ネストを避ける
