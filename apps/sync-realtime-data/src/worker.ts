@@ -160,12 +160,16 @@ import {
   resolveRunningStyleCronDates,
   runRunningStyleCronTick,
 } from "./running-style-cron";
-import { materializeRunningStyleFeatureParquetsForDate } from "./running-style-feature-materialize";
+import {
+  materializeRunningStyleFeatureParquetsForDate,
+  type MaterializeRunningStyleFeaturesForDateResult,
+} from "./running-style-feature-materialize";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
 import { DAILY_FEATURE_BUILD_CRON } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
 import { probeNeonWritePool } from "./neon-write-pool-probe";
+import { finalizeNetkeibaTrainingDay, syncNetkeibaTrainingDay } from "./netkeiba-training-day-sync";
 import {
   parseRunningStylePostgresVerificationParams,
   runRunningStyleWorkerPostgresVerification,
@@ -5682,6 +5686,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
           .filter(isPremiumRaceDataTarget)
           .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
       );
+      await env.REALTIME_JOBS.send({ date: job.date, type: "sync-netkeiba-training-day" });
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
       await logFetch(
         env.REALTIME_DB,
@@ -5690,6 +5695,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         null,
         JSON.stringify(premiumResult),
       );
+      return;
+    }
+    if (job.type === "sync-netkeiba-training-day") {
+      const count = await syncNetkeibaTrainingDay(env, job.date);
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} workouts staged`);
+      return;
+    }
+    if (job.type === "finalize-netkeiba-training-day") {
+      const status = await finalizeNetkeibaTrainingDay(env, job.date, job.catalogRunId);
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, status);
       return;
     }
     if (job.type === "plan-realtime-fetches") {
@@ -5721,6 +5736,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
           .filter(isPremiumRaceDataTarget)
           .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
       );
+      await env.REALTIME_JOBS.send({ date: job.date, type: "sync-netkeiba-training-day" });
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
       return;
     }
@@ -5804,12 +5820,11 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "plan-running-style-predictions") {
-      // Catalog materialization is an optimization, not a planner barrier.
-      // Discovery can finish after an earlier partial warm; stopping here left
-      // newly discovered races permanently unplanned. Preserve the failure in
-      // the fetch log while always letting the idempotent planner reconcile the
-      // complete date.
-      const materialize = await withHandlerTimeout({
+      // Publish the complete day-wide running-style foundation before fan-out.
+      // Production inference requires a foundation cache HIT, so planning must
+      // fail closed when this materialization is incomplete rather than letting
+      // every race fall back to an expensive independent Catalog query.
+      const materialize: MaterializeRunningStyleFeaturesForDateResult = await withHandlerTimeout({
         label: `materialize-running-style-features:${job.date}`,
         ms: QUEUE_HANDLER_TIMEOUT_MS,
         task: materializeRunningStyleFeatureParquetsForDate(env, job.date),
@@ -5820,6 +5835,15 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         scanned: 0,
         skipped: 0,
       }));
+      if (
+        env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === "1" &&
+        materialize.materializeError !== undefined &&
+        (materialize.publishedSources?.length ?? 0) === 0
+      ) {
+        throw new Error(`Running-style day foundation failed: ${materialize.materializeError}`);
+      }
+      // A failed NAR warm must not block an already published JRA day. The planner
+      // independently gates each category's foundation before it enqueues any race.
       const planSummary = await planRunningStylePredictionsForDate(
         env,
         job.date,

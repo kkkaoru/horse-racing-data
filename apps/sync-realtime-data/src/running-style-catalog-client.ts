@@ -17,7 +17,11 @@ const CATALOG_HTTP_5XX_PATTERN = /PC_KEIBA_R2_CATALOG \S+ failed with HTTP 5\d\d
 // Keep the Catalog request plus the bounded PostgreSQL fallback below the
 // Queue lease so a slow R2 query cannot outlive the message and redeliver the
 // same inference while its first attempt is still running.
-const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 60_000;
+// Keep enough time for normal R2 SQL hits, but fall back to the indexed Neon
+// mirror before one slow Catalog query occupies a Queue consumer for a full
+// minute. The fallback is the same feature contract and remains fail-closed
+// when the derived corner-feature rows are not ready.
+const RUNNING_STYLE_CATALOG_TIMEOUT_MS = 10_000;
 // Bounded slice of a failing Catalog response body appended to the thrown error so
 // the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
 // HTTP status. Never echoes request headers or env values.
@@ -259,6 +263,51 @@ export const fetchRunningStyleRaceKeysFromCatalog = async (
 const raceKeyFromRawFeature = (value: unknown): string => {
   if (!isRecord(value)) throw new Error("catalog race-feature response has invalid row");
   return `${requireString(value.source, "source")}:${requireString(value.kaisai_nen, "kaisai_nen")}${requireString(value.kaisai_tsukihi, "kaisai_tsukihi")}:${requireString(value.keibajo_code, "keibajo_code")}:${requireString(value.race_bango, "race_bango")}`;
+};
+
+export interface RunningStyleCatalogFeatureCoverage {
+  counts: ReadonlyMap<string, number>;
+  entrySignatures: ReadonlyMap<string, string>;
+}
+
+const isActiveRawFeature = (value: Record<string, unknown>): boolean => {
+  const status = value.ijo_kubun_code;
+  if (status === undefined || status === null) return true;
+  if (typeof status === "number") return status === 0;
+  if (typeof status !== "string") return false;
+  const normalized = status.trim();
+  return normalized.length === 0 || Number(normalized) === 0;
+};
+
+const entryIdentityFromRawFeature = (value: Record<string, unknown>): string => {
+  const horseNumber = value.umaban;
+  if (typeof horseNumber !== "number" && typeof horseNumber !== "string") {
+    throw new Error("catalog race-feature response has invalid umaban");
+  }
+  return `${String(horseNumber).padStart(2, "0")}:${requireString(value.ketto_toroku_bango, "ketto_toroku_bango")}`;
+};
+
+export const fetchRunningStyleFeatureCoverageFromCatalog = async (
+  catalog: CatalogServiceBinding,
+  date: string,
+): Promise<RunningStyleCatalogFeatureCoverage> => {
+  const url = new URL("/v1/race-features", CATALOG_ORIGIN);
+  url.searchParams.set("date", date);
+  url.searchParams.set("source", "all");
+  const payload = await fetchCatalogJson(catalog, url);
+  const identities = new Map<string, string[]>();
+  requireRowsEnvelope(payload, "catalog race-feature response").forEach((row) => {
+    if (!isRecord(row)) throw new Error("catalog race-feature response has invalid row");
+    if (!isActiveRawFeature(row)) return;
+    const raceKey = raceKeyFromRawFeature(row);
+    identities.set(raceKey, [...(identities.get(raceKey) ?? []), entryIdentityFromRawFeature(row)]);
+  });
+  return {
+    counts: new Map([...identities].map(([raceKey, entries]) => [raceKey, entries.length])),
+    entrySignatures: new Map(
+      [...identities].map(([raceKey, entries]) => [raceKey, entries.toSorted().join("|")]),
+    ),
+  };
 };
 
 export const fetchRunningStyleFeatureCountsFromCatalog = async (

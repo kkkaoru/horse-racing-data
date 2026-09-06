@@ -91,6 +91,71 @@ it("upsertRaceRunningStyles binds cell provenance before probabilities", async (
   ]);
 });
 
+it("replaceRaceRunningStyles skips an empty generation", async () => {
+  const { replaceRaceRunningStyles } = await import("./running-style-d1");
+  const batch = vi.fn();
+
+  await expect(replaceRaceRunningStyles({ batch } as unknown as D1Database, [])).resolves.toBe(0);
+  expect(batch).not.toHaveBeenCalled();
+});
+
+it("replaceRaceRunningStyles deletes the old race generation in the same D1 batch", async () => {
+  const { replaceRaceRunningStyles } = await import("./running-style-d1");
+  const statements: string[] = [];
+  const prepare = vi.fn((sql: string) => {
+    statements.push(sql);
+    return { bind: vi.fn(() => ({ sql })) };
+  });
+  const batch = vi.fn(async (_statements: unknown[]) => []);
+  const db = { batch, prepare } as unknown as D1Database;
+
+  await expect(
+    replaceRaceRunningStyles(db, [ROW, { ...ROW, horseNumber: 2, kettoTorokuBango: "2024100002" }]),
+  ).resolves.toBe(2);
+
+  expect(statements[0]).toBe("delete from race_running_styles where race_key = ?");
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
+});
+
+it("replaceRaceRunningStyles replaces each race in its own atomic batch", async () => {
+  const { replaceRaceRunningStyles } = await import("./running-style-d1");
+  const prepare = vi.fn((sql: string) => ({ bind: vi.fn(() => ({ sql })) }));
+  const batch = vi.fn(async (_statements: unknown[]) => []);
+  const db = { batch, prepare } as unknown as D1Database;
+
+  await expect(
+    replaceRaceRunningStyles(db, [ROW, { ...ROW, raceKey: "jra:20260512:08:02" }]),
+  ).resolves.toBe(2);
+  expect(batch).toHaveBeenCalledTimes(2);
+  expect(batch.mock.calls[0]?.[0]).toHaveLength(2);
+  expect(batch.mock.calls[1]?.[0]).toHaveLength(2);
+});
+
+it("listRaceRunningStyleEntrySignatures skips an empty race list", async () => {
+  const { listRaceRunningStyleEntrySignatures } = await import("./running-style-d1");
+  await expect(
+    listRaceRunningStyleEntrySignatures({} as unknown as D1Database, []),
+  ).resolves.toStrictEqual(new Map());
+});
+
+it("listRaceRunningStyleEntrySignatures returns stable horse identities", async () => {
+  const { listRaceRunningStyleEntrySignatures } = await import("./running-style-d1");
+  const all = vi.fn(async () => ({
+    results: [
+      { horse_number: 3, ketto_toroku_bango: "2024100003", race_key: "race-1" },
+      { horse_number: 1, ketto_toroku_bango: "2024100001", race_key: "race-1" },
+    ],
+  }));
+  const db = {
+    prepare: vi.fn(() => ({ bind: vi.fn(() => ({ all })) })),
+  } as unknown as D1Database;
+
+  const signatures = await listRaceRunningStyleEntrySignatures(db, ["race-1"]);
+
+  expect(signatures.get("race-1")).toBe("01:2024100001|03:2024100003");
+});
+
 it("listRaceRunningStyleCounts returns empty map when raceKeys is empty", async () => {
   const { listRaceRunningStyleCounts } = await import("./running-style-d1");
   const db = {} as unknown as D1Database;

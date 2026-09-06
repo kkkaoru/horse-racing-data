@@ -1,7 +1,30 @@
 // Run with bun test apps/sync-realtime-data/src/running-style-field-features.test.ts
 import { expect, test } from "vitest";
 
-import { computeFieldFeaturesPerHorse, type HorsePeerInputs } from "./running-style-field-features";
+import {
+  computeFieldFeaturesPerHorse,
+  isRunningStyleDerivedFieldFeature,
+  type HorsePeerInputs,
+} from "./running-style-field-features";
+
+test("recent-five escape rank matches SQL ties and NULLS LAST without substituting lifetime rates", () => {
+  const horses = [0.2, null, 0.8, 0.8, undefined].map((pastNigeRateRecent5) => ({
+    ...HORSE_A,
+    pastNigeRateRecent5,
+  }));
+  expect(computeFieldFeaturesPerHorse(horses).map((row) => row.field_nige_pressure_rank)).toEqual([
+    3,
+    4,
+    1,
+    1,
+    undefined,
+  ]);
+  expect(
+    computeFieldFeaturesPerHorse([{ ...HORSE_A, pastNigeRateRecent5: null }])[0]
+      ?.field_nige_pressure_rank,
+  ).toBe(1);
+  expect(isRunningStyleDerivedFieldFeature("field_nige_pressure_rank")).toBe(true);
+});
 
 const HORSE_A: HorsePeerInputs = {
   careerWinRate: 0.2,

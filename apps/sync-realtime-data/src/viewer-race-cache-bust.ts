@@ -55,6 +55,10 @@ interface SkippedOutcome {
 
 export type RaceCacheBustOutcome = ErrorOutcome | OkOutcome | SkippedOutcome;
 
+export interface RaceCacheBustOptions {
+  waitForCompletion?: boolean;
+}
+
 interface AttemptOkOutcome {
   retryable: false;
   status: "ok";
@@ -177,12 +181,14 @@ const runWithRetry = async (args: BustLoopArgs): Promise<AttemptOutcome[]> =>
 export const triggerRaceCacheBust = async (
   env: Env,
   body: RaceCacheBustBody,
+  options: RaceCacheBustOptions = {},
 ): Promise<RaceCacheBustOutcome> => {
   const token = env.PC_KEIBA_VIEWER_INTERNAL_TOKEN?.trim();
   if (!token) {
     return { message: "PC_KEIBA_VIEWER_INTERNAL_TOKEN not configured", status: "skipped" };
   }
-  const url = `${resolveViewerOrigin(env)}${VIEWER_INTERNAL_BUST_PATH}`;
+  const waitQuery = options.waitForCompletion === true ? "?wait=1" : "";
+  const url = `${resolveViewerOrigin(env)}${VIEWER_INTERNAL_BUST_PATH}${waitQuery}`;
   const attempts = await runWithRetry({ body, fetcher: resolveViewerFetcher(env), token, url });
   const last = attempts[attempts.length - 1]!;
   if (last.status === "ok") {

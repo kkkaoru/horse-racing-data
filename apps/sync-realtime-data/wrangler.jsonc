@@ -20,6 +20,7 @@
     "DATABASE_TARGET": "cloudflare",
     "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
     "RUNNING_STYLE_D1_WRITE_ENABLED": "1",
+    "RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT": "1",
     "RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
     "WIN5_D1_WRITE_ENABLED": "1",
   },
@@ -155,6 +156,10 @@
     "binding": "JRA_BROWSER",
   },
   "services": [
+    {
+      "binding": "DAILY_KEIBA_SYNC",
+      "service": "daily-keiba-sync",
+    },
     {
       "binding": "PC_KEIBA_VIEWER",
       "service": "pc-keiba-viewer",

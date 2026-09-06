@@ -209,6 +209,99 @@ test("selectRacesNeedingRunningStyleInference skips active queued state", () => 
   expect(selected.alreadyQueued).toBe(1);
 });
 
+test("selectRacesNeedingRunningStyleInference accepts an exact completed identity generation", () => {
+  const state = {
+    attemptedAt: "2026-05-19T00:00:00.000Z",
+    cellModelKey: "cell",
+    cellVariantId: "variant",
+    completedAt: "2026-05-19T00:01:00.000Z",
+    expectedHorseCount: 14,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v1",
+    raceKey: "nar:20260519:46:12",
+    status: "completed" as const,
+    writtenHorseCount: 14,
+  };
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", state]]),
+    new Date("2026-05-19T01:00:00.000Z"),
+    new Map([["nar:20260519:46:12", "01:2023101217"]]),
+    new Map([["nar:20260519:46:12", "01:2023101217"]]),
+  );
+
+  expect(selected.completed).toBe(1);
+  expect(selected.needed).toStrictEqual([]);
+});
+
+test("selectRacesNeedingRunningStyleInference invalidates a completed same-count identity replacement", () => {
+  const state = {
+    attemptedAt: "2026-05-19T00:00:00.000Z",
+    cellModelKey: "cell",
+    cellVariantId: "variant",
+    completedAt: "2026-05-19T00:01:00.000Z",
+    expectedHorseCount: 14,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v1",
+    raceKey: "nar:20260519:46:12",
+    status: "completed" as const,
+    writtenHorseCount: 14,
+  };
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", state]]),
+    new Date("2026-05-19T01:00:00.000Z"),
+    new Map([["nar:20260519:46:12", "01:2023101217"]]),
+    new Map([["nar:20260519:46:12", "01:2023104006"]]),
+  );
+
+  expect(selected.completed).toBe(0);
+  expect(selected.needed).toStrictEqual([
+    expect.objectContaining({
+      forceRefreshFeatures: true,
+      raceKey: "nar:20260519:46:12",
+    }),
+  ]);
+});
+
+test("selectRacesNeedingRunningStyleInference invalidates a completed cancellation count", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 13]]),
+    new Map([["nar:20260519:46:12", 13]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([
+      [
+        "nar:20260519:46:12",
+        {
+          attemptedAt: "2026-05-19T00:00:00.000Z",
+          cellModelKey: "cell",
+          cellVariantId: "variant",
+          completedAt: "2026-05-19T00:01:00.000Z",
+          expectedHorseCount: 14,
+          featuresR2Key: "features.parquet",
+          modelVersion: "v1",
+          raceKey: "nar:20260519:46:12",
+          status: "completed",
+          writtenHorseCount: 14,
+        },
+      ],
+    ]),
+  );
+
+  expect(selected.completed).toBe(0);
+  expect(selected.needed[0]).toMatchObject({
+    expectedHorseCount: 13,
+    forceRefreshFeatures: true,
+  });
+});
+
 test("selectRacesNeedingRunningStyleInference counts featureReady=0 as missingFeatures", () => {
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],

@@ -96,7 +96,11 @@ it("upserts a single valid row and returns 1", async () => {
   expect(vi.mocked(queryFn).mock.calls[0]?.[0]).toBe("BEGIN");
   expect(vi.mocked(queryFn).mock.calls[1]?.[0]).toBe("SET TRANSACTION READ WRITE");
   expect(vi.mocked(queryFn).mock.calls[2]?.[0]).toBe("SHOW transaction_read_only");
-  expect(vi.mocked(queryFn).mock.calls[4]?.[0]).toBe("COMMIT");
+  expect(String(vi.mocked(queryFn).mock.calls[3]?.[0])).toMatch(
+    /delete from race_running_style_model_predictions/,
+  );
+  expect(vi.mocked(queryFn).mock.calls[3]?.[1]).toStrictEqual(["jra", "2026", "0619", "08", "01"]);
+  expect(vi.mocked(queryFn).mock.calls[5]?.[0]).toBe("COMMIT");
   const [sql, values = []] = lastInsertCall(queryFn);
   expect(sql.startsWith("insert into race_running_style_model_predictions")).toBe(true);
   expect(sql.indexOf("on conflict") > -1).toBe(true);
@@ -117,6 +121,19 @@ it("filters rows with invalid race_key format", async () => {
   expect(connect).not.toHaveBeenCalled();
   expect(vi.mocked(queryFn)).not.toHaveBeenCalled();
   expect(poolQuery).not.toHaveBeenCalled();
+});
+
+it("rejects a batch containing more than one race", async () => {
+  const queryFn: QueryFn = writableQuery();
+  const { connect, pool } = buildWritablePool(queryFn);
+
+  await expect(
+    upsertRunningStylePredictionsToNeon(pool, [
+      buildRow(),
+      buildRow({ raceKey: "jra:20260619:08:02" }),
+    ]),
+  ).rejects.toThrow("requires one race");
+  expect(connect).not.toHaveBeenCalled();
 });
 
 it("filters rows with unknown predicted_label", async () => {
@@ -182,11 +199,12 @@ it("batches large row sets into NEON_BATCH_SIZE chunks on one writable client", 
   expect(sqls[0]).toBe("BEGIN");
   expect(sqls[1]).toBe("SET TRANSACTION READ WRITE");
   expect(sqls[2]).toBe("SHOW transaction_read_only");
-  expect(sqls[3]?.startsWith("insert into race_running_style_model_predictions")).toBe(true);
+  expect(sqls[3]).toMatch(/delete from race_running_style_model_predictions/);
   expect(sqls[4]?.startsWith("insert into race_running_style_model_predictions")).toBe(true);
   expect(sqls[5]?.startsWith("insert into race_running_style_model_predictions")).toBe(true);
-  expect(sqls[6]).toBe("COMMIT");
-  expect(sqls.length).toBe(7);
+  expect(sqls[6]?.startsWith("insert into race_running_style_model_predictions")).toBe(true);
+  expect(sqls[7]).toBe("COMMIT");
+  expect(sqls.length).toBe(8);
   expect(sqls.filter((sql) => sql.indexOf("alter table") > -1).length).toBe(0);
   expect(release).toHaveBeenCalledTimes(1);
   expect(poolQuery).not.toHaveBeenCalled();
@@ -286,6 +304,25 @@ it("rolls back without DML when transaction_read_only stays on", async () => {
   expect(poolQuery).not.toHaveBeenCalled();
 });
 
+it("rolls back when stale-generation deletion fails", async () => {
+  const queryFn: QueryFn = vi.fn(async (sql: string) => {
+    if (sql === "SHOW transaction_read_only") {
+      return { rows: [{ transaction_read_only: "off" }] };
+    }
+    if (sql.includes("delete from race_running_style_model_predictions")) {
+      throw new Error("delete failed");
+    }
+    return undefined;
+  });
+  const { pool, release } = buildWritablePool(queryFn);
+
+  await expect(upsertRunningStylePredictionsToNeon(pool, [buildRow()])).rejects.toThrow(
+    "delete failed",
+  );
+  expect(vi.mocked(queryFn).mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+  expect(release).toHaveBeenCalledTimes(1);
+});
+
 it("rolls back when an insert fails mid-transaction", async () => {
   const queryFn: QueryFn = vi.fn(async (sql: string) => {
     if (sql === "SHOW transaction_read_only") {
@@ -307,12 +344,15 @@ it("rolls back when an insert fails mid-transaction", async () => {
   expect(vi.mocked(queryFn).mock.calls[0]?.[0]).toBe("BEGIN");
   expect(vi.mocked(queryFn).mock.calls[1]?.[0]).toBe("SET TRANSACTION READ WRITE");
   expect(vi.mocked(queryFn).mock.calls[2]?.[0]).toBe("SHOW transaction_read_only");
+  expect(String(vi.mocked(queryFn).mock.calls[3]?.[0])).toMatch(
+    /delete from race_running_style_model_predictions/,
+  );
   expect(
-    String(vi.mocked(queryFn).mock.calls[3]?.[0]).startsWith(
+    String(vi.mocked(queryFn).mock.calls[4]?.[0]).startsWith(
       "insert into race_running_style_model_predictions",
     ),
   ).toBe(true);
-  expect(vi.mocked(queryFn).mock.calls[4]?.[0]).toBe("ROLLBACK");
+  expect(vi.mocked(queryFn).mock.calls[5]?.[0]).toBe("ROLLBACK");
   expect(release).toHaveBeenCalledTimes(1);
   expect(poolQuery).not.toHaveBeenCalled();
 });

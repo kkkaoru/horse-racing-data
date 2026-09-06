@@ -21,10 +21,13 @@ import {
   markRunningStyleInferenceFailed,
   markRunningStyleInferenceProcessing,
   markRunningStyleInferenceSyncFailed,
+  replaceRaceRunningStyles,
   type RaceRunningStyleRow,
-  upsertRaceRunningStyles,
 } from "./running-style-d1";
-import { loadOrBuildRunningStyleFeatureParquet } from "./running-style-feature-materialize";
+import {
+  loadOrBuildRunningStyleFeatureParquet,
+  materializeRunningStyleFeatureParquetForRace,
+} from "./running-style-feature-materialize";
 import {
   buildRealtimeRaceKeyFromRunningStyle,
   buildRunningStyleRaceKey,
@@ -130,6 +133,12 @@ interface FinishPositionDayBarrierResult extends FinishPositionTriggerResult {
   parquetExportedRows: number;
 }
 
+interface RefreshRunningStyleFeaturesParams {
+  env: Env;
+  featureNames: ReadonlyArray<string>;
+  job: RunningStylePredictionJob;
+}
+
 const waitForNeonSyncRetry = (attemptIndex: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, NEON_SYNC_RETRY_DELAY_MS * attemptIndex));
 
@@ -210,6 +219,17 @@ const resolveRouteFromRows = (
 
 const featureNamesMatch = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
   left.length === right.length && left.every((name, index) => name === right[index]);
+
+const refreshRunningStyleFeaturesIfRequested = async (
+  params: RefreshRunningStyleFeaturesParams,
+): Promise<void> => {
+  if (params.job.forceRefreshFeatures !== true) return;
+  await materializeRunningStyleFeatureParquetForRace({
+    env: params.env,
+    featureNames: params.featureNames,
+    race: params.job,
+  });
+};
 
 const triggerFinishPositionAfterDayBaseHit = async (
   env: Env,
@@ -413,7 +433,7 @@ const cacheAndSyncCompletedRunningStyles = async (
     if (rows.length === 0) {
       return { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
     }
-    await upsertRaceRunningStyles(env.REALTIME_DB, rows);
+    await replaceRaceRunningStyles(env.REALTIME_DB, rows);
     const [cacheWritten, neonResult] = await Promise.all([
       putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
         console.error(formatErrorLogLine("Running-style cache write failed", { raceKey }, error));
@@ -462,6 +482,7 @@ export const handleRunningStylePredictionJob = async (
       return null;
     }
     if (
+      job.forceRegenerate !== true &&
       (state?.status === "completed" || state?.status === "sync-failed") &&
       state.expectedHorseCount !== null &&
       state.writtenHorseCount !== null &&
@@ -543,6 +564,7 @@ export const handleRunningStylePredictionJob = async (
       defaultRoute.modelKey,
     );
     let featureNames = defaultHeader.feature_names;
+    await refreshRunningStyleFeaturesIfRequested({ env, featureNames, job });
     let loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
       env,
       featureNames,
@@ -556,6 +578,7 @@ export const handleRunningStylePredictionJob = async (
         : await loadFlatLightGBMHeaderFromR2(env.RUNNING_STYLE_MODELS, selectedRoute.modelKey);
     if (!featureNamesMatch(selectedHeader.feature_names, featureNames)) {
       featureNames = selectedHeader.feature_names;
+      await refreshRunningStyleFeaturesIfRequested({ env, featureNames, job });
       loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
         env,
         featureNames,

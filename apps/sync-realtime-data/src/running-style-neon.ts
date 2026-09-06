@@ -125,6 +125,10 @@ export const upsertRunningStylePredictionsToNeon = async (
     return parsed !== null && LABEL_CLASS_INDEX[row.predictedLabel] !== undefined;
   });
   if (validRows.length === 0) return 0;
+  const raceKeys = new Set(validRows.map((row) => row.raceKey));
+  if (raceKeys.size !== 1) throw new Error("Running-style Neon replacement requires one race");
+  const race = parseRaceKey(validRows[0]?.raceKey ?? "");
+  if (race === null) return 0;
   // Hot-path upserts must not run DDL. Hyperdrive/replica connections reject
   // ALTER TABLE with "cannot execute ALTER TABLE in a read-only transaction",
   // which previously aborted the entire Neon write and skipped finish-position
@@ -132,6 +136,12 @@ export const upsertRunningStylePredictionsToNeon = async (
   // explicit backfill script. One checkout covers every INSERT so SET
   // TRANSACTION READ WRITE applies to the same txn; pool.query would not.
   await withWritableClient(pool, async (client) => {
+    await client.query(
+      `delete from race_running_style_model_predictions
+        where source = $1 and kaisai_nen = $2 and kaisai_tsukihi = $3
+          and keibajo_code = $4 and race_bango = $5`,
+      [race.source, race.kaisaiNen, race.kaisaiTsukihi, race.keibajoCode, race.raceBango],
+    );
     for (let start = 0; start < validRows.length; start += NEON_BATCH_SIZE) {
       await upsertNeonBatch(client, validRows.slice(start, start + NEON_BATCH_SIZE));
     }

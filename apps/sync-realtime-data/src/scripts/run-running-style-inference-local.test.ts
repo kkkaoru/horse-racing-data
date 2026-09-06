@@ -588,6 +588,17 @@ it("PEER_INPUT_COLUMN_MAP maps speedIndexAvg5 to speed_index_avg_5", () => {
   expect(PEER_INPUT_COLUMN_MAP.speedIndexAvg5).toBe("speed_index_avg_5");
 });
 
+it("recent-five ranks map consistently and preserve stored ranks when no derived input is available", () => {
+  expect(PEER_INPUT_COLUMN_MAP.pastNigeRateRecent5).toBe("past_nige_rate_self_recent_5");
+  expect(
+    mergeFeatureMap({ field_nige_pressure_rank: 4 }, ZERO_FIELD_ROW).field_nige_pressure_rank,
+  ).toBe(4);
+  expect(
+    mergeFeatureMap({}, { ...ZERO_FIELD_ROW, field_nige_pressure_rank: 2 })
+      .field_nige_pressure_rank,
+  ).toBe(2);
+});
+
 it("PEER_INPUT_COLUMN_MAP maps pastNigeRate to past_nige_rate_self", () => {
   expect(PEER_INPUT_COLUMN_MAP.pastNigeRate).toBe("past_nige_rate_self");
 });

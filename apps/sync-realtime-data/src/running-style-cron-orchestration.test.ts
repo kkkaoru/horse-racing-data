@@ -16,9 +16,14 @@ vi.mock("./finish-position-lite-pool", () => ({
 }));
 vi.mock("./running-style-catalog-client", () => ({
   fetchRunningStyleFeatureCountsFromCatalog: vi.fn(async () => new Map()),
+  fetchRunningStyleFeatureCoverageFromCatalog: vi.fn(async () => ({
+    counts: new Map(),
+    entrySignatures: new Map(),
+  })),
 }));
 vi.mock("./running-style-d1", () => ({
   listRaceRunningStyleCounts: vi.fn(async () => new Map()),
+  listRaceRunningStyleEntrySignatures: vi.fn(async () => new Map()),
   listRaceRunningStylesForRace: vi.fn(async () => []),
   listRunningStyleInferenceStates: vi.fn(async () => new Map()),
   markRunningStyleInferenceEnqueueFailed: vi.fn(async () => {}),
@@ -838,6 +843,74 @@ it("requeues an August 29 sync-failed mirror on August 28 even when D1 rows are 
   expect(upsertRunningStylePendingStates).not.toHaveBeenCalled();
 });
 
+it("moves a stale sync-failed generation to pending for full re-inference", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  const {
+    listRaceRunningStyleCounts,
+    listRunningStyleInferenceStates,
+    upsertRunningStylePendingStates,
+  } = await import("./running-style-d1");
+  const { listRunningStyleExpectedHorseCounts } = await import("./running-style-expected-horses");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const raceKey = "nar:20260829:50:07";
+  const race = {
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0829",
+    keibajo_code: "50",
+    race_bango: "07",
+    source: "nar" as const,
+  };
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({ races: [race], source: "d1" });
+  vi.mocked(fetchRunningStyleFeatureCoverageFromCatalog).mockResolvedValue({
+    counts: new Map([[raceKey, 7]]),
+    entrySignatures: new Map(),
+  });
+  vi.mocked(listRunningStyleExpectedHorseCounts).mockResolvedValue(new Map([[raceKey, 7]]));
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map([[raceKey, 8]]));
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        raceKey,
+        {
+          attemptedAt: "2026-08-28T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
+          completedAt: null,
+          expectedHorseCount: 8,
+          featuresR2Key: "features.parquet",
+          modelVersion: "v7",
+          raceKey,
+          status: "sync-failed",
+          writtenHorseCount: 8,
+        },
+      ],
+    ]),
+  );
+  const send = vi.fn(queueSendOk);
+
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      RUNNING_STYLE_JOBS: {
+        metrics: vi.fn(queueMetricsOk),
+        send,
+        sendBatch: vi.fn(queueSendOk),
+      },
+    }),
+    "20260829",
+    new Date("2026-08-28T12:00:00.000Z"),
+  );
+
+  expect(summary.enqueued).toBe(1);
+  expect(upsertRunningStylePendingStates).toHaveBeenCalledWith(
+    {},
+    [expect.objectContaining({ raceKey })],
+    "2026-08-28T12:00:00.000Z",
+  );
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ raceKey }));
+});
+
 it("planRunningStylePredictionsForDate does not requeue completed from an unrelated count map", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
@@ -948,11 +1021,14 @@ it("planRunningStylePredictionsForDate does not requeue a completed race with al
   expect(send).not.toHaveBeenCalled();
 });
 
-it("planRunningStylePredictionsForDate fails closed for completed races when D1 counts timeout", async () => {
+it("planRunningStylePredictionsForDate fails closed for completed races when D1 audits timeout", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
-  const { listRaceRunningStyleCounts, listRunningStyleInferenceStates } =
-    await import("./running-style-d1");
+  const {
+    listRaceRunningStyleCounts,
+    listRaceRunningStyleEntrySignatures,
+    listRunningStyleInferenceStates,
+  } = await import("./running-style-d1");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
       {
@@ -966,6 +1042,9 @@ it("planRunningStylePredictionsForDate fails closed for completed races when D1 
     source: "d1",
   });
   vi.mocked(listRaceRunningStyleCounts).mockRejectedValueOnce(new Error("D1 count timeout"));
+  vi.mocked(listRaceRunningStyleEntrySignatures).mockRejectedValueOnce(
+    new Error("D1 identity timeout"),
+  );
   vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
     new Map([
       [
@@ -999,7 +1078,7 @@ it("planRunningStylePredictionsForDate fails closed for completed races when D1 
   );
   expect(summary.completed).toBe(1);
   expect(summary.enqueued).toBe(0);
-  expect(summary.planError).toContain("D1 count timeout");
+  expect(summary.planError).toContain("D1 count timeout; D1 identity timeout");
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -1007,7 +1086,7 @@ it("planRunningStylePredictionsForDate uses Catalog counts when only some races 
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { listRunningStyleInferenceStates } = await import("./running-style-d1");
-  const { fetchRunningStyleFeatureCountsFromCatalog } =
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
     await import("./running-style-catalog-client");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
@@ -1047,12 +1126,13 @@ it("planRunningStylePredictionsForDate uses Catalog counts when only some races 
       ],
     ]),
   );
-  vi.mocked(fetchRunningStyleFeatureCountsFromCatalog).mockResolvedValue(
-    new Map([
+  vi.mocked(fetchRunningStyleFeatureCoverageFromCatalog).mockResolvedValue({
+    counts: new Map([
       ["jra:20260512:08:01", 16],
       ["jra:20260512:08:02", 16],
     ]),
-  );
+    entrySignatures: new Map(),
+  });
   const metrics = vi.fn(queueMetricsOk);
   const send = vi.fn(queueSendOk);
   const sendBatch = vi.fn(queueSendOk);
@@ -1063,7 +1143,7 @@ it("planRunningStylePredictionsForDate uses Catalog counts when only some races 
   );
   expect(summary.completed).toBe(1);
   expect(summary.enqueued).toBe(1);
-  expect(fetchRunningStyleFeatureCountsFromCatalog).toHaveBeenCalledTimes(1);
+  expect(fetchRunningStyleFeatureCoverageFromCatalog).toHaveBeenCalledTimes(1);
 });
 
 it("planRunningStylePredictionsForDate falls back to individual sends after sendBatch error 15000", async () => {

@@ -97,12 +97,15 @@ test("triggerRaceCacheBust prefers the viewer service binding over the Access-pr
       source: "jra",
       year: "2026",
     },
+    { waitForCompletion: true },
   );
 
   expect(outcome).toStrictEqual({ attempts: 1, status: "ok" });
   expect(globalFetchSpy).not.toHaveBeenCalled();
   expect(serviceFetch).toHaveBeenCalledTimes(1);
-  expect(serviceFetch.mock.calls[0]?.[0]).toBe("https://example.test/api/internal/race-cache-bust");
+  expect(serviceFetch.mock.calls[0]?.[0]).toBe(
+    "https://example.test/api/internal/race-cache-bust?wait=1",
+  );
   expect(
     new Headers(serviceFetch.mock.calls[0]?.[1]?.headers).get("x-pc-keiba-internal-token"),
   ).toBe("secret-token");

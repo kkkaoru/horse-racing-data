@@ -143,6 +143,7 @@ const PEER_INPUT_COLUMN_MAP: Readonly<Record<keyof HorsePeerInputs, string>> = {
   pastCorner1NormAvg5: "past_corner_1_norm_avg_5",
   pastFirst3fAvg5: "past_first_3f_avg_5",
   pastNigeRate: "past_nige_rate_self",
+  pastNigeRateRecent5: "past_nige_rate_self_recent_5",
   pastOikomiRate: "past_oikomi_rate_self",
   pastSashiRate: "past_sashi_rate_self",
   pastSenkouRate: "past_senkou_rate_self",
@@ -160,6 +161,7 @@ const FIELD_FEATURE_COLUMN_MAP: Readonly<Record<keyof HorseFieldRow, string>> = 
   field_min_past_corner_1_norm: "field_min_past_corner_1_norm",
   field_nige_candidate_count: "field_nige_candidate_count",
   field_nige_pressure: "field_nige_pressure",
+  field_nige_pressure_rank: "field_nige_pressure_rank",
   field_oikomi_pressure: "field_oikomi_pressure",
   field_pace_index: "field_pace_index",
   field_sashi_pressure: "field_sashi_pressure",
@@ -424,6 +426,7 @@ export const mergeFeatureMap = (
   const numericField: Record<string, number | null> = {};
   (Object.keys(FIELD_FEATURE_COLUMN_MAP) as ReadonlyArray<keyof HorseFieldRow>).forEach((key) => {
     const value = fieldRow[key];
+    if (value === undefined) return;
     const column = FIELD_FEATURE_COLUMN_MAP[key];
     numericField[column] = typeof value === "boolean" ? Number(value) : value;
   });

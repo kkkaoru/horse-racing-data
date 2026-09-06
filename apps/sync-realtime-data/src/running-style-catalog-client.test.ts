@@ -79,6 +79,23 @@ it("fetchRunningStyleFeaturesFromCatalog validates and maps the fixed generation
   );
 });
 
+it("passes a grade code to the running-style Catalog query", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const catalog = catalogReturning({
+    featureNames: ["career_win_rate"],
+    generation: "raw-iceberg-v1",
+    rows: [validFeatureRow()],
+  });
+
+  await fetchRunningStyleFeaturesFromCatalog(catalog, { ...RACE, gradeCode: "A" }, [
+    "career_win_rate",
+  ]);
+
+  expect(catalog.fetch.mock.calls[0]?.[0]?.url).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/running-style-features?date=20260715&source=jra&keibajoCode=05&raceBango=01&gradeCode=A",
+  );
+});
+
 it("rejects Catalog HTTP errors", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   await expect(
@@ -182,10 +199,10 @@ it("bounds a running-style Catalog request and classifies the timeout as unavail
   const pending = fetchRunningStyleFeaturesFromCatalog(catalog, RACE, ["f1"]).catch(
     (error: unknown) => error,
   );
-  await vi.advanceTimersByTimeAsync(120_000);
+  await vi.advanceTimersByTimeAsync(20_000);
   const failure: unknown = await pending;
   expect(failure instanceof Error ? failure.message : "").toBe(
-    "running-style Catalog request timed out after 60000ms",
+    "running-style Catalog request timed out after 10000ms",
   );
   expect(isCatalogUnavailableError(failure)).toBe(true);
   vi.useRealTimers();
@@ -412,6 +429,129 @@ it("fetchRunningStyleFeatureCountsFromCatalog counts raw rows by race", async ()
   expect(request?.url).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/race-features?date=20260715&source=all",
   );
+});
+
+it("fetchRunningStyleFeatureCoverageFromCatalog fingerprints only active entry identities", async () => {
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  const coverage = await fetchRunningStyleFeatureCoverageFromCatalog(
+    catalogReturning({
+      rows: [
+        {
+          ijo_kubun_code: "0",
+          kaisai_nen: "2026",
+          kaisai_tsukihi: "0715",
+          keibajo_code: "44",
+          ketto_toroku_bango: "2023101217",
+          race_bango: "08",
+          source: "nar",
+          umaban: 1,
+        },
+        {
+          ijo_kubun_code: "1",
+          kaisai_nen: "2026",
+          kaisai_tsukihi: "0715",
+          keibajo_code: "44",
+          ketto_toroku_bango: "2023104006",
+          race_bango: "08",
+          source: "nar",
+          umaban: 2,
+        },
+        {
+          kaisai_nen: "2026",
+          kaisai_tsukihi: "0715",
+          keibajo_code: "44",
+          ketto_toroku_bango: "2023100316",
+          race_bango: "08",
+          source: "nar",
+          umaban: "3",
+        },
+      ],
+    }),
+    "20260715",
+  );
+
+  expect(coverage.counts.get("nar:20260715:44:08")).toBe(2);
+  expect(coverage.entrySignatures.get("nar:20260715:44:08")).toBe("01:2023101217|03:2023100316");
+});
+
+it("fetchRunningStyleFeatureCoverageFromCatalog normalizes numeric and blank statuses", async () => {
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  const base = {
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0715",
+    keibajo_code: "44",
+    race_bango: "08",
+    source: "nar",
+  };
+  const coverage = await fetchRunningStyleFeatureCoverageFromCatalog(
+    catalogReturning({
+      rows: [
+        { ...base, ijo_kubun_code: 0, ketto_toroku_bango: "horse-1", umaban: 1 },
+        { ...base, ijo_kubun_code: 1, ketto_toroku_bango: "horse-2", umaban: 2 },
+        { ...base, ijo_kubun_code: "", ketto_toroku_bango: "horse-3", umaban: 3 },
+        { ...base, ijo_kubun_code: "00", ketto_toroku_bango: "horse-4", umaban: 4 },
+        { ...base, ijo_kubun_code: {}, ketto_toroku_bango: "horse-5", umaban: 5 },
+        { ...base, ijo_kubun_code: null, ketto_toroku_bango: "horse-6", umaban: 6 },
+      ],
+    }),
+    "20260715",
+  );
+
+  expect(coverage.counts.get("nar:20260715:44:08")).toBe(4);
+  expect(coverage.entrySignatures.get("nar:20260715:44:08")).toBe(
+    "01:horse-1|03:horse-3|04:horse-4|06:horse-6",
+  );
+});
+
+it("fetchRunningStyleFeatureCoverageFromCatalog rejects an invalid horse identity", async () => {
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeatureCoverageFromCatalog(
+      catalogReturning({
+        rows: [
+          {
+            kaisai_nen: "2026",
+            kaisai_tsukihi: "0715",
+            keibajo_code: "44",
+            ketto_toroku_bango: "horse-1",
+            race_bango: "08",
+            source: "nar",
+            umaban: null,
+          },
+        ],
+      }),
+      "20260715",
+    ),
+  ).rejects.toThrow("invalid umaban");
+});
+
+it("fetchRunningStyleFeatureCoverageFromCatalog rejects malformed rows and horse ids", async () => {
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeatureCoverageFromCatalog(catalogReturning({ rows: [null] }), "20260715"),
+  ).rejects.toThrow("invalid row");
+  await expect(
+    fetchRunningStyleFeatureCoverageFromCatalog(
+      catalogReturning({
+        rows: [
+          {
+            kaisai_nen: "2026",
+            kaisai_tsukihi: "0715",
+            keibajo_code: "44",
+            ketto_toroku_bango: 2023101217,
+            race_bango: "08",
+            source: "nar",
+            umaban: 1,
+          },
+        ],
+      }),
+      "20260715",
+    ),
+  ).rejects.toThrow("invalid ketto_toroku_bango");
 });
 
 it("fetchRunningStyleFeatureCountsFromCatalog rejects malformed responses", async () => {

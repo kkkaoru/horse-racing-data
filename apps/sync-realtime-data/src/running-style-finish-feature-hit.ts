@@ -4,18 +4,18 @@
 import { parquetReadObjects, type AsyncBuffer } from "hyparquet";
 
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
+import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
 const DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
 const DAY_BASE_FILE = "features.parquet";
 const MAX_CACHED_RACES = 2;
-const WATERMARK_METADATA_KEYS = [
-  "max-data-sakusei-nengappi",
-  "row-count",
-  "rs-predicted-at-max",
-  "rs-row-count",
-] as const;
+// Running-style inference consumes the early-binding feature columns in the
+// day-base artifact. The rs-* watermarks describe downstream running-style
+// predictions and are necessarily absent before this consumer runs; requiring
+// them here creates a generation deadlock where a valid day-base can never HIT.
+const WATERMARK_METADATA_KEYS = ["max-data-sakusei-nengappi", "row-count"] as const;
 
 const PEER_INPUT_FEATURES = {
   career_win_rate: "careerWinRate",
@@ -199,7 +199,11 @@ const readRaceRows = async (
     matchesRace(raw, params.race) ? [index] : [],
   );
   if (indices.length === 0) return [];
-  const columns = [...new Set([...ROW_COLUMNS, ...params.featureNames])];
+  // Field-relative inputs are computed after all runners are loaded, not stored in the raw day base.
+  const rawFeatureNames = params.featureNames.filter(
+    (name) => !isRunningStyleDerivedFieldFeature(name),
+  );
+  const columns = [...new Set([...ROW_COLUMNS, ...rawFeatureNames])];
   const decoded = await readRanges({
     columns,
     file: params.file,
@@ -207,7 +211,7 @@ const readRaceRows = async (
     ranges: contiguousRanges(indices),
   });
   return decoded.flatMap((raw) => {
-    const row = toFeatureRow(raw, params.featureNames);
+    const row = toFeatureRow(raw, rawFeatureNames);
     return row === null ? [] : [row];
   });
 };

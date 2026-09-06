@@ -44,10 +44,15 @@ vi.mock("./running-style-d1", () => ({
   markRunningStyleInferenceFailed: vi.fn(async () => {}),
   markRunningStyleInferenceProcessing: vi.fn(async () => {}),
   markRunningStyleInferenceSyncFailed: vi.fn(async () => {}),
-  upsertRaceRunningStyles: vi.fn(async () => 0),
+  replaceRaceRunningStyles: vi.fn(async () => 0),
 }));
 vi.mock("./running-style-feature-materialize", () => ({
   loadOrBuildRunningStyleFeatureParquet: vi.fn(),
+  materializeRunningStyleFeatureParquetForRace: vi.fn(async () => ({
+    builtRowCount: 2,
+    bytesWritten: 1024,
+    featuresR2Key: "features.parquet",
+  })),
 }));
 vi.mock("./running-style-features", () => ({
   buildRealtimeRaceKeyFromRunningStyle: vi.fn(() => "jra:20260512:08:01"),
@@ -186,7 +191,7 @@ it("returns null when RUNNING_STYLE_D1_WRITE_ENABLED is not '1'", async () => {
 
 it("returns a skipped summary when state already completed and counts meet expectations", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace, upsertRaceRunningStyles } =
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace, replaceRaceRunningStyles } =
     await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -215,7 +220,7 @@ it("returns a skipped summary when state already completed and counts meet expec
   expect(summary?.finishPositionTriggerMode).toBe("skipped");
   expect(summary?.finishPositionTriggerError).toBeUndefined();
   expect(errorSpy).not.toHaveBeenCalled();
-  expect(upsertRaceRunningStyles).toHaveBeenCalledWith({}, [
+  expect(replaceRaceRunningStyles).toHaveBeenCalledWith({}, [
     { raceKey: "jra:20260512:08:01" },
     { raceKey: "jra:20260512:08:01" },
     { raceKey: "jra:20260512:08:01" },
@@ -714,12 +719,12 @@ it("keeps the ban-ei barrier and trigger separate from NAR", async () => {
   });
 });
 
-it("completes the job from an R2 hit and returns the success summary", async () => {
+it("force-regenerates a completed race and refreshes stale raw features", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { loadOrBuildRunningStyleFeatureParquet } =
+  const { loadOrBuildRunningStyleFeatureParquet, materializeRunningStyleFeatureParquetForRace } =
     await import("./running-style-feature-materialize");
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
@@ -730,7 +735,7 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   const { markRunningStyleInferenceCompleted, markRunningStyleInferenceSyncFailed } =
     await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
-  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(2));
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["x"], model_version: "v7-lineage" },
   } as never);
@@ -750,7 +755,16 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}] as never);
   vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(2);
 
-  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  const summary = await handleRunningStylePredictionJob(buildEnv(), {
+    ...JOB,
+    forceRefreshFeatures: true,
+    forceRegenerate: true,
+  });
+  expect(materializeRunningStyleFeatureParquetForRace).toHaveBeenCalledWith({
+    env: expect.any(Object),
+    featureNames: ["x"],
+    race: expect.objectContaining({ forceRefreshFeatures: true, raceKey: "jra:20260512:08:01" }),
+  });
   expect(summary?.modelVersion).toBe("v7-lineage");
   expect(summary?.cellVariantId).toBe("latest");
   expect(summary?.cellModelKey).toBe("models/jra/latest.flatbin");
@@ -800,13 +814,13 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   );
 });
 
-it("loads only the selected cell model body and rematerializes with its ranged header", async () => {
+it("force-rematerializes both default and selected cell feature contracts", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
   const { loadFlatLightGBMHeaderFromR2, loadFlatLightGBMModelFromR2 } =
     await import("./running-style-model-binary");
-  const { loadOrBuildRunningStyleFeatureParquet } =
+  const { loadOrBuildRunningStyleFeatureParquet, materializeRunningStyleFeatureParquetForRace } =
     await import("./running-style-feature-materialize");
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
@@ -852,7 +866,16 @@ it("loads only the selected cell model body and rematerializes with its ranged h
       RUNNING_STYLE_CELL_ROUTING_JSON: CELL_ROUTING_JSON,
       TRIGGER_TOKEN: "secret-token",
     }),
-    JOB,
+    { ...JOB, forceRefreshFeatures: true },
+  );
+  expect(materializeRunningStyleFeatureParquetForRace).toHaveBeenCalledTimes(2);
+  expect(materializeRunningStyleFeatureParquetForRace).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ featureNames: ["initial_feature"] }),
+  );
+  expect(materializeRunningStyleFeatureParquetForRace).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ featureNames: ["selected_feature"] }),
   );
   expect(summary?.modelVersion).toBe("grade-a-model");
   expect(summary?.cellVariantId).toBe("grade-a");

@@ -26,6 +26,7 @@ import { listRunningStyleRacesByDate } from "./running-style-race-list";
 import type { Env } from "./types";
 
 const ENABLED_FLAG = "1";
+const REQUIRE_DAY_BASE_CACHE_HIT_FLAG = "1";
 // R2 SQL can spend over a minute planning a cold multi-year history query.
 // PostgreSQL is the indexed mirror and should get enough time to complete the
 // one-race fallback; keeping this bounded still prevents a Queue attempt from
@@ -75,6 +76,7 @@ export interface MaterializeRunningStyleFeaturesForDateResult {
   scanned: number;
   skipped: number;
   materializeError?: string;
+  publishedSources?: ReadonlyArray<"jra" | "nar">;
 }
 
 interface BuildAndPutRunningStyleFeatureParquetInternalResult extends MaterializeRunningStyleFeatureParquetResult {
@@ -115,9 +117,69 @@ const loadPostgresFallback = async (
   }
 };
 
+interface CachedFoundation {
+  etag: string;
+  rows: Promise<ReadonlyArray<RaceHorseFeatureRow>>;
+}
+
+const foundationCache = new Map<string, CachedFoundation>();
+
+export const buildRunningStyleDayFoundationKey = (race: RunningStyleRaceParams): string =>
+  `running-style/features-day/raw-iceberg-v1/${race.source}/${race.kaisaiNen}${race.kaisaiTsukihi}/features.parquet`;
+
+export const clearRunningStyleFoundationCache = (): void => {
+  foundationCache.clear();
+};
+
+const loadRunningStyleFoundationRows = async (
+  params: MaterializeRunningStyleFeatureParquetParams,
+): Promise<ReadonlyArray<RaceHorseFeatureRow> | null> => {
+  const bucket = params.env.FEATURES_ARCHIVE;
+  if (bucket === undefined) return null;
+  const key = buildRunningStyleDayFoundationKey(params.race);
+  const cacheKey = `${key}\u0000${params.featureNames.join("\u0000")}`;
+  const object = await bucket.head(key);
+  if (object === null) {
+    foundationCache.delete(cacheKey);
+    return null;
+  }
+  let cached = foundationCache.get(cacheKey);
+  if (cached === undefined || cached.etag !== object.etag) {
+    cached = {
+      etag: object.etag,
+      rows: loadRunningStyleFeatureParquet(bucket, key, params.featureNames),
+    };
+    foundationCache.set(cacheKey, cached);
+  }
+  try {
+    const raceKey = buildRunningStyleRaceKey(params.race);
+    const rows = (await cached.rows).filter((row) => row.raceKey === raceKey);
+    if (rows.length === 0) return null;
+    const coverage = validateFeatureCoverage(rows, params.featureNames);
+    return coverage.missingFeatureNames.length === 0 ? rows : null;
+  } catch (error) {
+    foundationCache.delete(cacheKey);
+    if (error instanceof Error && error.message.startsWith("R2 object not found:")) return null;
+    throw error;
+  }
+};
+
 const loadAuthoritativeFeatureRows = async (
   params: MaterializeRunningStyleFeatureParquetParams,
 ): Promise<ReadonlyArray<RaceHorseFeatureRow>> => {
+  try {
+    const foundation = await loadRunningStyleFoundationRows(params);
+    if (foundation !== null) {
+      console.log(
+        `Running-style features HIT day foundation for ${buildRunningStyleRaceKey(params.race)}`,
+      );
+      return foundation;
+    }
+  } catch (error) {
+    console.warn(
+      `Running-style day foundation MISS for ${buildRunningStyleRaceKey(params.race)}: ${formatError(error)}`,
+    );
+  }
   try {
     const hit = await loadRunningStyleFeaturesFromFinishPositionDayBase({
       bucket: params.env.FEATURES_ARCHIVE,
@@ -130,7 +192,15 @@ const loadAuthoritativeFeatureRows = async (
       );
       return hit;
     }
+    if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+      throw new Error(
+        `Running-style day-base cache MISS for ${buildRunningStyleRaceKey(params.race)}`,
+      );
+    }
   } catch (error) {
+    if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+      throw error;
+    }
     console.warn(
       `Running-style finish-position day-base MISS for ${buildRunningStyleRaceKey(params.race)}: ${formatError(error)}`,
     );
@@ -208,6 +278,13 @@ const tryLoadCachedRunningStyleFeatureParquet = async (
 export const loadOrBuildRunningStyleFeatureParquet = async (
   params: LoadOrBuildRunningStyleFeatureParquetParams,
 ): Promise<LoadOrBuildRunningStyleFeatureParquetResult> => {
+  if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+    return {
+      featuresR2Key: buildRunningStyleFeatureParquetKey(params.race),
+      rebuilt: false,
+      rows: await loadAuthoritativeFeatureRows(params),
+    };
+  }
   const cached = await tryLoadCachedRunningStyleFeatureParquet(params);
   if (cached !== null) return cached;
   // Memory mitigation (2026-06-09): the previous implementation re-fetched the
@@ -244,27 +321,40 @@ const buildRaceParamsFromRegisteredRow = (row: RegisteredRaceRow): RunningStyleR
   gradeCode: row.grade_code,
 });
 
-const materializeRegisteredRace = async (
+const loadOrBuildFoundationRace = async (
   env: Env,
   row: RegisteredRaceRow,
-  acc: MaterializeRunningStyleFeaturesForDateResult,
-): Promise<MaterializeRunningStyleFeaturesForDateResult> => {
+  featureNames: ReadonlyArray<string>,
+): Promise<{ rebuilt: boolean; rows: ReadonlyArray<RaceHorseFeatureRow> }> => {
   const race = buildRaceParamsFromRegisteredRow(row);
-  const header = await loadFlatLightGBMHeaderFromR2(
-    env.RUNNING_STYLE_MODELS,
-    buildRunningStyleFlatModelKey(race.source),
-  );
-  const cache = await loadOrBuildRunningStyleFeatureParquet({
-    env,
-    featureNames: header.feature_names,
-    race,
-  });
-  return {
-    ...acc,
-    materialized: acc.materialized + (cache.rebuilt ? 1 : 0),
-    scanned: acc.scanned + 1,
-    skipped: acc.skipped + (cache.rebuilt ? 0 : 1),
-  };
+  const key = buildRunningStyleFeatureParquetKey(race);
+  try {
+    const cached = await loadRunningStyleFeatureParquet(
+      env.RUNNING_STYLE_MODELS,
+      key,
+      featureNames,
+    );
+    const coverage = validateFeatureCoverage(cached, featureNames);
+    if (cached.length > 0 && coverage.missingFeatureNames.length === 0) {
+      return { rebuilt: false, rows: cached };
+    }
+  } catch {
+    // A missing or stale per-race cache is rebuilt from the Catalog below.
+  }
+  // Reuse the attested day foundation instead of rebuilding history per race.
+  const rows = await loadAuthoritativeFeatureRows({ env, race, featureNames });
+  if (rows.length === 0)
+    throw new Error(
+      `no running-style feature rows found for race ${buildRunningStyleRaceKey(race)}`,
+    );
+  const coverage = validateFeatureCoverage(rows, featureNames);
+  if (coverage.missingFeatureNames.length > 0) {
+    throw new Error(
+      `catalog feature build missing model features: ${coverage.missingFeatureNames.join(", ")}`,
+    );
+  }
+  await putRunningStyleFeatureParquet(env.RUNNING_STYLE_MODELS, key, rows, featureNames);
+  return { rebuilt: true, rows };
 };
 
 export const materializeRunningStyleFeatureParquetsForDate = async (
@@ -274,17 +364,52 @@ export const materializeRunningStyleFeatureParquetsForDate = async (
   if (env.RUNNING_STYLE_D1_WRITE_ENABLED !== ENABLED_FLAG) {
     return { date, materialized: 0, scanned: 0, skipped: 0 };
   }
+  if (env.FEATURES_ARCHIVE === undefined) {
+    return {
+      date,
+      materialized: 0,
+      materializeError: "FEATURES_ARCHIVE binding is missing",
+      scanned: 0,
+      skipped: 0,
+    };
+  }
   const { races } = await listRunningStyleRacesByDate(env, date);
-  return races.reduce<Promise<MaterializeRunningStyleFeaturesForDateResult>>(
-    async (accPromise, row) => {
-      const acc = await accPromise;
-      return materializeRegisteredRace(env, row, acc).catch((error: unknown) => ({
-        ...acc,
-        materializeError: formatError(error),
-        scanned: acc.scanned + 1,
-        skipped: acc.skipped + 1,
-      }));
-    },
-    Promise.resolve({ date, materialized: 0, scanned: 0, skipped: 0 }),
-  );
+  let materialized = 0;
+  let scanned = 0;
+  let skipped = 0;
+  const publishedSources: Array<"jra" | "nar"> = [];
+  try {
+    for (const source of ["jra", "nar"] as const) {
+      const sourceRaces = races.filter((race) => race.source === source);
+      if (sourceRaces.length === 0) continue;
+      const header = await loadFlatLightGBMHeaderFromR2(
+        env.RUNNING_STYLE_MODELS,
+        buildRunningStyleFlatModelKey(source),
+      );
+      const rows: RaceHorseFeatureRow[] = [];
+      for (const race of sourceRaces) {
+        const result = await loadOrBuildFoundationRace(env, race, header.feature_names);
+        rows.push(...result.rows);
+        materialized += result.rebuilt ? 1 : 0;
+        skipped += result.rebuilt ? 0 : 1;
+        scanned += 1;
+      }
+      const key = buildRunningStyleDayFoundationKey(
+        buildRaceParamsFromRegisteredRow(sourceRaces[0]!),
+      );
+      await putRunningStyleFeatureParquet(env.FEATURES_ARCHIVE, key, rows, header.feature_names);
+      foundationCache.delete(`${key}\u0000${header.feature_names.join("\u0000")}`);
+      publishedSources.push(source);
+    }
+    return { date, materialized, scanned, skipped };
+  } catch (error) {
+    return {
+      date,
+      materializeError: formatError(error),
+      materialized,
+      scanned,
+      skipped,
+      ...(publishedSources.length > 0 ? { publishedSources } : {}),
+    };
+  }
 };

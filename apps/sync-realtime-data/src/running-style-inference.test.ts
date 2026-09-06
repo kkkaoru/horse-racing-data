@@ -86,9 +86,9 @@ const buildMockBucket = (
 
 const buildMockD1 = (): { db: D1Database; calls: unknown[][] } => {
   const calls: unknown[][] = [];
-  const prepare = vi.fn(() => ({
+  const prepare = vi.fn((sql: string) => ({
     bind: (...args: unknown[]) => {
-      calls.push(args);
+      if (sql.startsWith("insert or replace")) calls.push(args);
       return { args } as unknown;
     },
   }));
@@ -128,6 +128,26 @@ test("runRunningStyleInference writes one row per horse", async () => {
     predictedAt: "2026-05-18T10:00:00Z",
   });
   expect(summary.writtenCount).toBe(2);
+});
+
+test("runRunningStyleInference atomically replaces the prior race generation", async () => {
+  const bucket = buildMockBucket("model/key", "features/key", [HORSE_ROW_1, HORSE_ROW_2]);
+  const preparedSql: string[] = [];
+  const prepare = vi.fn((sql: string) => {
+    preparedSql.push(sql);
+    return { bind: vi.fn(() => ({ sql })) };
+  });
+  const batch = vi.fn(async (_statements: unknown[]) => []);
+
+  await runRunningStyleInference(bucket, { batch, prepare } as unknown as D1Database, {
+    featuresKey: "features/key",
+    modelKey: "model/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+  });
+
+  expect(preparedSql[0]).toBe("delete from race_running_styles where race_key = ?");
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
 });
 
 test("runRunningStyleInference reports model_version from loaded model", async () => {
@@ -173,6 +193,29 @@ test("runRunningStyleInference binds null cell provenance for legacy JSON model 
   });
   expect(calls[0]?.[7]).toBe(null);
   expect(calls[0]?.[8]).toBe(null);
+});
+
+test("inference supplies recent-five rates to race-relative feature computation", async () => {
+  const field = await import("./running-style-field-features");
+  const spy = vi.spyOn(field, "computeFieldFeaturesPerHorse");
+  try {
+    const bucket = buildMockBucket("rank/model", "features/key", []);
+    const { db } = buildMockD1();
+    await runRunningStyleInferenceForRows(bucket, db, {
+      modelKey: "rank/model",
+      predictedAt: "2026-05-18T10:00:00Z",
+      rows: [
+        { ...HORSE_ROW_1, perHorseFeatures: { past_nige_rate_self_recent_5: 0.2 } },
+        { ...HORSE_ROW_2, perHorseFeatures: { past_nige_rate_self_recent_5: null } },
+      ],
+    });
+    expect(spy).toHaveBeenCalledWith([
+      { ...HORSE_ROW_1.peerInputs, pastNigeRateRecent5: 0.2 },
+      { ...HORSE_ROW_2.peerInputs, pastNigeRateRecent5: null },
+    ]);
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 test("runRunningStyleInferenceForRows skips the features fetch and consumes provided rows", async () => {

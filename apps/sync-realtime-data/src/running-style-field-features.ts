@@ -6,6 +6,7 @@
 
 export interface HorsePeerInputs {
   pastNigeRate: number | null;
+  pastNigeRateRecent5?: number | null;
   pastSenkouRate: number | null;
   pastSashiRate: number | null;
   pastOikomiRate: number | null;
@@ -36,12 +37,14 @@ export interface FieldFeatures {
 }
 
 export interface HorseFieldRow extends FieldFeatures {
+  field_nige_pressure_rank?: number;
   self_nige_rate_minus_field_avg: number | null;
   self_speed_index_vs_field_top: number | null;
 }
 
 export const RUNNING_STYLE_DERIVED_FIELD_FEATURE_NAMES: ReadonlySet<string> = new Set([
   "field_nige_pressure",
+  "field_nige_pressure_rank",
   "field_senkou_pressure",
   "field_sashi_pressure",
   "field_oikomi_pressure",
@@ -165,12 +168,28 @@ export const computeFieldFeaturesPerHorse = (
 ): ReadonlyArray<HorseFieldRow> =>
   horses.map((horse, selfIndex) => {
     const fieldFeatures = buildFieldFeatures(horses, selfIndex);
+    const recentNigeRate = horse.pastNigeRateRecent5;
     const selfNigeMinusAvg =
       horse.pastNigeRate !== null && fieldFeatures.field_nige_pressure !== null && horses.length > 1
         ? horse.pastNigeRate - fieldFeatures.field_nige_pressure / (horses.length - 1)
         : null;
     return {
       ...fieldFeatures,
+      ...(recentNigeRate === undefined
+        ? {}
+        : {
+            // Match SQL RANK() OVER (ORDER BY recent-5 nige rate DESC NULLS LAST).
+            field_nige_pressure_rank:
+              1 +
+              horses.filter((peer) => {
+                const rate = peer.pastNigeRateRecent5;
+                return (
+                  rate !== undefined &&
+                  rate !== null &&
+                  (recentNigeRate === null || rate > recentNigeRate)
+                );
+              }).length,
+          }),
       self_nige_rate_minus_field_avg: selfNigeMinusAvg,
       self_speed_index_vs_field_top: safeDivide(
         horse.speedIndexBest5,

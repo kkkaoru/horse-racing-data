@@ -25,7 +25,7 @@ import {
   loadLightGBMModelFromR2,
   type RaceHorseFeatureRow,
 } from "./running-style-r2";
-import { upsertRaceRunningStyles, type RaceRunningStyleRow } from "./running-style-d1";
+import { replaceRaceRunningStyles, type RaceRunningStyleRow } from "./running-style-d1";
 import {
   applyRunningStyleCalibration,
   type RunningStyleCalibrationTable,
@@ -114,7 +114,11 @@ const mergeFeatureMap = (
 
 const extractPeerInputs = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
-): ReadonlyArray<HorsePeerInputs> => rows.map((row) => row.peerInputs);
+): ReadonlyArray<HorsePeerInputs> =>
+  rows.map((row) => ({
+    ...row.peerInputs,
+    pastNigeRateRecent5: row.perHorseFeatures.past_nige_rate_self_recent_5,
+  }));
 
 const predictionRowFromResult = (
   row: RaceHorseFeatureRow,
@@ -253,7 +257,7 @@ const runRunningStyleInferenceRows = async (
   grouped.forEach((raceRows) => {
     predictRace(raceRows, config.model, config.predictedAt).forEach((row) => predictions.push(row));
   });
-  const writtenCount = await upsertRaceRunningStyles(db, predictions);
+  const writtenCount = await replaceRaceRunningStyles(db, predictions);
   return {
     horseCount: config.rows.length,
     modelVersion: config.model.model_version,
@@ -306,7 +310,7 @@ export const runRunningStyleInferenceRowsWithFlatModel = async (
       config.cellVariantId,
     ).forEach((row) => predictions.push(row));
   });
-  const writtenCount = await upsertRaceRunningStyles(db, predictions);
+  const writtenCount = await replaceRaceRunningStyles(db, predictions);
   return {
     horseCount: config.rows.length,
     modelVersion: config.model.header.model_version,

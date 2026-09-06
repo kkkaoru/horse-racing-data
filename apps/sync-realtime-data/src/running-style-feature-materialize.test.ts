@@ -46,13 +46,14 @@ vi.mock("./format-error", () => ({
   formatError: vi.fn((error: unknown) => (error instanceof Error ? error.message : "error")),
 }));
 
-const makeEnv = (writeEnabled: string): Env =>
+const makeEnv = (writeEnabled: string, requireDayBaseCacheHit?: string): Env =>
   Object.assign(JSON.parse("{}"), {
     PC_KEIBA_R2_CATALOG: { fetch: vi.fn() },
-    FEATURES_ARCHIVE: {},
+    FEATURES_ARCHIVE: { head: vi.fn(async () => ({ etag: "foundation-etag" })) },
     REALTIME_DB: {},
     RUNNING_STYLE_D1_WRITE_ENABLED: writeEnabled,
     RUNNING_STYLE_MODELS: {},
+    RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: requireDayBaseCacheHit,
   });
 
 const RACE: RunningStyleRaceParams = {
@@ -68,6 +69,8 @@ const rows = (): RaceHorseFeatureRow[] =>
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  const { clearRunningStyleFoundationCache } = await import("./running-style-feature-materialize");
+  clearRunningStyleFoundationCache();
   const { loadRunningStyleFeatureParquet } = await import("./running-style-feature-parquet");
   vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValue(new Error("R2 cache missing"));
   const { buildRunningStyleFeaturesForRaceFromPostgres } =
@@ -78,6 +81,96 @@ beforeEach(async () => {
   const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
     await import("./running-style-finish-feature-hit");
   vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(null);
+});
+
+it("builds a collision-free running-style day foundation key", async () => {
+  const { buildRunningStyleDayFoundationKey } = await import("./running-style-feature-materialize");
+  expect(buildRunningStyleDayFoundationKey(RACE)).toBe(
+    "running-style/features-day/raw-iceberg-v1/jra/20260513/features.parquet",
+  );
+});
+
+it("uses the running-style day foundation HIT before finish-position or Catalog", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: false, rows: rows() });
+  expect(loadRunningStyleFeaturesFromFinishPositionDayBase).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
+    "Running-style features HIT day foundation for jra:20260513:08:01",
+  );
+});
+
+it("reuses one decoded day foundation across race loads", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+  const params = { env: makeEnv("1", "1"), featureNames: ["f1"], race: RACE };
+
+  await loadOrBuildRunningStyleFeatureParquet(params);
+  await loadOrBuildRunningStyleFeatureParquet(params);
+  expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
+});
+
+it("uses finish-position day-base when the foundation object is absent", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const env = makeEnv("1", "1");
+  env.FEATURES_ARCHIVE = { head: vi.fn(async () => null) } as unknown as R2Bucket;
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({ env, featureNames: ["f1"], race: RACE }),
+  ).resolves.toMatchObject({ rows: rows() });
+});
+
+it("uses finish-position day-base when the foundation bucket binding is absent", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const env = makeEnv("1", "1");
+  env.FEATURES_ARCHIVE = undefined;
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({ env, featureNames: ["f1"], race: RACE }),
+  ).resolves.toMatchObject({ rows: rows() });
 });
 
 it("uses the finish-position day-base HIT before Catalog", async () => {
@@ -111,6 +204,35 @@ it("uses the finish-position day-base HIT before Catalog", async () => {
   );
 });
 
+it("fails closed before Catalog when production requires a day-base cache HIT", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("Running-style day-base cache MISS");
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockRejectedValueOnce(
+    new Error("invalid day-base parquet"),
+  );
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("invalid day-base parquet");
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+});
+
 it("falls back to Catalog when the finish-position day-base read fails", async () => {
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
@@ -137,7 +259,7 @@ it("falls back to Catalog when the finish-position day-base read fails", async (
       race: RACE,
     }),
   ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: true, rows: rows() });
-  expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toBe(
+  expect(vi.mocked(console.warn).mock.calls.at(-1)?.[0]).toBe(
     "Running-style finish-position day-base MISS for jra:20260513:08:01: invalid day-base parquet",
   );
 });
@@ -217,7 +339,9 @@ it("rebuilds from Catalog when cached rows miss a requested model feature", asyn
   const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
     await import("./running-style-feature-parquet");
   const env = makeEnv("1");
-  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(loadRunningStyleFeatureParquet)
+    .mockResolvedValueOnce(rows())
+    .mockRejectedValueOnce(new Error("R2 object not found: foundation.parquet"));
   vi.mocked(validateFeatureCoverage)
     .mockReturnValueOnce({ missingCells: 1, missingFeatureNames: ["f1"] })
     .mockReturnValueOnce({ missingCells: 0, missingFeatureNames: [] });
@@ -521,7 +645,163 @@ it("skips date materialization when inference writes are disabled", async () => 
   ).resolves.toStrictEqual({ date: "20260513", materialized: 0, scanned: 0, skipped: 0 });
 });
 
-it("materializes Catalog races and records a per-race failure", async () => {
+it("requires the day foundation R2 binding for date materialization", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const env = makeEnv("1");
+  env.FEATURES_ARCHIVE = undefined;
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(env, "20260513"),
+  ).resolves.toStrictEqual({
+    date: "20260513",
+    materializeError: "FEATURES_ARCHIVE binding is missing",
+    materialized: 0,
+    scanned: 0,
+    skipped: 0,
+  });
+});
+
+it("rejects empty and feature-incomplete Catalog rows for the day foundation", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([]);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValueOnce([]);
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toMatchObject({ materializeError: expect.stringContaining("no running-style") });
+
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValueOnce(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 1,
+    missingFeatureNames: ["f1"],
+  });
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toMatchObject({ materializeError: expect.stringContaining("missing model features") });
+});
+
+it("rebuilds a missing per-race cache before publishing the day foundation", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValue(new Error("cache missing"));
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toStrictEqual({ date: "20260513", materialized: 1, scanned: 1, skipped: 0 });
+  expect(putRunningStyleFeatureParquet).toHaveBeenCalledTimes(2);
+});
+
+it("warms per-race and day caches from the finish-position foundation without Catalog scans", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1", "1"), "20260513"),
+  ).resolves.toStrictEqual({ date: "20260513", materialized: 1, scanned: 1, skipped: 0 });
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).toHaveBeenCalledTimes(2);
+});
+
+it("reports a completely published JRA day when the later NAR foundation fails", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "44",
+        race_bango: "01",
+        source: "nar",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase)
+    .mockResolvedValueOnce(rows())
+    .mockRejectedValueOnce(new Error("NAR foundation missing"));
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1", "1"), "20260513"),
+  ).resolves.toStrictEqual({
+    date: "20260513",
+    materializeError: "NAR foundation missing",
+    materialized: 1,
+    scanned: 1,
+    skipped: 0,
+    publishedSources: ["jra"],
+  });
+});
+
+it("fails the whole day foundation when one Catalog race fails", async () => {
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
@@ -560,13 +840,13 @@ it("materializes Catalog races and records a per-race failure", async () => {
   ).resolves.toStrictEqual({
     date: "20260513",
     materializeError: "catalog unavailable",
-    materialized: 1,
-    scanned: 2,
-    skipped: 1,
+    materialized: 0,
+    scanned: 0,
+    skipped: 0,
   });
 });
 
-it("date materialization keeps a valid Worker R2 warm cache without rebuilding it", async () => {
+it("publishes a day foundation from a valid per-race R2 cache", async () => {
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
@@ -599,7 +879,12 @@ it("date materialization keeps a valid Worker R2 warm cache without rebuilding i
     skipped: 1,
   });
   expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
-  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).toHaveBeenCalledWith(
+    expect.any(Object),
+    "running-style/features-day/raw-iceberg-v1/jra/20260513/features.parquet",
+    rows(),
+    ["f1"],
+  );
 });
 
 it("returns an empty summary for a Catalog date without races", async () => {

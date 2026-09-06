@@ -6,7 +6,7 @@ import {
 } from "../src/running-style-expected-horses";
 
 describe("running-style expected horses", () => {
-  test("prefers active entry count over feature count", () => {
+  test("keeps authoritative Catalog feature count over a partial entry snapshot", () => {
     expect(
       resolveRunningStyleExpectedHorseCount(14, {
         horses: [
@@ -15,7 +15,22 @@ describe("running-style expected horses", () => {
           { horseNumber: "3", status: null },
         ],
       }),
-    ).toBe(2);
+    ).toBe(14);
+  });
+
+  test("never returns a negative count when scratch markers exceed Catalog count", () => {
+    expect(
+      resolveRunningStyleExpectedHorseCount(
+        1,
+        {
+          horses: [
+            { horseNumber: "1", status: "取消" },
+            { horseNumber: "2", status: "出走取消" },
+          ],
+        },
+        new Set([1, 2]),
+      ),
+    ).toBe(0);
   });
 
   test("falls back to feature count when entry snapshot is missing", () => {

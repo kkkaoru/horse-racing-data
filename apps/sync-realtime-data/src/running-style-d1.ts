@@ -32,6 +32,12 @@ export interface RaceRunningStyleCount {
   count: number;
 }
 
+interface RaceRunningStyleIdentityRow {
+  horse_number: number;
+  ketto_toroku_bango: string;
+  race_key: string;
+}
+
 export type RunningStyleInferenceStatus =
   | "pending"
   | "processing"
@@ -137,6 +143,27 @@ export const upsertRaceRunningStyles = async (
   return rows.length;
 };
 
+export const replaceRaceRunningStyles = async (
+  db: D1Database,
+  rows: ReadonlyArray<RaceRunningStyleRow>,
+): Promise<number> => {
+  if (rows.length === 0) return 0;
+  const rowsByRace = new Map<string, RaceRunningStyleRow[]>();
+  rows.forEach((row) => {
+    const raceRows = rowsByRace.get(row.raceKey) ?? [];
+    raceRows.push(row);
+    rowsByRace.set(row.raceKey, raceRows);
+  });
+  for (const [raceKey, raceRows] of rowsByRace) {
+    const statements = [
+      db.prepare("delete from race_running_styles where race_key = ?").bind(raceKey),
+      ...raceRows.map((row) => db.prepare(INSERT_SQL).bind(...bindValues(row))),
+    ];
+    await db.batch(statements);
+  }
+  return rows.length;
+};
+
 const queryRaceRunningStyleCounts = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,
@@ -161,6 +188,32 @@ export interface ListRaceRunningStyleCountsOptions {
   bypassCache?: boolean;
   ctx?: ExecutionContext;
 }
+
+export const listRaceRunningStyleEntrySignatures = async (
+  db: D1Database,
+  raceKeys: ReadonlyArray<string>,
+): Promise<Map<string, string>> => {
+  if (raceKeys.length === 0) return new Map();
+  const signatures = new Map<string, string[]>();
+  for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
+    const result = await db
+      .prepare(
+        `select race_key, horse_number, ketto_toroku_bango
+           from race_running_styles
+          where race_key in (${buildPlaceholders(chunk.length)})
+          order by race_key, horse_number`,
+      )
+      .bind(...chunk)
+      .all<RaceRunningStyleIdentityRow>();
+    result.results.forEach((row) => {
+      const identity = `${String(row.horse_number).padStart(2, "0")}:${row.ketto_toroku_bango}`;
+      signatures.set(row.race_key, [...(signatures.get(row.race_key) ?? []), identity]);
+    });
+  }
+  return new Map(
+    [...signatures].map(([raceKey, identities]) => [raceKey, identities.toSorted().join("|")]),
+  );
+};
 
 export const listRaceRunningStyleCounts = async (
   db: D1Database,

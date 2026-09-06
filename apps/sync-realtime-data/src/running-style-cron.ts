@@ -4,9 +4,10 @@
 // jobs for missing predictions.
 
 import { formatError, formatErrorLogLine } from "./format-error";
-import { fetchRunningStyleFeatureCountsFromCatalog } from "./running-style-catalog-client";
+import { fetchRunningStyleFeatureCoverageFromCatalog } from "./running-style-catalog-client";
 import {
   listRaceRunningStyleCounts,
+  listRaceRunningStyleEntrySignatures,
   listRaceRunningStylesForRace,
   listRunningStyleInferenceStates,
   markRunningStyleInferenceEnqueueFailed,
@@ -64,6 +65,7 @@ const RUNNING_STYLE_FOUNDATION_FILE = "features.parquet";
 const FOUNDATION_NONE_WATERMARK = "none";
 const FOUNDATION_PREWARM_MARKER_PREFIX = "control:running-style-foundation-prewarm:v1";
 const FOUNDATION_PREWARM_MARKER_TTL_SECONDS = 15 * 60;
+const EMPTY_ENTRY_SIGNATURES: ReadonlyMap<string, string> = new Map();
 // 2026-06-04 incident: before JST midnight rolled over, the cron derived
 // today=06-03 and so never retried the stalled 06-04 races. Sweeping the last
 // 6 hours of yesterday-JST keeps post-midnight races eligible for retry
@@ -83,6 +85,7 @@ export interface RegisteredRaceRow {
 
 export interface RunningStylePlanRace extends RunningStylePendingRace {
   existingHorseCount: number;
+  forceRefreshFeatures?: boolean;
 }
 
 export interface RunningStyleParquetExportSummary {
@@ -146,6 +149,21 @@ interface RunningStyleFoundationGateParams {
 interface RunningStyleQueueDispatchGate {
   blocked: boolean;
   error?: string;
+}
+
+interface RunningStyleGenerationReadiness {
+  currentEntrySignature?: string;
+  currentExpectedHorseCount?: number;
+  predictionEntrySignature?: string;
+  state: RunningStyleInferenceStateDetail | undefined;
+}
+
+interface AllRegisteredRacesCompletedParams {
+  currentEntrySignatures: ReadonlyMap<string, string>;
+  expectedHorseCounts: ReadonlyMap<string, number>;
+  predictionEntrySignatures: ReadonlyMap<string, string>;
+  registeredRaces: ReadonlyArray<RegisteredRaceRow>;
+  states: ReadonlyMap<string, RunningStyleInferenceStateDetail>;
 }
 
 const inspectRunningStyleQueueDispatch = async (
@@ -405,23 +423,39 @@ const gateRunningStyleFoundations = async (
 };
 
 const isRunningStyleStateGenerationComplete = (
-  state: RunningStyleInferenceStateDetail | undefined,
-): boolean =>
-  (state?.status === "completed" || state?.status === "sync-failed") &&
-  state.writtenHorseCount !== null &&
-  state.expectedHorseCount !== null &&
-  state.writtenHorseCount >= state.expectedHorseCount;
+  params: RunningStyleGenerationReadiness,
+): boolean => {
+  const state = params.state;
+  const internallyComplete =
+    (state?.status === "completed" || state?.status === "sync-failed") &&
+    state.writtenHorseCount !== null &&
+    state.expectedHorseCount !== null &&
+    state.writtenHorseCount === state.expectedHorseCount;
+  if (!internallyComplete) return false;
+  if (
+    params.currentExpectedHorseCount !== undefined &&
+    params.currentExpectedHorseCount > 0 &&
+    state.expectedHorseCount !== params.currentExpectedHorseCount
+  )
+    return false;
+  return params.currentEntrySignature === undefined
+    ? true
+    : params.currentEntrySignature === params.predictionEntrySignature;
+};
 
-// D1-only generation probe. A sync-failed race has a complete recovery
-// payload, but is not serving-complete until the Queue retry commits to Neon.
-// An empty race list trivially satisfies the probe.
-const allRegisteredRacesCompleted = (
-  registeredRaces: ReadonlyArray<RegisteredRaceRow>,
-  states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
-): boolean =>
-  registeredRaces.every((row) =>
-    isRunningStyleStateGenerationComplete(states.get(toRunningStyleRaceKey(row))),
-  );
+// Current Catalog identities and active entry counts are part of the
+// generation. A completed state from an earlier card must not suppress
+// re-inference after a cancellation or same-number horse replacement.
+const allRegisteredRacesCompleted = (params: AllRegisteredRacesCompletedParams): boolean =>
+  params.registeredRaces.every((row) => {
+    const raceKey = toRunningStyleRaceKey(row);
+    return isRunningStyleStateGenerationComplete({
+      currentEntrySignature: params.currentEntrySignatures.get(raceKey),
+      currentExpectedHorseCount: params.expectedHorseCounts.get(raceKey),
+      predictionEntrySignature: params.predictionEntrySignatures.get(raceKey),
+      state: params.states.get(raceKey),
+    });
+  });
 
 const selectSyncFailedRacesNeedingRunningStyleMirror = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
@@ -436,7 +470,8 @@ const selectSyncFailedRacesNeedingRunningStyleMirror = (
     // completeness, so every such state must re-enter the idempotent mirror
     // Queue path. The consumer promotes it to completed only after the Neon
     // transaction succeeds and reports every expected row written.
-    if (state?.status !== "sync-failed" || !isRunningStyleStateGenerationComplete(state)) return;
+    if (state?.status !== "sync-failed" || !isRunningStyleStateGenerationComplete({ state }))
+      return;
     const expectedHorseCount = state.expectedHorseCount ?? 0;
     needed.push({
       ...toRunningStylePendingRace(row, expectedHorseCount),
@@ -468,6 +503,8 @@ export const selectRacesNeedingRunningStyleInference = (
   predictionCounts: ReadonlyMap<string, number>,
   states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
   now = new Date(),
+  currentEntrySignatures?: ReadonlyMap<string, string>,
+  predictionEntrySignatures?: ReadonlyMap<string, string>,
 ): {
   alreadyQueued: number;
   completed: number;
@@ -492,7 +529,15 @@ export const selectRacesNeedingRunningStyleInference = (
     const expectedHorseCount = expectedHorseCounts.get(race.raceKey) ?? featureCount;
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
     const state = states.get(race.raceKey);
-    const stateCompleted = isRunningStyleStateGenerationComplete(state);
+    const stateInternallyComplete = isRunningStyleStateGenerationComplete({ state });
+    const stateCompleted = isRunningStyleStateGenerationComplete({
+      currentEntrySignature: (currentEntrySignatures ?? EMPTY_ENTRY_SIGNATURES).get(race.raceKey),
+      currentExpectedHorseCount: expectedHorseCount,
+      predictionEntrySignature: (predictionEntrySignatures ?? EMPTY_ENTRY_SIGNATURES).get(
+        race.raceKey,
+      ),
+      state,
+    });
     if (stateCompleted) {
       completed += 1;
       return;
@@ -505,6 +550,7 @@ export const selectRacesNeedingRunningStyleInference = (
       ...race,
       existingHorseCount,
       expectedHorseCount,
+      ...(stateInternallyComplete ? { forceRefreshFeatures: true } : {}),
     });
   });
 
@@ -515,6 +561,7 @@ const toPredictionJob = (
   row: RunningStylePlanRace,
   predictedAt: string,
 ): RunningStylePredictionJob => ({
+  ...(row.forceRefreshFeatures === true ? { forceRefreshFeatures: true } : {}),
   kaisaiNen: row.kaisaiNen,
   kaisaiTsukihi: row.kaisaiTsukihi,
   keibajoCode: row.keibajoCode,
@@ -637,39 +684,63 @@ export const planRunningStylePredictionsForDate = async (
     });
   }
   const raceKeys = registeredRaces.map(toRunningStyleRaceKey);
-  const [predictionCountsResult, statesResult] = await Promise.allSettled([
-    listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
-    listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
-  ]);
-  if (statesResult.status === "rejected") {
-    throw statesResult.reason;
-  }
+  const [predictionCountsResult, predictionSignaturesResult, statesResult, catalogCoverageResult] =
+    await Promise.allSettled([
+      listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
+      listRaceRunningStyleEntrySignatures(env.REALTIME_DB, raceKeys),
+      listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
+      fetchRunningStyleFeatureCoverageFromCatalog(env.PC_KEIBA_R2_CATALOG, date),
+    ]);
+  if (statesResult.status === "rejected") throw statesResult.reason;
+  if (catalogCoverageResult.status === "rejected") throw catalogCoverageResult.reason;
   const states = statesResult.value;
-  // A transient D1 count failure must never turn a completed race into a
-  // full re-inference. Treat completed rows as mirrored for this tick and let
-  // the next scheduled tick retry the mirror audit once counts are available.
-  // Non-completed rows remain eligible because their state is the source of
-  // truth for generation, independent of the count query.
-  const predictionCountError =
-    predictionCountsResult.status === "rejected"
-      ? formatError(predictionCountsResult.reason)
-      : undefined;
+  const catalogCoverage = catalogCoverageResult.value;
+  // Transient D1 audits must not trigger blind re-inference. A successful
+  // Catalog + D1 identity audit, however, is authoritative and invalidates a
+  // completed generation after cancellation or horse replacement.
+  const predictionAuditError =
+    [
+      ...(predictionCountsResult.status === "rejected"
+        ? [formatError(predictionCountsResult.reason)]
+        : []),
+      ...(predictionSignaturesResult.status === "rejected"
+        ? [formatError(predictionSignaturesResult.reason)]
+        : []),
+    ].join("; ") || undefined;
   const predictionCounts =
     predictionCountsResult.status === "fulfilled"
       ? predictionCountsResult.value
       : new Map(
           registeredRaces.flatMap((row) => {
             const state = states.get(toRunningStyleRaceKey(row));
-            return isRunningStyleStateGenerationComplete(state)
+            return isRunningStyleStateGenerationComplete({ state })
               ? [[toRunningStyleRaceKey(row), state?.expectedHorseCount ?? 0] as const]
               : [];
           }),
         );
-  const mirrorNeeded = selectSyncFailedRacesNeedingRunningStyleMirror(registeredRaces, states);
+  const predictionEntrySignatures =
+    predictionSignaturesResult.status === "fulfilled"
+      ? predictionSignaturesResult.value
+      : new Map<string, string>();
+  const expectedHorseCounts = await listRunningStyleExpectedHorseCounts(
+    env.REALTIME_DB,
+    raceKeys,
+    catalogCoverage.counts,
+    catalogCoverage.entrySignatures,
+  );
+  const mirrorCandidates = selectSyncFailedRacesNeedingRunningStyleMirror(registeredRaces, states);
   const predictedAt = now.toISOString();
   const runningStyleQueue = env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS;
-  if (allRegisteredRacesCompleted(registeredRaces, states)) {
-    const mirrorJobs = mirrorNeeded.map((row) => toPredictionJob(row, predictedAt));
+  if (
+    allRegisteredRacesCompleted({
+      currentEntrySignatures: catalogCoverage.entrySignatures,
+      expectedHorseCounts,
+      predictionEntrySignatures,
+      registeredRaces,
+      states,
+    })
+  ) {
+    const mirrorJobs = mirrorCandidates.map((row) => toPredictionJob(row, predictedAt));
     const dispatchGate: RunningStyleQueueDispatchGate =
       mirrorJobs.length === 0
         ? { blocked: false }
@@ -677,17 +748,17 @@ export const planRunningStylePredictionsForDate = async (
     const sendResult = dispatchGate.blocked
       ? { failed: [], sentCount: 0 }
       : await sendPredictionJobs(runningStyleQueue, mirrorJobs);
-    await restoreFailedPendingStates(env, mirrorNeeded, sendResult.failed, predictedAt);
+    await restoreFailedPendingStates(env, mirrorCandidates, sendResult.failed, predictedAt);
     return {
       alreadyQueued: 0,
-      completed: registeredRaces.length - mirrorNeeded.length,
+      completed: registeredRaces.length - mirrorCandidates.length,
       date,
       enqueued: sendResult.sentCount,
       featureReady: 0,
       missingFeatures: 0,
       planError:
         [
-          predictionCountError,
+          predictionAuditError,
           dispatchGate.error,
           formatPredictionJobSendFailures(sendResult.failed),
         ]
@@ -696,15 +767,7 @@ export const planRunningStylePredictionsForDate = async (
       scanned: registeredRaces.length,
     };
   }
-  const featureCounts = await fetchRunningStyleFeatureCountsFromCatalog(
-    env.PC_KEIBA_R2_CATALOG,
-    date,
-  );
-  const expectedHorseCounts = await listRunningStyleExpectedHorseCounts(
-    env.REALTIME_DB,
-    raceKeys,
-    featureCounts,
-  );
+  const featureCounts = catalogCoverage.counts;
   const selected = selectRacesNeedingRunningStyleInference(
     registeredRaces,
     featureCounts,
@@ -712,7 +775,11 @@ export const planRunningStylePredictionsForDate = async (
     predictionCounts,
     states,
     now,
+    catalogCoverage.entrySignatures,
+    predictionEntrySignatures,
   );
+  const selectedRaceKeys = new Set(selected.needed.map((race) => race.raceKey));
+  const mirrorNeeded = mirrorCandidates.filter((race) => !selectedRaceKeys.has(race.raceKey));
   const foundationGate = await gateRunningStyleFoundations({
     date,
     env,
@@ -747,19 +814,17 @@ export const planRunningStylePredictionsForDate = async (
       featureReady: selected.featureReady,
       missingFeatures: selected.missingFeatures,
       planError:
-        [predictionCountError, ...foundationGate.errors, dispatchGate.error]
+        [predictionAuditError, ...foundationGate.errors, dispatchGate.error]
           .filter((error): error is string => error !== undefined)
           .join("; ") || undefined,
       scanned: registeredRaces.length,
     };
   }
-  // Never reset sync-failed rows to pending: their D1 predictions are
-  // complete and the fast path in handleRunningStylePredictionJob retries
-  // only the Neon mirror. Resetting would wipe written_horse_count and
-  // force a full re-inference (and re-classify the race as never-run).
-  const pendingUpsertRaces = foundationReadyRaces.filter(
-    (row) => states.get(row.raceKey)?.status !== "sync-failed",
-  );
+  // A sync-failed race is mirror-only only while its D1 generation still
+  // matches the current Catalog card. If count or identity drift selected it
+  // for inference, move it to pending so the consumer cannot take the stale
+  // mirror fast path forever.
+  const pendingUpsertRaces = foundationReadyRaces;
   await upsertRunningStylePendingStates(env.REALTIME_DB, pendingUpsertRaces, predictedAt);
   const sendResult = await sendPredictionJobs(runningStyleQueue, predictionJobs);
   await restoreFailedPendingStates(env, pendingUpsertRaces, sendResult.failed, predictedAt);
@@ -773,7 +838,7 @@ export const planRunningStylePredictionsForDate = async (
     missingFeatures: selected.missingFeatures,
     planError:
       [
-        predictionCountError,
+        predictionAuditError,
         ...foundationGate.errors,
         ...(queueError === undefined ? [] : [queueError]),
       ]

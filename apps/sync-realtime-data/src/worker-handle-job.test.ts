@@ -394,6 +394,51 @@ it("handleJob continues running-style planning when feature warm is incomplete",
   expect(vi.mocked(logFetch).mock.calls.at(-1)?.[4]).toContain("feature warm failed");
 });
 
+it("handleJob permits category-gated planning after JRA publication even if NAR fails", async () => {
+  const { handleJob } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260512",
+    materializeError: "NAR missing",
+    materialized: 36,
+    scanned: 36,
+    skipped: 0,
+    publishedSources: ["jra"],
+  });
+  await handleJob(buildEnv({ RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: "1" }), {
+    date: "20260512",
+    type: "plan-running-style-predictions",
+  });
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+});
+
+it.each([undefined, []])(
+  "handleJob retains the strict barrier when no source was published: %j",
+  async (publishedSources) => {
+    const { handleJob } = await import("./worker");
+    const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+    const { materializeRunningStyleFeatureParquetsForDate } =
+      await import("./running-style-feature-materialize");
+    vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+      date: "20260512",
+      materializeError: "foundation missing",
+      materialized: 0,
+      scanned: 0,
+      skipped: 0,
+      publishedSources,
+    });
+    await expect(
+      handleJob(buildEnv({ RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: "1" }), {
+        date: "20260512",
+        type: "plan-running-style-predictions",
+      }),
+    ).rejects.toThrow("Running-style day foundation failed");
+    expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
+  },
+);
+
 it("handleJob continues running-style planning when feature warm throws", async () => {
   const { handleJob } = await import("./worker");
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");

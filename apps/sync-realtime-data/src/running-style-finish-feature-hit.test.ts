@@ -71,6 +71,11 @@ const metadata = {
   "rs-row-count": "0",
 };
 
+const coreMetadata = {
+  "max-data-sakusei-nengappi": "20260822",
+  "row-count": "12",
+};
+
 const rawRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   category: "jra",
   f1: 1.25,
@@ -136,14 +141,14 @@ it("normalizes every Parquet scalar representation without changing numeric valu
   expect(toRunningStyleParquetNumberOrNull({ value: 1 })).toBe(null);
 });
 
-it("prefers the daily foundation and falls back to the final day-base", async () => {
+it("HITs an early day-base without downstream running-style watermarks", async () => {
   const bytes = await parquetBytes([rawRow()]);
   const foundationKey = buildRunningStyleFoundationKey(RACE);
   const dayBaseKey = buildFinishPositionDayBaseKey(RACE);
   const head = vi.fn(async (key: string) =>
     key === foundationKey
       ? null
-      : { customMetadata: metadata, etag: "final-etag", size: bytes.byteLength },
+      : { customMetadata: coreMetadata, etag: "final-etag", size: bytes.byteLength },
   );
   const get = vi.fn(async (key: string, options: R2GetOptions) =>
     key === dayBaseKey
@@ -156,7 +161,7 @@ it("prefers the daily foundation and falls back to the final day-base", async ()
             const end = range.length === undefined ? bytes.byteLength : start + range.length;
             return bytes.slice(start, end);
           }),
-          customMetadata: metadata,
+          customMetadata: coreMetadata,
           etag: "final-etag",
           size: bytes.byteLength,
         }
@@ -172,6 +177,18 @@ it("prefers the daily foundation and falls back to the final day-base", async ()
   expect(rows).toHaveLength(1);
   expect(head.mock.calls.map(([key]) => key)).toStrictEqual([foundationKey, dayBaseKey]);
   expect(get.mock.calls[0]?.[0]).toBe("feat-daybase/catalog-v1/jra/20260822/features.parquet");
+});
+
+it("does not require inference-time field features in the raw day foundation", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { bucket } = bucketWith(bytes);
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1", "field_nige_pressure"],
+    race: RACE,
+  });
+  expect(rows).toHaveLength(1);
+  expect(Object.keys(rows?.[0]?.perHorseFeatures ?? {})).toStrictEqual(["f1"]);
 });
 
 it("returns a complete race slice and reuses the etag cache", async () => {

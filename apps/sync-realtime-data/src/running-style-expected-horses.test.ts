@@ -15,7 +15,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("listRunningStyleExpectedHorseCounts uses entries when present", async () => {
+it("listRunningStyleExpectedHorseCounts keeps the Catalog count over a partial snapshot", async () => {
   const { listRunningStyleExpectedHorseCounts } = await import("./running-style-expected-horses");
   const { getLatestRaceEntries } = await import("./storage");
   vi.mocked(getLatestRaceEntries).mockResolvedValue({
@@ -31,6 +31,65 @@ it("listRunningStyleExpectedHorseCounts uses entries when present", async () => 
     [RACE_KEY],
     new Map([[RACE_KEY, 9]]),
   );
+  expect(counts.get(RACE_KEY)).toBe(9);
+});
+
+it("listRunningStyleExpectedHorseCounts subtracts an explicit scratch present in Catalog", async () => {
+  const { listRunningStyleExpectedHorseCounts } = await import("./running-style-expected-horses");
+  const { getLatestRaceEntries } = await import("./storage");
+  vi.mocked(getLatestRaceEntries).mockResolvedValue({
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    horses: [
+      { horseNumber: "1", status: null },
+      { horseNumber: "2", status: "出走取消" },
+    ],
+  } as never);
+
+  const counts = await listRunningStyleExpectedHorseCounts(
+    {} as unknown as D1Database,
+    [RACE_KEY],
+    new Map([[RACE_KEY, 9]]),
+    new Map([[RACE_KEY, "01:horse-1|02:horse-2|03:horse-3"]]),
+  );
+
+  expect(counts.get(RACE_KEY)).toBe(8);
+});
+
+it("listRunningStyleExpectedHorseCounts does not subtract a scratch absent from Catalog", async () => {
+  const { listRunningStyleExpectedHorseCounts } = await import("./running-style-expected-horses");
+  const { getLatestRaceEntries } = await import("./storage");
+  vi.mocked(getLatestRaceEntries).mockResolvedValue({
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    horses: [{ horseNumber: "2", status: "出走取消" }],
+  } as never);
+
+  const counts = await listRunningStyleExpectedHorseCounts(
+    {} as unknown as D1Database,
+    [RACE_KEY],
+    new Map([[RACE_KEY, 9]]),
+    new Map([[RACE_KEY, "invalid|01:horse-1|03:horse-3"]]),
+  );
+
+  expect(counts.get(RACE_KEY)).toBe(9);
+});
+
+it("listRunningStyleExpectedHorseCounts falls back to snapshot count without Catalog coverage", async () => {
+  const { listRunningStyleExpectedHorseCounts } = await import("./running-style-expected-horses");
+  const { getLatestRaceEntries } = await import("./storage");
+  vi.mocked(getLatestRaceEntries).mockResolvedValue({
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    horses: [
+      { horseNumber: "1", status: null },
+      { horseNumber: "2", status: null },
+    ],
+  } as never);
+
+  const counts = await listRunningStyleExpectedHorseCounts(
+    {} as unknown as D1Database,
+    [RACE_KEY],
+    new Map(),
+  );
+
   expect(counts.get(RACE_KEY)).toBe(2);
 });
 
@@ -85,7 +144,7 @@ it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when
   expect(result).toStrictEqual([{ umaban: 3 }]);
 });
 
-it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when every entry is scratched", async () => {
+it("filterRunningStyleFeatureRowsByActiveEntries removes explicitly scratched rows", async () => {
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
   const rows = [{ umaban: 4 }, { umaban: 9 }];
@@ -95,10 +154,10 @@ it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when
       { horseNumber: "9", status: "出走取消" },
     ],
   });
-  expect(result).toStrictEqual([{ umaban: 4 }, { umaban: 9 }]);
+  expect(result).toStrictEqual([]);
 });
 
-it("filterRunningStyleFeatureRowsByActiveEntries keeps only rows matching active horse numbers", async () => {
+it("filterRunningStyleFeatureRowsByActiveEntries preserves Catalog rows missing from a partial snapshot", async () => {
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
   const rows = [{ umaban: 1 }, { umaban: 2 }, { umaban: 5 }];
@@ -106,6 +165,19 @@ it("filterRunningStyleFeatureRowsByActiveEntries keeps only rows matching active
     horses: [
       { horseNumber: "1", status: null },
       { horseNumber: "5", status: null },
+    ],
+  });
+  expect(result).toStrictEqual([{ umaban: 1 }, { umaban: 2 }, { umaban: 5 }]);
+});
+
+it("filterRunningStyleFeatureRowsByActiveEntries removes a scratch from a mixed snapshot", async () => {
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const rows = [{ umaban: 1 }, { umaban: 2 }, { umaban: 5 }];
+  const result = filterRunningStyleFeatureRowsByActiveEntries(rows, {
+    horses: [
+      { horseNumber: "1", status: null },
+      { horseNumber: "2", status: "取消" },
     ],
   });
   expect(result).toStrictEqual([{ umaban: 1 }, { umaban: 5 }]);

@@ -70,6 +70,15 @@ export type Job =
       raceKey: string;
     }
   | {
+      type: "sync-netkeiba-training-day";
+      date: string;
+    }
+  | {
+      type: "finalize-netkeiba-training-day";
+      catalogRunId: string;
+      date: string;
+    }
+  | {
       type: "plan-running-style-predictions";
       date: string;
     }
@@ -86,6 +95,8 @@ export type Job =
       keibajoCode: string;
       raceBango: string;
       predictedAt: string;
+      forceRefreshFeatures?: boolean;
+      forceRegenerate?: boolean;
     }
   | {
       type: "discover-win5-schedules";
@@ -160,6 +171,7 @@ export interface Env {
   RACE_TREND_DAILY_TRACK_DO: DurableObjectNamespace;
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
   PC_KEIBA_R2_CATALOG: CatalogServiceBinding;
+  DAILY_KEIBA_SYNC?: { fetch: typeof fetch };
   ODDS_DO_TTL_SECONDS?: string;
   PREMIUM_PADDOCK_CACHE: DurableObjectNamespace;
   PREMIUM_PADDOCK_DO_TTL_SECONDS?: string;
@@ -213,6 +225,7 @@ export interface Env {
   PREMIUM_RACE_WORK_ROW_CLASS?: string;
   PREMIUM_RACE_WORK_TEXT_CLASS?: string;
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
+  R2_CATALOG_INGESTION_TOKEN?: string;
   REALTIME_ADMIN_TOKEN?: string;
   REALTIME_API_CACHE_SECONDS?: string;
   REALTIME_DB: D1Database;
@@ -237,6 +250,7 @@ export interface Env {
   RUNNING_STYLE_CELL_ROUTING_JSON?: string;
   RUNNING_STYLE_JOBS?: Queue<Job>;
   RUNNING_STYLE_D1_WRITE_ENABLED?: string;
+  RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT?: string;
   RUNNING_STYLE_MODELS: R2Bucket;
   TRACK_CONDITION_CACHE: DurableObjectNamespace;
   TRACK_CONDITION_DO_TTL_SECONDS?: string;
