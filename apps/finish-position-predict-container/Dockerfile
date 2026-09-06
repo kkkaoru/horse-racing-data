@@ -82,7 +82,7 @@ FROM runtime-base AS runtime
 
 # Bump when runtime orchestration changes so a remote Wrangler build cannot
 # reuse a stale source-copy layer from a previous container rollout.
-ARG SOURCE_CACHE_BUSTER=20260830-named-chukyo-jul1600-ninki2-v5
+ARG SOURCE_CACHE_BUSTER=20260903-prophet-maximum-branch-weight-policy-2024-2026-v5
 RUN echo "source-cache-buster=${SOURCE_CACHE_BUSTER}"
 
 # Copy only installed runtime packages and pre-installed DuckDB extensions.
@@ -105,10 +105,10 @@ COPY apps/finish-position-predict-container/production-artifacts.json /app/produ
 COPY apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py /app/pipeline/
 COPY apps/pc-keiba-viewer/src/scripts/finish-position-features /app/pipeline/finish-position-features
 
-# Static lookup parquet baked into the image at /app/lookups (path mirrors
-# predict_lib.pipeline_args.COURSE_LOOKUP_PATH). The v8 iter14 course-numerical
-# layer joins this 119-row constants table at runtime — tracked in git under
-# apps/pc-keiba-viewer/finish-position/lookups/ (see .gitignore negation).
+# Static lookup parquets baked into /app/lookups. This includes the 119-row
+# course constants and the compact annual Prophet entity forecasts. Prophet is
+# never installed or executed in this image; DAY_CHAIN performs lookup joins.
+# Artifacts are tracked under the viewer lookup directory (see .gitignore).
 COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 
 # Models are BAKED into the image under MODELS_DIR (/models) so the container has

@@ -3350,17 +3350,31 @@ def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
     races = {"nar:20260620:30:02:11": entries}
     xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
 
+    served_signatures: dict[str, str] = {}
     with (
         patch("predict_upcoming._load_booster", return_value=xgb),
         patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
         patch("predict_upcoming.NAR_ETOP2_ENABLED", True, create=True),
     ):
-        scored = score_races(races, "nar", Path("/models"), ["feat"])
+        scored = score_races(
+            races,
+            "nar",
+            Path("/models"),
+            ["feat"],
+            served_signatures_by_race_id=served_signatures,
+        )
 
     rows = scored[0]
     assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188" for row in rows)
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
+    assert served_signatures == {
+        "nar:20260620:30:02:11": (
+            "v1;mode=direct-default;stage2=direct-default;"
+            "stage2-model=iter12-nar-xgb-hpo-v8-clean188;stage1=not-configured;"
+            "final=iter12-nar-xgb-hpo-v8-clean188"
+        )
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3694,6 +3708,38 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
     assert all(row[0] == "banei-cb-v8-window2011-wf-15y" for row in rows)
+
+
+def test_score_races_accepts_evaluation_variant_override(tmp_path: Path) -> None:
+    """Offline replay may apply current routing rules before their activation date."""
+    version = "banei-cb-v8-window2011-wf-15y"
+    _write_variant_metadata(tmp_path, "ban-ei", version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "base": _FakeVariantSpec(version, 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="sim")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])
+    race_id = "ban-ei:20240620:83:01:01"
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming._load_booster_by_arch", return_value=variant_booster),
+    ):
+        rows = score_races(
+            {race_id: _banei_entries()},
+            "ban-ei",
+            tmp_path,
+            ["feat"],
+            evaluation_variants_by_race_id={race_id: "base"},
+        )[0]
+
+    assert {row[0] for row in rows} == {version}
+    assert next(row[7] for row in rows if row[9] == 1) == 2
 
 
 def test_score_races_rejects_cell_variant_feature_contract_mismatch(

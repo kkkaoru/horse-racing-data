@@ -121,6 +121,13 @@ export interface Env {
   // `wrangler secret put DAY_BASE_SPLIT_ENABLED`. Optional so existing
   // callers/tests need not set it.
   DAY_BASE_SPLIT_ENABLED?: string;
+  // Category allowlist for the validated, frozen Prophet entity trend score
+  // adjustment. Empty/unset defaults ON; "off" is the global rollback.
+  // Prophet itself never runs in the Container.
+  PROPHET_SCORE_ADJUSTMENT_ENABLED?: string;
+  // Bounded (0, 1] adjustment weight. Ignored unless the category allowlist
+  // above contains the current category and lookup coverage is sufficient.
+  PROPHET_SCORE_ADJUSTMENT_WEIGHT?: string;
   // Default-off race-chain Container canary. Both the exact "1" flag and a
   // comma-separated category allowlist entry are required. Routing also
   // requires a metadata-bearing R2 day-base object at dispatch time.

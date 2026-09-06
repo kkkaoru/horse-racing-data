@@ -22,6 +22,8 @@ from predict_lib.pipeline_args import (
     KOHAN3F_GOING_SCRIPT,
     LAYER_CHAIN,
     LINEAGE_SCRIPT,
+    PROPHET_ENTITY_TREND_SCRIPT,
+    PROPHET_LOOKUP_PATH,
     RACE_CHAIN,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
@@ -406,6 +408,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8_plus_kohan3f() 
         "add_kohan3f_going_features.py",
         "add-similar-race-features.py",
         "add-sire-venue-bias-features.py",
+        "add-prophet-entity-trend-features.py",
         "add-jra-jockey-pedigree-cell-features.py",
     ]
 
@@ -423,6 +426,7 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-relationship-r1-features.py",
         "add-similar-race-features.py",
         "add-sire-venue-bias-features.py",
+        "add-prophet-entity-trend-features.py",
     ]
 
 
@@ -436,6 +440,7 @@ def test_layer_chain_ban_ei_appends_futan_and_grade_career() -> None:
         "add-banei-grade-career-features.py",
         "add-similar-race-features.py",
         "add-sire-venue-bias-features.py",
+        "add-prophet-entity-trend-features.py",
     ]
 
 
@@ -1013,12 +1018,12 @@ def test_layer_chain_jra_has_similar_race_before_sire_venue_bias() -> None:
 
 def test_layer_chain_nar_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("nar")
-    assert chain[-2] == SIMILAR_RACE_SCRIPT
+    assert chain[chain.index(SIRE_VENUE_BIAS_SCRIPT) - 1] == SIMILAR_RACE_SCRIPT
 
 
 def test_layer_chain_ban_ei_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("ban-ei")
-    assert chain[-2] == SIMILAR_RACE_SCRIPT
+    assert chain[chain.index(SIRE_VENUE_BIAS_SCRIPT) - 1] == SIMILAR_RACE_SCRIPT
 
 
 def test_similar_race_script_is_in_scripts_with_pg_url() -> None:
@@ -1124,19 +1129,19 @@ def test_build_layer_argv_non_similar_race_script_omits_similar_race_flags() -> 
 def test_sire_venue_bias_script_in_jra_layer_chain() -> None:
     chain = layer_chain_for("jra")
     assert SIRE_VENUE_BIAS_SCRIPT in chain
-    assert chain[-2] == SIRE_VENUE_BIAS_SCRIPT
+    assert chain[-3] == SIRE_VENUE_BIAS_SCRIPT
 
 
 def test_sire_venue_bias_script_in_nar_layer_chain() -> None:
     chain = layer_chain_for("nar")
     assert SIRE_VENUE_BIAS_SCRIPT in chain
-    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+    assert chain[-2] == SIRE_VENUE_BIAS_SCRIPT
 
 
 def test_sire_venue_bias_script_in_banei_layer_chain() -> None:
     chain = layer_chain_for("ban-ei")
     assert SIRE_VENUE_BIAS_SCRIPT in chain
-    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+    assert chain[-2] == SIRE_VENUE_BIAS_SCRIPT
 
 
 def test_sire_venue_bias_script_receives_pg_url() -> None:
@@ -1333,12 +1338,61 @@ def test_baba_pedigree_remains_per_race_for_banei() -> None:
     assert BABA_PEDIGREE_SCRIPT in race_chain_for("ban-ei")
 
 
+def test_prophet_layer_is_day_stable_for_every_category() -> None:
+    assert PROPHET_ENTITY_TREND_SCRIPT in day_chain_for("jra")
+    assert PROPHET_ENTITY_TREND_SCRIPT in day_chain_for("nar")
+    assert PROPHET_ENTITY_TREND_SCRIPT in day_chain_for("ban-ei")
+    assert PROPHET_ENTITY_TREND_SCRIPT not in race_chain_for("jra")
+    assert PROPHET_ENTITY_TREND_SCRIPT not in race_chain_for("nar")
+    assert PROPHET_ENTITY_TREND_SCRIPT not in race_chain_for("ban-ei")
+
+
+def test_build_prophet_layer_argv_uses_frozen_lookup_and_target_date() -> None:
+    argv = build_layer_argv(
+        PROPHET_ENTITY_TREND_SCRIPT,
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_date="20260903",
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-prophet-entity-trend-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        URL,
+        "--category",
+        "nar",
+        "--target-date",
+        "20260903",
+        "--prophet-lookup",
+        str(PROPHET_LOOKUP_PATH),
+    ]
+
+
+def test_build_prophet_layer_argv_requires_target_date() -> None:
+    with pytest.raises(ValueError, match="requires target_date"):
+        build_layer_argv(
+            PROPHET_ENTITY_TREND_SCRIPT,
+            "ban-ei",
+            LAYER_DIR,
+            Path("/tmp/in"),
+            Path("/tmp/out"),
+            URL,
+        )
+
+
 def test_race_chain_counts_match_architecture_spec() -> None:
-    assert len(day_chain_for("jra")) == 15
+    assert len(day_chain_for("jra")) == 16
     assert len(race_chain_for("jra")) == 2
-    assert len(day_chain_for("nar")) == 10
+    assert len(day_chain_for("nar")) == 11
     assert len(race_chain_for("nar")) == 0
-    assert len(day_chain_for("ban-ei")) == 6
+    assert len(day_chain_for("ban-ei")) == 7
     assert len(race_chain_for("ban-ei")) == 1
 
 

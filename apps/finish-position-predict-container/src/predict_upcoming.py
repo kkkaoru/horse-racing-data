@@ -53,7 +53,7 @@ import threading
 import time
 import traceback
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -153,6 +153,10 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
+from predict_lib.prophet_adjustment import (
+    adjust_prediction_rows_with_prophet,
+    configured_prophet_weight,
+)
 from predict_lib.r2_client import (
     R2ObjectIdentity,
     r2_get_parquet,
@@ -209,6 +213,7 @@ from predict_lib.serve import (
     parse_request_path,
     run_prewarm_in_background,
 )
+from predict_lib.served_branch import ServedBranch
 from predict_lib.stage1_routing import (
     STAGE1_ROUTING_PATH,
     Stage1CategoryConfig,
@@ -1099,6 +1104,8 @@ def score_races(
     feature_names: Sequence[str] | None = None,
     card_max_race_bango: int | None = None,
     race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
+    evaluation_variants_by_race_id: Mapping[str, str] | None = None,
+    served_signatures_by_race_id: MutableMapping[str, str] | None = None,
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
 
@@ -1175,13 +1182,20 @@ def score_races(
         effective_architecture = architecture_for(category)
         cell_variant_model: VariantModel | None = None
         resolved_variant: str | None = None
+        routing_mode = "direct-default"
+        stage2_outcomes: list[str] = []
+        stage1_reason = "not-configured"
         if variant_pool:
             effective_card_max_race_bango = (
                 card_max_race_bango
                 if card_max_race_bango is not None
                 else card_max_race_bango_for_race_id(race_id, card_max_race_bango_by_card)
             )
-            variant = cell_router.resolve_variant(
+            variant = (
+                evaluation_variants_by_race_id.get(race_id)
+                if evaluation_variants_by_race_id is not None
+                else None
+            ) or cell_router.resolve_variant(
                 category, entries, card_max_race_bango=effective_card_max_race_bango
             )
             resolved_variant = variant
@@ -1191,6 +1205,7 @@ def score_races(
                 effective_feature_names = vm.feature_names
                 effective_architecture = vm.architecture
                 cell_variant_model = vm
+                routing_mode = vm.routing_mode
                 debug_log(f"[cell-routing] race={race_id} category={category} -> {variant}")
             elif variant != cell_router.routing_for(category).default_variant:
                 debug_log(
@@ -1204,6 +1219,7 @@ def score_races(
                     race_id,
                     category,
                     entries,
+                    stage2_outcomes.append,
                 )
             elif category == "jra" and cell_variant_model.routing_mode == "jra_lock1_rerank_rest":
                 rows = _score_one_race_lock1_rerank_rest(
@@ -1212,6 +1228,7 @@ def score_races(
                     category,
                     entries,
                 )
+                stage2_outcomes.append("lock1-rerank-rest")
             elif (
                 category == "nar" and cell_variant_model.routing_mode == "nar_transformer_top1_swap"
             ):
@@ -1222,6 +1239,7 @@ def score_races(
                     race_id,
                     entries,
                     resolved_feature_names,
+                    stage2_outcomes.append,
                 )
             elif (
                 category == "nar"
@@ -1234,6 +1252,7 @@ def score_races(
                     race_id,
                     entries,
                     resolved_feature_names,
+                    stage2_outcomes.append,
                 )
             elif (
                 category == "nar" and cell_variant_model.routing_mode == "nar_transformer_top2_swap"
@@ -1245,6 +1264,7 @@ def score_races(
                     race_id,
                     entries,
                     resolved_feature_names,
+                    stage2_outcomes.append,
                 )
             elif (
                 category == "jra"
@@ -1259,6 +1279,7 @@ def score_races(
                     effective_feature_names,
                     effective_architecture,
                     cell_variant_model.model_version,
+                    stage2_outcomes.append,
                 )
             else:
                 rows = _score_one_race_direct(
@@ -1270,7 +1291,9 @@ def score_races(
                     effective_architecture,
                     cell_variant_model.model_version,
                 )
+                stage2_outcomes.append("direct-cell")
         elif xgb_etop2_booster is not None:
+            routing_mode = "etop2-override"
             rows = _score_one_race_etop2(
                 effective_booster,
                 xgb_etop2_booster,
@@ -1278,13 +1301,16 @@ def score_races(
                 entries,
                 effective_feature_names,
             )
+            stage2_outcomes.append("etop2-override")
         elif nar_transformer is not None:
+            routing_mode = "nar-transformer-blend"
             rows = _score_one_race_nar_blend(
                 effective_booster,
                 nar_transformer,
                 race_id,
                 entries,
                 effective_feature_names,
+                stage2_outcomes.append,
             )
         else:
             rows = _score_one_race_direct(
@@ -1296,6 +1322,8 @@ def score_races(
                 effective_architecture,
                 model_version_for(category),
             )
+            stage2_outcomes.append("direct-default")
+        stage2_model_version = str(rows[0][0]) if rows else "no-score"
         if stage1_model is not None and stage1_config is not None and rows:
             scored_named_cell = cell_variant_model is not None and is_named_race_cell_score(
                 model_version=cell_variant_model.model_version,
@@ -1308,6 +1336,7 @@ def score_races(
                 stage2_scores=extract_predicted_scores(rows),
                 skip_named_race_cell=scored_named_cell,
             )
+            stage1_reason = gate.reason
             if gate.reason == "named-race-cell" and cell_variant_model is not None:
                 debug_log(
                     f"[stage1-gate] race={race_id} category={category} "
@@ -1318,8 +1347,8 @@ def score_races(
                     f"[stage1-gate] race={race_id} category={category} "
                     f"reason={gate.reason} stddev={gate.stddev} -> {stage1_model.model_version}"
                 )
-                rows = (
-                    _score_one_race_direct(
+                if stage1_model.top1_swap_base is None:
+                    rows = _score_one_race_direct(
                         stage1_model.booster,
                         race_id,
                         category,
@@ -1328,15 +1357,64 @@ def score_races(
                         stage1_model.architecture,
                         stage1_model.model_version,
                     )
-                    if stage1_model.top1_swap_base is None
-                    else _score_one_race_stage1_top1_swap(
+                    stage1_reason = f"{gate.reason}:direct-stage1"
+                else:
+                    stage1_outcomes: list[str] = []
+                    rows = _score_one_race_stage1_top1_swap(
                         stage1_model,
                         stage1_config,
                         race_id,
                         category,
                         entries,
+                        stage1_outcomes.append,
                     )
-                )
+                    stage1_outcome = stage1_outcomes[-1] if stage1_outcomes else "no-score"
+                    stage1_reason = f"{gate.reason}:{stage1_outcome}"
+        prophet_cell = resolved_variant or "sim"
+        prophet_branch = str(rows[0][0]) if rows else None
+        stage2_outcome = stage2_outcomes[-1] if stage2_outcomes else "no-score"
+        served_signature = (
+            ServedBranch(
+                routing_mode=routing_mode,
+                stage2_outcome=stage2_outcome,
+                stage2_model_version=stage2_model_version,
+                stage1_reason=stage1_reason,
+                final_model_version=prophet_branch,
+            ).signature()
+            if prophet_branch is not None
+            else None
+        )
+        if served_signature is not None and served_signatures_by_race_id is not None:
+            served_signatures_by_race_id[race_id] = served_signature
+        prophet_adjustment = adjust_prediction_rows_with_prophet(
+            rows,
+            entries,
+            category,
+            cell_variant=prophet_cell,
+            branch_variant=prophet_branch,
+            served_signature=served_signature,
+        )
+        if prophet_adjustment.applied:
+            rows = prophet_adjustment.rows
+            debug_log(
+                f"[prophet-adjustment] race={race_id} category={category} "
+                f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
+                "status=applied"
+            )
+        elif (
+            configured_prophet_weight(
+                category,
+                cell_variant=prophet_cell,
+                branch_variant=prophet_branch,
+                served_signature=served_signature,
+            )
+            is not None
+        ):
+            debug_log(
+                f"[prophet-adjustment] race={race_id} category={category} "
+                f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
+                f"status=fallback reason={prophet_adjustment.reason}"
+            )
         scored.append(rows)
     return scored
 
@@ -1453,6 +1531,11 @@ def score_dynamic_market_shadow(
     return records
 
 
+def _emit_branch_outcome(outcome_sink: Callable[[str], None] | None, outcome: str) -> None:
+    if outcome_sink is not None:
+        outcome_sink(outcome)
+
+
 def _score_one_race_direct(
     booster: BoosterLike,
     race_id: str,
@@ -1527,6 +1610,7 @@ def _score_one_race_variant_top1_swap(
     race_id: str,
     category: Category,
     entries: Sequence[Mapping[str, object]],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Score a routed base + companion and exchange only their top horses."""
     base = companion.top1_swap_base
@@ -1551,6 +1635,9 @@ def _score_one_race_variant_top1_swap(
     )
     horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
     should_swap = _passes_variant_top1_confidence_gate(companion, base_scores, companion_scores)
+    _emit_branch_outcome(
+        outcome_sink, "confidence-gate-swap" if should_swap else "confidence-gate-kept-base"
+    )
     adjusted_scores = (
         apply_top1_score_swap(horse_ids, base_scores, companion_scores)
         if should_swap
@@ -1609,12 +1696,14 @@ def _score_one_race_stage1_top1_swap(
     race_id: str,
     category: Category,
     entries: Sequence[Mapping[str, object]],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Score Stage-1 base + companion and exchange only their top horses."""
     base = companion.top1_swap_base
     if base is None:
         raise ValueError("Stage-1 top1 swap requires a base model")
     if not race_passes_top1_swap_weather_gate(config, entries):
+        _emit_branch_outcome(outcome_sink, "weather-gate-kept-base")
         debug_log(
             f"[stage1-top1-swap] race={race_id} category={category} "
             f"weather gate closed -> {base.model_version}"
@@ -1646,6 +1735,7 @@ def _score_one_race_stage1_top1_swap(
         build_feature_matrix(entries, companion.feature_names, companion.architecture),
     )
     horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    _emit_branch_outcome(outcome_sink, "weather-gate-swap")
     adjusted_scores = apply_top1_score_swap(horse_ids, base_scores, companion_scores)
     ranked = rank_race_entries(entries, adjusted_scores)
     return build_prediction_rows(
@@ -1733,6 +1823,7 @@ def _score_one_race_jra_dirt_hybrid(
     feature_names: Sequence[str],
     architecture: Architecture,
     fallback_model_version: str,
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Fuse the prior-corner cell model with the weighted three-seed companion."""
     if is_degenerate_feature_matrix(entries, feature_names):
@@ -1745,6 +1836,7 @@ def _score_one_race_jra_dirt_hybrid(
     base_scores = score_matrix(booster, build_feature_matrix(entries, feature_names, architecture))
     scores: Sequence[float] = base_scores
     model_version = fallback_model_version
+    outcome = "hybrid-field-or-feature-fallback"
     if len(entries) >= 2 and not hybrid.missing_feature_keys(entries):
         try:
             companion_scores = hybrid.companion_scores(entries)
@@ -1754,10 +1846,13 @@ def _score_one_race_jra_dirt_hybrid(
                 companion_weight=hybrid.companion_weight,
             )
             model_version = JRA_DIRT_HYBRID_MODEL_VERSION
+            outcome = "hybrid-fused"
         except BaseException as blend_error:
+            outcome = "hybrid-exception-fallback"
             debug_log(
                 f"[jra-dirt-hybrid] race fail -> prior-corner-only race_id={race_id}: {blend_error}"
             )
+    _emit_branch_outcome(outcome_sink, outcome)
     ranked = rank_race_entries(entries, scores)
     return build_prediction_rows(
         race_id,
@@ -1776,6 +1871,7 @@ def _score_one_race_nar_top1_swap(
     race_id: str,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Swap only production NAR top-1 with a routed specialist's top horse."""
     if is_degenerate_feature_matrix(entries, feature_names) or is_degenerate_feature_matrix(
@@ -1792,6 +1888,7 @@ def _score_one_race_nar_top1_swap(
         build_feature_matrix(entries, feature_names, "xgboost"),
     )
     production_scores: Sequence[float] = base_scores
+    transformer_outcome = "transformer-unavailable-or-feature-fallback"
     if (
         transformer is not None
         and len(entries) >= 2
@@ -1803,7 +1900,9 @@ def _score_one_race_nar_top1_swap(
                 transformer.seed_score_mean(entries),
                 NAR_TRANSFORMER_BLEND_WEIGHT,
             )
+            transformer_outcome = "transformer-fused"
         except BaseException as blend_error:
+            transformer_outcome = "transformer-exception-fallback"
             debug_log(
                 f"[nar-top1-routing] transformer fail -> ensemble-only "
                 f"race_id={race_id}: {blend_error}"
@@ -1813,6 +1912,10 @@ def _score_one_race_nar_top1_swap(
         build_feature_matrix(entries, companion.feature_names, companion.architecture),
     )
     horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
+    production_top = max(range(len(production_scores)), key=production_scores.__getitem__)
+    companion_top = max(range(len(companion_scores)), key=companion_scores.__getitem__)
+    swap_outcome = "swap-changed-top1" if production_top != companion_top else "swap-same-top1"
+    _emit_branch_outcome(outcome_sink, f"{transformer_outcome}-{swap_outcome}")
     adjusted_scores = apply_top1_score_swap(horse_ids, production_scores, companion_scores)
     ranked = rank_race_entries(entries, adjusted_scores)
     return build_prediction_rows(
@@ -1832,6 +1935,7 @@ def _score_one_race_nar_top2_swap(
     race_id: str,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Conditionally swap production NAR ranks two and three using a Top2 head."""
     if is_degenerate_feature_matrix(entries, feature_names) or is_degenerate_feature_matrix(
@@ -1848,6 +1952,7 @@ def _score_one_race_nar_top2_swap(
         build_feature_matrix(entries, feature_names, "xgboost"),
     )
     production_scores: Sequence[float] = base_scores
+    transformer_outcome = "transformer-unavailable-or-feature-fallback"
     if (
         transformer is not None
         and len(entries) >= 2
@@ -1859,7 +1964,9 @@ def _score_one_race_nar_top2_swap(
                 transformer.seed_score_mean(entries),
                 NAR_TRANSFORMER_BLEND_WEIGHT,
             )
+            transformer_outcome = "transformer-fused"
         except BaseException as blend_error:
+            transformer_outcome = "transformer-exception-fallback"
             debug_log(
                 f"[nar-top2-routing] transformer fail -> ensemble-only "
                 f"race_id={race_id}: {blend_error}"
@@ -1873,6 +1980,7 @@ def _score_one_race_nar_top2_swap(
         range(len(entries)), key=lambda index: (-float(production_scores[index]), horse_ids[index])
     )
     adjusted_scores = list(production_scores)
+    swap_outcome = "field-lt3-kept-base"
     if len(production_order) >= 3:
         rank2_index, rank3_index = production_order[1:3]
         minimum_margin = companion.minimum_candidate_margin
@@ -1882,6 +1990,10 @@ def _score_one_race_nar_top2_swap(
                 adjusted_scores[rank3_index],
                 adjusted_scores[rank2_index],
             )
+            swap_outcome = "margin-swap-top2-top3"
+        else:
+            swap_outcome = "margin-kept-base"
+    _emit_branch_outcome(outcome_sink, f"{transformer_outcome}-{swap_outcome}")
     ranked = rank_race_entries(entries, adjusted_scores)
     return build_prediction_rows(
         race_id,
@@ -1900,6 +2012,7 @@ def _score_one_race_nar_top2_consensus_swap(
     race_id: str,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Swap production ranks two and three only when enough panel heads agree."""
     members = (companion, *companion.consensus_members)
@@ -1917,6 +2030,7 @@ def _score_one_race_nar_top2_consensus_swap(
         build_feature_matrix(entries, feature_names, "xgboost"),
     )
     production_scores: Sequence[float] = base_scores
+    transformer_outcome = "transformer-unavailable-or-feature-fallback"
     if (
         transformer is not None
         and len(entries) >= 2
@@ -1928,7 +2042,9 @@ def _score_one_race_nar_top2_consensus_swap(
                 transformer.seed_score_mean(entries),
                 NAR_TRANSFORMER_BLEND_WEIGHT,
             )
+            transformer_outcome = "transformer-fused"
         except BaseException as blend_error:
+            transformer_outcome = "transformer-exception-fallback"
             debug_log(
                 f"[nar-top2-consensus-routing] transformer fail -> ensemble-only "
                 f"race_id={race_id}: {blend_error}"
@@ -1938,6 +2054,7 @@ def _score_one_race_nar_top2_consensus_swap(
         range(len(entries)), key=lambda index: (-float(production_scores[index]), horse_ids[index])
     )
     adjusted_scores = list(production_scores)
+    consensus_outcome = "field-lt3-kept-base"
     if len(production_order) >= 3:
         rank2_index, rank3_index = production_order[1:3]
         votes = 0
@@ -1955,6 +2072,10 @@ def _score_one_race_nar_top2_consensus_swap(
                 adjusted_scores[rank3_index],
                 adjusted_scores[rank2_index],
             )
+            consensus_outcome = f"consensus-swap-votes-{votes}"
+        else:
+            consensus_outcome = f"consensus-kept-base-votes-{votes}"
+    _emit_branch_outcome(outcome_sink, f"{transformer_outcome}-{consensus_outcome}")
     ranked = rank_race_entries(entries, adjusted_scores)
     return build_prediction_rows(
         race_id,
@@ -1972,6 +2093,7 @@ def _score_one_race_nar_blend(
     race_id: str,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
+    outcome_sink: Callable[[str], None] | None = None,
 ) -> list[list[object]]:
     """Score one NAR race with the Set-Transformer x base score-level z-fusion blend.
 
@@ -1996,6 +2118,7 @@ def _score_one_race_nar_blend(
     base_scores = score_matrix(fallback_booster, matrix)
     scores: Sequence[float] = base_scores
     model_version = model_version_for("nar")
+    outcome = "transformer-field-or-feature-fallback"
     if len(entries) >= 2 and not transformer.missing_feature_keys(entries):
         try:
             transformer_score_mean = transformer.seed_score_mean(entries)
@@ -2003,12 +2126,15 @@ def _score_one_race_nar_blend(
                 base_scores, transformer_score_mean, NAR_TRANSFORMER_BLEND_WEIGHT
             )
             model_version = NAR_TRANSFORMER_MODEL_VERSION
+            outcome = "transformer-fused"
         except BaseException as blend_error:
+            outcome = "transformer-exception-fallback"
             debug_log(
                 f"[nar-transformer] race fail -> ensemble-only race_id={race_id}: {blend_error}"
             )
             scores = base_scores
             model_version = model_version_for("nar")
+    _emit_branch_outcome(outcome_sink, outcome)
     ranked = rank_race_entries(entries, scores)
     return build_prediction_rows(
         race_id,

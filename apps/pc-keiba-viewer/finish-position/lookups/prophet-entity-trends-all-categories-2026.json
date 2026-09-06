@@ -1,0 +1,29 @@
+{
+  "artifact": "prophet-entity-trends-all-categories-2026.parquet",
+  "sha256": "6ccd299a15582ef481198b944c5e65bbe39cbf7629277faaca41abf4b12af630",
+  "source_sha256": {
+    "jra": "430ab9771ac8a4bb8eae75ee948f1d35c29a4047421310f20875bf3dfa1184fc",
+    "nar": "0c93c14ea201fbb324059a8d41ba0804f538e66d25cb1913ae22e394ada719db"
+  },
+  "year": 2026,
+  "rows": 89060,
+  "selected_entities": {
+    "jra": [
+      13,
+      32,
+      32
+    ],
+    "nar_and_ban_ei": [
+      15,
+      32,
+      32
+    ]
+  },
+  "history_contract": "race_date < 20260101",
+  "categories": [
+    "jra",
+    "nar",
+    "ban-ei"
+  ],
+  "runtime_prophet_dependency": false
+}

@@ -10,8 +10,9 @@ to the pure-DuckDB ``add-race-internal-features.py``) makes argparse abort, so
 the per-script flag surface is encoded here and unit-tested; ``pipeline_runner``
 only executes the vectors and reads the parquet.
 
-The chains reproduce the EXACT feature sets the production v8 models were
-trained on
+The model-input portions of the chains reproduce the EXACT feature sets the
+production v8 models were trained on. The final frozen-Prophet layer appends
+post-model adjustment inputs and never changes a booster feature vector.
 (docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §4 /
 §8 / §9 / §10 +
 docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2 +
@@ -109,6 +110,12 @@ SIRE_VENUE_BIAS_SCRIPT: Final[str] = "add-sire-venue-bias-features.py"
 # artifacts, so it is intentionally not in ``SCRIPTS_WITH_FROM_DATE``.
 JRA_JOCKEY_PEDIGREE_CELL_SCRIPT: Final[str] = "add-jra-jockey-pedigree-cell-features.py"
 
+# Frozen forecasts are baked offline; this day-stable layer only performs joins.
+PROPHET_ENTITY_TREND_SCRIPT: Final[str] = "add-prophet-entity-trend-features.py"
+PROPHET_LOOKUP_PATH: Final[Path] = Path(
+    "/app/lookups/prophet-entity-trends-all-categories-2026.parquet"
+)
+
 # DuckDB resource caps for the similar-race layer inside the prediction
 # container (standard-4 / 12 GiB) — mirror the per-year OOM-safe limits used by
 # the offline store build so the pairwise similarity scan spills to disk instead
@@ -149,6 +156,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
         JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     ),
     "nar": (
@@ -162,6 +170,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         RELATIONSHIP_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -171,6 +180,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         BANEI_GRADE_CAREER_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     ),
 }
 
@@ -185,7 +195,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 # same-day-cumulative jockey/pedigree cell aggregation). ``pipeline_runner``
 # now runs DAY_CHAIN once per category+day against the whole-day DuckDB base
 # build (cached), then RACE_CHAIN per race against that cached day-base —
-# instead of re-running all 17 (JRA) / 10 (NAR) / 7 (Ban-ei) scripts for every
+# instead of re-running all 18 (JRA) / 11 (NAR) / 8 (Ban-ei) scripts for every
 # single race. Relative order within each chain is preserved from
 # ``LAYER_CHAIN`` (this is a partition, not a reordering).
 #
@@ -228,6 +238,7 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -240,6 +251,7 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         RELATIONSHIP_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -248,6 +260,7 @@ DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         BANEI_GRADE_CAREER_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     ),
 }
 
@@ -285,6 +298,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
         JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
+        PROPHET_ENTITY_TREND_SCRIPT,
     }
 )
 
@@ -363,6 +377,12 @@ SIMILAR_RACE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
 # Like similar-race, it runs on ALL THREE chains, so the map carries every
 # category.
 SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+    "ban-ei": "ban-ei",
+}
+
+PROPHET_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "jra",
     "nar": "nar",
     "ban-ei": "ban-ei",
@@ -554,6 +574,24 @@ def _sire_venue_bias_category_args(script: str, category: Category) -> list[str]
     return ["--category", SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY[category]]
 
 
+def _prophet_entity_trend_args(
+    script: str, category: Category, target_date: str | None
+) -> list[str]:
+    """Flags for the frozen day/category lookup layer."""
+    if script != PROPHET_ENTITY_TREND_SCRIPT:
+        return []
+    if target_date is None:
+        raise ValueError("Prophet entity trend layer requires target_date")
+    return [
+        "--category",
+        PROPHET_CATEGORY_BY_CATEGORY[category],
+        "--target-date",
+        target_date,
+        "--prophet-lookup",
+        str(PROPHET_LOOKUP_PATH),
+    ]
+
+
 def _target_race_scope_args(script: str, target_race: str | None) -> list[str]:
     """``--target-race`` for scripts that support focused PG staging."""
     if target_race is not None and script in SCRIPTS_WITH_TARGET_RACE_SCOPE:
@@ -625,6 +663,7 @@ def build_layer_argv(
         + _exotic_category_args(script, category)
         + _similar_race_args(script, category)
         + _sire_venue_bias_category_args(script, category)
+        + _prophet_entity_trend_args(script, category, target_date)
         + _target_race_scope_args(script, target_race)
         + _near_miss_target_date_args(script, target_date, target_to_date)
     )
