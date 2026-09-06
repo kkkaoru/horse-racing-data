@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jra-van-datalab-cloudflare-demo",
+  "main": "src/worker.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+  "vars": {
+    "JRA_VAN_STATE_URL": "https://jra-van-datalab-cloudflare-demo.kaoru.workers.dev/internal/state",
+  },
+  "containers": [
+    {
+      "class_name": "JvLinkContainer",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 1,
+      "rollout_step_percentage": 100,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "JvLinkContainer",
+        "name": "JV_LINK_CONTAINER",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["JvLinkContainer"],
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "JV_LINK_STATE",
+      "bucket_name": "jra-van-datalab-cloudflare-state",
+    },
+  ],
+}

@@ -1,0 +1,41 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\Software\JRA-VAN Data Lab.\server_info]
+"datahost"="datalab.cdn.jra-van.ne.jp"
+"datapath"="/datalab/"
+"dataport"=dword:00000050
+"realhost"="reallab.jra-van.ne.jp"
+"realpath"="/Browsing/GateServlet/"
+"realport"=dword:00000050
+"serverhost"="authlab.jra-van.ne.jp"
+"serverpath"="/Browsing/JVServlet/"
+"serverport"=dword:00000050
+"verupurl"="http://jra-van.jp/dlb/sft/jv_x64.html"
+
+[HKEY_LOCAL_MACHINE\Software\JRA-VAN Data Lab.\uid_pass]
+"agentport"=dword:0000dcd3
+"installdate"="20000101000000000"
+"installpath"="C:\\Program Files\\JRA-VAN\\Data Lab"
+"messagekey"="00000000000000"
+"payflag"="2"
+"saveflag"="1"
+"savepath"="C:\\JVData"
+"servicekey"=""
+"ukey"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\AppID\{FC990E87-4D02-4C29-9367-B8D245F513F5}]
+@="JVLink64Agent"
+"LocalService"="JVLink64Agent"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\AppID\JVLink64Agent.EXE]
+"AppID"="{FC990E87-4D02-4C29-9367-B8D245F513F5}"
+
+[-HKEY_LOCAL_MACHINE\System\ControlSet001\Services\JVLink64Agent]
+
+[HKEY_LOCAL_MACHINE\System\ControlSet001\Services\JVLink64Agent]
+"ErrorControl"=dword:00000001
+"ImagePath"="\"C:\\Program Files\\JRA-VAN\\Data Lab\\JVLink64Agent.exe\" -Service"
+"ObjectName"="LocalSystem"
+"PreshutdownTimeout"=dword:0002bf20
+"Start"=dword:00000003
+"Type"=dword:00000010

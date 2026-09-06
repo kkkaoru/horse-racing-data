@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!container
+!container/**
+!sdk
+!sdk/JVLinkSetup.exe

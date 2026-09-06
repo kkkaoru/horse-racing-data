@@ -1,0 +1,31 @@
+{
+  "name": "jra-van-datalab-cloudflare-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "../../scripts/ensure-docker-compat.sh -- wrangler deploy",
+    "deploy:authenticated": "./scripts/deploy-authenticated.sh",
+    "dev": "../../scripts/ensure-docker-compat.sh -- wrangler dev",
+    "format": "oxfmt --write src tests package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src tests package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "import-native-auth": "./scripts/export-native-auth.sh",
+    "prepare-sdk": "./scripts/prepare-sdk.sh",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
