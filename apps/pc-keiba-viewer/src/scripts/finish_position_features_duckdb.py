@@ -1632,7 +1632,7 @@ def stage_ra_table(
         from_source = (
             f"("
             f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
-            f" tenko_code, kyoso_joken_meisho, hasso_jikoku"
+            f" tenko_code, kyoso_joken_meisho, hasso_jikoku, zenhan_3f"
             f" FROM pg.{pg_table} WHERE {where_clause}"
             f")"
         )
@@ -1645,7 +1645,10 @@ def stage_ra_table(
         f"""
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code,
-               kyoso_joken_meisho, hasso_jikoku
+               kyoso_joken_meisho, hasso_jikoku,
+               case when regexp_full_match(trim(zenhan_3f), '[0-9]+')
+                 then try_cast(nullif(trim(zenhan_3f), '000') as double) / 10
+                 else null end as zenhan_3f
         from {from_source}
         {where_sql}
         """,
@@ -1783,7 +1786,7 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
         "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
         "cast(null as varchar) as tenko_code, "
         "cast(null as varchar) as kyoso_joken_meisho, "
-        "cast(null as varchar) as hasso_jikoku "
+        "cast(null as varchar) as hasso_jikoku, cast(null as double) as zenhan_3f "
         "where false",
         row_count_table="jra_ra",
     )
@@ -1820,7 +1823,7 @@ def _stage_empty_nar_stubs(con: duckdb.DuckDBPyConnection) -> None:
         "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
         "cast(null as varchar) as tenko_code, "
         "cast(null as varchar) as kyoso_joken_meisho, "
-        "cast(null as varchar) as hasso_jikoku where false",
+        "cast(null as varchar) as hasso_jikoku, cast(null as double) as zenhan_3f where false",
         row_count_table="nar_ra",
     )
 
@@ -2018,6 +2021,7 @@ def horse_career_cte() -> str:
         avg(time_sa) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as speed_index_avg_5,
         min(time_sa) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as speed_index_best_5,
         avg(kohan_3f) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as kohan3f_avg_5,
+        avg(zenhan_3f) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as past_first_3f_avg_5,
         avg(corner4_norm) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as corner_pass_avg_5,
         avg(case when finish_position = 1 then 1 else 0 end) as career_win_rate,
         avg(case when finish_position between 1 and 3 then 1 else 0 end) as career_place_rate,
@@ -2088,6 +2092,8 @@ def jockey_cte(target_filter: str = "true") -> str:
         avg(case when finish_position = 1 then 1 else 0 end) filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '')) as jockey_grade_win_rate,
         count(*) filter (where history_horse = target_horse) as jockey_horse_pair_count,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as jockey_horse_pair_win_rate,
+        avg(case when corner1_norm is null then null when corner1_norm = 0 then 1.0 else 0.0 end)
+          filter (where history_horse = target_horse) as jockey_horse_pair_nige_rate,
         avg(case when corner1_norm = 0 then 1.0
                  when corner1_norm is null then null
                  else 0.0 end) as jockey_nige_rate,
@@ -2138,6 +2144,8 @@ def trainer_cte(target_filter: str = "true") -> str:
         avg(case when finish_position = 1 then 1 else 0 end) filter (where history_keibajo = target_keibajo) as trainer_keibajo_win_rate,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where abs(history_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE}) as trainer_distance_win_rate,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as trainer_horse_win_rate,
+        avg(case when corner1_norm is null then null when corner1_norm = 0 then 1.0 else 0.0 end)
+          filter (where history_horse = target_horse) as trainer_horse_pair_nige_rate,
         avg(case when corner1_norm = 0 then 1.0
                  when corner1_norm is null then null
                  else 0.0 end) as trainer_nige_rate,
@@ -2735,6 +2743,22 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
         avg(case when b.corner1_norm is null then null
                  when b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
                  else 0.0 end) as past_oikomi_rate_self,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm = 0 then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 5) as past_nige_rate_self_recent_5,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > 0 and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 5) as past_senkou_rate_self_recent_5,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 5) as past_sashi_rate_self_recent_5,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 5) as past_oikomi_rate_self_recent_5,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm = 0 then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 3) as past_nige_rate_self_recent_3,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > 0 and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 3) as past_senkou_rate_self_recent_3,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 3) as past_sashi_rate_self_recent_3,
+        avg(case when b.corner1_norm is null then null when b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end)
+          filter (where b.recent_rank <= 3) as past_oikomi_rate_self_recent_3,
         max(b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_1_norm,
         max(b.corner2_norm) filter (where b.recent_rank = 1) as last_race_corner_2_norm,
         max(b.corner3_norm) filter (where b.recent_rank = 1) as last_race_corner_3_norm,
@@ -3314,7 +3338,7 @@ def base_features_select_sql(category: str) -> str:
       t.kyosomei_hondai, t.kyosomei_fukudai, t.kyosomei_kakkonai,
       {nar_subclass_expr} as nar_subclass,
       t.target_corner_1_norm, t.target_corner_2_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
-      hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
+      hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.past_first_3f_avg_5, hc.corner_pass_avg_5,
       hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
       hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
       wa.weight_avg_5,
@@ -3325,13 +3349,13 @@ def base_features_select_sql(category: str) -> str:
       hc.days_since_last_race, hc.consecutive_race_count,
       jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
       jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
-      jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate,
+      jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate, jc.jockey_horse_pair_nige_rate,
       jc.jockey_nige_rate, jc.jockey_senkou_rate, jc.jockey_sashi_rate, jc.jockey_oikomi_rate,
       jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
       jc.jockey_recent_corner_1_norm_avg_90d, jc.jockey_recent_nige_rate_90d,
       jc.jockey_season_win_rate, jc.jockey_season_keibajo_win_rate, jc.jockey_keibajo_distance_win_rate,
       jc.jockey_season_keibajo_distance_win_rate, jc.jockey_season_keibajo_distance_count,
-      tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
+      tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate, tc.trainer_horse_pair_nige_rate,
       tc.trainer_nige_rate, tc.trainer_senkou_rate, tc.trainer_sashi_rate, tc.trainer_oikomi_rate,
       tc.trainer_corner_1_norm_avg,
       tc.trainer_grade_win_rate, tc.trainer_class_surface_season_win_rate, tc.trainer_class_surface_season_count,
@@ -3446,6 +3470,10 @@ def base_features_select_sql(category: str) -> str:
       rsh.past_corner_3_norm_worst_5,
       rsh.past_corner_4_norm_worst_5,
       rsh.past_nige_rate_self,
+      rsh.past_nige_rate_self_recent_5, rsh.past_senkou_rate_self_recent_5,
+      rsh.past_sashi_rate_self_recent_5, rsh.past_oikomi_rate_self_recent_5,
+      rsh.past_nige_rate_self_recent_3, rsh.past_senkou_rate_self_recent_3,
+      rsh.past_sashi_rate_self_recent_3, rsh.past_oikomi_rate_self_recent_3,
       rsh.past_senkou_rate_self,
       rsh.past_sashi_rate_self,
       rsh.past_oikomi_rate_self,
@@ -3958,6 +3986,7 @@ HORSE_HISTORY_BASE_SELECT = """
       cast(h.finish_norm as double) as finish_norm,
       cast(h.time_sa as double) as time_sa,
       cast(h.kohan_3f as double) as kohan_3f,
+      hr.zenhan_3f as zenhan_3f,
       cast(h.corner1_norm as double) as corner1_norm,
       cast(h.corner2_norm as double) as corner2_norm,
       cast(h.corner3_norm as double) as corner3_norm,
@@ -3990,6 +4019,16 @@ HORSE_HISTORY_BASE_FROM = """
           and hs.keibajo_code = h.keibajo_code
           and hs.race_bango = h.race_bango
           and hs.ketto_toroku_bango = h.ketto_toroku_bango
+        left join (
+          select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, zenhan_3f from jra_ra
+          union all
+          select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, zenhan_3f from nar_ra
+        ) hr
+          on hr.source = h.source
+          and hr.kaisai_nen = h.kaisai_nen
+          and hr.kaisai_tsukihi = h.kaisai_tsukihi
+          and hr.keibajo_code = h.keibajo_code
+          and hr.race_bango = h.race_bango
 """
 
 

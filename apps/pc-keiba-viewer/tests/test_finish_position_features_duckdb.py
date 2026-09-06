@@ -10,6 +10,42 @@ import _catalog_attach as catalog_attach
 import finish_position_features_duckdb as subject
 
 
+def test_day_foundation_contains_running_style_only_history_columns() -> None:
+    assert "as past_first_3f_avg_5" in subject.horse_career_cte()
+    assert "as jockey_horse_pair_nige_rate" in subject.jockey_cte()
+    assert "as trainer_horse_pair_nige_rate" in subject.trainer_cte()
+    history = subject.horse_running_style_history_cte()
+    assert "as past_nige_rate_self_recent_5" in history
+    assert "as past_senkou_rate_self_recent_5" in history
+    assert "as past_sashi_rate_self_recent_5" in history
+    assert "as past_oikomi_rate_self_recent_5" in history
+    assert "as past_nige_rate_self_recent_3" in history
+    assert "as past_senkou_rate_self_recent_3" in history
+    assert "as past_sashi_rate_self_recent_3" in history
+    assert "as past_oikomi_rate_self_recent_3" in history
+    assert "hr.zenhan_3f as zenhan_3f" in subject.HORSE_HISTORY_BASE_SELECT
+    assert "and hr.race_bango = h.race_bango" in subject.HORSE_HISTORY_BASE_FROM
+
+
+def test_stage_ra_first_three_furlongs_matches_running_style_units() -> None:
+    import duckdb
+
+    with duckdb.connect() as connection:
+        connection.execute("attach ':memory:' as pg")
+        connection.execute(
+            "create table pg.jvd_ra as select * from (values "
+            "('2026', '0905', '01', '01', '1', '', '1200', '356'), "
+            "('2026', '0905', '01', '02', '1', '', '1230', '000'), "
+            "('2026', '0905', '01', '03', '1', '', '1300', 'bad')) "
+            "r(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
+            "tenko_code, kyoso_joken_meisho, hasso_jikoku, zenhan_3f)"
+        )
+        subject.stage_ra_table(connection, "test.ra", "jra_ra", "jvd_ra", "20260901", "20260906")
+        assert connection.execute("select zenhan_3f from jra_ra order by race_bango").fetchall() == [
+            (35.6,), (None,), (None,)
+        ]
+
+
 class RecordingConnection:
     def __init__(self) -> None:
         self.statements: list[str] = []

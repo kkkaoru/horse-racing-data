@@ -226,8 +226,19 @@ def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.register("jra_ra_df", jra_ra)
     con.register("nar_ra_df", nar_ra)
-    con.execute("create or replace temp table jra_ra as select * from jra_ra_df")
-    con.execute("create or replace temp table nar_ra as select * from nar_ra_df")
+    con.execute("create or replace temp table jra_ra as select *, cast(null as double) as zenhan_3f from jra_ra_df")
+    con.execute("create or replace temp table nar_ra as select *, cast(null as double) as zenhan_3f from nar_ra_df")
+
+
+def test_running_style_foundation_preserves_recent_rates_and_first_three_furlongs(seeded_con: duckdb.DuckDBPyConnection) -> None:
+    seeded_con.execute("insert into jra_ra values ('2019', '0101', '01', '01', '1', null, '1200', 35.6), ('2019', '0601', '02', '01', '1', null, '1200', 36.2)")
+    subject.materialize_horse_history_base(seeded_con, "true")
+    assert seeded_con.execute(
+        f"with {subject.horse_career_cte()} select round(past_first_3f_avg_5, 1) from horse_career order by ketto_toroku_bango"
+    ).fetchall() == [(35.9,), (35.9,)]
+    assert seeded_con.execute(
+        f"with {subject.horse_running_style_history_cte()} select past_nige_rate_self_recent_5, past_senkou_rate_self_recent_5, past_sashi_rate_self_recent_5, past_oikomi_rate_self_recent_5, past_nige_rate_self_recent_3, past_senkou_rate_self_recent_3 from horse_running_style_history order by ketto_toroku_bango"
+    ).fetchall() == [(0.0, 1.0, 0.0, 0.0, 0.0, 1.0), (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)]
 
 
 @pytest.fixture

@@ -149,7 +149,7 @@ def test_stage_parquet_odds_creates_parquet_odds_table() -> None:
     assert "read_parquet('/tmp/in/race_year=*/*.parquet'" in body
     assert "tansho_odds" in body
     assert "tansho_ninkijun" in body
-    assert "tansho_odds is not null" in body
+    assert "input parquet is missing tansho_odds" in body
 
 
 def test_stage_parquet_odds_end_to_end_reads_parquet_values(tmp_path: Path) -> None:
@@ -195,6 +195,39 @@ def test_stage_parquet_odds_end_to_end_reads_parquet_values(tmp_path: Path) -> N
     assert len(rows) == 2
     assert rows[0] == ("horse_a", 12.5, 3)
     assert rows[1] == ("horse_b", 5.0, 1)
+
+
+def test_stage_parquet_odds_accepts_suffixed_popularity_column(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "input.parquet"
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        f"""
+        copy (
+          select
+            'jra' as source, '2026' as kaisai_nen, '0607' as kaisai_tsukihi,
+            '05' as keibajo_code, '11' as race_bango,
+            'horse_a' as ketto_toroku_bango, '20260607' as race_date,
+            2026 as race_year, 12.5::double as tansho_odds,
+            3::integer as tansho_ninkijun_1, 0.5::double as odds_score,
+            0.75::double as popularity_score, 0.2::double as career_win_rate
+        ) to '{parquet_path.as_posix()}' (format parquet)
+        """
+    )
+    seed_con.close()
+
+    con = duckdb.connect(":memory:")
+    subject.stage_parquet_odds(con, parquet_path.as_posix())
+    result = con.execute(
+        "select ketto_toroku_bango, tansho_odds_raw, tansho_ninkijun_raw from parquet_odds"
+    ).fetchone()
+    subject.stage_raw_odds(con, "20260607", "20260607", focused_target=True)
+    subject.merge_odds_tables(con)
+    appended = con.execute(
+        f"select tansho_ninkijun from ({subject.append_features_sql(parquet_path.as_posix())})"
+    ).fetchone()
+    con.close()
+    assert result == ("horse_a", 12.5, 3)
+    assert appended == (3,)
 
 
 # ---------------------------------------------------------------------------

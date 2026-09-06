@@ -124,10 +124,29 @@ def stage_parquet_odds(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
         select
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango,
-          cast(tansho_odds as double) as tansho_odds_raw,
-          cast(tansho_ninkijun as int) as tansho_ninkijun_raw
-        from read_parquet('{input_glob}', hive_partitioning=true)
-        where tansho_odds is not null
+          cast(
+            coalesce(
+              to_json(input_rows)->>'tansho_odds',
+              to_json(input_rows)->>'tansho_odds_1'
+            ) as double
+          ) as tansho_odds_raw,
+          cast(
+            coalesce(
+              to_json(input_rows)->>'tansho_ninkijun',
+              to_json(input_rows)->>'tansho_ninkijun_1',
+              error('input parquet is missing tansho_ninkijun')
+            ) as int
+          ) as tansho_ninkijun_raw
+        from read_parquet('{input_glob}', hive_partitioning=true) input_rows
+        where case
+          when json_exists(to_json(input_rows), '$.tansho_odds')
+            or json_exists(to_json(input_rows), '$.tansho_odds_1')
+          then coalesce(
+            to_json(input_rows)->>'tansho_odds',
+            to_json(input_rows)->>'tansho_odds_1'
+          ) is not null
+          else error('input parquet is missing tansho_odds')
+        end
         """
     )
 
@@ -174,6 +193,7 @@ def append_features_sql(input_glob: str) -> str:
     )
     select
       b.*,
+      b.tansho_ninkijun_raw as tansho_ninkijun,
       case when b.tansho_odds_raw is not null and b.tansho_odds_raw > 0
            then 1.0 / b.tansho_odds_raw
            else null end as inverse_odds_implied_prob,
