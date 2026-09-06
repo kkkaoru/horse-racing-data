@@ -1,5 +1,6 @@
 // Run with bun (bunx vitest).
 
+import { heatmapPedigreeSupplementSql } from "./heatmap-pedigree-supplements";
 import type {
   CatalogSource,
   R2SqlCatalogConfig,
@@ -249,13 +250,22 @@ const trimmedSql = (expr: string): string =>
 const namedOrUnknownSql = (expr: string): string =>
   `coalesce(${trimmedSql(expr)}, '${UNKNOWN_NAME}')`;
 
-const coalescedKettoSql = (column: string): string =>
-  `coalesce(
-    ${trimmedSql(`primary_um.${column}`)},
-    ${trimmedSql(`secondary_um.${column}`)},
-    ${trimmedSql(`tertiary_um.${column}`)},
-    '${UNKNOWN_NAME}'
+const masterKettoValuesSql = (column: string): string =>
+  ["primary_um", "secondary_um", "tertiary_um"]
+    .map((alias) => trimmedSql(`${alias}.${column}`))
+    .join(",\n    ");
+
+const coalescedKettoSql = (column: string): string => {
+  const supplement = heatmapPedigreeSupplementSql(
+    column,
+    `coalesce(${masterKettoValuesSql("ketto_joho_01b")})`,
+    `coalesce(${masterKettoValuesSql("ketto_joho_02b")})`,
+  );
+  return `coalesce(
+    ${masterKettoValuesSql(column)},
+    ${supplement === null ? "" : `${supplement},\n    `}'${UNKNOWN_NAME}'
   )`;
+};
 
 export const currentRaceIdentitySql = (filters: WinRateHeatmapStatsFilters): string =>
   `kaisai_nen = '${filters.date.slice(0, 4)}'
@@ -290,9 +300,9 @@ const normalizedGradeTitleSql = (alias: string): string =>
 
 const effectiveGradeCodeSql = (alias: string): string => `CASE
     WHEN ${codeColumnSql(alias, "grade_code")} <> '' THEN ${codeColumnSql(alias, "grade_code")}
-    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*III([^I]|$)') THEN 'C'
-    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*II([^I]|$)') THEN 'B'
-    WHEN regexp_matches(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*I([^I]|$)') THEN 'A'
+    WHEN regexp_match(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*III([^I]|$)') IS NOT NULL THEN 'C'
+    WHEN regexp_match(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*II([^I]|$)') IS NOT NULL THEN 'B'
+    WHEN regexp_match(${normalizedGradeTitleSql(alias)}, 'JPN[[:space:]]*I([^I]|$)') IS NOT NULL THEN 'A'
     ELSE ''
   END`;
 
@@ -388,10 +398,12 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
       : "";
   const raceTitleSql =
     filters.includeRaceTitle === true
-      ? `AND ${codeColumnSql("cr", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}
+      ? `AND (
+      ${codeColumnSql("cr", "grade_code")} NOT IN ${RACE_TITLE_GRADE_CODES}
+      OR ${codeColumnSql("ra", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}
+    )
     AND ${trimmedSql("cr.kyosomei_hondai")} IS NOT NULL
-    AND ${trimmedSql("ra.kyosomei_hondai")} = ${trimmedSql("cr.kyosomei_hondai")}
-    AND ${codeColumnSql("ra", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}`
+    AND ${trimmedSql("ra.kyosomei_hondai")} = ${trimmedSql("cr.kyosomei_hondai")}`
       : "";
   return `${historyDateSql(filters, "ra")}
     AND ${historyDateSql(filters, "se")}

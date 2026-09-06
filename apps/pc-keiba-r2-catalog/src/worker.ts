@@ -326,7 +326,8 @@ const isBearerTokenAuthorized = async (
   return timingSafeEqualDigests(providedDigest, expectedDigest);
 };
 
-const isFreshRaceEntriesAuthorized = (request: Request, env: Env): Promise<boolean> =>
+const isFreshRaceEntriesAuthorized = async (request: Request, env: Env): Promise<boolean> =>
+  (await isBearerTokenAuthorized(request, env.INGESTION_TOKEN)) ||
   isBearerTokenAuthorized(request, env.FINISH_POSITION_ATTESTATION_TOKEN);
 
 const compactUtcDate = (timestamp: number): string =>
@@ -1268,14 +1269,23 @@ const purgeTargets = (url: URL): CacheDescriptor[] => {
     : [...features, ...trainings];
 };
 
+const isScopedTrainingPurge = (url: URL): boolean =>
+  url.searchParams.get("date") !== null &&
+  url.searchParams.get("keibajoCode") !== null &&
+  url.searchParams.get("raceBango") !== null;
+
 const handlePurge = async (
   request: Request,
   url: URL,
   env: Env,
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
-  const expected = env.ADMIN_TOKEN;
-  if (!expected || request.headers.get("Authorization") !== `Bearer ${expected}`) {
+  const adminAuthorized =
+    env.ADMIN_TOKEN !== undefined &&
+    request.headers.get("Authorization") === `Bearer ${env.ADMIN_TOKEN}`;
+  const ingestionAuthorized =
+    isScopedTrainingPurge(url) && (await isBearerTokenAuthorized(request, env.INGESTION_TOKEN));
+  if (!adminAuthorized && !ingestionAuthorized) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
   const purged = await purgeDescriptors(dependencies.cache, env.CATALOG_KV, purgeTargets(url));

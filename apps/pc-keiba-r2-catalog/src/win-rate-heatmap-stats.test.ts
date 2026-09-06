@@ -30,6 +30,23 @@ const jraFilters: WinRateHeatmapStatsFilters = {
   years: 10,
 };
 
+it("uses R2 SQL regexp_match null checks rather than unsupported DuckDB regexp_matches", () => {
+  const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters);
+  expect(sql).not.toContain("regexp_matches(");
+  expect(sql).toContain("regexp_match(");
+  for (const grade of ["A", "B", "C"]) expect(sql).toContain(`IS NOT NULL THEN '${grade}'`);
+});
+
+it("keeps all provider master values ahead of verified pedigree supplements", () => {
+  const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters);
+  const provider = sql.indexOf("tertiary_um.ketto_joho_03b");
+  const supplement = sql.indexOf("CASE WHEN se.ketto_toroku_bango = '2020190007'");
+  expect(provider).toBeGreaterThan(-1);
+  expect(supplement).toBeGreaterThan(provider);
+  expect(sql).toContain("THEN 'Sadler''s Wells' ELSE NULL END");
+  expect(sql).toContain("primary_um.ketto_joho_02b");
+});
+
 it("builds aggregate-only JRA bloodline SQL with heatmap default similar-section filters", () => {
   const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters);
   expect(sql).toMatch("FROM pc_keiba.jvd_se");
@@ -175,9 +192,9 @@ it("filters similar history by current-race grade and track when those flags are
   });
   expect(sql).toMatch("coalesce(ra.grade_code, '')");
   expect(sql).toMatch("coalesce(cr.grade_code, '')");
-  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
-  expect(sql).toMatch("'JPN[[:space:]]*II([^I]|$)') THEN 'B'");
-  expect(sql).toMatch("'JPN[[:space:]]*I([^I]|$)') THEN 'A'");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') IS NOT NULL THEN 'C'");
+  expect(sql).toMatch("'JPN[[:space:]]*II([^I]|$)') IS NOT NULL THEN 'B'");
+  expect(sql).toMatch("'JPN[[:space:]]*I([^I]|$)') IS NOT NULL THEN 'A'");
   expect(sql).toMatch("END = CASE");
   expect(sql).toMatch("btrim(coalesce(ra.track_code, '')) = btrim(coalesce(cr.track_code, ''))");
   expect(sql).not.toMatch("THEN '芝'");
@@ -191,7 +208,7 @@ it("lets includeGrade skip matching when the current grade is not listed-or-high
     includeTurn: false,
   });
   expect(sql).toMatch("END NOT IN ('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')");
-  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') IS NOT NULL THEN 'C'");
   expect(sql).toMatch("END = CASE");
 });
 
@@ -212,7 +229,7 @@ it("always excludes graded races from ungraded open current races", () => {
   expect(sql).toMatch("kyosomei_hondai");
   expect(sql).toMatch("kyoso_shubetsu_code");
   expect(sql).toMatch("btrim(coalesce(cr.kyoso_joken_code, '')) <> '999'");
-  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') THEN 'C'");
+  expect(sql).toMatch("'JPN[[:space:]]*III([^I]|$)') IS NOT NULL THEN 'C'");
   expect(sql).toMatch("OR CASE");
 });
 
@@ -240,9 +257,13 @@ it("compares condition keys as strings before combining the predicate with boole
   expect(sql).toMatch(
     "END = CASE\n      WHEN btrim(coalesce(cr.kyoso_joken_code, '')) = '005' THEN '1勝クラス'",
   );
-  expect(sql).toMatch("END IS NOT NULL\n    AND btrim(coalesce(cr.grade_code, '')) IN ('A', 'F')");
+  expect(sql).toMatch("END IS NOT NULL\n    AND (");
   expect(sql).not.toMatch("IS NOT DISTINCT FROM");
-  expect(sql).toMatch("btrim(coalesce(cr.grade_code, '')) IN ('A', 'F')");
+  // Non-G1 named races must not be rejected merely because the UI enables title matching.
+  // G1 targets still require G1 history as well as an exact title match.
+  expect(sql).toMatch(
+    "btrim(coalesce(cr.grade_code, '')) NOT IN ('A', 'F')\n      OR btrim(coalesce(ra.grade_code, '')) IN ('A', 'F')",
+  );
   expect(sql).toMatch("btrim(coalesce(ra.grade_code, '')) IN ('A', 'F')");
   expect(sql).toMatch("cr.kyosomei_hondai");
   expect(sql).not.toMatch("THEN '芝'");

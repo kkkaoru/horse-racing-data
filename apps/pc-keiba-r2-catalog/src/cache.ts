@@ -128,6 +128,8 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("raceBango", descriptor.raceBango);
   }
   if (descriptor.kind === "win-rate-heatmap-stats") {
+    // Named-race grade matching and verified pedigree supplements change cached aggregates.
+    url.pathname = "/v3/win-rate-heatmap-stats";
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
     url.searchParams.set("source", descriptor.source);

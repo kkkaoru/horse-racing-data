@@ -105,10 +105,10 @@ it("builds canonical Cache API and KV keys", () => {
     years: 10,
   });
   expect(cacheRequestFor(heatmap).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(kvKeyFor(heatmap)).toBe(
-    "catalog:v2:v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
+    "catalog:v2:v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -125,7 +125,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=06&raceBango=11&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=06&raceBango=11&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -143,7 +143,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -162,7 +162,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeJockeyFrame=1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -181,7 +181,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&includeJockeyFrame=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&includeOwner=1&includeJockeyFrame=1&ungradedOp=1&emptyGradeMatch=2",
   );
   const horseResults = horseRaceResultsDescriptor({
     date: "20260715",
@@ -248,7 +248,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v3/win-rate-heatmap-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&nameTrim=ideographic&emptyTurnBypass=1&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
   );
   expect(
     cacheRequestFor(

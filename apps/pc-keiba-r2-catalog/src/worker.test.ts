@@ -73,6 +73,7 @@ const createHarness = (rows: unknown[] = []) => {
     CACHE_TTL_SECONDS: "15",
     CATALOG_KV: kv,
     FINISH_POSITION_ATTESTATION_TOKEN: "attestation-secret",
+    INGESTION_TOKEN: "ingestion-secret",
     KV_TTL_SECONDS: "120",
     R2_SQL_ACCOUNT_ID: "account",
     R2_SQL_BUCKET_NAME: "pc-keiba-r2-catalog",
@@ -267,6 +268,20 @@ it("requires the attestation Bearer token before querying fresh race entries", a
   expect(harness.fetchCalls).toHaveLength(0);
   expect(harness.cacheCalls.matches).toHaveLength(0);
   expect(harness.kvCalls.gets).toHaveLength(0);
+});
+
+it("accepts the dedicated ingestion token for fresh race entries", async () => {
+  const harness = createHarness([{ ketto_toroku_bango: "2023100001", umaban: 1 }]);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries?date=20260823&source=jra&keibajoCode=07&raceBango=09",
+      { headers: { Authorization: "Bearer ingestion-secret" } },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(1);
 });
 
 it("queries fresh race entries directly with an echoed exact scope and no cache access", async () => {
