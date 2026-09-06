@@ -49,6 +49,35 @@ describe("NV-Link NDJSON streaming", () => {
     ]);
   });
 
+  it("streams a valid close event when no updates are available", async () => {
+    const fetcher: NvFetch = vi
+      .fn<NvFetch>()
+      .mockResolvedValueOnce(new Response(decodeBase64(LICENSE_SUCCESS_BASE64)))
+      .mockResolvedValueOnce(new Response(""));
+    const stream = await createDataStream(
+      opaqueConfig(),
+      { dataSpec: "RACE", fromTime: "20260902000000", option: 1 },
+      fetcher,
+    );
+    const events = (await readStream(stream))
+      .trim()
+      .split("\n")
+      .map((entry: string): unknown => JSON.parse(entry));
+    expect(events).toEqual([
+      {
+        event: "open",
+        files: 0,
+        transitions: ["license-authorized", "file-list-received"],
+      },
+      {
+        event: "close",
+        files: 0,
+        records: 0,
+        transitions: ["license-authorized", "file-list-received", "payload-decoded"],
+      },
+    ]);
+  });
+
   it("propagates archive failures through the stream", async () => {
     const fetcher: NvFetch = vi
       .fn<NvFetch>()
