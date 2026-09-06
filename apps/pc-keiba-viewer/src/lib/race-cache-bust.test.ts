@@ -147,10 +147,10 @@ it("buildRaceCacheBustKeys generates main + stale entries for every cacheable se
     "race-detail-section:v4:2026:06:28:05:11:results:default",
     "race-detail-section:v10:2026:06:28:05:11:similar:default",
     "race-detail-section:v10:2026:06:28:05:11:time-score:default",
-    "race-detail-section:v5:2026:06:28:05:11:training:default",
-    "pc-keiba-viewer:win-rate-heatmap:v16:2026:06:28:05:11:default",
+    "race-detail-section:v6:2026:06:28:05:11:training:default",
+    "pc-keiba-viewer:win-rate-heatmap:v18:2026:06:28:05:11:default",
     "race-detail-section:v16:2026:06:28:05:11:condition:default",
-    "pc-keiba-viewer:win-rate-heatmap:v15:2026:06:28:05:11:default",
+    "pc-keiba-viewer:win-rate-heatmap:v17:2026:06:28:05:11:default",
   ]);
 });
 
@@ -172,7 +172,7 @@ it("buildRaceCacheBustKeys staleKeys prepend the stale: prefix to each main key"
     "stale:race-detail-section:v4:2026:06:28:05:11:results:default",
     "stale:race-detail-section:v10:2026:06:28:05:11:similar:default",
     "stale:race-detail-section:v10:2026:06:28:05:11:time-score:default",
-    "stale:race-detail-section:v5:2026:06:28:05:11:training:default",
+    "stale:race-detail-section:v6:2026:06:28:05:11:training:default",
     "stale:race-detail-section:v16:2026:06:28:05:11:condition:default",
   ]);
 });

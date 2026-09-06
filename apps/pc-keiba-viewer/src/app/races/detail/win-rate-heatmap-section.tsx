@@ -15,7 +15,6 @@ import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
-  HorseRaceResult,
   Runner,
   SimilarRaceStatsRow,
   WeightClassStatsRow,
@@ -37,6 +36,8 @@ import {
   formatWinRateHeatmapColorScaleTick,
   getWinRateHeatmapColorScaleTracks,
   type WinRateHeatmapColorScales,
+  type WinRateHeatmapHorseRateRow,
+  type WinRateHeatmapHorseResult,
   WIN_RATE_HEATMAP_VIEW_MODES,
   type WinRateHeatmapDisplaySwatch,
   type WinRateHeatmapRateMetric,
@@ -49,7 +50,8 @@ interface WinRateHeatmapSectionProps {
   bloodlineRows: BloodlineStatsRow[];
   carriedWeightClassStats?: readonly WeightClassStatsRow[];
   frameStats: FrameStatsRow[];
-  horseResults: HorseRaceResult[];
+  horseRateStats?: readonly WinRateHeatmapHorseRateRow[];
+  horseResults: WinRateHeatmapHorseResult[];
   keibajoCode: string;
   realtimeRequest: RealtimeRaceRequest;
   runners: Runner[];
@@ -308,6 +310,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   bloodlineRows,
   carriedWeightClassStats,
   frameStats,
+  horseRateStats,
   horseResults,
   keibajoCode,
   realtimeRequest,
@@ -398,6 +401,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     bloodlineRows,
     carriedWeightClassStats,
     frameStats,
+    horseRateStats,
     horseResults,
     keibajoCode,
     liveWeightKgByHorse,

@@ -1,5 +1,7 @@
+// Run with bun (Next.js server module).
 import "server-only";
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
+import { getDbQueryCachePolicy } from "../lib/db-query-cache-policy";
 import { isEmptyQueryResult } from "../lib/db-query-cacheability";
 import { getDatabaseTarget } from "./client";
 import { withDbRetry } from "./db-retry";
@@ -170,14 +172,19 @@ export const withDbQueryCache = async <T>(
   keyParts: readonly unknown[],
   load: () => Promise<T>,
 ): Promise<T> => {
-  const ttlSeconds = getCacheTtlSeconds();
+  const policy = getDbQueryCachePolicy({
+    keyParts,
+    nowMs: Date.now(),
+    ttlSeconds: getCacheTtlSeconds(),
+  });
+  const ttlSeconds = policy.ttlSeconds;
   const loadWithRetry = (): Promise<T> => withDbRetry(load);
 
   if (ttlSeconds <= 0 || !canUseQueryCache()) {
     return loadWithRetry();
   }
 
-  const cacheKey = buildCacheKey(keyParts);
+  const cacheKey = buildCacheKey(policy.keyParts);
   const request = buildCacheRequestForKey(cacheKey);
   const defaultCache = getDefaultCacheOrNull();
   const kv = await getDetailSectionCacheKv();

@@ -13,12 +13,15 @@ vi.mock("@opennextjs/cloudflare", () => ({
 }));
 
 import {
+  getCachedDetailSectionResponse,
   getDetailSectionCacheTtlSeconds,
+  getStaleDetailSectionBody,
   putDetailSectionCache,
 } from "./race-detail-section-cache.server";
 
 type KvGetFn = (key: string) => Promise<string | null>;
 type KvPutFn = (key: string, value: string, options?: { expirationTtl: number }) => Promise<void>;
+type CacheMatchFn = (request: Request) => Promise<Response | undefined>;
 type CachePutFn = (request: Request, response: Response) => Promise<void>;
 
 interface KvStub {
@@ -27,6 +30,7 @@ interface KvStub {
 }
 
 interface CacheStub {
+  match: ReturnType<typeof vi.fn<CacheMatchFn>>;
   put: ReturnType<typeof vi.fn<CachePutFn>>;
 }
 
@@ -70,6 +74,7 @@ const buildKvStub = (): KvStub => ({
 });
 
 const buildCacheStub = (): CacheStub => ({
+  match: vi.fn<CacheMatchFn>().mockResolvedValue(undefined),
   put: vi.fn<CachePutFn>().mockResolvedValue(undefined),
 });
 
@@ -133,7 +138,51 @@ it("computes the full race-start+6h TTL for a normal race payload", () => {
   expect(ttlSeconds > EXPECTED_EMPTY_TTL_SECONDS).toBe(true);
 });
 
-it("caches an empty training section body (no reviews, no comments) with the short self-heal TTL", async () => {
+it("returns a non-empty training section from edge cache", async () => {
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  cache.match.mockResolvedValue(new Response(filledTrainingBody));
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  const response = await getCachedDetailSectionResponse("training-key");
+  expect(await response?.json()).toStrictEqual(JSON.parse(filledTrainingBody));
+  expect(response?.headers.get("X-Detail-Section-Cache")).toBe("HIT-cache-api");
+  expect(kv.get).not.toHaveBeenCalled();
+});
+
+it("rejects an empty edge training entry and returns the non-empty KV entry", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(filledTrainingBody);
+  const cache = buildCacheStub();
+  cache.match.mockResolvedValue(new Response(emptyTrainingBody));
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  const response = await getCachedDetailSectionResponse("training-key");
+  expect(await response?.json()).toStrictEqual(JSON.parse(filledTrainingBody));
+  expect(response?.headers.get("X-Detail-Section-Cache")).toBe("HIT-kv");
+});
+
+it("treats an empty KV training entry as a cache miss", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(emptyTrainingBody);
+  mockEnvWithKv(kv);
+  expect(await getCachedDetailSectionResponse("training-key")).toBeNull();
+});
+
+it("treats a fresh but empty stale training entry as a cache miss", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(JSON.stringify({ payload: emptyTrainingBody, writtenAt: FIXED_NOW_MS }));
+  mockEnvWithKv(kv);
+  expect(await getStaleDetailSectionBody("training-key", FIXED_NOW_MS)).toBeNull();
+});
+
+it("does not cache an empty training section body", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -141,8 +190,25 @@ it("caches an empty training section body (no reviews, no comments) with the sho
     cacheKey: "training-key",
     race: FUTURE_RACE,
   });
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("caches a training section body with a compact workout date using the full long TTL", async () => {
+  const kv = buildKvStub();
+  mockEnvWithKv(kv);
+  await putDetailSectionCache({
+    body: JSON.stringify({
+      sourceLabel: "JRA",
+      stableComments: [],
+      trainings: [{ chokyoNengappi: "20260903", umaban: "1" }],
+      type: "training",
+    }),
+    cacheKey: "training-key",
+    race: FUTURE_RACE,
+  });
+  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "training-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: EXPECTED_EMPTY_TTL_SECONDS });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
 });
 
 it("caches a training section body with a premium evaluation grade using the full long TTL", async () => {
@@ -158,7 +224,7 @@ it("caches a training section body with a premium evaluation grade using the ful
   expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
 });
 
-it("caches an empty premium-data-top section body with the short self-heal TTL", async () => {
+it("does not cache an empty premium-data-top section body", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -166,8 +232,7 @@ it("caches an empty premium-data-top section body with the short self-heal TTL",
     cacheKey: "data-top-key",
     race: FUTURE_RACE,
   });
-  const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "data-top-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: EXPECTED_EMPTY_TTL_SECONDS });
+  expect(kv.put).not.toHaveBeenCalled();
 });
 
 it("caches a non-empty premium-data-top section body using the full long TTL", async () => {
@@ -183,7 +248,7 @@ it("caches a non-empty premium-data-top section body using the full long TTL", a
   expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
 });
 
-it("caches an empty NAR training section body using the full long TTL (no premium content ever lands for NAR)", async () => {
+it("does not cache an empty NAR training section body", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -191,12 +256,10 @@ it("caches an empty NAR training section body using the full long TTL (no premiu
     cacheKey: "training-key",
     race: NAR_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(NAR_RACE, null, FIXED_NOW_MS);
-  const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "training-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(kv.put).not.toHaveBeenCalled();
 });
 
-it("caches an empty premium-data-top section body for a non-Ban-ei NAR race using the short self-heal TTL", async () => {
+it("does not cache an empty premium-data-top section for a NAR race", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -204,11 +267,10 @@ it("caches an empty premium-data-top section body for a non-Ban-ei NAR race usin
     cacheKey: "data-top-key",
     race: NAR_RACE,
   });
-  const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "data-top-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: EXPECTED_EMPTY_TTL_SECONDS });
+  expect(kv.put).not.toHaveBeenCalled();
 });
 
-it("caches an empty premium-data-top section body for a Ban-ei race using the full long TTL (data-top never lands for Ban-ei)", async () => {
+it("does not cache an empty premium-data-top section for a Ban-ei race", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -216,9 +278,7 @@ it("caches an empty premium-data-top section body for a Ban-ei race using the fu
     cacheKey: "data-top-key",
     race: BAN_EI_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(BAN_EI_RACE, null, FIXED_NOW_MS);
-  const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "data-top-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(kv.put).not.toHaveBeenCalled();
 });
 
 it("uses the full long TTL for a section type the emptiness check does not recognize", async () => {
@@ -244,7 +304,7 @@ it("treats malformed JSON as non-empty and uses the full long TTL", async () => 
   expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
 });
 
-it("writes the short-TTL Cache-Control header to the edge cache for an empty training body", async () => {
+it("does not write an empty training body to edge cache", async () => {
   const kv = buildKvStub();
   const cache = buildCacheStub();
   mockEnvWithKv(kv);
@@ -257,11 +317,10 @@ it("writes the short-TTL Cache-Control header to the edge cache for an empty tra
     cacheKey: "training-key",
     race: FUTURE_RACE,
   });
-  const cacheControl = cache.put.mock.calls[0]?.[1].headers.get("Cache-Control");
-  expect(cacheControl).toBe(`public, max-age=${EXPECTED_EMPTY_TTL_SECONDS}`);
+  expect(cache.put).not.toHaveBeenCalled();
 });
 
-it("still writes the 30-day stale snapshot even when the fresh tier gets the short empty TTL", async () => {
+it("does not write an empty training body to stale cache", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
   await putDetailSectionCache({
@@ -269,6 +328,5 @@ it("still writes the 30-day stale snapshot even when the fresh tier gets the sho
     cacheKey: "training-key",
     race: FUTURE_RACE,
   });
-  const staleCall = kv.put.mock.calls.find((call) => call[0] === "stale:training-key");
-  expect(staleCall?.[2]).toStrictEqual({ expirationTtl: 30 * 24 * 60 * 60 });
+  expect(kv.put).not.toHaveBeenCalled();
 });

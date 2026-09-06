@@ -90,16 +90,19 @@ const fetchPremiumDataTopFromRealtimeApi = async (
   )}/${race.kaisaiTsukihi.slice(2, 4)}/${normalizeKeibajoCode(race.keibajoCode)}/${normalizeRaceBango(
     race.raceBango,
   )}/premium`;
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) {
-      return [];
-    }
-    const payload: unknown = await response.json();
-    return parseCachedPayload(payload) ?? [];
-  } catch {
-    return [];
+  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) {
+    throw new Error(`Premium data-top source failed with HTTP ${response.status}`);
   }
+  const payload: unknown = await response.json();
+  if (
+    !isRecord(payload) ||
+    !Array.isArray(payload.dataTopHorses) ||
+    !payload.dataTopHorses.every(isPremiumDataTopHorse)
+  ) {
+    throw new Error("Invalid premium data-top source payload");
+  }
+  return payload.dataTopHorses;
 };
 
 export const getPremiumDataTopHorsesWithCache = async (

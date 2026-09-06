@@ -14,7 +14,6 @@ import {
   serializeStaleDetailSectionEnvelope,
 } from "./race-detail-section-stale";
 import type { RaceDetail } from "./race-types";
-import { isBanEiKeibajoCode } from "./runner-format";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 // v2 invalidates Cache API entries created before race cache busts could reliably
@@ -42,7 +41,6 @@ const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
 // self-heal: the entry expires quickly, the next request recomputes it, and
 // once the premium fetch has landed the recompute is cached with the normal
 // long TTL again.
-const EMPTY_PREMIUM_SECTION_CACHE_TTL_SECONDS = 10 * 60;
 
 type CacheSource = "cache-api" | "kv";
 
@@ -110,12 +108,15 @@ const readCachedDetailSectionForKey = async (
   const cacheRequest = getCacheRequest(cacheKey);
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
-    return buildCachedResponse(await cachedResponse.text(), "cache-api");
+    const cachedBody = await cachedResponse.text();
+    if (!isEmptyDataSectionBody(cachedBody)) {
+      return buildCachedResponse(cachedBody, "cache-api");
+    }
   }
 
   const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
-  if (!kvBody) {
+  if (!kvBody || isEmptyDataSectionBody(kvBody)) {
     return null;
   }
 
@@ -183,7 +184,7 @@ const readStaleDetailSectionBodyForKey = async (
   if (!isEnvelopeStillFresh(envelope.writtenAt, nowMs)) {
     return null;
   }
-  return envelope.payload;
+  return isEmptyDataSectionBody(envelope.payload) ? null : envelope.payload;
 };
 
 export const getStaleDetailSectionBody = async (
@@ -212,10 +213,13 @@ export const buildStaleDetailSectionResponse = (body: string): Response =>
     },
   });
 
-const hasPremiumTrainingReviewContent = (training: unknown): boolean =>
+const hasTrainingContent = (training: unknown): boolean =>
   typeof training === "object" &&
   training !== null &&
-  (("premiumCommentText" in training && Boolean(training.premiumCommentText)) ||
+  (("chokyoNengappi" in training &&
+    typeof training.chokyoNengappi === "string" &&
+    training.chokyoNengappi.length === 8) ||
+    ("premiumCommentText" in training && Boolean(training.premiumCommentText)) ||
     ("premiumEvaluationGrade" in training && Boolean(training.premiumEvaluationGrade)) ||
     ("premiumEvaluationText" in training && Boolean(training.premiumEvaluationText)));
 
@@ -239,9 +243,7 @@ const isEmptyPremiumTrainingSectionBody = (body: string): boolean => {
     ) {
       return false;
     }
-    return (
-      parsed.stableComments.length === 0 && !parsed.trainings.some(hasPremiumTrainingReviewContent)
-    );
+    return parsed.stableComments.length === 0 && !parsed.trainings.some(hasTrainingContent);
   } catch {
     return false;
   }
@@ -270,30 +272,8 @@ const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
   }
 };
 
-// Premium training reviews / stable comments only ever exist for JRA races —
-// `fetchPremiumRacePayload` in detail-section-data.ts short-circuits to an
-// empty payload for every other source. An empty NAR training section is
-// therefore a permanent state, not a transient "premium fetch hasn't landed
-// yet" state, so it must keep the normal long TTL; giving it the short TTL
-// would just re-run the same empty recompute every 10 minutes forever with
-// nothing to self-heal into.
-const canTrainingSectionHavePremiumContent = (race: RaceDetail): boolean => race.source === "jra";
-
-// getPremiumDataTopHorsesWithCache (via detail-section-data.ts) short-circuits
-// to an empty payload for Ban-ei races specifically (not NAR as a whole), so
-// the same permanent-vs-transient distinction applies there.
-const canPremiumDataTopSectionHaveContent = (race: RaceDetail): boolean =>
-  !(race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode));
-
-const isSelfHealableEmptyPremiumSectionBody = (body: string, race: RaceDetail): boolean => {
-  if (isEmptyPremiumTrainingSectionBody(body)) {
-    return canTrainingSectionHavePremiumContent(race);
-  }
-  if (isEmptyPremiumDataTopSectionBody(body)) {
-    return canPremiumDataTopSectionHaveContent(race);
-  }
-  return false;
-};
+const isEmptyDataSectionBody = (body: string): boolean =>
+  isEmptyPremiumTrainingSectionBody(body) || isEmptyPremiumDataTopSectionBody(body);
 
 export const putDetailSectionCache = async ({
   body,
@@ -305,10 +285,8 @@ export const putDetailSectionCache = async ({
   race: RaceDetail;
 }): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(race, env);
-  const ttlSeconds = isSelfHealableEmptyPremiumSectionBody(body, race)
-    ? Math.min(fullTtlSeconds, EMPTY_PREMIUM_SECTION_CACHE_TTL_SECONDS)
-    : fullTtlSeconds;
+  if (isEmptyDataSectionBody(body)) return;
+  const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   // The 30-day stale snapshot is written even when fresh TTL is already
   // 0 (the race finished more than 6h ago) so future visits still get an

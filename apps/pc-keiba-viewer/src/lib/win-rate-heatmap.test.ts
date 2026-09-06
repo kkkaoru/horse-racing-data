@@ -881,6 +881,29 @@ it("returns no heatmap rows when there are no runners", () => {
   ).toStrictEqual([]);
 });
 
+it("uses compact cached horse aggregates and preserves a real zero win rate", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseRateStats: [{ horseNumber: "01", quinellaCount: 0, showCount: 0, starts: 0, winCount: 0 }],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    similarRows: [],
+  });
+  expect(rows[0]?.cells.horse).toStrictEqual({
+    name: "Alpha",
+    quinellaCount: 0,
+    quinellaRate: 0,
+    showCount: 0,
+    showRate: 0,
+    starts: 0,
+    winCount: 0,
+    winRate: 0,
+  });
+});
+
 it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
   expect(
     buildWinRateHeatmapRows({
@@ -3407,6 +3430,11 @@ it("marks zero rates and zero start counts so the graph text can stay faint", ()
   expect(frameSwatch?.graphStartsLabel).toBe("(10)");
   expect(frameSwatch?.isZeroValue).toBe(true);
   expect(frameSwatch?.isZeroGraphStarts).toBe(true);
+  const unavailableJockeySwatch = display.rows[0]?.swatches.find(
+    (swatch) => swatch.columnKey === "jockey" && swatch.metricKey === "winRate",
+  );
+  expect(unavailableJockeySwatch?.valueLabel).toBe("-");
+  expect(unavailableJockeySwatch?.isZeroValue).toBe(false);
   const hiddenStarts = buildWinRateHeatmapDisplay({
     bloodlineRows: [],
     frameStats: [

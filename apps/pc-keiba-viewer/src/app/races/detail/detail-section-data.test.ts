@@ -2487,12 +2487,50 @@ it("defaults omitted weightClassStats and keeps present carriedWeightClassStats"
   });
 });
 
-it("still builds a heatmap payload from runners when Catalog heatmap stats fail", async () => {
+it("relaxes empty cell filters so heatmap rate values remain populated", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
-  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
-    new Error("R2 Catalog heatmap stats failed: 502"),
+  fetchWinRateHeatmapStatsFromCatalogMock.mockImplementation((query) =>
+    Promise.resolve(
+      query.includeVenue
+        ? { bloodlineRows: [], similarRows: [] }
+        : {
+            bloodlineRows: [
+              {
+                category: "sire",
+                currentHorseNumbers: "1",
+                details: [],
+                horseCount: 1,
+                name: "Sire",
+                quinellaCount: 2,
+                quinellaRate: 20,
+                showCount: 3,
+                showRate: 30,
+                starts: 10,
+                winCount: 1,
+                winRate: 10,
+              },
+            ],
+            similarRows: [
+              {
+                category: "jockey",
+                currentHorseNumbers: "1",
+                details: [],
+                horseCount: 1,
+                name: "Jockey",
+                quinellaCount: 2,
+                quinellaRate: 20,
+                showCount: 3,
+                showRate: 30,
+                starts: 10,
+                winCount: 1,
+                winRate: 10,
+              },
+            ],
+          },
+    ),
   );
+
   const payload = await getDetailSectionPayload("win-rate-heatmap", {
     day: "23",
     keibajoCode: "04",
@@ -2502,16 +2540,42 @@ it("still builds a heatmap payload from runners when Catalog heatmap stats fail"
     raceSource: "jra",
     year: "2026",
   });
-  expect(payload).toStrictEqual({
-    bloodlineRows: [],
-    carriedWeightClassStats: [],
-    frameStats: [],
-    horseResults: [],
-    runners: [OVERSEAS_RUNNER],
-    similarRows: [],
+
+  expect(payload).toMatchObject({
+    bloodlineRows: [{ name: "Sire", starts: 10 }],
+    similarRows: [{ name: "Jockey", starts: 10 }],
     type: "win-rate-heatmap",
-    weightClassStats: [],
   });
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(2);
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[1]?.[0]).toMatchObject({
+    includeAge: false,
+    includeClass: false,
+    includeConditionKey: false,
+    includeDistance: false,
+    includeGrade: false,
+    includeRaceTitle: false,
+    includeTrackCode: false,
+    includeVenue: false,
+  });
+});
+
+it("propagates Catalog failure so the route returns retryable unavailability, not empty success", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockRejectedValue(
+    new Error("R2 Catalog heatmap stats failed: 502"),
+  );
+  await expect(
+    getDetailSectionPayload("win-rate-heatmap", {
+      day: "23",
+      keibajoCode: "04",
+      month: "08",
+      query: {},
+      raceNumber: "01",
+      raceSource: "jra",
+      year: "2026",
+    }),
+  ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
 });
 
 it("still builds a heatmap payload from runners when results and condition sources fail", async () => {

@@ -68,7 +68,8 @@ export const withDisabledCellDimensions = (
 export const toConditionAnalysisFallbackCell = (
   settings: SimilarRaceStatsSettings,
   keepVenue: boolean,
-): SimilarRaceStatsSettings => ({
-  ...withDisabledCellDimensions(settings, keepVenue),
-  includeDistance: settings.includeDistance,
-});
+): SimilarRaceStatsSettings => {
+  const fallback = withDisabledCellDimensions(settings, keepVenue);
+  fallback.includeDistance = settings.includeDistance;
+  return fallback;
+};

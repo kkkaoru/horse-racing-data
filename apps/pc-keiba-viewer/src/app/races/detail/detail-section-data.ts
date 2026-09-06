@@ -2390,14 +2390,25 @@ const loadHeatmapCatalogStats = async (
   settings: SimilarRaceStatsSettings,
   source: RaceSource,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
-  try {
-    return await fetchWinRateHeatmapStatsFromCatalog({
-      ...buildWinRateHeatmapCatalogQuery(params, settings, source, false),
-      includeJockeyFrame: true,
-    });
-  } catch {
-    return null;
+  const catalogStats = await fetchWinRateHeatmapStatsFromCatalog({
+    ...buildWinRateHeatmapCatalogQuery(params, settings, source, false),
+    includeJockeyFrame: true,
+  });
+  if (
+    catalogStats === null ||
+    (hasRateRows(catalogStats.similarRows) && hasRateRows(catalogStats.bloodlineRows))
+  ) {
+    return catalogStats;
   }
+  return await fetchWinRateHeatmapStatsFromCatalog({
+    ...buildWinRateHeatmapCatalogQuery(
+      params,
+      relaxAllConditionAnalysisSettings(settings),
+      source,
+      false,
+    ),
+    includeJockeyFrame: true,
+  });
 };
 
 export const getDetailSectionPayload = async (

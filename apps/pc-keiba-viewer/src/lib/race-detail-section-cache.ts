@@ -18,8 +18,10 @@ export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 export const DETAIL_SECTION_CACHE_VERSION = "v4";
 // Bumped v4->v5 on 2026-08-23 because training now unions netkeiba backup
 // workouts (including intermediate type=1 pages). Cached official-only
-// placeholder payloads must not survive.
-const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v5";
+// placeholder payloads must not survive. Bumped v5->v6 on 2026-09-05 to
+// invalidate empty edge-cache responses written before Catalog-first training
+// backfill completed; read-time validation now prevents the same stale state.
+const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v6";
 // Bumped v10->v11 on 2026-08-23 because Catalog condition history now filters
 // by cell-matching class, age, condition-key, race-title, and ungraded-OP
 // empty-grade. Cached mixed-class payloads must not survive.

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../../db/queries";
+import {
+  getRaceDetail,
+  getRaceRunners,
+  getRaceSourceByRoute,
+} from "../../../../../../../../../../db/queries";
 import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
@@ -26,6 +30,7 @@ import {
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
   buildWinRateHeatmapCacheKey,
+  buildWinRateHeatmapRunnerSignature,
   isWinRateHeatmapSectionPayload,
   serializeWinRateHeatmapCacheQuery,
 } from "../../../../../../../../../../lib/win-rate-heatmap-cache";
@@ -264,19 +269,22 @@ const isInternalPredictionRefresh = (request: Request): boolean => {
   );
 };
 
-const hasHeatmapCatalogRateRows = (payload: {
-  bloodlineRows: unknown[];
-  similarRows: unknown[];
-}): boolean => payload.bloodlineRows.length > 0 || payload.similarRows.length > 0;
+const hasCurrentHeatmapRunners = (
+  cachedRunners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0],
+  currentRunners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0],
+): boolean => {
+  const cachedSignature = buildWinRateHeatmapRunnerSignature(cachedRunners);
+  const currentSignature = buildWinRateHeatmapRunnerSignature(currentRunners);
+  return cachedSignature !== null && cachedSignature === currentSignature;
+};
 
-const hasHeatmapFrameStats = (payload: { frameStats: { count?: unknown }[] }): boolean =>
-  payload.frameStats.some((row) => typeof row.count === "number" && row.count > 0);
-
-const isHeatmapCacheReady = (payload: {
-  bloodlineRows: unknown[];
-  frameStats: { count?: unknown }[];
-  similarRows: unknown[];
-}): boolean => hasHeatmapCatalogRateRows(payload) && hasHeatmapFrameStats(payload);
+// A successful query with starts=0 and rates=0 is valid data. Availability is
+// represented by the generated fragment itself; only an absent fragment or a
+// runner-generation mismatch is a cache miss.
+const isHeatmapCacheReady = (
+  payload: { runners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0] },
+  currentRunners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0],
+): boolean => hasCurrentHeatmapRunners(payload.runners, currentRunners);
 
 const loadHeatmapSectionPayload = async (
   params: Parameters<typeof getDetailSectionPayload>[1],
@@ -295,6 +303,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   }
 
   const requestUrl = new URL(request.url);
+  const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
   const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
   sectionSearchParams.delete(EXPECTED_PREDICTION_GENERATED_AT_PARAM);
   const rawExpectedPredictionGeneratedAt = requestUrl.searchParams.get(
@@ -324,19 +333,26 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       raceNumber,
       year,
     });
-    const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
-    const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey);
-    if (cachedHeatmap && !isQueueWarm && isHeatmapCacheReady(cachedHeatmap)) {
+    const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
+    if (!raceSource) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    const currentRunners = await getRaceRunners(
+      raceSource,
+      year,
+      month,
+      day,
+      keibajoCode,
+      raceNumber,
+    );
+    const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey, currentRunners);
+    if (cachedHeatmap && !isQueueWarm && isHeatmapCacheReady(cachedHeatmap, currentRunners)) {
       return NextResponse.json(cachedHeatmap, {
         headers: {
           "Cache-Control": "private, max-age=0, no-store",
           "X-Win-Rate-Heatmap-Cache": "HIT",
         },
       });
-    }
-    const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
-    if (!raceSource) {
-      return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
     const heatmapPayload = await loadHeatmapSectionPayload({
       day,
@@ -362,7 +378,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    if (!isHeatmapCacheReady(heatmapPayload)) {
+    if (!isHeatmapCacheReady(heatmapPayload, currentRunners)) {
       if (isQueueWarm) {
         return NextResponse.json(
           { error: "heatmap_catalog_unavailable" },
@@ -451,7 +467,9 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   const skipPredictionRefresh =
     section === "finish-prediction" && requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM);
   const cachedResponse =
-    cacheKey && !skipPredictionRefresh ? await getCachedDetailSectionResponse(cacheKey) : null;
+    cacheKey && !skipPredictionRefresh && !isQueueWarm
+      ? await getCachedDetailSectionResponse(cacheKey)
+      : null;
   if (cachedResponse) {
     if (section === "premium-data-top") {
       const cachedBody = await cachedResponse.clone().text();
@@ -471,7 +489,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   // SWR branch: fresh tier missed, but a long-lived stale snapshot exists.
   // Serve it instantly and let the heavy DB recompute happen off-request
   // via `ctx.waitUntil`. The next visitor sees the refreshed payload.
-  if (cacheKey) {
+  if (cacheKey && !isQueueWarm) {
     const staleBody = await getStaleDetailSectionBody(cacheKey);
     const staleEmpty =
       staleBody !== null &&

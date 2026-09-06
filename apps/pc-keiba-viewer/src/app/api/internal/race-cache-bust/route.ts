@@ -34,8 +34,9 @@ export async function POST(request: Request): Promise<Response> {
   if (!body) {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
+  const waitForCompletion = new URL(request.url).searchParams.get("wait") === "1";
   const ctx = await safeGetCloudflareExecutionContext();
-  if (ctx) {
+  if (ctx && !waitForCompletion) {
     ctx.waitUntil(
       bustRaceCachesForRace(body).catch((error: unknown) => {
         console.error("Race cache bust background task failed", error);

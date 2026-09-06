@@ -37,7 +37,7 @@ describe("race detail section cache helpers", () => {
       ":v2:",
     );
     expect(buildDetailSectionCacheKey({ ...warmMessage, section: "training" })).toBe(
-      "race-detail-section:v5:2026:5:23:44:12:training:default",
+      "race-detail-section:v6:2026:5:23:44:12:training:default",
     );
   });
 
@@ -134,8 +134,8 @@ describe("race detail section cache helpers", () => {
       "race-detail-section:v16:2026:08:29:04:08:condition:default",
     ]);
     expect(
-      expandDetailSectionCacheReadKeys("race-detail-section:v5:2026:08:29:04:08:training:default"),
-    ).toStrictEqual(["race-detail-section:v5:2026:08:29:04:08:training:default"]);
+      expandDetailSectionCacheReadKeys("race-detail-section:v6:2026:08:29:04:08:training:default"),
+    ).toStrictEqual(["race-detail-section:v6:2026:08:29:04:08:training:default"]);
   });
 
   it("validates cacheable sections and default warm targets", () => {

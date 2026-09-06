@@ -251,6 +251,31 @@ it("POST returns 200 with busted and generation for a valid NAR body", async () 
   expect(body).toStrictEqual({ busted: 8, generation: 2, ok: true });
 });
 
+it("POST waits for cache deletion when the caller requests ordered warmup", async () => {
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  safeGetCloudflareExecutionContextMock.mockResolvedValue({ waitUntil });
+  bustRaceCachesForRaceMock.mockResolvedValue({ busted: 20, generation: 8 });
+  const response = await POST(
+    new Request(`${ENDPOINT_URL}?wait=1`, {
+      body: JSON.stringify({
+        keibajoCode: "05",
+        mmdd: "0628",
+        raceBango: "11",
+        source: "jra",
+        year: "2026",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [AUTH_HEADER]: INTERNAL_TOKEN,
+      },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await readSuccess(response)).toStrictEqual({ busted: 20, generation: 8, ok: true });
+  expect(waitUntil).not.toHaveBeenCalled();
+});
+
 it("POST accepts a production cache bust before the cache work completes", async () => {
   const outcome = Promise.withResolvers<{ busted: number; generation: number }>();
   const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();

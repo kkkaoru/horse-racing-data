@@ -9,7 +9,6 @@ import {
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
-  HorseRaceResult,
   Runner,
   SimilarRaceStatsRow,
   StatsDetail,
@@ -67,10 +66,27 @@ export interface WinRateHeatmapRow {
   horseNumber: string;
 }
 
+export interface WinRateHeatmapHorseResult {
+  bataiju: string | null;
+  currentUmaban: string | null;
+  futanJuryo: string | null;
+  kakuteiChakujun: string | null;
+  keibajoCode: string;
+}
+
+export interface WinRateHeatmapHorseRateRow {
+  horseNumber: string;
+  quinellaCount: number;
+  showCount: number;
+  starts: number;
+  winCount: number;
+}
+
 export interface BuildWinRateHeatmapRowsInput {
   bloodlineRows: BloodlineStatsRow[];
   frameStats: FrameStatsRow[];
-  horseResults: HorseRaceResult[];
+  horseResults: WinRateHeatmapHorseResult[];
+  horseRateStats?: readonly WinRateHeatmapHorseRateRow[];
   keibajoCode: string;
   liveWeightKgByHorse: Map<string, number>;
   runners: Runner[];
@@ -562,7 +578,32 @@ const toFrameHeatmapCell = (
   });
 };
 
-const buildHorseRateCell = (horseName: string, results: HorseRaceResult[]): WinRateHeatmapCell => {
+const buildHorseRateCell = (
+  horseName: string,
+  results: WinRateHeatmapHorseResult[],
+  cachedRate: WinRateHeatmapHorseRateRow | undefined,
+): WinRateHeatmapCell => {
+  if (cachedRate !== undefined) {
+    if (cachedRate.starts === 0) {
+      return {
+        name: horseName,
+        quinellaCount: 0,
+        quinellaRate: 0,
+        showCount: 0,
+        showRate: 0,
+        starts: 0,
+        winCount: 0,
+        winRate: 0,
+      };
+    }
+    return buildRateCell({
+      name: horseName,
+      quinellaCount: cachedRate.quinellaCount,
+      showCount: cachedRate.showCount,
+      starts: cachedRate.starts,
+      winCount: cachedRate.winCount,
+    });
+  }
   const ranks = results
     .map((result) => parseFinishPosition(result.kakuteiChakujun))
     .filter((rank): rank is number => rank !== null);
@@ -591,8 +632,8 @@ const indexRowsByHorse = <Row extends { category: string; currentHorseNumbers: s
   }, new Map<string, Map<string, Row>>());
 
 const indexHorseResultsByNumber = (
-  horseResults: HorseRaceResult[],
-): Map<string, HorseRaceResult[]> =>
+  horseResults: WinRateHeatmapHorseResult[],
+): Map<string, WinRateHeatmapHorseResult[]> =>
   horseResults.reduce((index, result) => {
     const horseNumber = formatRunnerNumber(result.currentUmaban);
     if (horseNumber === "-") {
@@ -601,7 +642,7 @@ const indexHorseResultsByNumber = (
     const current = index.get(horseNumber) ?? [];
     index.set(horseNumber, [...current, result]);
     return index;
-  }, new Map<string, HorseRaceResult[]>());
+  }, new Map<string, WinRateHeatmapHorseResult[]>());
 
 const indexFrameStatsByNumber = (rows: FrameStatsRow[]): Map<string, FrameStatsRow> =>
   rows.reduce((index, row) => {
@@ -639,7 +680,7 @@ const indexWeightClassStats = (
   }, new Map<string, WeightClassRateCounts>());
 
 const resolveWeightClassRates = (
-  horseResults: HorseRaceResult[],
+  horseResults: WinRateHeatmapHorseResult[],
   weightClassStats: readonly WeightClassStatsRow[] | undefined,
 ): Map<string, WeightClassRateCounts> => {
   if (weightClassStats !== undefined && weightClassStats.length > 0) {
@@ -649,7 +690,7 @@ const resolveWeightClassRates = (
 };
 
 const indexWeightClassRatesFromHorseResults = (
-  horseResults: HorseRaceResult[],
+  horseResults: WinRateHeatmapHorseResult[],
 ): Map<string, WeightClassRateCounts> =>
   horseResults.reduce((index, result) => {
     const kg = parseHorseWeightKg({
@@ -707,7 +748,7 @@ const toCarriedWeightHeatmapCell = (
     : toClassHeatmapCell(getCarriedWeightClass(kg), ratesByClass);
 
 const indexCarriedWeightClassRatesFromHorseResults = (
-  horseResults: HorseRaceResult[],
+  horseResults: WinRateHeatmapHorseResult[],
 ): Map<string, WeightClassRateCounts> =>
   horseResults.reduce((index, result) => {
     const kg = parseCarriedWeightKg(result.futanJuryo);
@@ -726,7 +767,7 @@ const indexCarriedWeightClassRatesFromHorseResults = (
   }, new Map<string, WeightClassRateCounts>());
 
 const resolveCarriedWeightClassRates = (
-  horseResults: HorseRaceResult[],
+  horseResults: WinRateHeatmapHorseResult[],
   carriedWeightClassStats: readonly WeightClassStatsRow[] | undefined,
 ): Map<string, WeightClassRateCounts> => {
   if (carriedWeightClassStats !== undefined && carriedWeightClassStats.length > 0) {
@@ -755,6 +796,9 @@ export const buildWinRateHeatmapRows = (
       ? DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES
       : input.splitBloodlineLines;
   const horseResultsByNumber = indexHorseResultsByNumber(input.horseResults);
+  const horseRatesByNumber = new Map(
+    (input.horseRateStats ?? []).map((row) => [formatRunnerNumber(row.horseNumber), row]),
+  );
   const frameStatsByNumber = indexFrameStatsByNumber(input.frameStats);
   const weightClassRates = resolveWeightClassRates(input.horseResults, input.weightClassStats);
   const carriedWeightClassRates = resolveCarriedWeightClassRates(
@@ -797,7 +841,11 @@ export const buildWinRateHeatmapRows = (
             splitBloodlineLines,
           ),
           frame: toFrameHeatmapCell(frameStatsByNumber.get(frameNumber), frameNumber),
-          horse: buildHorseRateCell(horseName, horseResultsByNumber.get(horseNumber) ?? []),
+          horse: buildHorseRateCell(
+            horseName,
+            horseResultsByNumber.get(horseNumber) ?? [],
+            horseRatesByNumber.get(horseNumber),
+          ),
           jockey: toHeatmapCell(similar?.get("jockey")),
           jockeyFrame: toHeatmapCell(similar?.get("jockeyFrame")),
           sire: toPooledBloodlineHeatmapCell(
