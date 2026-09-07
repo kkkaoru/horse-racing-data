@@ -71,8 +71,8 @@
     "apps/horse-racing-duckdb": {
       "name": "horse-racing-duckdb",
       "dependencies": {
-        "@ducklings/workers": "1.5.3",
-        "hono": "4.13.7",
+        "@ducklings/workers": "1.5.5",
+        "hono": "4.12.25",
         "horse-racing-schema": "workspace:*",
       },
       "devDependencies": {
@@ -574,7 +574,7 @@
 
     "@duckdb/node-bindings-win32-x64": ["@duckdb/node-bindings-win32-x64@1.5.3-r.3", "", { "os": "win32", "cpu": "x64" }, "sha512-rlOc9ltWQNHuDq99Ah8XaD80nN1ucrSK5AcH/7ibSp9ogX/jswPYlRVE7ODFJAjnQNf8bVvs++Mp+wyGvuG7ag=="],
 
-    "@ducklings/workers": ["@ducklings/workers@1.5.3", "", { "dependencies": { "@uwdata/flechette": "^2.3.0" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-SLYRPgEKJNNp1NVch0MPtIlRto6oB3ADT2rsuv6/MnLHZj+1rGaggkQMxqKDn5vY8RrOUMX+EBj70QT6dIEMvA=="],
+    "@ducklings/workers": ["@ducklings/workers@1.5.5", "", { "dependencies": { "@uwdata/flechette": "^2.3.0" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-Ee3JfOJNtAijqwH2k6ZCgOtKYz4hdyi/tRS3GPpl22jSB/3ZKDTZDHQ5isprzJ+hAUrAJO1jcaatRriJkoftwQ=="],
 
     "@ecies/ciphers": ["@ecies/ciphers@0.2.6", "", { "peerDependencies": { "@noble/ciphers": "^1.0.0" } }, "sha512-patgsRPKGkhhoBjETV4XxD0En4ui5fbX0hzayqI3M8tvNMGUoUvmyYAIWwlxBc1KX5cturfqByYdj5bYGRpN9g=="],
 
@@ -1494,7 +1494,7 @@
 
     "hasown": ["hasown@2.0.3", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg=="],
 
-    "hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
+    "hono": ["hono@4.12.25", "", {}, "sha512-2NFaIyNVgJmBs/ecmtGzlmluTFs5cHEWGTdu0t1HBwYzoGXOL5nUQBRMXsXWla5i4KkG//QMzVP88m1+I3fdAQ=="],
 
     "hookified": ["hookified@1.15.1", "", {}, "sha512-MvG/clsADq1GPM2KGo2nyfaWVyn9naPiXrqIe4jYjXNZQt238kWyOGrsyc/DmRAQ+Re6yeo6yX/yoNCG5KAEVg=="],
 
