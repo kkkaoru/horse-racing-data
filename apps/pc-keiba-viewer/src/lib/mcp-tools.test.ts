@@ -1048,6 +1048,61 @@ it("get_latest_odds ignores malformed selections and reports upstream JSON error
   });
 });
 
+it("get_weight_futan_diff returns the compact runner payload", async () => {
+  const result = await callMcpTool(
+    "get_weight_futan_diff",
+    {
+      day: "06",
+      keibajoCode: "83",
+      month: "09",
+      raceNumber: "11",
+      source: "nar",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/09/06/83/11/weight-futan?source=nar": {
+        r: [{ d: 390, f: 610, u: "1", w: 1000 }],
+      },
+    }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    r: [{ d: 390, f: 610, u: "1", w: 1000 }],
+  });
+});
+
+it("get_weight_futan_diff requires source and reports upstream errors", async () => {
+  const missingSource = await callMcpTool(
+    "get_weight_futan_diff",
+    {
+      day: "06",
+      keibajoCode: "83",
+      month: "09",
+      raceNumber: "11",
+      year: "2026",
+    },
+    jsonFetch({}),
+  );
+  expect(JSON.parse(missingSource.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "source must be jra or nar" },
+  });
+  const failed = await callMcpTool(
+    "get_weight_futan_diff",
+    {
+      day: "06",
+      keibajoCode: "83",
+      month: "09",
+      raceNumber: "11",
+      source: "nar",
+      year: "2026",
+    },
+    failingFetch,
+  );
+  expect(JSON.parse(failed.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "get_weight_futan_diff failed with status 500" },
+  });
+});
+
 it("rejects invalid and exhausted response cursors", async () => {
   const invalid = await callMcpTool(
     "get_api_spec",

@@ -427,6 +427,17 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
+      "Compact horse-weight minus carried-weight in kg for each runner in one race. Keys: u umaban, w weight kg, f futan kg, d w-f. Missing values are null.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: RACE_ROUTE_PROPERTIES,
+      required: ["year", "month", "day", "keibajoCode", "raceNumber", "source"],
+      type: "object",
+    },
+    name: "get_weight_futan_diff",
+  },
+  {
+    description:
       "Fetch a compact finish-position prediction summary for LLM use. Omits inputs.results and other UI-only history, joins current runner names by normalized horse number, and ranks lower predictedFinishNorm first.",
     inputSchema: {
       additionalProperties: false,
@@ -1108,6 +1119,24 @@ const getLatestOdds = async (input: GetLatestOddsInput): Promise<McpToolResult> 
   return okJson(payload);
 };
 
+const getWeightFutanDiff = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const parsed = parseRaceRoute(args);
+  if (typeof parsed === "string") {
+    return errorResult(parsed);
+  }
+  if (parsed.source === null) {
+    return errorResult("source must be jra or nar");
+  }
+  const fetched = await fetchSiteJson(fetchSite, raceApiPath(parsed, "weight-futan"));
+  if (!fetched.ok) {
+    return errorResult(`get_weight_futan_diff failed with status ${fetched.status}`);
+  }
+  return okJson(fetched.value);
+};
+
 export const callMcpTool = async (
   name: string,
   rawArgs: unknown,
@@ -1274,6 +1303,9 @@ export const callMcpTool = async (
   }
   if (name === "get_latest_odds") {
     return getLatestOdds({ args, fetchSite });
+  }
+  if (name === "get_weight_futan_diff") {
+    return getWeightFutanDiff(args, fetchSite);
   }
   if (name === "get_finish_prediction_summary") {
     return getFinishPredictionSummary(args, fetchSite, responseCursor);
