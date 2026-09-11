@@ -140,7 +140,7 @@ const freshVenuePredicate = (source: FreshRaceEntryFilters["source"]): string | 
 
 const freshActivePredicates = (): string[] => [
   "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
-  "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) IS NOT NULL",
+  "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18",
   "coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')",
 ];
 
@@ -274,7 +274,7 @@ INNER JOIN ${config.prefix}_counts counts
   AND counts.keibajo_code = se.keibajo_code
   AND counts.race_bango = se.race_bango
 WHERE nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
-  AND try_cast(nullif(se.umaban, '') AS INT) IS NOT NULL
+  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18
   AND try_cast(nullif(ra.kyori, '') AS INT) IS NOT NULL
   AND try_cast(nullif(ra.shusso_tosu, '') AS INT) IS NOT NULL
   AND try_cast(nullif(ra.keibajo_code, '') AS INT) IS NOT NULL
@@ -287,7 +287,7 @@ const buildRunnerCountsCte = (config: RawSourceConfig): string =>
     count(*) AS entry_count
   FROM ${config.prefix}_se
   WHERE nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL
-    AND try_cast(nullif(umaban, '') AS INT) IS NOT NULL
+    AND try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18
   GROUP BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
 )`;
 

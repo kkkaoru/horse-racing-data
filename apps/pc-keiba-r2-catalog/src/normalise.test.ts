@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 
-import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
+import {
+  normaliseCatalogRaceKeyRow,
+  normaliseDailyRaceEntryRow,
+  normaliseDailyRaceEntryRows,
+} from "./normalise";
 
 const baseRaw = (): Record<string, unknown> => ({
   kaisai_nen: "2026",
@@ -110,6 +114,33 @@ it("normalises missing optional feature values to null", () => {
   expect(row.bamei).toBe(null);
   expect(row.finish_position).toBe(null);
   expect(row.zogen_sa).toBe(null);
+});
+
+it("rejects invalid or duplicate race-feature runner identities", () => {
+  expect(() => normaliseDailyRaceEntryRows([{ ...baseRaw(), umaban: 0 }])).toThrow(
+    "invalid umaban",
+  );
+  expect(() =>
+    normaliseDailyRaceEntryRows([{ ...baseRaw(), umaban: 1, ketto_toroku_bango: "horse" }]),
+  ).toThrow("invalid ketto_toroku_bango");
+  expect(() =>
+    normaliseDailyRaceEntryRows([
+      { ...baseRaw(), umaban: 1 },
+      { ...baseRaw(), umaban: 2 },
+    ]),
+  ).toThrow("duplicate runners");
+  expect(() =>
+    normaliseDailyRaceEntryRows([
+      { ...baseRaw(), umaban: 1 },
+      { ...baseRaw(), ketto_toroku_bango: "2023100002", umaban: 1 },
+    ]),
+  ).toThrow("duplicate runners");
+  expect(
+    normaliseDailyRaceEntryRows([
+      { ...baseRaw(), umaban: 1 },
+      { ...baseRaw(), ketto_toroku_bango: "2023100002", umaban: 2 },
+    ]),
+  ).toHaveLength(2);
 });
 
 it("normalises an Iceberg race-key row into the raw Hyperdrive shape", () => {

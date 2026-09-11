@@ -8,7 +8,7 @@ import { restCatalogUpdateTable } from "icebird/src/catalog/rest.js";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 import { isTransientJobError, permanentFailure, transientFailure } from "./errors";
-import { layoutByTable, rowKey } from "./layouts";
+import { catalogDeleteRowKeys, layoutByTable, rowKey } from "./layouts";
 import { createR2Resolver } from "./r2-resolver";
 import {
   findCatalogPositions,
@@ -289,11 +289,9 @@ export const syncCatalogTable = async (
       )
         throw transientFailure("catalog-index-stale", new Error("snapshot mismatch"));
     }
-    const positions = await findCatalogPositions(
-      env.DB,
-      stage.tableName,
-      stage.records.map((row) => rowKey(layout, row)),
-    );
+    const positions = await findCatalogPositions(env.DB, stage.tableName, [
+      ...new Set(stage.records.flatMap((row) => catalogDeleteRowKeys(layout, row))),
+    ]);
     await validateDeletePositions(metadata, resolver, positions);
     const deletes = positions.map((position) => ({
       file_path: position.file_path,

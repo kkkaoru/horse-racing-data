@@ -1409,7 +1409,7 @@ it("supports authenticated DELETE purge without touching R2 SQL or raw data", as
   expect(harness.kvCalls.deletes).toHaveLength(1);
   expect(harness.fetchCalls).toHaveLength(0);
   expect(harness.cacheCalls.deletes[0]).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&source=jra",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=jra",
   );
 });
 
@@ -1429,7 +1429,7 @@ it("purges one source and its exact race-training cache key", async () => {
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 2 });
   expect(harness.cacheCalls.deletes[0]).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&source=ban-ei&keibajoCode=83&raceBango=09",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=ban-ei&keibajoCode=83&raceBango=09",
   );
   expect(harness.cacheCalls.deletes[1]).toBe(
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&keibajoCode=83&raceBango=09",

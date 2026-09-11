@@ -74,10 +74,10 @@ it("builds canonical Cache API and KV keys", () => {
     source: "jra",
   });
   expect(cacheRequestFor(descriptor).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&source=jra&keibajoCode=05&raceBango=01",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=jra&keibajoCode=05&raceBango=01",
   );
   expect(kvKeyFor(descriptor)).toBe(
-    "catalog:v2:v2/race-features?date=20260715&source=jra&keibajoCode=05&raceBango=01",
+    "catalog:v2:v2/race-features?date=20260715&schema=confirmed-runners-v1&source=jra&keibajoCode=05&raceBango=01",
   );
   expect(cacheRequestFor({ date: "20260715", kind: "race-keys" }).url).toBe(
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-keys?date=20260715&schema=grade-v1",

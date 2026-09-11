@@ -257,6 +257,29 @@ describe("Worker-native Iceberg table sync", () => {
     expect(mocks.append).toHaveBeenCalledTimes(1);
   });
 
+  test("position-deletes both confirmed and provisional keys for a domestic JRA runner", async () => {
+    const row = completeRow("jvd_se");
+    Object.assign(row, {
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0912",
+      keibajo_code: "06",
+      race_bango: "01",
+      umaban: "03",
+      ketto_toroku_bango: "2023100001",
+    });
+    mocks.load.mockResolvedValue({ metadata: metadata("jvd_se") });
+    mocks.readObjects.mockResolvedValue([row]);
+
+    await expect(syncCatalogTable(tableStage("jvd_se", [row]), env())).resolves.toMatchObject({
+      records: 1,
+    });
+
+    const keys = mocks.positions.mock.calls[0]?.[2] as string[];
+    expect(keys).toHaveLength(2);
+    expect(keys.some((key) => key.includes("\u001f03\u001f"))).toBe(true);
+    expect(keys.some((key) => key.includes("\u001f00\u001f"))).toBe(true);
+  });
+
   test("rejects a stage row without its partition value", async () => {
     const row = Object.fromEntries(
       Object.entries(completeRow("nvd_ra")).filter(([column]) => column !== "kaisai_nen"),

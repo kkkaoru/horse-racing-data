@@ -1,4 +1,9 @@
-import { optionalLayoutForRecord, parseFixedRecord, rowKey } from "./layouts";
+import {
+  isProvisionalJraRunner,
+  optionalLayoutForRecord,
+  parseFixedRecord,
+  rowKey,
+} from "./layouts";
 import type { Provider, RecordLayout, RecordRow, RecordValue, TableStage } from "./types";
 
 const MAX_NDJSON_LINE_BYTES = 28 * 1024 * 1024;
@@ -66,6 +71,7 @@ class SourceAccumulator {
       const layout = optionalLayoutForRecord(this.provider, bytes);
       if (layout === undefined) return;
       const row = parseFixedRecord(layout, bytes);
+      if (isProvisionalJraRunner(layout, row)) return;
       let table = this.#byTable.get(layout.tableName);
       if (table === undefined) {
         table = { layout, records: new Map<string, RecordRow>() };

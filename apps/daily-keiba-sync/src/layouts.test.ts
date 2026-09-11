@@ -1,6 +1,8 @@
 import { encode } from "iconv-lite";
 import { describe, expect, test } from "vitest";
 import {
+  catalogDeleteRowKeys,
+  isProvisionalJraRunner,
   layoutByTable,
   layoutForRecord,
   optionalLayoutForRecord,
@@ -86,6 +88,29 @@ describe("fixed-record layouts", () => {
         workout_key: "abc",
       }),
     ).toBe("2026\u001f0905\u001f01\u001f01\u001f2023100001\u001fabc");
+  });
+
+  test("maps a confirmed domestic JRA runner to its stale provisional Catalog key", () => {
+    const layout = layoutByTable("jvd_se");
+    const confirmed = {
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0912",
+      keibajo_code: "06",
+      race_bango: "01",
+      umaban: "03",
+      ketto_toroku_bango: "2023100001",
+    };
+    const provisional = { ...confirmed, umaban: "00" };
+
+    expect(isProvisionalJraRunner(layout, provisional)).toBe(true);
+    expect(isProvisionalJraRunner(layout, confirmed)).toBe(false);
+    expect(catalogDeleteRowKeys(layout, confirmed)).toStrictEqual([
+      rowKey(layout, confirmed),
+      rowKey(layout, provisional),
+    ]);
+    expect(
+      catalogDeleteRowKeys(layout, { ...confirmed, keibajo_code: "A8", umaban: "19" }),
+    ).toHaveLength(1);
   });
 
   test("rejects a row without a primary-key field", () => {

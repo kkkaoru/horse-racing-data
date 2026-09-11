@@ -19,7 +19,7 @@ import {
   type CacheDescriptor,
 } from "./cache";
 import { coalesce } from "./inflight";
-import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
+import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRows } from "./normalise";
 import {
   buildBulkFreshRaceEntriesQuery,
   buildFreshRaceEntriesQuery,
@@ -640,12 +640,12 @@ const handleRaceFeatures = (
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseFeatureFilters(url);
-  return queryAndCache(
+  return queryAndCacheRows(
     featureDescriptor(filters),
     env,
     dependencies,
     buildRaceFeaturesQuery(env, filters),
-    normaliseDailyRaceEntryRow,
+    normaliseDailyRaceEntryRows,
   );
 };
 

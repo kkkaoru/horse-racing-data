@@ -45,6 +45,28 @@ describe("Neon differential sync", () => {
     expect(mocks.query.mock.calls[1]?.[1]).toHaveLength(62);
   });
 
+  test("deletes a stale provisional JRA runner in the same upsert statement", async () => {
+    const row = completeRow("jvd_se");
+    Object.assign(row, {
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0912",
+      keibajo_code: "06",
+      race_bango: "01",
+      umaban: "03",
+      ketto_toroku_bango: "2023100001",
+    });
+
+    await expect(
+      syncNeonTable(stage("jvd_se", [row]), { NEON_DATABASE_URL: "postgresql://example" }),
+    ).resolves.toBe(1);
+
+    const sql = String(mocks.query.mock.calls[1]?.[0]);
+    expect(sql).toContain("deleted_provisional as");
+    expect(sql).toContain('delete from "jvd_se" existing using incoming');
+    expect(sql).toContain("existing.\"umaban\" = '00'");
+    expect(mocks.query.mock.calls[1]?.[1]).toHaveLength(70);
+  });
+
   test("retries a cold Neon compute before writing", async () => {
     mocks.query.mockRejectedValueOnce(new Error("cold"));
     mocks.query.mockRejectedValueOnce(new Error("cold"));

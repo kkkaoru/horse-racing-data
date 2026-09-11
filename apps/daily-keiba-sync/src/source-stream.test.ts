@@ -44,6 +44,34 @@ describe("source stream parser", () => {
     expect(parsed.tables[0]?.records).toHaveLength(1);
   });
 
+  test("does not stage provisional domestic JRA runners with umaban 00", () => {
+    const provisional = makeRecord("jvd_se", {
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0912",
+      keibajo_code: "06",
+      race_bango: "01",
+      umaban: "00",
+      ketto_toroku_bango: "2023100001",
+    });
+    const confirmed = makeRecord("jvd_se", {
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0912",
+      keibajo_code: "06",
+      race_bango: "01",
+      umaban: "03",
+      ketto_toroku_bango: "2023100001",
+    });
+    const body = stream(provisional, 2).replace(
+      JSON.stringify({ event: "close", files: 1, records: 2 }),
+      `${JSON.stringify({ bytes: confirmed.length, data: base64(confirmed), encoding: "base64", event: "record" })}\n${JSON.stringify({ event: "close", files: 1, records: 2 })}`,
+    );
+
+    const parsed = parseSourceStream(body, "jv");
+    expect(parsed.records).toBe(2);
+    expect(parsed.tables[0]?.records).toHaveLength(1);
+    expect(parsed.tables[0]?.records[0]?.umaban).toBe("03");
+  });
+
   test("counts unsupported records while retaining them only in raw staging", () => {
     const parsed = parseSourceStream(stream(new Uint8Array([74, 71, 13, 10])), "jv");
 

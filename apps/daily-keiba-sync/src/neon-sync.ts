@@ -60,7 +60,26 @@ const buildUpsert = (
   const updates = updateColumns
     .map((column) => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`)
     .join(", ");
-  return `insert into ${quoteIdentifier(tableName)} (${names}) values ${values.join(", ")} on conflict (${primaryKey.map(quoteIdentifier).join(", ")}) do update set ${updates}`;
+  const conflict = `on conflict (${primaryKey.map(quoteIdentifier).join(", ")}) do update set ${updates}`;
+  if (tableName !== "jvd_se") {
+    return `insert into ${quoteIdentifier(tableName)} (${names}) values ${values.join(", ")} ${conflict}`;
+  }
+  const selected = columns.map((column) => `incoming.${quoteIdentifier(column)}`).join(", ");
+  return `with incoming (${names}) as (values ${values.join(", ")}), deleted_provisional as (
+  delete from "jvd_se" existing using incoming
+  where existing."kaisai_nen" = incoming."kaisai_nen"
+    and existing."kaisai_tsukihi" = incoming."kaisai_tsukihi"
+    and existing."keibajo_code" = incoming."keibajo_code"
+    and existing."race_bango" = incoming."race_bango"
+    and existing."ketto_toroku_bango" = incoming."ketto_toroku_bango"
+    and existing."umaban" = '00'
+    and incoming."umaban" ~ '^(0[1-9]|1[0-8])$'
+    and incoming."keibajo_code" ~ '^[0-9]{2}$'
+    and incoming."ketto_toroku_bango" ~ '^[0-9]{10}$'
+    and incoming."ketto_toroku_bango" <> '0000000000'
+  returning 1
+)
+insert into "jvd_se" (${names}) select ${selected} from incoming ${conflict}`;
 };
 
 const warmNeon = async (query: NeonQueryFunction<false, false>): Promise<void> => {

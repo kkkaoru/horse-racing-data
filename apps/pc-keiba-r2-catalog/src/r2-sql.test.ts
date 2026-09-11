@@ -73,6 +73,7 @@ it("builds JRA features by joining partition-pruned jvd_se and jvd_ra", () => {
   expect(sql).toMatch("counts.entry_count");
   expect(sql).toMatch("nullif(ra.shusso_tosu, '00')");
   expect(sql).toMatch("try_cast(nullif(se.umaban, '') AS INT) AS umaban");
+  expect(sql.match(/umaban, ''\)\), ''\) AS INT\) BETWEEN 1 AND 18/gu)).toHaveLength(2);
   expect(sql).toMatch("END AS finish_norm");
   expect(sql).toMatch("END AS corner4_norm");
 });
@@ -121,6 +122,7 @@ it("builds a partition-pruned exact JRA fresh entrant query with active horses o
   expect(sql).toMatch("keibajo_code = '07'");
   expect(sql).toMatch("race_bango = '09'");
   expect(sql).toMatch("coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')");
+  expect(sql).toMatch("AS INT) BETWEEN 1 AND 18");
   expect(sql).toMatch("ORDER BY umaban, ketto_toroku_bango");
   expect(sql).not.toMatch("DISTINCT");
 });
@@ -164,6 +166,7 @@ it("builds one partition-pruned bulk fresh entrant query for each exact source",
   expect(banEiSql).toMatch("FROM pc_keiba.nvd_se");
   expect(banEiSql).toMatch("keibajo_code = '83'");
   expect(banEiSql).toMatch("coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')");
+  expect(banEiSql).toMatch("AS INT) BETWEEN 1 AND 18");
   expect(banEiSql).toMatch("ORDER BY keibajo_code, race_bango, umaban, ketto_toroku_bango");
 });
 

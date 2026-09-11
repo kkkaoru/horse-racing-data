@@ -89,6 +89,31 @@ export const normaliseDailyRaceEntryRow = (raw: Record<string, unknown>): DailyR
   zogen_sa: numericOrNull(raw.zogen_sa),
 });
 
+export const normaliseDailyRaceEntryRows = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): DailyRaceEntryRow[] => {
+  const normalised = rows.map(normaliseDailyRaceEntryRow);
+  const horsesByRace = new Map<string, Set<string>>();
+  const numbersByRace = new Map<string, Set<number>>();
+  for (const row of normalised) {
+    const umaban = row.umaban;
+    if (umaban === null || !Number.isInteger(umaban) || umaban < 1 || umaban > 18)
+      throw new Error("R2 SQL race features contain an invalid umaban");
+    if (!/^\d{10}$/.test(row.ketto_toroku_bango))
+      throw new Error("R2 SQL race features contain an invalid ketto_toroku_bango");
+    const raceKey = `${row.source}:${row.race_date}:${row.keibajo_code}:${row.race_bango}`;
+    const horses = horsesByRace.get(raceKey) ?? new Set<string>();
+    const numbers = numbersByRace.get(raceKey) ?? new Set<number>();
+    if (horses.has(row.ketto_toroku_bango) || numbers.has(umaban))
+      throw new Error(`R2 SQL race features contain duplicate runners: ${raceKey}`);
+    horses.add(row.ketto_toroku_bango);
+    numbers.add(umaban);
+    horsesByRace.set(raceKey, horses);
+    numbersByRace.set(raceKey, numbers);
+  }
+  return normalised;
+};
+
 export const normaliseCatalogRaceKeyRow = (raw: Record<string, unknown>): CatalogRaceKeyRow => {
   const source = normaliseSource(raw.source);
   const date = normaliseRaceDate(raw.race_date);

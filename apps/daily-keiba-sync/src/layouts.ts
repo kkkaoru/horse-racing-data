@@ -171,6 +171,26 @@ export const rowKey = (layout: RecordLayout, row: RecordRow): string => {
   return values.join("\u001f");
 };
 
+const trimmedField = (row: RecordRow, name: string): string => {
+  const value = row[name];
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+};
+
+const isDomesticJraRunner = (layout: RecordLayout, row: RecordRow): boolean =>
+  layout.tableName === "jvd_se" &&
+  /^\d{2}$/.test(trimmedField(row, "keibajo_code")) &&
+  /^(?!0{10}$)\d{10}$/.test(trimmedField(row, "ketto_toroku_bango"));
+
+export const isProvisionalJraRunner = (layout: RecordLayout, row: RecordRow): boolean =>
+  isDomesticJraRunner(layout, row) && trimmedField(row, "umaban") === "00";
+
+export const catalogDeleteRowKeys = (layout: RecordLayout, row: RecordRow): readonly string[] => {
+  const current = rowKey(layout, row);
+  const umaban = trimmedField(row, "umaban");
+  if (!isDomesticJraRunner(layout, row) || !/^(?:0[1-9]|1[0-8])$/.test(umaban)) return [current];
+  return [current, rowKey(layout, { ...row, umaban: "00" })];
+};
+
 export const layoutByTable = (tableName: string): RecordLayout => {
   if (tableName === NETKEIBA_TRAINING_LAYOUT.tableName) return NETKEIBA_TRAINING_LAYOUT;
   for (const layout of LAYOUTS.values()) if (layout.tableName === tableName) return layout;
