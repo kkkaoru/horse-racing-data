@@ -153,17 +153,15 @@ it("defaults the results view to the chart", () => {
 
 it("uses finish rank instead of last 3F copy for Ban-ei charts", () => {
   expect(RACE_TIME_CHART_BAN_EI_X_AXIS_TITLE).toBe("着順（右が上位）");
-  expect(RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE).toBe(
-    "馬体重−斤量の変化（右が今走より大きい）",
-  );
+  expect(RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE).toBe("馬体重−斤量の変化（右がマイナス）");
   expect(RACE_TIME_CHART_BAN_EI_EMPTY).toBe(
     "レースタイムと着順と馬体重と斤量が揃った競走成績がありません。",
   );
   expect(RACE_TIME_CHART_BAN_EI_NOTE).toBe(
-    "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+    "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほどマイナス（今走より馬体重−斤量が小さい）。横軸の0は今走と同じ馬体重−斤量。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
   );
   expect(raceTimeChartNote(true)).toBe(
-    "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+    "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほどマイナス（今走より馬体重−斤量が小さい）。横軸の0は今走と同じ馬体重−斤量。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
   );
   expect(raceTimeChartEmptyMessage(true)).toBe(
     "レースタイムと着順と馬体重と斤量が揃った競走成績がありません。",
@@ -589,7 +587,7 @@ it("plots Ban-ei clocks without last 3F and puts a larger weight-minus-futan cha
   if (drawn === null) {
     throw new Error("expected a Ban-ei scatter");
   }
-  expect(drawn.xAxisTitle).toBe("馬体重−斤量の変化（右が今走より大きい）");
+  expect(drawn.xAxisTitle).toBe("馬体重−斤量の変化（右がマイナス）");
   expect(drawn.references.map((line) => line.kind)).toStrictEqual([
     "fastestRaceTime",
     "averageRaceTime",
@@ -600,8 +598,11 @@ it("plots Ban-ei clocks without last 3F and puts a larger weight-minus-futan cha
   if (weightWinner === undefined || weightLast === undefined) {
     throw new Error("expected Ban-ei finish points");
   }
-  expect(weightWinner.x > weightLast.x).toBe(true);
+  expect(weightLast.x > weightWinner.x).toBe(true);
   expect(weightWinner.relativeDelta).toBe(0);
+  expect(drawn.scheduledGuides[0]?.label).toBe("0");
+  expect(drawn.scheduledGuides[0]?.x).toBe(weightWinner.x);
+  expect(drawn.xTicks.find((tick) => tick.label === "0")?.x).toBe(weightWinner.x);
   expect(weightLast.relativeDelta).toBe(-10);
   expect(weightWinner.radius === 10).toBe(true);
   expect(weightLast.radius === 5.6).toBe(true);
@@ -751,7 +752,8 @@ it("plots the change in horse-weight minus futan against the upcoming race", () 
   if (drawn === null) {
     throw new Error("expected Ban-ei net-weight change points");
   }
-  expect(drawn.scheduledGuides.length).toBe(0);
+  expect(drawn.scheduledGuides.length).toBe(1);
+  expect(drawn.scheduledGuides[0]?.label).toBe("0");
   expect(drawn.scheduledMarks.length).toBe(0);
   expect(drawn.weightLinks.length).toBe(0);
   const past = drawn.points[0];

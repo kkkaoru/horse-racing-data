@@ -209,7 +209,7 @@ export const RACE_TIME_CHART_NOTE: string =
   "各点は出走予定馬の過去レースです。レースタイムは今走の距離に比例換算しています。今走と同じ距離ほど点は濃く、距離が離れるほど薄くします。上ほど換算タイムが速く、右ほど上がり3Fが速い。点の色は着順、数字は馬番。最速・平均・中央値の線は目安です。";
 
 export const RACE_TIME_CHART_BAN_EI_NOTE: string =
-  "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。";
+  "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほどマイナス（今走より馬体重−斤量が小さい）。横軸の0は今走と同じ馬体重−斤量。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。";
 
 export const RACE_TIME_CHART_EMPTY: string = "レースタイムと上がり3Fが揃った競走成績がありません。";
 
@@ -226,11 +226,12 @@ export const RACE_TIME_CHART_TOOLTIP_OFFSET: number = 12;
 export const RACE_TIME_CHART_X_AXIS_TITLE: string = "上がり3F（右が速い）";
 export const RACE_TIME_CHART_BAN_EI_X_AXIS_TITLE: string = "着順（右が上位）";
 export const RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE: string =
-  "馬体重−斤量の変化（右が今走より大きい）";
+  "馬体重−斤量の変化（右がマイナス）";
 export const RACE_TIME_CHART_Y_AXIS_TITLE: string = "換算レースタイム（今走距離、上が速い）";
 export const BAN_EI_ABILITY_HORSE_LINK_STROKE: string = "#d5ddd8";
 export const BAN_EI_WEIGHT_LINK_STROKE: string = "#c5cdc8";
-export const BAN_EI_SCHEDULED_GUIDE_STROKE: string = "#78716c";
+export const BAN_EI_ZERO_BASELINE_LABEL: string = "0";
+export const BAN_EI_SCHEDULED_GUIDE_STROKE: string = "#1f2937";
 export const BAN_EI_FINISH_FIRST_RADIUS: number = 10;
 export const BAN_EI_FINISH_SECOND_RADIUS: number = 8.6;
 export const BAN_EI_FINISH_THIRD_RADIUS: number = 7.6;
@@ -248,6 +249,7 @@ const PLOT_BOTTOM: number = RACE_TIME_CHART_PLOT_BOTTOM;
 const RATIO_PAD_ABS: number = 8;
 const RATIO_PAD_RATIO: number = 0.08;
 const TICK_FRACTIONS: number[] = [0, 0.25, 0.5, 0.75, 1];
+const ZERO_TICK_VALUE: number = 0;
 const FINISH_FIRST_STROKE: string = "#eab308";
 const FINISH_SECOND_STROKE: string = "#16a34a";
 const FINISH_THIRD_STROKE: string = "#dc2626";
@@ -479,6 +481,21 @@ const tickValue = (domain: RaceTimeChartDomain, fraction: number, invert: boolea
   }
   return domain.minValue + (domain.maxValue - domain.minValue) * fraction;
 };
+
+const banEiXTickValues = (domain: RaceTimeChartDomain): number[] =>
+  [
+    ...new Set([
+      ...TICK_FRACTIONS.map((fraction) => tickValue(domain, fraction, true)),
+      ZERO_TICK_VALUE,
+    ]),
+  ].toSorted(compareNumberAsc);
+
+const toBanEiXTick = (layout: RaceTimeChartLayout, value: number): RaceTimeChartAxisTick => ({
+  label:
+    value === ZERO_TICK_VALUE ? BAN_EI_ZERO_BASELINE_LABEL : formatCarriedWeightDeltaLabel(value),
+  x: layout.xScale(value),
+  y: PLOT_BOTTOM,
+});
 
 const compareRaceTimeChartPoints = (
   left: RaceTimeChartPoint,
@@ -1004,10 +1021,10 @@ export const buildDrawnBanEiAbilityChart = ({
       spec.orientation === "horizontal" && spec.value !== null ? [spec.value] : [],
     ),
   ];
-  const xDomain = collectDomain(plottedRows.map((entry) => entry.relativeDelta));
+  const xDomain = collectDomain([...plottedRows.map((entry) => entry.relativeDelta), 0]);
   const yDomain = collectDomain(yValues);
   const layout = buildLayout({
-    invertX: false,
+    invertX: true,
     plotBottom: PLOT_BOTTOM,
     plotTop: PLOT_TOP,
     xDomain,
@@ -1046,19 +1063,12 @@ export const buildDrawnBanEiAbilityChart = ({
       });
       return line === null ? [] : [line];
     }),
-    scheduledGuides: [],
+    scheduledGuides: [{ label: BAN_EI_ZERO_BASELINE_LABEL, x: layout.xScale(0) }],
     scheduledMarks: [],
     weightLinks: [],
     width: RACE_TIME_CHART_VIEW_WIDTH,
     xAxisTitle: RACE_TIME_CHART_BAN_EI_WEIGHT_X_AXIS_TITLE,
-    xTicks: TICK_FRACTIONS.map((fraction) => {
-      const value = tickValue(xDomain, fraction, false);
-      return {
-        label: formatCarriedWeightDeltaLabel(value),
-        x: layout.xScale(value),
-        y: PLOT_BOTTOM,
-      };
-    }),
+    xTicks: banEiXTickValues(xDomain).map((value) => toBanEiXTick(layout, value)),
     yAxisTitle: RACE_TIME_CHART_Y_AXIS_TITLE,
     yTicks: TICK_FRACTIONS.map((fraction) => {
       const value = tickValue(yDomain, fraction, true);

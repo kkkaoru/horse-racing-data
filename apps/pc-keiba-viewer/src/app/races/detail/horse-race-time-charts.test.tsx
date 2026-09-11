@@ -194,16 +194,17 @@ it("plots Ban-ei clocks on a finish-rank axis without last 3F", () => {
     />,
   );
   expect(screen.getByRole("figure", { name: "競走成績タイム散布図" })).toBeDefined();
-  expect(screen.getByText("馬体重−斤量の変化（右が今走より大きい）")).toBeDefined();
+  expect(screen.getByText("馬体重−斤量の変化（右がマイナス）")).toBeDefined();
   expect(screen.queryByText("着順（右が上位）")).toBeNull();
   expect(
     screen.getByText(
-      "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほど今走より馬体重−斤量が大きい。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
+      "ばんえいには上がり3Fがありません。1つの図で馬体重と斤量の差の変化・換算タイム・着順を見ます。上ほど速く、右ほどマイナス（今走より馬体重−斤量が小さい）。横軸の0は今走と同じ馬体重−斤量。点の色・大きさが着順、数字は馬番。同じ馬の複数レースは薄い線でつなぎます。",
     ),
   ).toBeDefined();
   expect(screen.queryByText("過去斤量")).toBeNull();
   expect(screen.queryByText("予定斤量")).toBeNull();
   expect(screen.queryByText("上がり3F（右が速い）")).toBeNull();
+  expect(document.querySelectorAll("[data-scheduled-guide='0']").length).toBe(1);
   expect(document.querySelectorAll("[data-horse-link='1']").length).toBe(1);
   expect(document.querySelectorAll("[data-weight-link='1']").length).toBe(0);
   expect(document.querySelectorAll("[data-scheduled-weight='1']").length).toBe(0);
