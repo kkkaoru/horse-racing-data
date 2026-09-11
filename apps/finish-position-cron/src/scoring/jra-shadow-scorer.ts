@@ -12,6 +12,11 @@ const MODEL_FILE = "model.json";
 const METADATA_FILE = "metadata.json";
 const STAGE1_SCORE_STDDEV_THRESHOLD = 0.4;
 const FIRST_RANK = 1;
+// Model-version keys are immutable production artifacts. Retain only the last
+// fully attested parsed route per R2 binding, so warm Queue isolates avoid
+// repeated multi-megabyte R2 reads/tree parsing without accumulating every JRA
+// route under the Worker's 128 MB isolate limit.
+const MODEL_CACHE = new WeakMap<R2Bucket, CachedJraShadowModel>();
 
 const ROUTING_FIELDS = [
   "grade_code",
@@ -92,6 +97,11 @@ export interface LoadedJraShadowModel {
   featureNames: string[];
   model: CatBoostModel;
   spec: JraShadowModelSpec;
+}
+
+interface CachedJraShadowModel {
+  loaded: LoadedJraShadowModel;
+  modelVersion: string;
 }
 
 interface ModelMetadata {
@@ -269,6 +279,8 @@ export const loadSelectedJraShadowModel = async (
   bucket: R2Bucket,
   spec: JraShadowModelSpec,
 ): Promise<LoadedJraShadowModel> => {
+  const cached = MODEL_CACHE.get(bucket);
+  if (cached?.modelVersion === spec.modelVersion) return cached.loaded;
   if (spec.variant === "stage1_marketfree") {
     const [modelJson, metadataJson, baseModelJson, baseMetadataJson] = await Promise.all([
       getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, MODEL_FILE)),
@@ -287,23 +299,27 @@ export const loadSelectedJraShadowModel = async (
     if (featureNames.join("\0") !== baseFeatureNames.join("\0")) {
       throw new Error("Stage-1 top1-swap base and companion feature order mismatch");
     }
-    return {
+    const loaded: LoadedJraShadowModel = {
       baseFeatureNames,
       baseModel: parseCatBoostJsonModel(baseModelJson),
       featureNames,
       model: parseCatBoostJsonModel(modelJson),
       spec,
     };
+    MODEL_CACHE.set(bucket, { loaded, modelVersion: spec.modelVersion });
+    return loaded;
   }
   const [modelJson, metadataJson] = await Promise.all([
     getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, MODEL_FILE)),
     getJson(bucket, buildModelKey(CATEGORY, spec.modelVersion, METADATA_FILE)),
   ]);
-  return {
+  const loaded: LoadedJraShadowModel = {
     featureNames: parseMetadata(metadataJson, spec),
     model: parseCatBoostJsonModel(modelJson),
     spec,
   };
+  MODEL_CACHE.set(bucket, { loaded, modelVersion: spec.modelVersion });
+  return loaded;
 };
 
 const assertFinalFeatureContract = (

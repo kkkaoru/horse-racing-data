@@ -167,7 +167,9 @@ test("loads only the selected production model and its metadata from R2", async 
   const spec = JRA_SHADOW_MODEL_SPECS.jockey_pedigree_703;
   const { bucket, get } = bucketFor(cbSmall, metadataFor(spec));
   const loaded = await loadSelectedJraShadowModel(bucket, spec);
+  const cached = await loadSelectedJraShadowModel(bucket, spec);
   expect(loaded.featureNames).toHaveLength(269);
+  expect(cached).toBe(loaded);
   expect(loaded.spec).toBe(spec);
   expect(get).toHaveBeenCalledTimes(2);
   expect(get).toHaveBeenCalledWith(
