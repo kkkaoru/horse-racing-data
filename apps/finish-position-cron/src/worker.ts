@@ -1216,6 +1216,20 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   );
 };
 
+const consumeContainerControlMessage = async (
+  message: Message<PredictQueueBody | ContainerControlMessage>,
+  env: Env,
+): Promise<void> => {
+  if (!isContainerControlQueueMessage(message)) return;
+  try {
+    await consumeContainerStop(env, message.body);
+    message.ack();
+  } catch (error) {
+    console.error("[container-control] stop failed:", String(error));
+    message.retry({ delaySeconds: 30 });
+  }
+};
+
 // A single Worker script consumes both the primary predict queue and its
 // dead-letter queue (two consumer entries in wrangler.jsonc, both routed to
 // this one `queue()` export); MessageBatch.queue names which queue the batch
@@ -1226,16 +1240,9 @@ export const handleQueueBatch = async (
   env: Env,
 ): Promise<void> => {
   if (batch.queue === CONTAINER_CONTROL_QUEUE_NAME) {
-    for (const message of batch.messages) {
-      if (!isContainerControlQueueMessage(message)) continue;
-      try {
-        await consumeContainerStop(env, message.body);
-        message.ack();
-      } catch (error) {
-        console.error("[container-control] stop failed:", String(error));
-        message.retry({ delaySeconds: 30 });
-      }
-    }
+    await Promise.all(
+      batch.messages.map((message) => consumeContainerControlMessage(message, env)),
+    );
     return;
   }
   if (batch.queue === DLQ_QUEUE_NAME) {

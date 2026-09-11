@@ -1636,6 +1636,46 @@ test("control queue stops and acknowledges a named container", async () => {
   expect(retry).not.toHaveBeenCalled();
 });
 
+test("control queue processes independent container stops concurrently", async () => {
+  const firstClaim = Promise.withResolvers<{ allowed: true; state: "claimed" }>();
+  claimContainerSlotStopMock
+    .mockImplementationOnce(() => firstClaim.promise)
+    .mockResolvedValueOnce({ allowed: true, state: "claimed" });
+  const firstAck = vi.fn();
+  const secondAck = vi.fn();
+  const batch = {
+    messages: [
+      {
+        ack: firstAck,
+        body: {
+          name: "predict-jra-0",
+          requestedAt: "2026-08-22T00:00:00.000Z",
+          type: "container-stop",
+        },
+        retry: vi.fn(),
+      },
+      {
+        ack: secondAck,
+        body: {
+          name: "predict-nar-0",
+          requestedAt: "2026-08-22T00:00:00.000Z",
+          type: "container-stop",
+        },
+        retry: vi.fn(),
+      },
+    ],
+    queue: "finish-position-container-control-queue",
+  } as unknown as MessageBatch<import("./types").ContainerControlMessage>;
+
+  const handling = handleQueueBatch(batch, makeEnv());
+  await vi.waitFor(() => expect(secondAck).toHaveBeenCalledTimes(1));
+  expect(claimContainerSlotStopMock).toHaveBeenCalledTimes(2);
+  expect(firstAck).not.toHaveBeenCalled();
+  firstClaim.resolve({ allowed: true, state: "claimed" });
+  await handling;
+  expect(firstAck).toHaveBeenCalledTimes(1);
+});
+
 test("control queue retries failed stops and ignores invalid control bodies", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   containerDoFetchMock.mockResolvedValueOnce(new Response("busy", { status: 503 }));
