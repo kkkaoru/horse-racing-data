@@ -67,6 +67,20 @@ const DAY_BASE_GENERATION_RESERVATION_STALE_MS = 2 * 60 * 1000;
 const HTTP_OK = 200;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_NOT_FOUND = 404;
+const RESCORE_DELIVERY_STATUSES: ReadonlySet<string> = new Set([
+  "score_complete",
+  "neon_complete",
+  "kv_complete",
+  "viewer_warm_complete",
+]);
+const RESCORE_PROGRESS_RANK: Readonly<Record<string, number>> = {
+  started: 0,
+  score_complete: 1,
+  neon_complete: 2,
+  kv_complete: 3,
+  viewer_warm_complete: 4,
+  success: 5,
+};
 
 interface RunRecord {
   status: string;
@@ -166,6 +180,7 @@ interface CancelFocusedFullRaceRepairParams extends FailFocusedFullRaceEnqueuePa
 
 interface ClaimRescoreExecutionParams extends ClaimRaceParams {
   executionId: string;
+  force?: boolean;
   staleAfterMs: number;
 }
 
@@ -499,7 +514,11 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const isFreshActive =
         (existing?.status === "enqueued" || existing?.status === "started") &&
         now - existing.timestamp < staleAfterMs;
-      if (existing?.status === "success" || isFreshActive) {
+      if (
+        existing?.status === "success" ||
+        (existing !== undefined && RESCORE_DELIVERY_STATUSES.has(existing.status)) ||
+        isFreshActive
+      ) {
         return { proceed: false, state: existing.status };
       }
       await this.ctx.storage.put<RunRecord>(key, {
@@ -525,9 +544,32 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const key = buildRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(key);
       const now = Date.now();
-      if (existing?.status === "success") return { proceed: false, state: "success" };
+      if (
+        existing?.status === "success" ||
+        (existing !== undefined && RESCORE_DELIVERY_STATUSES.has(existing.status))
+      ) {
+        return { proceed: false, state: existing.status };
+      }
       if (existing?.status === "started" && now - existing.timestamp < params.staleAfterMs) {
-        return { proceed: false, state: "started" };
+        // Cloudflare Queue keeps the message id across redeliveries. If an
+        // invocation terminates after claiming execution but before recording
+        // an error, its redelivery must be allowed to resume immediately;
+        // otherwise the abandoned `started` record suppresses recovery for the
+        // full 31-minute Container deadline. A different message id is still
+        // excluded until the claim is stale, preventing concurrent generations
+        // from running the same rescore twice.
+        if (existing.executionId !== params.executionId && params.force !== true) {
+          return { proceed: false, state: "started" };
+        }
+        await this.ctx.storage.put<RunRecord>(key, {
+          executionId: params.executionId,
+          status: "started",
+          timestamp: now,
+        });
+        return {
+          proceed: true,
+          state: existing.executionId === params.executionId ? "redelivery" : "redrive",
+        };
       }
       await this.ctx.storage.put<RunRecord>(key, {
         executionId: params.executionId,
@@ -543,7 +585,12 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const key = buildRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(key);
       if (existing?.executionId !== params.executionId) return;
-      if (existing.status === "success" && params.status !== "success") return;
+      const existingRank = RESCORE_PROGRESS_RANK[existing.status];
+      const requestedRank = RESCORE_PROGRESS_RANK[params.status];
+      if (existingRank !== undefined) {
+        if (params.status === "error") return;
+        if (requestedRank === undefined || requestedRank < existingRank) return;
+      }
       const now = Date.now();
       await this.ctx.storage.put<RunRecord>(key, {
         completedAt: now,

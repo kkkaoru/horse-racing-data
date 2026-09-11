@@ -104,6 +104,7 @@ interface FailFocusedFullRaceEnqueueParams extends ClaimRaceParams {
 
 interface ClaimRescoreExecutionParams extends ClaimRaceParams {
   executionId: string;
+  force?: boolean;
   staleAfterMs: number;
 }
 
@@ -252,6 +253,7 @@ export const claimRescoreExecution = async (
       body: JSON.stringify({
         category: params.category,
         executionId: params.executionId,
+        ...(params.force === undefined ? {} : { force: params.force }),
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
         runYmd: params.runYmd,

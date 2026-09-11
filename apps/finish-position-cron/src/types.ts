@@ -302,6 +302,12 @@ export interface PredictionCacheRepairMessage {
   keibajoCode: string;
   raceBango: string;
   runYmd: string;
+  rescoreLifecycle?: {
+    executionId: string;
+    weightSnapshotCount?: number;
+    weightSnapshotFetchedAt?: string;
+    weightSnapshotHash?: string;
+  };
 }
 
 export type FocusedFullWatchOutcome = "error" | "missing" | "success" | "timeout";

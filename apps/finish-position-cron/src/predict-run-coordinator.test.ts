@@ -317,6 +317,28 @@ test("claimRace returns proceed:false when the per-race key already exists", asy
   expect(storageMock.put).not.toHaveBeenCalled();
 });
 
+test.each(["score_complete", "neon_complete", "kv_complete", "viewer_warm_complete"])(
+  "claimRace does not enqueue scoring again while delivery is at %s",
+  async (status) => {
+    storageMap.set("rescore:20260619:jra:05:11", {
+      executionId: "queue-message-1",
+      status,
+      timestamp: 1_000,
+    });
+    const coordinator = makeCoordinator();
+    await expect(
+      coordinator.claimRace({
+        category: "jra",
+        claimId: "claim-duplicate",
+        keibajoCode: "05",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ).resolves.toStrictEqual({ proceed: false, state: status });
+    expect(storageMock.put).not.toHaveBeenCalled();
+  },
+);
+
 test("claimRace immediately reclaims a failed rescore generation", async () => {
   storageMap.set("rescore:20260619:jra:05:11", {
     completedAt: 1000,
@@ -3698,6 +3720,61 @@ test("claimRescoreExecution rejects fresh started and successful execution", asy
   vi.useRealTimers();
 });
 
+test("claimRescoreExecution immediately resumes a fresh redelivery from the same execution owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(2_000);
+  storageMap.set("rescore:20260823:jra:05:11", {
+    executionId: "queue-message-1",
+    status: "started",
+    timestamp: 1_000,
+  });
+  const coordinator = makeCoordinator();
+  await expect(
+    coordinator.claimRescoreExecution({
+      category: "jra",
+      executionId: "queue-message-1",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260823",
+      staleAfterMs: 1_860_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "redelivery" });
+  expect(storageMap.get("rescore:20260823:jra:05:11")).toMatchObject({
+    executionId: "queue-message-1",
+    status: "started",
+    timestamp: 2_000,
+  });
+  vi.useRealTimers();
+});
+
+test("claimRescoreExecution lets a DLQ redrive replace a fresh abandoned execution owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(2_000);
+  storageMap.set("rescore:20260823:jra:05:11", {
+    executionId: "queue-message-before-dlq",
+    status: "started",
+    timestamp: 1_000,
+  });
+  const coordinator = makeCoordinator();
+  await expect(
+    coordinator.claimRescoreExecution({
+      category: "jra",
+      executionId: "queue-message-redriven",
+      force: true,
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260823",
+      staleAfterMs: 1_860_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "redrive" });
+  expect(storageMap.get("rescore:20260823:jra:05:11")).toMatchObject({
+    executionId: "queue-message-redriven",
+    status: "started",
+    timestamp: 2_000,
+  });
+  vi.useRealTimers();
+});
+
 test("claimRescoreExecution reclaims stale started with a new execution owner", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(2_000_000);
@@ -3744,6 +3821,35 @@ test("completeRescoreRace ignores completion from a stale execution owner", asyn
     status: "started",
     timestamp: 2_000,
   });
+});
+
+test("rescore delivery stages are durable and monotonic after scoring", async () => {
+  const key = "rescore:20260823:jra:05:11";
+  storageMap.set(key, {
+    executionId: "queue-message-1",
+    status: "started",
+    timestamp: 1_000,
+  });
+  const coordinator = makeCoordinator();
+  const params = {
+    category: "jra",
+    executionId: "queue-message-1",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260823",
+  };
+  for (const status of ["score_complete", "neon_complete", "kv_complete", "viewer_warm_complete"]) {
+    await coordinator.completeRescoreRace({ ...params, status });
+    await expect(
+      coordinator.claimRescoreExecution({ ...params, staleAfterMs: 1_860_000 }),
+    ).resolves.toStrictEqual({ proceed: false, state: status });
+  }
+  await coordinator.completeRescoreRace({ ...params, status: "score_complete" });
+  await coordinator.completeRescoreRace({ ...params, status: "error" });
+  await coordinator.completeRescoreRace({ ...params, status: "unexpected" });
+  expect(storageMap.get(key)).toMatchObject({ status: "viewer_warm_complete" });
+  await coordinator.completeRescoreRace({ ...params, status: "success" });
+  expect(storageMap.get(key)).toMatchObject({ status: "success" });
 });
 
 test("completeRescoreRace records matching success and never downgrades it to error", async () => {

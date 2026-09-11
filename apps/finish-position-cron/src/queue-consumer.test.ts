@@ -2029,6 +2029,12 @@ test("republishes and warms a cache-only repair without invoking a prediction Co
             category: "ban-ei",
             keibajoCode: "83",
             raceBango: "12",
+            rescoreLifecycle: {
+              executionId: "rescore-message-1",
+              weightSnapshotCount: 3,
+              weightSnapshotFetchedAt: "2026-08-24T00:55:00.000Z",
+              weightSnapshotHash: "weight-hash",
+            },
             runYmd: "20260824",
             type: "prediction-cache-repair",
           },
@@ -2060,6 +2066,22 @@ test("republishes and warms a cache-only repair without invoking a prediction Co
     year: "2026",
   });
   expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenNthCalledWith(1, {
+    category: "ban-ei",
+    env: expect.anything(),
+    executionId: "rescore-message-1",
+    keibajoCode: "83",
+    raceBango: "12",
+    runYmd: "20260824",
+    status: "viewer_warm_complete",
+    weightSnapshotCount: 3,
+    weightSnapshotFetchedAt: "2026-08-24T00:55:00.000Z",
+    weightSnapshotHash: "weight-hash",
+  });
+  expect(completeRescoreRaceMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ status: "success" }),
+  );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
 });
@@ -3398,10 +3420,65 @@ test("falls back to the Container when enabled Worker rescore has no feature cac
   );
   expect(rescoreJraRaceMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
-  expect(completeRescoreRaceMock).toHaveBeenCalledTimes(2);
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error" }),
+  );
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "score_complete" }),
+  );
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(ackMock).toHaveBeenCalledTimes(1);
   warnSpy.mockRestore();
   consoleSpy.mockRestore();
+});
+
+test("resumes enabled Worker delivery without rerunning Worker or Container scoring", async () => {
+  claimRescoreExecutionMock.mockResolvedValue({ proceed: false, state: "neon_complete" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), JRA_WORKER_RESCORE_ENABLED: "1" },
+  );
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("resumes legacy Worker delivery whose generation predates weight identity fields", async () => {
+  claimRescoreExecutionMock.mockResolvedValue({ proceed: false, state: "neon_complete" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+        weightSnapshotCount: undefined,
+        weightSnapshotFetchedAt: undefined,
+        weightSnapshotHash: undefined,
+      }),
+    ]),
+    { ...makeEnv(), JRA_WORKER_RESCORE_ENABLED: "1" },
+  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("acks an enabled Worker rescore whose semantic execution already succeeded", async () => {
@@ -3482,6 +3559,9 @@ test("commits and acks an enabled Worker rescore when viewer warm fails", async 
     { ...makeEnv(), JRA_WORKER_RESCORE_ENABLED: "1" },
   );
   expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "kv_complete" }),
+  );
+  expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
   expect(stubFetchMock).not.toHaveBeenCalled();
@@ -3515,6 +3595,9 @@ test("defers a cache-only repair after Worker rescore warm returns false", async
     { delaySeconds: 30 },
   );
   expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "kv_complete" }),
+  );
+  expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
@@ -3527,6 +3610,40 @@ test("defers a cache-only repair after Worker rescore warm returns false", async
   );
   warnSpy.mockRestore();
   consoleSpy.mockRestore();
+});
+
+test("retries delivery without semantic downgrade when warm-repair enqueue fails", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  warmPredictionCacheForRaceMock.mockResolvedValue(false);
+  sendMock.mockRejectedValueOnce(new Error("repair queue unavailable"));
+
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "neon_complete" }),
+  );
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error" }),
+  );
+  expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+  errorSpy.mockRestore();
 });
 
 test("retries a JRA container per-race rescore when the container fetch throws", async () => {
@@ -5421,31 +5538,47 @@ test("logs per-race KV publish status after a successful rescore", async () => {
   consoleSpy.mockRestore();
 });
 
-test("retries a successful score when KV publish returns skipped-empty", async () => {
+test("retries KV delivery after a successful score without invoking the Container twice", async () => {
   const logs: string[] = [];
   const consoleSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(" "));
   });
-  publishFinishPositionPredictionCacheMock.mockResolvedValue({
-    busted: false,
-    expectedGeneratedAt: null,
-    status: "skipped-empty",
-  });
-  await handleQueue(
-    makeBatch([
-      makeMessage({
-        daysAhead: 0,
-        keibajoCode: "04",
-        mode: "rescore",
-        raceBango: "01",
-        runYmd: "20260809",
-      }),
-    ]),
-    makeEnv(),
-  );
+  claimRescoreExecutionMock
+    .mockResolvedValueOnce({ proceed: true })
+    .mockResolvedValueOnce({ proceed: false, state: "neon_complete" });
+  publishFinishPositionPredictionCacheMock
+    .mockResolvedValueOnce({
+      busted: false,
+      expectedGeneratedAt: null,
+      status: "skipped-empty",
+    })
+    .mockResolvedValueOnce({
+      busted: true,
+      expectedGeneratedAt: "2026-08-09T01:15:00.000Z",
+      status: "written",
+    });
+  const body = {
+    daysAhead: 0,
+    keibajoCode: "04",
+    mode: "rescore",
+    raceBango: "01",
+    runYmd: "20260809",
+  } satisfies Partial<PredictQueueMessage>;
+  await handleQueue(makeBatch([makeMessage(body)]), makeEnv());
   expect(ackMock).not.toHaveBeenCalled();
   expect(retryMock).toHaveBeenCalledTimes(1);
-  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "neon_complete" }),
+  );
+
+  await handleQueue(makeBatch([makeMessage(body)]), makeEnv());
+
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledTimes(1);
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(logs.some((line) => line.includes("status=skipped-empty"))).toBe(true);
   consoleSpy.mockRestore();
 });
@@ -7127,7 +7260,7 @@ test("does not retry scoring after a viewer warm failure", async () => {
   warmPredictionCacheForRaceMock.mockRejectedValueOnce(new Error("viewer unavailable"));
   claimRescoreExecutionMock
     .mockResolvedValueOnce({ proceed: true })
-    .mockResolvedValueOnce({ proceed: true });
+    .mockResolvedValueOnce({ proceed: false, state: "kv_complete" });
   const body = {
     category: "jra",
     daysAhead: 0,
@@ -7140,8 +7273,7 @@ test("does not retry scoring after a viewer warm failure", async () => {
   await handleQueue(makeBatch([makeMessage(body)]), makeEnv());
   await handleQueue(makeBatch([makeMessage(body)]), makeEnv());
 
-  expect(stubFetchMock).toHaveBeenCalledTimes(2);
-  expect(completeRescoreRaceMock).toHaveBeenCalledTimes(2);
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(completeRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
     env: expect.any(Object),
@@ -7165,6 +7297,140 @@ test("does not retry scoring after a viewer warm failure", async () => {
   consoleSpy.mockRestore();
 });
 
+test("resumes score-complete delivery without starting the prediction Container", async () => {
+  claimRescoreExecutionMock.mockResolvedValueOnce({ proceed: false, state: "score_complete" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  for (const status of ["neon_complete", "kv_complete", "viewer_warm_complete", "success"]) {
+    expect(completeRescoreRaceMock).toHaveBeenCalledWith(expect.objectContaining({ status }));
+  }
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test.each(["neon_complete", "kv_complete"])(
+  "resumes %s delivery without scoring again",
+  async (state) => {
+    claimRescoreExecutionMock.mockResolvedValueOnce({ proceed: false, state });
+    await handleQueue(
+      makeBatch([
+        makeMessage({
+          category: "jra",
+          daysAhead: 0,
+          keibajoCode: "05",
+          mode: "rescore",
+          raceBango: "11",
+          runYmd: "20260619",
+        }),
+      ]),
+      makeEnv(),
+    );
+    expect(stubFetchMock).not.toHaveBeenCalled();
+    expect(claimContainerSlotMock).not.toHaveBeenCalled();
+    expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "neon_complete" }),
+    );
+    expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "success" }),
+    );
+    expect(ackMock).toHaveBeenCalledTimes(1);
+    expect(retryMock).not.toHaveBeenCalled();
+  },
+);
+
+test("defers viewer repair when resumed delivery cannot warm the cache", async () => {
+  claimRescoreExecutionMock.mockResolvedValueOnce({ proceed: false, state: "kv_complete" });
+  warmPredictionCacheForRaceMock.mockResolvedValueOnce(false);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "kv_complete" }),
+  );
+  expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("completes a warmed Worker delivery without acquiring a Container", async () => {
+  claimRescoreExecutionMock.mockResolvedValueOnce({
+    proceed: false,
+    state: "viewer_warm_complete",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), JRA_WORKER_RESCORE_ENABLED: "1" },
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("finishes viewer-warm-complete delivery without republishing KV", async () => {
+  claimRescoreExecutionMock.mockResolvedValueOnce({
+    proceed: false,
+    state: "viewer_warm_complete",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
 test("acks a completed rescore duplicate without starting the container", async () => {
   claimRescoreExecutionMock.mockResolvedValueOnce({ proceed: false, state: "success" });
   await handleQueue(
@@ -7184,6 +7450,7 @@ test("acks a completed rescore duplicate without starting the container", async 
     category: "jra",
     env: expect.any(Object),
     executionId: "predict-msg-1",
+    force: false,
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260619",
@@ -7204,6 +7471,26 @@ test("acks a completed rescore duplicate without starting the container", async 
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("forces a semantic execution takeover for a DLQ-redriven rescore", async () => {
+  claimRescoreExecutionMock.mockResolvedValueOnce({ proceed: false, state: "success" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        dlqRedriveCount: 1,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimRescoreExecutionMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("retries a rescore whose semantic execution is already in progress", async () => {
@@ -7314,7 +7601,9 @@ test("recovers terminal rescore cleanup after both stop queues fail without resc
 
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
-  expect(completeRescoreRaceMock).toHaveBeenCalledTimes(1);
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(claimContainerSlotMock).toHaveBeenCalledTimes(1);
   expect(sendMock).toHaveBeenCalledWith(
     {
@@ -7364,10 +7653,21 @@ test("records semantic rescore success before acknowledging", async () => {
     (completeRescoreRaceMock.mock.invocationCallOrder[0] ?? 0) <
       (controlSendMock.mock.invocationCallOrder[0] ?? 0),
   ).toBe(true);
+  const completionCalls = completeRescoreRaceMock.mock.calls as unknown as Array<
+    [{ status: string }]
+  >;
+  const scoreCompleteCall = completionCalls.findIndex(
+    ([params]) => params.status === "score_complete",
+  );
+  const successCall = completionCalls.findIndex(([params]) => params.status === "success");
   expect(
-    (completeRescoreRaceMock.mock.invocationCallOrder[0] ?? 0) <
+    (completeRescoreRaceMock.mock.invocationCallOrder[scoreCompleteCall] ?? 0) <
       (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
-  ).toBe(false);
+  ).toBe(true);
+  expect(
+    (completeRescoreRaceMock.mock.invocationCallOrder[successCall] ?? 0) >
+      (warmPredictionCacheForRaceMock.mock.invocationCallOrder[0] ?? 0),
+  ).toBe(true);
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });

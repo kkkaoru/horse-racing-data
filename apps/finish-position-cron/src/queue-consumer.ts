@@ -382,14 +382,23 @@ interface ViewerPredictionCacheTarget extends ViewerDisplayWarmTarget {
   category: PredictCategory;
 }
 
+interface RescoreLifecycleIdentity {
+  executionId: string;
+  weightSnapshotCount?: number;
+  weightSnapshotFetchedAt?: string;
+  weightSnapshotHash?: string;
+}
+
 interface RescoreDisplayTarget extends ViewerPredictionCacheTarget {
   raceStartAtJst: string | undefined;
+  rescoreLifecycle: RescoreLifecycleIdentity;
 }
 
 type ViewerPredictionCacheRepairOutcome = "complete" | "outside-window" | "retry";
 
 interface PredictionCacheRepairEnqueueOptions {
   delaySeconds: number;
+  rescoreLifecycle?: RescoreLifecycleIdentity;
 }
 
 const toViewerPredictionCacheTarget = (
@@ -610,17 +619,22 @@ const warmViewerDisplayBestEffort = async (
   return false;
 };
 
+interface RescoreDisplayPublishResult {
+  published: boolean;
+  viewerWarmed: boolean;
+}
+
 const publishAndWarmRescoreDisplay = async (
   env: Env,
   target: RescoreDisplayTarget,
-): Promise<boolean> => {
+): Promise<RescoreDisplayPublishResult> => {
   if (
     !isBeforeRaceStartDeadline({
       nowMs: Date.now(),
       raceStartAtJst: target.raceStartAtJst,
     })
   )
-    return false;
+    return { published: false, viewerWarmed: false };
   const published = await publishPredictionKvForRace(env, {
     bustCacheApi: true,
     category: target.category,
@@ -632,10 +646,12 @@ const publishAndWarmRescoreDisplay = async (
     throw new Error(`Prediction KV publish did not write: ${published.status}`);
   }
   if (!published.busted) throw new Error("Prediction viewer cache bust failed");
-  if (!(await warmViewerDisplayBestEffort(env, published, target, target.category))) {
+  const viewerWarmed = await warmViewerDisplayBestEffort(env, published, target, target.category);
+  if (!viewerWarmed) {
     try {
       await enqueuePredictionCacheRepair(env, target, {
         delaySeconds: PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS,
+        rescoreLifecycle: target.rescoreLifecycle,
       });
       console.warn(
         `[predict-queue] deferred prediction cache repair after warm miss category=${target.category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}`,
@@ -644,9 +660,10 @@ const publishAndWarmRescoreDisplay = async (
       console.warn(
         `[predict-queue] failed to defer prediction cache repair after warm miss category=${target.category} runYmd=${target.runYmd} keibajo=${target.keibajoCode} race=${target.raceBango}: ${String(error)}`,
       );
+      throw new Error("Prediction cache repair enqueue failed", { cause: error });
     }
   }
-  return true;
+  return { published: true, viewerWarmed };
 };
 
 const repairViewerPredictionCache = async (
@@ -672,12 +689,15 @@ const enqueuePredictionCacheRepair = async (
   const message = {
     ...target,
     type: "prediction-cache-repair",
+    ...(options?.rescoreLifecycle === undefined
+      ? {}
+      : { rescoreLifecycle: options.rescoreLifecycle }),
   } satisfies PredictionCacheRepairMessage;
   if (options === undefined) {
     await env.PREDICT_QUEUE.send(message);
     return;
   }
-  await env.PREDICT_QUEUE.send(message, options);
+  await env.PREDICT_QUEUE.send(message, { delaySeconds: options.delaySeconds });
 };
 
 const repairViewerPredictionCacheOrDefer = async (
@@ -741,6 +761,22 @@ const consumePredictionCacheRepair = async (
     }
     message.retry({ delaySeconds: PREDICTION_CACHE_REPAIR_RETRY_DELAY_SECONDS });
     return;
+  }
+  if (outcome === "complete" && message.body.rescoreLifecycle !== undefined) {
+    const lifecycle = message.body.rescoreLifecycle;
+    const params = {
+      category: message.body.category,
+      env,
+      executionId: lifecycle.executionId,
+      keibajoCode: message.body.keibajoCode,
+      raceBango: message.body.raceBango,
+      runYmd: message.body.runYmd,
+      weightSnapshotCount: lifecycle.weightSnapshotCount,
+      weightSnapshotFetchedAt: lifecycle.weightSnapshotFetchedAt,
+      weightSnapshotHash: lifecycle.weightSnapshotHash,
+    };
+    await completeRescoreRace({ ...params, status: "viewer_warm_complete" });
+    await completeRescoreRace({ ...params, status: "success" });
   }
   message.ack();
 };
@@ -1809,6 +1845,75 @@ const releaseRescoreSlot = (
     workKey: buildPredictWorkKey(message.body),
   });
 
+const buildRescoreLifecycleIdentity = (
+  message: Message<PerRaceRescoreMessage>,
+): RescoreLifecycleIdentity => ({
+  executionId: message.id,
+  ...(message.body.weightSnapshotCount === undefined
+    ? {}
+    : { weightSnapshotCount: message.body.weightSnapshotCount }),
+  ...(message.body.weightSnapshotFetchedAt === undefined
+    ? {}
+    : { weightSnapshotFetchedAt: message.body.weightSnapshotFetchedAt }),
+  ...(message.body.weightSnapshotHash === undefined
+    ? {}
+    : { weightSnapshotHash: message.body.weightSnapshotHash }),
+});
+
+const resumeRescoreDelivery = async (
+  message: Message<PerRaceRescoreMessage>,
+  env: Env,
+  state: string,
+  doName?: string,
+): Promise<void> => {
+  try {
+    if (state === "viewer_warm_complete") {
+      await completeRescoreExecution(message, env, "success");
+      if (doName !== undefined) {
+        await handOffTerminalContainerStop({
+          doName,
+          env,
+          role: "legacy",
+          workKey: buildPredictWorkKey(message.body),
+        });
+      }
+      message.ack();
+      return;
+    }
+    if (state === "score_complete") {
+      await completeRescoreExecution(message, env, "neon_complete");
+    }
+    const delivered = await publishAndWarmRescoreDisplay(env, {
+      category: message.body.category,
+      keibajoCode: message.body.keibajoCode,
+      raceBango: message.body.raceBango,
+      raceStartAtJst: message.body.raceStartAtJst,
+      rescoreLifecycle: buildRescoreLifecycleIdentity(message),
+      runYmd: message.body.runYmd,
+    });
+    if (!delivered.published) {
+      await finishExpiredRescore({ env, message, stage: "delivery-resume" });
+      return;
+    }
+    await completeRescoreExecution(message, env, "kv_complete");
+    if (delivered.viewerWarmed) {
+      await completeRescoreExecution(message, env, "viewer_warm_complete");
+      await completeRescoreExecution(message, env, "success");
+    }
+    if (doName !== undefined) {
+      await handOffTerminalContainerStop({
+        doName,
+        env,
+        role: "legacy",
+        workKey: buildPredictWorkKey(message.body),
+      });
+    }
+    message.ack();
+  } catch (error) {
+    await retryAfterFailure(message, env, error);
+  }
+};
+
 const claimRescoreExecutionOrFinish = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -1820,6 +1925,7 @@ const claimRescoreExecutionOrFinish = async (
       category,
       env,
       executionId: message.id,
+      force: message.body.dlqRedriveCount !== undefined,
       keibajoCode,
       raceBango,
       runYmd,
@@ -1837,6 +1943,15 @@ const claimRescoreExecutionOrFinish = async (
         workKey: buildPredictWorkKey(message.body),
       });
       message.ack();
+      return false;
+    }
+    if (
+      claim.state === "score_complete" ||
+      claim.state === "neon_complete" ||
+      claim.state === "kv_complete" ||
+      claim.state === "viewer_warm_complete"
+    ) {
+      await resumeRescoreDelivery(message, env, claim.state, doName);
       return false;
     }
     retryDeferredRescore(message, `execution-${claim.state ?? "claimed"}`);
@@ -1857,6 +1972,7 @@ const claimWorkerRescoreExecutionOrFinish = async (
       category,
       env,
       executionId: message.id,
+      force: message.body.dlqRedriveCount !== undefined,
       keibajoCode,
       raceBango,
       runYmd,
@@ -1870,6 +1986,15 @@ const claimWorkerRescoreExecutionOrFinish = async (
       message.ack();
       return false;
     }
+    if (
+      claim.state === "score_complete" ||
+      claim.state === "neon_complete" ||
+      claim.state === "kv_complete" ||
+      claim.state === "viewer_warm_complete"
+    ) {
+      await resumeRescoreDelivery(message, env, claim.state);
+      return false;
+    }
     retryDeferredRescore(message, `execution-${claim.state ?? "claimed"}`);
     return false;
   } catch (error) {
@@ -1878,10 +2003,18 @@ const claimWorkerRescoreExecutionOrFinish = async (
   }
 };
 
+type RescoreLifecycleStatus =
+  | "error"
+  | "kv_complete"
+  | "neon_complete"
+  | "score_complete"
+  | "success"
+  | "viewer_warm_complete";
+
 const completeRescoreExecution = (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
-  status: "error" | "success",
+  status: RescoreLifecycleStatus,
 ): Promise<void> =>
   completeRescoreRace({
     category: message.body.category,
@@ -2099,8 +2232,9 @@ const fetchPerRaceRescoreWithReconnect = async (
 // successful ack the viewer Cache API is warmed for the same race so the
 // event-driven horse-weight trigger surfaces fresh predictions on the race
 // detail page without waiting for cache TTL. KV write-through and the semantic
-// success commit are awaited before terminal cleanup. Stop/warm failures after
-// that commit must not make Queue redelivery run scoring a second time.
+// score/Neon/KV/Viewer stages are durably advanced before terminal cleanup.
+// Delivery failures after Neon commit resume at publication and must never make
+// Queue redelivery run scoring a second time.
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -2289,19 +2423,26 @@ const processContainerPerRaceRescore = async (
             );
           }
         }
-        const published = await publishAndWarmRescoreDisplay(env, {
+        await completeRescoreExecution(message, env, "score_complete");
+        await completeRescoreExecution(message, env, "neon_complete");
+        const delivered = await publishAndWarmRescoreDisplay(env, {
           category,
           keibajoCode,
           raceBango,
           raceStartAtJst,
+          rescoreLifecycle: buildRescoreLifecycleIdentity(message),
           runYmd,
         });
-        if (!published) {
+        if (!delivered.published) {
           deadlineExpired.value = true;
           await finishExpiredRescore({ env, message, stage: "container-kv-publish" });
           return;
         }
-        await completeRescoreExecution(message, env, "success");
+        await completeRescoreExecution(message, env, "kv_complete");
+        if (delivered.viewerWarmed) {
+          await completeRescoreExecution(message, env, "viewer_warm_complete");
+          await completeRescoreExecution(message, env, "success");
+        }
       })(),
     ]);
     lifecycle.terminal = true;
@@ -2386,18 +2527,25 @@ const processWorkerJraPerRaceRescore = async (
       await finishExpiredRescore({ env, message, stage: "worker-score-complete" });
       return;
     }
-    const published = await publishAndWarmRescoreDisplay(env, {
+    await completeRescoreExecution(message, env, "score_complete");
+    await completeRescoreExecution(message, env, "neon_complete");
+    const delivered = await publishAndWarmRescoreDisplay(env, {
       category,
       keibajoCode,
       raceBango,
       raceStartAtJst: message.body.raceStartAtJst,
+      rescoreLifecycle: buildRescoreLifecycleIdentity(message),
       runYmd,
     });
-    if (!published) {
+    if (!delivered.published) {
       await finishExpiredRescore({ env, message, stage: "worker-kv-publish" });
       return;
     }
-    await completeRescoreExecution(message, env, "success");
+    await completeRescoreExecution(message, env, "kv_complete");
+    if (delivered.viewerWarmed) {
+      await completeRescoreExecution(message, env, "viewer_warm_complete");
+      await completeRescoreExecution(message, env, "success");
+    }
     console.log(
       `Rescore Worker category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted} predictions=${result.predictionCount} model=${result.modelVersion} durationMs=${Date.now() - startedAt}`,
     );

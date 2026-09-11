@@ -238,11 +238,12 @@ test("claimRescoreRace throws when DO returns non-200", async () => {
   ).rejects.toThrow("DO claim-race failed: 500");
 });
 
-test("claimRescoreExecution sends execution ownership and stale budget", async () => {
+test("claimRescoreExecution sends execution ownership, redrive force, and stale budget", async () => {
   await claimRescoreExecution({
     category: "jra",
     env: makeEnv(),
     executionId: "queue-message-1",
+    force: true,
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260823",
@@ -253,6 +254,7 @@ test("claimRescoreExecution sends execution ownership and stale budget", async (
   await expect(request.json()).resolves.toStrictEqual({
     category: "jra",
     executionId: "queue-message-1",
+    force: true,
     keibajoCode: "05",
     raceBango: "11",
     runYmd: "20260823",
