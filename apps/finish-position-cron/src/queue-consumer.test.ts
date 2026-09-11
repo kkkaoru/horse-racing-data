@@ -341,7 +341,17 @@ const { consumeDayBasePickupMock } = vi.hoisted(() => ({
   consumeDayBasePickupMock: vi.fn(async () => undefined),
 }));
 
-const { prewarmCategoryWithOutcomeMock } = vi.hoisted(() => ({
+const { getPredictionReadinessMock, prewarmCategoryWithOutcomeMock } = vi.hoisted(() => ({
+  getPredictionReadinessMock: vi.fn(
+    async (): Promise<{
+      races: Array<{
+        keibajoCode: string;
+        postWeight: { complete: boolean; weightSnapshotAt: string | null };
+        raceBango: string;
+        source: string;
+      }>;
+    }> => ({ races: [] }),
+  ),
   prewarmCategoryWithOutcomeMock: vi.fn(async () => "landed"),
 }));
 
@@ -357,6 +367,10 @@ vi.mock("./day-base-prewarm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./day-base-prewarm")>();
   return { ...actual, prewarmCategoryWithOutcome: prewarmCategoryWithOutcomeMock };
 });
+
+vi.mock("./prediction-readiness", () => ({
+  getPredictionReadiness: getPredictionReadinessMock,
+}));
 
 import {
   PER_RACE_SCOPE_INVALID_ERROR,
@@ -517,6 +531,8 @@ beforeEach(() => {
   retryMock.mockClear();
   prewarmCategoryWithOutcomeMock.mockClear();
   prewarmCategoryWithOutcomeMock.mockResolvedValue("landed");
+  getPredictionReadinessMock.mockReset();
+  getPredictionReadinessMock.mockResolvedValue({ races: [] });
   sendMock.mockClear();
   sendMock.mockResolvedValue(undefined);
   watchSendMock.mockClear();
@@ -3940,6 +3956,265 @@ test("retries a NAR per-race rescore when the container final result status is e
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("acks an old NAR rescore generation after a newer post-weight generation is fully delivered", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error:
+      "RealtimeWeightFetchError: post-weight snapshot generation mismatch: race_key=nar:2026:0619:44:01",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockResolvedValue({
+    races: [
+      {
+        keibajoCode: "44",
+        postWeight: { complete: true, weightSnapshotAt: "2026-06-19T14:35:00+09:00" },
+        raceBango: "01",
+        source: "nar",
+      },
+    ],
+  });
+  isFocusedFullPredictionCompleteMock.mockResolvedValueOnce(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(isFocusedFullPredictionCompleteMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      notBefore: "2026-06-19T14:35:00+09:00",
+      requireKv: true,
+    }),
+  );
+  expect(consoleSpy).toHaveBeenCalledWith(
+    expect.stringContaining("superseded rescore complete; acknowledging old generation"),
+  );
+  consoleSpy.mockRestore();
+});
+
+test("acks a phantom generation after the authoritative older snapshot is fully delivered", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockResolvedValue({
+    races: [
+      {
+        keibajoCode: "44",
+        postWeight: { complete: true, weightSnapshotAt: "2026-06-19T14:11:00+09:00" },
+        raceBango: "01",
+        source: "nar",
+      },
+    ],
+  });
+  isFocusedFullPredictionCompleteMock.mockResolvedValueOnce(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(isFocusedFullPredictionCompleteMock).toHaveBeenCalledWith(
+    expect.objectContaining({ notBefore: "2026-06-19T14:11:00+09:00", requireKv: true }),
+  );
+  consoleSpy.mockRestore();
+});
+
+test("keeps retrying a generation mismatch until the newer post-weight delivery is complete", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockResolvedValue({
+    races: [
+      {
+        keibajoCode: "44",
+        postWeight: { complete: false, weightSnapshotAt: "2026-06-19T14:35:00+09:00" },
+        raceBango: "01",
+        source: "nar",
+      },
+    ],
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("keeps retrying a mismatch against the same authoritative weight generation", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockResolvedValue({
+    races: [
+      {
+        keibajoCode: "44",
+        postWeight: { complete: true, weightSnapshotAt: "2026-06-19T14:30:00+09:00" },
+        raceBango: "01",
+        source: "nar",
+      },
+    ],
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(isFocusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("keeps retrying a mismatch when the current race has no weight snapshot", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockResolvedValue({
+    races: [
+      {
+        keibajoCode: "44",
+        postWeight: { complete: false, weightSnapshotAt: null },
+        raceBango: "01",
+        source: "nar",
+      },
+    ],
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(isFocusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("fails closed on a generation mismatch with an invalid requested timestamp", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "nar",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+        weightSnapshotFetchedAt: "invalid",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(getPredictionReadinessMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("fails closed when superseded-generation readiness cannot be checked", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    category: "jra",
+    error: "post-weight snapshot generation mismatch",
+    racesPredicted: 0,
+    status: "error",
+    type: "result",
+  });
+  getPredictionReadinessMock.mockRejectedValue(new Error("readiness unavailable"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    expect.stringContaining("superseded rescore readiness unavailable"),
+  );
+  warnSpy.mockRestore();
   errorSpy.mockRestore();
 });
 

@@ -139,6 +139,30 @@ test("focused completion falls back to Neon when the KV generation is stale", as
   expect(neonMock).toHaveBeenCalledWith("postgres://example");
 });
 
+test("focused completion fails closed without Neon fallback when KV is required", async () => {
+  kvGetMock.mockResolvedValue(
+    Array.from({ length: 12 }, (_, index) => ({
+      horseNumber: String(index + 1),
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictionGeneratedAt: "2026-08-29T18:00:00.000Z",
+    })),
+  );
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "1",
+      notBefore: "2026-08-29T19:00:00.000Z",
+      raceBango: "4",
+      requireKv: true,
+      runYmd: "20260830",
+    }),
+  ).resolves.toBe(false);
+
+  expect(neonMock).not.toHaveBeenCalled();
+});
+
 test("focused completion falls back to Neon when KV preflight throws", async () => {
   kvGetMock.mockRejectedValue(new Error("KV unavailable"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

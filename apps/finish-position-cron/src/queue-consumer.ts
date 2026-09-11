@@ -76,6 +76,7 @@ import {
   type PredictResultLine,
 } from "./ndjson-stream";
 import { isOldDateRunYmd, OLD_DATE_THRESHOLD_DAYS } from "./old-date-guard";
+import { getPredictionReadiness } from "./prediction-readiness";
 import {
   buildOldDateSkipEventBindParams,
   buildOldDateSkipEventInsertSql,
@@ -213,6 +214,7 @@ const FOCUSED_FULL_RETRY_DELAY_SECONDS = 30;
 // minute lets the next status poll observe deadlineExpired and recycle it.
 const FOCUSED_FULL_IN_FLIGHT_STALE_MS = 31 * 60 * 1000;
 const RESCORE_EXECUTION_STALE_MS = 31 * 60 * 1000;
+const RESCORE_GENERATION_MISMATCH_FRAGMENT = "post-weight snapshot generation mismatch";
 const RESCORE_NEAR_POST_THRESHOLD_SECONDS = 5 * 60;
 const RESCORE_NEAR_POST_RETRY_MAX_SECONDS = 15;
 const MIN_RETRY_DELAY_SECONDS = 1;
@@ -2235,6 +2237,52 @@ const fetchPerRaceRescoreWithReconnect = async (
 // score/Neon/KV/Viewer stages are durably advanced before terminal cleanup.
 // Delivery failures after Neon commit resume at publication and must never make
 // Queue redelivery run scoring a second time.
+const isSupersededRescoreComplete = async (
+  message: Message<PerRaceRescoreMessage>,
+  env: Env,
+  error: unknown,
+): Promise<boolean> => {
+  if (!String(error).includes(RESCORE_GENERATION_MISMATCH_FRAGMENT)) return false;
+  const requestedAt = message.body.weightSnapshotFetchedAt;
+  if (requestedAt === undefined) return false;
+  const requestedAtMs = Date.parse(requestedAt);
+  if (!Number.isFinite(requestedAtMs)) return false;
+  try {
+    const readiness = await getPredictionReadiness({
+      env,
+      now: new Date(),
+      runYmd: message.body.runYmd,
+    });
+    const expectedSource = message.body.category === JRA_CATEGORY ? JRA_CATEGORY : NAR_CATEGORY;
+    const race = readiness.races.find(
+      (candidate) =>
+        candidate.source === expectedSource &&
+        candidate.keibajoCode === message.body.keibajoCode.padStart(2, "0") &&
+        candidate.raceBango === message.body.raceBango.padStart(2, "0"),
+    );
+    const latestWeightAt = race?.postWeight.weightSnapshotAt;
+    if (latestWeightAt === null || latestWeightAt === undefined) return false;
+    const latestWeightAtMs = Date.parse(latestWeightAt);
+    if (!Number.isFinite(latestWeightAtMs) || latestWeightAtMs === requestedAtMs) return false;
+    return isFocusedFullPredictionComplete({
+      category: message.body.category,
+      env,
+      keibajoCode: message.body.keibajoCode,
+      notBefore: latestWeightAt,
+      raceBango: message.body.raceBango,
+      requireKv: true,
+      runYmd: message.body.runYmd,
+    });
+  } catch (readinessError) {
+    console.warn(
+      `[predict-queue] superseded rescore readiness unavailable ${describePredictMessage(
+        message.body,
+      )}: ${String(readinessError)}`,
+    );
+    return false;
+  }
+};
+
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -2447,6 +2495,16 @@ const processContainerPerRaceRescore = async (
     ]);
     lifecycle.terminal = true;
     if (commitResult.status === "rejected") {
+      if (await isSupersededRescoreComplete(message, env, commitResult.reason)) {
+        console.log(
+          `[predict-queue] superseded rescore complete; acknowledging old generation ${describePredictMessage(
+            message.body,
+          )}`,
+        );
+        await completeRescoreExecution(message, env, "success");
+        message.ack();
+        return;
+      }
       console.error(
         `Container per-race rescore failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} durationMs=${
           Date.now() - startedAt

@@ -12,6 +12,7 @@ interface CompletionParams {
   keibajoCode: string;
   raceBango: string;
   notBefore?: string;
+  requireKv?: boolean;
 }
 
 interface CatalogEntry {
@@ -634,6 +635,7 @@ export const isFocusedFullPredictionComplete = async (
     return false;
   });
   if (kvComplete) return true;
+  if (params.requireKv === true) return false;
   const shared = {
     env: params.env,
     expectedCount: entries.length,
