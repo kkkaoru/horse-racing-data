@@ -57,9 +57,10 @@ export interface Env {
   // falls back to 0 (no backward window, matching the pre-lookback behavior).
   CORNER_FEATURES_LOOKBACK_DAYS?: string;
   PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
-  // Direct Cloudflare service binding for live odds warm-up. Avoids a public
-  // hostname/WAF round trip before materializing the market-signal R2 artifact.
+  // Direct Cloudflare service bindings for realtime reads. They avoid public
+  // hostname/WAF round trips for odds and horse-weight rescore inputs.
   REALTIME_HOT?: { fetch: typeof fetch };
+  REALTIME_SERVICE?: { fetch: typeof fetch };
   // Bearer credential for the catalog's fresh race-entry attestation endpoint.
   // Rescore retries fail closed before Container dispatch when this is absent.
   FINISH_POSITION_ATTESTATION_TOKEN?: string;

@@ -546,5 +546,9 @@
       "binding": "REALTIME_HOT",
       "service": "sync-realtime-data-hot",
     },
+    {
+      "binding": "REALTIME_SERVICE",
+      "service": "sync-realtime-data",
+    },
   ],
 }

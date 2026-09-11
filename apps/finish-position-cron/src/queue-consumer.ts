@@ -109,6 +109,7 @@ import {
 import { isBeforeRaceStartDeadline, RaceDeadlineExceededError } from "./race-deadline";
 import { addRescoreAttestationToUrl, createRescoreAttestation } from "./rescore-attestation";
 import { rescoreJraRace } from "./scoring/rescore-consumer";
+import { resolveRescoreRealtimeFetch } from "./scoring/rescore-fetch";
 import {
   buildRetryErrorBindParams,
   buildRetryErrorInsertSql,
@@ -2291,7 +2292,11 @@ const processWorkerJraPerRaceRescore = async (
       await finishExpiredRescore({ env, message, stage: "worker-start" });
       return;
     }
-    const result = await rescoreJraRace({ env, fetchImpl: fetch, message: message.body });
+    const result = await rescoreJraRace({
+      env,
+      fetchImpl: resolveRescoreRealtimeFetch(env, fetch),
+      message: message.body,
+    });
     if (result.status !== "ok") {
       throw new Error(`Worker rescore unavailable: ${result.status}`);
     }
