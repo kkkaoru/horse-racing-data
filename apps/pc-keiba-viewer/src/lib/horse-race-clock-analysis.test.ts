@@ -52,7 +52,7 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   kyosomeiKakkonai: null,
   raceBango: "01",
   seibetsuCode: "1",
-  sohaTime: "1050",
+  sohaTime: "1450",
   tanshoNinkijun: "03",
   tanshoOdds: "45",
   tenkoCode: "1",
@@ -77,7 +77,7 @@ const targetRace = (overrides: Partial<RaceTimeTargetRace>): RaceTimeTargetRace 
   popularity: "01",
   raceName: "一般",
   raceNumber: "11",
-  raceTime: "1050",
+  raceTime: "1450",
   trainerName: "調教師",
   ...overrides,
 });
@@ -94,7 +94,7 @@ const stats = (): RaceTimeStats => ({
   raceCount: 2,
   targetRaces: [
     targetRace({ kyori: "1000", raceTime: "575" }),
-    targetRace({ date: "20260308", kyori: "1700", raceTime: "1050" }),
+    targetRace({ date: "20260308", kyori: "1700", raceTime: "1450" }),
   ],
 });
 
@@ -103,7 +103,7 @@ it("scales mixed-distance winner clocks onto the current race distance", () => {
     currentDistance: "1700",
     races: [
       targetRace({ kyori: "1000", raceTime: "575" }),
-      targetRace({ date: "20260308", kyori: "1700", raceTime: "1050" }),
+      targetRace({ date: "20260308", kyori: "1700", raceTime: "1450" }),
     ],
   });
   expect(par.fastestRaceTime).toBe(977.5);
@@ -187,7 +187,7 @@ it("scales a horse clock to the current distance and skips incomplete rows", () 
   const rows = buildClockAnalysisRows({
     currentDistance: "1700",
     results: [
-      result({ kyori: "1700", sohaTime: "1050" }),
+      result({ kyori: "1700", sohaTime: "1450" }),
       result({
         bamei: "短い距離",
         currentUmaban: "02",
@@ -195,9 +195,9 @@ it("scales a horse clock to the current distance and skips incomplete rows", () 
         sohaTime: "575",
         umaban: "02",
       }),
-      result({ kohan3f: "000", sohaTime: "1050" }),
-      result({ kyori: "", sohaTime: "1050" }),
-      result({ kaisaiTsukihi: "00", sohaTime: "1050" }),
+      result({ kohan3f: "000", sohaTime: "1450" }),
+      result({ kyori: "", sohaTime: "1450" }),
+      result({ kaisaiTsukihi: "00", sohaTime: "1450" }),
     ],
     runners: [],
   });
@@ -219,13 +219,13 @@ it("plots every filtered race with scaled winner references, not a short mixed-d
   const rows = buildClockAnalysisRows({
     currentDistance: "1700",
     results: [
-      result({ kaisaiTsukihi: "0322", sohaTime: "1050" }),
-      result({ kaisaiTsukihi: "0101", sohaTime: "1100" }),
+      result({ kaisaiTsukihi: "0322", sohaTime: "1450" }),
+      result({ kaisaiTsukihi: "0101", sohaTime: "1500" }),
       result({
         bamei: "2着馬",
         currentUmaban: "02",
         kaisaiTsukihi: "0322",
-        sohaTime: "1060",
+        sohaTime: "1460",
         umaban: "02",
       }),
     ],
@@ -237,7 +237,7 @@ it("plots every filtered race with scaled winner references, not a short mixed-d
       currentDistance: "1700",
       races: [
         targetRace({ kyori: "1000", raceTime: "575" }),
-        targetRace({ kyori: "1700", raceTime: "1050" }),
+        targetRace({ kyori: "1700", raceTime: "1450" }),
       ],
     }),
   );
@@ -283,7 +283,7 @@ it("returns no scatter when there are no plottable rows", () => {
 it("keeps race times when winner last-3F is missing", () => {
   const par = buildScaledWinnerPar({
     currentDistance: "1700",
-    races: [targetRace({ kohan3f: "000", kyori: "1700", raceTime: "1050" })],
+    races: [targetRace({ kohan3f: "000", kyori: "1700", raceTime: "1450" })],
   });
   expect(par.fastestRaceTime).toBe(1050);
   expect(par.fastestKohan3f).toBe(null);

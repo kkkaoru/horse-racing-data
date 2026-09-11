@@ -51,7 +51,7 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   kyosomeiKakkonai: null,
   raceBango: "01",
   seibetsuCode: "1",
-  sohaTime: "1100",
+  sohaTime: "1500",
   tanshoNinkijun: "03",
   tanshoOdds: "45",
   tenkoCode: "1",
@@ -76,7 +76,7 @@ const targetRace = (overrides: Partial<RaceTimeTargetRace>): RaceTimeTargetRace 
   popularity: "01",
   raceName: "一般",
   raceNumber: "11",
-  raceTime: "1050",
+  raceTime: "1450",
   trainerName: "調教師",
   ...overrides,
 });
@@ -123,7 +123,7 @@ const stats = (): RaceTimeStats => ({
   raceCount: 10,
   targetRaces: [
     targetRace({ kyori: "1000", raceTime: "575" }),
-    targetRace({ date: "20260308", kyori: "1800", raceTime: "1100" }),
+    targetRace({ date: "20260308", kyori: "1800", raceTime: "1500" }),
   ],
 });
 

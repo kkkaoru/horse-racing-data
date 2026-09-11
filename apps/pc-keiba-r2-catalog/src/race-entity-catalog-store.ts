@@ -4,6 +4,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 
+import { parseEncodedRaceTimeSeconds } from "./race-time";
 import {
   normaliseRaceEntityHistoryRow,
   type RaceEntityCursorKey,
@@ -351,7 +352,7 @@ const objectRowToHistoryRow = (row: Record<string, unknown>): RaceEntityHistoryR
     race_name: textOrNull(row.kyosomei_hondai),
     race_start_sort_key: rowSortKey(row),
     race_start_time: textOrNull(row.hasso_jikoku),
-    race_time_seconds: scaledNumber(row.soha_time, "0000", 10),
+    race_time_seconds: parseEncodedRaceTimeSeconds(row.soha_time),
     result_id: rowResultId(row),
     source,
     track_code: textOrNull(row.track_code),

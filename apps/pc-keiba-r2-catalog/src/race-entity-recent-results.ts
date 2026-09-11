@@ -1,5 +1,6 @@
 // Run with bun (bunx vitest). Builds bounded keyset queries over the R2 Iceberg catalog.
 
+import { encodedRaceTimeTenthsSql } from "./race-time";
 import type {
   CatalogSource,
   R2SqlCatalogConfig,
@@ -494,7 +495,7 @@ const historySelect = ({
   ${trimSql("se.ijo_kubun_code")} AS abnormality_code,
   try_cast(nullif(${trimSql("se.tansho_ninkijun")}, '00') AS INT) AS popularity,
   try_cast(nullif(${trimSql("se.tansho_odds")}, '0000') AS FLOAT) / 10.0 AS win_odds,
-  try_cast(nullif(${trimSql("se.soha_time")}, '0000') AS FLOAT) / 10.0 AS race_time_seconds,
+  ${encodedRaceTimeTenthsSql(`try_cast(nullif(${trimSql("se.soha_time")}, '0000') AS FLOAT)`)} / 10.0 AS race_time_seconds,
   ${trimSql("se.time_sa")} AS margin,
   try_cast(nullif(${trimSql("se.kohan_3f")}, '000') AS FLOAT) / 10.0 AS final_3f_seconds,
   ${trimSql("se.corner_1")} AS corner_1,

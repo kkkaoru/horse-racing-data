@@ -6,6 +6,7 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import { formatEncodedRaceTime } from "../../../lib/race-time";
 import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { formatRunnerNumber } from "../../../lib/runner-format";
@@ -166,18 +167,7 @@ const parseNumber = (value: string): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const formatTenthsTime = (value: string): string => {
-  const tenths = parseNumber(value);
-  if (tenths === null) {
-    return "-";
-  }
-  const minutes = Math.floor(tenths / 600);
-  const seconds = Math.floor((tenths % 600) / 10);
-  const remainder = tenths % 10;
-  return minutes > 0
-    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
-    : `${seconds}.${remainder}`;
-};
+const formatTenthsTime = (value: string): string => formatEncodedRaceTime(value);
 
 const formatOdds = (value: string): string => {
   const odds = parseNumber(value);

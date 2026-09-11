@@ -12,6 +12,7 @@ import {
   DEFAULT_CONDITION_PAYOUT_CHART,
 } from "../../../lib/condition-analysis-charts";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import { parseEncodedRaceTimeTenths } from "../../../lib/race-time";
 import type {
   FinishPositionStatsRow,
   PayoutStatsRow,
@@ -264,7 +265,9 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                       <td>{targetRace.jockeyName || "-"}</td>
                       <td>{targetRace.trainerName || "-"}</td>
                       <td className="stats-name-cell">{targetRace.ownerName || "-"}</td>
-                      <td>{formatRaceTimeTenths(parseTenths(targetRace.raceTime))}</td>
+                      <td>
+                        {formatRaceTimeTenths(parseEncodedRaceTimeTenths(targetRace.raceTime))}
+                      </td>
                       <td>{formatRaceTimeDecimalTenths(parseTenths(targetRace.kohan3f))}</td>
                       <td>{parseRank(targetRace.popularity)}</td>
                     </tr>
@@ -382,7 +385,9 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                                         <td>{detail.horseNumber || "-"}</td>
                                         <td>{parseRank(detail.rank)}</td>
                                         <td>
-                                          {formatRaceTimeTenths(parseTenths(detail.raceTime))}
+                                          {formatRaceTimeTenths(
+                                            parseEncodedRaceTimeTenths(detail.raceTime),
+                                          )}
                                         </td>
                                         <td>{parseRank(detail.popularity)}</td>
                                         <td>{parseOdds(detail.winOdds)}</td>

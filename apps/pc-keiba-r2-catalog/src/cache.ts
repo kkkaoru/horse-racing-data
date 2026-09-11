@@ -97,7 +97,8 @@ const UNGRADED_OPEN_CACHE_TOKEN = "1";
 const EMPTY_GRADE_MATCH_CACHE_TOKEN = "2";
 const FINISH_DETAILS_CACHE_TOKEN = "1";
 const RACE_ENTITY_CURSOR_CACHE_TOKEN_LENGTH = 64;
-const RACE_ENTITY_HISTORY_CACHE_TOKEN = "object-v1";
+const RACE_ENTITY_HISTORY_CACHE_TOKEN = "object-v2-mssd";
+const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v1";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -172,6 +173,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
     url.searchParams.set("targetRaces", "1");
     url.searchParams.set("finishDetails", FINISH_DETAILS_CACHE_TOKEN);
+    url.searchParams.set("raceTimeEncoding", RACE_TIME_ENCODING_CACHE_TOKEN);
     appendCellClassCacheParams(url, descriptor);
   }
   return new Request(url);

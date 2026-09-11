@@ -401,7 +401,7 @@ it("getHorseRaceResults excludes empty and all-zero identities for a JRA current
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getHorseRaceResults",
-    "v2",
+    "v3-mssd",
   ]);
   expect(collectTableNames(queryArg)[0]).toBe("jvd_se");
   expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) not in \('\s*'\)/u);
@@ -1335,7 +1335,7 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getTimeScoreRows",
-    "v3-cell",
+    "v4-mssd",
   ]);
   expect(collectTableNames(queryArg)).toStrictEqual([
     "jvd_se",

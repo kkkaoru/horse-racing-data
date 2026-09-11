@@ -61,7 +61,7 @@ it("compacts signed entity cursors below the KV key limit", () => {
     raceBango: "05",
     source: "nar",
   });
-  expect(cacheRequestFor(descriptor).url).toMatch(/history=object-v1/u);
+  expect(cacheRequestFor(descriptor).url).toMatch(/history=object-v2-mssd/u);
   expect(cacheRequestFor(descriptor).url).toMatch(/cursor=x{64}$/u);
   expect(new TextEncoder().encode(kvKeyFor(descriptor)).byteLength).toBeLessThan(512);
 });
@@ -208,7 +208,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -225,7 +225,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=83&raceBango=09&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&targetRaces=1&finishDetails=1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=83&raceBango=09&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -271,7 +271,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
   );
 });
 

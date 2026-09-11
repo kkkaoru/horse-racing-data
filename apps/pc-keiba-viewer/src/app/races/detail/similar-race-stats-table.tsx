@@ -6,6 +6,7 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import { formatEncodedRaceTime } from "../../../lib/race-time";
 import type {
   Runner,
   SimilarRaceStatsRow,
@@ -155,19 +156,6 @@ const parseNumber = (value: string): number | null => {
   }
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : null;
-};
-
-const formatTenthsTime = (value: string): string => {
-  const tenths = parseNumber(value);
-  if (tenths === null) {
-    return "-";
-  }
-  const minutes = Math.floor(tenths / 600);
-  const seconds = Math.floor((tenths % 600) / 10);
-  const remainder = tenths % 10;
-  return minutes > 0
-    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
-    : `${seconds}.${remainder}`;
 };
 
 const formatOdds = (value: string): string => {
@@ -462,7 +450,7 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
                     </td>
                     <td>{detail.horseNumber || "-"}</td>
                     <td>{formatRank(detail.rank)}</td>
-                    <td>{formatTenthsTime(detail.raceTime)}</td>
+                    <td>{formatEncodedRaceTime(detail.raceTime)}</td>
                     <td>{formatRank(detail.popularity)}</td>
                     <td>{formatOdds(detail.winOdds)}</td>
                   </tr>

@@ -21,6 +21,7 @@ import {
   isCornerPacePredictionSupported,
   RACE_PACE_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/race-pace-prediction";
+import { formatEncodedRaceTime, parseEncodedRaceTimeTenths } from "../../../lib/race-time";
 import type { HorseRaceResult, RaceTimeStats, Runner } from "../../../lib/race-types";
 import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import {
@@ -176,24 +177,6 @@ const formatRaceConditions = (result: HorseRaceResult): string => {
   return tags.length > 0 ? tags.join(" / ") : cleanText(result.kyosoJokenMeisho);
 };
 
-const formatTenthsTime = (value: string | null | undefined, decodeBanEi = false): string => {
-  const cleaned = cleanText(value, "");
-  const tenths = parseNumber(cleaned);
-  if (tenths === null) {
-    return "-";
-  }
-  if (decodeBanEi) {
-    const padded = cleaned.padStart(4, "0");
-    return `${Number(padded.slice(0, -3))}:${padded.slice(-3, -1)}.${padded.slice(-1)}`;
-  }
-  const minutes = Math.floor(tenths / 600);
-  const seconds = Math.floor((tenths % 600) / 10);
-  const remainder = tenths % 10;
-  return minutes > 0
-    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
-    : `${seconds}.${remainder}`;
-};
-
 const formatDecimalTenths = (value: string | null | undefined): string => {
   const tenths = parseNumber(value);
   return tenths === null ? "-" : (tenths / 10).toFixed(1);
@@ -294,7 +277,7 @@ const getSortValue = (result: HorseRaceResult, key: SortKey): number | null => {
   if (key === "kohan3f") {
     return parseNumber(result.kohan3f);
   }
-  return parseSohaTimeTenths(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode));
+  return parseEncodedRaceTimeTenths(result.sohaTime);
 };
 
 const getDistanceValue = (result: HorseRaceResult): number | null => parseNumber(result.kyori);
@@ -343,27 +326,6 @@ const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): 
 const getCoveredRunnerNumbers = (results: HorseRaceResult[]): Set<string> =>
   new Set(results.map((result) => cleanText(result.currentUmaban, "")).filter(Boolean));
 
-// Decode a soha time into comparable total-tenths so faster times compare smaller.
-// Ban-ei encodes minutes/seconds/tenths packed in decimal (e.g. "3188" -> 3:18.8),
-// while other tracks store the value directly in tenths.
-const parseSohaTimeTenths = (
-  value: string | null | undefined,
-  decodeBanEi: boolean,
-): number | null => {
-  const raw = parseNumber(value);
-  if (raw === null) {
-    return null;
-  }
-  if (!decodeBanEi) {
-    return raw;
-  }
-  const padded = cleanText(value, "").padStart(4, "0");
-  const minutes = Number(padded.slice(0, -3));
-  const seconds = Number(padded.slice(-3, -1));
-  const tenths = Number(padded.slice(-1));
-  return minutes * 600 + seconds * 10 + tenths;
-};
-
 // Distance difference relative to the target distance, null when distance is missing.
 const getDistanceDiff = (result: HorseRaceResult, baseDistance: number): number | null => {
   const distance = getDistanceValue(result);
@@ -374,7 +336,7 @@ const getDistanceDiff = (result: HorseRaceResult, baseDistance: number): number 
 };
 
 const getComparablePace = (result: HorseRaceResult): number | null => {
-  const time = parseSohaTimeTenths(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode));
+  const time = parseEncodedRaceTimeTenths(result.sohaTime);
   const distance = getDistanceValue(result);
   if (time === null || distance === null || distance <= 0) {
     return null;
@@ -391,8 +353,8 @@ const compareEqualDistanceTimes = (
   direction: SortDirection,
 ): number => {
   const timeCompared = compareNullable(
-    parseSohaTimeTenths(left.sohaTime, isBanEiKeibajoCode(left.keibajoCode)),
-    parseSohaTimeTenths(right.sohaTime, isBanEiKeibajoCode(right.keibajoCode)),
+    parseEncodedRaceTimeTenths(left.sohaTime),
+    parseEncodedRaceTimeTenths(right.sohaTime),
     direction,
   );
   if (timeCompared !== 0) {
@@ -1076,7 +1038,7 @@ export function HorseRaceResultsTable({
         </td>
         <td>{formatRank(result.kakuteiChakujun)}</td>
         <td>{formatCornerRanks(result)}</td>
-        <td>{formatTenthsTime(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode))}</td>
+        <td>{formatEncodedRaceTime(result.sohaTime)}</td>
         {showLast3fColumn ? <td>{formatDecimalTenths(result.kohan3f)}</td> : null}
         <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
           {cleanText(result.kishumeiRyakusho)}
@@ -1501,12 +1463,7 @@ export function HorseRaceResultsTable({
                                     <td>{formatDistance(detail.kyori)}</td>
                                     <td>{formatRank(detail.kakuteiChakujun)}</td>
                                     <td>{formatCornerRanks(detail)}</td>
-                                    <td>
-                                      {formatTenthsTime(
-                                        detail.sohaTime,
-                                        isBanEiKeibajoCode(detail.keibajoCode),
-                                      )}
-                                    </td>
+                                    <td>{formatEncodedRaceTime(detail.sohaTime)}</td>
                                     {showLast3fColumn ? (
                                       <td>{formatDecimalTenths(detail.kohan3f)}</td>
                                     ) : null}

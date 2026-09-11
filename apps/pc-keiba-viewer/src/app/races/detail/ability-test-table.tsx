@@ -9,6 +9,7 @@ import {
   formatTrack,
   formatWeather,
 } from "../../../lib/format";
+import { formatEncodedRaceTime } from "../../../lib/race-time";
 import type { AbilityTest } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -58,7 +59,7 @@ const parseNumber = (value: string | null | undefined): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const formatTenthsTime = (value: string | null | undefined): string => {
+const formatSectionalTime = (value: string | null | undefined): string => {
   const tenths = parseNumber(value);
   if (tenths === null) {
     return "-";
@@ -176,9 +177,9 @@ export function AbilityTestTable({ abilityTests }: AbilityTestTableProps) {
                 )}
               </td>
               <td>{formatRunnerValue(test.juni, "00")}</td>
-              <td>{formatTenthsTime(test.sohaTime)}</td>
-              <td>{formatTenthsTime(test.kohan4f)}</td>
-              <td>{formatTenthsTime(test.kohan3f)}</td>
+              <td>{formatEncodedRaceTime(test.sohaTime)}</td>
+              <td>{formatSectionalTime(test.kohan4f)}</td>
+              <td>{formatSectionalTime(test.kohan3f)}</td>
               <td>{formatDistance(test.kyori)}</td>
               <td>{formatTrack(test.trackCode)}</td>
               <td>{formatWeather(test.tenkoCode)}</td>

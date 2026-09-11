@@ -46,7 +46,7 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   kyosomeiKakkonai: null,
   raceBango: "01",
   seibetsuCode: "1",
-  sohaTime: "1050",
+  sohaTime: "1450",
   tanshoNinkijun: "03",
   tanshoOdds: "45",
   tenkoCode: "1",
@@ -251,8 +251,8 @@ it("plots every filtered race for the same horse", () => {
     <HorseRaceClockGallery
       currentDistance="1700"
       results={[
-        result({ kaisaiTsukihi: "0322", sohaTime: "1050" }),
-        result({ kaisaiTsukihi: "0101", sohaTime: "1100" }),
+        result({ kaisaiTsukihi: "0322", sohaTime: "1450" }),
+        result({ kaisaiTsukihi: "0101", sohaTime: "1500" }),
       ]}
       runners={[]}
       stats={null}

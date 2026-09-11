@@ -262,7 +262,7 @@ it("normalises rich history and excludes future leakage", async () => {
     race_bango: "04",
     result_id: "nar:20260827:50:04:07:2022103916",
     shusso_tosu: "12",
-    soha_time: "830",
+    soha_time: "1230",
     source: "nar",
     tansho_ninkijun: "02",
     tansho_odds: "0120",

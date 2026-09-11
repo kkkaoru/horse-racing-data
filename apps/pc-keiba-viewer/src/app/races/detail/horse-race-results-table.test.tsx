@@ -881,7 +881,7 @@ describe("horse race results table", () => {
     expect(restoredRaceNameCells).toStrictEqual(["同距離1800", "速い1900", "短い1700"]);
   });
 
-  it("sorts ban-ei clocks by decoded minutes instead of the packed numeric string", () => {
+  it("sorts encoded race clocks by decoded minutes", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -896,9 +896,9 @@ describe("horse race results table", () => {
             currentUmaban: "01",
             keibajoCode: "83",
             kyori: "200",
-            kyosomeiHondai: "遅いばんえい",
+            kyosomeiHondai: "速いばんえい",
             raceBango: "01",
-            sohaTime: "1999",
+            sohaTime: "1599",
             source: "nar",
             trackCode: "90",
           }),
@@ -907,7 +907,7 @@ describe("horse race results table", () => {
             keibajoCode: "83",
             kettoTorokuBango: "2022100002",
             kyori: "200",
-            kyosomeiHondai: "速いばんえい",
+            kyosomeiHondai: "遅いばんえい",
             raceBango: "02",
             sohaTime: "2000",
             umaban: "02",

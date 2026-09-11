@@ -78,7 +78,7 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   kyosomeiKakkonai: null,
   raceBango: "01",
   seibetsuCode: "1",
-  sohaTime: "1100",
+  sohaTime: "1500",
   tanshoNinkijun: "03",
   tanshoOdds: "45",
   tenkoCode: "1",
@@ -209,10 +209,11 @@ it("uses finish rank instead of last 3F copy for Ban-ei charts", () => {
 });
 
 it("parses soha times as tenths and packed ban-ei clocks", () => {
-  expect(parseSohaTimeTenths("1100", false)).toBe(1100);
-  expect(parseSohaTimeTenths("3188", true)).toBe(1988);
-  expect(parseSohaTimeTenths("0000", false)).toBe(null);
-  expect(parseSohaTimeTenths(null, false)).toBe(null);
+  expect(parseSohaTimeTenths("1100")).toBe(700);
+  expect(parseSohaTimeTenths("1008")).toBe(608);
+  expect(parseSohaTimeTenths("3188")).toBe(1988);
+  expect(parseSohaTimeTenths("0000")).toBe(null);
+  expect(parseSohaTimeTenths(null)).toBe(null);
 });
 
 it("parses last-3F tenths and finish ranks", () => {
@@ -251,7 +252,7 @@ it("returns null when no race has both a clock and a last 3F", () => {
   expect(
     buildDrawnRaceTimeChart({
       currentDistance: "1800",
-      results: [result({ kohan3f: "000", sohaTime: "1100" })],
+      results: [result({ kohan3f: "000", sohaTime: "1500" })],
       stats: null,
     }),
   ).toBe(null);
@@ -290,7 +291,7 @@ it("plots a faster last 3F to the right and a faster race time higher", () => {
         currentUmaban: "02",
         kakuteiChakujun: "08",
         kohan3f: "400",
-        sohaTime: "1200",
+        sohaTime: "2000",
         umaban: "02",
       }),
       result({
@@ -298,7 +299,7 @@ it("plots a faster last 3F to the right and a faster race time higher", () => {
         currentUmaban: "01",
         kakuteiChakujun: "01",
         kohan3f: "330",
-        sohaTime: "1000",
+        sohaTime: "1400",
       }),
     ],
     stats: null,
@@ -450,13 +451,13 @@ it("scales different distances onto the current race distance", () => {
         bamei: "1600馬",
         currentUmaban: "01",
         kyori: "1600",
-        sohaTime: "1000",
+        sohaTime: "1400",
       }),
       result({
         bamei: "2000馬",
         currentUmaban: "02",
         kyori: "2000",
-        sohaTime: "1250",
+        sohaTime: "2050",
         umaban: "02",
       }),
     ],
@@ -509,8 +510,8 @@ it("drops a result with no distance when the current race distance is known", ()
   const drawn = buildDrawnRaceTimeChart({
     currentDistance: "1800",
     results: [
-      result({ kyori: "0000", sohaTime: "1100" }),
-      result({ bamei: "距離あり", sohaTime: "1100" }),
+      result({ kyori: "0000", sohaTime: "1500" }),
+      result({ bamei: "距離あり", sohaTime: "1500" }),
     ],
     stats: null,
   });
@@ -525,11 +526,11 @@ it("keeps raw clocks when the current race distance is missing", () => {
   const drawn = buildDrawnRaceTimeChart({
     currentDistance: "",
     results: [
-      result({ kyori: "1600", sohaTime: "1000" }),
+      result({ kyori: "1600", sohaTime: "1400" }),
       result({
         bamei: "距離なし",
         kyori: null,
-        sohaTime: "1000",
+        sohaTime: "1400",
         umaban: "02",
         currentUmaban: "02",
       }),

@@ -8,6 +8,7 @@ import {
   formatRaceNumber,
   formatTrack,
 } from "../lib/format";
+import { formatEncodedRaceTime } from "../lib/race-time";
 import type {
   EntityDetailSummary,
   EntityListQuery,
@@ -392,24 +393,6 @@ const formatOdds = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? (parsed / 10).toFixed(1) : "-";
 };
 
-const formatRaceTime = (value: string | null | undefined, decodeBanEi = false): string => {
-  const cleaned = cleanText(value, "");
-  const parsed = Number(cleaned);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return "-";
-  }
-  if (decodeBanEi) {
-    const padded = cleaned.padStart(4, "0");
-    return `${Number(padded.slice(0, -3))}:${padded.slice(-3, -1)}.${padded.slice(-1)}`;
-  }
-  const minutes = Math.floor(parsed / 600);
-  const seconds = Math.floor((parsed % 600) / 10);
-  const remainder = parsed % 10;
-  return minutes > 0
-    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
-    : `${seconds}.${remainder}`;
-};
-
 const formatLast3f = (value: string | null | undefined): string => {
   const parsed = Number(cleanText(value, ""));
   return Number.isFinite(parsed) && parsed > 0 ? (parsed / 10).toFixed(1) : "-";
@@ -567,9 +550,7 @@ export function EntityRaceResultsTable({
               <td>{formatTrack(row.trackCode)}</td>
               <td>{formatRank(row.rank)}</td>
               <td>{formatCornerRanks(row)}</td>
-              {showRaceTimeColumns ? (
-                <td>{formatRaceTime(row.raceTime, isBanEiKeibajoCode(row.keibajoCode))}</td>
-              ) : null}
+              {showRaceTimeColumns ? <td>{formatEncodedRaceTime(row.raceTime)}</td> : null}
               {showLast3fColumn ? <td>{formatLast3f(row.last3f)}</td> : null}
               <td>{formatRank(row.popularity)}</td>
               <td>{formatOdds(row.winOdds)}</td>

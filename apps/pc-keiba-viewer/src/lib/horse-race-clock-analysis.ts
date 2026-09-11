@@ -19,7 +19,7 @@ import {
   summariseNumbers,
 } from "./horse-race-time-charts";
 import type { HorseRaceResult, RaceTimeStats, RaceTimeTargetRace } from "./race-types";
-import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
+import { formatRunnerNumber } from "./runner-format";
 
 export interface ClockAnalysisRow {
   dateLabel: string;
@@ -277,7 +277,7 @@ export const buildClockAnalysisRows = ({
   const targetDistance = parseRaceDistanceMeters(currentDistance);
   const wakubanByKetto = buildRunnerWakubanMap(runners);
   return results.flatMap((result) => {
-    const soha = parseSohaTimeTenths(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode));
+    const soha = parseSohaTimeTenths(result.sohaTime);
     const kohan = parseKohan3fTenths(result.kohan3f);
     if (soha === null || kohan === null) {
       return [];
@@ -319,7 +319,7 @@ export const buildScaledWinnerPar = ({
 }: BuildScaledWinnerParParams): ClockPar => {
   const targetDistance = parseRaceDistanceMeters(currentDistance);
   const times = races.flatMap((race) => {
-    const soha = parseSohaTimeTenths(race.raceTime, isBanEiKeibajoCode(race.keibajoCode));
+    const soha = parseSohaTimeTenths(race.raceTime);
     if (soha === null) {
       return [];
     }

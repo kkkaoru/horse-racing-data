@@ -44,9 +44,20 @@ describe("entity race results table", () => {
     expect(screen.getByRole("columnheader", { name: "レースタイム" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "上がり3F" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "コーナー順位" })).toBeTruthy();
-    expect(screen.getByText("1:52.3")).toBeTruthy();
+    expect(screen.getByText("1:12.3")).toBeTruthy();
     expect(screen.getByText("37.8")).toBeTruthy();
     expect(screen.getByText("3-4-5-6")).toBeTruthy();
+  });
+
+  it("shows the JRA time 1008 as 1:00.8", () => {
+    render(
+      <EntityRaceResultsTable
+        rows={[row({ kaisaiTsukihi: "0613", keibajoCode: "02", raceTime: "1008" })]}
+        showRaceTimeColumns
+      />,
+    );
+
+    expect(screen.getByText("1:00.8")).toBeTruthy();
   });
 
   it("keeps race time and hides last 3F for ban-ei horse detail rows", () => {

@@ -1,3 +1,4 @@
+import { formatRaceTimeTenths as formatCalculatedRaceTime } from "../../../lib/race-time";
 import type { RaceTimeStats } from "../../../lib/race-types";
 
 interface RaceTimeStatsMetric {
@@ -5,18 +6,8 @@ interface RaceTimeStatsMetric {
   value: string;
 }
 
-export const formatRaceTimeTenths = (value: number | null): string => {
-  if (value === null) {
-    return "-";
-  }
-  const tenths = Math.round(value);
-  const minutes = Math.floor(tenths / 600);
-  const seconds = Math.floor((tenths % 600) / 10);
-  const remainder = tenths % 10;
-  return minutes > 0
-    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
-    : `${seconds}.${remainder}`;
-};
+export const formatRaceTimeTenths = (value: number | null): string =>
+  formatCalculatedRaceTime(value);
 
 export const formatRaceTimeDecimalTenths = (value: number | null): string =>
   value === null ? "-" : (value / 10).toFixed(1);

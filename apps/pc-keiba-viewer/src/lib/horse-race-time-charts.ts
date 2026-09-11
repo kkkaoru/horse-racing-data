@@ -4,8 +4,9 @@ import { scaleLinear } from "d3";
 
 import { cleanText, formatDate, formatKeibajo } from "./format";
 import { horseRaceChartColorForUmaban } from "./horse-race-results-chart-data";
+import { formatRaceTimeTenths, parseEncodedRaceTimeTenths } from "./race-time";
 import type { HorseRaceResult, RaceTimeStats, Runner } from "./race-types";
-import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
+import { formatRunnerNumber } from "./runner-format";
 
 export interface RaceTimeChartPoint {
   carriedWeightDeltaKg: number | null;
@@ -269,23 +270,8 @@ const parseClockNumber = (value: string | null | undefined): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-export const parseSohaTimeTenths = (
-  value: string | null | undefined,
-  decodeBanEi: boolean,
-): number | null => {
-  const raw = parseClockNumber(value);
-  if (raw === null) {
-    return null;
-  }
-  if (!decodeBanEi) {
-    return raw;
-  }
-  const padded = cleanText(value, "").padStart(4, "0");
-  const minutes = Number(padded.slice(0, -3));
-  const seconds = Number(padded.slice(-3, -1));
-  const tenths = Number(padded.slice(-1));
-  return minutes * 600 + seconds * 10 + tenths;
-};
+export const parseSohaTimeTenths = (value: string | null | undefined): number | null =>
+  parseEncodedRaceTimeTenths(value);
 
 export const parseKohan3fTenths = (value: string | null | undefined): number | null =>
   parseClockNumber(value);
@@ -317,16 +303,7 @@ export const parseRaceFinishRank = (value: string | null | undefined): number | 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
-export const formatRaceTimeTenthsLabel = (tenths: number): string => {
-  const rounded = Math.round(tenths);
-  const minutes = Math.floor(rounded / 600);
-  const seconds = Math.floor((rounded % 600) / 10);
-  const remainder = rounded % 10;
-  if (minutes > 0) {
-    return `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`;
-  }
-  return `${seconds}.${remainder}`;
-};
+export const formatRaceTimeTenthsLabel = (tenths: number): string => formatRaceTimeTenths(tenths);
 
 export const formatKohan3fTenthsLabel = (tenths: number): string => (tenths / 10).toFixed(1);
 
@@ -557,10 +534,7 @@ const collectChartRows = ({
   results,
 }: CollectChartRowsParams): RaceTimeChartRow[] =>
   results.flatMap((result) => {
-    const sohaTimeTenths = parseSohaTimeTenths(
-      result.sohaTime,
-      isBanEiKeibajoCode(result.keibajoCode),
-    );
+    const sohaTimeTenths = parseSohaTimeTenths(result.sohaTime);
     const kohan3fTenths = parseKohan3fTenths(result.kohan3f);
     if (sohaTimeTenths === null || kohan3fTenths === null) {
       return [];
@@ -823,10 +797,7 @@ const collectBanEiAbilityRows = ({
   results,
 }: CollectBanEiAbilityRowsParams): BanEiAbilityRow[] =>
   results.flatMap((result) => {
-    const sohaTimeTenths = parseSohaTimeTenths(
-      result.sohaTime,
-      isBanEiKeibajoCode(result.keibajoCode),
-    );
+    const sohaTimeTenths = parseSohaTimeTenths(result.sohaTime);
     const finishRank = parseRaceFinishRank(result.kakuteiChakujun);
     const carriedWeightKg = parseBanEiCarriedWeightKg(result.futanJuryo);
     const horseWeightKg = parseBanEiHorseWeightKg(result.bataiju);

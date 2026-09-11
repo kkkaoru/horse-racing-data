@@ -11,6 +11,7 @@ import type {
   R2SqlCatalogConfig,
   WinRateHeatmapStatsFilters,
 } from "./types";
+import { encodedRaceTimeTenthsSql } from "./race-time";
 import {
   currentRaceCteSql,
   currentRaceIdentitySql,
@@ -160,6 +161,8 @@ const integerSelect = (expr: string, empty: string): string =>
 
 const doubleSelect = (expr: string): string =>
   `try_cast(nullif(btrim(coalesce(${expr}, '')), '') AS DOUBLE)`;
+
+const raceTimeTenthsSelect = (expr: string): string => encodedRaceTimeTenthsSql(doubleSelect(expr));
 
 const trimmedNameSql = (column: string): string =>
   `coalesce(nullif(btrim(replace(coalesce(${column}, ''), chr(12288), '')), ''), '-')`;
@@ -356,11 +359,10 @@ matched_history AS (
         env,
         extraJoin: "",
         extraWhere: `AND ${finishPositionSql("se")} = 1
-    AND ${doubleSelect("se.soha_time")} IS NOT NULL
-    AND ${doubleSelect("se.soha_time")} > 0
+    AND ${raceTimeTenthsSelect("se.soha_time")} IS NOT NULL
     ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
-        selectList: `${doubleSelect("se.soha_time")} AS race_time,
+        selectList: `${raceTimeTenthsSelect("se.soha_time")} AS race_time,
     ${doubleSelect("se.kohan_3f")} AS kohan_3f`,
         tables,
       }),
@@ -393,8 +395,7 @@ matched_history AS (
         env,
         extraJoin: "",
         extraWhere: `AND ${finishPositionSql("se")} = 1
-    AND ${doubleSelect("se.soha_time")} IS NOT NULL
-    AND ${doubleSelect("se.soha_time")} > 0
+    AND ${raceTimeTenthsSelect("se.soha_time")} IS NOT NULL
     ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
         selectList: `concat(ra.kaisai_nen, ra.kaisai_tsukihi) AS target_race_date,

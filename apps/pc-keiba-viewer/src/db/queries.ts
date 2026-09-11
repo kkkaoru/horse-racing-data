@@ -96,6 +96,22 @@ import {
 } from "./schema";
 
 const BLOODLINE_STATS_QUERY_VERSION = "v5";
+const ENTITY_RESULTS_QUERY_VERSION = "v2-mssd";
+const RACE_TIME_STATS_QUERY_VERSION = "v2-mssd";
+
+const raceTimeTenthsSql = (column: ReturnType<typeof sql>) => {
+  const cleaned = sql`btrim(coalesce(${column}, ''))`;
+  const padded = sql`lpad(${cleaned}, 4, '0')`;
+  return sql`case
+    when ${cleaned} ~ '^[0-9]{1,4}$'
+      and ${cleaned} !~ '^0+$'
+      and substring(${padded} from 2 for 2)::int < 60
+    then substring(${padded} from 1 for 1)::int * 600
+      + substring(${padded} from 2 for 2)::int * 10
+      + substring(${padded} from 4 for 1)::int
+    else null
+  end`;
+};
 
 const trimmedKettoColumn = (alias: string, column: string) =>
   sql`nullif(regexp_replace(${sql.raw(`${alias}.${column}`)}, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')`;
@@ -223,10 +239,10 @@ const BAN_EI_WEIGHT_CLASS_SQL =
 const NON_BAN_EI_WEIGHT_CLASS_SQL =
   "case when kg < 400 then 'le399' when kg < 420 then '400-419' when kg < 440 then '420-439' when kg < 460 then '440-459' when kg < 480 then '460-479' when kg < 500 then '480-499' when kg < 520 then '500-519' when kg < 540 then '520-539' else 'ge540' end";
 const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
-const HORSE_RACE_RESULTS_QUERY_VERSION = "v2";
+const HORSE_RACE_RESULTS_QUERY_VERSION = "v3-mssd";
 const RATE_PERCENT_DIVISOR = 10;
 const RATE_PERCENT_SCALE = 1000;
-const TIME_SCORE_QUERY_VERSION = "v3-cell";
+const TIME_SCORE_QUERY_VERSION = "v4-mssd";
 const CELL_CONDITION_LABEL_PAIRS = [
   ["005", "1勝クラス"],
   ["010", "2勝クラス"],
@@ -1788,7 +1804,7 @@ const entityResultsOrder = (order: string) => {
     case "odds":
       return sql`nullif(tansho_odds, '0000')::int asc nulls last, race_date desc`;
     case "time":
-      return sql`nullif(soha_time, '0000')::int asc nulls last, race_date desc`;
+      return sql`${raceTimeTenthsSql(sql.raw("soha_time"))} asc nulls last, race_date desc`;
     default:
       return sql`race_date desc, race_bango desc`;
   }
@@ -1863,8 +1879,8 @@ const getEntityDetailFilterCondition = (query: EntityListQuery) => {
       or (${query.turn} = 'left' and track_code in ('11', '12', '13', '14', '15', '16', '23', '25', '27'))
       or (${query.turn} = 'right' and track_code in ('17', '18', '19', '20', '21', '22', '24', '26', '28'))
     )
-    and (${raceTimeMin}::int is null or nullif(soha_time, '0000')::int >= ${raceTimeMin})
-    and (${raceTimeMax}::int is null or nullif(soha_time, '0000')::int <= ${raceTimeMax})
+    and (${raceTimeMin}::int is null or ${raceTimeTenthsSql(sql.raw("soha_time"))} >= ${raceTimeMin})
+    and (${raceTimeMax}::int is null or ${raceTimeTenthsSql(sql.raw("soha_time"))} <= ${raceTimeMax})
     and (${last3fMin}::int is null or nullif(kohan_3f, '000')::int >= ${last3fMin})
     and (${last3fMax}::int is null or nullif(kohan_3f, '000')::int <= ${last3fMax})
     and (${popularityMin}::int is null or nullif(tansho_ninkijun, '00')::int >= ${popularityMin})
@@ -2169,17 +2185,19 @@ export const getHorseDetailData = cache(
     if (/^0*$/u.test(kettoTorokuBango.trim())) {
       return null;
     }
-    return withDbQueryCache(["getHorseDetailData", kettoTorokuBango, query], async () => {
-      const rows = await getEntityResultRows(
-        sql`
+    return withDbQueryCache(
+      ["getHorseDetailData", ENTITY_RESULTS_QUERY_VERSION, kettoTorokuBango, query],
+      async () => {
+        const rows = await getEntityResultRows(
+          sql`
           ketto_toroku_bango = ${kettoTorokuBango}
           and ${getEntitySourceCondition(query.source)}
           ${getEntityDetailFilterCondition(query)}
         `,
-        query.order,
-      );
-      if (rows.length === 0) {
-        const nameResult = await getDb().execute<{ bamei: string }>(sql`
+          query.order,
+        );
+        if (rows.length === 0) {
+          const nameResult = await getDb().execute<{ bamei: string }>(sql`
           (
             select coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), ${kettoTorokuBango}) bamei
             from ${jvdSe}
@@ -2195,19 +2213,20 @@ export const getHorseDetailData = cache(
           )
           limit 1
         `);
-        const name = nameResult.rows[0]?.bamei;
-        return name
-          ? {
-              results: [],
-              summary: summarizeEntityResults(name, []),
-            }
-          : null;
-      }
-      return {
-        results: rows,
-        summary: summarizeEntityResults(rows[0]?.horseName ?? kettoTorokuBango, rows),
-      };
-    });
+          const name = nameResult.rows[0]?.bamei;
+          return name
+            ? {
+                results: [],
+                summary: summarizeEntityResults(name, []),
+              }
+            : null;
+        }
+        return {
+          results: rows,
+          summary: summarizeEntityResults(rows[0]?.horseName ?? kettoTorokuBango, rows),
+        };
+      },
+    );
   },
 );
 
@@ -5671,7 +5690,7 @@ export const getTimeScoreRows = cache(
       ),
       target_profile as (
         select
-          avg(nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric) target_race_time,
+          avg(${raceTimeTenthsSql(sql`se.soha_time`)}) target_race_time,
           avg(nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric) target_last3f,
           avg(nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric) target_body_weight,
           avg(nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric) target_carried_weight,
@@ -5723,7 +5742,7 @@ export const getTimeScoreRows = cache(
             se.kaisai_nen || se.kaisai_tsukihi race_date,
             se.keibajo_code,
             nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
-            nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric race_time,
+            ${raceTimeTenthsSql(sql`se.soha_time`)} race_time,
             nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
             nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
             nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
@@ -5741,7 +5760,7 @@ export const getTimeScoreRows = cache(
             se.kaisai_nen || se.kaisai_tsukihi race_date,
             se.keibajo_code,
             nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
-            nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric race_time,
+            ${raceTimeTenthsSql(sql`se.soha_time`)} race_time,
             nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
             nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
             nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
@@ -5996,41 +6015,44 @@ const cellRouterDistanceBandCaseSql = (input: {
 
 export const getRaceTimeStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<RaceTimeStats> => {
-    return withDbQueryCache(["getRaceTimeStats", race, settings], async () => {
-      const statsSource = getSingleStatsSource(race, settings);
-      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
-      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
-      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-      const historyDistanceBandSql = cellRouterDistanceBandCaseSql({
-        kyoriSql: sql`ra.kyori`,
-        source: statsSource,
-      });
-      const currentDistanceBandSql = cellRouterDistanceBandCaseSql({
-        kyoriSql: sql`${race.kyori}`,
-        source: statsSource,
-      });
-      const result = await getDb().execute<{
-        raceCount: string;
-        fastestRaceTime: string | null;
-        fastestKohan3f: string | null;
-        averageRaceTime: string | null;
-        averageKohan3f: string | null;
-        medianRaceTime: string | null;
-        medianKohan3f: string | null;
-        fastestDate: string | null;
-        fastestKeibajoCode: string | null;
-        fastestRaceNumber: string | null;
-        fastestRaceName: string | null;
-        fastestHorseName: string | null;
-        fastestFrameNumber: string | null;
-        fastestHorseNumber: string | null;
-        fastestJockeyName: string | null;
-        fastestRank: string | null;
-        fastestPopularity: string | null;
-        fastestWinOdds: string | null;
-        correlationRows: unknown;
-        targetRaces: unknown;
-      }>(sql`
+    return withDbQueryCache(
+      ["getRaceTimeStats", RACE_TIME_STATS_QUERY_VERSION, race, settings],
+      async () => {
+        const statsSource = getSingleStatsSource(race, settings);
+        const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+        const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+        const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+        const historyDistanceBandSql = cellRouterDistanceBandCaseSql({
+          kyoriSql: sql`ra.kyori`,
+          source: statsSource,
+        });
+        const currentDistanceBandSql = cellRouterDistanceBandCaseSql({
+          kyoriSql: sql`${race.kyori}`,
+          source: statsSource,
+        });
+        const result = await getDb().execute<{
+          raceCount: string;
+          fastestRaceTime: string | null;
+          fastestEncodedRaceTime: string | null;
+          fastestKohan3f: string | null;
+          averageRaceTime: string | null;
+          averageKohan3f: string | null;
+          medianRaceTime: string | null;
+          medianKohan3f: string | null;
+          fastestDate: string | null;
+          fastestKeibajoCode: string | null;
+          fastestRaceNumber: string | null;
+          fastestRaceName: string | null;
+          fastestHorseName: string | null;
+          fastestFrameNumber: string | null;
+          fastestHorseNumber: string | null;
+          fastestJockeyName: string | null;
+          fastestRank: string | null;
+          fastestPopularity: string | null;
+          fastestWinOdds: string | null;
+          correlationRows: unknown;
+          targetRaces: unknown;
+        }>(sql`
       with matched_races as (
         select
           ra.kaisai_nen,
@@ -6068,7 +6090,8 @@ export const getRaceTimeStats = cache(
           coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as owner_name,
           se.tansho_ninkijun,
           se.tansho_odds,
-          nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric as race_time,
+          se.soha_time encoded_race_time,
+          ${raceTimeTenthsSql(sql`se.soha_time`)} as race_time,
           nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric as kohan_3f
         from matched_races
         join ${runnerTable} se
@@ -6078,7 +6101,7 @@ export const getRaceTimeStats = cache(
           and se.race_bango = matched_races.race_bango
         where
           se.kakutei_chakujun = '01'
-          and nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+          and ${raceTimeTenthsSql(sql`se.soha_time`)} is not null
       ),
       target_top3 as (
         select
@@ -6309,7 +6332,7 @@ export const getRaceTimeStats = cache(
                 'jockeyName', limited_winner_rows.jockey_name,
                 'trainerName', limited_winner_rows.trainer_name,
                 'ownerName', limited_winner_rows.owner_name,
-                'raceTime', limited_winner_rows.race_time::text,
+                'raceTime', limited_winner_rows.encoded_race_time,
                 'kohan3f', limited_winner_rows.kohan_3f::text,
                 'popularity', limited_winner_rows.tansho_ninkijun
               )
@@ -6343,6 +6366,7 @@ export const getRaceTimeStats = cache(
         fastest.kakutei_chakujun as "fastestRank",
         fastest.tansho_ninkijun as "fastestPopularity",
         fastest.tansho_odds as "fastestWinOdds",
+        fastest.encoded_race_time as "fastestEncodedRaceTime",
         target_races."targetRaces",
         correlation_rows."correlationRows"
       from stats
@@ -6351,38 +6375,39 @@ export const getRaceTimeStats = cache(
       cross join correlation_rows
     `);
 
-      const row = result.rows[0];
-      const fastestDetail =
-        row?.fastestDate && row.fastestKeibajoCode && row.fastestRaceNumber
-          ? {
-              date: row.fastestDate,
-              frameNumber: row.fastestFrameNumber ?? "",
-              horseName: row.fastestHorseName ?? "",
-              horseNumber: row.fastestHorseNumber ?? "",
-              jockeyName: row.fastestJockeyName ?? "",
-              keibajoCode: row.fastestKeibajoCode,
-              popularity: row.fastestPopularity ?? "",
-              raceName: row.fastestRaceName ?? "",
-              raceNumber: row.fastestRaceNumber,
-              raceTime: row.fastestRaceTime ?? "",
-              rank: row.fastestRank ?? "",
-              winOdds: row.fastestWinOdds ?? "",
-            }
-          : null;
+        const row = result.rows[0];
+        const fastestDetail =
+          row?.fastestDate && row.fastestKeibajoCode && row.fastestRaceNumber
+            ? {
+                date: row.fastestDate,
+                frameNumber: row.fastestFrameNumber ?? "",
+                horseName: row.fastestHorseName ?? "",
+                horseNumber: row.fastestHorseNumber ?? "",
+                jockeyName: row.fastestJockeyName ?? "",
+                keibajoCode: row.fastestKeibajoCode,
+                popularity: row.fastestPopularity ?? "",
+                raceName: row.fastestRaceName ?? "",
+                raceNumber: row.fastestRaceNumber,
+                raceTime: row.fastestEncodedRaceTime ?? "",
+                rank: row.fastestRank ?? "",
+                winOdds: row.fastestWinOdds ?? "",
+              }
+            : null;
 
-      return {
-        averageKohan3f: toNullableNumber(row?.averageKohan3f),
-        averageRaceTime: toNullableNumber(row?.averageRaceTime),
-        fastestDetail,
-        fastestKohan3f: toNullableNumber(row?.fastestKohan3f),
-        fastestRaceTime: toNullableNumber(row?.fastestRaceTime),
-        correlationRows: toConditionCorrelationRows(row?.correlationRows),
-        medianKohan3f: toNullableNumber(row?.medianKohan3f),
-        medianRaceTime: toNullableNumber(row?.medianRaceTime),
-        raceCount: toCount(row?.raceCount),
-        targetRaces: toRaceTimeTargetRaces(row?.targetRaces),
-      };
-    });
+        return {
+          averageKohan3f: toNullableNumber(row?.averageKohan3f),
+          averageRaceTime: toNullableNumber(row?.averageRaceTime),
+          fastestDetail,
+          fastestKohan3f: toNullableNumber(row?.fastestKohan3f),
+          fastestRaceTime: toNullableNumber(row?.fastestRaceTime),
+          correlationRows: toConditionCorrelationRows(row?.correlationRows),
+          medianKohan3f: toNullableNumber(row?.medianKohan3f),
+          medianRaceTime: toNullableNumber(row?.medianRaceTime),
+          raceCount: toCount(row?.raceCount),
+          targetRaces: toRaceTimeTargetRaces(row?.targetRaces),
+        };
+      },
+    );
   },
 );
 
