@@ -31,6 +31,7 @@ const {
   enqueueDeliveryCanaryMock,
   listDeliveryCanariesMock,
   getPredictionReadinessMock,
+  hasCompleteCategoryPreWeightCoverageMock,
   pickUpPrewarmDayBaseMock,
   headDayBaseObjectMock,
   completeLandedDayBaseMock,
@@ -83,6 +84,7 @@ const {
     races: [],
     runYmd: "20260815",
   }));
+  const hasCompleteCategoryPreWeightCoverage = vi.fn(async () => false);
   const pickUpPrewarmDayBase = vi.fn(async () => false);
   const headDayBaseObject = vi.fn(async (): Promise<unknown> => null);
   const completeLandedDayBase = vi.fn(async () => 0);
@@ -143,6 +145,7 @@ const {
     enqueueDeliveryCanaryMock: enqueueDeliveryCanary,
     listDeliveryCanariesMock: listDeliveryCanaries,
     getPredictionReadinessMock: getPredictionReadiness,
+    hasCompleteCategoryPreWeightCoverageMock: hasCompleteCategoryPreWeightCoverage,
     pickUpPrewarmDayBaseMock: pickUpPrewarmDayBase,
     headDayBaseObjectMock: headDayBaseObject,
     completeLandedDayBaseMock: completeLandedDayBase,
@@ -170,6 +173,7 @@ vi.mock("./delivery-canary", () => ({
 
 vi.mock("./prediction-readiness", () => ({
   getPredictionReadiness: getPredictionReadinessMock,
+  hasCompleteCategoryPreWeightCoverage: hasCompleteCategoryPreWeightCoverageMock,
 }));
 
 vi.mock("./queue-consumer", () => ({ handleQueue: handleQueueMock }));
@@ -386,6 +390,8 @@ beforeEach(() => {
   enqueueDeliveryCanaryMock.mockClear();
   listDeliveryCanariesMock.mockClear();
   getPredictionReadinessMock.mockClear();
+  hasCompleteCategoryPreWeightCoverageMock.mockReset();
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValue(false);
   predictQueueSendMock.mockClear();
   weightRescoreQueueSendMock.mockClear();
   controlQueueSendMock.mockClear();
@@ -808,6 +814,52 @@ test("admin prewarm-day-base directly lands one category without queue starvatio
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
+test("admin prewarm-day-base skips Container work after category coverage is complete", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValueOnce(true);
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260910" }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    accepted: true,
+    category: "nar",
+    generationId: expect.any(String),
+    ok: true,
+    outcome: "coverage-complete",
+    queued: false,
+    runYmd: "20260910",
+  });
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm-day-base proceeds when the optional coverage check fails", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockRejectedValueOnce(
+    new Error("readiness unavailable"),
+  );
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260910" }),
+    ),
+    makeEnv(),
+  );
+
+  expect(response.status).toBe(200);
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-worker] admin-prewarm-day-base coverage check failed category=nar runYmd=20260910:",
+    "Error: readiness unavailable",
+  );
+  warnSpy.mockRestore();
+});
+
 test("admin prewarm-day-base forwards the feature-hit generation intent", async () => {
   const response = await handleFetch(
     adminPrewarmDayBaseRequest(
@@ -912,6 +964,7 @@ test("admin prewarm-day-base preserves an explicit category-scoped historical fo
     generationId: expect.any(String),
     runYmd: "20260817",
   });
+  expect(hasCompleteCategoryPreWeightCoverageMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base rejects invalid and unscoped historical force", async () => {
@@ -2265,6 +2318,7 @@ test("admin run focused full race endpoint enqueues a focused full prediction", 
     raceBango: "07",
     runDate: "2026-07-05",
     runYmd: "20260705",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     skipDedup: true,
   });
   expect(containerDoFetchMock).not.toHaveBeenCalled();
@@ -2295,6 +2349,7 @@ test("admin run focused full race endpoint omits optional debug and force fields
     raceBango: "07",
     runDate: "2026-07-05",
     runYmd: "20260705",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     skipDedup: true,
   });
 });
@@ -2322,6 +2377,7 @@ test("admin direct focused full race endpoint uses the coordinated Queue path", 
     raceBango: "02",
     runDate: "2026-08-26",
     runYmd: "20260826",
+    raceStartAtJst: "2026-06-19T15:30:00+09:00",
     skipDedup: true,
   });
   expect(containerDoFetchMock).not.toHaveBeenCalled();

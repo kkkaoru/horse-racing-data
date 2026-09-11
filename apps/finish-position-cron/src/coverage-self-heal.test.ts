@@ -149,8 +149,8 @@ test("COVERAGE_SELF_HEAL_CRON covers late local races and is offset by 7 minutes
   expect(COVERAGE_SELF_HEAL_CRON).toBe("7,22,37,52 1-14 * * *");
 });
 
-test("pre-race readiness constants mirror weight lead and keep separate budgets", () => {
-  expect(PRE_RACE_LEAD_MINUTES).toBe(180);
+test("pre-race readiness starts three hours before the weight window and keeps separate budgets", () => {
+  expect(PRE_RACE_LEAD_MINUTES).toBe(360);
   expect(PRE_RACE_ENQUEUE_CAP_PER_TICK).toBe(256);
   expect(MAX_PRE_RACE_ENQUEUES_PER_RACE).toBe(2);
   expect(PRE_RACE_ESCALATED_RETRY_MINUTES).toBe(30);
@@ -194,20 +194,20 @@ test("isPastGraceWindow is true only after the 15-minute grace after post", () =
   expect(isPastGraceWindow("not-a-date", NOW)).toBe(false);
 });
 
-test("isWithinPreRaceLeadWindow covers (now, now+180m] and rejects past/unparseable", () => {
+test("isWithinPreRaceLeadWindow covers (now, now+360m] and rejects past/unparseable", () => {
   // 1 minute ahead
   expect(isWithinPreRaceLeadWindow("2026-07-12T15:01:00+09:00", NOW)).toBe(true);
-  // exactly 180 minutes ahead (inclusive boundary)
-  expect(isWithinPreRaceLeadWindow("2026-07-12T18:00:00+09:00", NOW)).toBe(true);
-  // 181 minutes ahead (outside)
-  expect(isWithinPreRaceLeadWindow("2026-07-12T18:01:00+09:00", NOW)).toBe(false);
+  // exactly 360 minutes ahead (inclusive boundary)
+  expect(isWithinPreRaceLeadWindow("2026-07-12T21:00:00+09:00", NOW)).toBe(true);
+  // 361 minutes ahead (outside)
+  expect(isWithinPreRaceLeadWindow("2026-07-12T21:01:00+09:00", NOW)).toBe(false);
   // already at/ past post
   expect(isWithinPreRaceLeadWindow("2026-07-12T15:00:00+09:00", NOW)).toBe(false);
   expect(isWithinPreRaceLeadWindow("2026-07-12T14:00:00+09:00", NOW)).toBe(false);
   expect(isWithinPreRaceLeadWindow("not-a-date", NOW)).toBe(false);
 });
 
-test("buildPreRaceGapCandidates prioritizes the 17:00+ card and tags phase", () => {
+test("buildPreRaceGapCandidates uses strict post-time priority and tags phase", () => {
   const rows: RaceSourceRow[] = [
     {
       keibajo_code: "44",
@@ -232,17 +232,17 @@ test("buildPreRaceGapCandidates prioritizes the 17:00+ card and tags phase", () 
   expect(candidates).toStrictEqual([
     {
       category: "nar",
-      keibajoCode: "44",
-      phase: "pre-race",
-      raceBango: "10",
-      raceStartAtJst: "2026-07-12T17:00:00+09:00",
-    },
-    {
-      category: "nar",
       keibajoCode: "30",
       phase: "pre-race",
       raceBango: "01",
       raceStartAtJst: "2026-07-12T15:30:00+09:00",
+    },
+    {
+      category: "nar",
+      keibajoCode: "44",
+      phase: "pre-race",
+      raceBango: "10",
+      raceStartAtJst: "2026-07-12T17:00:00+09:00",
     },
   ]);
 });
@@ -318,8 +318,8 @@ test("runCoverageSelfHeal excludes races still inside the grace window, beyond t
       {
         keibajo_code: "05",
         race_bango: "02",
-        // 181 min ahead -- beyond pre-race lead
-        race_start_at_jst: "2026-07-12T18:01:00+09:00",
+        // 361 min ahead -- beyond pre-race lead
+        race_start_at_jst: "2026-07-12T21:01:00+09:00",
         source: "jra",
       },
       { keibajo_code: "05", race_bango: "03", race_start_at_jst: "not-a-date", source: "jra" },

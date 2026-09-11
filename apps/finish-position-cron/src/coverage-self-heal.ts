@@ -38,13 +38,13 @@ import {
 // cron-decision.ts). Same tick also runs the pre-race readiness scan.
 export const COVERAGE_SELF_HEAL_CRON = "7,22,37,52 1-14 * * *";
 const SELF_HEAL_GRACE_MINUTES = 15;
-// Mirrors WEIGHT_FETCH_LEAD_MINUTES in sync-realtime-data (180): open the
-// pre-race readiness window early enough that a worst-case serialised
-// focused-full pipeline (~13-27 min/race, single container slot per category)
-// still has room to finish before post for the earliest races in the window.
-export const PRE_RACE_LEAD_MINUTES = 180;
+// Open six hours before post, three hours before sync-realtime-data's 180-minute
+// weight window. The weight watchdog also gates acquisition on preWeight.complete,
+// but this separate recovery head start prevents a day-base repair burst from
+// postponing both the initial prediction and the subsequent weight rescore.
+export const PRE_RACE_LEAD_MINUTES = 360;
 // Keep the guard well above the maximum number of domestic races that can be
-// in one 180-minute window. The old value (16) silently left later races out
+// in one six-hour window. The old value (16) silently left later races out
 // of the pre-race window until the next tick; for a 15:35 race that meant the
 // prediction could start after post. Queue/DO lane claims already provide the
 // real concurrency bound, so this is only a last-resort corruption guard.
@@ -65,7 +65,7 @@ export const MAX_PRE_RACE_ENQUEUES_PER_RACE = 2;
 // After the pre-race budget is exhausted, keep retrying incomplete races that
 // are still before post -- 2026-08-09 Ban-ei 83/06-12 were left at 0 rows once
 // PRE_RACE_READY_ESCALATE fired at prior=2. Interval is 2x the 15-min tick so
-// a dead container is not stampeded every tick, while a 180-min lead window
+// a dead container is not stampeded every tick, while a six-hour lead window
 // still gets several more attempts before post.
 export const PRE_RACE_ESCALATED_RETRY_MINUTES = 30;
 const RUN_YMD_YEAR_END = 4;
@@ -279,15 +279,6 @@ const rowToCandidate = (row: RaceSourceRow, phase: HealPhase): GapCandidate => {
 // heal / readiness attempts before later ones when a tick is capacity-bound.
 const sortByRaceStartAscending = (candidates: GapCandidate[]): GapCandidate[] =>
   [...candidates].sort((a, b) => {
-    // From 17:00 JST onward, prioritize the late-card races as a group, then
-    // preserve strict post-time order inside that group. This prevents the
-    // earlier broad window from consuming the enqueue budget before the
-    // evening races have received their pre-weight prediction.
-    const aHour = Number.parseInt(a.raceStartAtJst.slice(11, 13), 10);
-    const bHour = Number.parseInt(b.raceStartAtJst.slice(11, 13), 10);
-    const aLate = Number.isFinite(aHour) && aHour >= 17;
-    const bLate = Number.isFinite(bHour) && bHour >= 17;
-    if (aLate !== bLate) return aLate ? -1 : 1;
     const aMs = Date.parse(a.raceStartAtJst);
     const bMs = Date.parse(b.raceStartAtJst);
     if (aMs !== bMs) return aMs - bMs;

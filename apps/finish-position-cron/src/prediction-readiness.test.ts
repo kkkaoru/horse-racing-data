@@ -5,13 +5,44 @@ vi.mock("@neondatabase/serverless", () => ({
   neon: vi.fn(() => ({ query: queryMock })),
 }));
 
-import { buildPredictionReadiness, getPredictionReadiness } from "./prediction-readiness";
+import {
+  buildPredictionReadiness,
+  getPredictionReadiness,
+  isCategoryPreWeightCoverageComplete,
+} from "./prediction-readiness";
+import type { PredictionReadinessResponse } from "./prediction-readiness";
 import type { Env } from "./types";
 
 const NOW = new Date("2026-08-15T00:00:00Z");
 
 beforeEach(() => {
   queryMock.mockReset();
+});
+
+it("requires at least one race and complete pre-weight coverage for the requested category", () => {
+  const readiness = {
+    races: [
+      { preWeight: { complete: true }, source: "nar" },
+      { preWeight: { complete: true }, source: "nar" },
+      { preWeight: { complete: false }, source: "jra" },
+    ],
+  } as unknown as PredictionReadinessResponse;
+
+  expect(isCategoryPreWeightCoverageComplete(readiness, "nar")).toBe(true);
+  expect(isCategoryPreWeightCoverageComplete(readiness, "jra")).toBe(false);
+  expect(isCategoryPreWeightCoverageComplete(readiness, "ban-ei")).toBe(false);
+  readiness.races.push({
+    preWeight: { complete: false, neonComplete: true },
+    source: "ban-ei",
+    started: true,
+  } as never);
+  expect(isCategoryPreWeightCoverageComplete(readiness, "ban-ei")).toBe(true);
+  readiness.races.push({
+    preWeight: { complete: false, neonComplete: false },
+    source: "ban-ei",
+    started: true,
+  } as never);
+  expect(isCategoryPreWeightCoverageComplete(readiness, "ban-ei")).toBe(false);
 });
 
 it("builds race coverage by intersecting eligible entries and predictions", () => {

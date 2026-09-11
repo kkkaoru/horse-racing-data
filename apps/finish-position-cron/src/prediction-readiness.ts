@@ -129,6 +129,10 @@ interface ReadinessInput {
   runYmd: string;
 }
 
+interface CategoryPreWeightCoverageInput extends ReadinessInput {
+  category: PredictCategory;
+}
+
 interface PostWeightReasonInput {
   kvAfterWeight: boolean;
   lastWeightFetchAt: string | null;
@@ -719,3 +723,21 @@ export const getPredictionReadiness = async (
     races,
   });
 };
+
+export const isCategoryPreWeightCoverageComplete = (
+  readiness: PredictionReadinessResponse,
+  category: PredictCategory,
+): boolean => {
+  const categoryRaces = readiness.races.filter((race) => race.source === category);
+  return (
+    categoryRaces.length > 0 &&
+    categoryRaces.every(
+      (race) => race.preWeight.complete || (race.started && race.preWeight.neonComplete),
+    )
+  );
+};
+
+export const hasCompleteCategoryPreWeightCoverage = async (
+  input: CategoryPreWeightCoverageInput,
+): Promise<boolean> =>
+  isCategoryPreWeightCoverageComplete(await getPredictionReadiness(input), input.category);

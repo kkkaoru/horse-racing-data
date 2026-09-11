@@ -341,7 +341,11 @@ const { consumeDayBasePickupMock } = vi.hoisted(() => ({
   consumeDayBasePickupMock: vi.fn(async () => undefined),
 }));
 
-const { getPredictionReadinessMock, prewarmCategoryWithOutcomeMock } = vi.hoisted(() => ({
+const {
+  getPredictionReadinessMock,
+  hasCompleteCategoryPreWeightCoverageMock,
+  prewarmCategoryWithOutcomeMock,
+} = vi.hoisted(() => ({
   getPredictionReadinessMock: vi.fn(
     async (): Promise<{
       races: Array<{
@@ -352,6 +356,7 @@ const { getPredictionReadinessMock, prewarmCategoryWithOutcomeMock } = vi.hoiste
       }>;
     }> => ({ races: [] }),
   ),
+  hasCompleteCategoryPreWeightCoverageMock: vi.fn(async () => false),
   prewarmCategoryWithOutcomeMock: vi.fn(async () => "landed"),
 }));
 
@@ -370,6 +375,7 @@ vi.mock("./day-base-prewarm", async (importOriginal) => {
 
 vi.mock("./prediction-readiness", () => ({
   getPredictionReadiness: getPredictionReadinessMock,
+  hasCompleteCategoryPreWeightCoverage: hasCompleteCategoryPreWeightCoverageMock,
 }));
 
 import {
@@ -533,6 +539,8 @@ beforeEach(() => {
   prewarmCategoryWithOutcomeMock.mockResolvedValue("landed");
   getPredictionReadinessMock.mockReset();
   getPredictionReadinessMock.mockResolvedValue({ races: [] });
+  hasCompleteCategoryPreWeightCoverageMock.mockReset();
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValue(false);
   sendMock.mockClear();
   sendMock.mockResolvedValue(undefined);
   watchSendMock.mockClear();
@@ -1364,6 +1372,7 @@ test("acks focused full skipDedup messages without container when Neon already h
       runYmd: "20260701",
     }),
   );
+  expect(getFocusedFullDayBaseReadinessMock).not.toHaveBeenCalled();
   // No full /predict re-run -- but exactly ONE fetch to the container's
   // GET /focused-full-cache pickup endpoint, since Neon completion means a
   // prior detached focused-full run may have left an unpicked R2 payload.
@@ -2779,6 +2788,41 @@ test("consumes a delayed day-base pickup without claiming a run or starting a pr
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(stubFetchMock).not.toHaveBeenCalled();
+});
+
+test("acks and cleans up a delayed day-base pickup after category coverage completes", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValueOnce(true);
+  const pickup = {
+    ack: ackMock,
+    body: {
+      attempt: 5,
+      category: "nar",
+      generationId: "stale-generation",
+      runYmd: "20260910",
+      type: "day-base-pickup",
+    },
+    retry: retryMock,
+  };
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await handleQueue({ messages: [pickup] } as never, makeEnv());
+
+  expect(consumeDayBasePickupMock).not.toHaveBeenCalled();
+  expect(clearDayBaseRepairReservationMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      env: expect.any(Object),
+      runYmd: "20260910",
+    }),
+  );
+  expect(controlSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ workKey: "day-base:20260910:nar:stale-generation" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(logSpy).toHaveBeenCalledWith(
+    "[predict-queue] day-base work skipped after complete coverage type=day-base-pickup category=nar runYmd=20260910",
+  );
+  logSpy.mockRestore();
 });
 
 test("acks an old non-force day-base pickup only after its strict cleanup completes", async () => {
@@ -8000,6 +8044,116 @@ test("consumes a day-base prewarm message and acknowledges a landed build", asyn
   });
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("acks a zero-day repair without starting a Container after category coverage is complete", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValueOnce(true);
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      requestedAt: "2026-09-10T09:00:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(clearDayBaseRepairReservationMock).toHaveBeenCalledWith({
+    category: "nar",
+    env: expect.any(Object),
+    runYmd: "20260910",
+  });
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[predict-queue] day-base work skipped after complete coverage type=day-base-prewarm category=nar runYmd=20260910",
+  );
+  logSpy.mockRestore();
+});
+
+test("continues a zero-day repair when one category race is incomplete", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockResolvedValueOnce(false);
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      requestedAt: "2026-09-10T09:00:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("continues prewarm fail-open when the optional complete-coverage check fails", async () => {
+  hasCompleteCategoryPreWeightCoverageMock.mockRejectedValueOnce(
+    new Error("readiness unavailable"),
+  );
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      requestedAt: "2026-09-10T09:00:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] day-base coverage check failed type=day-base-prewarm category=nar runYmd=20260910:",
+    "Error: readiness unavailable",
+  );
+  warnSpy.mockRestore();
+});
+
+test("does not run complete-coverage suppression for a multi-day scheduled prewarm", async () => {
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 2,
+      requestedAt: "2026-09-10T00:30:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(hasCompleteCategoryPreWeightCoverageMock).not.toHaveBeenCalled();
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("acks old non-force day-base prewarm work without restarting its container", async () => {

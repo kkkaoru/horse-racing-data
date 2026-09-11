@@ -76,7 +76,10 @@ import {
   type PredictResultLine,
 } from "./ndjson-stream";
 import { isOldDateRunYmd, OLD_DATE_THRESHOLD_DAYS } from "./old-date-guard";
-import { getPredictionReadiness } from "./prediction-readiness";
+import {
+  getPredictionReadiness,
+  hasCompleteCategoryPreWeightCoverage,
+} from "./prediction-readiness";
 import {
   buildOldDateSkipEventBindParams,
   buildOldDateSkipEventInsertSql,
@@ -122,6 +125,7 @@ import {
 } from "./retry-errors";
 import type {
   ContainerControlMessage,
+  DayBasePickupMessage,
   DayBasePrewarmMessage,
   Env,
   FocusedFullCompletionMessage,
@@ -2744,6 +2748,44 @@ const cleanupPastDayBaseWork = async (params: PastDayBaseWorkParams): Promise<vo
   ]);
 };
 
+const ackIfDayBaseCoverageComplete = async (
+  message: Message<DayBasePickupMessage | DayBasePrewarmMessage>,
+  env: Env,
+): Promise<boolean> => {
+  if (
+    message.body.force === true ||
+    (message.body.type === "day-base-prewarm" && message.body.daysAhead !== 0)
+  ) {
+    return false;
+  }
+  try {
+    const complete = await hasCompleteCategoryPreWeightCoverage({
+      category: message.body.category,
+      env,
+      now: new Date(),
+      runYmd: message.body.runYmd,
+    });
+    if (!complete) return false;
+    await cleanupPastDayBaseWork({
+      category: message.body.category,
+      env,
+      ...dayBaseGenerationFields(message.body.generationId),
+      runYmd: message.body.runYmd,
+    });
+    message.ack();
+    console.log(
+      `[predict-queue] day-base work skipped after complete coverage type=${message.body.type} category=${message.body.category} runYmd=${message.body.runYmd}`,
+    );
+    return true;
+  } catch (error) {
+    console.warn(
+      `[predict-queue] day-base coverage check failed type=${message.body.type} category=${message.body.category} runYmd=${message.body.runYmd}:`,
+      String(error),
+    );
+    return false;
+  }
+};
+
 const handlePastDayBaseSkip = async (
   message: Message<DayBasePrewarmMessage>,
   env: Env,
@@ -2794,8 +2836,11 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     : buildPredictWorkKey(message.body);
   const shouldCompleteCategoryRun = !isFocusedSkipDedup;
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
-  if (await deferFocusedFullUntilDayBaseReady(message, env)) return;
+  // Completion is independent of current day-base freshness. Check it first so
+  // delayed duplicate/forced deliveries that have already produced a newer
+  // generation cannot keep rebuilding day-base and starting Containers.
   if (await ackIfFocusedFullAlreadyComplete(message, env)) return;
+  if (await deferFocusedFullUntilDayBaseReady(message, env)) return;
   if (
     isFocusedSkipDedupMessage(message.body) &&
     !(await claimFocusedFullOrRetry(message, message.body, env))
@@ -3345,6 +3390,7 @@ export const handleQueue = async (
       await consumeContainerCleanup({ env, message: message.body });
       message.ack();
     } else if (isDayBasePickupQueueMessage(message)) {
+      if (await ackIfDayBaseCoverageComplete(message, env)) continue;
       await consumeDayBasePickup({ env, message: message.body });
       if (isOldDateRunYmd(message.body.runYmd, new Date()))
         await clearDayBaseRepairReservation({
@@ -3358,6 +3404,7 @@ export const handleQueue = async (
         await handlePastDayBaseSkip(message, env);
         continue;
       }
+      if (await ackIfDayBaseCoverageComplete(message, env)) continue;
       const outcome = await prewarmCategoryWithOutcome({
         category: message.body.category,
         daysAhead: message.body.daysAhead,

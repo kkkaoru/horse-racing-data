@@ -53,7 +53,10 @@ import {
   normalizePerRaceScope,
   PER_RACE_SCOPE_REQUIRED_ERROR,
 } from "./per-race-scope-guard";
-import { getPredictionReadiness } from "./prediction-readiness";
+import {
+  getPredictionReadiness,
+  hasCompleteCategoryPreWeightCoverage,
+} from "./prediction-readiness";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import type { PredictionContainerRole } from "./race-container-routing";
 import { handleQueue } from "./queue-consumer";
@@ -491,10 +494,7 @@ const buildRunDateFromYmd = (runYmd: string): string =>
 const describeRaceRequest = (body: RaceScopedPredictRequest): string =>
   `category=${body.category} runYmd=${body.runYmd} keibajo=${body.keibajoCode} race=${body.raceBango}`;
 
-const resolveRescoreRaceStartAtJst = async (
-  env: Env,
-  body: InternalRescoreRaceRequest,
-): Promise<string> => {
+const resolveRaceStartAtJst = async (env: Env, body: RaceScopedPredictRequest): Promise<string> => {
   if (body.raceStartAtJst !== undefined) return body.raceStartAtJst;
   const source = body.category === "jra" ? "jra" : "nar";
   const result = await env.REALTIME_DB.prepare(
@@ -566,7 +566,7 @@ const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Re
   if (parsed.debug) {
     console.log(`[predict-worker] internal-rescore claim start ${describeRaceRequest(parsed)}`);
   }
-  const raceStartAtJst = await resolveRescoreRaceStartAtJst(env, parsed);
+  const raceStartAtJst = await resolveRaceStartAtJst(env, parsed);
   const claimId = crypto.randomUUID();
   const claimParams = {
     category: parsed.category,
@@ -738,7 +738,8 @@ const handleAdminRunFocusedFullRace = async (request: Request, env: Env): Promis
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
   }
   const runDate = buildRunDateFromYmd(parsed.runYmd);
-  await enqueuePredict({
+  const raceStartAtJst = await resolveRaceStartAtJst(env, parsed);
+  const queued = await enqueuePredict({
     category: parsed.category,
     daysAhead: RESCORE_DAYS_AHEAD,
     ...(parsed.debug === true ? { debug: true } : {}),
@@ -749,9 +750,13 @@ const handleAdminRunFocusedFullRace = async (request: Request, env: Env): Promis
     raceBango: parsed.raceBango,
     runDate,
     runYmd: parsed.runYmd,
+    raceStartAtJst,
     skipDedup: true,
   });
-  return Response.json({ ok: true, queued: true, ...parsed }, { status: HTTP_ACCEPTED });
+  return Response.json(
+    { ok: true, queued: queued.length > 0, ...parsed, raceStartAtJst },
+    { status: HTTP_ACCEPTED },
+  );
 };
 
 const guardedAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
@@ -792,6 +797,34 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
   );
   if (parsed.category !== undefined) {
     const generationId = parsed.generationId ?? crypto.randomUUID();
+    const coverageComplete =
+      parsed.force !== true &&
+      (await hasCompleteCategoryPreWeightCoverage({
+        category: parsed.category,
+        env,
+        now: new Date(),
+        runYmd: parsed.runYmd,
+      }).catch((error) => {
+        console.warn(
+          `[predict-worker] admin-prewarm-day-base coverage check failed category=${parsed.category} runYmd=${parsed.runYmd}:`,
+          String(error),
+        );
+        return false;
+      }));
+    if (coverageComplete) {
+      console.log(
+        `[predict-worker] admin-prewarm-day-base skipped after complete coverage category=${parsed.category} runYmd=${parsed.runYmd}`,
+      );
+      return Response.json({
+        accepted: true,
+        category: parsed.category,
+        generationId,
+        ok: true,
+        outcome: "coverage-complete",
+        queued: false,
+        runYmd: parsed.runYmd,
+      });
+    }
     const outcome = await prewarmCategoryWithOutcome({
       category: parsed.category,
       daysAhead,
