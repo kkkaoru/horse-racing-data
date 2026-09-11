@@ -574,7 +574,10 @@ const PREMIUM_RACE_DISCOVERY_HOURS_JST = [9, 20] satisfies readonly number[];
 // weight jobs, so each retry cadence has one owner.
 export const WEIGHT_WATCHDOG_CRON = "1-59/2 * * * *";
 const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
-const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 10;
+// Keep late races eligible after an initial-prediction outage. Weight acquisition
+// is deliberately blocked until preWeight.complete, so a short post-time lookback
+// can otherwise make that barrier permanent once prediction recovery takes >10 min.
+const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 180;
 const WEIGHT_WATCHDOG_FAR_ATTEMPT_BACKOFF_MINUTES = 15;
 const WEIGHT_WATCHDOG_NEAR_ATTEMPT_BACKOFF_MINUTES = 5;
 const WEIGHT_WATCHDOG_NEAR_RACE_THRESHOLD_MINUTES = 30;

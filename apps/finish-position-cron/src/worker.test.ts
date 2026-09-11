@@ -2383,6 +2383,7 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
   expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
   expect(weightRescoreQueueSendMock).toHaveBeenCalledWith({
     activeHorseNumbers: [1, 2, 3],
+    allowPostTimeRescore: true,
     category: "nar",
     daysAhead: 0,
     entrySnapshotFetchedAt: "2026-06-19T14:30:00+09:00",
@@ -2420,6 +2421,7 @@ test("internal rescore-race endpoint safely falls back to the primary queue duri
   expect(response.status).toBe(202);
   expect(predictQueueSendMock).toHaveBeenCalledWith({
     activeHorseNumbers: [1, 2, 3],
+    allowPostTimeRescore: true,
     category: "jra",
     daysAhead: 0,
     entrySnapshotFetchedAt: "2026-06-19T14:30:00+09:00",

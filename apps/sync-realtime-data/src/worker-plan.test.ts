@@ -2306,7 +2306,7 @@ it("findStaleWeightFetchRaces binds post window and dynamic retry backoffs as JS
   const db = { prepare } as unknown as D1Database;
   await findStaleWeightFetchRaces(db, new Date("2026-06-07T03:00:00.000Z"));
   expect(bind).toHaveBeenCalledWith(
-    "2026-06-07T11:50:00+09:00",
+    "2026-06-07T09:00:00+09:00",
     "2026-06-07T15:00:00+09:00",
     "2026-06-07T13:30:00+09:00",
     "2026-06-07T11:59:00+09:00",
@@ -2327,7 +2327,7 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
   // pre-fix UTC bounds lex-compared wrong against stored JST values.
   await findStaleWeightFetchRaces(db, new Date("2026-06-13T02:13:00.000Z"));
   expect(bind).toHaveBeenCalledWith(
-    "2026-06-13T11:03:00+09:00",
+    "2026-06-13T08:13:00+09:00",
     "2026-06-13T14:13:00+09:00",
     "2026-06-13T12:43:00+09:00",
     "2026-06-13T11:12:00+09:00",
@@ -2340,7 +2340,7 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
   // last_weight_fetch_at IS NULL. Confirm a real stored JST
   // race-start string the bug previously missed now lex-compares correctly.
   const storedRaceStartJst = "2026-06-13T11:30:00+09:00";
-  const storedLookBack = "2026-06-13T11:03:00+09:00";
+  const storedLookBack = "2026-06-13T08:13:00+09:00";
   const storedLookAhead = "2026-06-13T14:13:00+09:00";
   expect(storedRaceStartJst > storedLookBack).toBe(true);
   expect(storedRaceStartJst < storedLookAhead).toBe(true);
@@ -2423,7 +2423,7 @@ it("findStaleWeightFetchRaces gates on attempts and prioritizes the earliest rac
       `,
   );
   expect(bind).toHaveBeenCalledWith(
-    "2026-07-03T11:50:00+09:00",
+    "2026-07-03T09:00:00+09:00",
     "2026-07-03T15:00:00+09:00",
     "2026-07-03T13:30:00+09:00",
     "2026-07-03T11:59:00+09:00",

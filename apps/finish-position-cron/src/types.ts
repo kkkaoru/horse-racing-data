@@ -349,6 +349,10 @@ export interface PredictQueueMessage {
   // it so downstream queue ordering can prioritize imminent races. Optional
   // for backward compatibility with manual/admin and already queued messages.
   raceStartAtJst?: string;
+  // Event-driven weight updates may legitimately arrive after post when the
+  // initial-prediction barrier recovered late. Only the authenticated internal
+  // rescore route sets this; clock-only coordinator messages remain post-bounded.
+  allowPostTimeRescore?: boolean;
   // Immutable identity of the horse-weight snapshot that caused this rescore.
   // Required by event-driven rescore producers and preserved across every
   // Queue retry/redrive so a newer or older non-empty snapshot cannot be

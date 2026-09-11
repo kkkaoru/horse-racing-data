@@ -7826,7 +7826,7 @@ test("caps a near-post rescore retry at fifteen seconds", async () => {
   vi.useRealTimers();
 });
 
-test("acks and drops a rescore after its scheduled post time", async () => {
+test("acks and drops a clock-only rescore after its scheduled post time", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-24T02:05:00.000Z"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -7840,6 +7840,9 @@ test("acks and drops a rescore after its scheduled post time", async () => {
         raceBango: "01",
         raceStartAtJst: "2026-08-24T11:04:00+09:00",
         runYmd: "20260824",
+        weightSnapshotCount: undefined,
+        weightSnapshotFetchedAt: undefined,
+        weightSnapshotHash: undefined,
       }),
     ]),
     makeEnv(),
@@ -7849,6 +7852,32 @@ test("acks and drops a rescore after its scheduled post time", async () => {
   expect(claimRescoreExecutionMock).not.toHaveBeenCalled();
   expect(stubFetchMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
+  vi.useRealTimers();
+});
+
+test("runs an attested weight rescore after post time", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-24T02:05:00.000Z"));
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        allowPostTimeRescore: true,
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "01",
+        mode: "rescore",
+        raceBango: "01",
+        raceStartAtJst: "2026-08-24T11:04:00+09:00",
+        runYmd: "20260824",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
   vi.useRealTimers();
 });
 

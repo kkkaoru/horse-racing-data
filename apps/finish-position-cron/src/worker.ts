@@ -527,6 +527,7 @@ const sendRescoreRaceMessage = async (
   const queue =
     env.WEIGHT_RESCORE_QUEUE === undefined ? env.PREDICT_QUEUE : env.WEIGHT_RESCORE_QUEUE;
   await queue.send({
+    allowPostTimeRescore: true,
     category: body.category,
     daysAhead: RESCORE_DAYS_AHEAD,
     ...(body.debug ? { debug: true } : {}),

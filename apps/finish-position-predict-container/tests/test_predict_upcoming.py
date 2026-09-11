@@ -2021,6 +2021,30 @@ def test_score_and_flush_rejects_when_deadline_passes_during_scoring() -> None:
     flush_mock.assert_not_called()
 
 
+def test_score_and_flush_allows_attested_weight_recovery_after_deadline() -> None:
+    score_and_flush: Callable[..., int] = vars(predict_upcoming)["_score_and_flush_races"]
+    with (
+        patch("predict_upcoming._utc_now") as now_mock,
+        patch("predict_upcoming.score_races", return_value=[]) as score_mock,
+        patch("predict_upcoming._flush_scored", return_value=0) as flush_mock,
+        patch("predict_upcoming.score_dynamic_market_shadow", return_value=[]),
+        patch("predict_upcoming._flush_dynamic_market_shadow", return_value=0),
+    ):
+        written = score_and_flush(
+            _DB_URL,
+            "nar",
+            Path("/models"),
+            {},
+            race_start_at_jst="2026-08-24T15:00:00+09:00",
+            allow_after_race_start=True,
+        )
+
+    assert written == 0
+    now_mock.assert_not_called()
+    score_mock.assert_called_once()
+    flush_mock.assert_called_once_with(_DB_URL, "nar", [], race_start_at_jst=None)
+
+
 def test_score_and_flush_forwards_catalog_race_names() -> None:
     score_and_flush: Callable[..., int] = vars(predict_upcoming)["_score_and_flush_races"]
     with (

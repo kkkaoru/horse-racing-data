@@ -547,6 +547,7 @@ class PredictParams:
     """
 
     __slots__ = (
+        "allow_post_time_rescore",
         "allow_race_scoped_day_base",
         "card_max_race_bango",
         "category",
@@ -579,7 +580,9 @@ class PredictParams:
         race_start_at_jst: str | None = None,
         market_signal_foundation_attestation: MarketSignalFoundationAttestation | None = None,
         allow_race_scoped_day_base: bool = False,
+        allow_post_time_rescore: bool = False,
     ) -> None:
+        self.allow_post_time_rescore: bool = allow_post_time_rescore
         self.allow_race_scoped_day_base: bool = allow_race_scoped_day_base
         self.category: str = category
         self.run_date: str = run_date
@@ -681,6 +684,11 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         mode == "full" and keibajo_code is not None and race_bango is not None
     ):
         return "allowRaceScopedDayBase requires a focused mode=full request"
+    allow_post_time_rescore = _parse_debug_flag(_first_qs(qs, "allowPostTimeRescore"))
+    if allow_post_time_rescore and not (
+        mode == "rescore" and keibajo_code is not None and race_bango is not None
+    ):
+        return "allowPostTimeRescore requires a focused mode=rescore request"
 
     market_signal_attestation = _parse_market_signal_attestation(
         qs,
@@ -752,6 +760,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         race_start_at_jst=race_start_at_jst,
         market_signal_foundation_attestation=market_signal_attestation,
         allow_race_scoped_day_base=allow_race_scoped_day_base,
+        allow_post_time_rescore=allow_post_time_rescore,
     )
 
 
@@ -1393,6 +1402,12 @@ for the whole body of :func:`_run_predict_fn`, never held across a
 
 _current_market_signal_attestation: MarketSignalFoundationAttestation | None = None
 _current_allow_race_scoped_day_base = False
+_current_allow_post_time_rescore = False
+
+
+def current_allow_post_time_rescore() -> bool:
+    """Return whether a weight-triggered rescore may recover after post."""
+    return _current_allow_post_time_rescore
 
 
 def current_allow_race_scoped_day_base() -> bool:
@@ -1403,6 +1418,17 @@ def current_allow_race_scoped_day_base() -> bool:
 def current_market_signal_foundation_attestation() -> MarketSignalFoundationAttestation | None:
     """Return the attestation bound to the serialized prediction currently executing."""
     return _current_market_signal_attestation
+
+
+@contextmanager
+def _allow_post_time_rescore_scope(allowed: bool) -> Generator[None]:
+    global _current_allow_post_time_rescore
+    previous = _current_allow_post_time_rescore
+    _current_allow_post_time_rescore = allowed
+    try:
+        yield
+    finally:
+        _current_allow_post_time_rescore = previous
 
 
 @contextmanager
@@ -1448,6 +1474,7 @@ def _run_predict_fn(
     with (
         _PIPELINE_EXEC_LOCK,
         debug_logs_scope(params.debug_logs),
+        _allow_post_time_rescore_scope(params.allow_post_time_rescore),
         _allow_race_scoped_day_base_scope(params.allow_race_scoped_day_base),
         _market_signal_foundation_attestation_scope(params.market_signal_foundation_attestation),
     ):

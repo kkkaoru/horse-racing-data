@@ -392,6 +392,7 @@ interface RescoreLifecycleIdentity {
 }
 
 interface RescoreDisplayTarget extends ViewerPredictionCacheTarget {
+  allowAfterRaceStart: boolean;
   raceStartAtJst: string | undefined;
   rescoreLifecycle: RescoreLifecycleIdentity;
 }
@@ -414,6 +415,7 @@ const toViewerPredictionCacheTarget = (
 
 interface PerRaceRescoreUrlParams {
   activeHorseNumbers?: number[];
+  allowAfterRaceStart?: boolean;
   category: string;
   daysAhead: number;
   debug?: boolean;
@@ -492,6 +494,7 @@ const buildPerRaceRescoreUrl = (params: PerRaceRescoreUrlParams): string => {
     weightSnapshotHash: params.weightSnapshotHash,
   });
   if (params.debug === true) searchParams.set("debug", "1");
+  if (params.allowAfterRaceStart === true) searchParams.set("allowPostTimeRescore", "1");
   if (params.activeHorseNumbers !== undefined) {
     searchParams.set("activeHorseNumbers", JSON.stringify(params.activeHorseNumbers));
   }
@@ -631,6 +634,7 @@ const publishAndWarmRescoreDisplay = async (
   target: RescoreDisplayTarget,
 ): Promise<RescoreDisplayPublishResult> => {
   if (
+    !target.allowAfterRaceStart &&
     !isBeforeRaceStartDeadline({
       nowMs: Date.now(),
       raceStartAtJst: target.raceStartAtJst,
@@ -1886,6 +1890,7 @@ const resumeRescoreDelivery = async (
       await completeRescoreExecution(message, env, "neon_complete");
     }
     const delivered = await publishAndWarmRescoreDisplay(env, {
+      allowAfterRaceStart: message.body.allowPostTimeRescore === true,
       category: message.body.category,
       keibajoCode: message.body.keibajoCode,
       raceBango: message.body.raceBango,
@@ -2317,6 +2322,7 @@ const processContainerPerRaceRescore = async (
     return;
   }
   const startedAt = Date.now();
+  const allowAfterRaceStart = message.body.allowPostTimeRescore === true;
   if (await deferRescoreUntilInitialPrediction(message, env)) return;
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictDoName = resolvePredictDoName({
@@ -2340,6 +2346,7 @@ const processContainerPerRaceRescore = async (
     return;
   }
   const basePredictUrl = buildPerRaceRescoreUrl({
+    allowAfterRaceStart,
     cardMaxRaceBango,
     category,
     daysAhead,
@@ -2364,6 +2371,7 @@ const processContainerPerRaceRescore = async (
     const [commitResult] = await Promise.allSettled([
       (async () => {
         if (
+          !allowAfterRaceStart &&
           !isBeforeRaceStartDeadline({
             nowMs: Date.now(),
             raceStartAtJst,
@@ -2432,6 +2440,7 @@ const processContainerPerRaceRescore = async (
         });
         assertPredictResultSucceeded(result);
         if (
+          !allowAfterRaceStart &&
           !isBeforeRaceStartDeadline({
             nowMs: Date.now(),
             raceStartAtJst,
@@ -2474,6 +2483,7 @@ const processContainerPerRaceRescore = async (
         await completeRescoreExecution(message, env, "score_complete");
         await completeRescoreExecution(message, env, "neon_complete");
         const delivered = await publishAndWarmRescoreDisplay(env, {
+          allowAfterRaceStart,
           category,
           keibajoCode,
           raceBango,
@@ -2555,11 +2565,13 @@ const processWorkerJraPerRaceRescore = async (
   env: Env,
 ): Promise<void> => {
   const { category, keibajoCode, raceBango, runYmd } = message.body;
+  const allowAfterRaceStart = message.body.allowPostTimeRescore === true;
   const startedAt = Date.now();
   if (await deferRescoreUntilInitialPrediction(message, env)) return;
   if (!(await claimWorkerRescoreExecutionOrFinish(message, env))) return;
   try {
     if (
+      !allowAfterRaceStart &&
       !isBeforeRaceStartDeadline({
         nowMs: Date.now(),
         raceStartAtJst: message.body.raceStartAtJst,
@@ -2577,6 +2589,7 @@ const processWorkerJraPerRaceRescore = async (
       throw new Error(`Worker rescore unavailable: ${result.status}`);
     }
     if (
+      !allowAfterRaceStart &&
       !isBeforeRaceStartDeadline({
         nowMs: Date.now(),
         raceStartAtJst: message.body.raceStartAtJst,
@@ -2588,6 +2601,7 @@ const processWorkerJraPerRaceRescore = async (
     await completeRescoreExecution(message, env, "score_complete");
     await completeRescoreExecution(message, env, "neon_complete");
     const delivered = await publishAndWarmRescoreDisplay(env, {
+      allowAfterRaceStart,
       category,
       keibajoCode,
       raceBango,
@@ -2623,13 +2637,19 @@ const processWorkerJraPerRaceRescore = async (
 };
 
 // Per-race rescore dispatch: supported categories route to the container held
-// /predict, unknown categories are skipped + acked.
+// /predict, unknown categories are skipped + acked. Clock-only coordinator
+// messages expire at post, but an event-driven message carrying an immutable
+// weight snapshot must still run after post: pre-weight recovery can deliberately
+// delay acquisition, and dropping that message would make the post-weight gap
+// permanent. The downstream readiness check validates the snapshot fail-closed.
 const processPerRaceRescore = (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
 ): Promise<void> => {
   const { category, runYmd } = message.body;
+  const allowAfterRaceStart = message.body.allowPostTimeRescore === true;
   if (
+    !allowAfterRaceStart &&
     !isBeforeRaceStartDeadline({
       nowMs: Date.now(),
       raceStartAtJst: message.body.raceStartAtJst,

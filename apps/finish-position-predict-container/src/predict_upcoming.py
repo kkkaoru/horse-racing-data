@@ -202,6 +202,7 @@ from predict_lib.serve import (
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     build_r2_running_style_foundation_key,
+    current_allow_post_time_rescore,
     current_allow_race_scoped_day_base,
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
@@ -2276,6 +2277,8 @@ def _score_and_flush_races(
     card_max_race_bango: int | None = None,
     race_start_at_jst: str | None = None,
     source_url: str | None = None,
+    *,
+    allow_after_race_start: bool = False,
 ) -> int:
     """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
 
@@ -2285,7 +2288,7 @@ def _score_and_flush_races(
     is forwarded to :func:`score_races` untouched -- see that function's
     docstring for the whole-category-vs-single-race sourcing split.
     """
-    if race_start_at_jst is not None:
+    if race_start_at_jst is not None and not allow_after_race_start:
         _assert_before_race_start(race_start_at_jst)
     race_names_by_race_id = _load_race_names_by_race_id(races, source_url)
     scored = score_races(
@@ -2297,12 +2300,13 @@ def _score_and_flush_races(
         race_names_by_race_id=race_names_by_race_id,
     )
     if race_start_at_jst is not None:
-        _assert_before_race_start(race_start_at_jst)
+        if not allow_after_race_start:
+            _assert_before_race_start(race_start_at_jst)
         written = _flush_scored(
             database_url,
             category,
             scored,
-            race_start_at_jst=race_start_at_jst,
+            race_start_at_jst=None if allow_after_race_start else race_start_at_jst,
         )
     else:
         written = _flush_scored(database_url, category, scored)
@@ -3692,6 +3696,7 @@ def _make_rescore_fn(
             card_max_race_bango=card_max_race_bango,
             race_start_at_jst=race_start_at_jst,
             source_url=source_url,
+            allow_after_race_start=current_allow_post_time_rescore(),
         )
 
     def _per_race_payloads() -> list[dict[str, str]] | None:
