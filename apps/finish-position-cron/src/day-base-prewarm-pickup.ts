@@ -4,9 +4,9 @@
 // Container R2 tokens are read-only (focused-full-cache-pickup.ts). Detached
 // prewarm cannot SigV4 PUT; this is the only working write path.
 
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
 import { buildDayBaseObjectKey } from "./day-base-object-key";
-import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import { getDayBaseCandidateReadiness } from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark, PredictResultLine } from "./ndjson-stream";
 import { listDayBasePickupDoNames } from "./predict-do-shard";
@@ -229,7 +229,7 @@ const pickUpPrewarmDayBaseFromDo = async (
     env,
     debug === true,
   );
-  const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+  const materialized = await assembleAttestedRaceCaches({ category, env, runYmd });
   if (materialized.status !== "materialized") {
     console.warn(
       `[day-base-prewarm-pickup] per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,

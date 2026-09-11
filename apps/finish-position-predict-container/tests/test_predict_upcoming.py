@@ -5410,9 +5410,19 @@ def test_build_feature_rows_uses_split_path_when_enabled_and_target_race_set(
         database_url: str,
         target_race: str,
         r2_config: object = None,
+        *,
+        allow_stale_running_style: bool = False,
     ) -> Mapping[str, list[Mapping[str, object]]]:
         split_called.append(
-            (category, target_date, days_ahead, database_url, target_race, r2_config)
+            (
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                target_race,
+                r2_config,
+                allow_stale_running_style,
+            )
         )
         return {"race-1": [{"umaban": 1}]}
 

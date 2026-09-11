@@ -52,8 +52,8 @@ vi.mock("./day-base-prewarm-pickup", () => ({
   headDayBaseObject: headDayBaseObjectMock,
   pickUpPrewarmDayBaseWithOutcome: pickUpPrewarmDayBaseWithOutcomeMock,
 }));
-vi.mock("./day-base-race-materializer", () => ({
-  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: materializeDayBasePerRaceCacheMock,
 }));
 vi.mock("./feature-hit-prediction", () => ({
   fanOutPredictionsAfterDayBaseHit: fanOutPredictionsAfterDayBaseHitMock,

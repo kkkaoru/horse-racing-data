@@ -26,11 +26,11 @@ import {
   enqueueDayBasePickup,
 } from "./day-base-pickup";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { getDayBaseDiscoveryReadiness } from "./day-base-discovery-readiness";
-import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   getDayBasePrewarmHitReadiness,
   getFocusedFullDayBaseReadiness,
@@ -313,7 +313,7 @@ const useVerifiedDayBaseHit = async (
     // fan-out so the Container can read it directly instead of rebuilding the
     // race lazily during the prediction request. If materialization cannot be
     // completed, keep the existing lazy fallback as a safety net.
-    const materialized = await materializeDayBasePerRaceCache({
+    const materialized = await assembleAttestedRaceCaches({
       category: params.category,
       env: params.env,
       runYmd: params.runYmd,
@@ -454,7 +454,7 @@ export const prewarmCategoryWithOutcome = async (
     // Only the container can declare an existing R2 object fresh because its
     // prewarm fast path compares the live Catalog + running-style watermark.
     if (result?.status === PREWARM_SUCCESS_STATUS && hasUploadableParquet(result)) {
-      const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+      const materialized = await assembleAttestedRaceCaches({ category, env, runYmd });
       if (materialized.status !== "materialized") {
         throw new Error(
           `per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,
@@ -467,7 +467,7 @@ export const prewarmCategoryWithOutcome = async (
       return "landed";
     }
     if (await landDayBaseFromPickup({ category, env, runYmd })) {
-      const materialized = await materializeDayBasePerRaceCache({ category, env, runYmd });
+      const materialized = await assembleAttestedRaceCaches({ category, env, runYmd });
       if (materialized.status !== "materialized") {
         throw new Error(
           `per-race foundation warm failed category=${category} runYmd=${runYmd} reason=${materialized.reason}`,

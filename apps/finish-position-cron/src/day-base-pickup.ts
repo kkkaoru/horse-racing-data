@@ -7,10 +7,10 @@
 
 import { pickUpPrewarmDayBaseWithOutcome } from "./day-base-prewarm-pickup";
 import { CONTAINER_DAY_BASE_SLOT_STALE_MS, type ContainerSlotKind } from "./container-slot-cap";
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
-import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
 import { kickRunningStylePlan } from "./running-style-kick";
 import { isOldDateRunYmd } from "./old-date-guard";
@@ -174,7 +174,7 @@ const exhaustDayBasePickup = async (params: ExhaustDayBasePickupParams): Promise
 export const completeLandedDayBase = async (
   params: CompleteLandedDayBaseParams,
 ): Promise<number> => {
-  const materialized = await materializeDayBasePerRaceCache({
+  const materialized = await assembleAttestedRaceCaches({
     category: params.category,
     env: params.env,
     runYmd: params.runYmd,

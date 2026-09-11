@@ -212,8 +212,8 @@ vi.mock("./day-base-pickup", () => ({
   completeLandedDayBase: completeLandedDayBaseMock,
 }));
 
-vi.mock("./day-base-race-materializer", () => ({
-  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: materializeDayBasePerRaceCacheMock,
 }));
 
 vi.mock("./focused-full-day-base-readiness", () => ({

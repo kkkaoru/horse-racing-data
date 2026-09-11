@@ -11,6 +11,7 @@ import {
 } from "hyparquet";
 
 import { buildDayBaseObjectKey } from "./day-base-object-key";
+import type { CatalogRaceSourceSnapshot } from "./race-source-snapshot";
 import type { Env, PredictCategory } from "./types";
 
 const FOUNDATION_PREFIX = "feat-daybase-race";
@@ -19,6 +20,7 @@ const FOUNDATION_FILE = "foundation.json";
 const MANIFEST_FILE = "manifest.json";
 const CONTRACT_SCHEMA_VERSION = "1";
 const FOUNDATION_CONTRACT_VERSION = "day-base-race-foundation-v1";
+const CATALOG_SNAPSHOT_VERSION = "stable-source-v1";
 const MAX_DAY_BASE_BYTES = 16 * 1024 * 1024;
 const MAX_UNCOMPRESSED_PARQUET_BYTES = 16 * 1024 * 1024;
 const MAX_DAY_BASE_ROWS = 1_024;
@@ -44,6 +46,7 @@ interface MaterializeParams {
   env: Pick<Env, "FEATURES_CACHE">;
   force?: boolean;
   runYmd: string;
+  sourceSnapshots?: ReadonlyMap<string, CatalogRaceSourceSnapshot>;
 }
 
 interface RaceFoundationReadinessParams extends MaterializeParams {
@@ -101,6 +104,9 @@ interface ManifestContract {
 }
 
 interface FoundationEnvelope {
+  // Kept outside the strict v1 contract so an older Container can consume
+  // caches written during a Worker-first rolling deployment.
+  catalogSourceHash?: string;
   contract: FoundationContract;
   raceId: string;
   rows: FoundationRow[];
@@ -112,6 +118,7 @@ interface FoundationEnvelope {
 }
 
 interface ManifestRace {
+  catalogSourceHash?: string;
   entrySetHash: string;
   key: string;
   raceId: string;
@@ -378,6 +385,7 @@ const existingManifestResult = (
   manifestKey: string,
   sourceEtag: string,
   sourceVersion: string,
+  requireCatalogSnapshots: boolean,
 ): DayBaseRaceMaterializeResult | null => {
   const metadata = object?.customMetadata;
   if (metadata === undefined) return null;
@@ -386,6 +394,12 @@ const existingManifestResult = (
   const featureHash = metadata["feature-hash"];
   if (metadata["contract-version"] !== FOUNDATION_CONTRACT_VERSION) return null;
   if (metadata["schema-version"] !== CONTRACT_SCHEMA_VERSION) return null;
+  if (
+    requireCatalogSnapshots &&
+    metadata["catalog-snapshot-version"] !== CATALOG_SNAPSHOT_VERSION
+  ) {
+    return null;
+  }
   if (metadata["source-etag"] !== sourceEtag) return null;
   if ((metadata["source-version"] ?? "") !== sourceVersion) return null;
   if (typeof featureHash !== "string" || featureHash === "") return null;
@@ -467,6 +481,7 @@ export const materializeDayBasePerRaceCache = async (
           manifestKey,
           source.etag,
           sourceVersion,
+          params.sourceSnapshots !== undefined,
         );
     if (existing !== null) return existing;
     const decoded = await dependencies.decodeDayBase(
@@ -481,10 +496,27 @@ export const materializeDayBasePerRaceCache = async (
       throw new Error("unsupported-schema");
     }
     const races = await groupRows(decoded.rows, params.category, params.runYmd);
+    const sourceSnapshots = params.sourceSnapshots;
+    if (
+      sourceSnapshots !== undefined &&
+      races.some((race) => {
+        const snapshot = sourceSnapshots.get(race.identity.raceId);
+        return (
+          snapshot === undefined ||
+          snapshot.entrySetHash !== race.entrySetHash ||
+          snapshot.rowCount !== race.rows.length
+        );
+      })
+    ) {
+      throw new Error("catalog-source-snapshot-mismatch");
+    }
     const targetRowCount = races.reduce((total, race) => total + race.rows.length, 0);
     const featureHash = await sha256(featureNames.join("\n"));
     const entryContract = races
-      .map(({ entrySetHash, identity }) => `${identity.raceId}:${entrySetHash}`)
+      .map(({ entrySetHash, identity }) => {
+        const sourceHash = sourceSnapshots?.get(identity.raceId)?.stableSourceHash ?? "-";
+        return `${identity.raceId}:${entrySetHash}:${sourceHash}`;
+      })
       .sort()
       .join("\n");
     const generationId = await sha256(
@@ -498,6 +530,7 @@ export const materializeDayBasePerRaceCache = async (
       ].join("\n"),
     );
     const raceObjects = races.map(({ entrySetHash, identity, rows: raceRows }) => {
+      const catalogSourceHash = sourceSnapshots?.get(identity.raceId)?.stableSourceHash;
       const contract: FoundationContract = {
         contractVersion: FOUNDATION_CONTRACT_VERSION,
         entrySetHash,
@@ -507,6 +540,7 @@ export const materializeDayBasePerRaceCache = async (
         schemaVersion: CONTRACT_SCHEMA_VERSION,
       };
       const envelope: FoundationEnvelope = {
+        ...(catalogSourceHash === undefined ? {} : { catalogSourceHash }),
         contract,
         raceId: identity.raceId,
         rows: raceRows,
@@ -523,6 +557,12 @@ export const materializeDayBasePerRaceCache = async (
           identity.raceNumber,
         ),
         metadata: {
+          ...(catalogSourceHash === undefined
+            ? {}
+            : {
+                "catalog-snapshot-version": CATALOG_SNAPSHOT_VERSION,
+                "catalog-source-hash": catalogSourceHash,
+              }),
           "contract-version": FOUNDATION_CONTRACT_VERSION,
           "entry-set-hash": entrySetHash,
           "feature-hash": featureHash,
@@ -539,6 +579,9 @@ export const materializeDayBasePerRaceCache = async (
     await putRaces(params.env.FEATURES_CACHE, raceObjects);
 
     const manifestRaces: ManifestRace[] = races.map((race) => ({
+      ...(sourceSnapshots === undefined
+        ? {}
+        : { catalogSourceHash: sourceSnapshots.get(race.identity.raceId)?.stableSourceHash }),
       entrySetHash: race.entrySetHash,
       key: buildDayBaseRaceFoundationKey(
         params.category,
@@ -565,6 +608,9 @@ export const materializeDayBasePerRaceCache = async (
     });
     await params.env.FEATURES_CACHE.put(manifestKey, manifestBody, {
       customMetadata: {
+        ...(sourceSnapshots === undefined
+          ? {}
+          : { "catalog-snapshot-version": CATALOG_SNAPSHOT_VERSION }),
         "contract-version": FOUNDATION_CONTRACT_VERSION,
         "feature-hash": featureHash,
         "generation-id": generationId,

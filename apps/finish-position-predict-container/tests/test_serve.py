@@ -74,6 +74,7 @@ from predict_lib.serve import (
     build_r2_per_race_feat_cache_key,
     build_r2_running_style_foundation_key,
     build_result_line,
+    current_allow_race_scoped_day_base,
     current_market_signal_foundation_attestation,
     get_prewarm_run_state,
     has_single_race_scope,
@@ -230,6 +231,22 @@ def test_parse_predict_params_force_flag_default_false() -> None:
     assert result.force is False
 
 
+def test_parse_predict_params_accepts_worker_scoped_day_base_attestation() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260910&mode=full&keibajoCode=50&raceBango=11"
+        "&allowRaceScopedDayBase=1"
+    )
+    assert isinstance(result, PredictParams)
+    assert result.allow_race_scoped_day_base is True
+
+
+def test_parse_predict_params_rejects_scoped_day_base_attestation_without_focused_full() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260910&mode=full&allowRaceScopedDayBase=1"
+    )
+    assert result == "allowRaceScopedDayBase requires a focused mode=full request"
+
+
 def _market_signal_attestation_query(**overrides: str) -> str:
     values = {
         "category": "jra",
@@ -308,7 +325,7 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
         odds_snapshot_hash="a" * 64,
         version="artifact-version",
     )
-    observed: list[MarketSignalFoundationAttestation | None] = []
+    observed: list[tuple[MarketSignalFoundationAttestation | None, bool]] = []
 
     def predict(
         _category: str,
@@ -318,7 +335,12 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
         _race_bango: str | None,
         _card_max_race_bango: int | None,
     ) -> int:
-        observed.append(current_market_signal_foundation_attestation())
+        observed.append(
+            (
+                current_market_signal_foundation_attestation(),
+                current_allow_race_scoped_day_base(),
+            )
+        )
         return 1
 
     params = PredictParams(
@@ -329,10 +351,12 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
         keibajo_code="01",
         race_bango="03",
         market_signal_foundation_attestation=attestation,
+        allow_race_scoped_day_base=True,
     )
     list(iter_predict_chunks(params, predict, sleep_fn=_noop_sleep))
-    assert observed == [attestation]
+    assert observed == [(attestation, True)]
     assert current_market_signal_foundation_attestation() is None
+    assert current_allow_race_scoped_day_base() is False
 
 
 def _attested_query(**overrides: str) -> str:

@@ -2549,6 +2549,7 @@ def _foundation_readiness_snapshot(
     target_race: str,
     database_url: str,
     r2_config: R2Config | None,
+    allow_stale_running_style: bool = False,
 ) -> FoundationReadinessSnapshot | None:
     """Capture Catalog, RS and source-object evidence once, failing closed."""
     if r2_config is None or not is_catalog_source_url(database_url):
@@ -2556,18 +2557,22 @@ def _foundation_readiness_snapshot(
     catalog = _catalog_foundation_readiness(category, target_date, target_race, database_url)
     if catalog is None:
         return None
-    running_style = _compute_rs_watermark(category, target_date, r2_config)
-    live_watermark = _combine_watermarks(catalog[1], running_style)
-    if live_watermark is None:
-        return None
     source_key = build_foundation_source_key(category, target_date)
     source_head = r2_head_object(r2_config, source_key)
-    if (
-        source_head is None
-        or source_head.watermark != live_watermark
-        or source_head.identity is None
-    ):
+    if source_head is None or source_head.watermark is None or source_head.identity is None:
         return None
+    if allow_stale_running_style:
+        # The Worker has already compared this race's exact RS feature values
+        # against D1. Keep the independent Catalog half fail-closed here; only
+        # the category-wide RS aggregate may differ because of another race.
+        if source_head.watermark[:2] != catalog[1]:
+            return None
+        live_watermark = source_head.watermark
+    else:
+        running_style = _compute_rs_watermark(category, target_date, r2_config)
+        live_watermark = _combine_watermarks(catalog[1], running_style)
+        if live_watermark is None or not _watermarks_match(source_head.watermark, live_watermark):
+            return None
     return FoundationReadinessSnapshot(
         expected_entries=catalog[0],
         live_watermark=live_watermark,
@@ -2975,6 +2980,8 @@ def build_upcoming_feature_rows_split(
     database_url: str,
     target_race: str,
     r2_config: R2Config | None = None,
+    *,
+    allow_stale_running_style: bool = False,
 ) -> Mapping[str, list[Mapping[str, object]]] | None:
     """Focused per-race build via the day-base + RACE_CHAIN split path.
 
@@ -3007,6 +3014,7 @@ def build_upcoming_feature_rows_split(
             target_race=target_race,
             database_url=database_url,
             r2_config=r2_config,
+            allow_stale_running_style=allow_stale_running_style,
         )
         day_base_dir = _materialize_r2_race_foundation(
             category=category,

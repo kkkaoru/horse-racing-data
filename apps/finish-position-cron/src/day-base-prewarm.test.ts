@@ -83,8 +83,8 @@ vi.mock("./focused-full-day-base-readiness", () => ({
   getDayBasePrewarmHitReadiness: getDayBasePrewarmHitReadinessMock,
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
-vi.mock("./day-base-race-materializer", () => ({
-  materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: materializeDayBasePerRaceCacheMock,
 }));
 
 import {

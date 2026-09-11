@@ -2,6 +2,7 @@
 // For each message: dedup via DO coordinator (strong consistency), call the Container
 // DO stub's fetch, track state.
 
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import {
   cleanupDayBaseWork,
   consumeDayBasePickup,
@@ -66,11 +67,9 @@ import {
   WATCH_RESPONSE_HEADER,
 } from "./focused-full-watch";
 import { clearDayBaseRepairReservation, enqueueDayBaseRepairOnce } from "./day-base-repair";
-import {
-  getDayBaseRaceFoundationReadiness,
-  materializeDayBasePerRaceCache,
-} from "./day-base-race-materializer";
+import { getDayBaseRaceFoundationReadiness } from "./day-base-race-materializer";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
+import { getRaceScopedDayBaseReadiness } from "./race-scoped-day-base-readiness";
 import {
   parseNdjsonStream,
   type PredictProgressLine,
@@ -337,6 +336,7 @@ interface DeferredMessageDecision {
 const FOCUSED_FULL_ACCEPTED_KEEP_SLOT: boolean = true;
 
 interface PredictUrlParams {
+  allowRaceScopedDayBase?: boolean;
   category: string;
   daysAhead: number;
   debug?: boolean;
@@ -456,6 +456,7 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
     mode: params.mode,
     runDate: params.runYmd,
   });
+  if (params.allowRaceScopedDayBase === true) searchParams.set("allowRaceScopedDayBase", "1");
   if (params.keibajoCode) searchParams.set("keibajoCode", params.keibajoCode);
   if (params.raceBango) searchParams.set("raceBango", params.raceBango);
   if (params.debug === true) searchParams.set("debug", "1");
@@ -1640,6 +1641,16 @@ const retryAfterFailure = async (
   message.retry({ delaySeconds });
 };
 
+const isRaceScopedDayBaseFallbackEligible = (reason: string): boolean =>
+  reason.startsWith("running-style-race-count-") ||
+  reason.startsWith("rs-row-count-") ||
+  reason.startsWith("source-row-count-") ||
+  reason === "rs-predicted-at-max-mismatch" ||
+  reason === "source-watermark-mismatch";
+
+const requiresStableSourceHash = (reason: string): boolean =>
+  reason.startsWith("source-row-count-") || reason === "source-watermark-mismatch";
+
 const deferFocusedFullUntilDayBaseReady = async (
   message: Message<PredictQueueMessage>,
   env: Env,
@@ -1648,7 +1659,29 @@ const deferFocusedFullUntilDayBaseReady = async (
   const { category, keibajoCode, raceBango, runYmd } = message.body;
   try {
     const readiness = await getFocusedFullDayBaseReadiness({ category, env, runYmd });
-    if (readiness.ready) {
+    const raceScopedReadiness = readiness.ready
+      ? readiness
+      : isRaceScopedDayBaseFallbackEligible(readiness.reason)
+        ? await getRaceScopedDayBaseReadiness({
+            category,
+            env,
+            keibajoCode,
+            raceBango,
+            requireStableSourceHash: requiresStableSourceHash(readiness.reason),
+            runYmd,
+          }).catch((error: unknown) => ({
+            ready: false,
+            reason: `race-scoped-check-error:${String(error)}`,
+          }))
+        : { ready: false, reason: "race-scoped-fallback-ineligible" };
+    if (raceScopedReadiness.ready) {
+      if (!readiness.ready) {
+        console.warn(
+          `[predict-queue] using race-scoped foundation while category day-base is stale ${describePredictMessage(
+            message.body,
+          )} categoryReason=${readiness.reason}`,
+        );
+      }
       let foundation = await getDayBaseRaceFoundationReadiness({
         category,
         env,
@@ -1657,7 +1690,7 @@ const deferFocusedFullUntilDayBaseReady = async (
         venueCode: keibajoCode,
       });
       if (!foundation.ready) {
-        const materialized = await materializeDayBasePerRaceCache({
+        const materialized = await assembleAttestedRaceCaches({
           category,
           env,
           force: true,
@@ -1708,7 +1741,7 @@ const deferFocusedFullUntilDayBaseReady = async (
     console.warn(
       `[predict-queue] focused-full day-base deferred before claim ${describePredictMessage(
         message.body,
-      )} reason=${readiness.reason} repair=${repair} attempts=${message.attempts} delaySeconds=${delaySeconds}`,
+      )} reason=${readiness.reason} raceReason=${raceScopedReadiness.reason} repair=${repair} attempts=${message.attempts} delaySeconds=${delaySeconds}`,
     );
     return true;
   } catch (error) {
@@ -2602,6 +2635,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     return;
   }
   const basePredictUrl = buildPredictUrl({
+    allowRaceScopedDayBase: isFocusedSkipDedup,
     cardMaxRaceBango,
     category,
     daysAhead,

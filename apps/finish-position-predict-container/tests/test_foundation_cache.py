@@ -28,7 +28,9 @@ def _payloads(
     venue: str = "1",
     race_number: str = "2",
     manifest_contract_updates: Mapping[str, object] | None = None,
+    manifest_race_updates: Mapping[str, object] | None = None,
     race_contract_updates: Mapping[str, object] | None = None,
+    race_updates: Mapping[str, object] | None = None,
     row_updates: Mapping[str, object] | None = None,
 ) -> tuple[bytes, bytes, frozenset[str]]:
     source = "jra" if category == "jra" else "nar"
@@ -83,16 +85,17 @@ def _payloads(
     if row_updates:
         first_row.update(row_updates)
     race_key = build_foundation_race_key(category, target_date, venue, race_number)
+    manifest_race: dict[str, object] = {
+        "entrySetHash": entry_hash,
+        "key": race_key,
+        "raceId": race_id,
+        "rowCount": 2,
+    }
+    if manifest_race_updates:
+        manifest_race.update(manifest_race_updates)
     manifest: dict[str, object] = {
         "contract": manifest_contract,
-        "races": [
-            {
-                "entrySetHash": entry_hash,
-                "key": race_key,
-                "raceId": race_id,
-                "rowCount": 2,
-            }
-        ],
+        "races": [manifest_race],
         "source": source_contract,
     }
     race: dict[str, object] = {
@@ -109,6 +112,8 @@ def _payloads(
         ],
         "source": source_contract,
     }
+    if race_updates:
+        race.update(race_updates)
     return (
         json.dumps(manifest).encode(),
         json.dumps(race).encode(),
@@ -149,6 +154,59 @@ def test_validate_foundation_objects_accepts_exact_contract(
         "INT64",
         "DOUBLE",
     ]
+
+
+def test_validate_foundation_objects_accepts_stable_source_attestation() -> None:
+    manifest, race, entries = _payloads(
+        manifest_race_updates={"catalogSourceHash": "stable-source-hash"},
+        race_updates={"catalogSourceHash": "stable-source-hash"},
+    )
+    result = validate_foundation_objects(
+        category="jra",
+        target_date="20260823",
+        target_race="1:2",
+        manifest_bytes=manifest,
+        race_bytes=race,
+        source_identity=R2ObjectIdentity("source-etag", "source-version"),
+        expected_entries=entries,
+    )
+    assert result.reason == "hit"
+    assert result.rows is not None and len(result.rows) == 2
+
+
+def test_validate_foundation_objects_rejects_invalid_stable_source_attestation() -> None:
+    manifest, race, entries = _payloads(
+        manifest_race_updates={"catalogSourceHash": ""},
+    )
+    result = validate_foundation_objects(
+        category="jra",
+        target_date="20260823",
+        target_race="1:2",
+        manifest_bytes=manifest,
+        race_bytes=race,
+        source_identity=R2ObjectIdentity("source-etag", "source-version"),
+        expected_entries=entries,
+    )
+    assert result.reason == "invalid-race-contract"
+    assert result.rows is None
+
+
+def test_validate_foundation_objects_rejects_stable_source_attestation_mismatch() -> None:
+    manifest, race, entries = _payloads(
+        manifest_race_updates={"catalogSourceHash": "stable-source-hash"},
+        race_updates={"catalogSourceHash": "different-source-hash"},
+    )
+    result = validate_foundation_objects(
+        category="jra",
+        target_date="20260823",
+        target_race="1:2",
+        manifest_bytes=manifest,
+        race_bytes=race,
+        source_identity=R2ObjectIdentity("source-etag", "source-version"),
+        expected_entries=entries,
+    )
+    assert result.reason == "race-contract-mismatch"
+    assert result.rows is None
 
 
 @pytest.mark.parametrize(

@@ -547,6 +547,7 @@ class PredictParams:
     """
 
     __slots__ = (
+        "allow_race_scoped_day_base",
         "card_max_race_bango",
         "category",
         "days_ahead",
@@ -577,7 +578,9 @@ class PredictParams:
         weight_snapshot_generation: WeightSnapshotGeneration | None = None,
         race_start_at_jst: str | None = None,
         market_signal_foundation_attestation: MarketSignalFoundationAttestation | None = None,
+        allow_race_scoped_day_base: bool = False,
     ) -> None:
+        self.allow_race_scoped_day_base: bool = allow_race_scoped_day_base
         self.category: str = category
         self.run_date: str = run_date
         self.days_ahead: int = days_ahead
@@ -673,6 +676,11 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     race_bango = _optional_scope_value(_first_qs(qs, "raceBango"))
     debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
     force = _parse_debug_flag(_first_qs(qs, "force"))
+    allow_race_scoped_day_base = _parse_debug_flag(_first_qs(qs, "allowRaceScopedDayBase"))
+    if allow_race_scoped_day_base and not (
+        mode == "full" and keibajo_code is not None and race_bango is not None
+    ):
+        return "allowRaceScopedDayBase requires a focused mode=full request"
 
     market_signal_attestation = _parse_market_signal_attestation(
         qs,
@@ -743,6 +751,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         weight_snapshot_generation=weight_snapshot_generation,
         race_start_at_jst=race_start_at_jst,
         market_signal_foundation_attestation=market_signal_attestation,
+        allow_race_scoped_day_base=allow_race_scoped_day_base,
     )
 
 
@@ -1383,11 +1392,28 @@ for the whole body of :func:`_run_predict_fn`, never held across a
 """
 
 _current_market_signal_attestation: MarketSignalFoundationAttestation | None = None
+_current_allow_race_scoped_day_base = False
+
+
+def current_allow_race_scoped_day_base() -> bool:
+    """Return whether the serialized request passed the Worker's race-scoped gate."""
+    return _current_allow_race_scoped_day_base
 
 
 def current_market_signal_foundation_attestation() -> MarketSignalFoundationAttestation | None:
     """Return the attestation bound to the serialized prediction currently executing."""
     return _current_market_signal_attestation
+
+
+@contextmanager
+def _allow_race_scoped_day_base_scope(allowed: bool) -> Generator[None]:
+    global _current_allow_race_scoped_day_base
+    previous = _current_allow_race_scoped_day_base
+    _current_allow_race_scoped_day_base = allowed
+    try:
+        yield
+    finally:
+        _current_allow_race_scoped_day_base = previous
 
 
 @contextmanager
@@ -1422,6 +1448,7 @@ def _run_predict_fn(
     with (
         _PIPELINE_EXEC_LOCK,
         debug_logs_scope(params.debug_logs),
+        _allow_race_scoped_day_base_scope(params.allow_race_scoped_day_base),
         _market_signal_foundation_attestation_scope(params.market_signal_foundation_attestation),
     ):
         return predict_fn(

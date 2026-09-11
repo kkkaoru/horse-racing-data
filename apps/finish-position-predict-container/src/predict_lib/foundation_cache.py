@@ -321,6 +321,13 @@ def validate_foundation_objects(
         or not _source_matches(race.get("source"), source_key, source_identity)
     ):
         return FoundationLoadResult("race-source-mismatch", None, None)
+    catalog_source_hash = manifest_race.get("catalogSourceHash")
+    if catalog_source_hash is not None and (
+        not isinstance(catalog_source_hash, str) or not catalog_source_hash
+    ):
+        return FoundationLoadResult("invalid-race-contract", None, None)
+    if race.get("catalogSourceHash") != catalog_source_hash:
+        return FoundationLoadResult("race-contract-mismatch", None, None)
     expected_contract: Mapping[str, object] = {
         "contractVersion": FOUNDATION_CONTRACT_VERSION,
         "entrySetHash": entry_hash,

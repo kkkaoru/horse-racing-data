@@ -178,24 +178,32 @@ const {
   clearDayBaseRepairReservationMock,
   enqueueDayBaseRepairOnceMock,
   getFocusedFullDayBaseReadinessMock,
+  getRaceScopedDayBaseReadinessMock,
 } = vi.hoisted(() => ({
   clearDayBaseRepairReservationMock: vi.fn(async () => undefined),
   enqueueDayBaseRepairOnceMock: vi.fn(async () => "enqueued"),
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  getRaceScopedDayBaseReadinessMock: vi.fn(async () => ({
+    ready: false,
+    reason: "race-entry-set-mismatch",
+  })),
 }));
 
-const { getDayBaseRaceFoundationReadinessMock, materializeDayBasePerRaceCacheMock } = vi.hoisted(
-  () => ({
-    getDayBaseRaceFoundationReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
-    materializeDayBasePerRaceCacheMock: vi.fn(async () => ({
-      featureHash: "feature-hash",
-      manifestKey: "manifest-key",
-      raceCount: 1,
-      rowCount: 12,
-      status: "materialized" as const,
-    })),
-  }),
-);
+const {
+  fetchCatalogRaceSourceSnapshotsMock,
+  getDayBaseRaceFoundationReadinessMock,
+  materializeDayBasePerRaceCacheMock,
+} = vi.hoisted(() => ({
+  fetchCatalogRaceSourceSnapshotsMock: vi.fn(async () => new Map()),
+  getDayBaseRaceFoundationReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  materializeDayBasePerRaceCacheMock: vi.fn(async () => ({
+    featureHash: "feature-hash",
+    manifestKey: "manifest-key",
+    raceCount: 1,
+    rowCount: 12,
+    status: "materialized" as const,
+  })),
+}));
 
 const { addRescoreAttestationToUrlMock, createRescoreAttestationMock } = vi.hoisted(() => ({
   addRescoreAttestationToUrlMock: vi.fn((url: string) => url),
@@ -224,6 +232,10 @@ const prepareMarketSignalFoundationBestEffortMock = vi.hoisted(() =>
   ),
 );
 
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: materializeDayBasePerRaceCacheMock,
+}));
+
 vi.mock("./container-control", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./container-control")>();
   return { ...actual, consumeContainerStop: consumeContainerStopMock };
@@ -246,9 +258,17 @@ vi.mock("./focused-full-day-base-readiness", () => ({
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
 
+vi.mock("./race-scoped-day-base-readiness", () => ({
+  getRaceScopedDayBaseReadiness: getRaceScopedDayBaseReadinessMock,
+}));
+
 vi.mock("./day-base-race-materializer", () => ({
   getDayBaseRaceFoundationReadiness: getDayBaseRaceFoundationReadinessMock,
   materializeDayBasePerRaceCache: materializeDayBasePerRaceCacheMock,
+}));
+
+vi.mock("./race-source-snapshot", () => ({
+  fetchCatalogRaceSourceSnapshots: fetchCatalogRaceSourceSnapshotsMock,
 }));
 
 vi.mock("./rescore-attestation", () => ({
@@ -373,6 +393,7 @@ const makeEnv = (): Env => ({
     idFromName: idFromNameMock,
   } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
+  PC_KEIBA_R2_CATALOG: { fetch: vi.fn() } as unknown as Fetcher,
   PC_KEIBA_VIEWER_INTERNAL_TOKEN: "secret-token",
   PREDICT_DAYS_AHEAD: "2",
   CONTAINER_CONTROL_QUEUE: {
@@ -552,6 +573,11 @@ beforeEach(() => {
   enqueueDayBaseRepairOnceMock.mockClear();
   getFocusedFullDayBaseReadinessMock.mockClear();
   getFocusedFullDayBaseReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
+  getRaceScopedDayBaseReadinessMock.mockClear();
+  getRaceScopedDayBaseReadinessMock.mockResolvedValue({
+    ready: false,
+    reason: "race-entry-set-mismatch",
+  });
   getDayBaseRaceFoundationReadinessMock.mockClear();
   getDayBaseRaceFoundationReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   materializeDayBasePerRaceCacheMock.mockClear();
@@ -562,6 +588,8 @@ beforeEach(() => {
     rowCount: 12,
     status: "materialized",
   });
+  fetchCatalogRaceSourceSnapshotsMock.mockClear();
+  fetchCatalogRaceSourceSnapshotsMock.mockResolvedValue(new Map());
   addRescoreAttestationToUrlMock.mockClear();
   addRescoreAttestationToUrlMock.mockImplementation((url: string) => url);
   createRescoreAttestationMock.mockClear();
@@ -756,10 +784,73 @@ test("defers a partial day-base, enqueues one repair, and never claims a Contain
   expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(getRaceScopedDayBaseReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "05",
+    raceBango: "11",
+    requireStableSourceHash: true,
+    runYmd: "20260603",
+  });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full day-base deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=source-row-count-26-of-392 repair=enqueued attempts=2 delaySeconds=50",
+    "[predict-queue] focused-full day-base deferred before claim category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 reason=source-row-count-26-of-392 raceReason=race-entry-set-mismatch repair=enqueued attempts=2 delaySeconds=50",
   );
   warnSpy.mockRestore();
+});
+
+test("uses a fresh race-scoped foundation while another race makes the category stale", async () => {
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "rs-row-count-455-of-454",
+  });
+  getRaceScopedDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 1)]), makeEnv());
+
+  expect(enqueueDayBaseRepairOnceMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[predict-queue] using race-scoped foundation while category day-base is stale category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=true busyRequeueCount=0 keibajo=05 race=11 categoryReason=rs-row-count-455-of-454",
+  );
+  warnSpy.mockRestore();
+});
+
+test("uses a stable race source snapshot when another race changes the Catalog watermark", async () => {
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "source-watermark-mismatch",
+  });
+  getRaceScopedDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 1)]), makeEnv());
+
+  expect(getRaceScopedDayBaseReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "05",
+    raceBango: "11",
+    requireStableSourceHash: true,
+    runYmd: "20260603",
+  });
+  expect(enqueueDayBaseRepairOnceMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalled();
+});
+
+test("repairs the category when the race-scoped fallback probe fails", async () => {
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "rs-row-count-455-of-454",
+  });
+  getRaceScopedDayBaseReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
+
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true }, 1)]), makeEnv());
+
+  expect(enqueueDayBaseRepairOnceMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
 });
 
 test("retries a second partial-day-base race without duplicate repair enqueue", async () => {
@@ -1018,7 +1109,7 @@ test("uses a stable category-scoped DO name for focused per-race full skipDedup 
     expect(stubFetchMock).toHaveBeenCalledTimes(2);
     const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
     expect(fetchRequest.url).toBe(
-      "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
+      "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&allowRaceScopedDayBase=1&keibajoCode=02&raceBango=01",
     );
     expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
     expect(randomUuidSpy).not.toHaveBeenCalled();
@@ -1046,7 +1137,7 @@ test("keeps focused full detached when Worker debug logging is enabled", async (
   );
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260822&keibajoCode=07&raceBango=11",
+    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260822&allowRaceScopedDayBase=1&keibajoCode=07&raceBango=11",
   );
 });
 
@@ -1230,7 +1321,7 @@ test("threads cardMaxRaceBango into a Kochi focused-full skipDedup query URL", a
   );
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=nar&daysAhead=0&mode=full&runDate=20260712&keibajoCode=54&raceBango=10&cardMaxRaceBango=10",
+    "http://do/predict?category=nar&daysAhead=0&mode=full&runDate=20260712&allowRaceScopedDayBase=1&keibajoCode=54&raceBango=10&cardMaxRaceBango=10",
   );
 });
 
@@ -2172,7 +2263,7 @@ test("starts a forced focused-full when no completion exists after forceRequeste
   expect(stubFetchMock).toHaveBeenCalledTimes(2);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&keibajoCode=02&raceBango=01&force=1",
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&allowRaceScopedDayBase=1&keibajoCode=02&raceBango=01&force=1",
   );
   expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
@@ -2250,7 +2341,7 @@ test("preserves force through Queue redelivery when completion is not visible", 
   expect(claimFocusedFullRaceMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
   const predictRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(predictRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&keibajoCode=02&raceBango=01&force=1",
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&allowRaceScopedDayBase=1&keibajoCode=02&raceBango=01&force=1",
   );
 });
 
@@ -2350,7 +2441,7 @@ test("ignores requestId in the DO name for focused per-race full skipDedup messa
   expect(stubFetchMock).toHaveBeenCalledTimes(2);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&keibajoCode=35&raceBango=01",
+    "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&allowRaceScopedDayBase=1&keibajoCode=35&raceBango=01",
   );
   expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
   expect(claimRunMock).not.toHaveBeenCalled();
@@ -6445,7 +6536,7 @@ test("continues a never-dispatched focused-full after resumed status is missing"
   );
   const predictRequest = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
   expect(predictRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260822&keibajoCode=07&raceBango=09",
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260822&allowRaceScopedDayBase=1&keibajoCode=07&raceBango=09",
   );
   expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalledWith(expect.objectContaining({ force: true }), {
@@ -6493,7 +6584,7 @@ test("preserves forced execution after six deliveries and a resumed missing stat
   );
   const predictRequest = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
   expect(predictRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260822&keibajoCode=07&raceBango=09&force=1",
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260822&allowRaceScopedDayBase=1&keibajoCode=07&raceBango=09&force=1",
   );
   expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
   expect(retryMock).not.toHaveBeenCalled();

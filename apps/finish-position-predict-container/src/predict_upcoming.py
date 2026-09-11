@@ -202,6 +202,7 @@ from predict_lib.serve import (
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     build_r2_running_style_foundation_key,
+    current_allow_race_scoped_day_base,
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
@@ -2542,6 +2543,7 @@ def _build_feature_rows(
             window.database_url,
             target_race,
             r2_config=r2_config,
+            allow_stale_running_style=current_allow_race_scoped_day_base(),
         )
         if split_rows is not None:
             return split_rows

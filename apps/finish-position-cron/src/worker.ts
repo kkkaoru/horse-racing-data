@@ -1,5 +1,6 @@
 // Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container) + queue handlers.
 
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import {
   FinishPositionPredictContainer,
   FinishPositionRaceChainContainer,
@@ -24,7 +25,6 @@ import {
 } from "./day-base-prewarm";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
 import { completeLandedDayBase } from "./day-base-pickup";
-import { materializeDayBasePerRaceCache } from "./day-base-race-materializer";
 import {
   enqueueDeliveryCanary,
   listDeliveryCanaries,
@@ -948,7 +948,7 @@ const handleAdminMaterializeDayBase = async (request: Request, env: Env): Promis
   if (parsed === null || parsed.category === undefined) {
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
   }
-  const result = await materializeDayBasePerRaceCache({
+  const result = await assembleAttestedRaceCaches({
     category: parsed.category,
     env,
     runYmd: parsed.runYmd,

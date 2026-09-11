@@ -4,17 +4,25 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
 
 const {
+  fetchCatalogRaceSourceSnapshotsMock,
   getDayBaseCandidateReadinessMock,
+  getFocusedFullDayBaseReadinessMock,
   materializeDayBasePerRaceCacheMock,
   proxyResultParquetsToRMock,
 } = vi.hoisted(() => ({
+  fetchCatalogRaceSourceSnapshotsMock: vi.fn(async () => new Map()),
   getDayBaseCandidateReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   materializeDayBasePerRaceCacheMock: vi.fn(
     async (): Promise<{ status: "materialized" } | { reason: string; status: "fallback" }> => ({
       status: "materialized",
     }),
   ),
   proxyResultParquetsToRMock: vi.fn(async () => undefined),
+}));
+
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: materializeDayBasePerRaceCacheMock,
 }));
 
 vi.mock("./container-ndjson-proxy", () => ({
@@ -27,6 +35,11 @@ vi.mock("./day-base-race-materializer", () => ({
 
 vi.mock("./focused-full-day-base-readiness", () => ({
   getDayBaseCandidateReadiness: getDayBaseCandidateReadinessMock,
+  getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
+}));
+
+vi.mock("./race-source-snapshot", () => ({
+  fetchCatalogRaceSourceSnapshots: fetchCatalogRaceSourceSnapshotsMock,
 }));
 
 import {
@@ -52,6 +65,7 @@ const createPickupEnv = (cache: PickupFeaturesCache): Env =>
       get: getMock,
       idFromName: idFromNameMock,
     },
+    PC_KEIBA_R2_CATALOG: { fetch: vi.fn() },
   }) as unknown as Env;
 
 const isRequest = (value: unknown): value is Request =>
@@ -67,6 +81,10 @@ beforeEach(() => {
   proxyResultParquetsToRMock.mockClear();
   getDayBaseCandidateReadinessMock.mockReset();
   getDayBaseCandidateReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
+  getFocusedFullDayBaseReadinessMock.mockReset();
+  getFocusedFullDayBaseReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
+  fetchCatalogRaceSourceSnapshotsMock.mockReset();
+  fetchCatalogRaceSourceSnapshotsMock.mockResolvedValue(new Map());
 });
 
 test("buildDayBaseObjectKey is the catalog-v1 day-base path", () => {

@@ -188,6 +188,115 @@ describe("day-base per-race foundation materializer", () => {
     expect(bucket.puts).toHaveLength(2);
   });
 
+  test("binds Worker-built foundations to stable race source snapshots", async () => {
+    const bucket = makeBucket(new Uint8Array([1, 2, 3, 4]));
+    const sourceSnapshots = new Map([
+      [
+        "jra:2026:0823:01:01",
+        {
+          entrySetHash: "d2d7eaf97b33ea69dc341c5e079b6f7ccfdefa733bd6469b68b5e4fcdeb6e940",
+          raceId: "jra:2026:0823:01:01",
+          rowCount: 1,
+          stableSourceHash: "stable-source-hash",
+        },
+      ],
+    ]);
+
+    const result = await materializeDayBasePerRaceCache(
+      {
+        category: "jra",
+        env: bucket.env,
+        runYmd: "20260823",
+        sourceSnapshots,
+      },
+      injected([validRow()]),
+    );
+
+    expect(result.status).toBe("materialized");
+    expect(bucket.puts[0]?.options.customMetadata).toMatchObject({
+      "catalog-snapshot-version": "stable-source-v1",
+      "catalog-source-hash": "stable-source-hash",
+    });
+    expect(jsonBody(bucket.puts[0])).toMatchObject({
+      catalogSourceHash: "stable-source-hash",
+    });
+    expect(bucket.puts.at(-1)?.options.customMetadata).toMatchObject({
+      "catalog-snapshot-version": "stable-source-v1",
+    });
+    expect(jsonBody(bucket.puts.at(-1)).races).toStrictEqual([
+      {
+        catalogSourceHash: "stable-source-hash",
+        entrySetHash: "d2d7eaf97b33ea69dc341c5e079b6f7ccfdefa733bd6469b68b5e4fcdeb6e940",
+        key: "feat-daybase-race/catalog-v1/jra/20260823/01/01/foundation.json",
+        raceId: "jra:2026:0823:01:01",
+        rowCount: 1,
+      },
+    ]);
+  });
+
+  test("rejects a source snapshot that does not cover the decoded foundation", async () => {
+    const bucket = makeBucket(new Uint8Array([1, 2, 3, 4]));
+
+    await expect(
+      materializeDayBasePerRaceCache(
+        {
+          category: "jra",
+          env: bucket.env,
+          runYmd: "20260823",
+          sourceSnapshots: new Map(),
+        },
+        injected([validRow()]),
+      ),
+    ).resolves.toStrictEqual({
+      reason: "catalog-source-snapshot-mismatch",
+      status: "fallback",
+    });
+    expect(bucket.puts).toHaveLength(0);
+  });
+
+  test("does not reuse a legacy manifest when source snapshots are required", async () => {
+    const head = vi
+      .fn()
+      .mockResolvedValueOnce({ etag: "source-etag", size: 4, version: "source-version" })
+      .mockResolvedValueOnce({
+        customMetadata: {
+          "contract-version": "day-base-race-foundation-v1",
+          "feature-hash": "feature-hash",
+          "race-count": "1",
+          "row-count": "1",
+          "schema-version": "1",
+          "source-etag": "source-etag",
+          "source-version": "source-version",
+        },
+      });
+    const bucket = makeBucket(new Uint8Array([1, 2, 3, 4]), { head });
+    const decodeDayBase = vi.fn(injected([validRow()]).decodeDayBase);
+
+    const result = await materializeDayBasePerRaceCache(
+      {
+        category: "jra",
+        env: bucket.env,
+        runYmd: "20260823",
+        sourceSnapshots: new Map([
+          [
+            "jra:2026:0823:01:01",
+            {
+              entrySetHash: "d2d7eaf97b33ea69dc341c5e079b6f7ccfdefa733bd6469b68b5e4fcdeb6e940",
+              raceId: "jra:2026:0823:01:01",
+              rowCount: 1,
+              stableSourceHash: "stable-source-hash",
+            },
+          ],
+        ]),
+      },
+      { decodeDayBase },
+    );
+
+    expect(result.status).toBe("materialized");
+    expect(decodeDayBase).toHaveBeenCalledTimes(1);
+    expect(bucket.puts).toHaveLength(2);
+  });
+
   test("attests the exact race foundation against the canonical source and manifest", async () => {
     const metadataByKey: Record<string, R2Object> = {
       "feat-daybase/catalog-v1/jra/20260823/features.parquet": {

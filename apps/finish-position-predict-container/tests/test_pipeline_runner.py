@@ -4101,6 +4101,69 @@ def test_foundation_readiness_snapshot_uses_one_combined_source_head(
     assert head_calls == ["feat-daybase/catalog-v1/jra/20260823/features.parquet"]
 
 
+def test_foundation_readiness_snapshot_allows_only_worker_attested_rs_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from predict_lib.r2_client import R2ObjectHead, R2ObjectIdentity
+    from predict_lib.serve import R2Config
+
+    identity = R2ObjectIdentity("etag", "version")
+    source_watermark = ("20260910", 455, "2026-09-10T06:00:00Z", 454, "rs-hash")
+    monkeypatch.setattr(pipeline_runner, "is_catalog_source_url", lambda _url: True)
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_catalog_foundation_readiness",
+        lambda *_args: (frozenset({"H1:1"}), source_watermark[:2]),
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_compute_rs_watermark",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("scoped path must use source RS")),
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "r2_head_object",
+        lambda *_args: R2ObjectHead(identity=identity, watermark=source_watermark),
+    )
+    readiness_attr = "_foundation_readiness_snapshot"
+    readiness_fn = cast(
+        Callable[..., pipeline_runner.FoundationReadinessSnapshot | None],
+        getattr(pipeline_runner, readiness_attr),
+    )
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = readiness_fn(
+        category="nar",
+        target_date="20260910",
+        target_race="50:11",
+        database_url="r2-catalog://pc-keiba",
+        r2_config=r2,
+        allow_stale_running_style=True,
+    )
+    assert result == pipeline_runner.FoundationReadinessSnapshot(
+        expected_entries=frozenset({"H1:1"}),
+        live_watermark=source_watermark,
+        source_identity=identity,
+    )
+
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_catalog_foundation_readiness",
+        lambda *_args: (frozenset({"H1:1"}), ("changed", 455)),
+    )
+    assert (
+        readiness_fn(
+            category="nar",
+            target_date="20260910",
+            target_race="50:11",
+            database_url="r2-catalog://pc-keiba",
+            r2_config=r2,
+            allow_stale_running_style=True,
+        )
+        is None
+    )
+
+
 def test_build_upcoming_feature_rows_split_prefers_foundation_over_whole_day(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
