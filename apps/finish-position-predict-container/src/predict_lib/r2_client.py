@@ -46,7 +46,7 @@ class R2ObjectIdentity:
     version: str
 
 
-R2ObjectWatermark = tuple[str, int, str, int]
+R2ObjectWatermark = tuple[str, int, str, int, str | None]
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,7 @@ class _HeaderLookup(Protocol):
 # ``customMetadata`` object keys.
 _WATERMARK_META_MAX_UPDATED: str = "x-amz-meta-max-data-sakusei-nengappi"
 _WATERMARK_META_ROW_COUNT: str = "x-amz-meta-row-count"
+_WATERMARK_META_RS_CONTENT_HASH: str = "x-amz-meta-rs-content-hash"
 _WATERMARK_META_RS_PREDICTED_AT_MAX: str = "x-amz-meta-rs-predicted-at-max"
 _WATERMARK_META_RS_ROW_COUNT: str = "x-amz-meta-rs-row-count"
 
@@ -199,6 +200,7 @@ def _watermark_from_headers(headers: _HeaderLookup) -> R2ObjectWatermark | None:
     """Parse custom day-base freshness metadata, failing closed."""
     max_updated = headers.get(_WATERMARK_META_MAX_UPDATED)
     row_count_raw = headers.get(_WATERMARK_META_ROW_COUNT)
+    rs_content_hash = headers.get(_WATERMARK_META_RS_CONTENT_HASH)
     rs_predicted_at_max = headers.get(_WATERMARK_META_RS_PREDICTED_AT_MAX)
     rs_row_count_raw = headers.get(_WATERMARK_META_RS_ROW_COUNT)
     if (
@@ -213,7 +215,15 @@ def _watermark_from_headers(headers: _HeaderLookup) -> R2ObjectWatermark | None:
         rs_row_count = int(rs_row_count_raw)
     except ValueError:
         return None
-    return (max_updated, row_count, rs_predicted_at_max, rs_row_count)
+    if rs_content_hash is not None and not rs_content_hash.strip():
+        return None
+    return (
+        max_updated,
+        row_count,
+        rs_predicted_at_max,
+        rs_row_count,
+        None if rs_content_hash is None else rs_content_hash.strip(),
+    )
 
 
 def r2_head_object(r2: R2Config, object_key: str) -> R2ObjectHead | None:
@@ -241,8 +251,10 @@ def r2_head_watermark(r2: R2Config, object_key: str) -> R2ObjectWatermark | None
     """Return the day-base watermark from an R2 object's custom metadata via
     a signed HEAD request (no body download), or ``None`` on ANY ambiguity --
     missing object, network/auth failure, or a present object whose custom
-    metadata is missing/malformed (e.g. written by a container image from
-    before this metadata existed). Fail-closed, matching every other
+    metadata is malformed. Objects written before content hashes were added
+    return a ``None`` hash so the caller can use the four-field timestamp
+    fallback during rolling deployment. Other missing fields fail closed,
+    matching every other
     watermark helper in this codebase
     (``pipeline_runner._compute_source_watermark`` /
     ``_compute_rs_watermark``) -- the caller must never trust an R2 day-base

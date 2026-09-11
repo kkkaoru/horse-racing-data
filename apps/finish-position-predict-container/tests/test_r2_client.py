@@ -255,6 +255,7 @@ class _FakeHeadResponse:
 _FULL_WATERMARK_HEADERS = {
     "x-amz-meta-max-data-sakusei-nengappi": "20260712",
     "x-amz-meta-row-count": "946",
+    "x-amz-meta-rs-content-hash": "rs-hash",
     "x-amz-meta-rs-predicted-at-max": "2026-07-18T09:00:00",
     "x-amz-meta-rs-row-count": "12",
 }
@@ -303,7 +304,41 @@ def test_r2_head_watermark_success_returns_four_tuple(
 
     result = r2_head_watermark(_R2, "feat-daybase/catalog-v1/jra/20260712/features.parquet")
 
-    assert result == ("20260712", 946, "2026-07-18T09:00:00", 12)
+    assert result == ("20260712", 946, "2026-07-18T09:00:00", 12, "rs-hash")
+
+
+def test_r2_head_watermark_legacy_metadata_falls_back_without_content_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = dict(_FULL_WATERMARK_HEADERS)
+    del legacy["x-amz-meta-rs-content-hash"]
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeHeadResponse(legacy),
+    )
+
+    assert r2_head_watermark(_R2, "legacy") == (
+        "20260712",
+        946,
+        "2026-07-18T09:00:00",
+        12,
+        None,
+    )
+
+
+def test_r2_head_watermark_rejects_empty_content_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malformed = dict(_FULL_WATERMARK_HEADERS)
+    malformed["x-amz-meta-rs-content-hash"] = " "
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeHeadResponse(malformed),
+    )
+
+    assert r2_head_watermark(_R2, "malformed") is None
 
 
 def test_r2_head_watermark_request_method_is_head_no_body_read(
@@ -461,6 +496,7 @@ def test_r2_head_watermark_banei_none_rs_token_returns_four_tuple(
             {
                 "x-amz-meta-max-data-sakusei-nengappi": "20260814",
                 "x-amz-meta-row-count": "117",
+                "x-amz-meta-rs-content-hash": "none",
                 "x-amz-meta-rs-predicted-at-max": "none",
                 "x-amz-meta-rs-row-count": "0",
             }
@@ -470,4 +506,4 @@ def test_r2_head_watermark_banei_none_rs_token_returns_four_tuple(
 
     result = r2_head_watermark(_R2, "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet")
 
-    assert result == ("20260814", 117, "none", 0)
+    assert result == ("20260814", 117, "none", 0, "none")

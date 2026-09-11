@@ -295,6 +295,33 @@ test("pickUpPrewarmDayBase fetches the category-scoped cache endpoint", async ()
   expect(request.url).toBe("http://do/prewarm-day-base-cache?category=ban-ei&runDate=20260816");
 });
 
+test.each([null, 42, ""])("rejects a malformed running-style content hash: %s", async (hash) => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260816",
+        rowCount: 80,
+        rsContentHash: hash,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+
+  await expect(
+    pickUpPrewarmDayBase({
+      category: "ban-ei",
+      env: createPickupEnv({ head: headMock }),
+      runYmd: "20260816",
+    }),
+  ).resolves.toBe(false);
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+  expect(getDayBaseCandidateReadinessMock).not.toHaveBeenCalled();
+});
+
 test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", async () => {
   stubFetchMock.mockResolvedValueOnce(
     new Response(
@@ -305,6 +332,7 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
         daybaseWatermark: {
           maxDataSakuseiNengappi: "20260816",
           rowCount: 80,
+          rsContentHash: "rs-hash",
           rsPredictedAtMax: "2026-08-16T00:00:00",
           rsRowCount: 4,
         },
@@ -331,6 +359,7 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
       daybaseWatermark: {
         maxDataSakuseiNengappi: "20260816",
         rowCount: 80,
+        rsContentHash: "rs-hash",
         rsPredictedAtMax: "2026-08-16T00:00:00",
         rsRowCount: 4,
       },

@@ -3013,6 +3013,7 @@ def _make_prewarm_fn(
                 {
                     "maxDataSakuseiNengappi": entrant_watermark[0],
                     "rowCount": entrant_watermark[1],
+                    "rsContentHash": "none",
                     "rsPredictedAtMax": "none",
                     "rsRowCount": 0,
                 },
@@ -3080,7 +3081,7 @@ def _prewarm_parquet_payload(
     # fire either.
     read_watermark_attr = "_read_watermark"
     read_watermark = cast(
-        "Callable[[Path], tuple[str, int, str, int] | None]",
+        "Callable[[Path], tuple[str, int, str, int, str] | None]",
         getattr(pipeline_runner, read_watermark_attr),
     )
     read_reason_attr = "_read_watermark_reason"
@@ -3099,10 +3100,11 @@ def _prewarm_parquet_payload(
     watermark_tuple = read_watermark(day_base_dir.parent)
     watermark: Mapping[str, str | int] | None = None
     if watermark_tuple is not None:
-        max_updated, row_count, rs_predicted_at_max, rs_row_count = watermark_tuple
+        max_updated, row_count, rs_predicted_at_max, rs_row_count, rs_content_hash = watermark_tuple
         watermark = {
             "maxDataSakuseiNengappi": max_updated,
             "rowCount": row_count,
+            "rsContentHash": rs_content_hash,
             "rsPredictedAtMax": rs_predicted_at_max,
             "rsRowCount": rs_row_count,
         }

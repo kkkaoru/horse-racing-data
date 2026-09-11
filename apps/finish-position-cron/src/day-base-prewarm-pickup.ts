@@ -73,14 +73,26 @@ const parseDaybaseWatermark = (value: unknown): DaybaseWatermark | null => {
   if (!isRecord(value)) return null;
   const maxDataSakuseiNengappi = value.maxDataSakuseiNengappi;
   const rowCount = value.rowCount;
+  const rsContentHash = value.rsContentHash;
   const rsPredictedAtMax = value.rsPredictedAtMax;
   const rsRowCount = value.rsRowCount;
   if (typeof maxDataSakuseiNengappi !== "string" || maxDataSakuseiNengappi.length === 0)
     return null;
   if (typeof rowCount !== "number") return null;
+  if (
+    rsContentHash !== undefined &&
+    (typeof rsContentHash !== "string" || rsContentHash.length === 0)
+  )
+    return null;
   if (typeof rsPredictedAtMax !== "string" || rsPredictedAtMax.length === 0) return null;
   if (typeof rsRowCount !== "number") return null;
-  return { maxDataSakuseiNengappi, rowCount, rsPredictedAtMax, rsRowCount };
+  return {
+    maxDataSakuseiNengappi,
+    rowCount,
+    ...(typeof rsContentHash === "string" ? { rsContentHash } : {}),
+    rsPredictedAtMax,
+    rsRowCount,
+  };
 };
 
 const parsePrewarmCacheResponse = (value: unknown): PrewarmCacheResponseBody | null => {

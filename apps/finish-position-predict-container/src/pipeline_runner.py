@@ -104,6 +104,7 @@ from predict_lib.r2_client import (
     r2_head_watermark,
 )
 from predict_lib.rescore import RaceScope, race_matches_scope
+from predict_lib.running_style_content_hash import compute_running_style_content_hash
 from predict_lib.serve import (
     R2Config,
     build_r2_day_base_key,
@@ -123,7 +124,11 @@ _ABSENT_WATERMARK_TOKEN: Final[str] = "none"
 ``data_sakusei_nengappi`` on a non-zero row set. Pickup/HEAD reject empty
 strings, so both :func:`build_day_base` and :func:`ensure_day_base` must
 recompute this same token -- never ``""``."""
-_ABSENT_RS_WATERMARK: Final[tuple[str, int]] = (_ABSENT_WATERMARK_TOKEN, 0)
+_ABSENT_RS_WATERMARK: Final[tuple[str, int, str]] = (
+    _ABSENT_WATERMARK_TOKEN,
+    0,
+    _ABSENT_WATERMARK_TOKEN,
+)
 """Stable RS watermark when the category has no by-day shard (Ban-ei) or the
 day's shard has not been written yet."""
 _YMD_DATE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{8}$")
@@ -886,6 +891,7 @@ def _compute_source_watermark(
 
 
 _RS_PREDICTIONS_R2_PREFIX: Final[str] = "running-style/predictions/by-day/raw-iceberg-v1"
+_MAX_RUNNING_STYLE_WATERMARK_ROWS: Final[int] = 1_024
 """Object-key prefix for the by-day running-style prediction shards this
 watermark checks for freshness. Must stay in sync with ``R2_PREDICTIONS_PREFIX``
 in ``apps/pc-keiba-viewer/src/scripts/finish-position-features/
@@ -914,10 +920,8 @@ _RS_JRA_KEIBAJO_CODES: Final[tuple[str, ...]] = (
 )
 """JRA venue codes used to isolate JRA rows in a potentially mixed RS shard."""
 
-DayBaseWatermark = tuple[str, int, str, int]
-"""``(max_data_sakusei_nengappi, entrant_row_count, rs_predicted_at_max,
-rs_row_count)`` -- the combined freshness signal :func:`ensure_day_base`
-trusts a cached day-base against."""
+DayBaseWatermark = tuple[str, int, str, int, str | None]
+"""Entrant watermark plus RS timestamp/count/content fingerprint."""
 
 RunningStyleFoundationCommitFn = Callable[[Category, str, Path, tuple[str, int]], None]
 """Publish the RS-independent base after its entrant watermark is known."""
@@ -925,7 +929,7 @@ RunningStyleFoundationCommitFn = Callable[[Category, str, Path, tuple[str, int]]
 
 def _compute_rs_watermark(
     category: Category, target_date: str, r2_config: R2Config | None
-) -> tuple[str, int] | None:
+) -> tuple[str, int, str] | None:
     """Freshness signal for the day's running-style predictions in R2.
 
     Returns :data:`_ABSENT_RS_WATERMARK` (``("none", 0)``) -- a STABLE,
@@ -978,10 +982,18 @@ def _compute_rs_watermark(
                 )
                 """
             )
-            row = connection.execute(
-                f"select max(predicted_at), count(*) from read_parquet(?) where {venue_predicate}",
+            rows = connection.execute(
+                f"""
+                select source, kaisai_nen || kaisai_tsukihi, keibajo_code,
+                       race_bango, umaban, ketto_toroku_bango,
+                       p_nige, p_senkou, p_sashi, p_oikomi,
+                       predicted_class, predicted_at
+                  from read_parquet(?)
+                 where {venue_predicate}
+                 limit 1025
+                """,
                 (glob, *venue_params),
-            ).fetchone()
+            ).fetchall()
         finally:
             connection.close()
     except duckdb.IOException as exc:
@@ -998,20 +1010,41 @@ def _compute_rs_watermark(
             f"target_date={target_date} error={exc}"
         )
         return None
-    if not row or not row[1]:
+    if not rows:
         return _ABSENT_RS_WATERMARK
-    max_predicted_at, row_count = row
-    count_value = row_count if isinstance(row_count, int) else int(str(row_count))
-    if max_predicted_at is None:
-        return (_ABSENT_WATERMARK_TOKEN, count_value)
-    predicted_token = str(max_predicted_at).strip()
-    if not predicted_token:
-        return (_ABSENT_WATERMARK_TOKEN, count_value)
-    return (predicted_token, count_value)
+    if len(rows) > _MAX_RUNNING_STYLE_WATERMARK_ROWS:
+        debug_log(
+            f"[day-base] rs watermark row limit exceeded category={category} "
+            f"target_date={target_date} rows={len(rows)}"
+        )
+        return None
+    content_rows = [
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            int(row[4]),
+            str(row[5]),
+            float(row[6]),
+            float(row[7]),
+            float(row[8]),
+            float(row[9]),
+            int(row[10]),
+        )
+        for row in rows
+    ]
+    predicted_tokens = [str(row[11]).strip() for row in rows if row[11] is not None]
+    predicted_token = max(predicted_tokens, default=_ABSENT_WATERMARK_TOKEN)
+    return (
+        predicted_token or _ABSENT_WATERMARK_TOKEN,
+        len(rows),
+        compute_running_style_content_hash(content_rows),
+    )
 
 
 def _combine_watermarks(
-    entrant: tuple[str, int] | None, rs: tuple[str, int] | None
+    entrant: tuple[str, int] | None, rs: tuple[str, int, str] | None
 ) -> DayBaseWatermark | None:
     """Merge the entrant + RS freshness signals into one comparable value.
 
@@ -1021,7 +1054,7 @@ def _combine_watermarks(
     """
     if entrant is None or rs is None:
         return None
-    return (entrant[0], entrant[1], rs[0], rs[1])
+    return (entrant[0], entrant[1], rs[0], rs[1], rs[2])
 
 
 def compute_day_base_watermark(
@@ -1072,6 +1105,7 @@ def _write_watermark(day_dir: Path, watermark: DayBaseWatermark) -> None:
         "row_count": watermark[1],
         "rs_predicted_at_max": watermark[2],
         "rs_row_count": watermark[3],
+        "rs_content_hash": watermark[4],
     }
     try:
         _watermark_path(day_dir).write_text(json.dumps(payload), encoding="utf-8")
@@ -1091,9 +1125,20 @@ def _read_watermark(day_dir: Path) -> DayBaseWatermark | None:
             int(payload["row_count"]),
             str(payload["rs_predicted_at_max"]),
             int(payload["rs_row_count"]),
+            None if payload.get("rs_content_hash") is None else str(payload["rs_content_hash"]),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _watermarks_match(
+    stored: DayBaseWatermark | None,
+    live: DayBaseWatermark,
+) -> bool:
+    """Compare content hashes when present, with timestamp fallback for legacy objects."""
+    if stored is None or stored[:4] != live[:4]:
+        return False
+    return stored[4] is None or stored[4] == live[4]
 
 
 def _query_upcoming_race_keys(
@@ -1884,7 +1929,7 @@ def ensure_day_base(
             _log_day_base_miss(category=category, target_date=target_date, reason=miss_reason)
             return None
         stored = _read_watermark(day_dir)
-        if has_parquet_output(final_dir) and stored == watermark:
+        if has_parquet_output(final_dir) and _watermarks_match(stored, watermark):
             debug_log(
                 f"[day-base] HIT local category={category} target_date={target_date} "
                 "reason=watermark-match"
@@ -1900,7 +1945,7 @@ def ensure_day_base(
             object_key = build_r2_day_base_key(category, target_date)
             try:
                 r2_watermark = r2_head_watermark(r2_config, object_key)
-                if r2_watermark == watermark:
+                if _watermarks_match(r2_watermark, watermark):
                     hive_miss = _materialize_r2_day_base(
                         r2_config=r2_config,
                         category=category,

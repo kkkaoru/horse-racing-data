@@ -30,13 +30,13 @@ _day_base_dir = cast(
     getattr(pipeline_runner, _DAY_BASE_DIR_ATTR),
 )
 _write_watermark = cast(
-    Callable[[Path, tuple[str, int, str, int]], None],
+    Callable[[Path, tuple[str, int, str, int, str]], None],
     getattr(pipeline_runner, _WRITE_WATERMARK_ATTR),
 )
 _combine_watermarks = cast(
     Callable[
-        [tuple[str, int] | None, tuple[str, int] | None],
-        tuple[str, int, str, int] | None,
+        [tuple[str, int] | None, tuple[str, int, str] | None],
+        tuple[str, int, str, int, str] | None,
     ],
     getattr(pipeline_runner, _COMBINE_WATERMARKS_ATTR),
 )
@@ -94,18 +94,19 @@ class _RecordingConnection:
         self.closed = True
 
 
-def test_combine_watermarks_banei_none_rs_is_valid_four_tuple() -> None:
-    """Production Ban-ei RS token ``none`` plus source max/count is a 4-tuple."""
-    assert _combine_watermarks(("20260814", 117), ("none", 0)) == (
+def test_combine_watermarks_banei_none_rs_is_valid_five_tuple() -> None:
+    """Production Ban-ei RS tokens plus source max/count form a 5-tuple."""
+    assert _combine_watermarks(("20260814", 117), ("none", 0, "none")) == (
         "20260814",
         117,
         "none",
         0,
+        "none",
     )
 
 
 def test_combine_watermarks_returns_none_when_source_missing() -> None:
-    assert _combine_watermarks(None, ("none", 0)) is None
+    assert _combine_watermarks(None, ("none", 0, "none")) is None
 
 
 def test_combine_watermarks_returns_none_when_rs_missing() -> None:
@@ -123,7 +124,7 @@ def test_ensure_day_base_banei_watermark_match_hits_twice_without_rebuild(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"BANEI-DAY-BASE")
-    _write_watermark(day_dir, ("20260814", 117, "none", 0))
+    _write_watermark(day_dir, ("20260814", 117, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
@@ -143,7 +144,7 @@ def test_ensure_day_base_banei_watermark_match_hits_twice_without_rebuild(
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: r2_calls.append("head") or ("20260814", 117, "none", 0),
+        lambda *_args, **_kwargs: r2_calls.append("head") or ("20260814", 117, "none", 0, "none"),
     )
 
     first = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -182,7 +183,7 @@ def test_ensure_day_base_banei_watermark_mismatch_does_not_hit(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"STALE-BANEI")
-    _write_watermark(day_dir, ("20260814", 117, "none", 0))
+    _write_watermark(day_dir, ("20260814", 117, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
@@ -203,7 +204,7 @@ def test_ensure_day_base_banei_zero_count_does_not_hit(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"ZERO-COUNT")
-    _write_watermark(day_dir, ("20260814", 117, "none", 0))
+    _write_watermark(day_dir, ("20260814", 117, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
@@ -226,7 +227,7 @@ def test_split_path_first_and_second_banei_predict_are_race_chain_hits(
     hive_dir = day_base_final / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"BANEI-DAY-BASE")
-    _write_watermark(day_dir, ("20260814", 117, "none", 0))
+    _write_watermark(day_dir, ("20260814", 117, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",

@@ -64,6 +64,8 @@ _READ_SOURCE_WATERMARK_SIDECAR_ATTR = "_read_source_watermark_sidecar"
 _WRITE_WATERMARK_ATTR = "_write_watermark"
 _READ_WATERMARK_ATTR = "_read_watermark"
 _READ_WATERMARK_REASON_ATTR = "_read_watermark_reason"
+_WATERMARKS_MATCH_ATTR = "_watermarks_match"
+type TestWatermark = tuple[str, int, str, int, str | None]
 _compute_source_watermark = cast(
     "Callable[[str, str, str], tuple[str, int] | None]",
     getattr(pipeline_runner, _COMPUTE_SOURCE_WATERMARK_ATTR),
@@ -77,7 +79,7 @@ _read_watermark_reason = cast(
     getattr(pipeline_runner, _READ_WATERMARK_REASON_ATTR),
 )
 _compute_rs_watermark = cast(
-    "Callable[[str, str, object], tuple[str, int] | None]",
+    "Callable[[str, str, object], tuple[str, int, str] | None]",
     getattr(pipeline_runner, _COMPUTE_RS_WATERMARK_ATTR),
 )
 _read_source_watermark_sidecar = cast(
@@ -85,12 +87,16 @@ _read_source_watermark_sidecar = cast(
     getattr(pipeline_runner, _READ_SOURCE_WATERMARK_SIDECAR_ATTR),
 )
 _write_watermark = cast(
-    "Callable[[Path, tuple[str, int, str, int]], None]",
+    "Callable[[Path, TestWatermark], None]",
     getattr(pipeline_runner, _WRITE_WATERMARK_ATTR),
 )
 _read_watermark = cast(
-    "Callable[[Path], tuple[str, int, str, int] | None]",
+    "Callable[[Path], TestWatermark | None]",
     getattr(pipeline_runner, _READ_WATERMARK_ATTR),
+)
+_watermarks_match = cast(
+    "Callable[[TestWatermark | None, TestWatermark], bool]",
+    getattr(pipeline_runner, _WATERMARKS_MATCH_ATTR),
 )
 _DAY_BASE_HAS_BABA_FEATURES_ATTR = "_day_base_has_baba_features"
 _RACE_CHAIN_FOR_DAY_BASE_ATTR = "_race_chain_for_day_base"
@@ -1190,7 +1196,7 @@ def test_build_day_base_commits_running_style_foundation_before_day_layers(
         lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260822", 477), None),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     events: list[str] = []
 
@@ -1241,7 +1247,7 @@ def test_build_day_base_raises_when_foundation_commit_fails(
         lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260822", 477), None),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner, "build_base_argv", lambda *args, **_kwargs: ["base", str(args[5])]
@@ -1335,7 +1341,7 @@ def test_build_day_base_writes_watermark_for_catalog_source(
         lambda *_args, **_kwargs: pipeline_runner.SourceWatermarkOutcome(("20260712", 1200), None),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.build_day_base(
@@ -1348,7 +1354,7 @@ def test_build_day_base_writes_watermark_for_catalog_source(
 
     assert result is not None
     day_dir = _day_base_dir("jra", "20260712")
-    assert _read_watermark(day_dir) == ("20260712", 1200, "none", 0)
+    assert _read_watermark(day_dir) == ("20260712", 1200, "none", 0, "none")
 
 
 def test_build_day_base_raises_when_foundation_source_watermark_is_missing(
@@ -1381,7 +1387,7 @@ def test_build_day_base_raises_when_foundation_source_watermark_is_missing(
         ),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     progress: list[str] = []
@@ -1434,7 +1440,7 @@ def test_build_day_base_emits_only_operational_timings_without_debug(
         ),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     with pytest.raises(RuntimeError, match="source watermark unavailable"):
@@ -1487,7 +1493,7 @@ def test_build_day_base_watermark_reason_logs_when_debug_enabled(
         ),
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     with pytest.raises(RuntimeError, match="source watermark unavailable"):
@@ -1897,7 +1903,7 @@ def test_compute_source_watermark_blank_max_with_nonzero_count_uses_none_token(
 def test_compute_rs_watermark_banei_returns_none_token():
     result = _compute_rs_watermark("ban-ei", "20260816", None)
 
-    assert result == ("none", 0)
+    assert result == ("none", 0, "none")
 
 
 def test_compute_rs_watermark_jra_without_r2_returns_none():
@@ -1918,8 +1924,23 @@ def test_compute_rs_watermark_nar_excludes_banei_rows_from_mixed_shard(
             executed.append((sql, params))
             return self
 
-        def fetchone(self) -> tuple[object, ...]:
-            return ("2026-08-23T19:01:42.459Z", 479)
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                (
+                    "nar",
+                    "20260824",
+                    "50",
+                    "01",
+                    1,
+                    "HORSE-1",
+                    0.1,
+                    0.2,
+                    0.3,
+                    0.4,
+                    0,
+                    "2026-08-23T19:01:42.459Z",
+                )
+            ]
 
         def close(self) -> None:
             return None
@@ -1937,14 +1958,62 @@ def test_compute_rs_watermark_nar_excludes_banei_rows_from_mixed_shard(
         ),
     )
 
-    assert result == ("2026-08-23T19:01:42.459Z", 479)
-    assert executed[2] == (
-        "select max(predicted_at), count(*) from read_parquet(?) where keibajo_code <> ?",
-        (
-            "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/"
-            "2026/08/24/nar/*.parquet",
-            "83",
-        ),
+    assert result == (
+        "2026-08-23T19:01:42.459Z",
+        1,
+        "8e79248aac077724cd6b0a350a94f9c8de60e93470e8a5d1f8a53b05bf794872",
+    )
+    assert "where keibajo_code <> ?" in executed[2][0]
+    assert executed[2][1] == (
+        "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/2026/08/24/nar/*.parquet",
+        "83",
+    )
+
+
+def test_compute_rs_watermark_rejects_unbounded_prediction_shard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    content_row = (
+        "nar",
+        "20260824",
+        "50",
+        "01",
+        1,
+        "HORSE-1",
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0,
+        "2026-08-23T19:01:42.459Z",
+    )
+
+    class FakeConnection:
+        def execute(self, *_args: object, **_kwargs: object) -> FakeConnection:
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [content_row] * 1_025
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(duckdb, "connect", lambda _database: FakeConnection())
+
+    assert (
+        _compute_rs_watermark(
+            "nar",
+            "20260824",
+            R2Config(
+                account_id="account",
+                access_key_id="access-key",
+                secret_access_key="secret-key",
+                bucket="pc-keiba",
+            ),
+        )
+        is None
     )
 
 
@@ -1960,8 +2029,23 @@ def test_compute_rs_watermark_jra_includes_only_jra_venue_codes(
             executed.append((sql, params))
             return self
 
-        def fetchone(self) -> tuple[object, ...]:
-            return ("2026-08-23T20:00:00Z", 312)
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                (
+                    "jra",
+                    "20260824",
+                    "05",
+                    "01",
+                    1,
+                    "HORSE-1",
+                    0.1,
+                    0.2,
+                    0.3,
+                    0.4,
+                    0,
+                    "2026-08-23T20:00:00Z",
+                )
+            ]
 
         def close(self) -> None:
             return None
@@ -1979,24 +2063,24 @@ def test_compute_rs_watermark_jra_includes_only_jra_venue_codes(
         ),
     )
 
-    assert result == ("2026-08-23T20:00:00Z", 312)
-    assert executed[2] == (
-        "select max(predicted_at), count(*) from read_parquet(?) where "
-        "keibajo_code in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/"
-            "2026/08/24/jra/*.parquet",
-            "01",
-            "02",
-            "03",
-            "04",
-            "05",
-            "06",
-            "07",
-            "08",
-            "09",
-            "10",
-        ),
+    assert result == (
+        "2026-08-23T20:00:00Z",
+        1,
+        "c5e7428b97ca78408939145d313003b2c8707eda9e44155ce012feda236eb8f9",
+    )
+    assert "where keibajo_code in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" in executed[2][0]
+    assert executed[2][1] == (
+        "s3://pc-keiba/running-style/predictions/by-day/raw-iceberg-v1/2026/08/24/jra/*.parquet",
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
     )
 
 
@@ -2004,9 +2088,35 @@ def test_write_then_read_watermark_round_trips(tmp_path: Path):
     day_dir = tmp_path / "daybase-jra-20260712"
     day_dir.mkdir(parents=True)
 
-    _write_watermark(day_dir, ("20260712", 946, "2026-07-18T09:00:00", 12))
+    _write_watermark(day_dir, ("20260712", 946, "2026-07-18T09:00:00", 12, "rs-hash"))
 
-    assert _read_watermark(day_dir) == ("20260712", 946, "2026-07-18T09:00:00", 12)
+    assert _read_watermark(day_dir) == ("20260712", 946, "2026-07-18T09:00:00", 12, "rs-hash")
+
+
+def test_legacy_watermark_uses_timestamp_fallback_until_content_hash_is_written(
+    tmp_path: Path,
+) -> None:
+    day_dir = tmp_path / "day"
+    day_dir.mkdir()
+    (day_dir / "watermark.json").write_text(
+        json.dumps(
+            {
+                "max_data_sakusei_nengappi": "20260712",
+                "row_count": 946,
+                "rs_predicted_at_max": "2026-07-18T09:00:00",
+                "rs_row_count": 12,
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy = _read_watermark(day_dir)
+    live = ("20260712", 946, "2026-07-18T09:00:00", 12, "new-hash")
+
+    assert legacy == ("20260712", 946, "2026-07-18T09:00:00", 12, None)
+    assert _watermarks_match(legacy, live)
+    assert not _watermarks_match(None, live)
+    assert not _watermarks_match(("20260712", 945, "2026-07-18T09:00:00", 12, None), live)
+    assert not _watermarks_match(("20260712", 946, "2026-07-18T09:00:00", 12, "old-hash"), live)
 
 
 def test_read_watermark_returns_none_when_file_missing(tmp_path: Path):
@@ -2032,7 +2142,7 @@ def test_write_watermark_failure_is_best_effort(
     build's own success (see build_day_base's call site)."""
     unwritable_dir = tmp_path / "not-a-real-parent" / "nested" / "too-deep"
 
-    _write_watermark(unwritable_dir, ("20260712", 946, "none", 0))
+    _write_watermark(unwritable_dir, ("20260712", 946, "none", 0, "none"))
 
     assert capsys.readouterr().err == ""
 
@@ -2077,14 +2187,14 @@ def test_ensure_day_base_catalog_source_watermark_match_returns_local_dir(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     r2_calls: list[bool] = []
     monkeypatch.setattr(
@@ -2101,7 +2211,7 @@ def test_ensure_day_base_catalog_source_banei_none_rs_match_returns_local_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """HIT path for Ban-ei: concat source rows plus the absent-RS token
-    ``("none", 0)`` match the sidecar build wrote."""
+    ``("none", 0, "none")`` match the sidecar build wrote."""
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     day_dir = _day_base_dir("ban-ei", "20260816")
@@ -2109,14 +2219,14 @@ def test_ensure_day_base_catalog_source_banei_none_rs_match_returns_local_dir(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED-BANEI")
-    _write_watermark(day_dir, ("20260816", 80, "none", 0))
+    _write_watermark(day_dir, ("20260816", 80, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260816", 80)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -2134,14 +2244,14 @@ def test_ensure_day_base_catalog_source_zero_count_returns_none(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"UNTRUSTED-ZERO")
-    _write_watermark(day_dir, ("20260816", 80, "none", 0))
+    _write_watermark(day_dir, ("20260816", 80, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [(None, 0)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -2160,14 +2270,14 @@ def test_ensure_day_base_hit_local_emits_operational_event_without_debug(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2196,14 +2306,14 @@ def test_ensure_day_base_hit_local_logs_when_debug_enabled(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2229,14 +2339,14 @@ def test_ensure_day_base_hit_records_daybase_hit_step(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2262,7 +2372,7 @@ def test_ensure_day_base_miss_records_daybase_miss_step(
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2287,14 +2397,14 @@ def test_ensure_day_base_hit_step_queue_stays_silent_without_debug(
     hive_dir = final_dir / "race_year=2026"
     hive_dir.mkdir(parents=True)
     (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2313,14 +2423,14 @@ def test_ensure_day_base_zero_count_logs_miss_not_hit_when_debug_enabled(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"UNTRUSTED-ZERO")
-    _write_watermark(day_dir, ("20260816", 80, "none", 0))
+    _write_watermark(day_dir, ("20260816", 80, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [(None, 0)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -2344,14 +2454,14 @@ def test_ensure_day_base_zero_count_emits_operational_event_without_debug(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"UNTRUSTED-ZERO")
-    _write_watermark(day_dir, ("20260816", 80, "none", 0))
+    _write_watermark(day_dir, ("20260816", 80, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [(None, 0)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -2412,7 +2522,7 @@ def test_ensure_day_base_catalog_source_watermark_mismatch_returns_none(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"STALE")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     # A late correction/scratch bumped the row count -- the current source
     # no longer matches what this cached day-base was built from.
     monkeypatch.setattr(
@@ -2421,7 +2531,7 @@ def test_ensure_day_base_catalog_source_watermark_mismatch_returns_none(
         lambda *_args, **_kwargs: [("20260712", 1201)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2441,7 +2551,7 @@ def test_ensure_day_base_catalog_source_watermark_mismatch_on_rs_side_returns_no
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"STALE-RS")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
@@ -2451,7 +2561,7 @@ def test_ensure_day_base_catalog_source_watermark_mismatch_on_rs_side_returns_no
     monkeypatch.setattr(
         pipeline_runner,
         "_compute_rs_watermark",
-        lambda *_args, **_kwargs: ("2026-07-18T09:00:00", 177),
+        lambda *_args, **_kwargs: ("2026-07-18T09:00:00", 177, "rs-hash"),
     )
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
@@ -2490,14 +2600,14 @@ def test_ensure_day_base_catalog_source_watermark_query_fails_returns_none(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"UNVERIFIABLE")
-    _write_watermark(day_dir, ("20260712", 1200, "none", 0))
+    _write_watermark(day_dir, ("20260712", 1200, "none", 0, "none"))
 
     def raiser(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
         raise RuntimeError("catalog attach failed")
 
     monkeypatch.setattr(pipeline_runner, "_query_source_rows", raiser)
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     r2 = None
 
@@ -2524,13 +2634,15 @@ def test_ensure_day_base_catalog_source_r2_watermark_match_fetches_and_returns_f
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     head_calls: list[str] = []
 
-    def fake_r2_head_watermark(_r2: R2Config, object_key: str) -> tuple[str, int, str, int] | None:
+    def fake_r2_head_watermark(
+        _r2: R2Config, object_key: str
+    ) -> tuple[str, int, str, int, str] | None:
         head_calls.append(object_key)
-        return ("20260712", 1200, "none", 0)
+        return ("20260712", 1200, "none", 0, "none")
 
     get_calls: list[str] = []
 
@@ -2567,12 +2679,12 @@ def test_ensure_day_base_r2_hit_logs_when_debug_enabled(
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_r2, **_kwargs: ("20260712", 1200, "none", 0),
+        lambda *_r2, **_kwargs: ("20260712", 1200, "none", 0, "none"),
     )
 
     def fake_r2_get_parquet(_r2: object, _key: str, dest: Path) -> bool:
@@ -2609,12 +2721,12 @@ def test_ensure_day_base_catalog_source_r2_watermark_mismatch_returns_none(
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260711", 1199, "none", 0),
+        lambda *_args, **_kwargs: ("20260711", 1199, "none", 0, "none"),
     )
     get_calls: list[str] = []
     monkeypatch.setattr(
@@ -2649,7 +2761,7 @@ def test_ensure_day_base_banei_20260817_r2_missing_object_logs_r2_missing_object
         lambda *_args, **_kwargs: [("20260815", 118)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
@@ -2689,12 +2801,12 @@ def test_ensure_day_base_banei_20260817_r2_watermark_mismatch_logs_mismatch(
         lambda *_args, **_kwargs: [("20260815", 118)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260814", 117, "none", 0),
+        lambda *_args, **_kwargs: ("20260814", 117, "none", 0, "none"),
     )
     get_calls: list[str] = []
     monkeypatch.setattr(
@@ -2729,12 +2841,12 @@ def test_ensure_day_base_banei_20260817_r2_watermark_match_hits_hive(
         lambda *_args, **_kwargs: [("20260815", 118)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260815", 118, "none", 0),
+        lambda *_args, **_kwargs: ("20260815", 118, "none", 0, "none"),
     )
 
     def fake_r2_get_parquet(_r2: object, _key: str, dest: Path) -> bool:
@@ -2770,12 +2882,12 @@ def test_ensure_day_base_catalog_source_r2_watermark_match_but_get_fails_returns
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260712", 1200, "none", 0),
+        lambda *_args, **_kwargs: ("20260712", 1200, "none", 0, "none"),
     )
     monkeypatch.setattr(pipeline_runner, "r2_get_parquet", lambda *_args, **_kwargs: False)
     r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
@@ -2798,10 +2910,10 @@ def test_ensure_day_base_catalog_source_r2_head_exception_returns_none(
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
-    def raiser(*_args: object, **_kwargs: object) -> tuple[str, int, str, int] | None:
+    def raiser(*_args: object, **_kwargs: object) -> tuple[str, int, str, int, str] | None:
         raise RuntimeError("head request boom")
 
     monkeypatch.setattr(pipeline_runner, "r2_head_watermark", raiser)
@@ -2831,7 +2943,7 @@ def test_ensure_day_base_catalog_source_no_r2_config_skips_r2_branch_returns_non
         lambda *_args, **_kwargs: [("20260712", 1200)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     head_calls: list[bool] = []
     monkeypatch.setattr(
@@ -2929,12 +3041,12 @@ def test_ensure_day_base_r2_get_true_without_hive_file_is_miss(
         lambda *_args, **_kwargs: [("20260814", 117)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260814", 117, "none", 0),
+        lambda *_args, **_kwargs: ("20260814", 117, "none", 0, "none"),
     )
     monkeypatch.setattr(pipeline_runner, "r2_get_parquet", lambda *_args, **_kwargs: True)
     r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
@@ -2956,14 +3068,14 @@ def test_ensure_day_base_local_flat_parquet_is_not_a_hit(
     final_dir = day_dir / "final"
     final_dir.mkdir(parents=True)
     (final_dir / "features.parquet").write_bytes(b"FLAT-LEFTOVER")
-    _write_watermark(day_dir, ("20260814", 117, "none", 0))
+    _write_watermark(day_dir, ("20260814", 117, "none", 0, "none"))
     monkeypatch.setattr(
         pipeline_runner,
         "_query_source_rows",
         lambda *_args, **_kwargs: [("20260814", 117)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
 
     result = pipeline_runner.ensure_day_base("ban-ei", "20260816", 0, "r2-catalog://pc-keiba", None)
@@ -2987,12 +3099,12 @@ def test_ensure_day_base_r2_hit_materializes_hive_for_banei_20260816(
         lambda *_args, **_kwargs: [("20260814", 117)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260814", 117, "none", 0),
+        lambda *_args, **_kwargs: ("20260814", 117, "none", 0, "none"),
     )
 
     def fake_r2_get_parquet(_r2: object, _key: str, dest: Path) -> bool:
@@ -3029,12 +3141,12 @@ def test_build_upcoming_feature_rows_split_r2_hit_does_not_rebuild_banei_day_bas
         lambda *_args, **_kwargs: [("20260814", 117)],
     )
     monkeypatch.setattr(
-        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0)
+        pipeline_runner, "_compute_rs_watermark", lambda *_args, **_kwargs: ("none", 0, "none")
     )
     monkeypatch.setattr(
         pipeline_runner,
         "r2_head_watermark",
-        lambda *_args, **_kwargs: ("20260814", 117, "none", 0),
+        lambda *_args, **_kwargs: ("20260814", 117, "none", 0, "none"),
     )
 
     def fake_r2_get_parquet(_r2: object, _key: str, dest: Path) -> bool:
@@ -3709,7 +3821,7 @@ def test_materialize_r2_race_foundation_preserves_all_null_column_type(
 
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
     monkeypatch.setattr(pipeline_runner, "is_catalog_source_url", lambda _url: True)
-    watermark = ("20260823", 1, "none", 0)
+    watermark = ("20260823", 1, "none", 0, "none")
     readiness = pipeline_runner.FoundationReadinessSnapshot(
         expected_entries=frozenset({"H1:1"}),
         live_watermark=watermark,
@@ -3788,7 +3900,7 @@ def test_materialize_market_signal_foundation_writes_typed_non_final_parquet(
     artifact_identity = R2ObjectIdentity("artifact-etag", "artifact-version")
     readiness = pipeline_runner.FoundationReadinessSnapshot(
         expected_entries=frozenset({"H1:1"}),
-        live_watermark=("20260824", 1, "none", 0),
+        live_watermark=("20260824", 1, "none", 0, "none"),
         source_identity=source_identity,
     )
     schema = (
@@ -3950,7 +4062,7 @@ def test_foundation_readiness_snapshot_uses_one_combined_source_head(
     from predict_lib.serve import R2Config
 
     expected_entries = frozenset({"H1:1"})
-    watermark = ("20260823", 12, "none", 0)
+    watermark = ("20260823", 12, "none", 0, "none")
     identity = R2ObjectIdentity("etag", "version")
     monkeypatch.setattr(pipeline_runner, "is_catalog_source_url", lambda _url: True)
     monkeypatch.setattr(
@@ -4011,7 +4123,7 @@ def test_build_upcoming_feature_rows_split_prefers_foundation_over_whole_day(
     )
     readiness = pipeline_runner.FoundationReadinessSnapshot(
         expected_entries=frozenset({"H1:1"}),
-        live_watermark=("20260823", 1, "none", 0),
+        live_watermark=("20260823", 1, "none", 0, "none"),
         source_identity=R2ObjectIdentity("etag", "version"),
     )
     monkeypatch.setattr(

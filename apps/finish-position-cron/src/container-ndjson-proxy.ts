@@ -15,6 +15,7 @@ const IDLE_TERMINAL_STATUS_PATTERN = /"status"\s*:\s*"(?:busy|accepted|already-c
 // the Container side.
 const WATERMARK_META_MAX_UPDATED = "max-data-sakusei-nengappi";
 const WATERMARK_META_ROW_COUNT = "row-count";
+const WATERMARK_META_RS_CONTENT_HASH = "rs-content-hash";
 const WATERMARK_META_RS_PREDICTED_AT_MAX = "rs-predicted-at-max";
 const WATERMARK_META_RS_ROW_COUNT = "rs-row-count";
 
@@ -73,6 +74,9 @@ const buildWatermarkCustomMetadata = (
   return {
     [WATERMARK_META_MAX_UPDATED]: watermark.maxDataSakuseiNengappi,
     [WATERMARK_META_ROW_COUNT]: String(watermark.rowCount),
+    ...(watermark.rsContentHash === undefined
+      ? {}
+      : { [WATERMARK_META_RS_CONTENT_HASH]: watermark.rsContentHash }),
     [WATERMARK_META_RS_PREDICTED_AT_MAX]: watermark.rsPredictedAtMax,
     [WATERMARK_META_RS_ROW_COUNT]: String(watermark.rsRowCount),
   };

@@ -280,6 +280,7 @@ test("proxyParquetFromNdjson attaches the daybase watermark as R2 customMetadata
     daybaseWatermark: {
       maxDataSakuseiNengappi: "20260712",
       rowCount: 946,
+      rsContentHash: "rs-hash",
       rsPredictedAtMax: "2026-07-18T09:00:00",
       rsRowCount: 12,
     },
@@ -309,6 +310,7 @@ test("proxyParquetFromNdjson attaches the daybase watermark as R2 customMetadata
       customMetadata: {
         "max-data-sakusei-nengappi": "20260712",
         "row-count": "946",
+        "rs-content-hash": "rs-hash",
         "rs-predicted-at-max": "2026-07-18T09:00:00",
         "rs-row-count": "12",
       },

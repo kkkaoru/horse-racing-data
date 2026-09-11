@@ -4,6 +4,7 @@ import { buildDayBaseObjectKey } from "./day-base-object-key";
 import { enumerateTodaysRaces } from "./cron-decision";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { getRunningStyleRaceReadiness } from "./running-style-readiness";
+import { computeRunningStyleContentFingerprint } from "./running-style-content-hash";
 import type { Env, PredictCategory } from "./types";
 
 interface FocusedFullDayBaseReadinessParams {
@@ -19,6 +20,7 @@ interface DayBaseCandidateReadinessParams extends FocusedFullDayBaseReadinessPar
 interface DayBaseMetadata {
   maxSourceUpdated: string;
   rowCount: number;
+  rsContentHash: string | null;
   rsPredictedAtMax: string;
   rsRowCount: number;
 }
@@ -28,9 +30,11 @@ interface CatalogRowsPayload {
 }
 
 interface LiveDayBaseWatermark {
+  fingerprintRowCount: number;
   readyRunningStyleRaceCount: number;
   rowCount: number;
   runningStyleRaceCount: number;
+  rsContentHash: string;
   rsPredictedAtMax: string | null;
   rsRowCount: number;
   sourceUpdatedMax: string | null;
@@ -71,12 +75,15 @@ const parseMetadata = (object: R2Object | null): DayBaseMetadata | null => {
   if (object === null || object.customMetadata === undefined) return null;
   const metadata = object.customMetadata;
   const maxSourceUpdated = metadata["max-data-sakusei-nengappi"]?.trim() ?? "";
+  const rsContentHashValue = metadata["rs-content-hash"]?.trim();
+  if (rsContentHashValue !== undefined && rsContentHashValue.length === 0) return null;
+  const rsContentHash = rsContentHashValue ?? null;
   const rsPredictedAtMax = metadata["rs-predicted-at-max"]?.trim() ?? "";
   const rowCount = numericMetadata(metadata, "row-count");
   const rsRowCount = numericMetadata(metadata, "rs-row-count");
   if (maxSourceUpdated.length === 0 || rsPredictedAtMax.length === 0) return null;
   if (rowCount === null || rowCount === 0 || rsRowCount === null) return null;
-  return { maxSourceUpdated, rowCount, rsPredictedAtMax, rsRowCount };
+  return { maxSourceUpdated, rowCount, rsContentHash, rsPredictedAtMax, rsRowCount };
 };
 
 const parseCandidateMetadata = (watermark: DaybaseWatermark): DayBaseMetadata | null => {
@@ -85,9 +92,12 @@ const parseCandidateMetadata = (watermark: DaybaseWatermark): DayBaseMetadata | 
   if (maxSourceUpdated.length === 0 || rsPredictedAtMax.length === 0) return null;
   if (!Number.isSafeInteger(watermark.rowCount) || watermark.rowCount <= 0) return null;
   if (!Number.isSafeInteger(watermark.rsRowCount) || watermark.rsRowCount < 0) return null;
+  const rsContentHashValue = watermark.rsContentHash?.trim();
+  if (rsContentHashValue !== undefined && rsContentHashValue.length === 0) return null;
   return {
     maxSourceUpdated,
     rowCount: watermark.rowCount,
+    rsContentHash: rsContentHashValue ?? null,
     rsPredictedAtMax,
     rsRowCount: watermark.rsRowCount,
   };
@@ -148,8 +158,10 @@ const fetchRunningStyleWatermark = async (
 ): Promise<Omit<LiveDayBaseWatermark, "rowCount" | "sourceUpdatedMax">> => {
   if (params.category === "ban-ei") {
     return {
+      fingerprintRowCount: 0,
       readyRunningStyleRaceCount: 0,
       runningStyleRaceCount: 0,
+      rsContentHash: NO_RUNNING_STYLE_WATERMARK,
       rsPredictedAtMax: NO_RUNNING_STYLE_WATERMARK,
       rsRowCount: 0,
     };
@@ -157,21 +169,31 @@ const fetchRunningStyleWatermark = async (
   const races = (await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd)).filter(
     (race) => race.category === params.category,
   );
-  const readiness = await getRunningStyleRaceReadiness({
-    category: params.category,
-    db: params.env.REALTIME_DB,
-    races,
-    runYmd: params.runYmd,
-  });
   const patterns = runningStylePatterns(params.category, params.runYmd);
-  const aggregate = await params.env.REALTIME_DB.prepare(RUNNING_STYLE_AGGREGATE_SQL)
-    .bind(patterns.include, patterns.exclude)
-    .first<RunningStyleAggregateRow>();
+  const [readiness, aggregate, fingerprint] = await Promise.all([
+    getRunningStyleRaceReadiness({
+      category: params.category,
+      db: params.env.REALTIME_DB,
+      races,
+      runYmd: params.runYmd,
+    }),
+    params.env.REALTIME_DB.prepare(RUNNING_STYLE_AGGREGATE_SQL)
+      .bind(patterns.include, patterns.exclude)
+      .first<RunningStyleAggregateRow>(),
+    computeRunningStyleContentFingerprint({
+      category: params.category,
+      db: params.env.REALTIME_DB,
+      runYmd: params.runYmd,
+    }),
+  ]);
+  const aggregateRowCount = Number(aggregate?.rs_row_count ?? 0);
   return {
+    fingerprintRowCount: fingerprint.rowCount,
     readyRunningStyleRaceCount: readiness.filter((race) => race.reason === null).length,
     runningStyleRaceCount: races.length,
+    rsContentHash: fingerprint.contentHash,
     rsPredictedAtMax: aggregate?.rs_predicted_at_max ?? null,
-    rsRowCount: Number(aggregate?.rs_row_count ?? 0),
+    rsRowCount: aggregateRowCount,
   };
 };
 
@@ -198,6 +220,8 @@ const compareWithLiveWatermark = async (
     };
   if (live.sourceUpdatedMax !== null && metadata.maxSourceUpdated !== live.sourceUpdatedMax)
     return { ready: false, reason: "source-watermark-mismatch" };
+  if (live.fingerprintRowCount !== live.rsRowCount)
+    return { ready: false, reason: "running-style-fingerprint-row-count-mismatch" };
   if (live.readyRunningStyleRaceCount !== live.runningStyleRaceCount)
     return {
       ready: false,
@@ -208,6 +232,11 @@ const compareWithLiveWatermark = async (
       ready: false,
       reason: `rs-row-count-${String(metadata.rsRowCount)}-of-${String(live.rsRowCount)}`,
     };
+  if (metadata.rsContentHash !== null) {
+    return metadata.rsContentHash === live.rsContentHash
+      ? { ready: true, reason: READY_REASON }
+      : { ready: false, reason: "rs-content-hash-mismatch" };
+  }
   const metadataTimestamp = normalizedTimestamp(metadata.rsPredictedAtMax);
   const liveTimestamp =
     live.rsPredictedAtMax === null ? null : normalizedTimestamp(live.rsPredictedAtMax);

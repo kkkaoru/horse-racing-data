@@ -1465,6 +1465,7 @@ def test_make_prewarm_fn_commits_running_style_foundation_payload(
     assert watermark == {
         "maxDataSakuseiNengappi": "20260822",
         "rowCount": 477,
+        "rsContentHash": "none",
         "rsPredictedAtMax": "none",
         "rsRowCount": 0,
     }
@@ -1547,11 +1548,11 @@ def test_prewarm_parquet_payload_reads_watermark_sidecar_when_present(tmp_path: 
     # basedpyright does not flag ``reportPrivateUsage``.
     write_watermark_attr = "_write_watermark"
     write_watermark = cast(
-        "Callable[[Path, tuple[str, int, str, int]], None]",
+        "Callable[[Path, tuple[str, int, str, int, str]], None]",
         getattr(pipeline_runner, write_watermark_attr),
     )
 
-    write_watermark(day_dir, ("20260712", 946, "2026-07-18T09:00:00", 12))
+    write_watermark(day_dir, ("20260712", 946, "2026-07-18T09:00:00", 12, "rs-hash"))
 
     result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
 
@@ -1561,6 +1562,7 @@ def test_prewarm_parquet_payload_reads_watermark_sidecar_when_present(tmp_path: 
     assert watermark == {
         "maxDataSakuseiNengappi": "20260712",
         "rowCount": 946,
+        "rsContentHash": "rs-hash",
         "rsPredictedAtMax": "2026-07-18T09:00:00",
         "rsRowCount": 12,
     }
@@ -2471,12 +2473,12 @@ def test_prewarm_existing_object_fn_returns_key_on_watermark_hit(
     monkeypatch.setattr(
         predict_upcoming,
         "r2_head_watermark",
-        lambda _r2, _key: ("20260712", 10, "none", 0),
+        lambda _r2, _key: ("20260712", 10, "none", 0, "none"),
     )
     monkeypatch.setattr(
         pipeline_runner,
         "compute_day_base_watermark",
-        lambda *_args, **_kwargs: ("20260712", 10, "none", 0),
+        lambda *_args, **_kwargs: ("20260712", 10, "none", 0, "none"),
     )
     existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")
     assert existing("jra", "20260712") == ("feat-daybase/catalog-v1/jra/20260712/features.parquet")
@@ -2494,7 +2496,7 @@ def test_prewarm_existing_object_fn_returns_none_on_watermark_miss(
     monkeypatch.setattr(
         pipeline_runner,
         "compute_day_base_watermark",
-        lambda *_args, **_kwargs: ("20260712", 10, "none", 0),
+        lambda *_args, **_kwargs: ("20260712", 10, "none", 0, "none"),
     )
     monkeypatch.setattr(predict_upcoming, "r2_head_watermark", lambda _r2, _key: None)
     existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")
@@ -2513,12 +2515,12 @@ def test_prewarm_existing_object_fn_rebuilds_stale_present_object(
     monkeypatch.setattr(
         pipeline_runner,
         "compute_day_base_watermark",
-        lambda *_args, **_kwargs: ("20260713", 11, "2026-07-13T10:00:00", 30),
+        lambda *_args, **_kwargs: ("20260713", 11, "2026-07-13T10:00:00", 30, "new-hash"),
     )
     monkeypatch.setattr(
         predict_upcoming,
         "r2_head_watermark",
-        lambda _r2, _key: ("20260712", 10, "2026-07-12T10:00:00", 20),
+        lambda _r2, _key: ("20260712", 10, "2026-07-12T10:00:00", 20, "old-hash"),
     )
 
     existing = _make_prewarm_existing_object_fn(r2, "r2-catalog://pc-keiba")

@@ -6,6 +6,7 @@ import {
   getDayBaseCandidateReadiness,
   getFocusedFullDayBaseReadiness,
 } from "./focused-full-day-base-readiness";
+import { computeRunningStyleContentFingerprint } from "./running-style-content-hash";
 import {
   clearDayBaseRepairReservation,
   DAY_BASE_REPAIR_LEASE_TTL_MS,
@@ -17,6 +18,8 @@ const catalogFetchMock = vi.fn<(request: Request) => Promise<Response>>();
 const runningStyleFirstMock = vi.fn<() => Promise<Record<string, unknown> | null>>();
 const raceSourceAllMock = vi.fn<() => Promise<{ results: Record<string, unknown>[] }>>();
 const runningStyleReadinessAllMock = vi.fn<() => Promise<{ results: Record<string, unknown>[] }>>();
+const runningStyleHashAllMock =
+  vi.fn<(include: string) => Promise<{ results: Record<string, unknown>[] }>>();
 const realtimePrepareSqlMock = vi.fn<(sql: string) => void>();
 const repairFirstMock = vi.fn<() => Promise<{ category: string } | null>>();
 const repairInsertBindMock = vi.fn((..._values: unknown[]) => ({ first: repairFirstMock }));
@@ -59,6 +62,13 @@ const makeEnv = (): Env =>
     REALTIME_DB: {
       prepare: vi.fn((sql: string) => {
         realtimePrepareSqlMock(sql);
+        if (sql.includes("select race_key, horse_number")) {
+          return {
+            bind: vi.fn((include: string) => ({
+              all: () => runningStyleHashAllMock(include),
+            })),
+          };
+        }
         return { bind: vi.fn(() => bindRealtimeSql(sql)) };
       }),
     },
@@ -102,6 +112,31 @@ beforeEach(() => {
       },
     ],
   });
+  runningStyleHashAllMock.mockReset();
+  runningStyleHashAllMock.mockImplementation(async (include) => ({
+    results: [
+      {
+        horse_number: 1,
+        ketto_toroku_bango: "H1",
+        p_nige: 0.1,
+        p_oikomi: 0.4,
+        p_sashi: 0.3,
+        p_senkou: 0.2,
+        predicted_label: "nige",
+        race_key: include.startsWith("jra:") ? "jra:20260823:05:01" : "nar:20260823:43:01",
+      },
+      {
+        horse_number: 2,
+        ketto_toroku_bango: "H2",
+        p_nige: 0.2,
+        p_oikomi: 0.3,
+        p_sashi: 0.1,
+        p_senkou: 0.4,
+        predicted_label: "senkou",
+        race_key: include.startsWith("jra:") ? "jra:20260823:05:01" : "nar:20260823:43:01",
+      },
+    ],
+  }));
   runningStyleReadinessAllMock.mockReset();
   runningStyleReadinessAllMock.mockResolvedValue({
     results: [
@@ -169,6 +204,10 @@ test("rejects missing and malformed day-base metadata before live probes", async
   await expect(
     getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: false, reason: "day-base-missing-or-invalid" });
+  featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-content-hash": " " }));
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: false, reason: "day-base-missing-or-invalid" });
 
   expect(catalogFetchMock).not.toHaveBeenCalled();
 });
@@ -207,6 +246,7 @@ test("rejects malformed in-process candidate watermarks before live probes", asy
   };
   for (const watermark of [
     { ...base, maxDataSakuseiNengappi: "" },
+    { ...base, rsContentHash: "" },
     { ...base, rsPredictedAtMax: "" },
     { ...base, rowCount: 2.5 },
     { ...base, rowCount: 0 },
@@ -239,6 +279,30 @@ test("rejects a canonical artifact from an older running-style generation", asyn
   ).resolves.toStrictEqual({ ready: false, reason: "rs-predicted-at-max-mismatch" });
 });
 
+test("uses content identity instead of predicted_at for new running-style artifacts", async () => {
+  const env = makeEnv();
+  const fingerprint = await computeRunningStyleContentFingerprint({
+    category: "jra",
+    db: env.REALTIME_DB,
+    runYmd: "20260823",
+  });
+  featureHeadMock.mockResolvedValueOnce(
+    metadataObject({
+      "rs-content-hash": fingerprint.contentHash,
+      "rs-predicted-at-max": "2026-08-22T23:00:00Z",
+    }),
+  );
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env, runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+
+  featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-content-hash": "stale-hash" }));
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env, runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: false, reason: "rs-content-hash-mismatch" });
+});
+
 test("compares a live source watermark when the Catalog projection provides it", async () => {
   catalogFetchMock.mockResolvedValueOnce(
     Response.json({
@@ -257,11 +321,36 @@ test("rejects an artifact while the D1 running-style mirror is empty", async () 
     rs_predicted_at_max: null,
     rs_row_count: 0,
   });
+  runningStyleHashAllMock.mockResolvedValueOnce({ results: [] });
 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-2-of-0" });
   expect(runningStyleFirstMock).toHaveBeenCalledTimes(1);
+});
+
+test("rejects a changing D1 mirror between aggregate and fingerprint reads", async () => {
+  runningStyleHashAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        horse_number: 1,
+        ketto_toroku_bango: "H1",
+        p_nige: 0.1,
+        p_oikomi: 0.4,
+        p_sashi: 0.3,
+        p_senkou: 0.2,
+        predicted_label: "nige",
+        race_key: "nar:20260823:43:01",
+      },
+    ],
+  });
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({
+    ready: false,
+    reason: "running-style-fingerprint-row-count-mismatch",
+  });
 });
 
 test("requires per-race D1 inference completion before artifact freshness", async () => {
@@ -273,6 +362,7 @@ test("requires per-race D1 inference completion before artifact freshness", asyn
     rs_predicted_at_max: null,
     rs_row_count: 0,
   });
+  runningStyleHashAllMock.mockResolvedValueOnce({ results: [] });
   runningStyleReadinessAllMock.mockResolvedValueOnce({ results: [] });
 
   await expect(

@@ -35,6 +35,9 @@ export interface PerRaceParquetEntry {
 export interface DaybaseWatermark {
   maxDataSakuseiNengappi: string;
   rowCount: number;
+  // Optional while old Container generations are still rolling. New builds
+  // always provide the timestamp-independent feature-content fingerprint.
+  rsContentHash?: string;
   rsPredictedAtMax: string;
   rsRowCount: number;
 }
