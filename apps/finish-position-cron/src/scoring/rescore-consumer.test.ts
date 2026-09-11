@@ -7,14 +7,17 @@ import type { Env, PredictQueueMessage } from "../types";
 const {
   queryMock,
   neonMock,
+  loadSelectedBaneiModelMock,
   loadSelectedModelMock,
+  scoreBaneiShadowMock,
   scoreShadowMock,
   selectShadowModelMock,
   fetchOddsMock,
   fetchWeightMock,
   createAttestationMock,
 } = vi.hoisted(() => {
-  const query = vi.fn(async () => []);
+  const query = vi.fn(async (): Promise<unknown> => []);
+  const loadSelectedBaneiModel = vi.fn(async (_bucket, spec) => ({ spec }));
   const loadSelectedModel = vi.fn(async (_bucket, spec) => ({ spec }));
   const selectShadowModel = vi.fn(() => ({
     architecture: "catboost",
@@ -36,6 +39,18 @@ const {
     stage1RescoreRequired: false,
     variant: "sim",
   }));
+  const scoreBaneiShadow = vi.fn(() => ({
+    gradeCode: null,
+    modelVersion: "banei-cb-v9-sim-2011",
+    predictions: [
+      { kettoTorokuBango: "2019100001", predictedRank: 1, predictedScore: 0.9, umaban: 1 },
+      { kettoTorokuBango: "2019100002", predictedRank: 2, predictedScore: 0.7, umaban: 2 },
+      { kettoTorokuBango: "2019100003", predictedRank: 3, predictedScore: 0.5, umaban: 3 },
+    ],
+    raceId: "nar:2026:0614:83:11",
+    shadowOnly: true as const,
+    variant: "sim" as const,
+  }));
   const fetchOdds = vi.fn(async () => new Map());
   const fetchWeight = vi.fn(async () => new Map());
   const createAttestation = vi.fn(async () => ({
@@ -49,9 +64,11 @@ const {
     createAttestationMock: createAttestation,
     fetchOddsMock: fetchOdds,
     fetchWeightMock: fetchWeight,
+    loadSelectedBaneiModelMock: loadSelectedBaneiModel,
     loadSelectedModelMock: loadSelectedModel,
     neonMock: vi.fn(() => ({ query })),
     queryMock: query,
+    scoreBaneiShadowMock: scoreBaneiShadow,
     scoreShadowMock: scoreShadow,
     selectShadowModelMock: selectShadowModel,
   };
@@ -59,6 +76,15 @@ const {
 
 vi.mock("@neondatabase/serverless", () => ({ neon: neonMock }));
 vi.mock("../rescore-attestation", () => ({ createRescoreAttestation: createAttestationMock }));
+vi.mock("./banei-shadow-scorer", async () => {
+  const actual =
+    await vi.importActual<typeof import("./banei-shadow-scorer")>("./banei-shadow-scorer");
+  return {
+    ...actual,
+    loadSelectedBaneiShadowModel: loadSelectedBaneiModelMock,
+    scoreBaneiRaceShadow: scoreBaneiShadowMock,
+  };
+});
 vi.mock("./jra-shadow-scorer", async () => {
   const actual = await vi.importActual<typeof import("./jra-shadow-scorer")>("./jra-shadow-scorer");
   return {
@@ -83,7 +109,9 @@ import {
   classifySurface,
   assertCompleteWeightSet,
   assertAttestedTargetCacheRows,
+  compareBaneiShadowWithPersisted,
   rescoreJraRace,
+  shadowBaneiRace,
   splitRaceId,
 } from "./rescore-consumer";
 
@@ -93,9 +121,16 @@ const EMPTY_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "empty-cach
 const emptyBytes = new Uint8Array(readFileSync(EMPTY_PARQUET_PATH));
 const PER_RACE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "per-race-cache.parquet");
 const threeRaceBytes = new Uint8Array(readFileSync(PER_RACE_PARQUET_PATH));
+const BANEI_PARQUET_PATH = join(
+  import.meta.dirname,
+  "__fixtures__",
+  "banei-per-race-cache.parquet",
+);
+const baneiBytes = new Uint8Array(readFileSync(BANEI_PARQUET_PATH));
 
 const PER_RACE_CACHE_KEY = "feat-cache/catalog-v1/jra/20260614/05/11/features.parquet";
 const WHOLE_DAY_CACHE_KEY = "feat-cache/catalog-v1/jra/20260614/features.parquet";
+const BANEI_PER_RACE_CACHE_KEY = "feat-cache/catalog-v1/ban-ei/20260614/83/11/features.parquet";
 
 const cacheObject = {
   arrayBuffer: async () => sampleBytes.buffer.slice(0),
@@ -109,6 +144,11 @@ const emptyCacheObject = {
 };
 const perRaceCacheObject = {
   arrayBuffer: async () => threeRaceBytes.buffer.slice(0),
+  etag: "per-race-etag",
+  version: "per-race-version",
+};
+const baneiCacheObject = {
+  arrayBuffer: async () => baneiBytes.buffer.slice(0),
   etag: "per-race-etag",
   version: "per-race-version",
 };
@@ -154,7 +194,9 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): PredictQueue
 beforeEach(() => {
   queryMock.mockClear();
   neonMock.mockClear();
+  loadSelectedBaneiModelMock.mockClear();
   loadSelectedModelMock.mockClear();
+  scoreBaneiShadowMock.mockClear();
   scoreShadowMock.mockClear();
   selectShadowModelMock.mockClear();
   fetchOddsMock.mockClear();
@@ -173,6 +215,12 @@ beforeEach(() => {
 
 test("buildTargetRaceId composes jra:nen:tsukihi:keibajo:bango from the message", () => {
   expect(buildTargetRaceId(makeMessage())).toBe("jra:2026:0614:05:11");
+});
+
+test("buildTargetRaceId maps Ban-ei to the NAR source race identity", () => {
+  expect(buildTargetRaceId(makeMessage({ category: "ban-ei", keibajoCode: "83" }), "ban-ei")).toBe(
+    "nar:2026:0614:83:11",
+  );
 });
 
 test("splitRaceId splits a colon-delimited race_id into its parts", () => {
@@ -454,6 +502,134 @@ test("rescoreJraRace fails closed when the requested weight generation is missin
     }),
   ).rejects.toThrow("Horse weight snapshot generation is missing");
   expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("shadowBaneiRace scores an attested race-final cache without writing Neon", async () => {
+  const env = makeKeyedEnv(new Map([[BANEI_PER_RACE_CACHE_KEY, baneiCacheObject]]));
+  const message = makeMessage({ category: "ban-ei", keibajoCode: "83" });
+
+  await expect(shadowBaneiRace({ env, fetchImpl: fetch, message })).resolves.toMatchObject({
+    score: {
+      modelVersion: "banei-cb-v9-sim-2011",
+      raceId: "nar:2026:0614:83:11",
+    },
+    status: "ok",
+  });
+
+  expect(createAttestationMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env,
+    keibajoCode: "83",
+    raceBango: "11",
+    runYmd: "20260614",
+  });
+  expect(fetchWeightMock).toHaveBeenCalledWith(
+    expect.objectContaining({ source: "nar", weightGeneration: expect.any(Object) }),
+  );
+  expect(loadSelectedBaneiModelMock).toHaveBeenCalledWith(
+    env.FEATURES_CACHE,
+    expect.objectContaining({ variant: "sim" }),
+  );
+  expect(scoreBaneiShadowMock).toHaveBeenCalledWith(
+    expect.arrayContaining([
+      expect.objectContaining({ ketto_toroku_bango: "2019100001", weight_diff_from_avg: 10 }),
+    ]),
+    expect.any(Object),
+  );
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("shadowBaneiRace reuses the Container dispatch attestation", async () => {
+  const env = makeKeyedEnv(new Map([[BANEI_PER_RACE_CACHE_KEY, baneiCacheObject]]));
+  await shadowBaneiRace({
+    attestation: {
+      attestationIssuedAtMs: 1_777_000_000_000,
+      entryCount: 3,
+      entrySetHash: "c9b6dd15b6539b195ce006d2a3c7ed8d755ef4af0753fd7305e0cce5cdb6109d",
+      featureCacheEtag: "per-race-etag",
+      featureCacheVersion: "per-race-version",
+    },
+    env,
+    fetchImpl: fetch,
+    message: makeMessage({ category: "ban-ei", keibajoCode: "83" }),
+  });
+  expect(createAttestationMock).not.toHaveBeenCalled();
+});
+
+test("shadowBaneiRace reports cache miss without realtime or model work", async () => {
+  await expect(
+    shadowBaneiRace({
+      env: makeKeyedEnv(new Map()),
+      fetchImpl: fetch,
+      message: makeMessage({ category: "ban-ei", keibajoCode: "83" }),
+    }),
+  ).resolves.toStrictEqual({ score: null, status: "cache_miss" });
+  expect(fetchWeightMock).not.toHaveBeenCalled();
+  expect(loadSelectedBaneiModelMock).not.toHaveBeenCalled();
+});
+
+test("compareBaneiShadowWithPersisted reports exact Container parity", async () => {
+  queryMock.mockResolvedValueOnce([
+    { ketto_toroku_bango: "2019100001", predicted_rank: 1, predicted_score: 0.9 },
+    { ketto_toroku_bango: "2019100002", predicted_rank: 2, predicted_score: 0.7 },
+    { ketto_toroku_bango: "2019100003", predicted_rank: 3, predicted_score: 0.5 },
+  ]);
+  const shadow = scoreBaneiShadowMock();
+  const env = makeKeyedEnv(new Map());
+  await expect(
+    compareBaneiShadowWithPersisted(
+      env,
+      makeMessage({ category: "ban-ei", keibajoCode: "83" }),
+      shadow,
+    ),
+  ).resolves.toStrictEqual({
+    matched: true,
+    maxAbsoluteScoreDifference: 0,
+    persistedCount: 3,
+    reason: "match",
+  });
+  expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("model_version = $1"), [
+    "banei-cb-v9-sim-2011",
+    "nar",
+    "2026",
+    "0614",
+    "83",
+    "11",
+  ]);
+});
+
+test("compareBaneiShadowWithPersisted distinguishes missing, rank, and score drift", async () => {
+  const shadow = scoreBaneiShadowMock();
+  const env = makeKeyedEnv(new Map());
+  const message = makeMessage({ category: "ban-ei", keibajoCode: "83" });
+  queryMock.mockResolvedValueOnce([]);
+  await expect(compareBaneiShadowWithPersisted(env, message, shadow)).resolves.toMatchObject({
+    matched: false,
+    persistedCount: 0,
+    reason: "missing-persisted",
+  });
+
+  queryMock.mockResolvedValueOnce([
+    { ketto_toroku_bango: "missing", predicted_rank: 1, predicted_score: 0.9 },
+    { ketto_toroku_bango: "2019100002", predicted_rank: 1, predicted_score: 0.7 },
+    { ketto_toroku_bango: "2019100003", predicted_rank: 3, predicted_score: 0.5 },
+  ]);
+  await expect(compareBaneiShadowWithPersisted(env, message, shadow)).resolves.toMatchObject({
+    matched: false,
+    reason: "rank-mismatch",
+  });
+
+  queryMock.mockResolvedValueOnce([
+    { ketto_toroku_bango: "2019100001", predicted_rank: 1, predicted_score: 0.8 },
+    { ketto_toroku_bango: "2019100002", predicted_rank: 2, predicted_score: 0.7 },
+    { ketto_toroku_bango: "2019100003", predicted_rank: 3, predicted_score: 0.5 },
+  ]);
+  await expect(compareBaneiShadowWithPersisted(env, message, shadow)).resolves.toStrictEqual({
+    matched: false,
+    maxAbsoluteScoreDifference: 0.09999999999999998,
+    persistedCount: 3,
+    reason: "score-mismatch",
+  });
 });
 
 test("assertCompleteWeightSet rejects a partial active-runner snapshot", () => {

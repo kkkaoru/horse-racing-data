@@ -19,6 +19,12 @@ import {
   type WeightSnapshotGeneration,
 } from "./rescore-realtime";
 import {
+  loadSelectedBaneiShadowModel,
+  scoreBaneiRaceShadow,
+  selectBaneiShadowModel,
+  type BaneiShadowScoreResult,
+} from "./banei-shadow-scorer";
+import {
   JRA_SHADOW_MODEL_SPECS,
   loadSelectedJraShadowModel,
   scoreJraRaceShadow,
@@ -32,6 +38,8 @@ import type { Env, PredictQueueMessage } from "../types";
 import type { FeatureEntry } from "./feature-projection";
 
 const JRA_CATEGORY = "jra";
+const BANEI_CATEGORY = "ban-ei";
+type NativeRescoreCategory = typeof BANEI_CATEGORY | typeof JRA_CATEGORY;
 const RACE_ID_NEN_END = 4;
 // popularity_score needs runner_count > 1; a 0- or 1-entry odds map cannot give
 // a valid denominator, so it degrades to the category median (null runnerCount).
@@ -88,6 +96,7 @@ const MEDIUM_FIELD_MAX = 14;
 export type RescoreStatus = "ok" | "cache_miss" | "race_not_found";
 
 export interface RescoreJraRaceInput {
+  attestation?: RescoreAttestation;
   env: Env;
   message: PredictQueueMessage;
   // Injectable realtime fetch so the consumer can be tested without network I/O.
@@ -159,10 +168,13 @@ const RACE_NOT_FOUND_RESULT: RescoreJraRaceResult = {
 
 // Build the target race_id the cache rows carry:
 // jra:{nen}:{tsukihi}:{keibajoCode}:{raceBango}. runYmd -> nen[0:4] / tsukihi[4:8].
-const buildTargetRaceId = (message: PredictQueueMessage): string => {
+const buildTargetRaceId = (
+  message: PredictQueueMessage,
+  category: NativeRescoreCategory = JRA_CATEGORY,
+): string => {
   const nen = message.runYmd.slice(0, RACE_ID_NEN_END);
   const tsukihi = message.runYmd.slice(RACE_ID_NEN_END);
-  return `${JRA_CATEGORY}:${nen}:${tsukihi}:${message.keibajoCode}:${message.raceBango}`;
+  return `${sourceForCategory(category)}:${nen}:${tsukihi}:${message.keibajoCode}:${message.raceBango}`;
 };
 
 const splitRaceId = (raceId: string): RaceIdParts => {
@@ -231,6 +243,7 @@ const classifySurface = (value: unknown): string | null => {
 };
 
 interface RefreshRowsInput {
+  category: NativeRescoreCategory;
   rows: ReadonlyArray<FeatureEntry>;
   oddsMap: Map<number, { tanshoOdds: number; tanshoNinkijun: number }>;
   weightMap: Map<number, number>;
@@ -255,7 +268,7 @@ const refreshRow = (input: RefreshRowInput): FeatureEntry => {
   const umaban = Number(cellToString(input.row.umaban));
   const odds = input.rowsInput.oddsMap.get(umaban);
   return refreshLateBindingColumns({
-    category: JRA_CATEGORY,
+    category: input.rowsInput.category,
     currentBataiju: input.rowsInput.weightMap.get(umaban) ?? null,
     row: input.row,
     runnerCount: input.runnerCount,
@@ -401,13 +414,14 @@ const loadPerRaceRows = async (object: R2ObjectBody): Promise<TargetRaceRows> =>
 const loadWholeDayRows = async (
   env: Env,
   message: PredictQueueMessage,
+  category: NativeRescoreCategory,
 ): Promise<TargetRaceRows> => {
-  const object = await env.FEATURES_CACHE.get(buildFeatCacheKey(JRA_CATEGORY, message.runYmd));
+  const object = await env.FEATURES_CACHE.get(buildFeatCacheKey(category, message.runYmd));
   if (object === null) {
     return { cacheEtag: "", cacheVersion: "", isPerRace: false, rows: [], status: "cache_miss" };
   }
   const rows = await decodeR2Object(object);
-  const targetRaceId = buildTargetRaceId(message);
+  const targetRaceId = buildTargetRaceId(message, category);
   const group = groupRowsByRace(rows).find((race) => race.raceId === targetRaceId);
   if (group === undefined) {
     return {
@@ -433,16 +447,17 @@ const loadWholeDayRows = async (
 const loadTargetRaceRows = async (
   env: Env,
   message: PredictQueueMessage,
+  category: NativeRescoreCategory,
 ): Promise<TargetRaceRows> => {
   const perRaceKey = buildPerRaceFeatCacheKey(
-    JRA_CATEGORY,
+    category,
     message.runYmd,
     message.keibajoCode ?? "",
     message.raceBango ?? "",
   );
   const perRaceObject = await env.FEATURES_CACHE.get(perRaceKey);
   if (perRaceObject !== null) return loadPerRaceRows(perRaceObject);
-  return loadWholeDayRows(env, message);
+  return loadWholeDayRows(env, message, category);
 };
 
 const normalizePositiveHorseNumber = (value: unknown): number | null => {
@@ -491,6 +506,7 @@ const assertAttestedTargetCacheRows = async (input: CacheRowsValidationInput): P
 const loadExpectedRunnerNumbers = async (
   env: Env,
   message: PredictQueueMessage,
+  category: NativeRescoreCategory,
 ): Promise<ExpectedRunnerSnapshot> => {
   const result = await env.REALTIME_DB.prepare(
     `with latest as (
@@ -504,7 +520,7 @@ const loadExpectedRunnerNumbers = async (
       where entries.race_key = ?1
       order by cast(entries.horse_number as integer)`,
   )
-    .bind(buildTargetRaceId(message))
+    .bind(buildTargetRaceId(message, category))
     .all<EntrySnapshotRow>();
   const active = new Set<number>();
   const scratched = new Set<number>();
@@ -518,7 +534,7 @@ const loadExpectedRunnerNumbers = async (
     active.add(horseNumber);
   });
   if (active.size === 0) {
-    throw new Error(`Active JRA runner snapshot is empty: ${buildTargetRaceId(message)}`);
+    throw new Error(`Active runner snapshot is empty: ${buildTargetRaceId(message, category)}`);
   }
   return { active, scratched };
 };
@@ -550,6 +566,7 @@ interface ScoreAndWriteInput {
 
 const scoreAndWrite = async (input: ScoreAndWriteInput): Promise<RescoreJraRaceResult> => {
   const entries = buildEntries({
+    category: JRA_CATEGORY,
     oddsMap: input.oddsMap,
     rows: input.rows,
     weightMap: input.weightMap,
@@ -585,8 +602,142 @@ const MISS_RESULT_BY_STATUS: Record<"cache_miss" | "race_not_found", RescoreJraR
   race_not_found: RACE_NOT_FOUND_RESULT,
 };
 
+export interface BaneiRaceShadowResult {
+  score: BaneiShadowScoreResult | null;
+  status: RescoreStatus;
+}
+
+export interface BaneiShadowParityResult {
+  matched: boolean;
+  maxAbsoluteScoreDifference: number | null;
+  persistedCount: number;
+  reason: "match" | "missing-persisted" | "rank-mismatch" | "score-mismatch";
+}
+
+interface PersistedBaneiPrediction {
+  ketto_toroku_bango: string;
+  predicted_rank: number;
+  predicted_score: number;
+}
+
+export const shadowBaneiRace = async (
+  input: RescoreJraRaceInput,
+): Promise<BaneiRaceShadowResult> => {
+  const target = await loadTargetRaceRows(input.env, input.message, BANEI_CATEGORY);
+  if (target.status !== "ok") return { score: null, status: target.status };
+  const targetRaceId = buildTargetRaceId(input.message, BANEI_CATEGORY);
+  const attestation =
+    input.attestation ??
+    (await createRescoreAttestation({
+      category: BANEI_CATEGORY,
+      env: input.env,
+      keibajoCode: input.message.keibajoCode ?? "",
+      raceBango: input.message.raceBango ?? "",
+      runYmd: input.message.runYmd,
+    }));
+  await assertAttestedTargetCacheRows({
+    attestation,
+    cacheEtag: target.cacheEtag,
+    cacheVersion: target.cacheVersion,
+    isPerRace: target.isPerRace,
+    rows: target.rows,
+    targetRaceId,
+  });
+  const fetchInput = {
+    fetchImpl: input.fetchImpl,
+    keibajoCode: input.message.keibajoCode ?? "",
+    raceBango: input.message.raceBango ?? "",
+    runYmd: input.message.runYmd,
+    source: sourceForCategory(BANEI_CATEGORY),
+    weightGeneration: requiredWeightGeneration(input.message),
+  };
+  const [oddsMap, weightMap, expectedRunners] = await Promise.all([
+    fetchOddsForRace(fetchInput),
+    fetchWeightForRace(fetchInput),
+    loadExpectedRunnerNumbers(input.env, input.message, BANEI_CATEGORY),
+  ]);
+  assertCompleteWeightSet({
+    ...expectedRunners,
+    raceId: targetRaceId,
+    weights: weightMap,
+  });
+  const entries = buildEntries({
+    category: BANEI_CATEGORY,
+    oddsMap,
+    rows: target.rows,
+    weightMap,
+  });
+  const selected = selectBaneiShadowModel(entries);
+  return {
+    score: scoreBaneiRaceShadow(
+      entries,
+      await loadSelectedBaneiShadowModel(input.env.FEATURES_CACHE, selected),
+    ),
+    status: "ok",
+  };
+};
+
+export const compareBaneiShadowWithPersisted = async (
+  env: Env,
+  message: PredictQueueMessage,
+  shadow: BaneiShadowScoreResult,
+): Promise<BaneiShadowParityResult> => {
+  const sql = neon(env.NEON_DATABASE_URL);
+  const rows: unknown = await sql.query(
+    `select ketto_toroku_bango, predicted_rank, predicted_score
+       from ${PREDICTIONS_TABLE}
+      where model_version = $1 and source = $2 and kaisai_nen = $3
+        and kaisai_tsukihi = $4 and keibajo_code = $5 and race_bango = $6
+      order by ketto_toroku_bango`,
+    [
+      shadow.modelVersion,
+      sourceForCategory(BANEI_CATEGORY),
+      message.runYmd.slice(0, RACE_ID_NEN_END),
+      message.runYmd.slice(RACE_ID_NEN_END),
+      message.keibajoCode ?? "",
+      message.raceBango ?? "",
+    ],
+  );
+  const persisted = Array.isArray(rows) ? (rows as PersistedBaneiPrediction[]) : [];
+  if (persisted.length !== shadow.predictions.length) {
+    return {
+      matched: false,
+      maxAbsoluteScoreDifference: null,
+      persistedCount: persisted.length,
+      reason: "missing-persisted",
+    };
+  }
+  const persistedByHorse = new Map(persisted.map((row) => [row.ketto_toroku_bango, row]));
+  const differences = shadow.predictions.map((prediction) => {
+    const row = persistedByHorse.get(prediction.kettoTorokuBango);
+    return row === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.abs(Number(row.predicted_score) - prediction.predictedScore);
+  });
+  const rankMismatch = shadow.predictions.some((prediction) => {
+    const row = persistedByHorse.get(prediction.kettoTorokuBango);
+    return row === undefined || Number(row.predicted_rank) !== prediction.predictedRank;
+  });
+  const maxAbsoluteScoreDifference = Math.max(0, ...differences);
+  if (rankMismatch) {
+    return {
+      matched: false,
+      maxAbsoluteScoreDifference,
+      persistedCount: persisted.length,
+      reason: "rank-mismatch",
+    };
+  }
+  const matched = maxAbsoluteScoreDifference <= 1e-6;
+  return {
+    matched,
+    maxAbsoluteScoreDifference,
+    persistedCount: persisted.length,
+    reason: matched ? "match" : "score-mismatch",
+  };
+};
+
 export const rescoreJraRace = async (input: RescoreJraRaceInput): Promise<RescoreJraRaceResult> => {
-  const target = await loadTargetRaceRows(input.env, input.message);
+  const target = await loadTargetRaceRows(input.env, input.message, JRA_CATEGORY);
   if (target.status !== "ok") {
     const targetRaceId = buildTargetRaceId(input.message);
     console.warn(`rescore ${target.status} race_id=${targetRaceId} runYmd=${input.message.runYmd}`);
@@ -619,7 +770,7 @@ export const rescoreJraRace = async (input: RescoreJraRaceInput): Promise<Rescor
   const [oddsMap, weightMap, expectedRunners] = await Promise.all([
     fetchOddsForRace(fetchInput),
     fetchWeightForRace(fetchInput),
-    loadExpectedRunnerNumbers(input.env, input.message),
+    loadExpectedRunnerNumbers(input.env, input.message, JRA_CATEGORY),
   ]);
   assertCompleteWeightSet({
     ...expectedRunners,

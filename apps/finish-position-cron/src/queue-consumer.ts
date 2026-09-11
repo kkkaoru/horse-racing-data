@@ -108,7 +108,12 @@ import {
 } from "./race-chain-market-signal-hook";
 import { isBeforeRaceStartDeadline, RaceDeadlineExceededError } from "./race-deadline";
 import { addRescoreAttestationToUrl, createRescoreAttestation } from "./rescore-attestation";
-import { rescoreJraRace } from "./scoring/rescore-consumer";
+import {
+  compareBaneiShadowWithPersisted,
+  rescoreJraRace,
+  shadowBaneiRace,
+  type BaneiRaceShadowResult,
+} from "./scoring/rescore-consumer";
 import { resolveRescoreRealtimeFetch } from "./scoring/rescore-fetch";
 import {
   buildRetryErrorBindParams,
@@ -2163,6 +2168,20 @@ const processContainerPerRaceRescore = async (
         console.log(
           `[predict-queue] rescore feature HIT before Container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} entries=${attestation.entryCount}`,
         );
+        const baneiShadowPromise: Promise<BaneiRaceShadowResult | null> =
+          category === BAN_EI_CATEGORY && env.BANEI_WORKER_RESCORE_SHADOW_ENABLED === ENABLED_FLAG
+            ? shadowBaneiRace({
+                attestation,
+                env,
+                fetchImpl: resolveRescoreRealtimeFetch(env, fetch),
+                message: message.body,
+              }).catch((error) => {
+                console.warn(
+                  `[predict-queue] Ban-ei Worker shadow unavailable runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}: ${String(error)}`,
+                );
+                return null;
+              })
+            : Promise.resolve(null);
         const predictUrl = addRescoreAttestationToUrl(basePredictUrl, attestation);
         debugLog(
           message.body,
@@ -2212,6 +2231,31 @@ const processContainerPerRaceRescore = async (
             Date.now() - startedAt
           }`,
         );
+        const baneiShadow = await baneiShadowPromise;
+        if (baneiShadow?.status === "ok" && baneiShadow.score !== null) {
+          try {
+            const parity = await compareBaneiShadowWithPersisted(
+              env,
+              message.body,
+              baneiShadow.score,
+            );
+            console.log(
+              JSON.stringify({
+                category,
+                event: "banei-worker-rescore-shadow-parity",
+                keibajoCode,
+                modelVersion: baneiShadow.score.modelVersion,
+                raceBango,
+                runYmd,
+                ...parity,
+              }),
+            );
+          } catch (error) {
+            console.warn(
+              `[predict-queue] Ban-ei Worker shadow parity unavailable runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}: ${String(error)}`,
+            );
+          }
+        }
         const published = await publishAndWarmRescoreDisplay(env, {
           category,
           keibajoCode,

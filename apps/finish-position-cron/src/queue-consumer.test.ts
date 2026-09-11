@@ -21,6 +21,11 @@ interface ClaimResult {
   state?: string;
 }
 
+interface BaneiShadowMockResult {
+  score: Record<string, unknown> | null;
+  status: "cache_miss" | "ok" | "race_not_found";
+}
+
 interface RescoreResult {
   status: "ok" | "cache_miss" | "race_not_found";
   racesPredicted: number;
@@ -48,7 +53,9 @@ const {
   touchContainerSlotMock,
   isOldDateRunYmdMock,
   parseNdjsonStreamMock,
+  compareBaneiShadowWithPersistedMock,
   rescoreJraRaceMock,
+  shadowBaneiRaceMock,
   warmPredictionCacheForRaceMock,
   warmPredictionCacheForCategoryMock,
   publishFinishPositionPredictionCacheMock,
@@ -84,6 +91,25 @@ const {
       racesPredicted: 5,
       category: "jra",
       status: "success" as const,
+    }),
+  );
+  const compareBaneiShadowWithPersisted = vi.fn(async () => ({
+    matched: true,
+    maxAbsoluteScoreDifference: 0,
+    persistedCount: 2,
+    reason: "match" as const,
+  }));
+  const shadowBaneiRace = vi.fn(
+    async (): Promise<BaneiShadowMockResult> => ({
+      score: {
+        gradeCode: null,
+        modelVersion: "banei-cb-v9-sim-2011",
+        predictions: [],
+        raceId: "nar:2026:0619:83:03",
+        shadowOnly: true as const,
+        variant: "sim" as const,
+      },
+      status: "ok" as const,
     }),
   );
   const rescoreJraRace = vi.fn(
@@ -140,7 +166,9 @@ const {
     publishFinishPositionPredictionCacheForCategoryMock:
       publishFinishPositionPredictionCacheForCategory,
     publishFinishPositionPredictionCacheMock: publishFinishPositionPredictionCache,
+    compareBaneiShadowWithPersistedMock: compareBaneiShadowWithPersisted,
     rescoreJraRaceMock: rescoreJraRace,
+    shadowBaneiRaceMock: shadowBaneiRace,
     warmPredictionCacheForCategoryMock: warmPredictionCacheForCategory,
     warmPredictionCacheForRaceMock: warmPredictionCacheForRace,
   };
@@ -258,7 +286,9 @@ vi.mock("./old-date-guard", () => ({
 }));
 
 vi.mock("./scoring/rescore-consumer", () => ({
+  compareBaneiShadowWithPersisted: compareBaneiShadowWithPersistedMock,
   rescoreJraRace: rescoreJraRaceMock,
+  shadowBaneiRace: shadowBaneiRaceMock,
 }));
 
 vi.mock("./prediction-cache-warm", async (importOriginal) => {
@@ -507,6 +537,8 @@ beforeEach(() => {
   isOldDateRunYmdMock.mockClear();
   isOldDateRunYmdMock.mockReturnValue(false);
   parseNdjsonStreamMock.mockClear();
+  compareBaneiShadowWithPersistedMock.mockClear();
+  shadowBaneiRaceMock.mockClear();
   rescoreJraRaceMock.mockClear();
   warmPredictionCacheForRaceMock.mockClear();
   warmPredictionCacheForCategoryMock.mockClear();
@@ -552,6 +584,23 @@ beforeEach(() => {
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
   isPerRaceRescoreReadyMock.mockResolvedValue(true);
+  compareBaneiShadowWithPersistedMock.mockResolvedValue({
+    matched: true,
+    maxAbsoluteScoreDifference: 0,
+    persistedCount: 2,
+    reason: "match",
+  });
+  shadowBaneiRaceMock.mockResolvedValue({
+    score: {
+      gradeCode: null,
+      modelVersion: "banei-cb-v9-sim-2011",
+      predictions: [],
+      raceId: "nar:2026:0619:83:03",
+      shadowOnly: true,
+      variant: "sim",
+    },
+    status: "ok",
+  });
   rescoreJraRaceMock.mockResolvedValue({
     modelVersion: "jra-cb-v9-sim-2013-clean",
     predictionCount: 3,
@@ -3843,9 +3892,101 @@ test("routes a Ban-ei per-race rescore to a category-scoped container DO (not Wo
   );
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(shadowBaneiRaceMock).not.toHaveBeenCalled();
   expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
+});
+
+test("shadows Ban-ei rescore, compares persisted Container output, and never replaces it", async () => {
+  const logs: string[] = [];
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  });
+  const env = { ...makeEnv(), BANEI_WORKER_RESCORE_SHADOW_ENABLED: "1" };
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "ban-ei",
+        daysAhead: 0,
+        keibajoCode: "83",
+        mode: "rescore",
+        raceBango: "07",
+        runYmd: "20260619",
+      }),
+    ]),
+    env,
+  );
+  expect(shadowBaneiRaceMock).toHaveBeenCalledWith({
+    attestation: expect.objectContaining({ featureCacheEtag: "feature-etag" }),
+    env,
+    fetchImpl: expect.any(Function),
+    message: expect.objectContaining({ category: "ban-ei", raceBango: "07" }),
+  });
+  expect(compareBaneiShadowWithPersistedMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(logs.some((line) => line.includes('"event":"banei-worker-rescore-shadow-parity"'))).toBe(
+    true,
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("keeps Container serving when Ban-ei shadow or parity observation fails", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  shadowBaneiRaceMock.mockRejectedValueOnce(new Error("shadow unavailable"));
+  const env = { ...makeEnv(), BANEI_WORKER_RESCORE_SHADOW_ENABLED: "1" };
+  const body = {
+    category: "ban-ei",
+    daysAhead: 0,
+    keibajoCode: "83",
+    mode: "rescore",
+    raceBango: "07",
+    runYmd: "20260619",
+  } satisfies Partial<PredictQueueMessage>;
+  await handleQueue(makeBatch([makeMessage(body)]), env);
+  expect(compareBaneiShadowWithPersistedMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+
+  shadowBaneiRaceMock.mockResolvedValueOnce({
+    score: {
+      gradeCode: null,
+      modelVersion: "banei-cb-v9-sim-2011",
+      predictions: [],
+      raceId: "nar:2026:0619:83:07",
+      shadowOnly: true,
+      variant: "sim",
+    },
+    status: "ok",
+  });
+  compareBaneiShadowWithPersistedMock.mockRejectedValueOnce(new Error("Neon unavailable"));
+  await handleQueue(makeBatch([makeMessage(body)]), env);
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  expect(ackMock).toHaveBeenCalledTimes(2);
+  expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Ban-ei Worker shadow unavailable"));
+  expect(warnSpy).toHaveBeenCalledWith(
+    expect.stringContaining("Ban-ei Worker shadow parity unavailable"),
+  );
+  warnSpy.mockRestore();
+});
+
+test("does not compare a Ban-ei shadow cache miss", async () => {
+  shadowBaneiRaceMock.mockResolvedValueOnce({ score: null, status: "cache_miss" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "ban-ei",
+        daysAhead: 0,
+        keibajoCode: "83",
+        mode: "rescore",
+        raceBango: "07",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), BANEI_WORKER_RESCORE_SHADOW_ENABLED: "1" },
+  );
+  expect(compareBaneiShadowWithPersistedMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("acks a day-scoped rescore without container fetch", async () => {

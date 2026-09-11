@@ -99,6 +99,9 @@ export interface Env {
   // per-race feature cache. Any miss or scoring/write failure falls back to
   // the existing Container path, making this an instant config rollback.
   JRA_WORKER_RESCORE_ENABLED?: string;
+  // "1" computes Ban-ei CatBoost scores from the attested race-final cache
+  // alongside the authoritative Container and logs parity without writing.
+  BANEI_WORKER_RESCORE_SHADOW_ENABLED?: string;
   // Feature flag forwarded into the container env: unset enables the NAR
   // clean Set-Transformer x ensemble score-z blend (iter40); "0", "false", or
   // "off" rolls the container back to the pure iter12 clean188 base. Set via

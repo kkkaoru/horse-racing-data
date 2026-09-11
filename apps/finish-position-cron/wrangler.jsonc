@@ -314,6 +314,9 @@
     // Worker-native JRA weight rescore: final R2 cache + live late-binding
     // columns + current champion model. Failures fall back to Container.
     "JRA_WORKER_RESCORE_ENABLED": "1",
+    // Shadow-only Ban-ei CatBoost scoring. Container remains authoritative;
+    // parity is logged and no Worker shadow row is persisted or served.
+    "BANEI_WORKER_RESCORE_SHADOW_ENABLED": "1",
     // R2 bucket for the cached feature parquet GET in the container rescore path.
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
