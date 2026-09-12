@@ -1487,7 +1487,7 @@ it("purges one source and its exact race-training cache key", async () => {
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=ban-ei&keibajoCode=83&raceBango=09",
   );
   expect(harness.cacheCalls.deletes[1]).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&keibajoCode=83&raceBango=09",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&schema=complete-horse-workouts-v2&keibajoCode=83&raceBango=09",
   );
 });
 

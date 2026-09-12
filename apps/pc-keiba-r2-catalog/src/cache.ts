@@ -126,6 +126,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     if (descriptor.raceBango) url.searchParams.set("raceBango", descriptor.raceBango);
   }
   if (descriptor.kind === "race-trainings") {
+    url.searchParams.set("schema", "complete-horse-workouts-v2");
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
   }

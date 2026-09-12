@@ -6,6 +6,8 @@ const IDENTIFIER_PATTERN: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN: RegExp = /^\d{8}$/u;
 const CODE_PATTERN: RegExp = /^\d{2}$/u;
 const LOOKBACK_DAYS: number = 14;
+const FALLBACK_LOOKBACK_DAYS: number = 90;
+const FALLBACK_WORKOUT_LIMIT: number = 3;
 const MILLISECONDS_PER_DAY: number = 86_400_000;
 
 const WORKOUT_VALUE_COLUMN_NAMES: ReadonlyArray<string> = [
@@ -66,7 +68,7 @@ const requireCode = (value: string, label: string): string => {
 const compactUtcDate = (timestamp: number): string =>
   new Date(timestamp).toISOString().slice(0, 10).replaceAll("-", "");
 
-const workoutWindowStart = (date: string): string => {
+const workoutWindowStart = (date: string, lookbackDays: number = LOOKBACK_DAYS): string => {
   const checked = requireDate(date);
   const timestamp = Date.UTC(
     Number(checked.slice(0, 4)),
@@ -74,7 +76,7 @@ const workoutWindowStart = (date: string): string => {
     Number(checked.slice(6, 8)),
   );
   if (compactUtcDate(timestamp) !== checked) throw new Error("date must be a valid calendar date");
-  return compactUtcDate(timestamp - LOOKBACK_DAYS * MILLISECONDS_PER_DAY);
+  return compactUtcDate(timestamp - lookbackDays * MILLISECONDS_PER_DAY);
 };
 
 const rawTableName = (env: R2SqlCatalogConfig, table: string): string =>
@@ -84,6 +86,7 @@ const officialWorkoutSelect = (
   table: string,
   trainingType: string,
   extendedColumns: boolean,
+  windowName: string,
 ): string => `SELECT
     r.umaban, r.bamei, r.current_jockey_name, r.trainer_name,
     r.ketto_toroku_bango,
@@ -116,7 +119,7 @@ const officialWorkoutSelect = (
     0 AS source_priority
   FROM runners r
   INNER JOIN ${table} w ON w.ketto_toroku_bango = r.ketto_toroku_bango
-  CROSS JOIN workout_window ww
+  CROSS JOIN ${windowName} ww
   WHERE w.chokyo_nengappi BETWEEN ww.start_date AND ww.end_date`;
 
 export const buildRaceTrainingsQuery = (
@@ -127,14 +130,27 @@ export const buildRaceTrainingsQuery = (
   const keibajoCode = requireCode(filters.keibajoCode, "keibajoCode");
   const raceBango = requireCode(filters.raceBango, "raceBango");
   const startDate = workoutWindowStart(date);
+  const fallbackStartDate = workoutWindowStart(date, FALLBACK_LOOKBACK_DAYS);
   const kaisaiNen = date.slice(0, 4);
   const kaisaiTsukihi = date.slice(4, 8);
   const runnersTable = rawTableName(env, "jvd_se");
   const hillTable = rawTableName(env, "jvd_hc");
   const woodTable = rawTableName(env, "jvd_wc");
   const netkeibaTable = rawTableName(env, "netkeiba_training_workouts");
-  const hillSelect = officialWorkoutSelect(hillTable, "坂路", false);
-  const woodSelect = officialWorkoutSelect(woodTable, "ウッド", true);
+  const hillSelect = officialWorkoutSelect(hillTable, "坂路", false, "workout_window");
+  const woodSelect = officialWorkoutSelect(woodTable, "ウッド", true, "workout_window");
+  const fallbackHillSelect = officialWorkoutSelect(
+    hillTable,
+    "坂路",
+    false,
+    "fallback_workout_window",
+  );
+  const fallbackWoodSelect = officialWorkoutSelect(
+    woodTable,
+    "ウッド",
+    true,
+    "fallback_workout_window",
+  );
 
   return `WITH runners AS (
   SELECT
@@ -151,6 +167,9 @@ export const buildRaceTrainingsQuery = (
 ),
 workout_window AS (
   SELECT '${startDate}' AS start_date, '${date}' AS end_date
+),
+fallback_workout_window AS (
+  SELECT '${fallbackStartDate}' AS start_date, '${date}' AS end_date
 ),
 official_workouts AS (
   ${hillSelect}
@@ -200,6 +219,31 @@ deduplicated_workouts AS (
   ) ranked
   WHERE signature_rank = 1
 ),
+historical_official_candidates AS (
+  ${fallbackHillSelect}
+  UNION ALL
+  ${fallbackWoodSelect}
+),
+historical_official_workouts AS (
+  SELECT${WORKOUT_ROW_COLUMNS}
+  FROM (
+    SELECT${WORKOUT_ROW_COLUMNS}, row_number() OVER (
+      PARTITION BY ketto_toroku_bango
+      ORDER BY chokyo_nengappi DESC, chokyo_jikoku DESC, training_type
+    ) AS fallback_rank
+    FROM historical_official_candidates historical
+    WHERE NOT EXISTS (
+      SELECT 1 FROM deduplicated_workouts current
+      WHERE current.ketto_toroku_bango = historical.ketto_toroku_bango
+    )
+  ) ranked
+  WHERE fallback_rank <= ${FALLBACK_WORKOUT_LIMIT}
+),
+complete_workouts AS (
+  SELECT${WORKOUT_ROW_COLUMNS} FROM deduplicated_workouts
+  UNION ALL
+  SELECT${WORKOUT_ROW_COLUMNS} FROM historical_official_workouts
+),
 placeholder_rows AS (
   SELECT
     r.umaban, r.bamei, r.current_jockey_name, r.trainer_name,
@@ -225,12 +269,12 @@ placeholder_rows AS (
     'jra' AS training_data_source
   FROM runners r
   WHERE NOT EXISTS (
-    SELECT 1 FROM deduplicated_workouts w
+    SELECT 1 FROM complete_workouts w
     WHERE w.ketto_toroku_bango = r.ketto_toroku_bango
   )
 ),
 all_rows AS (
-  SELECT${WORKOUT_ROW_COLUMNS} FROM deduplicated_workouts
+  SELECT${WORKOUT_ROW_COLUMNS} FROM complete_workouts
   UNION ALL
   SELECT${WORKOUT_ROW_COLUMNS} FROM placeholder_rows
 )

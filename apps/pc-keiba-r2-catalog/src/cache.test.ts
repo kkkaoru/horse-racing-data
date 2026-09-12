@@ -88,10 +88,10 @@ it("builds canonical Cache API and KV keys", () => {
     raceBango: "01",
   });
   expect(cacheRequestFor(training).url).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&keibajoCode=05&raceBango=01",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&schema=complete-horse-workouts-v2&keibajoCode=05&raceBango=01",
   );
   expect(kvKeyFor(training)).toBe(
-    "catalog:v2:v2/race-trainings?date=20260715&keibajoCode=05&raceBango=01",
+    "catalog:v2:v2/race-trainings?date=20260715&schema=complete-horse-workouts-v2&keibajoCode=05&raceBango=01",
   );
   const heatmap = heatmapStatsDescriptor({
     date: "20260715",

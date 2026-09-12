@@ -21,6 +21,10 @@ it("builds the year-crossing official and netkeiba workout union", () => {
   expect(sql).toMatch("INNER JOIN pc_keiba.jvd_wc w");
   expect(sql).toMatch("FROM pc_keiba.netkeiba_training_workouts n");
   expect(sql).toMatch("SELECT '20251218' AS start_date, '20260101' AS end_date");
+  expect(sql).toMatch("SELECT '20251003' AS start_date, '20260101' AS end_date");
+  expect(sql).toMatch("historical_official_candidates AS");
+  expect(sql).toMatch("historical_official_workouts AS");
+  expect(sql).toMatch("WHERE fallback_rank <= 3");
   expect(sql).toMatch("w.chokyo_nengappi BETWEEN ww.start_date AND ww.end_date");
   expect(sql).toMatch("n.kaisai_nen = '2026'");
   expect(sql).toMatch("n.kaisai_tsukihi = '0101'");
@@ -60,6 +64,7 @@ it("keeps distinct workouts and emits a placeholder only for runners without act
   expect(sql).toMatch("placeholder_rows AS");
   expect(sql).toMatch("'-' AS training_type");
   expect(sql).toMatch("'' AS chokyo_nengappi, '' AS chokyo_jikoku");
+  expect(sql).toMatch("complete_workouts AS");
   expect(sql).toMatch("WHERE NOT EXISTS");
   expect(sql).toMatch("w.ketto_toroku_bango = r.ketto_toroku_bango");
 });
