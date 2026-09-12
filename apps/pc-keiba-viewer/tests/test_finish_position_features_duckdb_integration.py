@@ -457,7 +457,7 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
     corner_df = pl.DataFrame(
         [
             (
-                "jra", "20260627", "2026", "0627", "02", "01", "h001", 1, "j1", "t1",
+                "jra", "20260627", "2026", "0627", "02", "01", "2023100001", 1, "j1", "t1",
                 1600, "10", "A", "703", 10,
                 None, None, 35.0, 34.0, 0.3, 0.35, 0.4, 0.5,
                 "1", None, 2, 5.0, 1, 3,
@@ -473,15 +473,15 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
     se_df = pl.DataFrame(
         [
             (
-                "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
-                "02", "0", "0.5", "35.0", "0002", "0050", "480", "1", "3",
+                "2026", "0627", "02", "01", "2023100001", "01", "j1", "t1",
+                "02", "0", "0.5", "35.0", "0002", "0050", "480", "1", "3", "2",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
             "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
-            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei", "data_kubun",
         ],
         orient="row",
     )
@@ -564,7 +564,7 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
     corner_df = pl.DataFrame(
         [
             (
-                "jra", "20260627", "2026", "0627", "02", "01", "h999", 9, "j9", "t9",
+                "jra", "20260627", "2026", "0627", "02", "01", "2023100009", 9, "j9", "t9",
                 1600, "10", "A", "703", 10,
                 None, None, 35.0, 34.0, 0.3, 0.35, 0.4, 0.5,
                 "1", None, 2, 5.0, 1, 3,
@@ -580,19 +580,19 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
     se_df = pl.DataFrame(
         [
             (
-                "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
-                "00", "0", "", "", "00", "0000", "480", "1", "3",
+                "2026", "0627", "02", "01", "2023100001", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "480", "1", "3", "2",
             ),
             (
-                "2026", "0627", "02", "01", "h002", "02", "j2", "t2",
-                "00", "0", "", "", "03", "0055", "470", "1", "4",
+                "2026", "0627", "02", "01", "2023100002", "02", "j2", "t2",
+                "00", "0", "", "", "03", "0055", "470", "1", "4", "2",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
             "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
-            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei", "data_kubun",
         ],
         orient="row",
     )
@@ -658,43 +658,43 @@ def test_upcoming_target_union_sql_jra_excludes_scratched_and_excluded_entrants(
     se_df = pl.DataFrame(
         [
             (
-                "2026", "0718", "05", "01", "h001", "01", "j1", "t1",
-                "00", "0", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100001", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h002", "02", "j2", "t2",
-                "00", "1", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100002", "02", "j2", "t2",
+                "00", "1", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h003", "03", "j3", "t3",
-                "00", "2", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100003", "03", "j3", "t3",
+                "00", "2", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h004", "04", "j4", "t4",
-                "05", "3", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100004", "04", "j4", "t4",
+                "05", "3", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h005", "05", "j5", "t5",
-                "03", "4", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100005", "05", "j5", "t5",
+                "03", "4", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h006", "06", "j6", "t6",
-                "02", "5", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100006", "06", "j6", "t6",
+                "02", "5", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h007", "07", "j7", "t7",
-                "08", "6", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100007", "07", "j7", "t7",
+                "08", "6", "", "", "00", "0000", "480", "1", "4", "2",
             ),
             (
-                "2026", "0718", "05", "01", "h008", "08", "j8", "t8",
-                "07", "7", "", "", "00", "0000", "480", "1", "4",
+                "2026", "0718", "05", "01", "2023100008", "08", "j8", "t8",
+                "07", "7", "", "", "00", "0000", "480", "1", "4", "2",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
             "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
-            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei", "data_kubun",
         ],
         orient="row",
     )
@@ -730,7 +730,7 @@ def test_upcoming_target_union_sql_jra_excludes_scratched_and_excluded_entrants(
 
     assert out["umaban"].to_list() == [1, 4, 5, 6, 7, 8]
     assert out["ketto_toroku_bango"].to_list() == [
-        "h001", "h004", "h005", "h006", "h007", "h008",
+        "2023100001", "2023100004", "2023100005", "2023100006", "2023100007", "2023100008",
     ]
     # h001 (code '0') has not run yet; h004 (code '3') has -- confirms the
     # surviving rows still carry correct, unrelated finish_position parsing.

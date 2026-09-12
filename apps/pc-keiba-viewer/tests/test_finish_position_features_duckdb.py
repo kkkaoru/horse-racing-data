@@ -116,6 +116,14 @@ def test_source_watermark_sql_uses_category_table_and_partition() -> None:
     assert "from pg.jvd_se" in sql
     assert "kaisai_nen between '2026' and '2026'" in sql
     assert "keibajo_code in ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10')" in sql
+    assert "coalesce(trim(data_kubun), '') <> '1'" in sql
+    assert "try_cast(nullif(trim(umaban), '') as int) between 1 and 18" in sql
+    assert "trim(ketto_toroku_bango) <> '0000000000'" in sql
+
+
+def test_source_watermark_sql_keeps_nar_data_kubun_contract_separate() -> None:
+    sql = subject.source_watermark_sql("nar", "20260826")
+    assert "data_kubun" not in sql
 
 
 def test_source_watermark_sql_rejects_all_category() -> None:
@@ -366,6 +374,19 @@ def test_upcoming_target_union_sql_jra_reads_jvd_tables_and_nulls_corners():
     assert "pg.jvd_ra ra" in sql
     assert "cast(null as double) as corner1_norm" in sql
     assert "'jra' as source" in sql
+
+
+def test_upcoming_target_union_sql_jra_excludes_provisional_entries():
+    sql = subject.upcoming_target_union_sql("jra", "20260603", "20260603")
+    assert "coalesce(trim(se.data_kubun), '') <> '1'" in sql
+    assert "try_cast(nullif(trim(se.umaban), '') as int) between 1 and 18" in sql
+    assert "regexp_full_match(trim(se.ketto_toroku_bango), '^[0-9]{10}$')" in sql
+    assert "trim(se.ketto_toroku_bango) <> '0000000000'" in sql
+
+
+def test_upcoming_target_union_sql_nar_keeps_data_kubun_contract_separate():
+    sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
+    assert "se.data_kubun" not in sql
 
 
 def test_upcoming_target_union_sql_nullifies_unrun_finish_position():
@@ -5011,6 +5032,31 @@ def test_rec_select_from_corner_features_source_scopes_raw_before_field_count() 
     assert "from pg.nvd_se se" in sql
     assert "where true and ketto_toroku_bango in ('2020100001')" in sql
     assert "inner join cohort_race_keys cohort" in sql
+
+
+def test_rec_select_from_raw_se_ra_excludes_provisional_jra_entries() -> None:
+    sql = subject._rec_select_from_raw_se_ra(
+        "jra",
+        "20260628",
+        "20260628",
+        "",
+    )
+    assert "coalesce(trim(se.data_kubun), '') <> '1'" in sql
+    assert "try_cast(nullif(trim(se.umaban), '') as int) between 1 and 18" in sql
+    assert (
+        "regexp_full_match(trim(se.ketto_toroku_bango), '^[0-9]{10}$')" in sql
+    )
+    assert "trim(se.ketto_toroku_bango) <> '0000000000'" in sql
+
+
+def test_rec_select_from_raw_se_ra_keeps_nar_data_kubun_contract_separate() -> None:
+    sql = subject._rec_select_from_raw_se_ra(
+        "nar",
+        "20260628",
+        "20260628",
+        "",
+    )
+    assert "se.data_kubun" not in sql
 
 
 def test_rec_select_from_raw_se_ra_counts_full_race_before_entity_filter() -> None:

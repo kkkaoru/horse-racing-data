@@ -82,7 +82,7 @@ FROM runtime-base AS runtime
 
 # Bump when runtime orchestration changes so a remote Wrangler build cannot
 # reuse a stale source-copy layer from a previous container rollout.
-ARG SOURCE_CACHE_BUSTER=20260903-prophet-maximum-branch-weight-policy-2024-2026-v5
+ARG SOURCE_CACHE_BUSTER=20260912-jra-confirmed-entry-filter-v2
 RUN echo "source-cache-buster=${SOURCE_CACHE_BUSTER}"
 
 # Copy only installed runtime packages and pre-installed DuckDB extensions.

@@ -548,6 +548,20 @@ def _rec_select_from_raw_se_ra(
     venue_predicate = (
         "" if keibajo_code is None else f"and se.keibajo_code = {sql_literal(keibajo_code)}"
     )
+    # JRA can retain provisional SE rows (data_kubun='1', umaban='00',
+    # zero registration IDs) beside the confirmed card under a distinct raw
+    # primary key. They are not runners and must never enter a day foundation.
+    # NAR uses a different data-kubun contract, so keep this predicate JRA-only.
+    confirmed_entry_predicate = (
+        """
+      and coalesce(trim(se.data_kubun), '') <> '1'
+      and try_cast(nullif(trim(se.umaban), '') as int) between 1 and 18
+      and regexp_full_match(trim(se.ketto_toroku_bango), '^[0-9]{10}$')
+      and trim(se.ketto_toroku_bango) <> '0000000000'
+        """
+        if source == CATEGORY_JRA
+        else ""
+    )
     base_predicate = f"""
       se.kaisai_nen between {sql_literal(history_start[:4])}
         and {sql_literal(to_date[:4])}
@@ -555,6 +569,7 @@ def _rec_select_from_raw_se_ra(
         between {sql_literal(history_start)} and {sql_literal(to_date)}
       and nullif(trim(se.ketto_toroku_bango), '') is not null
       and try_cast(nullif(trim(se.umaban), '') as int) is not null
+      {confirmed_entry_predicate}
       and (
         try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int)
           is not null
@@ -965,6 +980,14 @@ def _rec_select_from_se_ra(
     race_filter = ""
     if target_race is not None:
         race_filter = f"      and {target_race_filter_sql('se', target_race)}\n"
+    confirmed_entry_filter = ""
+    if source == CATEGORY_JRA:
+        confirmed_entry_filter = """
+      and coalesce(trim(se.data_kubun), '') <> '1'
+      and try_cast(nullif(trim(se.umaban), '') as int) between 1 and 18
+      and regexp_full_match(trim(se.ketto_toroku_bango), '^[0-9]{10}$')
+      and trim(se.ketto_toroku_bango) <> '0000000000'
+        """
     return f"""
     select
       '{source}' as source,
@@ -1029,6 +1052,7 @@ def _rec_select_from_se_ra(
       and (se.kaisai_nen || se.kaisai_tsukihi) between '{target_from}' and '{target_to}'
       and se.ketto_toroku_bango is not null
       and try_cast(nullif(trim(se.umaban), '') as int) is not null
+      {confirmed_entry_filter}
       and coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')
     """
 
@@ -4948,12 +4972,20 @@ def source_watermark_sql(category: str, target_date: str) -> str:
     if category == CATEGORY_JRA:
         table = "jvd_se"
         venue_filter = f"keibajo_code in {JRA_KEIBAJO_CODES_SQL}"
+        entry_filter = """
+          and coalesce(trim(data_kubun), '') <> '1'
+          and try_cast(nullif(trim(umaban), '') as int) between 1 and 18
+          and regexp_full_match(trim(ketto_toroku_bango), '^[0-9]{10}$')
+          and trim(ketto_toroku_bango) <> '0000000000'
+        """
     elif category == CATEGORY_NAR:
         table = "nvd_se"
         venue_filter = "keibajo_code <> '83'"
+        entry_filter = ""
     elif category == CATEGORY_BAN_EI:
         table = "nvd_se"
         venue_filter = "keibajo_code = '83'"
+        entry_filter = ""
     else:
         raise ValueError("source watermark requires a single prediction category")
     year = target_date[:4]
@@ -4963,6 +4995,7 @@ def source_watermark_sql(category: str, target_date: str) -> str:
         where kaisai_nen between '{year}' and '{year}'
           and (kaisai_nen || kaisai_tsukihi) between '{target_date}' and '{target_date}'
           and {venue_filter}
+          {entry_filter}
     """
 
 
