@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -6,6 +8,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "../.open-next/worker.js": fileURLToPath(
+        new URL("./src/test-stubs/open-next-worker.ts", import.meta.url),
+      ),
       "cloudflare:workers": new URL("./src/test-stubs/cloudflare-workers.ts", import.meta.url)
         .pathname,
       "server-only": new URL("./src/test-stubs/server-only.ts", import.meta.url).pathname,

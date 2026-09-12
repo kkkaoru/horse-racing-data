@@ -33,14 +33,14 @@ uses. Defaults match first paint (勝率, レース数 off).
 1. `search_tool` query `pc-keiba-viewer`.
 2. `authenticate` — MCP bearer succeeded; Worker can read `/api/spec`.
 3. `search_entities` — horses, jockeys, owners, trainers.
-4. `get_win_rate_heatmap_display` — same display builder as the table.
+4. `get_win_rate_heatmap_compact` — numeric rates, names and starts; defaults to one horse per page. Repeat with `nextOffset` until null. `get_win_rate_heatmap_display` uses the same compact default; explicitly pass `viewMode` or `showStarts` only when the large UI display model is needed.
 5. For a specific race, never start with the day-wide prediction response:
    - `get_finish_prediction_summary` — compact ranked finish predictions for an
      LLM. Use this instead of the full `finish-prediction` race section unless the
      user explicitly needs its historical inputs or UI-only intermediate data.
    - `get_race_section` with `section=overall-score` — the selected race's overall
      evaluation.
-   - `get_win_rate_heatmap_display` — the selected race's heatmap display.
+   - `get_win_rate_heatmap_compact` — the selected race's heatmap rates; collect every page using `nextOffset`.
 
    Use `get_daily_finish_predictions` without a race scope only for genuine
    multi-race day analysis. When one race must be read through that tool, supply

@@ -1,6 +1,18 @@
 // Run with: bun run --filter pc-keiba-viewer test
 import { describe, expect, test, vi } from "vitest";
 
+// Manifest persistence is not under test here; orchestration tests must not
+// create real files at their illustrative /tmp output paths.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  const filesystem = {
+    ...original,
+    mkdir: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    writeFile: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  };
+  return { ...filesystem, default: filesystem };
+});
+
 import {
   assertContainerRuntimeCapacity,
   buildCategoryFeaturesDir,

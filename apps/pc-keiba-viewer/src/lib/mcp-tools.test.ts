@@ -2,7 +2,7 @@
 import { expect, it } from "vitest";
 
 import { indexLiveHorseWeightKg } from "./horse-weight-class";
-import { callMcpTool, MCP_TOOL_DEFINITIONS } from "./mcp-tools";
+import { callMcpTool, MCP_TOOL_DEFINITIONS, type McpSiteFetch } from "./mcp-tools";
 import { buildWinRateHeatmapDisplay } from "./win-rate-heatmap";
 import type { WinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
 
@@ -75,6 +75,311 @@ const jsonFetch =
   };
 
 const failingFetch = async (): Promise<Response> => new Response("nope", { status: 500 });
+
+const compactRaceArgs = {
+  year: "2026",
+  month: "09",
+  day: "12",
+  keibajoCode: "09",
+  raceNumber: "04",
+  source: "jra",
+};
+
+// Synthetic runners exercise transport completeness; they are not live race data.
+const eighteenHorsePayload: WinRateHeatmapSectionPayload = {
+  ...heatmapPayload,
+  runners: Array.from({ length: 18 }, (_, index) => ({
+    ...heatmapPayload.runners[0]!,
+    umaban: String(index + 1),
+    bamei: `Synthetic ${index + 1}`,
+  })),
+};
+
+const collectCompactText = async (
+  fetchSite: McpSiteFetch,
+  args: Record<string, unknown>,
+): Promise<string> => {
+  const result = await callMcpTool("get_win_rate_heatmap_compact", args, fetchSite);
+  if (result.isError) throw new Error(result.content[0]?.text);
+  const text = result.content[0]?.text ?? "{}";
+  const payload = JSON.parse(text);
+  if (payload.encoding !== "json-text") return text;
+  if (payload.complete) return payload.dataChunk;
+  return (
+    payload.dataChunk +
+    (await collectCompactText(fetchSite, { ...args, responseCursor: payload.nextResponseCursor }))
+  );
+};
+
+it("compact tool publishes horse selection, row paging and continuation in its schema", () => {
+  const definition = MCP_TOOL_DEFINITIONS.find(
+    (tool) => tool.name === "get_win_rate_heatmap_compact",
+  );
+  expect(definition?.inputSchema.properties.horseNumbers?.type).toBe("array");
+  expect(definition?.inputSchema.properties.responseCursor?.type).toBe("integer");
+  expect(definition?.inputSchema.properties.offset?.minimum).toBe(0);
+  expect(definition?.inputSchema.properties.limit?.minimum).toBe(1);
+});
+
+it("recovers all 18 synthetic runners and all three rates through JSON continuation", async () => {
+  const fetchSite = jsonFetch({
+    "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+  });
+  const text = await collectCompactText(fetchSite, { ...compactRaceArgs, limit: 99 });
+  const payload = JSON.parse(text);
+  expect(payload.total).toBe(18);
+  expect(payload.nextOffset).toBe(null);
+  expect(payload.rows.map((row: { horseNumber: string }) => row.horseNumber)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+  ]);
+  expect(
+    payload.rows.every((row: { heatmap: Record<string, Record<string, unknown>> }) =>
+      Object.values(row.heatmap).every(
+        (cell) =>
+          Object.keys(cell).toSorted().join(",") === "name,quinellaRate,showRate,starts,winRate",
+      ),
+    ),
+  ).toBe(true);
+  expect(text.length).toBeLessThan(50000);
+});
+
+it.each(["get_win_rate_heatmap_display", "get_win_rate_heatmap_compact"])(
+  "%s defaults to a small complete first horse page",
+  async (name) => {
+    const result = await callMcpTool(
+      name,
+      compactRaceArgs,
+      jsonFetch({
+        "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+      }),
+    );
+    const payload = JSON.parse(result.content[0]?.text ?? "{}");
+    expect(result.isError).toBe(false);
+    expect(payload.rows.length).toBe(1);
+    expect(payload.rows[0].horseNumber).toBe("1");
+    expect(payload.total).toBe(18);
+    expect(payload.nextOffset).toBe(1);
+    expect(payload.encoding).toBeUndefined();
+    expect(result.content[0]?.text.length).toBeLessThan(5000);
+  },
+);
+
+it("display tool accepts explicit showStarts as a rendering opt-in", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_display",
+    {
+      ...compactRaceArgs,
+      showStarts: false,
+    },
+    failingFetch,
+  );
+  expect(result.isError).toBe(true);
+});
+
+it("returns 18 independently readable horse pages below the chunk boundary", async () => {
+  const fetchSite = jsonFetch({
+    "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+  });
+  const results = await Promise.all(
+    Array.from({ length: 18 }, (_, offset) =>
+      callMcpTool(
+        "get_win_rate_heatmap_compact",
+        { ...compactRaceArgs, offset, limit: 1 },
+        fetchSite,
+      ),
+    ),
+  );
+  expect(
+    results.every(
+      (result) => !result.isError && (result.content[0]?.text.length ?? Infinity) < 5000,
+    ),
+  ).toBe(true);
+  const pages = results.map((result) => JSON.parse(result.content[0]?.text ?? "{}"));
+  expect(pages.map((page) => page.rows[0].horseNumber)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+  ]);
+  expect(pages.map((page) => page.nextOffset)).toStrictEqual([
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    null,
+  ]);
+});
+
+it("filters horses before applying offset and limit and preserves source order", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_compact",
+    {
+      ...compactRaceArgs,
+      horseNumbers: ["18", "02", "1", "2"],
+      offset: 1,
+      limit: 1,
+    },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+    }),
+  );
+  expect(result.isError).toBe(false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  expect(payload.total).toBe(3);
+  expect(payload.nextOffset).toBe(2);
+  expect(payload.rows[0].horseNumber).toBe("2");
+});
+
+it.each([
+  [{ year: "x" }, "year must be a 4-digit calendar year"],
+  [
+    { horseNumbers: [] },
+    "horseNumbers must be a non-empty array of horse number strings from 1 to 99",
+  ],
+  [{ horseNumbers: ["99"] }, "horseNumbers contains a horse not present in this race"],
+])("compact tool reports invalid selections and routes: %j", async (extra, message) => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_compact",
+    { ...compactRaceArgs, ...extra },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": heatmapPayload,
+    }),
+  );
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0]?.text ?? "{}").error.message).toMatch(message);
+});
+
+it("compact tool reports missing heatmap data", async () => {
+  const result = await callMcpTool("get_win_rate_heatmap_compact", compactRaceArgs, failingFetch);
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "win-rate-heatmap section payload is unavailable" },
+  });
+});
+
+it("compact heatmap retains precomputed horse rates, including real zeros", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_compact",
+    compactRaceArgs,
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": {
+        ...heatmapPayload,
+        horseRateStats: [
+          { horseNumber: "01", starts: 6, winCount: 0, quinellaCount: 0, showCount: 1 },
+        ],
+      },
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}").rows[0].heatmap.horse).toMatchObject({
+    name: "Alpha",
+    starts: 6,
+    winRate: 0,
+    quinellaRate: 0,
+  });
+  expect(JSON.parse(result.content[0]?.text ?? "{}").rows[0].heatmap.horse.showRate).toBe(16.7);
+});
+
+it("compact tool returns an empty terminal page past the last horse", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_compact",
+    { ...compactRaceArgs, offset: 18 },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+    }),
+  );
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    rows: [],
+    total: 18,
+    offset: 18,
+    nextOffset: null,
+  });
+});
+
+it("compact heatmap returns numeric rates, counts, and nulls without rendering fields", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_compact",
+    {
+      year: "2026",
+      month: "09",
+      day: "12",
+      keibajoCode: "09",
+      raceNumber: "04",
+      source: "jra",
+    },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": heatmapPayload,
+    }),
+  );
+  expect(result.isError).toBe(false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  expect(payload.total).toBe(1);
+  expect(payload.nextOffset).toBe(null);
+  expect(Object.keys(payload.rows[0]).toSorted()).toStrictEqual([
+    "heatmap",
+    "horseName",
+    "horseNumber",
+  ]);
+  expect(payload.rows[0].horseNumber).toBe("1");
+  expect(payload.rows[0].horseName).toBe("Alpha");
+  expect(payload.rows[0].heatmap.jockey).toStrictEqual({
+    name: "Jockey A",
+    starts: 80,
+    winRate: 20,
+    quinellaRate: 25,
+    showRate: 37.5,
+  });
+  expect(payload.rows[0].heatmap.horse).toStrictEqual({
+    name: "Alpha",
+    starts: null,
+    winRate: null,
+    quinellaRate: null,
+    showRate: null,
+  });
+});
 
 it("authenticate reports MCP bearer success without touching human Access", async () => {
   const result = await callMcpTool(
@@ -618,10 +923,11 @@ it("search_entities validates kind and query", async () => {
   });
 });
 
-it("get_win_rate_heatmap_display uses the same display builder as the table", async () => {
+it("get_win_rate_heatmap_display uses the same display builder as the table when requested", async () => {
   const result = await callMcpTool(
     "get_win_rate_heatmap_display",
     {
+      viewMode: "winRate",
       day: "20",
       keibajoCode: "05",
       month: "08",
