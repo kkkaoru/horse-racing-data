@@ -32,7 +32,8 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     git = binary / "git"
     git.write_text(
         "#!/bin/bash\n"
-        'if [[ "${ADVANCE_MAIN:-}" == true ]] && rg -q "venue-weather deploy" "$COMMAND_LOG"; '
+        'if [[ "${ADVANCE_MAIN:-}" == true && '
+        '"$(< "$COMMAND_LOG")" == *"venue-weather deploy"* ]]; '
         'then echo newer; else printf "%s\\trefs/heads/main\\n" "$REMOTE_SHA"; fi\n',
         encoding="utf-8",
     )
