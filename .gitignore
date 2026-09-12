@@ -229,6 +229,7 @@ temp/*
 /research/jra-20260913/**/*.headers
 /research/jra-20260913/test-work-*/
 /research/jra-20260913/test-full-*/
+/research/jra-20260913/test-model-*/
 
 # Hand-written replay protocol, not an evaluation output.
 !/docs/finish-position-accuracy/experiments/20260912-local-pg/pandas-baseline-replay-plan.json

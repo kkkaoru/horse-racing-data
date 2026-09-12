@@ -1,0 +1,7 @@
+# Measure entire research functions, including signatures with variadic tuple types.
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ['^if __name__ == "__main__":$']
+show_missing = true
