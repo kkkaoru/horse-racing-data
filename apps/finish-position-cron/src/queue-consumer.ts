@@ -2200,8 +2200,22 @@ const retryDayBaseRequiredFailClosed = async (
   return true;
 };
 
+const OPERATIONAL_PREDICT_PROGRESS_PREFIXES: readonly string[] = [
+  "step=daybase-hit ",
+  "step=racechain-layer ",
+  "done racechain ",
+];
+
+const isOperationalPredictProgress = (line: PredictProgressLine): boolean => {
+  const detail = line.stage ?? line.message;
+  return (
+    typeof detail === "string" &&
+    OPERATIONAL_PREDICT_PROGRESS_PREFIXES.some((prefix) => detail.startsWith(prefix))
+  );
+};
+
 const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
-  if (message.debug !== true) return;
+  if (message.debug !== true && !isOperationalPredictProgress(line)) return;
   console.log(
     `Predict progress category=${message.category} runYmd=${message.runYmd} keibajo=${
       message.keibajoCode ?? "-"

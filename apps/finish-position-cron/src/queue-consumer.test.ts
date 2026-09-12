@@ -2719,7 +2719,7 @@ test("logs container progress for per-race predict messages when debug is enable
   consoleSpy.mockRestore();
 });
 
-test("does not log container progress for normal predict messages when debug is off", async () => {
+test("logs allowlisted operational progress but not generic progress when debug is off", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -2727,12 +2727,21 @@ test("does not log container progress for normal predict messages when debug is 
       options?: ParseNdjsonStreamOptions,
     ): Promise<PredictResultLine> => {
       options?.onProgress?.({ type: "progress", stage: "predict", elapsed_s: 12.3 });
+      options?.onProgress?.({
+        type: "progress",
+        stage:
+          "step=racechain-layer index=1/1 status=done category=jra script=cell.py target_race=05:11 elapsed_seconds=42.0",
+        elapsed_s: 42,
+      });
       return { type: "result", racesPredicted: 5, category: "jra", status: "success" };
     },
   );
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(consoleSpy).not.toHaveBeenCalledWith(
     "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=predict elapsed=12.3",
+  );
+  expect(consoleSpy).toHaveBeenCalledWith(
+    "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=step=racechain-layer index=1/1 status=done category=jra script=cell.py target_race=05:11 elapsed_seconds=42.0 elapsed=42",
   );
   consoleSpy.mockRestore();
 });
