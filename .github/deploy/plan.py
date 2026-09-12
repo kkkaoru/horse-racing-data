@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 TARGETS: Final[tuple[str, ...]] = (
@@ -37,6 +37,16 @@ EXTRA_INPUTS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 
+def is_runtime_input(path: str) -> bool:
+    """Test fixtures and documentation do not alter deployed runtime behavior."""
+    parts = PurePosixPath(path).parts
+    return not (
+        path.endswith((".md", ".test.ts", ".test.tsx"))
+        or any(part in {"test", "tests", "__tests__", "docs"} for part in parts)
+        or (PurePosixPath(path).name.startswith("test_") and path.endswith(".py"))
+    )
+
+
 def select_targets(paths: Iterable[str], requested: str) -> list[str]:
     """An explicit dispatch selects one service/all; pushes select affected inputs."""
     if requested == "all":
@@ -45,7 +55,7 @@ def select_targets(paths: Iterable[str], requested: str) -> list[str]:
         if requested not in TARGETS:
             raise ValueError(f"Unknown deployment target: {requested}")
         return [requested]
-    changed = tuple(paths)
+    changed = tuple(path for path in paths if is_runtime_input(path))
     if any(path in GLOBAL_FILES or path.startswith("packages/") for path in changed):
         return list(TARGETS)
     return [

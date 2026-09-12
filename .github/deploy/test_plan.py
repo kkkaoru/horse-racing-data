@@ -16,6 +16,24 @@ def test_documentation_does_not_redeploy_production() -> None:
     )
 
 
+def test_test_only_changes_do_not_redeploy_production() -> None:
+    assert (
+        select_targets(
+            [
+                "apps/sync-realtime-data/test/premium-race.test.ts",
+                "apps/pc-keiba-viewer/src/lib/cache.test.ts",
+                "packages/horse-racing-schema/src/race.test.tsx",
+                "apps/pc-keiba-viewer/tests/test_features.py",
+                "apps/venue-weather/scripts/test_weather.py",
+                "apps/venue-weather/README.md",
+                "apps/venue-weather/docs/guide.txt",
+            ],
+            "changed",
+        )
+        == []
+    )
+
+
 def test_deleted_or_renamed_inputs_are_selected_in_deploy_order() -> None:
     assert select_targets(
         ["apps/pc-keiba-viewer/src/old.ts", "apps/pc-keiba-r2-catalog/src/new.ts"], "changed"
