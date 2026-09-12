@@ -202,7 +202,29 @@ target as (
    and r.kaisai_tsukihi = p.kaisai_tsukihi
    and r.keibajo_code = p.keibajo_code
    and r.race_bango = p.race_bango
-  where r.ketto_toroku_bango is not null
+  where r.ketto_toroku_bango ~ '^[0-9]{10}$'
+    and r.ketto_toroku_bango <> '0000000000'
+    and r.umaban between 1 and 18
+    and (
+      r.source <> 'jra'
+      or exists (
+        select 1
+        from jvd_se confirmed
+        where confirmed.kaisai_nen = r.kaisai_nen
+          and confirmed.kaisai_tsukihi = r.kaisai_tsukihi
+          and lpad(confirmed.keibajo_code::text, 2, '0') = r.keibajo_code
+          and lpad(confirmed.race_bango::text, 2, '0') = r.race_bango
+          and confirmed.ketto_toroku_bango = r.ketto_toroku_bango
+          and coalesce(trim(confirmed.data_kubun), '') <> '1'
+          and trim(confirmed.ketto_toroku_bango) <> '0000000000'
+          and trim(confirmed.ketto_toroku_bango) ~ '^[0-9]{10}$'
+          and case
+            when trim(confirmed.umaban) ~ '^[0-9]{1,2}$'
+              then trim(confirmed.umaban)::int between 1 and 18
+            else false
+          end
+      )
+    )
 ),
 `;
 
@@ -1337,7 +1359,7 @@ const D1_TARGET_CTE_SQL = `target as (
 )`;
 
 const REC_TARGET_CTE_MARKER =
-  /target as \(\s*select\s+r\.source,[\s\S]*?where r\.ketto_toroku_bango is not null\s*\)/;
+  /target as \(\s*select\s+r\.source,[\s\S]*?\n\)(?=,\ntarget_horses as \()/;
 
 export const buildRunningStylePostgresFeatureSqlWithD1Target = (
   params?: RunningStyleRaceParams,

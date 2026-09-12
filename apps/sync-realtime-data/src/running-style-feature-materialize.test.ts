@@ -8,6 +8,10 @@ vi.mock("./running-style-catalog-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./running-style-catalog-client")>();
   return {
     ...actual,
+    fetchRunningStyleFeatureCoverageFromCatalog: vi.fn(async () => ({
+      counts: new Map(),
+      entrySignatures: new Map(),
+    })),
     fetchRunningStyleFeaturesFromCatalog: vi.fn(),
   };
 });
@@ -65,7 +69,7 @@ const RACE: RunningStyleRaceParams = {
 };
 
 const rows = (): RaceHorseFeatureRow[] =>
-  JSON.parse('[{"raceKey":"jra:20260513:08:01","umaban":1}]');
+  JSON.parse('[{"raceKey":"jra:20260513:08:01","kettoTorokuBango":"2023100001","umaban":1}]');
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -81,6 +85,65 @@ beforeEach(async () => {
   const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
     await import("./running-style-finish-feature-hit");
   vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockResolvedValue(null);
+});
+
+it("fails closed when a provisional identity cache cannot be exactly attested", async () => {
+  const { repairRunningStyleFeatureIdentities } =
+    await import("./running-style-feature-materialize");
+  const cached = (overrides: Record<string, unknown> = {}): RaceHorseFeatureRow =>
+    ({
+      kettoTorokuBango: "2023100001",
+      perHorseFeatures: { umaban_norm: 0 },
+      raceKey: "jra:20260513:08:01",
+      shussoTosu: 1,
+      umaban: 0,
+      ...overrides,
+    }) as unknown as RaceHorseFeatureRow;
+
+  expect(repairRunningStyleFeatureIdentities([cached()], RACE, undefined)).toBeNull();
+  expect(repairRunningStyleFeatureIdentities([], RACE, "01:2023100001")).toBeNull();
+  expect(repairRunningStyleFeatureIdentities([cached()], RACE, "invalid")).toBeNull();
+  expect(repairRunningStyleFeatureIdentities([cached()], RACE, "19:2023100001")).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities(
+      [cached({ raceKey: "jra:20260513:08:02" })],
+      RACE,
+      "01:2023100001",
+    ),
+  ).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities(
+      [cached({ kettoTorokuBango: "bad" })],
+      RACE,
+      "01:2023100001",
+    ),
+  ).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities([cached(), cached()], RACE, "01:2023100001|02:2023100002"),
+  ).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities([cached({ shussoTosu: 2 })], RACE, "01:2023100001"),
+  ).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities(
+      [cached({ kettoTorokuBango: "2023100002" })],
+      RACE,
+      "01:2023100001",
+    ),
+  ).toBeNull();
+  expect(
+    repairRunningStyleFeatureIdentities(
+      [cached({ shussoTosu: 2 })],
+      RACE,
+      "01:2023100001|02:2023100002",
+    ),
+  ).toBeNull();
+  expect(repairRunningStyleFeatureIdentities([cached()], RACE, "01:2023100001")).toEqual([
+    expect.objectContaining({
+      perHorseFeatures: { umaban_norm: null },
+      umaban: 1,
+    }),
+  ]);
 });
 
 it("builds a collision-free running-style day foundation key", async () => {
@@ -119,6 +182,67 @@ it("uses the running-style day foundation HIT before finish-position or Catalog"
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "Running-style features HIT day foundation for jra:20260513:08:01",
   );
+});
+
+it("repairs an invalid cached identity from the authoritative Catalog", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([{ ...rows()[0]!, umaban: 0 }]);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toMatchObject({ rows: rows() });
+  expect(fetchRunningStyleFeaturesFromCatalog).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toContain(
+    "invalid running-style feature identity",
+  );
+});
+
+it("fails closed when every strict-cache fallback has an invalid entry identity", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet } = await import("./running-style-feature-parquet");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const invalidRows = [{ ...rows()[0]!, umaban: 0 }];
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(invalidRows);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue(invalidRows);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("invalid running-style feature identity");
+});
+
+it("fails closed when an invalid strict-cache fallback resolves to no rows", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet } = await import("./running-style-feature-parquet");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([{ ...rows()[0]!, umaban: 0 }]);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue([]);
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("no running-style feature rows found");
 });
 
 it("reuses one decoded day foundation across race loads", async () => {
@@ -277,7 +401,7 @@ it("returns a coverage-complete per-race cache before day-base, Catalog, or Post
     await import("./running-style-finish-feature-hit");
   const env = makeEnv("1");
   const cachedRows: RaceHorseFeatureRow[] = JSON.parse(
-    '[{"raceKey":"jra:20260513:08:01","umaban":1},{"raceKey":"jra:20260513:08:01","umaban":9}]',
+    '[{"raceKey":"jra:20260513:08:01","kettoTorokuBango":"2023100001","umaban":1},{"raceKey":"jra:20260513:08:01","kettoTorokuBango":"2023100002","umaban":9}]',
   );
   vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(cachedRows);
   vi.mocked(validateFeatureCoverage).mockReturnValue({
@@ -661,6 +785,94 @@ it("requires the day foundation R2 binding for date materialization", async () =
   });
 });
 
+it("validates a day foundation against every authoritative race entry set", async () => {
+  const { isRunningStyleDayFoundationComplete } =
+    await import("./running-style-feature-materialize");
+  const { validateFeatureCoverage } = await import("./running-style-feature-parquet");
+  const race = {
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0513",
+    keibajo_code: "08",
+    race_bango: "01",
+    source: "jra" as const,
+  };
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  const complete = {
+    authoritativeEntrySignatures: new Map([["jra:20260513:08:01", "01:2023100001"]]),
+    featureNames: ["f1"],
+    races: [race],
+    rows: rows(),
+  };
+
+  expect(isRunningStyleDayFoundationComplete(complete)).toBe(true);
+  expect(
+    isRunningStyleDayFoundationComplete({
+      ...complete,
+      authoritativeEntrySignatures: new Map(),
+    }),
+  ).toBe(false);
+  expect(isRunningStyleDayFoundationComplete({ ...complete, rows: [] })).toBe(false);
+  expect(
+    isRunningStyleDayFoundationComplete({
+      ...complete,
+      rows: [...rows(), { ...rows()[0]!, raceKey: "jra:20260513:08:02" }],
+    }),
+  ).toBe(false);
+  expect(
+    isRunningStyleDayFoundationComplete({
+      ...complete,
+      authoritativeEntrySignatures: new Map([["jra:20260513:08:01", "01:bad"]]),
+      rows: [{ ...rows()[0]!, kettoTorokuBango: "bad" }],
+    }),
+  ).toBe(false);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 1,
+    missingFeatureNames: ["f1"],
+  });
+  expect(isRunningStyleDayFoundationComplete(complete)).toBe(false);
+});
+
+it("skips per-race R2 scans when the complete day foundation matches Catalog entries", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeatureCoverageFromCatalog, fetchRunningStyleFeaturesFromCatalog } =
+    await import("./running-style-catalog-client");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(fetchRunningStyleFeatureCoverageFromCatalog).mockResolvedValue({
+    counts: new Map([["jra:20260513:08:01", 1]]),
+    entrySignatures: new Map([["jra:20260513:08:01", "01:2023100001"]]),
+  });
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toStrictEqual({ date: "20260513", materialized: 0, scanned: 1, skipped: 1 });
+  expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
 it("rejects empty and feature-incomplete Catalog rows for the day foundation", async () => {
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
@@ -755,6 +967,76 @@ it("warms per-race and day caches from the finish-position foundation without Ca
   ).resolves.toStrictEqual({ date: "20260513", materialized: 1, scanned: 1, skipped: 0 });
   expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
   expect(putRunningStyleFeatureParquet).toHaveBeenCalledTimes(2);
+});
+
+it("repairs provisional horse numbers from the authoritative day entry set without a history scan", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeatureCoverageFromCatalog, fetchRunningStyleFeaturesFromCatalog } =
+    await import("./running-style-catalog-client");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(fetchRunningStyleFeatureCoverageFromCatalog).mockResolvedValue({
+    counts: new Map([["jra:20260513:08:01", 2]]),
+    entrySignatures: new Map([["jra:20260513:08:01", "01:2023100001|02:2023100002"]]),
+  });
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([
+    {
+      kettoTorokuBango: "2023100002",
+      perHorseFeatures: { f1: 2, umaban_norm: 0 },
+      raceKey: "jra:20260513:08:01",
+      shussoTosu: 2,
+      umaban: 0,
+    },
+    {
+      kettoTorokuBango: "2023100001",
+      perHorseFeatures: { f1: 1, umaban_norm: 0 },
+      raceKey: "jra:20260513:08:01",
+      shussoTosu: 2,
+      umaban: 0,
+    },
+  ] as unknown as RaceHorseFeatureRow[]);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1", "1"), "20260513"),
+  ).resolves.toStrictEqual({ date: "20260513", materialized: 1, scanned: 1, skipped: 0 });
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).toHaveBeenNthCalledWith(
+    1,
+    expect.any(Object),
+    "features.parquet",
+    [
+      expect.objectContaining({
+        kettoTorokuBango: "2023100002",
+        perHorseFeatures: { f1: 2, umaban_norm: 1 },
+        umaban: 2,
+      }),
+      expect.objectContaining({
+        kettoTorokuBango: "2023100001",
+        perHorseFeatures: { f1: 1, umaban_norm: 0 },
+        umaban: 1,
+      }),
+    ],
+    ["f1"],
+  );
 });
 
 it("reports a completely published JRA day when the later NAR foundation fails", async () => {

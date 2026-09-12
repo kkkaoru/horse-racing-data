@@ -4,6 +4,7 @@
 import { formatError } from "./format-error";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
+  fetchRunningStyleFeatureCoverageFromCatalog,
   fetchRunningStyleFeaturesFromCatalog,
   isCatalogUnavailableError,
 } from "./running-style-catalog-client";
@@ -88,6 +89,77 @@ interface PostgresFallbackResult {
   rows: ReadonlyArray<RaceHorseFeatureRow>;
 }
 
+class InvalidRunningStyleFeatureIdentityError extends Error {}
+
+const assertRunningStyleFeatureIdentities = (
+  rows: ReadonlyArray<RaceHorseFeatureRow>,
+  race: RunningStyleRaceParams,
+): void => {
+  const expectedRaceKey = buildRunningStyleRaceKey(race);
+  const horseIds = new Set<string>();
+  const horseNumbers = new Set<number>();
+  for (const row of rows) {
+    if (
+      row.raceKey !== expectedRaceKey ||
+      !Number.isInteger(row.umaban) ||
+      row.umaban < 1 ||
+      row.umaban > 18 ||
+      !/^\d{10}$/.test(row.kettoTorokuBango) ||
+      horseIds.has(row.kettoTorokuBango) ||
+      horseNumbers.has(row.umaban)
+    ) {
+      throw new InvalidRunningStyleFeatureIdentityError(
+        `invalid running-style feature identity for ${expectedRaceKey}`,
+      );
+    }
+    horseIds.add(row.kettoTorokuBango);
+    horseNumbers.add(row.umaban);
+  }
+};
+
+export const repairRunningStyleFeatureIdentities = (
+  rows: ReadonlyArray<RaceHorseFeatureRow>,
+  race: RunningStyleRaceParams,
+  authoritativeEntrySignature: string | undefined,
+): ReadonlyArray<RaceHorseFeatureRow> | null => {
+  if (authoritativeEntrySignature === undefined || rows.length === 0) return null;
+  const expectedRaceKey = buildRunningStyleRaceKey(race);
+  const authoritativeEntries = authoritativeEntrySignature.split("|").map((identity) => {
+    const match = /^(\d{2}):(\d{10})$/.exec(identity);
+    if (match === null) return null;
+    const umaban = Number(match[1]);
+    return umaban >= 1 && umaban <= 18 ? ([match[2], umaban] as const) : null;
+  });
+  if (authoritativeEntries.some((entry) => entry === null)) return null;
+  const horseNumberById = new Map(authoritativeEntries.filter((entry) => entry !== null));
+  const fieldSize = horseNumberById.size;
+  const cachedHorseIds = new Set<string>();
+  for (const row of rows) {
+    if (
+      row.raceKey !== expectedRaceKey ||
+      !/^\d{10}$/.test(row.kettoTorokuBango) ||
+      cachedHorseIds.has(row.kettoTorokuBango) ||
+      row.shussoTosu !== fieldSize ||
+      !horseNumberById.has(row.kettoTorokuBango)
+    ) {
+      return null;
+    }
+    cachedHorseIds.add(row.kettoTorokuBango);
+  }
+  if (cachedHorseIds.size !== horseNumberById.size) return null;
+  return rows.map((row) => {
+    const umaban = horseNumberById.get(row.kettoTorokuBango)!;
+    return {
+      ...row,
+      perHorseFeatures: {
+        ...row.perHorseFeatures,
+        umaban_norm: fieldSize < 2 ? null : (umaban - 1) / (fieldSize - 1),
+      },
+      umaban,
+    };
+  });
+};
+
 const loadPostgresFallback = async (
   params: MaterializeRunningStyleFeatureParquetParams,
 ): Promise<PostgresFallbackResult | null> => {
@@ -155,6 +227,7 @@ const loadRunningStyleFoundationRows = async (
     const raceKey = buildRunningStyleRaceKey(params.race);
     const rows = (await cached.rows).filter((row) => row.raceKey === raceKey);
     if (rows.length === 0) return null;
+    assertRunningStyleFeatureIdentities(rows, params.race);
     const coverage = validateFeatureCoverage(rows, params.featureNames);
     return coverage.missingFeatureNames.length === 0 ? rows : null;
   } catch (error) {
@@ -167,6 +240,7 @@ const loadRunningStyleFoundationRows = async (
 const loadAuthoritativeFeatureRows = async (
   params: MaterializeRunningStyleFeatureParquetParams,
 ): Promise<ReadonlyArray<RaceHorseFeatureRow>> => {
+  let invalidCachedIdentity = false;
   try {
     const foundation = await loadRunningStyleFoundationRows(params);
     if (foundation !== null) {
@@ -176,6 +250,7 @@ const loadAuthoritativeFeatureRows = async (
       return foundation;
     }
   } catch (error) {
+    invalidCachedIdentity = error instanceof InvalidRunningStyleFeatureIdentityError;
     console.warn(
       `Running-style day foundation MISS for ${buildRunningStyleRaceKey(params.race)}: ${formatError(error)}`,
     );
@@ -187,18 +262,26 @@ const loadAuthoritativeFeatureRows = async (
       race: params.race,
     });
     if (hit !== null && hit.length > 0) {
+      assertRunningStyleFeatureIdentities(hit, params.race);
       console.log(
         `Running-style features HIT finish-position day-base for ${buildRunningStyleRaceKey(params.race)}`,
       );
       return hit;
     }
-    if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+    if (
+      !invalidCachedIdentity &&
+      params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG
+    ) {
       throw new Error(
         `Running-style day-base cache MISS for ${buildRunningStyleRaceKey(params.race)}`,
       );
     }
   } catch (error) {
-    if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+    if (error instanceof InvalidRunningStyleFeatureIdentityError) invalidCachedIdentity = true;
+    if (
+      !invalidCachedIdentity &&
+      params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG
+    ) {
       throw error;
     }
     console.warn(
@@ -237,6 +320,7 @@ const buildAndPutRunningStyleFeatureParquetInternal = async (
 ): Promise<BuildAndPutRunningStyleFeatureParquetInternalResult> => {
   const raceKey = buildRunningStyleRaceKey(params.race);
   const rows = await loadAuthoritativeFeatureRows(params);
+  assertRunningStyleFeatureIdentities(rows, params.race);
   if (rows.length === 0) {
     throw new Error(`no running-style feature rows found for race ${raceKey}`);
   }
@@ -267,6 +351,7 @@ const tryLoadCachedRunningStyleFeatureParquet = async (
       params.featureNames,
     );
     if (rows.length === 0) return null;
+    assertRunningStyleFeatureIdentities(rows, params.race);
     const coverage = validateFeatureCoverage(rows, params.featureNames);
     if (coverage.missingFeatureNames.length > 0) return null;
     return { featuresR2Key, rebuilt: false, rows };
@@ -279,10 +364,17 @@ export const loadOrBuildRunningStyleFeatureParquet = async (
   params: LoadOrBuildRunningStyleFeatureParquetParams,
 ): Promise<LoadOrBuildRunningStyleFeatureParquetResult> => {
   if (params.env.RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT === REQUIRE_DAY_BASE_CACHE_HIT_FLAG) {
+    const rows = await loadAuthoritativeFeatureRows(params);
+    assertRunningStyleFeatureIdentities(rows, params.race);
+    if (rows.length === 0) {
+      throw new Error(
+        `no running-style feature rows found for race ${buildRunningStyleRaceKey(params.race)}`,
+      );
+    }
     return {
       featuresR2Key: buildRunningStyleFeatureParquetKey(params.race),
       rebuilt: false,
-      rows: await loadAuthoritativeFeatureRows(params),
+      rows,
     };
   }
   const cached = await tryLoadCachedRunningStyleFeatureParquet(params);
@@ -321,10 +413,50 @@ const buildRaceParamsFromRegisteredRow = (row: RegisteredRaceRow): RunningStyleR
   gradeCode: row.grade_code,
 });
 
+const buildFeatureEntrySignature = (rows: ReadonlyArray<RaceHorseFeatureRow>): string =>
+  rows
+    .toSorted((left, right) => left.umaban - right.umaban)
+    .map((row) => `${String(row.umaban).padStart(2, "0")}:${row.kettoTorokuBango}`)
+    .join("|");
+
+export const isRunningStyleDayFoundationComplete = (params: {
+  authoritativeEntrySignatures: ReadonlyMap<string, string>;
+  featureNames: ReadonlyArray<string>;
+  races: ReadonlyArray<RegisteredRaceRow>;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
+}): boolean => {
+  const rowsByRaceKey = new Map<string, RaceHorseFeatureRow[]>();
+  for (const row of params.rows) {
+    const raceRows = rowsByRaceKey.get(row.raceKey) ?? [];
+    raceRows.push(row);
+    rowsByRaceKey.set(row.raceKey, raceRows);
+  }
+  if (rowsByRaceKey.size !== params.races.length) return false;
+  return params.races.every((registeredRace) => {
+    const race = buildRaceParamsFromRegisteredRow(registeredRace);
+    const raceKey = buildRunningStyleRaceKey(race);
+    const expectedEntrySignature = params.authoritativeEntrySignatures.get(raceKey);
+    const rows = rowsByRaceKey.get(raceKey);
+    if (expectedEntrySignature === undefined || rows === undefined || rows.length === 0)
+      return false;
+    try {
+      assertRunningStyleFeatureIdentities(rows, race);
+    } catch {
+      return false;
+    }
+    const coverage = validateFeatureCoverage(rows, params.featureNames);
+    return (
+      coverage.missingFeatureNames.length === 0 &&
+      buildFeatureEntrySignature(rows) === expectedEntrySignature
+    );
+  });
+};
+
 const loadOrBuildFoundationRace = async (
   env: Env,
   row: RegisteredRaceRow,
   featureNames: ReadonlyArray<string>,
+  authoritativeEntrySignature: string | undefined,
 ): Promise<{ rebuilt: boolean; rows: ReadonlyArray<RaceHorseFeatureRow> }> => {
   const race = buildRaceParamsFromRegisteredRow(row);
   const key = buildRunningStyleFeatureParquetKey(race);
@@ -334,6 +466,21 @@ const loadOrBuildFoundationRace = async (
       key,
       featureNames,
     );
+    try {
+      assertRunningStyleFeatureIdentities(cached, race);
+    } catch (error) {
+      if (!(error instanceof InvalidRunningStyleFeatureIdentityError)) throw error;
+      const repaired = repairRunningStyleFeatureIdentities(
+        cached,
+        race,
+        authoritativeEntrySignature,
+      );
+      if (repaired === null) throw error;
+      const repairedCoverage = validateFeatureCoverage(repaired, featureNames);
+      if (repairedCoverage.missingFeatureNames.length > 0) throw error;
+      await putRunningStyleFeatureParquet(env.RUNNING_STYLE_MODELS, key, repaired, featureNames);
+      return { rebuilt: true, rows: repaired };
+    }
     const coverage = validateFeatureCoverage(cached, featureNames);
     if (cached.length > 0 && coverage.missingFeatureNames.length === 0) {
       return { rebuilt: false, rows: cached };
@@ -347,6 +494,7 @@ const loadOrBuildFoundationRace = async (
     throw new Error(
       `no running-style feature rows found for race ${buildRunningStyleRaceKey(race)}`,
     );
+  assertRunningStyleFeatureIdentities(rows, race);
   const coverage = validateFeatureCoverage(rows, featureNames);
   if (coverage.missingFeatureNames.length > 0) {
     throw new Error(
@@ -373,7 +521,10 @@ export const materializeRunningStyleFeatureParquetsForDate = async (
       skipped: 0,
     };
   }
-  const { races } = await listRunningStyleRacesByDate(env, date);
+  const [{ races }, catalogCoverage] = await Promise.all([
+    listRunningStyleRacesByDate(env, date),
+    fetchRunningStyleFeatureCoverageFromCatalog(env.PC_KEIBA_R2_CATALOG, date),
+  ]);
   let materialized = 0;
   let scanned = 0;
   let skipped = 0;
@@ -386,17 +537,47 @@ export const materializeRunningStyleFeatureParquetsForDate = async (
         env.RUNNING_STYLE_MODELS,
         buildRunningStyleFlatModelKey(source),
       );
+      const key = buildRunningStyleDayFoundationKey(
+        buildRaceParamsFromRegisteredRow(sourceRaces[0]!),
+      );
+      try {
+        const existingRows = await loadRunningStyleFeatureParquet(
+          env.FEATURES_ARCHIVE,
+          key,
+          header.feature_names,
+        );
+        if (
+          isRunningStyleDayFoundationComplete({
+            authoritativeEntrySignatures: catalogCoverage.entrySignatures,
+            featureNames: header.feature_names,
+            races: sourceRaces,
+            rows: existingRows,
+          })
+        ) {
+          scanned += sourceRaces.length;
+          skipped += sourceRaces.length;
+          publishedSources.push(source);
+          continue;
+        }
+      } catch {
+        // Missing, unreadable, stale, or identity-incomplete day foundations
+        // are rebuilt from the attested per-race caches below.
+      }
       const rows: RaceHorseFeatureRow[] = [];
       for (const race of sourceRaces) {
-        const result = await loadOrBuildFoundationRace(env, race, header.feature_names);
+        const result = await loadOrBuildFoundationRace(
+          env,
+          race,
+          header.feature_names,
+          catalogCoverage.entrySignatures.get(
+            buildRunningStyleRaceKey(buildRaceParamsFromRegisteredRow(race)),
+          ),
+        );
         rows.push(...result.rows);
         materialized += result.rebuilt ? 1 : 0;
         skipped += result.rebuilt ? 0 : 1;
         scanned += 1;
       }
-      const key = buildRunningStyleDayFoundationKey(
-        buildRaceParamsFromRegisteredRow(sourceRaces[0]!),
-      );
       await putRunningStyleFeatureParquet(env.FEATURES_ARCHIVE, key, rows, header.feature_names);
       foundationCache.delete(`${key}\u0000${header.feature_names.join("\u0000")}`);
       publishedSources.push(source);

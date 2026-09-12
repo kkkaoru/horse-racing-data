@@ -18,8 +18,8 @@ import {
 // Snapshots were re-pinned after the addition; downstream parquet schema is
 // additive (existing columns unchanged).
 const PER_RACE_SQL_SHA256_REFERENCE =
-  "7e71f0970c829ccf789c4248fc1c1deaaa3f8be49055f64c1f89d45dfbc5fbc1";
-const PER_RACE_SQL_LENGTH_REFERENCE = 49563;
+  "ad135fcfb65f61b199861e6cbf837c8069254cfa62c629ada1620771e4520ab4";
+const PER_RACE_SQL_LENGTH_REFERENCE = 50446;
 const D1_TARGET_SQL_SHA256_REFERENCE =
   "dd2113ed6098ade1e2317e8e31314c9313e22c380e0e4c9d7aa6d8597a6d0ca4";
 const D1_TARGET_SQL_LENGTH_REFERENCE = 49777;
@@ -108,6 +108,15 @@ it("buildRunningStylePostgresFeatureSql returns SQL string", () => {
   expect(sql.length).toBeGreaterThan(0);
 });
 
+it("buildRunningStylePostgresFeatureSql excludes provisional and invalid JRA target entries", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql).toContain("r.ketto_toroku_bango ~ '^[0-9]{10}$'");
+  expect(sql).toContain("r.ketto_toroku_bango <> '0000000000'");
+  expect(sql).toContain("r.umaban between 1 and 18");
+  expect(sql).toContain("coalesce(trim(confirmed.data_kubun), '') <> '1'");
+  expect(sql).toContain("trim(confirmed.umaban) ~ '^[0-9]{1,2}$'");
+});
+
 it("buildRunningStylePostgresFeatureSql keeps history date predicates indexable", () => {
   const sql = buildRunningStylePostgresFeatureSql();
   expect(sql).toMatch(/\(se\.kaisai_nen, se\.kaisai_tsukihi\) between/);
@@ -116,7 +125,7 @@ it("buildRunningStylePostgresFeatureSql keeps history date predicates indexable"
   expect(sql).not.toMatch(/ra\.kaisai_nen \|\| ra\.kaisai_tsukihi between/);
 });
 
-it("buildRunningStylePostgresFeatureSql output is byte-identical to pre-refactor reference", () => {
+it("buildRunningStylePostgresFeatureSql output matches the confirmed-entry reference", () => {
   const sql = buildRunningStylePostgresFeatureSql();
   expect(sql.length).toBe(PER_RACE_SQL_LENGTH_REFERENCE);
   expect(sha256(sql)).toBe(PER_RACE_SQL_SHA256_REFERENCE);
