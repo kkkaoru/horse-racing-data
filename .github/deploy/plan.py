@@ -35,6 +35,7 @@ EXTRA_INPUTS: Final[dict[str, tuple[str, ...]]] = {
     "sync-realtime-data": (
         "apps/pc-keiba-viewer/src/lib/jra-url.ts",
         "apps/pc-keiba-viewer/src/lib/win5/",
+        "apps/pc-keiba-viewer/src/lib/codes.ts",
     ),
     "sync-realtime-data-hot": ("apps/pc-keiba-viewer/src/lib/jra-url.ts",),
     "mlflow-ui-proxy": ("apps/mlflow/", "scripts/ensure-docker-compat.sh"),

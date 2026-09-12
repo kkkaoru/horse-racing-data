@@ -1,16 +1,19 @@
 name: Production configuration checks
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - .github/deploy/**
       - .github/workflows/production*.yml
+      - .github/workflows/deploy-*.yml
       - .devin/**
   push:
     branches: [main]
     paths:
       - .github/deploy/**
       - .github/workflows/production*.yml
+      - .github/workflows/deploy-*.yml
       - .devin/**
 
 permissions:

@@ -126,8 +126,12 @@ def test_shared_jra_url_redeploys_consuming_workers() -> None:
     ]
 
 
-def test_win5_redeploys_consuming_worker() -> None:
-    assert select_targets(["apps/pc-keiba-viewer/src/lib/win5/prediction.ts"], "changed") == [
+@pytest.mark.parametrize(
+    "path",
+    ["apps/pc-keiba-viewer/src/lib/win5/prediction.ts", "apps/pc-keiba-viewer/src/lib/codes.ts"],
+)
+def test_win5_redeploys_consuming_worker(path: str) -> None:
+    assert select_targets([path], "changed") == [
         "sync-realtime-data",
         "pc-keiba-viewer",
     ]

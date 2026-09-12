@@ -39,7 +39,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check:
+    uses: ./.github/workflows/production-config-check.yml
   plan:
+    needs: check
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
