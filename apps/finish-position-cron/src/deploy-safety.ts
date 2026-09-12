@@ -1,5 +1,7 @@
 // Run with bun. Pure deployment-safety checks shared by the local predeploy CLI.
 
+import { MAX_PREDICT_DO_SHARDS_PER_CATEGORY, resolvePredictShardIndex } from "./predict-do-shard";
+
 const FINISH_POSITION_CONTAINER_PREFIX = "finish-position-cron-finishposition";
 
 // Pause only queues that can start prediction work. Completion and control
@@ -89,7 +91,54 @@ export const parseDeploymentRaces = (value: unknown): DeploymentRace[] => {
 export const buildDeploymentPredictionRequest = (
   race: DeploymentRace,
   runYmd: string,
-): DeploymentPredictionRequest => ({ ...race, force: true, runYmd });
+  force: boolean = true,
+): DeploymentPredictionRequest => ({ ...race, force, runYmd });
+
+export const buildDeploymentPredictionRequests = (
+  races: readonly DeploymentRace[],
+  runYmd: string,
+): DeploymentPredictionRequest[] => {
+  const forcedLanes = new Set<string>();
+  return races.map((race) => {
+    const shard = resolvePredictShardIndex(
+      race.keibajoCode,
+      race.raceBango,
+      MAX_PREDICT_DO_SHARDS_PER_CATEGORY,
+    );
+    const lane = `${race.category}:${shard}`;
+    const force = !forcedLanes.has(lane);
+    forcedLanes.add(lane);
+    return buildDeploymentPredictionRequest(race, runYmd, force);
+  });
+};
+
+export const parseCompletedDeploymentRaceKeys = (value: unknown): ReadonlySet<string> => {
+  if (!isRecord(value) || !Array.isArray(value.races)) {
+    throw new Error("Prediction readiness returned invalid JSON");
+  }
+  const completed = new Set<string>();
+  for (const race of value.races) {
+    if (
+      !isRecord(race) ||
+      (race.source !== "jra" && race.source !== "nar" && race.source !== "ban-ei") ||
+      typeof race.raceKey !== "string" ||
+      !isRecord(race.preWeight) ||
+      typeof race.preWeight.complete !== "boolean"
+    ) {
+      throw new Error("Prediction readiness returned an invalid race");
+    }
+    if (race.preWeight.complete) completed.add(race.raceKey);
+  }
+  return completed;
+};
+
+export const filterIncompleteDeploymentRaces = (
+  races: readonly DeploymentRace[],
+  completedRaceKeys: ReadonlySet<string>,
+): DeploymentRace[] =>
+  races.filter(
+    (race) => !completedRaceKeys.has(`${race.category}:${race.keibajoCode}:${race.raceBango}`),
+  );
 
 export const finishPositionContainerApplications = (
   applications: readonly ContainerApplicationSummary[],

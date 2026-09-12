@@ -4,12 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDeploymentPredictionRequest,
+  buildDeploymentPredictionRequests,
   DEPLOYMENT_DRAIN_QUEUES,
+  filterIncompleteDeploymentRaces,
   findLiveContainerInstances,
   findUnsafeContainerInstances,
   finishPositionContainerApplications,
   isLiveContainerState,
   parseContainerApplications,
+  parseCompletedDeploymentRaceKeys,
   parseContainerInstances,
   parseDeploymentRaces,
   shouldRequeueDeploymentPredictions,
@@ -38,6 +41,49 @@ describe("deployment safety", () => {
       raceBango: "01",
       runYmd: "20260827",
     });
+  });
+
+  it("forces only the first ordered recovery in each shard lane", () => {
+    expect(
+      buildDeploymentPredictionRequests(
+        [
+          { category: "jra", keibajoCode: "06", raceBango: "01" },
+          { category: "jra", keibajoCode: "06", raceBango: "02" },
+          { category: "jra", keibajoCode: "06", raceBango: "03" },
+          { category: "jra", keibajoCode: "06", raceBango: "05" },
+        ],
+        "20260912",
+      ).map(({ force }) => force),
+    ).toEqual([true, false, true, true]);
+  });
+
+  it("filters already-current selected-model races before forced recovery enqueue", () => {
+    const completed = parseCompletedDeploymentRaceKeys({
+      races: [
+        { preWeight: { complete: true }, raceKey: "jra:06:01", source: "jra" },
+        { preWeight: { complete: false }, raceKey: "jra:09:01", source: "jra" },
+      ],
+    });
+
+    expect(
+      filterIncompleteDeploymentRaces(
+        [
+          { category: "jra", keibajoCode: "06", raceBango: "01" },
+          { category: "jra", keibajoCode: "09", raceBango: "01" },
+        ],
+        completed,
+      ),
+    ).toEqual([{ category: "jra", keibajoCode: "09", raceBango: "01" }]);
+  });
+
+  it.each([
+    null,
+    {},
+    { races: null },
+    { races: [{}] },
+    { races: [{ preWeight: {}, raceKey: "jra:06:01", source: "jra" }] },
+  ])("fails closed on invalid prediction readiness %#", (value) => {
+    expect(() => parseCompletedDeploymentRaceKeys(value)).toThrow();
   });
 
   it("requeues current races only for an explicit model deployment", () => {

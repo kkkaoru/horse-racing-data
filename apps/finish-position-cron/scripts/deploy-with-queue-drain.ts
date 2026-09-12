@@ -4,8 +4,10 @@ import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
 
 import {
-  buildDeploymentPredictionRequest,
+  buildDeploymentPredictionRequests,
   DEPLOYMENT_DRAIN_QUEUES,
+  filterIncompleteDeploymentRaces,
+  parseCompletedDeploymentRaceKeys,
   parseDeploymentRaces,
   shouldRequeueDeploymentPredictions,
 } from "../src/deploy-safety";
@@ -24,6 +26,7 @@ const WRANGLER_DEPLOY_RETRY_WAIT_MS = 15_000;
 const ADMIN_ORIGIN = "https://finish-position-cron.kaoru.workers.dev";
 const ADMIN_STOP_PATH = "/api/admin/stop-predict-containers";
 const ADMIN_RUN_PATH = "/api/admin/run-focused-full-race";
+const READINESS_PATH = "/api/internal/prediction-readiness";
 const pausedQueues = new Set<string>();
 let resuming = false;
 
@@ -143,7 +146,7 @@ where kaisai_nen = '${runYmd.slice(0, 4)}'
   and kaisai_tsukihi = '${runYmd.slice(4)}'
   and datetime(race_start_at_jst) > datetime('now')
 order by datetime(race_start_at_jst)`;
-  const races = parseDeploymentRaces(
+  const candidateRaces = parseDeploymentRaces(
     await runWranglerJson([
       "d1",
       "execute",
@@ -154,11 +157,24 @@ order by datetime(race_start_at_jst)`;
       sql,
     ]),
   );
-  for (const race of races) {
-    await postAdmin(ADMIN_RUN_PATH, buildDeploymentPredictionRequest(race, runYmd));
+  const readinessUrl = new URL(READINESS_PATH, ADMIN_ORIGIN);
+  readinessUrl.searchParams.set("runYmd", runYmd);
+  const readinessResponse = await fetch(readinessUrl, {
+    headers: { authorization: `Bearer ${triggerToken}` },
+  });
+  if (!readinessResponse.ok) {
+    throw new Error(`Prediction readiness failed status=${readinessResponse.status}`);
+  }
+  const races = filterIncompleteDeploymentRaces(
+    candidateRaces,
+    parseCompletedDeploymentRaceKeys(await readinessResponse.json()),
+  );
+  for (const request of buildDeploymentPredictionRequests(races, runYmd)) {
+    await postAdmin(ADMIN_RUN_PATH, request);
   }
   console.log(
-    `[rolling-deploy] queued new-model predictions runYmd=${runYmd} races=${races.length}`,
+    `[rolling-deploy] queued new-model predictions runYmd=${runYmd} races=${races.length} ` +
+      `completedSkipped=${candidateRaces.length - races.length}`,
   );
 };
 

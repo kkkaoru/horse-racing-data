@@ -86,8 +86,11 @@ const assertPredictCategory = (category: string): void => {
 // deliberately EXCLUDED from the hash input -- this keeps a given
 // (keibajoCode, raceBango) pair's shard assignment stable across days, a
 // debugging/reasoning convenience, not a correctness requirement.
-const resolveShardIndex = (keibajoCode: string, raceBango: string, maxConcurrent: number): number =>
-  hashString(`${keibajoCode}${SHARD_KEY_SEPARATOR}${raceBango}`) % maxConcurrent;
+export const resolvePredictShardIndex = (
+  keibajoCode: string,
+  raceBango: string,
+  maxConcurrent: number,
+): number => hashString(`${keibajoCode}${SHARD_KEY_SEPARATOR}${raceBango}`) % maxConcurrent;
 
 // The single source of truth for every FinishPositionPredictContainer DO
 // name in this Worker.
@@ -129,6 +132,10 @@ export const resolvePredictDoName = (params: ResolvePredictDoNameParams): string
   if (!isRaceShardingEnabled(env) || keibajoCode === undefined || raceBango === undefined) {
     return unshardedName;
   }
-  const shardIndex = resolveShardIndex(keibajoCode, raceBango, resolveShardMaxConcurrent(env));
+  const shardIndex = resolvePredictShardIndex(
+    keibajoCode,
+    raceBango,
+    resolveShardMaxConcurrent(env),
+  );
   return `${unshardedName}-${shardIndex}`;
 };
