@@ -1045,7 +1045,10 @@ test("consumeDayBasePickup rebuilds a stale candidate and resets the pickup wind
 
   expect(containerIdFromNameMock).toHaveBeenCalledWith("predict-nar");
   expect(containerFetchMock).toHaveBeenCalledWith(
-    new Request("http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260824"),
+    expect.objectContaining({
+      method: "GET",
+      url: "http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260824",
+    }),
   );
   expect(queueSendMock).toHaveBeenCalledWith(
     {

@@ -3115,9 +3115,10 @@ test("routes a JRA per-race rescore to the container held /predict", async () =>
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).toHaveBeenCalledWith(
-    new Request(
-      "http://do/predict?category=jra&daysAhead=0&mode=rescore&keibajoCode=05&raceBango=11&raceStartAtJst=2099-01-01T00%3A00%3A00%2B09%3A00&runDate=20260619&weightSnapshotCount=3&weightSnapshotFetchedAt=2026-06-19T14%3A30%3A00%2B09%3A00&weightSnapshotHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    ),
+    expect.objectContaining({
+      method: "GET",
+      url: "http://do/predict?category=jra&daysAhead=0&mode=rescore&keibajoCode=05&raceBango=11&raceStartAtJst=2099-01-01T00%3A00%3A00%2B09%3A00&runDate=20260619&weightSnapshotCount=3&weightSnapshotFetchedAt=2026-06-19T14%3A30%3A00%2B09%3A00&weightSnapshotHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }),
   );
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
