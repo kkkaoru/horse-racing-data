@@ -39,6 +39,7 @@ it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs
   expect(sql).toMatch("regr_slope(case when");
   expect(sql).not.toMatch(/\bover\s*\(/iu);
   expect(sql).toMatch("base_feature_ranks as");
+  expect(sql).toMatch("AS INT) BETWEEN 1 AND 18");
   expect(sql).toMatch("order by umaban limit 18");
 });
 

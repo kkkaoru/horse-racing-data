@@ -722,9 +722,24 @@ it("retries running-style features without ORDER BY and sorts by umaban when R2 
     return Response.json({
       result: {
         rows: [
-          { ...featureRow(), race_bango: "1", umaban: "3" },
-          { ...featureRow(), race_bango: "1", umaban: "1" },
-          { ...featureRow(), race_bango: "1", umaban: "2" },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100003",
+            race_bango: "1",
+            umaban: "3",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100001",
+            race_bango: "1",
+            umaban: "1",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100002",
+            race_bango: "1",
+            umaban: "2",
+          },
         ],
       },
       success: true,
@@ -793,7 +808,17 @@ it("splits only R2 SQL 70200 race failures into bounded per-horse batches", asyn
     const umaban = Number(match?.[1]);
     return Response.json({
       result: {
-        rows: umaban <= 3 ? [{ ...featureRow(), race_bango: "1", umaban: String(umaban) }] : [],
+        rows:
+          umaban <= 3
+            ? [
+                {
+                  ...featureRow(),
+                  ketto_toroku_bango: `202310000${umaban}`,
+                  race_bango: "1",
+                  umaban: String(umaban),
+                },
+              ]
+            : [],
       },
       success: true,
     });
@@ -964,7 +989,7 @@ it("does not recursively split an already per-horse R2 SQL 70200 failure", async
   expect(consoleMock).toHaveBeenCalledOnce();
 });
 
-it("sorts a venue-level fallback by race_bango then umaban, tolerating absent sort keys", async () => {
+it("sorts a venue-level fallback by race_bango then umaban", async () => {
   const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
   const fetchImpl: Fetcher = async (input, init) => {
     fetchCalls.push({ input: String(input), init });
@@ -977,9 +1002,24 @@ it("sorts a venue-level fallback by race_bango then umaban, tolerating absent so
     return Response.json({
       result: {
         rows: [
-          { ...featureRow(), race_bango: "02", umaban: "1" },
-          { ...featureRow(), race_bango: "01", umaban: "2" },
-          { ...featureRow(), race_bango: "01", umaban: null },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100201",
+            race_bango: "02",
+            umaban: "1",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100102",
+            race_bango: "01",
+            umaban: "2",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100103",
+            race_bango: "01",
+            umaban: "3",
+          },
         ],
       },
       success: true,
@@ -1022,8 +1062,8 @@ it("sorts a venue-level fallback by race_bango then umaban, tolerating absent so
   expect(String(fetchCalls[1]?.init?.body)).toMatch("limit 216");
   await expect(response.json()).resolves.toMatchObject({
     rows: [
-      { raceBango: "01", umaban: 0 },
       { raceBango: "01", umaban: 2 },
+      { raceBango: "01", umaban: 3 },
       { raceBango: "02", umaban: 1 },
     ],
   });
@@ -1042,9 +1082,24 @@ it("groups a venue-level fallback by race when race_bango arrives as a JSON numb
     return Response.json({
       result: {
         rows: [
-          { ...featureRow(), race_bango: 2, umaban: "5" },
-          { ...featureRow(), race_bango: 1, umaban: "9" },
-          { ...featureRow(), race_bango: 2, umaban: "4" },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100205",
+            race_bango: 2,
+            umaban: "5",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100109",
+            race_bango: 1,
+            umaban: "9",
+          },
+          {
+            ...featureRow(),
+            ketto_toroku_bango: "2023100204",
+            race_bango: 2,
+            umaban: "4",
+          },
         ],
       },
       success: true,

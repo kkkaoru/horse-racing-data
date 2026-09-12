@@ -115,9 +115,25 @@ export const normaliseRunningStyleRows = (
   rows: ReadonlyArray<Record<string, unknown>>,
 ): RunningStyleResponseBody => {
   const featureNames = featureNamesFor(rows);
-  return {
-    featureNames,
-    generation: "raw-iceberg-v1",
-    rows: rows.map((row) => normaliseRow(row, featureNames)),
-  };
+  const normalised = rows.map((row) => normaliseRow(row, featureNames));
+  const horsesByRace = new Map<string, Set<string>>();
+  const numbersByRace = new Map<string, Set<number>>();
+  for (const row of normalised) {
+    const raceKey = requiredString(row.raceKey, "raceKey");
+    const horse = requiredString(row.kettoTorokuBango, "kettoTorokuBango");
+    const umaban = numberOrNull(row.umaban);
+    if (umaban === null || !Number.isInteger(umaban) || umaban < 1 || umaban > 18)
+      throw new Error("R2 SQL running-style rows contain an invalid umaban");
+    if (!/^\d{10}$/.test(horse))
+      throw new Error("R2 SQL running-style rows contain an invalid ketto_toroku_bango");
+    const horses = horsesByRace.get(raceKey) ?? new Set<string>();
+    const numbers = numbersByRace.get(raceKey) ?? new Set<number>();
+    if (horses.has(horse) || numbers.has(umaban))
+      throw new Error(`R2 SQL running-style rows contain duplicate runners: ${raceKey}`);
+    horses.add(horse);
+    numbers.add(umaban);
+    horsesByRace.set(raceKey, horses);
+    numbersByRace.set(raceKey, numbers);
+  }
+  return { featureNames, generation: "raw-iceberg-v1", rows: normalised };
 };

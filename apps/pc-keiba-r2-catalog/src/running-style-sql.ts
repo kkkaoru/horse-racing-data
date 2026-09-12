@@ -230,7 +230,7 @@ const normalisedRecSelect = (
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
   WHERE nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
-    AND try_cast(nullif(se.umaban, '') AS INT) IS NOT NULL`;
+    AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18`;
 
 const targetCte = (source: RunningStyleRawSource): string => `target_counts AS (
   SELECT source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,

@@ -85,16 +85,21 @@ it("handles empty results and nullable display values", () => {
     rows: [],
   });
   expect(
-    normaliseRunningStyleRows([
-      {
-        ...row(),
-        bamei: " ",
-        category: null,
-        source: "nar",
-        umaban: null,
-      },
-    ]).rows[0],
-  ).toMatchObject({ bamei: null, category: "nar", source: "nar", umaban: 0 });
+    normaliseRunningStyleRows([{ ...row(), bamei: " ", category: null, source: "nar" }]).rows[0],
+  ).toMatchObject({ bamei: null, category: "nar", source: "nar", umaban: 7 });
+});
+
+it("rejects invalid and duplicate runner identities", () => {
+  expect(() => normaliseRunningStyleRows([{ ...row(), umaban: 0 }])).toThrow("invalid umaban");
+  expect(() => normaliseRunningStyleRows([{ ...row(), ketto_toroku_bango: "horse" }])).toThrow(
+    "invalid ketto_toroku_bango",
+  );
+  expect(() => normaliseRunningStyleRows([row(), { ...row(), umaban: 8 }])).toThrow(
+    "duplicate runners",
+  );
+  expect(() =>
+    normaliseRunningStyleRows([row(), { ...row(), ketto_toroku_bango: "2023100002", umaban: 7 }]),
+  ).toThrow("duplicate runners");
 });
 
 it("rejects rows missing required identity fields", () => {
