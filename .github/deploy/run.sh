@@ -11,6 +11,9 @@ bun run --filter '*' format:check
 bun run --filter '*' lint
 for target in "${targets[@]}"; do
   case "$target" in
+    pc-keiba-viewer)
+      (cd apps/pc-keiba-viewer && bunx next typegen)
+      ;;
     jra-van-datalab-worker-only-probe|umacon-worker)
       bun run --filter "$target" core:prepare
       ;;

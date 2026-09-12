@@ -47,6 +47,7 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "apps" / "pipeline-health-monitor").mkdir()
     (tmp_path / "apps" / "finish-position-cron").mkdir()
     (tmp_path / "apps" / "daily-keiba-sync").mkdir()
+    (tmp_path / "apps" / "pc-keiba-viewer").mkdir()
     targets = tmp_path / "targets.json"
     targets.write_text(json.dumps(["venue-weather", "pipeline-health-monitor"]), encoding="utf-8")
 
@@ -135,6 +136,7 @@ def test_viewer_python_gates_are_required_even_for_validate_only(runner) -> None
     code, log = run("true")
     assert code == 0
     assert "run --filter pc-keiba-viewer python:check\n" in log
+    assert log.index("next typegen\n") < log.index("pc-keiba-viewer tsc\n")
 
 
 def test_mlflow_python_gates_are_required_for_container_changes(runner) -> None:
