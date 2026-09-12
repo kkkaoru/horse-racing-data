@@ -76,3 +76,30 @@ partial-2026 decision are documented in
 results in
 [`results/model-lab-evaluation-2024-2026.json`](results/model-lab-evaluation-2024-2026.json).
 This remains local research and has no production integration.
+
+## JRA cell-custom campaign and Rustuna
+
+`run_jra_cell_timesfm_lab.py` revisits TimesFM-3 for a dated JRA production plan without forcing one temporal representation onto every cell:
+
+- the evaluation cell remains the routing and reporting identity;
+- every strictly prior race of every evaluation entrant is mandatory training/context data, across all venues and other cells;
+- related-distance and venue-surface peers may expand that mandatory scope, never replace or narrow it;
+- newcomer, sprint, turf-route, balanced, and normalized named-open cells receive different candidate variate profiles;
+- TimesFM inference is cached before hyperparameter optimization;
+- Rustuna 0.1.0 then runs Rust TPE over cell profile/scope, market blend, and performance/speed/final-3F/pace weights without rerunning the expensive foundation model on every trial;
+- 2020–2023 selects each cell configuration; 2024–2026 remains untouched holdout evidence, with annual Top2–Top5 guards and complete current-model identity checks.
+
+The default is 10,000 Rustuna trials per cell. `--rustuna-storage-dir` enables resumable SQLite studies; omit it for artifact-free in-memory searches. Rustuna is search infrastructure, not a predictive component, so using it does not itself change inference accuracy; it is retained to make larger local searches practical. TimesFM is evaluated and adopted independently per cell: a cell remains on its incumbent unless untouched Top1 improves, annual Top2–Top5 do not regress, and current-model identity/PIT/parity/attestation gates all pass. A failed TimesFM adaptation closes only that specific profile/readout, not future cell-specific TimesFM hypotheses. The official checkpoint still requires explicit `--accept-non-commercial-license`. For this self-only Cloudflare installation, the owner confirmed non-commercial use on 2026-09-12; accuracy gates remain unchanged.
+
+```bash
+cd apps/timesfm-finish-position
+PYTHONPATH="src:../finish-position-predict-container/src" uv run python \
+  scripts/run_jra_cell_timesfm_lab.py \
+  --history <immutable-jra-history.parquet> \
+  --production-plan <production-plan.json> \
+  --current <current-predictions.parquet> \
+  --target-date 2026-09-12 \
+  --rustuna-trials 10000 \
+  --output <report.json> \
+  --accept-non-commercial-license
+```
