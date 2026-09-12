@@ -1,5 +1,18 @@
 # keiba-data
 
+## ローカルから本番を確認
+
+`bun run prod` で既存のWrangler／cloudflared認証を利用します。1Passwordや独自の資格情報管理は追加しません。
+
+```sh
+bun run prod status
+bun run prod login
+bun run prod get /races/2026/09/12/83/01
+bun run prod kv pred:fp:v1:20260912:83:01
+```
+
+初回の接続先設定とR2参照は[本番アクセス手順](docs/operations/production-access.md)を参照してください。
+
 ## Agent setup
 
 Paste this prompt to your coding agent (same pattern as [Cloudflare agent-setup](https://developers.cloudflare.com/agent-setup/prompt.md)):
