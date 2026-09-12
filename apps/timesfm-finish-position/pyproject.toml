@@ -56,10 +56,11 @@ reportUnknownVariableType = "none"
 
 [tool.ty.environment]
 python = ".venv/bin/python"
+extra-paths = ["../finish-position-predict-container/src"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=timesfm_finish_position --cov-report=term-missing --cov-fail-under=90"
-pythonpath = ["src"]
+pythonpath = ["src", "../finish-position-predict-container/src"]
 testpaths = ["tests"]
 
 [tool.coverage.run]

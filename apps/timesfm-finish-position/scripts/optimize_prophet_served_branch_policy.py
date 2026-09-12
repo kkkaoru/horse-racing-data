@@ -21,6 +21,15 @@ from predict_lib.prophet_adjustment import adjust_prediction_rows_with_prophet
 from predict_lib.prophet_cell_policy import parse_prophet_cell_policy
 from predict_upcoming import score_races
 
+from timesfm_finish_position.policy_report import (
+    CategoryReport,
+    CellReport,
+    EvaluationReport,
+    MetricReport,
+    require_category,
+    require_float,
+    require_int,
+)
 from timesfm_finish_position.prophet_policy_optimization import (
     LinearRaceScores,
     LinearRunnerScore,
@@ -289,7 +298,7 @@ def read_nar_races(
 def policy_cell(
     category: str,
     entries: list[dict[str, object]],
-    card_max_race_bango: int,
+    card_max_race_bango: int | None,
 ) -> str:
     routing = ROUTER.routing_for(category)
     normal = ROUTER.resolve_variant(category, entries, card_max_race_bango=card_max_race_bango)
@@ -335,22 +344,24 @@ def linear_race(
     adjusted = adjust_prediction_rows_with_prophet(
         rows,
         aligned_entries,
-        category,
+        require_category(category),
         environment={"PROPHET_SCORE_ADJUSTMENT_WEIGHT": "1.0"},
         cell_variant=cell,
         policy=ALL_ON_POLICY,
     )
-    adjusted_scores = {str(row[6]): float(row[8]) for row in adjusted.rows}
+    adjusted_scores = {str(row[6]): require_float(row[8]) for row in adjusted.rows}
     runners = tuple(
         LinearRunnerScore(
             horse_id=str(row[6]),
-            intercept=float(row[8]),
-            adjustment=adjusted_scores[str(row[6])] - float(row[8]),
+            intercept=require_float(row[8]),
+            adjustment=adjusted_scores[str(row[6])] - require_float(row[8]),
         )
         for row in rows
     )
     winners = tuple(
-        runner for runner in runners if int(by_horse[runner.horse_id]["finish_position"]) == 1
+        runner
+        for runner in runners
+        if require_int(by_horse[runner.horse_id]["finish_position"]) == 1
     )
     winner_ids = {winner.horse_id for winner in winners}
     competitors = tuple(runner for runner in runners if runner.horse_id not in winner_ids)
@@ -476,7 +487,7 @@ def metric_report(
     baseline_hits: tuple[int, ...],
     adjusted_hits: tuple[int, ...],
     races: int,
-) -> dict[str, object]:
+) -> dict[str, MetricReport]:
     return {
         f"top{top_k}": {
             "baseline_hits": baseline,
@@ -495,10 +506,10 @@ def metric_report(
 def build_report(
     evidence: dict[tuple[str, str, str], BranchEvidence],
     skipped: Counter[str],
-) -> dict[str, object]:
-    categories: dict[str, object] = {}
+) -> EvaluationReport:
+    categories: dict[str, CategoryReport] = {}
     for category in CATEGORIES:
-        cells: dict[str, object] = {}
+        cells: dict[str, CellReport] = {}
         category_states = sorted(
             (state for state in evidence.values() if state.category == category),
             key=lambda state: (state.cell, state.branch),

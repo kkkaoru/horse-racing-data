@@ -16,6 +16,13 @@ from predict_lib.cell_router import all_conditions_match, load_cell_router
 from predict_lib.prophet_adjustment import adjust_prediction_rows_with_prophet
 from predict_lib.prophet_cell_policy import parse_prophet_cell_policy
 
+from timesfm_finish_position.policy_report import (
+    OptimizedCategoryReport,
+    OptimizedCellReport,
+    require_category,
+    require_float,
+    require_int,
+)
 from timesfm_finish_position.prophet_policy_optimization import (
     LinearRaceScores,
     LinearRunnerScore,
@@ -241,7 +248,9 @@ def main() -> None:
     with psycopg.connect(args.local_url) as connection:
         for table_prefix, source in (("jvd", "jra"), ("nvd", "nar")):
             with connection.cursor() as cursor:
-                cursor.execute(entry_query(table_prefix, source), MODELS)
+                cursor.execute(entry_query(table_prefix, source).encode("utf-8"), MODELS)
+                if cursor.description is None:
+                    raise RuntimeError("Entry query returned no result columns")
                 names = [column.name for column in cursor.description]
                 for row in cursor:
                     raw = dict(zip(names, row, strict=True))
@@ -408,14 +417,14 @@ def main() -> None:
         adjusted = adjust_prediction_rows_with_prophet(
             rows,
             aligned_entries,
-            category,
+            require_category(category),
             environment={"PROPHET_SCORE_ADJUSTMENT_WEIGHT": "1.0"},
             cell_variant=cell,
             policy=ALL_ON_POLICY,
         )
         if not adjusted.applied:
             skipped[f"{category}-{year}-{adjusted.reason}"] += 1
-        adjusted_scores = {str(row[6]): float(row[8]) for row in adjusted.rows}
+        adjusted_scores = {str(row[6]): require_float(row[8]) for row in adjusted.rows}
         linear_runners = tuple(
             LinearRunnerScore(
                 horse_id=str(row[6]),
@@ -425,7 +434,8 @@ def main() -> None:
             for row in rows
         )
         finish_by_horse = {
-            str(entry["ketto_toroku_bango"]): int(entry["finish_position"]) for entry in entries
+            str(entry["ketto_toroku_bango"]): require_int(entry["finish_position"])
+            for entry in entries
         }
         winners = tuple(
             runner for runner in linear_runners if finish_by_horse[runner.horse_id] == 1
@@ -473,9 +483,9 @@ def main() -> None:
         (optimized.category, optimized.cell): optimized.policy for optimized in optimized_results
     }
 
-    categories: dict[str, object] = {}
+    categories: dict[str, OptimizedCategoryReport] = {}
     for category in ("jra", "nar", "ban-ei"):
-        cells: dict[str, object] = {}
+        cells: dict[str, OptimizedCellReport] = {}
         for cell in sorted(ROUTER.routing_for(category).variants):
             evidence = stats.get((category, cell), CellEvidence())
             optimized = optimized_by_cell[(category, cell)]
