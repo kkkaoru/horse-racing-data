@@ -116,3 +116,18 @@ def test_cli_reads_nul_delimited_paths(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(sys, "argv", ["plan.py", "--paths", str(paths), "--target", "changed"])
     main()
     assert capsys.readouterr().out == '["venue-weather"]\n'
+
+
+def test_shared_jra_url_redeploys_consuming_workers() -> None:
+    assert select_targets(["apps/pc-keiba-viewer/src/lib/jra-url.ts"], "changed") == [
+        "sync-realtime-data-hot",
+        "sync-realtime-data",
+        "pc-keiba-viewer",
+    ]
+
+
+def test_win5_redeploys_consuming_worker() -> None:
+    assert select_targets(["apps/pc-keiba-viewer/src/lib/win5/prediction.ts"], "changed") == [
+        "sync-realtime-data",
+        "pc-keiba-viewer",
+    ]

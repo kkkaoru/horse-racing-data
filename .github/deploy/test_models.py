@@ -178,3 +178,10 @@ def test_cli_transfers_selected_container_artifacts(
     else:
         operation.assert_called_once()
         assert "model artifacts: 1" in capsys.readouterr().out
+
+
+def test_regression_manifest_is_valid_and_contains_only_nonselected_inputs() -> None:
+    manifest = models.load_manifest(Path(__file__).with_name("test-artifacts.json"))
+    selected = models.derive_selected_artifact_keys()
+    assert len(manifest.artifacts) == 6
+    assert {artifact.serving_key for artifact in manifest.artifacts}.isdisjoint(selected)

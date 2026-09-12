@@ -32,6 +32,11 @@ EXTRA_INPUTS: Final[dict[str, tuple[str, ...]]] = {
         "scripts/ensure-docker-compat.sh",
     ),
     "pc-keiba-viewer": ("apps/sync-realtime-data-hot/",),
+    "sync-realtime-data": (
+        "apps/pc-keiba-viewer/src/lib/jra-url.ts",
+        "apps/pc-keiba-viewer/src/lib/win5/",
+    ),
+    "sync-realtime-data-hot": ("apps/pc-keiba-viewer/src/lib/jra-url.ts",),
     "mlflow-ui-proxy": ("apps/mlflow/", "scripts/ensure-docker-compat.sh"),
     "jra-van-datalab-cloudflare-demo": ("scripts/ensure-docker-compat.sh",),
 }
