@@ -1660,6 +1660,28 @@ wheels = [
 ]
 
 [[package]]
+name = "rustuna"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/64/4a0b235958be6bf1518d68306a620c30aa0f74397b343fd7df9144a88955/rustuna-0.1.0.tar.gz", hash = "sha256:f055767e2cda4ebaec5bcbf7a1a121b8fdb03f97df531b9dc65fe7f54822b471", size = 263023, upload-time = "2026-09-07T05:46:27.795Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/a6/7a97651259812d3105f965d7563af46624b9102877186d89fac9f24bf31e/rustuna-0.1.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:28f8c726faecf7f90d2b503d7fe740ad593422fb6df5d53acfd9706b827933cc", size = 2174910, upload-time = "2026-09-07T05:46:07.244Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/3e/28ad63e782e57651c0b6e0f7caef95cfcfa2bcafbce1adc367896ab787c9/rustuna-0.1.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:f9f9f235186cce75ac556467a82940bcf20c6bede361672e342b5d9db72cdc0d", size = 2072760, upload-time = "2026-09-07T05:46:08.783Z" },
+    { url = "https://files.pythonhosted.org/packages/16/11/97db9a13fd8dea116725d0fb213d74db7f32ad4b9a8e0c7af81d03a02f16/rustuna-0.1.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:0b90d539925c9be81b095cd4382d256fc60dc2e1a7d59eb8aca36af16870aff5", size = 2256187, upload-time = "2026-09-07T05:46:10.332Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/97/e3906c02268a1055b943d19d320cfb0ee733f3b24a995d1278f524f5e34f/rustuna-0.1.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:7db76e80f7054c8c5b36d8690642419fe544e6bd09e98c6737dba1bcc83787f8", size = 2335495, upload-time = "2026-09-07T05:46:11.682Z" },
+    { url = "https://files.pythonhosted.org/packages/40/ec/d3b70769ba864fadc4e6b7f3ce34f842e83a0641ec8b3673cab0e2ba7865/rustuna-0.1.0-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ece060261cb507d128ef44d9a939001355a39c5259400080586e59750311bec3", size = 2399267, upload-time = "2026-09-07T05:46:13.306Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/0b/eccdd39da6f470771cb50d1c0d02868409e9097f81a17577e7fb91748c3f/rustuna-0.1.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:3f5937230a037483b44bda5aaf35f13535ed1224d8a0c3e9bc2e978cb4743339", size = 2518121, upload-time = "2026-09-07T05:46:14.661Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/e4/ab3175c1f7c3a63096d63a1c4899ce3f57b8a30afb898937dd0d237b34ef/rustuna-0.1.0-cp311-abi3-win_amd64.whl", hash = "sha256:ed5e676aabb33e32c2a38729680c4f8499583754d954c4868bd874e0258b6af2", size = 2086137, upload-time = "2026-09-07T05:46:16.447Z" },
+    { url = "https://files.pythonhosted.org/packages/08/4c/29369ed0357266cb69d2c2938a0863cdd4a52f3feeecad161a9d243f0e05/rustuna-0.1.0-cp311-abi3-win_arm64.whl", hash = "sha256:578dbdf1fcea686339fdcf428e44e7aca2c8c22c4eebc21f7472c013402df808", size = 1848733, upload-time = "2026-09-07T05:46:17.902Z" },
+    { url = "https://files.pythonhosted.org/packages/db/3a/409e0c89d006502ef15e01fc7781338b0b942a0d3d31907dbe55e5ac5e11/rustuna-0.1.0-cp315-abi3.abi3t-macosx_10_12_x86_64.whl", hash = "sha256:5b883610b06575c05acbd6296456c37dcc3f404139f9e966f0f8151db75cede1", size = 2248721, upload-time = "2026-09-07T05:46:19.26Z" },
+    { url = "https://files.pythonhosted.org/packages/89/d4/442276bcaa2e48af7b6e0e5a28f8bf69104766bb6124d80dd0986a68ac08/rustuna-0.1.0-cp315-abi3.abi3t-macosx_11_0_arm64.whl", hash = "sha256:0d25e7b3edc433875ace21009052c1a8fc9fb7b019122b9dabf6cbebf7b67ae7", size = 2107277, upload-time = "2026-09-07T05:46:20.825Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/7a/4c98b86c638dd99a245a3022f82bf7e0736613702a43584fef5eca662660/rustuna-0.1.0-cp315-abi3.abi3t-manylinux_2_28_aarch64.whl", hash = "sha256:8e85a5d5a789f544a3aa2527f8d0e0b6e8b87631fad45aef16fbddd22774456e", size = 2294246, upload-time = "2026-09-07T05:46:22.174Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/c8/412ec984d05eb2a5610f7f8cd538900cec60ba30640671b5225910a50709/rustuna-0.1.0-cp315-abi3.abi3t-manylinux_2_28_x86_64.whl", hash = "sha256:6790bff1a39450cec78d508c65c1d6e1117447b43f0dce898c7017eb4cb4a5fc", size = 2382608, upload-time = "2026-09-07T05:46:23.615Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/73/8ca7a8533a4d99efc02f4851f2f9f32e511dfff4402202edcf2d65d771c2/rustuna-0.1.0-cp315-abi3.abi3t-win_amd64.whl", hash = "sha256:854ed461c90eb71b080ab70007f5a96c13e34b488070d72706d44b78c99f6940", size = 2131256, upload-time = "2026-09-07T05:46:24.901Z" },
+    { url = "https://files.pythonhosted.org/packages/06/e7/70cdc31ae1e7ca214082883cdf403dfd024f0317ca93f9f8d6731ae576b0/rustuna-0.1.0-cp315-abi3.abi3t-win_arm64.whl", hash = "sha256:c377c5f3ed66f07eec3567945e37bca67a6be53005e9e60ac6ee09fe272574bc", size = 1884167, upload-time = "2026-09-07T05:46:26.416Z" },
+]
+
+[[package]]
 name = "safetensors"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1874,6 +1896,7 @@ dependencies = [
     { name = "mlx", marker = "sys_platform == 'darwin'" },
     { name = "numpy" },
     { name = "pyarrow" },
+    { name = "rustuna" },
     { name = "timesfm", extra = ["torch"] },
 ]
 
@@ -1904,6 +1927,7 @@ requires-dist = [
     { name = "mlx", marker = "sys_platform == 'darwin'", specifier = ">=0.31.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=17.0.0" },
+    { name = "rustuna", specifier = "==0.1.0" },
     { name = "timesfm", extras = ["torch"], specifier = "==3.0.0" },
 ]
 
