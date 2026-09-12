@@ -22,7 +22,7 @@
         "hyparquet-compressors": "1.1.1",
         "hyparquet-writer": "0.16.8",
         "icebird": "0.8.27",
-        "iconv-lite": "0.7.2",
+        "iconv-lite": "0.7.3",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "catalog:",
@@ -1524,7 +1524,7 @@
 
     "icebird": ["icebird@0.8.27", "", { "dependencies": { "hyparquet": "1.29.2", "hyparquet-compressors": "1.1.1", "hyparquet-writer": "0.16.8", "squirreling": "0.16.3" }, "peerDependencies": { "@aws-sdk/credential-providers": "^3.0.0" }, "optionalPeers": ["@aws-sdk/credential-providers"] }, "sha512-qkmUFxdsJOuB9PkbwXvHq34QctmOUOLPqmxM2J52u5G/6zl/TNYL7HIsFqaxPNygtVUVW7Mjj/nzANZ/lfu3Eg=="],
 
-    "iconv-lite": ["iconv-lite@0.7.2", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw=="],
+    "iconv-lite": ["iconv-lite@0.7.3", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ=="],
 
     "ieee754": ["ieee754@1.2.1", "", {}, "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA=="],
 
