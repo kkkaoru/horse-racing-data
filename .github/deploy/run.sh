@@ -43,6 +43,22 @@ for target in "${targets[@]}"; do
   esac
 done
 
+# Build the exact Worker and Container inputs without publishing versions.
+# Wrangler dry-run builds Docker images locally, preserving its configured args.
+for target in "${targets[@]}"; do
+  case "$target" in
+    pc-keiba-viewer)
+      (cd "apps/$target" && bunx opennextjs-cloudflare build && OPEN_NEXT_DEPLOY=true bunx wrangler deploy --dry-run)
+      ;;
+    finish-position-cron|mlflow-ui-proxy|jra-van-datalab-cloudflare-demo)
+      (cd "apps/$target" && ../../scripts/ensure-docker-compat.sh -- bunx wrangler deploy --dry-run)
+      ;;
+    *)
+      (cd "apps/$target" && bunx wrangler deploy --dry-run)
+      ;;
+  esac
+done
+
 if [[ "$validate_only" == true ]]; then
   printf '%s\n' 'Validation passed; deployment was not requested.'
   exit 0

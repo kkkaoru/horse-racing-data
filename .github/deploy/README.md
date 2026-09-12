@@ -47,6 +47,8 @@ Set the four artifact environment variables from your secret manager. If the S3 
 
 ## Verification and operation
 
+Validation-only runs also build the selected Workers, OpenNext application and Container images with Wrangler `--dry-run`. They do not publish versions or alter production queues. Deploying runs perform the same builds before the first production mutation; Docker layers are reused by the subsequent guarded deployment.
+
 Existing prediction regression tests also require historical artifacts listed in `test-artifacts.json`. CI restores these with `--extra-manifest .github/deploy/test-artifacts.json`, using the same byte and digest checks. Publish that manifest's bytes when updating those regression inputs. This supplemental manifest does not change production selectors or activate historical models.
 
 `Production configuration checks` tests service selection, download corruption/network failure, failed validation, stale main, validate-only behavior, deployment ordering, and the guarded prediction deployment. Python helper coverage must remain at least 95%. No production secrets are used by PR checks.
