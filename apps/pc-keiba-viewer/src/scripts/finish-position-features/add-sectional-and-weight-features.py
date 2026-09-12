@@ -10,6 +10,8 @@ races, and writes a v4 parquet partitioned by race_year.
 New features:
   - recent_soha_time_per_meter_avg5: average normalized finish time
   - same_distance_soha_time_per_meter_avg5: same, but restricted to similar distance
+  - recent_race_relative_time_z_avg5: within-race standardized clock residual
+  - recent_condition_par_time_residual_avg5: residual from strictly prior-day condition par
   - bataiju_avg5: 5-race average horse weight
   - weight_trend_5: linear regression slope of bataiju over last 5 races (kg/race)
   - weight_volatility_5: stddev of bataiju over last 5 races
@@ -20,20 +22,31 @@ Run with:
     --output-dir tmp/finish-position-features-parquet-jra-v4 \
     --pg-url postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
+from collections.abc import Collection
 from pathlib import Path
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
+from _race_time import encoded_race_time_tenths_sql
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 SAME_DISTANCE_TOLERANCE = 200
 RECENT_WINDOW_SIZE = 5
+APPENDED_FEATURE_NAMES = (
+    "recent_soha_time_per_meter_avg5",
+    "same_distance_soha_time_per_meter_avg5",
+    "recent_race_relative_time_z_avg5",
+    "recent_condition_par_time_residual_avg5",
+    "bataiju_avg5",
+    "weight_trend_5",
+    "weight_volatility_5",
+)
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 
 
@@ -117,6 +130,7 @@ def stage_history(
           {bataiju_filter}
         """
     )
+    soha_time_tenths = encoded_race_time_tenths_sql("rec.soha_time")
     con.execute(
         f"""
         create or replace temp table rec_hist as
@@ -128,7 +142,13 @@ def stage_history(
           rec.keibajo_code,
           rec.race_bango,
           rec.ketto_toroku_bango,
-          cast(rec.soha_time as double) as soha_time,
+          rec.track_code,
+          case
+            when try_cast(rec.track_code as int) between 10 and 22
+              then rec.babajotai_code_shiba
+            else rec.babajotai_code_dirt
+          end as track_condition,
+          cast({soha_time_tenths} as double) as soha_time,
           cast(rec.kyori as int) as kyori,
           bw.bataiju
         from pg.race_entry_corner_features rec
@@ -144,7 +164,64 @@ def stage_history(
           {rec_filter}
         """
     )
-    con.execute("create index rec_hist_horse_date on rec_hist (source, ketto_toroku_bango, race_date)")
+    con.execute(
+        "create index rec_hist_horse_date on rec_hist (source, ketto_toroku_bango, race_date)"
+    )
+
+
+def stage_race_time_context(con: duckdb.DuckDBPyConnection) -> None:
+    """Build same-race controls and strictly prior-day condition pars."""
+    con.execute(
+        """
+        create or replace temp table race_clock as
+        select
+          source, race_date, keibajo_code, race_bango, track_code, track_condition, kyori,
+          median(soha_time / nullif(kyori, 0)) as race_time_per_meter_median,
+          stddev_pop(soha_time / nullif(kyori, 0)) as race_time_per_meter_std
+        from rec_hist
+        where soha_time is not null and kyori > 0
+        group by source, race_date, keibajo_code, race_bango, track_code, track_condition, kyori
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table condition_day_clock as
+        select
+          source, race_date, keibajo_code, track_code, track_condition, kyori,
+          median(race_time_per_meter_median) as condition_day_time_per_meter
+        from race_clock
+        group by source, race_date, keibajo_code, track_code, track_condition, kyori
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table condition_day_par as
+        select
+          *,
+          median(condition_day_time_per_meter) over (
+            partition by source, keibajo_code, track_code, track_condition, kyori
+            order by race_date
+            rows between 64 preceding and 1 preceding
+          ) as prior_condition_time_per_meter
+        from condition_day_clock
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table rec_hist_context as
+        select
+          h.*,
+          (h.soha_time / nullif(h.kyori, 0) - c.race_time_per_meter_median)
+            / nullif(c.race_time_per_meter_std, 0) as race_relative_time_z,
+          h.soha_time / nullif(h.kyori, 0) - p.prior_condition_time_per_meter
+            as prior_condition_time_residual
+        from rec_hist h
+        left join race_clock c
+          using (source, race_date, keibajo_code, race_bango, track_code, track_condition, kyori)
+        left join condition_day_par p
+          using (source, race_date, keibajo_code, track_code, track_condition, kyori)
+        """
+    )
 
 
 def stage_horse_history_lookup(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -166,6 +243,8 @@ def stage_horse_history_lookup(con: duckdb.DuckDBPyConnection, input_glob: str) 
           h.soha_time as hist_soha_time,
           h.kyori as hist_kyori,
           h.bataiju as hist_bataiju,
+          h.race_relative_time_z as hist_race_relative_time_z,
+          h.prior_condition_time_residual as hist_prior_condition_time_residual,
           row_number() over (
             partition by t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango
             order by h.race_date desc
@@ -176,7 +255,7 @@ def stage_horse_history_lookup(con: duckdb.DuckDBPyConnection, input_glob: str) 
                      h.race_date desc
           ) as same_distance_recent_rank
         from base_v3 t
-        join rec_hist h on h.source = t.source
+        join rec_hist_context h on h.source = t.source
           and h.ketto_toroku_bango = t.ketto_toroku_bango
           and h.race_date < t.race_date
         """
@@ -198,6 +277,12 @@ def stage_horse_history_agg(con: duckdb.DuckDBPyConnection) -> None:
                 and abs(hist_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE}
             )
             as same_distance_soha_time_per_meter_avg5,
+          avg(hist_race_relative_time_z)
+            filter (where recent_rank <= {RECENT_WINDOW_SIZE})
+            as recent_race_relative_time_z_avg5,
+          avg(hist_prior_condition_time_residual)
+            filter (where recent_rank <= {RECENT_WINDOW_SIZE})
+            as recent_condition_par_time_residual_avg5,
           avg(hist_bataiju) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as bataiju_avg5,
           regr_slope(hist_bataiju, (-recent_rank)::double)
             filter (where recent_rank <= {RECENT_WINDOW_SIZE} and hist_bataiju is not null)
@@ -211,25 +296,28 @@ def stage_horse_history_agg(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql(
+    input_glob: str, existing_columns: Collection[str] = frozenset()
+) -> str:
+    additions = [
+        name for name in APPENDED_FEATURE_NAMES if name not in existing_columns
+    ]
+    feature_projection = "".join(f",\n      h.{name}" for name in additions)
     return f"""
     with base_v3 as (
       select * from read_parquet('{input_glob}', hive_partitioning=true)
     )
     select
-      b.*,
-      h.recent_soha_time_per_meter_avg5,
-      h.same_distance_soha_time_per_meter_avg5,
-      h.bataiju_avg5,
-      h.weight_trend_5,
-      h.weight_volatility_5
+      b.*{feature_projection}
     from base_v3 b
     left join horse_history_agg h
       using ({RACE_PARTITION}, ketto_toroku_bango)
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -261,9 +349,20 @@ def main() -> None:
         args.target_race is not None,
         horse_literals,
     )
+    stage_race_time_context(con)
     stage_horse_history_lookup(con, input_glob)
     stage_horse_history_agg(con)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    input_columns = {
+        str(row[0])
+        for row in con.execute(
+            f"describe select * from read_parquet('{input_glob}', hive_partitioning=true)"
+        ).fetchall()
+    }
+    write_partitioned(
+        con,
+        append_features_sql(input_glob, input_columns),
+        args.output_dir,
+    )
     con.close()
 
 
