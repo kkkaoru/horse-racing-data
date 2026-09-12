@@ -72,7 +72,8 @@ def test_docker_helper_selects_all_container_hosts() -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["bun.lock", "package.json", "packages/horse-racing-schema/src/race.ts"]
+    "path",
+    ["bun.lock", "package.json", "tsconfig.json", "packages/horse-racing-schema/src/race.ts"],
 )
 def test_shared_dependencies_select_every_service(path: str) -> None:
     assert select_targets([path], "changed") == [

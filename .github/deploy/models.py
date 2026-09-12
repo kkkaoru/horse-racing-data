@@ -59,6 +59,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--extra-manifest", type=Path)
     args = parser.parse_args()
     manifest = load_manifest()
     selected = derive_selected_artifact_keys()
@@ -77,6 +78,8 @@ def main() -> None:
         for item in manifest.artifacts
         if item.system == "finish-position" and item.serving_key in selected
     ]
+    if args.extra_manifest is not None:
+        artifacts.extend(load_manifest(args.extra_manifest).artifacts)
     for artifact in artifacts:
         transfer(
             store=store,

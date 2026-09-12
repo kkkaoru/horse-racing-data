@@ -18,7 +18,8 @@ for target in "${targets[@]}"; do
       uv sync --project apps/finish-position-predict-container --frozen --python 3.12
       PYTHONPATH=apps/finish-position-predict-container/src \
         uv run --project apps/pc-keiba-viewer python .github/deploy/models.py \
-          --root apps/finish-position-predict-container/models
+          --root apps/finish-position-predict-container/models \
+          --extra-manifest .github/deploy/test-artifacts.json
       bun run --filter finish-position-predict-container artifact:verify -- \
         --artifact-root models --system finish-position
       bun run --filter finish-position-predict-container python:check
@@ -44,14 +45,13 @@ if [[ "$validate_only" == true ]]; then
   exit 0
 fi
 
-# Older queued runs must not roll production back after main advances.
-current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
-if [[ "$current_main" != "$GITHUB_SHA" ]]; then
-  printf '%s\n' 'Main advanced during verification; aborting so the newer run includes these changes.'
-  exit 1
-fi
-
 for target in "${targets[@]}"; do
+  # Check each service because earlier deployments can take several minutes.
+  current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
+  if [[ "$current_main" != "$GITHUB_SHA" ]]; then
+    printf '%s\n' 'Main advanced; aborting so the newer run includes these changes.'
+    exit 1
+  fi
   printf 'Deploying %s from %s\n' "$target" "$GITHUB_SHA"
   case "$target" in
     sync-realtime-data|sync-realtime-data-hot|sync-realtime-data-features)
@@ -72,4 +72,8 @@ for target in "${targets[@]}"; do
   # Confirm Cloudflare accepted a deployment for each service. Preserve its
   # runtime secrets; secret bulk is intentionally not part of ordinary deploys.
   (cd "apps/$target" && bunx wrangler deployments list)
+  if [[ "$target" == daily-keiba-sync ]]; then
+    response="$(curl --fail --silent --show-error https://daily-keiba-sync.kaoru.workers.dev/health)"
+    test "$response" = '{"ok":true,"runtime":"cloudflare-workers-native-daily-keiba-sync"}'
+  fi
 done

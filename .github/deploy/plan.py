@@ -23,7 +23,7 @@ TARGETS: Final[tuple[str, ...]] = (
     "mlflow-ui-proxy",
     "jra-van-datalab-cloudflare-demo",
 )
-GLOBAL_FILES: Final[frozenset[str]] = frozenset({"bun.lock", "package.json"})
+GLOBAL_FILES: Final[frozenset[str]] = frozenset({"bun.lock", "package.json", "tsconfig.json"})
 EXTRA_INPUTS: Final[dict[str, tuple[str, ...]]] = {
     "finish-position-cron": (
         "apps/finish-position-predict-container/",

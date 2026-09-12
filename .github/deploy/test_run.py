@@ -23,9 +23,18 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake.chmod(0o755)
     (binary / "bunx").symlink_to(fake)
     (binary / "uv").symlink_to(fake)
+    curl = binary / "curl"
+    curl.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\nprintf "%s" "$HEALTH_RESPONSE"\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
     git = binary / "git"
     git.write_text(
-        '#!/bin/bash\nprintf "%s\\trefs/heads/main\\n" "$REMOTE_SHA"\n', encoding="utf-8"
+        "#!/bin/bash\n"
+        'if [[ "${ADVANCE_MAIN:-}" == true ]] && rg -q "venue-weather deploy" "$COMMAND_LOG"; '
+        'then echo newer; else printf "%s\\trefs/heads/main\\n" "$REMOTE_SHA"; fi\n',
+        encoding="utf-8",
     )
     git.chmod(0o755)
     log = tmp_path / "commands"
@@ -36,6 +45,7 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "apps" / "venue-weather").mkdir(parents=True)
     (tmp_path / "apps" / "pipeline-health-monitor").mkdir()
     (tmp_path / "apps" / "finish-position-cron").mkdir()
+    (tmp_path / "apps" / "daily-keiba-sync").mkdir()
     targets = tmp_path / "targets.json"
     targets.write_text(json.dumps(["venue-weather", "pipeline-health-monitor"]), encoding="utf-8")
 
@@ -50,6 +60,17 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return result.returncode, log.read_text(encoding="utf-8")
 
     return run, targets
+
+
+def test_main_advancing_between_services_stops_remaining_deployments(
+    runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ADVANCE_MAIN", "true")
+    run, _targets = runner
+    code, log = run("false")
+    assert code == 1
+    assert "venue-weather deploy" in log
+    assert "pipeline-health-monitor deploy" not in log
 
 
 def test_validation_failure_prevents_every_deployment(
@@ -130,3 +151,21 @@ def test_private_core_compatibility_is_checked(runner) -> None:
     assert code == 0
     assert "run --filter jra-van-datalab-worker-only-probe core:prepare\n" in log
     assert "run --filter jra-van-datalab-worker-only-probe test:compatibility:local\n" in log
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_code"),
+    [
+        ('{"ok":true,"runtime":"cloudflare-workers-native-daily-keiba-sync"}', 0),
+        ('{"ok":false}', 1),
+    ],
+)
+def test_daily_sync_requires_healthy_runtime(
+    runner, monkeypatch: pytest.MonkeyPatch, response: str, expected_code: int
+) -> None:
+    monkeypatch.setenv("HEALTH_RESPONSE", response)
+    run, targets = runner
+    targets.write_text('["daily-keiba-sync"]', encoding="utf-8")
+    code, log = run("false")
+    assert code == expected_code
+    assert "https://daily-keiba-sync.kaoru.workers.dev/health" in log

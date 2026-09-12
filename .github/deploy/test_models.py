@@ -133,13 +133,17 @@ def test_cli_rejects_unmanifested_selection(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.parametrize("publish", [False, True])
+@pytest.mark.parametrize("extra", [False, True])
 def test_cli_transfers_selected_container_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     artifact: ArtifactSpec,
     capsys: pytest.CaptureFixture[str],
     publish: bool,
+    extra: bool,
 ) -> None:
     argv = ["models.py", "--root", "models"] + (["--publish"] if publish else [])
+    if extra:
+        argv.extend(["--extra-manifest", "test-artifacts.json"])
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setenv("PRODUCTION_ARTIFACT_BUCKET", "artifacts")
     monkeypatch.setenv("R2_ENDPOINT_URL", "https://example.invalid")
@@ -168,5 +172,9 @@ def test_cli_transfers_selected_container_artifacts(
     operation = Mock()
     monkeypatch.setattr(models, "transfer", operation)
     main()
-    operation.assert_called_once()
-    assert "model artifacts: 1" in capsys.readouterr().out
+    if extra:
+        assert operation.call_count == 4
+        assert "model artifacts: 4" in capsys.readouterr().out
+    else:
+        operation.assert_called_once()
+        assert "model artifacts: 1" in capsys.readouterr().out
