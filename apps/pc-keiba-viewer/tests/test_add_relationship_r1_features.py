@@ -15,7 +15,9 @@ MODULE_PATH = SCRIPTS_DIR / "add-relationship-r1-features.py"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-_spec = importlib.util.spec_from_file_location("add_relationship_r1_features", MODULE_PATH)
+_spec = importlib.util.spec_from_file_location(
+    "add_relationship_r1_features", MODULE_PATH
+)
 assert _spec is not None
 assert _spec.loader is not None
 subject = importlib.util.module_from_spec(_spec)
@@ -119,7 +121,10 @@ def test_history_lookback_days_constant() -> None:
 
 
 def test_race_partition_constant() -> None:
-    assert subject.RACE_PARTITION == "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
+    assert (
+        subject.RACE_PARTITION
+        == "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
+    )
 
 
 def test_source_filter_sql_jra() -> None:
@@ -150,6 +155,13 @@ def test_se_table_for_nar() -> None:
 
 def test_se_table_for_banei() -> None:
     assert subject.se_table_for("ban-ei") == "pg.nvd_se"
+
+
+def test_deduplicated_se_sql_groups_each_horse_race_identity() -> None:
+    sql = subject.deduplicated_se_sql("jra")
+    assert "from pg.jvd_se" in sql
+    assert "max(bataiju)" in sql
+    assert "group by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango" in sql
 
 
 def test_safe_bataiju_cast_sql_uses_provided_alias() -> None:
@@ -208,7 +220,7 @@ def test_stage_base_input_calls_read_parquet_with_glob() -> None:
     assert "bataiju" in body
 
 
-def test_stage_base_input_left_joins_race_entry_corner_features_on_umaban() -> None:
+def test_stage_base_input_deduplicates_and_joins_corner_features_on_horse() -> None:
     captured: list[str] = []
 
     class FakeConn:
@@ -217,8 +229,9 @@ def test_stage_base_input_left_joins_race_entry_corner_features_on_umaban() -> N
 
     subject.stage_base_input(FakeConn(), "/tmp/x/race_year=*/*.parquet", "jra")
     body = " ".join(captured)
-    assert "left join pg.race_entry_corner_features rec" in body
-    assert "rec.umaban = b.umaban" in body
+    assert "from pg.race_entry_corner_features" in body
+    assert "max(futan_juryo) as futan_juryo" in body
+    assert "rec.ketto_toroku_bango = b.ketto_toroku_bango" in body
     # kyori / futan_juryo / barei use COALESCE with se fallback for upcoming races.
     assert "rec.kyori" in body
     assert "rec.futan_juryo" in body
@@ -237,7 +250,7 @@ def test_stage_base_input_left_joins_jvd_se_for_bataiju_when_jra() -> None:
 
     subject.stage_base_input(FakeConn(), "/tmp/x/race_year=*/*.parquet", "jra")
     body = " ".join(captured)
-    assert "left join pg.jvd_se se" in body
+    assert "from pg.jvd_se" in body
     assert "pg.nvd_se" not in body
     # bataiju is sourced from se table with safe cast.
     assert "se.bataiju" in body
@@ -252,7 +265,7 @@ def test_stage_base_input_left_joins_nvd_se_for_bataiju_when_nar() -> None:
 
     subject.stage_base_input(FakeConn(), "/tmp/x/race_year=*/*.parquet", "nar")
     body = " ".join(captured)
-    assert "left join pg.nvd_se se" in body
+    assert "from pg.nvd_se" in body
     assert "pg.jvd_se" not in body
 
 
@@ -321,6 +334,10 @@ def test_stage_race_history_filters_soha_time_and_kyori_for_leak_guard() -> None
     assert "rec.finish_position is not null" in body
     assert "rec.kyori is not null" in body
     assert "rec.soha_time is not null" in body
+    assert (
+        "(try_cast(nullif(trim(cast(rec.soha_time as varchar)), '0000') as bigint) // 1000) * 600"
+        in body
+    )
 
 
 def test_stage_race_relative_sql_contains_all_seven_columns() -> None:
@@ -523,7 +540,9 @@ def test_stage_race_relative_zscore_is_null_when_stddev_zero(tmp_path: Path) -> 
     assert row == (None,)
 
 
-def test_stage_race_relative_zscore_nonzero_when_stddev_positive(tmp_path: Path) -> None:
+def test_stage_race_relative_zscore_nonzero_when_stddev_positive(
+    tmp_path: Path,
+) -> None:
     con = duckdb.connect(":memory:")
     _seed_base_input_with_three_horses(con)
     subject.stage_race_relative(con)
@@ -589,7 +608,9 @@ def test_stage_history_normalized_computes_speed_kg_avg(tmp_path: Path) -> None:
     con.close()
     # avg(soha_time/kyori * bataiju):
     # (95/1600*478 + 96/1600*482 + 97/1600*480) / 3
-    expected = (95.0 / 1600.0 * 478.0 + 96.0 / 1600.0 * 482.0 + 97.0 / 1600.0 * 480.0) / 3.0
+    expected = (
+        95.0 / 1600.0 * 478.0 + 96.0 / 1600.0 * 482.0 + 97.0 / 1600.0 * 480.0
+    ) / 3.0
     assert row is not None
     assert row[0] == "horse_a"
     assert row[1] == pytest.approx(expected, rel=1e-6)
@@ -610,7 +631,9 @@ def test_stage_history_normalized_computes_volatility(tmp_path: Path) -> None:
     # stddev_pop of soha_time/kyori = stddev_pop([95/1600, 96/1600, 97/1600])
     speed = [95.0 / 1600.0, 96.0 / 1600.0, 97.0 / 1600.0]
     mean_speed = sum(speed) / len(speed)
-    expected_speed_stddev = math.sqrt(sum((x - mean_speed) ** 2 for x in speed) / len(speed))
+    expected_speed_stddev = math.sqrt(
+        sum((x - mean_speed) ** 2 for x in speed) / len(speed)
+    )
     # stddev_pop of finish_position = stddev_pop([1, 3, 5]) = sqrt(((1-3)^2+(3-3)^2+(5-3)^2)/3)
     expected_fp_stddev = math.sqrt(((1 - 3) ** 2 + (3 - 3) ** 2 + (5 - 3) ** 2) / 3.0)
     assert row is not None
@@ -618,7 +641,9 @@ def test_stage_history_normalized_computes_volatility(tmp_path: Path) -> None:
     assert row[1] == pytest.approx(expected_fp_stddev, rel=1e-6)
 
 
-def test_stage_history_normalized_speed_age_adjusted_skips_zero_barei(tmp_path: Path) -> None:
+def test_stage_history_normalized_speed_age_adjusted_skips_zero_barei(
+    tmp_path: Path,
+) -> None:
     con = duckdb.connect(":memory:")
     con.execute(
         """
@@ -761,7 +786,9 @@ def _seed_for_append(con: duckdb.DuckDBPyConnection, parquet_dir: Path) -> str:
     return f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
 
 
-def test_append_features_sql_join_preserves_input_and_adds_twelve(tmp_path: Path) -> None:
+def test_append_features_sql_join_preserves_input_and_adds_twelve(
+    tmp_path: Path,
+) -> None:
     con = duckdb.connect(":memory:")
     glob = _seed_for_append(con, tmp_path / "input")
     sql = subject.append_features_sql(glob)
@@ -787,7 +814,9 @@ def test_append_features_sql_join_preserves_input_and_adds_twelve(tmp_path: Path
     assert len(col_names) == 20
 
 
-def test_append_features_sql_join_handles_nulls_for_missing_horses(tmp_path: Path) -> None:
+def test_append_features_sql_join_handles_nulls_for_missing_horses(
+    tmp_path: Path,
+) -> None:
     con = duckdb.connect(":memory:")
     glob = _seed_for_append(con, tmp_path / "input")
     sql = subject.append_features_sql(glob)
@@ -827,7 +856,9 @@ def test_write_partitioned_writes_parquet_files(tmp_path: Path) -> None:
     assert rows == (4,)
 
 
-def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Path) -> None:
+def test_stage_base_input_end_to_end_projects_columns_from_pg_join(
+    tmp_path: Path,
+) -> None:
     """Drive stage_base_input against a real DuckDB connection with synthetic
     in-memory pg.race_entry_corner_features + pg.jvd_se and a synthetic parquet.
     rec is present -> rec wins (COALESCE keeps rec value unchanged for completed races)."""
@@ -865,6 +896,8 @@ def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Pat
           values
             ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
               1600::integer, 56.0::double, 5::integer),
+            ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
+              1600::integer, 56.0::double, 5::integer),
             ('jra', '2025', '0415', '05', '11', 2::integer, 'horse_b',
               1600::integer, 54.0::double, 4::integer)
         ) as v(
@@ -880,6 +913,7 @@ def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Pat
         create table pg.jvd_se as
         select * from (
           values
+            ('2025', '0415', '05', '11', 'horse_a', '480'::varchar, '560'::varchar, '05'::varchar),
             ('2025', '0415', '05', '11', 'horse_a', '480'::varchar, '560'::varchar, '05'::varchar),
             ('2025', '0415', '05', '11', 'horse_b', '   460  '::varchar, '540'::varchar, '04'::varchar)
         ) as v(
@@ -1104,7 +1138,9 @@ def test_stage_base_input_all_null_when_rec_and_se_both_absent(tmp_path: Path) -
     assert rows[0][3] is None
 
 
-def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: Path) -> None:
+def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(
+    tmp_path: Path,
+) -> None:
     """LEFT JOIN must emit NULL when there is no PG row for the parquet row.
 
     This is the documented "row without history" path that downstream stages
@@ -1174,7 +1210,9 @@ def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: P
     assert rows[0][4] is None
 
 
-def test_main_runs_end_to_end_with_stubbed_pg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_main_runs_end_to_end_with_stubbed_pg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """End-to-end main(): we stub install_and_attach_pg so no real PG is
     required, and verify the output parquet has the expected new columns +
     row count. rec is present for both horses -> rec wins COALESCE.

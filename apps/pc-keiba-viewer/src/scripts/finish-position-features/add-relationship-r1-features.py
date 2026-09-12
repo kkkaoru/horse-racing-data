@@ -47,6 +47,7 @@ Rows without a populated history (new horse / no eligible past race) emit
 NULL — gradient boosters treat missing inputs as a learned default so no
 imputation is applied here.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,9 +56,8 @@ import shutil
 from pathlib import Path
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
-
+from _race_time import encoded_race_time_tenths_sql
 from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
@@ -133,6 +133,23 @@ def se_table_for(category: str) -> str:
     return "pg.nvd_se"
 
 
+def deduplicated_se_sql(category: str) -> str:
+    """Select one latest source row per horse and race."""
+    table = se_table_for(category)
+    return f"""
+      (
+        select
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
+          max(futan_juryo) as futan_juryo,
+          max(barei) as barei,
+          max(bataiju) as bataiju
+        from {table}
+        group by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                 ketto_toroku_bango
+      )
+    """
+
+
 def safe_bataiju_cast_sql(alias: str) -> str:
     """SQL CASE that safely parses bataiju (text) -> integer.
 
@@ -162,7 +179,7 @@ def stage_base_input(
     The JOIN key is the standard race-entry tuple including ``umaban`` so the
     correct row in race_entry_corner_features is identified.
     """
-    se_table = se_table_for(category)
+    se_rows = deduplicated_se_sql(category)
     bataiju_sql = safe_bataiju_cast_sql("se")
     con.execute(
         f"""
@@ -181,14 +198,24 @@ def stage_base_input(
           ) as barei,
           {bataiju_sql}::double as bataiju
         from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) b
-        left join pg.race_entry_corner_features rec
+        left join (
+          select
+            source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+            ketto_toroku_bango,
+            max(kyori) as kyori,
+            max(futan_juryo) as futan_juryo,
+            max(barei) as barei
+          from pg.race_entry_corner_features
+          group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                   ketto_toroku_bango
+        ) rec
           on rec.source = b.source
           and rec.kaisai_nen = b.kaisai_nen
           and rec.kaisai_tsukihi = b.kaisai_tsukihi
           and rec.keibajo_code = b.keibajo_code
           and rec.race_bango = b.race_bango
-          and rec.umaban = b.umaban
-        left join {se_table} se
+          and rec.ketto_toroku_bango = b.ketto_toroku_bango
+        left join {se_rows} se
           on se.kaisai_nen = b.kaisai_nen
           and se.kaisai_tsukihi = b.kaisai_tsukihi
           and se.keibajo_code = b.keibajo_code
@@ -226,10 +253,11 @@ def stage_race_history(
     history to rows where ``soha_time``, ``kyori`` are populated so downstream
     speed-normalized averages can safely divide.
     """
-    se_table = se_table_for(category)
+    se_rows = deduplicated_se_sql(category)
     src_filter = source_filter_sql(category)
     bataiju_sql = safe_bataiju_cast_sql("se")
     target_filter = race_history_focus_filter_sql(focused_target)
+    soha_time_tenths = encoded_race_time_tenths_sql("rec.soha_time")
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -243,12 +271,25 @@ def stage_race_history(
           rec.ketto_toroku_bango,
           rec.finish_position::double as finish_position,
           rec.kyori::double as kyori,
-          rec.soha_time::double as soha_time,
+          cast({soha_time_tenths} as double) as soha_time,
           rec.futan_juryo::double as futan_juryo,
           rec.barei::double as barei,
           {bataiju_sql}::double as bataiju
-        from pg.race_entry_corner_features rec
-        left join {se_table} se
+        from (
+          select
+            source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+            ketto_toroku_bango,
+            max(race_date) as race_date,
+            max(finish_position) as finish_position,
+            max(kyori) as kyori,
+            max(soha_time) as soha_time,
+            max(futan_juryo) as futan_juryo,
+            max(barei) as barei
+          from pg.race_entry_corner_features
+          group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                   ketto_toroku_bango
+        ) rec
+        left join {se_rows} se
           on se.kaisai_nen = rec.kaisai_nen
           and se.kaisai_tsukihi = rec.kaisai_tsukihi
           and se.keibajo_code = rec.keibajo_code
@@ -438,7 +479,9 @@ def append_features_sql(input_glob: str) -> str:
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -457,9 +500,7 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_base_input(con, input_glob, args.category)
-    stage_race_history(
-        con, args.from_date, args.category, args.target_race is not None
-    )
+    stage_race_history(con, args.from_date, args.category, args.target_race is not None)
     stage_race_relative(con)
     stage_history_normalized(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
