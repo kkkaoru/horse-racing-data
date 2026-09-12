@@ -17,6 +17,7 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake = binary / "bun"
     fake.write_text(
         '#!/bin/bash\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n'
+        'if [[ -n "${UV_PYTHON:-}" ]]; then exit 11; fi\n'
         'if [[ -n "${FAIL_COMMAND:-}" && "$*" == *"$FAIL_COMMAND"* ]]; then exit 9; fi\n',
         encoding="utf-8",
     )
@@ -43,6 +44,7 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("COMMAND_LOG", str(log))
     monkeypatch.setenv("GITHUB_SHA", "current")
     monkeypatch.setenv("REMOTE_SHA", "current")
+    monkeypatch.setenv("UV_PYTHON", "3.12")
     (tmp_path / "apps" / "venue-weather").mkdir(parents=True)
     (tmp_path / "apps" / "pipeline-health-monitor").mkdir()
     (tmp_path / "apps" / "finish-position-cron").mkdir()

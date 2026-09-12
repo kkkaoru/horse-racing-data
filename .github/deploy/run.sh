@@ -2,6 +2,10 @@
 # Run on a GitHub-hosted Linux runner after selecting and validating main.
 set -euo pipefail
 
+# setup-uv exports a global interpreter pin. Let each project's own Python
+# requirement select its interpreter (the legacy Wine demo requires 3.13+).
+unset UV_PYTHON
+
 target_file="$1"
 validate_only="$2"
 mapfile -t targets < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1], encoding="utf-8"))))' "$target_file")
