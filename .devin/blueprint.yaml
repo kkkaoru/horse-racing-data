@@ -1,0 +1,61 @@
+initialize:
+  - name: System tools
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y build-essential curl unzip git git-lfs jq ripgrep shellcheck libgomp1 libpq-dev
+  - name: Bun and uv
+    run: |
+      curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
+      curl -LsSf https://astral.sh/uv/0.11.8/install.sh | sh
+      export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+      uv python install 3.12
+      bun --version
+      uv --version
+
+maintenance:
+  - name: Workspace dependencies
+    run: |
+      export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+      bun install --frozen-lockfile
+      uv sync --project apps/pc-keiba-viewer --frozen --python 3.12
+      uv sync --project scripts --frozen --python 3.12
+      bunx lefthook install
+
+knowledge:
+  - name: repository-rules
+    contents: |
+      Read root AGENTS.md and CLAUDE.md, then the instructions for every package you touch.
+      Use bun/bunx and uv. Package scripts and lefthook.yml are authoritative.
+      Read .devin/README.md for onboarding verification and task workflows.
+      Add regression tests with every changed function or branch in enforced packages.
+      Never lower coverage thresholds, shrink measured sources, add suppression comments,
+      or bypass hooks. Check all four TypeScript coverage metrics against package thresholds.
+  - name: verification
+    contents: |
+      From the repository root, replace PACKAGE with the actual package.json name:
+      bun run --filter PACKAGE format:check
+      bun run --filter PACKAGE lint
+      bun run --filter PACKAGE tsc
+      bun run --filter PACKAGE test:coverage
+      Run only scripts that exist; inspect the package manifest for alternative checks.
+      For viewer Python: bun run --filter pc-keiba-viewer python:check
+      For scripts Python: cd scripts && uv run ruff check && uv run ty check && uv run basedpyright && uv run pytest
+      Report pre-existing failures separately with a baseline comparison. Do not conceal failures.
+  - name: environment
+    contents: |
+      Export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH" before dependency commands.
+      After updating the checkout, rerun maintenance if dependencies changed.
+      Other Python packages have independent pyproject.toml and uv.lock files; sync the affected project.
+      Devin Cloud uses Linux. Apple MLX/Metal and Windows PC-KEIBA desktop automation need
+      a compatible runner; do not replace their execution with passing mocks and claim E2E success.
+      Start viewer development with bun run --filter pc-keiba-viewer dev.
+      Read its package instructions for data services and environment requirements.
+      Store credentials in Devin repository Secrets. Never copy a developer's .env into git.
+  - name: architecture
+    contents: |
+      Trace ingestion through sync-realtime-data, its hot/features workers, local-postgresql,
+      and pc-keiba-r2-catalog before changing freshness or data formats.
+      Trace prediction through finish-position-cron, finish-position-predict-container,
+      pc-keiba-viewer Python feature pipelines, and model evaluation artifacts.
+      Preserve race-time feature availability and prevent training/evaluation leakage.
+      Read current source/configuration first; historical probes are evidence, not current runtime truth.
