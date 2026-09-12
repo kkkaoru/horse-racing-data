@@ -54,11 +54,13 @@ def test_hex_kg_sql_references_requested_column() -> None:
     assert "futan_juryo" in sql
 
 
-def test_stage_nvd_se_source_uses_hex_decode_not_decimal() -> None:
+def test_stage_nvd_se_source_uses_hex_decode_and_mssd_race_time() -> None:
     src = inspect.getsource(subject.stage_nvd_se)
     assert "hex_kg_sql" in src
+    assert "encoded_race_time_tenths_sql" in src
     assert "trim(futan_juryo), '') as double" not in src
     assert "trim(bataiju), '') as int" not in src
+    assert "try_cast(nullif(trim(soha_time), '') as double) / 10.0" not in src
 
 
 def test_hex_decode_bataiju_values_to_kg() -> None:

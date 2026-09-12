@@ -19,6 +19,7 @@ Run with:
     --input-dir apps/pc-keiba-viewer/tmp/finish-position-features-parquet-ban-ei-v1 \\
     --output-dir tmp/feat-ban-ei-v2
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,13 +28,14 @@ import shutil
 from pathlib import Path
 
 import duckdb
-
 from _catalog_attach import attach_source_catalog
-
+from _race_time import encoded_race_time_tenths_sql
 from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
-RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+RACE_PARTITION_BY = (
+    "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+)
 BAN_EI_KEIBAJO = "83"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 FUTAN_BUCKET_BREAKS = (700, 800, 900)  # ≤700, 701-800, 801-900, 900+
@@ -74,6 +76,7 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
 
 def stage_nvd_se(con: duckdb.DuckDBPyConnection) -> None:
     """Pull ban-ei race entries with futan_juryo, bataiju, corner positions."""
+    soha_time_tenths = encoded_race_time_tenths_sql("soha_time")
     con.execute(
         f"""
         create or replace temp table se_raw as
@@ -85,7 +88,7 @@ def stage_nvd_se(con: duckdb.DuckDBPyConnection) -> None:
           try_cast(nullif(trim(corner_1), '') as int) as corner_1_raw,
           try_cast(nullif(trim(corner_3), '') as int) as corner_3_raw,
           try_cast(nullif(trim(corner_4), '') as int) as corner_4_raw,
-          try_cast(nullif(trim(soha_time), '') as double) / 10.0 as soha_time_sec,
+          cast({soha_time_tenths} as double) / 10.0 as soha_time_sec,
           try_cast(nullif(trim(tansho_ninkijun), '') as int) as tansho_ninkijun
         from pg.nvd_se
         where keibajo_code = '{BAN_EI_KEIBAJO}'
@@ -185,7 +188,9 @@ def append_features_sql(input_glob: str) -> str:
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

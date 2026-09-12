@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 
 import {
   buildRelationshipHistoryUpdateSql,
+  encodedRaceTimeTenthsSql,
   HISTORY_LOOKBACK_DAYS_YYYYMMDD,
   JRA_RUNNER_TABLE,
   NAR_RUNNER_TABLE,
@@ -126,6 +127,19 @@ test("buildRelationshipHistoryUpdateSql filters history where soha_time is not n
 
 test("buildRelationshipHistoryUpdateSql filters history where finish_position is not null", () => {
   expect(buildRelationshipHistoryUpdateSql("jra")).toMatch("history.finish_position is not null");
+});
+
+test("encodedRaceTimeTenthsSql decodes packed MSSd positions", () => {
+  const sql = encodedRaceTimeTenthsSql("history.soha_time");
+  expect(sql).toMatch("(trim(history.soha_time::text)::bigint / 1000) * 600");
+  expect(sql).toMatch("((trim(history.soha_time::text)::bigint / 10) % 100) * 10");
+  expect(sql).toMatch("(trim(history.soha_time::text)::bigint % 10)");
+});
+
+test("encodedRaceTimeTenthsSql rejects impossible seconds", () => {
+  expect(encodedRaceTimeTenthsSql("history.soha_time")).toMatch(
+    "((trim(history.soha_time::text)::bigint / 10) % 100) < 60",
+  );
 });
 
 test("buildRelationshipHistoryUpdateSql derives past_speed_kg_normalized_avg5 as avg of soha/kyori times bataiju", () => {

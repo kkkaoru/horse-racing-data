@@ -65,6 +65,23 @@ const safeBataijuCast = (alias: string): string => `
 const bataijuExpression = (jraAlias: string, narAlias: string): string =>
   `coalesce(${safeBataijuCast(jraAlias)}, ${safeBataijuCast(narAlias)})`;
 
+export function encodedRaceTimeTenthsSql(expression: string): string {
+  const value = `trim(${expression}::text)`;
+  const raw = `${value}::bigint`;
+  const seconds = `((${raw} / 10) % 100)`;
+  return `
+    case
+      when ${value} ~ '^[0-9]+$' then
+        case
+          when ${raw} > 0 and ${seconds} < 60
+            then (${raw} / 1000) * 600 + ${seconds} * 10 + (${raw} % 10)
+          else null
+        end
+      else null
+    end
+  `;
+}
+
 const targetCte = (filters: CategoryFilterClauses): string => `
     target as (
       select
@@ -91,7 +108,7 @@ const historyCte = (filters: CategoryFilterClauses): string => `
         target.race_bango,
         target.ketto_toroku_bango,
         history.kyori::numeric as hist_kyori,
-        history.soha_time::numeric as hist_soha_time,
+        (${encodedRaceTimeTenthsSql("history.soha_time")})::numeric as hist_soha_time,
         history.barei::numeric as hist_barei,
         history.futan_juryo::numeric as hist_futan_juryo,
         history.finish_position::numeric as hist_finish_position,
