@@ -1,0 +1,17 @@
+{
+  "purpose": "Fixed-model dataframe-ingestion sensitivity audit, not a new model search",
+  "comparisons": [
+    "early replay: legacy Polars versus explicit pandas",
+    "retrospective replay: legacy Polars versus explicit pandas"
+  ],
+  "model_version": "banei-cb-v9-sim-2011",
+  "training": false,
+  "inputs": "Existing retained local-PostgreSQL feature exports only",
+  "external_serving_inputs_used": false,
+  "prophet_postprocessing_applied": false,
+  "production_feature_parity_attested": false,
+  "complete_prerace_cohort_attested": false,
+  "final_timesfm_family_selection_remains_closed": true,
+  "candidate_promotion_authorized_by_this_audit": false,
+  "caveat": "Previously examined 2026 outcomes; this is not new holdout evidence. Do not retune or reselect the frozen TimesFM families from these results. New output directories preserve all old reports."
+}
