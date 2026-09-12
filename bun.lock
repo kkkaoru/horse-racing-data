@@ -21,7 +21,7 @@
         "hyparquet": "1.30.1",
         "hyparquet-compressors": "1.1.1",
         "hyparquet-writer": "0.16.8",
-        "icebird": "0.8.27",
+        "icebird": "0.8.28",
         "iconv-lite": "0.7.2",
       },
       "devDependencies": {
@@ -1522,7 +1522,7 @@
 
     "hysnappy": ["hysnappy@1.0.0", "", {}, "sha512-MNrC4NfwDGPb889O6gIfEtbvEZCSWUsSEhsz4Oq2FRcpGtXHfeVz3KciSPp5Pnnz1NjFMgDQNfxdJozymJEDDA=="],
 
-    "icebird": ["icebird@0.8.27", "", { "dependencies": { "hyparquet": "1.29.2", "hyparquet-compressors": "1.1.1", "hyparquet-writer": "0.16.8", "squirreling": "0.16.3" }, "peerDependencies": { "@aws-sdk/credential-providers": "^3.0.0" }, "optionalPeers": ["@aws-sdk/credential-providers"] }, "sha512-qkmUFxdsJOuB9PkbwXvHq34QctmOUOLPqmxM2J52u5G/6zl/TNYL7HIsFqaxPNygtVUVW7Mjj/nzANZ/lfu3Eg=="],
+    "icebird": ["icebird@0.8.28", "", { "dependencies": { "hyparquet": "1.29.2", "hyparquet-compressors": "1.1.1", "hyparquet-writer": "0.16.9", "squirreling": "0.16.4" }, "peerDependencies": { "@aws-sdk/credential-providers": "^3.0.0" }, "optionalPeers": ["@aws-sdk/credential-providers"] }, "sha512-lknMGjzrilhtkqhkYzdaigp9HFEjtUeYyanJ98QB2wXk9TazcC4Wg/+SBnPGxlniSsa60Y/uusvnB0VsgLMdKA=="],
 
     "iconv-lite": ["iconv-lite@0.7.2", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw=="],
 
@@ -1816,7 +1816,7 @@
 
     "split2": ["split2@4.2.0", "", {}, "sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg=="],
 
-    "squirreling": ["squirreling@0.16.3", "", {}, "sha512-lgY4HWZ6BAO6PdBI/4clmlou4leoLlw6xSRTQ5pJmXgNODi0JnjUmfNlbFTZJJF05jNVWgiR7wE4/QXou7yCuw=="],
+    "squirreling": ["squirreling@0.16.4", "", {}, "sha512-cE9jQdV9FwbsMA8AhOY5Qg9xrFtLbitbapLgpXI1VS8cxxmaqWqEp957M3zBIb8KDyDGx/n3djt+TE6wXyM2Zg=="],
 
     "stackback": ["stackback@0.0.2", "", {}, "sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw=="],
 
@@ -2031,6 +2031,8 @@
     "hyparquet-writer/hyparquet": ["hyparquet@1.29.2", "", {}, "sha512-2LxinZ8X0JqToST+9OXcy9t3t5Q7ZneMTkSqUx/36Hv18pCTk/N71IWZc7APTSNG1Me39l/jjEvzZSZ0R+Knbw=="],
 
     "icebird/hyparquet": ["hyparquet@1.29.2", "", {}, "sha512-2LxinZ8X0JqToST+9OXcy9t3t5Q7ZneMTkSqUx/36Hv18pCTk/N71IWZc7APTSNG1Me39l/jjEvzZSZ0R+Knbw=="],
+
+    "icebird/hyparquet-writer": ["hyparquet-writer@0.16.9", "", { "dependencies": { "hyparquet": "1.29.2" } }, "sha512-VZvH4Vq9lQwZa/+1y4YrEwF9+FAe5pED+mVN4AHflCoFk5LG2RemMHW9iwVlVqug7fO3ATwEMSG68cr3uZAkjQ=="],
 
     "jra-van-datalab-worker-only-probe/@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
