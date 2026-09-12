@@ -1,0 +1,19 @@
+[tool.pytest.ini_options]
+testpaths = ["."]
+addopts = "--cov=plan --cov=models --cov-branch --cov-report=term-missing --cov-fail-under=95"
+
+[tool.coverage.run]
+omit = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.basedpyright]
+include = ["plan.py", "models.py"]
+extraPaths = ["../../apps/finish-position-predict-container/src"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"

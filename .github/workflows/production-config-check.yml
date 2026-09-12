@@ -1,0 +1,38 @@
+name: Production configuration checks
+
+on:
+  pull_request:
+    paths:
+      - .github/deploy/**
+      - .github/workflows/production*.yml
+      - .devin/**
+  push:
+    branches: [main]
+    paths:
+      - .github/deploy/**
+      - .github/workflows/production*.yml
+      - .devin/**
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.11.8
+          python-version: "3.12"
+      - run: bun install --frozen-lockfile
+      - run: uv sync --project apps/pc-keiba-viewer --frozen --python 3.12
+      - run: bunx oxfmt --check .github/deploy .github/workflows/production.yml .github/workflows/production-config-check.yml .devin
+      - run: shellcheck .github/deploy/run.sh
+      - name: Test selection and immutable model transport
+        env:
+          PYTHONPATH: apps/finish-position-predict-container/src
+        run: uv run --project apps/pc-keiba-viewer python -m pytest -c .github/deploy/pyproject.toml .github/deploy

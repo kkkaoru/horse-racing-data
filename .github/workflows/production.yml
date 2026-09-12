@@ -1,0 +1,118 @@
+name: Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Service to validate or deploy
+        type: choice
+        default: changed
+        options:
+          - changed
+          - all
+          - pc-keiba-r2-catalog
+          - jra-van-datalab-worker-only-probe
+          - umacon-worker
+          - daily-keiba-sync
+          - sync-realtime-data-features
+          - sync-realtime-data-hot
+          - sync-realtime-data
+          - finish-position-cron
+          - pc-keiba-viewer
+          - pipeline-health-monitor
+          - venue-weather
+          - mlflow-ui-proxy
+          - jra-van-datalab-cloudflare-demo
+      validate_only:
+        description: Run all checks without deploying
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-main
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Include changes since the last successful automatic run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          REQUESTED: ${{ inputs.target || 'changed' }}
+        run: |
+          baseline="$(gh run list --workflow production.yml --branch main --status success --event push --limit 1 --json headSha --jq '.[0].headSha // empty')"
+          if [[ -z "$baseline" ]]; then baseline="$BEFORE"; fi
+          if [[ -n "$baseline" && ! "$baseline" =~ ^0+$ ]] && git cat-file -e "$baseline^{commit}"; then
+            git diff --name-only --no-renames -z "$baseline" "$GITHUB_SHA" > "$RUNNER_TEMP/production-paths"
+          else
+            git ls-files -z > "$RUNNER_TEMP/production-paths"
+          fi
+          targets="$(python3 .github/deploy/plan.py --paths "$RUNNER_TEMP/production-paths" --target "$REQUESTED")"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          printf 'Selected services: %s\n' "$targets" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: plan
+    if: needs.plan.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_TOKEN: ${{ secrets.PRIVATE_CORE_READ_TOKEN }}
+      FINISH_POSITION_CRON_TRIGGER_TOKEN: ${{ secrets.FINISH_POSITION_CRON_TRIGGER_TOKEN }}
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: ${{ secrets.PC_KEIBA_VIEWER_INTERNAL_TOKEN }}
+      JRA_VAN_WORKER_API_TOKEN: ${{ secrets.JRA_VAN_WORKER_API_TOKEN }}
+      UMMACON_WORKER_API_TOKEN: ${{ secrets.UMMACON_WORKER_API_TOKEN }}
+      R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+      PRODUCTION_ARTIFACT_BUCKET: ${{ secrets.PRODUCTION_ARTIFACT_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      NEXT_TELEMETRY_DISABLED: "1"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.11.8
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          bun install --frozen-lockfile
+          uv sync --project apps/pc-keiba-viewer --frozen --python 3.12
+      - name: Check CI infrastructure
+        env:
+          PYTHONPATH: apps/finish-position-predict-container/src
+        run: |
+          shellcheck .github/deploy/run.sh
+          uv run --project apps/pc-keiba-viewer python -m pytest -c .github/deploy/pyproject.toml .github/deploy
+      - name: Verify Cloudflare authentication
+        run: bunx wrangler whoami
+      - name: Validate and deploy in dependency order
+        env:
+          TARGETS: ${{ needs.plan.outputs.targets }}
+          VALIDATE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_only || false }}
+        run: |
+          printf '%s' "$TARGETS" > "$RUNNER_TEMP/production-targets.json"
+          bash .github/deploy/run.sh "$RUNNER_TEMP/production-targets.json" "$VALIDATE_ONLY"
