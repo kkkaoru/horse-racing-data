@@ -14,6 +14,10 @@ for target in "${targets[@]}"; do
     pc-keiba-viewer)
       (cd apps/pc-keiba-viewer && bunx next typegen)
       ;;
+    jra-van-datalab-cloudflare-demo)
+      PYTHONPATH=apps/finish-position-predict-container/src \
+        uv run --project apps/pc-keiba-viewer python .github/deploy/sdk.py
+      ;;
     jra-van-datalab-worker-only-probe|umacon-worker)
       bun run --filter "$target" core:prepare
       ;;
