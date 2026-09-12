@@ -1,0 +1,12 @@
+# Package-local allowlist; no datasets, credentials, MLX, or rejected models.
+**
+!requirements-chronos-cpu.txt
+!src/
+src/**
+!src/timesfm_finish_position/
+src/timesfm_finish_position/**
+!src/timesfm_finish_position/__init__.py
+!src/timesfm_finish_position/domain.py
+!src/timesfm_finish_position/chronos_forecasting.py
+!src/timesfm_finish_position/chronos_portable.py
+!src/timesfm_finish_position/chronos_service.py
