@@ -48,6 +48,13 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "apps" / "finish-position-cron").mkdir()
     (tmp_path / "apps" / "daily-keiba-sync").mkdir()
     (tmp_path / "apps" / "pc-keiba-viewer").mkdir()
+    (tmp_path / "apps" / "mlflow-ui-proxy").mkdir()
+    (tmp_path / "apps" / "jra-van-datalab-worker-only-probe").mkdir()
+    (tmp_path / "apps" / "jra-van-datalab-cloudflare-demo").mkdir()
+    (tmp_path / "scripts").mkdir()
+    wrapper = tmp_path / "scripts" / "ensure-docker-compat.sh"
+    wrapper.write_text('#!/bin/bash\nshift\nexec "$@"\n', encoding="utf-8")
+    wrapper.chmod(0o755)
     targets = tmp_path / "targets.json"
     targets.write_text(json.dumps(["venue-weather", "pipeline-health-monitor"]), encoding="utf-8")
 
@@ -82,14 +89,14 @@ def test_validation_failure_prevents_every_deployment(
     run, _targets = runner
     code, log = run("false")
     assert code == 9
-    assert " deploy" not in log
+    assert " deploy\n" not in log
 
 
 def test_validate_only_never_mutates_production(runner) -> None:
     run, _targets = runner
     code, log = run("true")
     assert code == 0
-    assert " deploy" not in log
+    assert " deploy\n" not in log
     assert "test:coverage" in log
 
 
@@ -98,7 +105,7 @@ def test_stale_checkout_cannot_deploy(runner, monkeypatch: pytest.MonkeyPatch) -
     run, _targets = runner
     code, log = run("false")
     assert code == 1
-    assert " deploy" not in log
+    assert " deploy\n" not in log
 
 
 def test_deployment_failure_stops_subsequent_services(
@@ -172,3 +179,30 @@ def test_daily_sync_requires_healthy_runtime(
     code, log = run("false")
     assert code == expected_code
     assert "https://daily-keiba-sync.kaoru.workers.dev/health" in log
+
+
+def test_failed_build_prevents_any_production_deployment(
+    runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAIL_COMMAND", "wrangler deploy --dry-run")
+    run, _targets = runner
+    code, log = run("false")
+    assert code == 9
+    assert " deploy\n" not in log
+
+
+def test_viewer_validate_only_builds_without_publishing(runner) -> None:
+    run, targets = runner
+    targets.write_text('["pc-keiba-viewer"]', encoding="utf-8")
+    code, log = run("true")
+    assert code == 0
+    assert log.index("opennextjs-cloudflare build\n") < log.index("wrangler deploy --dry-run\n")
+    assert " deploy\n" not in log
+
+
+def test_wine_container_restores_private_sdk_before_building(runner) -> None:
+    run, targets = runner
+    targets.write_text('["jra-van-datalab-cloudflare-demo"]', encoding="utf-8")
+    code, log = run("true")
+    assert code == 0
+    assert log.index("python .github/deploy/sdk.py\n") < log.index("wrangler deploy --dry-run\n")

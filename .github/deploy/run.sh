@@ -14,6 +14,10 @@ for target in "${targets[@]}"; do
     pc-keiba-viewer)
       (cd apps/pc-keiba-viewer && bunx next typegen)
       ;;
+    jra-van-datalab-cloudflare-demo)
+      PYTHONPATH=apps/finish-position-predict-container/src \
+        uv run --project apps/pc-keiba-viewer python .github/deploy/sdk.py
+      ;;
     jra-van-datalab-worker-only-probe|umacon-worker)
       bun run --filter "$target" core:prepare
       ;;
@@ -39,6 +43,22 @@ for target in "${targets[@]}"; do
       ;;
     jra-van-datalab-worker-only-probe)
       bun run --filter "$target" test:compatibility:local
+      ;;
+  esac
+done
+
+# Build the exact Worker and Container inputs without publishing versions.
+# Wrangler dry-run builds Docker images locally, preserving its configured args.
+for target in "${targets[@]}"; do
+  case "$target" in
+    pc-keiba-viewer)
+      (cd "apps/$target" && bunx opennextjs-cloudflare build && OPEN_NEXT_DEPLOY=true bunx wrangler deploy --dry-run)
+      ;;
+    finish-position-cron|mlflow-ui-proxy|jra-van-datalab-cloudflare-demo)
+      (cd "apps/$target" && ../../scripts/ensure-docker-compat.sh -- bunx wrangler deploy --dry-run)
+      ;;
+    *)
+      (cd "apps/$target" && bunx wrangler deploy --dry-run)
       ;;
   esac
 done

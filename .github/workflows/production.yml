@@ -111,6 +111,7 @@ jobs:
           shellcheck .github/deploy/run.sh
           uv run --project apps/pc-keiba-viewer python -m pytest -c .github/deploy/pyproject.toml .github/deploy
       - name: Verify Cloudflare authentication
+        if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
         run: bunx wrangler whoami
       - name: Validate and deploy in dependency order
         env:
