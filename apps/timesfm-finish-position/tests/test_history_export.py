@@ -9,7 +9,9 @@ import timesfm_finish_position.history_export as subject
 from timesfm_finish_position.history_export import (
     HISTORY_SELECT_SQL,
     duckdb_literal,
+    encoded_race_time_seconds_sql,
     export_history_parquet,
+    history_select_sql,
 )
 
 
@@ -35,6 +37,27 @@ def test_history_select_is_point_in_time_source_and_has_required_outcomes() -> N
     assert "order by race_date, race_id, horse_id" in HISTORY_SELECT_SQL
 
 
+def test_history_select_supports_jra_and_validates_scope() -> None:
+    sql = history_select_sql("jra", from_year=2000, to_year=2026)
+    assert "concat('jra:', se.kaisai_nen, ':', se.kaisai_tsukihi, ':'" in sql
+    assert "from pg.jvd_se" in sql
+    assert "from pg.jvd_ra" in sql
+    assert "group by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango" in sql
+    assert "between '2000' and '2026'" in sql
+    with pytest.raises(ValueError, match="category"):
+        history_select_sql("banei")
+    with pytest.raises(ValueError, match="from_year"):
+        history_select_sql("jra", from_year=2026, to_year=2025)
+
+
+def test_encoded_race_time_seconds_sql_decodes_mssd_positions() -> None:
+    sql = encoded_race_time_seconds_sql("encoded")
+    assert "(try_cast(trim(encoded) as bigint) // 1000) * 600" in sql
+    assert "((try_cast(trim(encoded) as bigint) // 10) % 100) * 10" in sql
+    assert "(try_cast(trim(encoded) as bigint) % 10)" in sql
+    assert "((try_cast(trim(encoded) as bigint) // 10) % 100) < 60" in sql
+
+
 def test_duckdb_literal_escapes_quotes_and_rejects_nul() -> None:
     assert duckdb_literal("local'url") == "'local''url'"
     with pytest.raises(ValueError, match="must not contain NUL"):
@@ -44,7 +67,13 @@ def test_duckdb_literal_escapes_quotes_and_rejects_nul() -> None:
 def test_export_history_parquet_uses_injected_local_connection(tmp_path: Path) -> None:
     connection = FakeConnection()
     output = tmp_path / "nested" / "history.parquet"
-    export_history_parquet(output, database_url="postgresql://local", connection=connection)
+    export_history_parquet(
+        output,
+        database_url="postgresql://local",
+        connection=connection,
+        category="jra",
+        from_year=2000,
+    )
     assert output.parent.is_dir()
     assert connection.calls[0] == ("INSTALL postgres", None)
     assert connection.calls[1] == ("LOAD postgres", None)
@@ -53,6 +82,8 @@ def test_export_history_parquet_uses_injected_local_connection(tmp_path: Path) -
         None,
     )
     assert str(output) in connection.calls[3][0]
+    assert "from pg.jvd_se" in connection.calls[3][0]
+    assert "between '2000' and '2026'" in connection.calls[3][0]
     assert "FORMAT PARQUET" in connection.calls[3][0]
     assert connection.closed is False
 
