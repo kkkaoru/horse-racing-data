@@ -101,6 +101,7 @@ vi.mock("./running-style-cron", () => ({
   planRunningStylePredictionsForDate: vi.fn(async () => ({})),
   refreshViewerRunningStyleCachesForDate: vi.fn(async () => ({})),
   refreshViewerRunningStyleCacheForRace: vi.fn(async () => false),
+  requestRunningStyleFoundationPrewarmForDate: vi.fn(async () => []),
   runRunningStyleCronTick: vi.fn(async () => ({})),
 }));
 vi.mock("./running-style-feature-materialize", () => ({
@@ -282,11 +283,13 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   expect(runRunningStyleCronTick).toHaveBeenCalled();
 });
 
-it("scheduled inference cron still plans races when batch feature warm is incomplete", async () => {
+it("scheduled inference cron defers planning when batch feature warm is incomplete", async () => {
   const { default: worker } = await import("./worker");
-  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { requestRunningStyleFoundationPrewarmForDate, runRunningStyleCronTick } =
+    await import("./running-style-cron");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
   vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
     date: "20260512",
     materializeError: "feature warm failed",
@@ -305,12 +308,28 @@ it("scheduled inference cron still plans races when batch feature warm is incomp
     ctx,
   );
   await flushWaits(waits);
-  expect(runRunningStyleCronTick).toHaveBeenCalled();
+  expect(runRunningStyleCronTick).not.toHaveBeenCalled();
+  expect(requestRunningStyleFoundationPrewarmForDate).toHaveBeenCalledWith(
+    expect.anything(),
+    "20260512",
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "skipped",
+    null,
+    JSON.stringify({
+      dates: ["20260512"],
+      readyDates: [],
+      reason: "running-style foundation not ready",
+    }),
+  );
 });
 
-it("scheduled inference cron still plans races when batch feature warm rejects", async () => {
+it("scheduled inference cron defers planning when batch feature warm rejects", async () => {
   const { default: worker } = await import("./worker");
-  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { requestRunningStyleFoundationPrewarmForDate, runRunningStyleCronTick } =
+    await import("./running-style-cron");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
   const { logFetch } = await import("./storage");
@@ -328,7 +347,11 @@ it("scheduled inference cron still plans races when batch feature warm rejects",
     ctx,
   );
   await flushWaits(waits);
-  expect(runRunningStyleCronTick).toHaveBeenCalled();
+  expect(runRunningStyleCronTick).not.toHaveBeenCalled();
+  expect(requestRunningStyleFoundationPrewarmForDate).toHaveBeenCalledWith(
+    expect.anything(),
+    "20260512",
+  );
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "materialize-running-style-features",
@@ -338,6 +361,17 @@ it("scheduled inference cron still plans races when batch feature warm rejects",
       date: "20260512",
       materializeError: "Catalog unavailable",
       mode: "inference-cron",
+    }),
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "skipped",
+    null,
+    JSON.stringify({
+      dates: ["20260512"],
+      readyDates: [],
+      reason: "running-style foundation not ready",
     }),
   );
 });

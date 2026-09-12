@@ -380,6 +380,27 @@ const triggerRunningStyleFoundationPrewarm = async (
   }
 };
 
+export const requestRunningStyleFoundationPrewarmForDate = async (
+  env: Env,
+  date: string,
+): Promise<ReadonlyArray<string>> => {
+  const { races } = await listRunningStyleRacesByDate(env, date);
+  const categories = [
+    ...new Set(
+      races.map((race) =>
+        deriveRunningStyleCategory({
+          keibajoCode: normalizeKeibajoCode(race.keibajo_code),
+          source: race.source,
+        }),
+      ),
+    ),
+  ];
+  const errors = await Promise.all(
+    categories.map((category) => triggerRunningStyleFoundationPrewarm({ category, date, env })),
+  );
+  return errors.filter((error): error is string => error !== null);
+};
+
 const gateRunningStyleFoundations = async (
   params: RunningStyleFoundationGateParams,
 ): Promise<RunningStyleFoundationGateResult> => {

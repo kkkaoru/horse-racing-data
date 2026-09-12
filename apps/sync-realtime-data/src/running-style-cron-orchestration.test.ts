@@ -95,6 +95,40 @@ it("planRunningStylePredictionsForDate returns empty summary when no races regis
   expect(summary.enqueued).toBe(0);
 });
 
+it("requestRunningStyleFoundationPrewarmForDate forces every registered category", async () => {
+  const { requestRunningStyleFoundationPrewarmForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0824",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0824",
+        keibajo_code: "83",
+        race_bango: "01",
+        source: "nar",
+      },
+    ],
+    source: "d1",
+  });
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(null, { status: 202 }))
+    .mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const env = buildEnv({ FINISH_POSITION_CRON: { fetch } });
+
+  await expect(requestRunningStyleFoundationPrewarmForDate(env, "20260824")).resolves.toEqual([
+    "HTTP 503",
+  ]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
 it("planRunningStylePredictionsForDate rejects dates beyond tomorrow before reading races", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");

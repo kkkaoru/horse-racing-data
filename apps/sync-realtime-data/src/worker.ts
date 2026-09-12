@@ -157,6 +157,7 @@ import {
   formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
   refreshViewerRunningStyleCachesForDate,
+  requestRunningStyleFoundationPrewarmForDate,
   resolveRunningStyleCronDates,
   runRunningStyleCronTick,
 } from "./running-style-cron";
@@ -1076,7 +1077,10 @@ const logRunningStyleMaterializeBestEffort = async (
   }
 };
 
-const materializeRunningStyleFeaturesBestEffort = async (env: Env, date: string): Promise<void> => {
+const materializeRunningStyleFeaturesBestEffort = async (
+  env: Env,
+  date: string,
+): Promise<boolean> => {
   try {
     const materializeResult = await withHandlerTimeout({
       label: `materialize-running-style-features:${date}`,
@@ -1088,12 +1092,14 @@ const materializeRunningStyleFeaturesBestEffort = async (env: Env, date: string)
       resolveMaterializeLogStatus(materializeResult),
       JSON.stringify({ ...materializeResult, mode: "inference-cron" }),
     );
+    return materializeResult.materializeError === undefined;
   } catch (error) {
     await logRunningStyleMaterializeBestEffort(
       env,
       "error",
       JSON.stringify({ date, materializeError: formatError(error), mode: "inference-cron" }),
     );
+    return false;
   }
 };
 
@@ -1102,8 +1108,32 @@ const logRunningStylePlanResult = async (
   scheduledAt: Date,
   ctx?: ExecutionContext,
 ): Promise<void> => {
-  for (const date of resolveRunningStyleCronDates(scheduledAt)) {
-    await materializeRunningStyleFeaturesBestEffort(env, date);
+  const dates = resolveRunningStyleCronDates(scheduledAt);
+  const readyDates: string[] = [];
+  for (const date of dates) {
+    if (await materializeRunningStyleFeaturesBestEffort(env, date)) {
+      readyDates.push(date);
+    }
+  }
+  if (readyDates.length !== dates.length) {
+    const missingDates = dates.filter((date) => !readyDates.includes(date));
+    await Promise.all(
+      missingDates.map((date) =>
+        requestRunningStyleFoundationPrewarmForDate(env, date).catch((error: unknown) =>
+          console.error(
+            formatErrorLogLine("Running-style foundation prewarm request failed", { date }, error),
+          ),
+        ),
+      ),
+    );
+    await logFetch(
+      env.REALTIME_DB,
+      "plan-running-style-predictions",
+      "skipped",
+      null,
+      JSON.stringify({ dates, readyDates, reason: "running-style foundation not ready" }),
+    );
+    return;
   }
   await runRunningStyleCronTick(env, scheduledAt, ctx)
     .then((summary) =>
@@ -5889,7 +5919,23 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         materialize.materializeError !== undefined &&
         (materialize.publishedSources?.length ?? 0) === 0
       ) {
-        throw new Error(`Running-style day foundation failed: ${materialize.materializeError}`);
+        const prewarmErrors = await requestRunningStyleFoundationPrewarmForDate(
+          env,
+          job.date,
+        ).catch((error: unknown) => [formatError(error)]);
+        await logFetch(
+          env.REALTIME_DB,
+          job.type,
+          "skipped",
+          null,
+          JSON.stringify({
+            date: job.date,
+            materializeError: materialize.materializeError,
+            prewarmErrors,
+            reason: "running-style foundation not ready",
+          }),
+        );
+        return;
       }
       // A failed NAR warm must not block an already published JRA day. The planner
       // independently gates each category's foundation before it enqueues any race.

@@ -129,6 +129,7 @@ vi.mock("./running-style-cron", () => ({
     skipped: 0,
   })),
   refreshViewerRunningStyleCacheForRace: vi.fn(async () => false),
+  requestRunningStyleFoundationPrewarmForDate: vi.fn(async () => []),
 }));
 vi.mock("./running-style-queue", () => ({
   handleRunningStylePredictionJob: vi.fn(async () => null),
@@ -548,12 +549,14 @@ it("handleJob permits category-gated planning after JRA publication even if NAR 
 });
 
 it.each([undefined, []])(
-  "handleJob retains the strict barrier when no source was published: %j",
+  "handleJob acknowledges a strict-barrier skip when no source was published: %j",
   async (publishedSources) => {
     const { handleJob } = await import("./worker");
-    const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+    const { planRunningStylePredictionsForDate, requestRunningStyleFoundationPrewarmForDate } =
+      await import("./running-style-cron");
     const { materializeRunningStyleFeatureParquetsForDate } =
       await import("./running-style-feature-materialize");
+    const { logFetch } = await import("./storage");
     vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
       date: "20260512",
       materializeError: "foundation missing",
@@ -562,15 +565,53 @@ it.each([undefined, []])(
       skipped: 0,
       publishedSources,
     });
-    await expect(
-      handleJob(buildEnv({ RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: "1" }), {
-        date: "20260512",
-        type: "plan-running-style-predictions",
-      }),
-    ).rejects.toThrow("Running-style day foundation failed");
+
+    await handleJob(buildEnv({ RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: "1" }), {
+      date: "20260512",
+      type: "plan-running-style-predictions",
+    });
+
+    expect(requestRunningStyleFoundationPrewarmForDate).toHaveBeenCalledWith(
+      expect.anything(),
+      "20260512",
+    );
     expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
+    expect(vi.mocked(logFetch).mock.calls.at(-1)).toEqual([
+      expect.anything(),
+      "plan-running-style-predictions",
+      "skipped",
+      null,
+      expect.stringContaining("foundation missing"),
+    ]);
   },
 );
+
+it("handleJob acknowledges a strict-barrier skip when the bounded prewarm request fails", async () => {
+  const { handleJob } = await import("./worker");
+  const { planRunningStylePredictionsForDate, requestRunningStyleFoundationPrewarmForDate } =
+    await import("./running-style-cron");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260512",
+    materializeError: "foundation missing",
+    materialized: 0,
+    scanned: 0,
+    skipped: 0,
+  });
+  vi.mocked(requestRunningStyleFoundationPrewarmForDate).mockRejectedValueOnce(
+    new Error("prewarm failed"),
+  );
+
+  await handleJob(buildEnv({ RUNNING_STYLE_REQUIRE_DAY_BASE_CACHE_HIT: "1" }), {
+    date: "20260512",
+    type: "plan-running-style-predictions",
+  });
+
+  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
+  expect(vi.mocked(logFetch).mock.calls.at(-1)?.[4]).toContain("prewarm failed");
+});
 
 it("handleJob continues running-style planning when feature warm throws", async () => {
   const { handleJob } = await import("./worker");
