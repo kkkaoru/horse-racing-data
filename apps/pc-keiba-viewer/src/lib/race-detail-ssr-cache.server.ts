@@ -5,7 +5,7 @@
 
 import "server-only";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
-import type { RaceSource } from "./codes";
+import { buildRaceDetailSsrCacheKey, type RaceDetailSsrCacheKeyParams } from "./race-cache-bust";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "./race-types";
 
@@ -16,23 +16,11 @@ export interface RaceDetailSsrSnapshot {
   sameVenueRaces: RaceListItem[];
 }
 
-export interface RaceDetailSsrCacheKeyParams {
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  source: RaceSource;
-  year: string;
-}
-
-// Runner snapshots gained supplemental overseas identity/profile fields on
-// 2026-08-15. Use a new key so a pre-deploy snapshot cannot hide them until
-// the race-day TTL expires.
-const RACE_DETAIL_SSR_CACHE_VERSION = "v3";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-detail-ssr-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const MIN_KV_TTL_SECONDS = 60;
+const PRE_RACE_MAX_TTL_SECONDS = 60;
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -71,20 +59,14 @@ export const getRaceDetailSsrCacheTtlSeconds = (
   const raceStartTime = getRaceStartTimeMs(params, snapshot.race);
   const expiresAt =
     (raceStartTime ?? getRaceDayFallbackBaseTimeMs(params)) + afterStartSeconds * 1000;
-  return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+  const ttlSeconds = Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+  return raceStartTime !== null && nowMs < raceStartTime
+    ? Math.min(ttlSeconds, PRE_RACE_MAX_TTL_SECONDS)
+    : ttlSeconds;
 };
 
-export const buildRaceDetailSsrCacheKey = (params: RaceDetailSsrCacheKeyParams): string =>
-  [
-    "race-detail-ssr",
-    RACE_DETAIL_SSR_CACHE_VERSION,
-    params.source,
-    params.year,
-    params.month,
-    params.day,
-    params.keibajoCode,
-    params.raceNumber,
-  ].join(":");
+export { buildRaceDetailSsrCacheKey };
+export type { RaceDetailSsrCacheKeyParams };
 
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);

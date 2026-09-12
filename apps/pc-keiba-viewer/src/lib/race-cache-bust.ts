@@ -27,6 +27,7 @@ import {
 // purge from inside a Worker).
 const RACE_CACHE_GEN_PREFIX = "race-cache:gen";
 const CACHE_WARM_MARKER_PREFIX = "race-cache:warm:v1";
+const RACE_DETAIL_SSR_CACHE_VERSION = "v4";
 const STALE_KEY_PREFIX = "stale";
 
 // PC_KEIBA_INTERNAL_TOKEN-protected internal endpoint path.
@@ -36,6 +37,15 @@ export interface RaceCacheBustRequest {
   keibajoCode: string;
   mmdd: string;
   raceBango: string;
+  source: RaceSource;
+  year: string;
+}
+
+export interface RaceDetailSsrCacheKeyParams {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
   source: RaceSource;
   year: string;
 }
@@ -102,6 +112,18 @@ export const buildRaceCacheGenerationKey = (request: RaceCacheBustRequest): stri
     request.raceBango,
   ].join(":");
 
+export const buildRaceDetailSsrCacheKey = (params: RaceDetailSsrCacheKeyParams): string =>
+  [
+    "race-detail-ssr",
+    RACE_DETAIL_SSR_CACHE_VERSION,
+    params.source,
+    params.year,
+    params.month,
+    params.day,
+    params.keibajoCode,
+    params.raceNumber,
+  ].join(":");
+
 export const buildRaceCacheWarmMarkerKey = (
   kind: RaceCacheWarmKind,
   request: RaceCacheBustRequest,
@@ -133,9 +155,23 @@ export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCache
   const previousHeatmapKeys = buildWinRateHeatmapCacheFallbackKeys(heatmapInput);
   const sectionKeys = [...sectionMainKeys, ...previousSectionKeys];
   const staleKeys = sectionKeys.map((key) => `${STALE_KEY_PREFIX}:${key}`);
+  const ssrKey = buildRaceDetailSsrCacheKey({
+    day: request.mmdd.slice(2, 4),
+    keibajoCode: request.keibajoCode,
+    month: request.mmdd.slice(0, 2),
+    raceNumber: request.raceBango,
+    source: request.source,
+    year: request.year,
+  });
   return {
     generationKey: buildRaceCacheGenerationKey(request),
-    mainKeys: [...sectionMainKeys, heatmapKey, ...previousSectionKeys, ...previousHeatmapKeys],
+    mainKeys: [
+      ...sectionMainKeys,
+      heatmapKey,
+      ssrKey,
+      ...previousSectionKeys,
+      ...previousHeatmapKeys,
+    ],
     markerKeys: [
       buildRaceCacheWarmMarkerKey("race-detail-ssr", request),
       buildRaceCacheWarmMarkerKey("race-trend", request),
