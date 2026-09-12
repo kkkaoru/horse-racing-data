@@ -14,7 +14,7 @@
 3. **72 レース (27.3%, 07-11+07-12 の全レース)** — 正しい `cell_routing.json` ルールに従うモデル版で頭数分すべて埋まっている「完全 coverage」に見えるが、**実測 top1 ≈ 8.3%・市場単勝1番人気の top1 32.4% を大幅に下回り、既知の健全ベースライン (`serve_accuracy_report.py` docstring: FULL 44.71% / DEGRADED 31.78%) にも届かない、ほぼランダムに近い品質**。score の within-race 標準偏差も健全時の 1/11 程度に潰れており、退化した (壊れた/placeholder な) 特徴量からスコアリングされた強いシグネチャを示す。この 72 レースの予測はすべて単一の書き込みイベント (2026-07-12 14:51-14:52 JST、36 レースを 23 秒で処理する明らかな一括スクリプト実行、ドキュメント記載の per-race Cloudflare Container パイプラインの挙動とは一致しない) に由来する。
 4. **2 レース (07-07 に単発バックフィル)** — n が小さすぎて品質評価不能。
 
-一方、**唯一「健全」な精度 (top1=42.86%、市場超え) を示したのは 2026-07-11 10:47 JST の Mac ローカルバッチ fallback (21 レース、`docs/finish-position-prediction-system.md` §1.2 に記載の同日中に無効化されたインシデント本体)** だったが、これは cell_routing 非対応の stale image で書かれたため誤ったモデル版 (plain default) の下に存在し、viewer の priority-0 機構は正しいモデル版 (= 上記③の壊れたデータ) を優先するため、**この健全な予測はユーザーには一切見えない**。
+一方、**唯一「健全」な精度 (top1=42.86%、市場超え) を示したのは 2026-07-11 10:47 JST の Mac ローカルバッチ fallback (21 レース、`docs/architecture/finish-position-prediction-system.md` §1.2 に記載の同日中に無効化されたインシデント本体)** だったが、これは cell_routing 非対応の stale image で書かれたため誤ったモデル版 (plain default) の下に存在し、viewer の priority-0 機構は正しいモデル版 (= 上記③の壊れたデータ) を優先するため、**この健全な予測はユーザーには一切見えない**。
 
 加えて、コードレベルで新規の defect を 1 件特定 (`focused-full-completion.ts` の `expectedModelVersion()` が venue==02 ルールを欠落) — 生きた D1 ログで false-positive re-trigger を確認済み。
 
@@ -67,7 +67,7 @@
 
 - **件数**: 21 レース (函館12 / 福島4 / 小倉5)。
 - **代表 race_id**: `jra:2026:0711:02:01` 〜 `:02:12` (函館全 12 レース)。
-- **内容**: 2026-07-11 10:47 JST の Mac ローカルバッチ fallback (`docs/finish-position-prediction-system.md` §1.2 記載の同日中に無効化されたインシデントそのもの) が書いた `model_version='jra-cb-v9-sim-2013-clean'` (plain default) の行。ルーティング未対応の stale image で書かれたため、函館 (venue=02) や 703-joken レースなど本来 `jockey-pedigree269` / `prior-corner274` に routing されるべきレースにも default モデルが書かれている。しかし **この default 行自体の予測品質は健全** (top1=42.86%、市場超え、score 分散も健全)。
+- **内容**: 2026-07-11 10:47 JST の Mac ローカルバッチ fallback (`docs/architecture/finish-position-prediction-system.md` §1.2 記載の同日中に無効化されたインシデントそのもの) が書いた `model_version='jra-cb-v9-sim-2013-clean'` (plain default) の行。ルーティング未対応の stale image で書かれたため、函館 (venue=02) や 703-joken レースなど本来 `jockey-pedigree269` / `prior-corner274` に routing されるべきレースにも default モデルが書かれている。しかし **この default 行自体の予測品質は健全** (top1=42.86%、市場超え、score 分散も健全)。
 - **問題**: viewer の priority-0 機構 (`finish-position-cell-routing.ts`) は「cell-routing 期待モデル版」を最優先で拾う設計 — これは 2026-07-11 の display-priority incident (正しい routing が Mac fallback の一括上書きで見えなくなった事故) の再発防止のために導入されたものだが、皮肉にも今回は **正しい routing 変数の下に Defect A の壊れたデータ (Cluster B) が存在するため、priority-0 がその壊れたデータを最優先表示し、同じレースに存在する健全な default 行 (Cluster A) を完全にシャドーイングする**。函館 12 レース全てで該当。
 - **対処状況**: 未対処 (コード変更なし、read-only 監査のため)。
 
@@ -259,7 +259,7 @@ venue02 ルール (`cell_routing.json` rule 3) が本番投入された 2026-07-
 
    **再トリガー前に必ず確認すること (既知の罠)**: `focused-full-completion.ts::expectedModelVersion()` が使う「既に complete」判定は、期待 model_version の **行数が揃っているかのみ** を見ており、`predicted_score` の分散などの **値の健全性は一切見ない**。この罠は実際に発生済みであり、並行する専任診断 (`jra-269-serve-defect-2026-07-17.md` §7.1) の本番 admin trigger smoke test で、劣化した 269 行が既に存在する対象レース (2026-07-12 venue02 R01) への再トリガーが行数一致のみを理由に `status: "already-complete"` で実行されずスキップされたことが確認されている。本ドキュメント §8.4 の実証結果自体 (2026-07-12 の 36 レースは行数としては期待頭数分揃っているが quality check では全て DEGRADED) がまさにこの罠の的中条件を示している。したがって再トリガーの前には、対象レースが本当に未生成かを **count だけでなく本ツールの quality check (check 2) でも確認** し、count は揃っているが quality が悪いレースについては、素朴な再トリガーが `already-complete` にブロックされて効果を持たない可能性を踏まえて対処する (§2 Defect C も参照)。
 
-3. **それでも解消しない場合のロールバック**: CF-only serving パイプライン自体を疑う場合は `docs/finish-position-prediction-system.md` §1.2 の Mac batch fallback 緊急ロールバックを検討する — 無効化済みの launchd plist は 1 コマンドで復元できる (`cp ~/Library/LaunchAgents.disabled-20260711/com.kkk4oru.finish-position-predict.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.finish-position-predict.plist`、詳細は既存 project memory `project_cf_only_serving_2026_07_11` に記載)。あるいは直近の `finish-position-cron` / `finish-position-predict-container` deploy commit への revert を検討する。いずれもデータ削除・UPDATE を伴わない (pointer/flag の revert のみ)。
+3. **それでも解消しない場合のロールバック**: CF-only serving パイプライン自体を疑う場合は `docs/architecture/finish-position-prediction-system.md` §1.2 の Mac batch fallback 緊急ロールバックを検討する — 無効化済みの launchd plist は 1 コマンドで復元できる (`cp ~/Library/LaunchAgents.disabled-20260711/com.kkk4oru.finish-position-predict.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.finish-position-predict.plist`、詳細は既存 project memory `project_cf_only_serving_2026_07_11` に記載)。あるいは直近の `finish-position-cron` / `finish-position-predict-container` deploy commit への revert を検討する。いずれもデータ削除・UPDATE を伴わない (pointer/flag の revert のみ)。
 
 ### 8.6 既知の限界
 

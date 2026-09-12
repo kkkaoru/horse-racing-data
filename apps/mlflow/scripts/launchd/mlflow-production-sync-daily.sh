@@ -81,7 +81,7 @@
 #   Same-day JRA/NAR/Ban-ei racing has finished by then, and results have
 #   typically already mirrored into the local PostgreSQL replica that
 #   sync-production / eval-champion-cells / eval-cells all read for
-#   finalized-result joins (see docs/mlflow-tracking.md SS11/SS13). Running
+#   finalized-result joins (see docs/architecture/mlflow-tracking.md SS11/SS13). Running
 #   before results land just means the day's production-usage rows get
 #   logged without an evaluation yet -- sync-production's sync_eval_logged
 #   tag stays unset and a later call (tomorrow's run, which re-covers
@@ -117,7 +117,7 @@
 #   config.load_dotenv_local() (reads apps/mlflow/.env.local) and then
 #   config.load_repo_root_env_fallback() (reads a narrow allow-listed subset
 #   of the repo-root .env) before argparse even runs -- see that function's
-#   own module docstring and docs/mlflow-tracking.md SS2.1. Those two loaders
+#   own module docstring and docs/architecture/mlflow-tracking.md SS2.1. Those two loaders
 #   exist specifically so this CLI resolves its backend URI / R2 settings
 #   correctly under launchd, which -- unlike an interactive shell -- never
 #   sources direnv's dotenv hook. This script therefore has nothing secret

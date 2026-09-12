@@ -11,7 +11,7 @@
   cached champion CatBoost artifacts + two already-existing candidate gate
   outputs). `cell_training_evaluations` (the Neon table) is **never**
   queried — its finish_position rows are documented broken (doc
-  `docs/finish-position-prediction-system.md` §6.4: eval-driver bug,
+  `docs/architecture/finish-position-prediction-system.md` §6.4: eval-driver bug,
   top1 deflated ~5-16x, unfixed as of this repo state). Every ledger number
   here is an in-memory re-score per §6.3/§6.4's mandated `score_cells.py`
   convention.
@@ -568,7 +568,7 @@ single-seed noise と確定し、**CLOSED(ADOPT せず、DO-NOT-RETEST)**とし�
   `apps/finish-position-predict-container/src/predict_lib/cell_router.py`,
   `apps/finish-position-predict-container/src/predict_lib/cell_routing.json`,
   `apps/finish-position-predict-container/src/predict_lib/model_meta.py`,
-  `docs/finish-position-prediction-system.md` §6-§8
+  `docs/architecture/finish-position-prediction-system.md` §6-§8
 - 2026 supplementary reference: `apps/pc-keiba-viewer/tmp/candidate-jra-summer3-local-replay-2026-07-17/`
   (team-lead-shared, high-fidelity 264-race local replay)
 - v2 addendum (§7): `apps/pc-keiba-viewer/tmp/candidate-jra-cell-model-ledger-2026-07-17/v2-multiseed/`

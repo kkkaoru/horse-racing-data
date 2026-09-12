@@ -1,3 +1,4 @@
+// Documentation: docs/architecture/finish-position-prediction-system.md (tests run with bun).
 // Run with bun (bunx vitest)
 
 import { readFileSync } from "node:fs";

@@ -59,7 +59,7 @@ construction, confirming these 7 are genuinely untested:
   `_edge` (summer-circuit specialist). **REJECT, global and summer-restricted,
   DO-NOT-RETEST.** Different construction: EB-shrunk vs raw, meeting-day
   vs season/quarter — no calendar-season column tested.
-- `docs/finish-position-prediction-system.md` §11 (jockey-track chemistry,
+- `docs/architecture/finish-position-prediction-system.md` §11 (jockey-track chemistry,
   jockey-switch delta, same-day jockey form, trainer-switch — all JRA/NAR/
   Ban-ei REJECT 2026-07-02): chemistry = subgroup rate **minus** career rate
   (relative diff, not raw conditional rate); switch = delta on jockey/trainer
@@ -138,7 +138,7 @@ failing because CatBoost/existing features already reconstruct them, they're
 failing because odds already price in whatever seasonal/venue/distance
 jockey-trainer skill they encode. Same mechanism as every other REJECTed
 jockey/trainer lever in this campaign (chemistry, switch, same-day form —
-`docs/finish-position-prediction-system.md` §11).
+`docs/architecture/finish-position-prediction-system.md` §11).
 
 Construction-overlap sanity check (raw Pearson r vs the chosen control
 feature, 2023) confirms these are also substantially collinear with existing

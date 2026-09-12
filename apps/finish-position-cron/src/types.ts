@@ -189,7 +189,7 @@ export interface Env {
   // prediction path can fetch venue weather data over HTTP. Plain var; optional
   // so existing callers/tests need not set it.
   VENUE_WEATHER_URL?: string;
-  // Feature flag (USER decision 11, docs/finish-position-prediction-system.md
+  // Feature flag (USER decision 11, docs/architecture/finish-position-prediction-system.md
   // §5.4): "1" switches every Container DO name lookup for a race-scoped
   // predict request (queue-consumer.ts, focused-full-cache-pickup.ts,
   // worker.ts's admin run-focused-full-race) from one DO per category to a

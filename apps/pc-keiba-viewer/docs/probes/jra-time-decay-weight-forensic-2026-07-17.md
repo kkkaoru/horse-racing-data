@@ -64,7 +64,7 @@ Two independent standalone repros already exist in this codebase, from
 two different sessions, two different categories, converging on the
 identical CatBoost runtime warning:
 
-- **Ban-ei large-scale investigation** (`docs/finish-position-prediction-system.md:1388`,
+- **Ban-ei large-scale investigation** (`docs/architecture/finish-position-prediction-system.md:1388`,
   2026-07-03): "WF wrapper の `attach_sample_weights`（time-decay 非一様
   weight）は YetiRank pairwise と非互換（`Pairwise losses don't support
 object weights`）で、prod 自体は no-weight。" That session bypassed the

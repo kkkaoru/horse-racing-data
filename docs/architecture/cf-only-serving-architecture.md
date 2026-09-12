@@ -36,7 +36,7 @@ established for finish-position -- production prediction generation must not
 depend on Mac batch processing -- that RS-kick scheduling gap is now also closed
 by a Cloudflare Cron Trigger (`finish-position-cron`'s `src/running-style-kick.ts`,
 two new crons in `wrangler.jsonc`). See
-`docs/finish-position-prediction-system.md` §1.3 for the full design, the exact
+`docs/architecture/finish-position-prediction-system.md` §1.3 for the full design, the exact
 crontab, and the guard-retirement sequence; the guard's RS-kick role is
 superseded once that CF cron is verified live, matching how §1.2 above already
 treats the guard's finish-position role as reduced to a monitor + CF-retrigger

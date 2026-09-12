@@ -1,3 +1,4 @@
+// Documentation: docs/architecture/cf-only-serving-architecture.md (tests run with bun).
 // Run with bun. Tests for the per-race coverage self-healing + pre-race readiness cron.
 
 import { beforeEach, expect, test, vi } from "vitest";

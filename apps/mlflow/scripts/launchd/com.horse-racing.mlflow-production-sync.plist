@@ -13,7 +13,7 @@
       2. eval-champion-cells --category jra,nar,banei -- re-scores each
          category's CURRENT champion model version at cell granularity over
          its default trailing 90-day window.
-    See docs/mlflow-tracking.md SS11-SS13 for what these two commands record
+    See docs/architecture/mlflow-tracking.md SS11-SS13 for what these two commands record
     and why (production-usage sync / champion cell eval / serve-vs-WF regime
     discipline).
 

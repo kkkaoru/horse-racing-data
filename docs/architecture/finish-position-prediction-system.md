@@ -1548,7 +1548,7 @@ flowchart TB
 
 ## 12. MLflow 連携（利用箇所・依存箇所）
 
-学習 run・cell 単位評価・model artifact 参照は MLflow（`apps/mlflow` / `apps/mlflow-ui` / `apps/mlflow-ui-proxy`）に記録される。バックエンド仕様（Neon Postgres backend store・artifact store・Model Registry 規約・cell 評価の記録形式など）の完全な仕様は `docs/mlflow-tracking.md` を正とし、本節では重複させず、本書が扱う着順・脚質予測パイプラインとの接点のみを記す。
+学習 run・cell 単位評価・model artifact 参照は MLflow（`apps/mlflow` / `apps/mlflow-ui` / `apps/mlflow-ui-proxy`）に記録される。バックエンド仕様（Neon Postgres backend store・artifact store・Model Registry 規約・cell 評価の記録形式など）の完全な仕様は `docs/architecture/mlflow-tracking.md` を正とし、本節では重複させず、本書が扱う着順・脚質予測パイプラインとの接点のみを記す。
 
 ### 12.1 MLflow を利用している箇所
 

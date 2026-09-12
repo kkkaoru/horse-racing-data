@@ -317,7 +317,7 @@ season/surface）に一致する cell の実測精度を、`export_production.py
 
 ## 5. §7.2 gated metrics への非影響
 
-`docs/finish-position-prediction-system.md` §7.2 の accept gate は
+`docs/architecture/finish-position-prediction-system.md` §7.2 の accept gate は
 `top1/place2/place3`（+ finish-position cell routing では place4-6 /
 top3_box）という、**`predicted_rank` の的中率**から計算される cell 単位
 の delta 指標であり、WF walk-forward 評価または本番 serve 実測のいずれか

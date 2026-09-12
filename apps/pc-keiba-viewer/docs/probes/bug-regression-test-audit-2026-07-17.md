@@ -336,7 +336,7 @@ drives live cell-routing decisions) and `subgroup_diagnostics.py`
 JRA surface classification for track_code 20/21/22 — `cell_router.py`'s
 `derive_surface` classified them as dirt (`track_code.startswith("2")`);
 `subgroup_diagnostics.py`'s `get_surface_label` classified them as turf
-(`track_code in range(10, 23)`). `docs/finish-position-prediction-system.md`
+(`track_code in range(10, 23)`). `docs/architecture/finish-position-prediction-system.md`
 §6 claims the two are consistent; they were not.
 
 ### Determining which side is correct (measured, not assumed)

@@ -198,7 +198,7 @@ independent of model quality, not a modeling lever — see the verdict below
 
 ### 4a-2. Verdict (task #28): blackout is fully explained by the item-17 starvation/work-dir bug, now fixed — CLOSED
 
-`docs/finish-position-prediction-system.md` §5.9 documents a same-category
+`docs/architecture/finish-position-prediction-system.md` §5.9 documents a same-category
 slot-starvation bug (process-scoped single-slot guard: a 2nd concurrent race
 in the same category got stuck "accepted" and DLQ'd after a 30-min retry
 budget with zero rows written) plus a follow-on work-dir-cleanup bug (a

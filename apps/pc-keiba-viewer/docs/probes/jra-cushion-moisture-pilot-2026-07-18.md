@@ -260,7 +260,7 @@ No fold-consistent signal for either arm on any primary — sign flips across fo
 #### 5.3.4 Per-cell scan (22 cells, keibajo_code × kyori_band × season_band × current_baba_condition, n≥200 each)
 
 Neither arm has any cell clear the 2-of-3-primaries gate, and none clears the §8.12 all-7-gated-
-metrics exception (docs/finish-position-prediction-system.md §8.12 item 6: if every one of the 7
+metrics exception (docs/architecture/finish-position-prediction-system.md §8.12 item 6: if every one of the 7
 gated metrics — top1..place6 + top3_box — individually clears +0.08pp, a cell may be adopted even if
 LB95 crosses 0; that did not happen in any of the 44 cell×arm combinations scanned here).
 

@@ -184,7 +184,7 @@ reported separately) among that race's longshot horses only.
   numbers and both are reported).
 - **Cell-level** (`keibajo_code` / `kyori_band` / `season_band` /
   `current_baba_condition`, n>=200, **sort-before-mask** exactly per
-  `docs/finish-position-prediction-system.md` §7.3/§9-K): lift computed
+  `docs/architecture/finish-position-prediction-system.md` §7.3/§9-K): lift computed
   per cell, not just pooled — pooled-only judgment is explicitly prohibited by
   the brief.
 - **Summer-4-venue cut** (`keibajo_code` in 01/02/03/10): lift must not

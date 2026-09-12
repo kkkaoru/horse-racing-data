@@ -114,7 +114,7 @@ byte-identical to the live recipe.
 
 Three scripts (`hpo_selection.py`, `hpo_blind_confirm.py`,
 `hpo_gate_check.py`, sharing `hpo_common.py`), matching
-docs/finish-position-prediction-system.md §7.3's standing rule that
+docs/architecture/finish-position-prediction-system.md §7.3's standing rule that
 **HPO requires a separate blind holdout for confirmation** (selection-bias
 protection) on top of the usual WF fold convention, and its sort-before-mask
 harness discipline (§7.3, last bullet) — `hpo_gate_check.py`'s cell scan
@@ -271,7 +271,7 @@ against blind-2025 (47,497 rows / 3,455 races), **paired-bootstrapped**
 already-trusted live-champion fold-2025 model
 (`tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/fold-2025/model.json`,
 never retrained, loaded directly). Gate applied per
-docs/finish-position-prediction-system.md §7.2/§8.12 exactly (see
+docs/architecture/finish-position-prediction-system.md §7.2/§8.12 exactly (see
 `hpo_gate_check.py::apply_gate`'s docstring for how §7.2's loose `>0`
 reading and §8.12's stricter `≥+0.08pp` reading are both checked at once).
 

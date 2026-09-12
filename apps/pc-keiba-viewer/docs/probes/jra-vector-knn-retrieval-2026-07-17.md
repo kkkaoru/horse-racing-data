@@ -179,7 +179,7 @@ in `race_year == 2013` are null on all 8 candidate columns as expected (no prior
 year exists within the 2013+ window). This is coarser than the per-row-strict
 date cutoff `knn-feature-cheapfilter.md` used, but still strictly leak-free (no
 same-year-or-later data ever enters a pool), and matches this repo's own WF
-fold-boundary granularity (`docs/finish-position-prediction-system.md` §8.9:
+fold-boundary granularity (`docs/architecture/finish-position-prediction-system.md` §8.9:
 train `<= (valid_year-1)/12/31`, valid = full calendar year).
 
 ### 2.5 Candidate aggregation columns

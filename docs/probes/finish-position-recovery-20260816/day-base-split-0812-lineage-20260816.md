@@ -5,7 +5,7 @@ deploy. Answers the three questions from advisor 06:53.
 
 ## 1. What changed in the 08-12 deploy
 
-Handoff (`docs/race-day-handoff-2026-08-15.md` §1): after the
+Handoff (`docs/incidents/race-day-handoff-2026-08-15.md` §1): after the
 **2026-08-12 17:29 JST** deploy, finish-position output was absent for
 three days (08-13 8 races, 08-14 19, 08-15 all 68).
 

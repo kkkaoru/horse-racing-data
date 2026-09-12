@@ -1,5 +1,5 @@
 // Run with bun. Per-race coverage self-healing + pre-race readiness cron
-// (doc §4.3, docs/cf-only-serving-architecture.md).
+// (doc §4.3, docs/architecture/cf-only-serving-architecture.md).
 //
 // Post-race path (unchanged contract): for every race whose post time is more
 // than a grace window in the past, check the same Neon completion query the

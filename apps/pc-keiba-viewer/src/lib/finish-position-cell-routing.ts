@@ -6,7 +6,7 @@
 // NAR_TRANSFORMER_BLEND_MODEL_VERSION below), so the viewer's display-priority
 // query can tell when a race was scored by a non-default model and must
 // surface that prediction instead of a later/duplicate write of the plain
-// category default. See docs/finish-position-prediction-system.md for the
+// category default. See docs/architecture/finish-position-prediction-system.md for the
 // incidents this guards against (2026-07-11: a JRA cell-routed Hakodate
 // prediction, and separately the NAR transformer blend, were both shadowed by
 // fallback writes of the plain champion model).

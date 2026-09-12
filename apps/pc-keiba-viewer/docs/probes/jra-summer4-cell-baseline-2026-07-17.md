@@ -2,7 +2,7 @@
 
 - **Date**: 2026-07-17
 - **Category**: JRA finish-position — cell-level baseline ledger for the 2026 summer-4-venue accuracy campaign
-- **Goal**: establish a confirmed, measured (not assumed) current-state ledger of cell-level accuracy for venues 01 Sapporo / 02 Hakodate / 03 Fukushima / 10 Kokura, combining (a) a WF blind-backtest ledger for the champion model and (b) an actual 2026-YTD serve-realism check against Neon production data, per docs/finish-position-prediction-system.md §6/§7/§9.
+- **Goal**: establish a confirmed, measured (not assumed) current-state ledger of cell-level accuracy for venues 01 Sapporo / 02 Hakodate / 03 Fukushima / 10 Kokura, combining (a) a WF blind-backtest ledger for the champion model and (b) an actual 2026-YTD serve-realism check against Neon production data, per docs/architecture/finish-position-prediction-system.md §6/§7/§9.
 - **Training performed**: **none**. All numbers below come from either (1) predict-only inference using the 9 already-trained CatBoost artifacts in `tmp/candidate-masked-lever-retest/models/base/` (3 seeds × 3 folds, spec-identical clone of live `jra-cb-v9-sim-2013-clean`), (2) an existing cached WF gate output (`tmp/candidate-jra-jockey-pedigree-cell/gate-v9sim-exact/`), or (3) read-only SQL against production Neon.
 - **Headline finding (not a cell-quality issue — a serving issue)**: 2026 YTD
   production predictions for these venues include a large share of
@@ -32,7 +32,7 @@
 
 ### 1.1 Cell definition and metrics
 
-Cell key follows docs/finish-position-prediction-system.md §6.1:
+Cell key follows docs/architecture/finish-position-prediction-system.md §6.1:
 `category × surface × distance_band × class_label × season × venue`. This
 probe fixes `category=jra` and reports the venue-anchored subsets team-lead
 asked for: **venue**, **venue×surface**, **venue×distance_band**,

@@ -7,7 +7,7 @@
 // unsetting one env var (RACE_SHARDED_DO), and so a cache pickup or admin
 // re-run always targets the exact DO the original race-scoped request used.
 //
-// See docs/finish-position-prediction-system.md §5.4 for the design
+// See docs/architecture/finish-position-prediction-system.md §5.4 for the design
 // rationale (USER decision 11) and
 // docs/probes/serving-latency-architecture-2026-07-17.md §2 for the
 // underlying argument: `_claim_focused_full_slot()` /

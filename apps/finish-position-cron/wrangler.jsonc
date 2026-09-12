@@ -342,7 +342,7 @@
     // venue-weather Worker base URL, forwarded into the container env so the
     // Python prediction path can fetch venue weather data over HTTP.
     "VENUE_WEATHER_URL": "https://venue-weather.kaoru.workers.dev",
-    // Race-sharded Container DO naming (USER decision 11, docs/finish-position-prediction-system.md
+    // Race-sharded Container DO naming (USER decision 11, docs/architecture/finish-position-prediction-system.md
     // §5.4.2/§5.4.3). "1" makes src/predict-do-shard.ts's resolvePredictDoName()
     // spread each category's race-scoped requests across RACE_SHARD_MAX_CONCURRENT
     // (unset here -- default 3, see types.ts) independent Container DOs instead of

@@ -1,6 +1,6 @@
 -- finish_position_coverage_gap_events: one row per per-race coverage gap the
 -- self-healing cron (coverage-self-heal.ts, doc §4.3 of
--- docs/cf-only-serving-architecture.md) found and acted on -- either
+-- docs/architecture/cf-only-serving-architecture.md) found and acted on -- either
 -- re-enqueuing a fresh focused-full message for a race whose expected
 -- prediction rows were still missing well after its grace window, or
 -- refusing to re-enqueue once the per-race escalation cap

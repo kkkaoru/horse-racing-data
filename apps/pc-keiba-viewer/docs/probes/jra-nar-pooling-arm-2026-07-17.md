@@ -41,7 +41,7 @@ sample-weighted ranking-loss training in this codebase.
 
 ## 1. Dedup — why this is genuinely untested
 
-Searched `index_closed_probes.md`, `docs/finish-position-prediction-system.md`
+Searched `index_closed_probes.md`, `docs/architecture/finish-position-prediction-system.md`
 §11 lever bank, and all `docs/probes/*.md` for prior tests of "add NAR rows
 to JRA training, evaluate JRA-only." None found. The closest neighbors are
 both confirmed distinct:

@@ -2,7 +2,7 @@
 // Neon directly, decoupled from the Win5-overlay pipeline that used to be
 // its only writer.
 //
-// docs/cf-only-serving-architecture.md §4.4: race_entry_corner_features had
+// docs/architecture/cf-only-serving-architecture.md §4.4: race_entry_corner_features had
 // no refresh path of its own -- it was populated only as a side effect of
 // apps/pc-keiba-viewer/src/scripts/generate-win5-overlay.ts (JRA Win5 gate +
 // a 14-day backward lookback + a local-PG-only write via build-corner-

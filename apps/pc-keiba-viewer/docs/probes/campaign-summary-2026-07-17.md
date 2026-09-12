@@ -3,7 +3,7 @@
 - **Date**: 2026-07-17 (JST, 06:24 開始 〜 23:59 締切)
 - **Scope**: JRA 夏4場（01札幌／02函館／03福島／10小倉）cell 精度向上キャンペーン。全成果の索引。
 - **Primary source**: `.claude/plans/2026-07-17-summer4-cell-mlflow-campaign.md` の統合判定ログ（orchestrator 記入・事実のみ）。数値・時刻はすべて同ログから引用。
-- **関連**: 本 doc は `docs/finish-position-prediction-system.md` §11 と対になる索引。§11 は JRA frontier の恒久記録、本 doc は本日 1 日分の横断インデックス（USER 指示 / verdict 一覧 / incident / heal / bug 監査 / 保留事項 / 今後の検証）。
+- **関連**: 本 doc は `docs/architecture/finish-position-prediction-system.md` §11 と対になる索引。§11 は JRA frontier の恒久記録、本 doc は本日 1 日分の横断インデックス（USER 指示 / verdict 一覧 / incident / heal / bug 監査 / 保留事項 / 今後の検証）。
 
 ---
 
@@ -160,7 +160,7 @@
 
 ### RACE_SHARDED_DO 有効化（USER decision 11）— リスクと rollback（2026-07-18 09:2x JST 実施）
 
-**内容**: `apps/finish-position-cron/wrangler.jsonc` の `vars.RACE_SHARDED_DO` を `"1"` に、`queues.consumers[0].max_concurrency` を `3`→`9` に変更（commit `a0eb365a`、Defect F 修正 `78076cc8` と同一 deploy、Version ID `84e51027-b08a-4b19-8a88-2c728d9a8be2`）。詳細設計・rollback runbook は `docs/finish-position-prediction-system.md` §5.4.2/§5.4.3。当初 17:00 JST の落ち着いた窓を想定していたが、USER が「max_concurrency 引き上げ OK / live 競合 OK」を追加承認したため即日実施——開催中の deploy・shard 切替となる。
+**内容**: `apps/finish-position-cron/wrangler.jsonc` の `vars.RACE_SHARDED_DO` を `"1"` に、`queues.consumers[0].max_concurrency` を `3`→`9` に変更（commit `a0eb365a`、Defect F 修正 `78076cc8` と同一 deploy、Version ID `84e51027-b08a-4b19-8a88-2c728d9a8be2`）。詳細設計・rollback runbook は `docs/architecture/finish-position-prediction-system.md` §5.4.2/§5.4.3。当初 17:00 JST の落ち着いた窓を想定していたが、USER が「max_concurrency 引き上げ OK / live 競合 OK」を追加承認したため即日実施——開催中の deploy・shard 切替となる。
 
 **リスク**: 各 category の Container DO 名が固定 1 個から最大 3 個（`RACE_SHARD_MAX_CONCURRENT` 既定値）に増える。`resolvePredictDoName()` は純粋関数で決定論的なため誤配線リスクは低いが、①各 shard は初回アクセス時に day-base cache が空の状態からコールドスタートする（`day-base-prewarm.ts` は意図的に category 単位のまま——各 shard は自身の day-base を最初のレースで遅延ビルド、精度影響なし・その 1 レースだけ遅い）、②同時に起動しうる Container instance 数が増える（最悪ケース `3 category × 3 shard = 9 <= max_instances: 10`、余裕は 1 instance のみ）。
 

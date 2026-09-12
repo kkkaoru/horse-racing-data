@@ -52,7 +52,7 @@ backstory and the Cloudflare-Container cron-disable rationale.
 Production prediction generation must not run on this Mac (user directive,
 2026-07-11 night, so that 2026-07-12's races are served by Cloudflare only).
 This converges the actual runtime state to the CF-only policy documented in
-`docs/finish-position-prediction-system.md` §1.1/§1.2 and §9 — a real local
+`docs/architecture/finish-position-prediction-system.md` §1.1/§1.2 and §9 — a real local
 Apple container fallback had been running via both the direct launchd fires and
 `race-prediction-guard.sh`'s escalation, and per the 2026-07-11
 serving-latency-audit it had been load-bearing (a same-day 10:47 JST batch

@@ -1136,7 +1136,7 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   }
   if (shouldRunCoverageSelfHealCron(event.cron)) {
     // Per-race coverage self-healing + pre-race readiness scan (doc §4.3,
-    // docs/cf-only-serving-architecture.md): the direct functional
+    // docs/architecture/cf-only-serving-architecture.md): the direct functional
     // replacement for race-prediction-guard.sh's day-wide COUNT check.
     // Same tick also enqueues mode=full skipDedup for incomplete races in
     // (now, now+PRE_RACE_LEAD_MINUTES] so predictions exist before post, not

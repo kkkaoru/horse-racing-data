@@ -23,7 +23,7 @@ without it.**
 ## 1. Design
 
 **Fold definitions** (this repo's standard convention,
-`docs/finish-position-prediction-system.md` §8.9): Fold A = train
+`docs/architecture/finish-position-prediction-system.md` §8.9): Fold A = train
 `race_year<=2022`, blind `race_year==2023`. Fold B = train `race_year<=2023`,
 blind `race_year==2024`. Fold C = train `race_year<=2024`, blind
 `race_year==2025`.

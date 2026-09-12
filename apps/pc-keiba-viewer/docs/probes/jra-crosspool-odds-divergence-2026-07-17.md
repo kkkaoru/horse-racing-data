@@ -272,7 +272,7 @@ list, never writes to them).
   early-stop, all-numeric (`cat_indices=[]`) — matches the live champion
   exactly.
 - **3 blind folds** (train 2013..Y-1, test Y) × **3 seeds** (42, 101, 2026).
-- **Gate** (§7.2 of `docs/finish-position-prediction-system.md`): ≥2 of
+- **Gate** (§7.2 of `docs/architecture/finish-position-prediction-system.md`): ≥2 of
   {top1, place2, place3} with delta≥+0.08pp AND LB95>0; at least one of
   {place2, place3} must pass; no metric regresses below -0.05pp.
 

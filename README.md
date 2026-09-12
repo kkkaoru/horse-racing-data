@@ -13,6 +13,20 @@ bun run prod kv pred:fp:v1:20260912:83:01
 
 初回の接続先設定とR2参照は[本番アクセス手順](docs/operations/production-access.md)を参照してください。
 
+## Documentation
+
+`docs/` 直下にはMarkdownを置かず、内容別のサブディレクトリに整理します。
+
+| Directory                                                  | 内容                                       |
+| ---------------------------------------------------------- | ------------------------------------------ |
+| [architecture](docs/architecture/)                         | 予測・配信・MLflow・天気パイプラインの設計 |
+| [data](docs/data/)                                         | データカタログ・海外履歴の仕様と採用判断   |
+| [operations](docs/operations/)                             | 本番アクセス・ローカル実行・運用上の注意   |
+| [reports](docs/reports/)                                   | 利用量・費用レポート                       |
+| [incidents](docs/incidents/)                               | 障害記録・引き継ぎ                         |
+| [finish-position-accuracy](docs/finish-position-accuracy/) | 精度評価・実験履歴                         |
+| [journals](docs/journals/)                                 | 論文・調査資料                             |
+
 ## Agent setup
 
 Paste this prompt to your coding agent (same pattern as [Cloudflare agent-setup](https://developers.cloudflare.com/agent-setup/prompt.md)):

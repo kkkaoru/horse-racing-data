@@ -1,3 +1,4 @@
+// Documentation: docs/architecture/cf-only-serving-architecture.md, docs/architecture/finish-position-prediction-system.md (tests run with bun).
 // Run with bun. Tests for the Worker fetch (health + on-demand trigger) +
 // scheduled handlers with mocked Container binding and D1.
 

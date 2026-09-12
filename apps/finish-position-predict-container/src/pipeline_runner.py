@@ -1524,7 +1524,7 @@ def build_pipeline(
 # ---------------------------------------------------------------------------
 # DAY_CHAIN / RACE_CHAIN split (per-race rebuild speedup)
 #
-# docs/cf-only-serving-architecture.md §2-3 +
+# docs/architecture/cf-only-serving-architecture.md §2-3 +
 # docs/finish-position-cloudflare-container/08-per-race-rebuild-plan.md.
 # ---------------------------------------------------------------------------
 

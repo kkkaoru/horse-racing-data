@@ -1,3 +1,4 @@
+// Documentation: docs/architecture/finish-position-prediction-system.md (tests run with bun).
 // Run with bun. Tests for the race-sharded Container DO name resolver.
 
 import { expect, test } from "vitest";

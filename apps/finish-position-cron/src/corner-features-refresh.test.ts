@@ -1,3 +1,4 @@
+// Documentation: docs/architecture/cf-only-serving-architecture.md (tests run with bun).
 // Run with bun. Tests for the corner-features Neon-direct refresh (§4.4).
 
 import { beforeEach, expect, test, vi } from "vitest";

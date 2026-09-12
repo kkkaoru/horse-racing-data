@@ -40,7 +40,7 @@ fold_year` per fold), pooled via per-race hit-rate averaging across seeds
   finished ≤2). Primaries = `{top1, place2, place3}`.
 - **Significance**: paired race-level bootstrap, 2000 iterations, fixed seed
   20260519, `delta = treatment − control`.
-- **Accept gate** (`docs/finish-position-prediction-system.md` §7.2): ≥2 of 3
+- **Accept gate** (`docs/architecture/finish-position-prediction-system.md` §7.2): ≥2 of 3
   primaries have `delta_pp >= +0.08` AND `LB95 > 0`; AND ≥1 of
   `{place2, place3}` passes; AND no metric regresses below `-0.05pp`
   (`GATE_NO_REG`).
