@@ -26,6 +26,17 @@ for target in "${targets[@]}"; do
   esac
   bun run --filter "$target" tsc
   bun run --filter "$target" test:coverage
+  case "$target" in
+    pc-keiba-viewer)
+      bun run --filter pc-keiba-viewer python:check
+      ;;
+    mlflow-ui-proxy)
+      bun run --filter mlflow python:check
+      ;;
+    jra-van-datalab-worker-only-probe)
+      bun run --filter "$target" test:compatibility:local
+      ;;
+  esac
 done
 
 if [[ "$validate_only" == true ]]; then

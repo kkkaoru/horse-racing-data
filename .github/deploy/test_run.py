@@ -105,3 +105,28 @@ def test_prediction_uses_the_existing_guarded_deploy_command(runner) -> None:
     assert "artifact:verify -- --artifact-root models --system finish-position" in log
     assert "run --filter finish-position-cron deploy\n" in log
     assert "wrangler deploy\n" not in log
+
+
+def test_viewer_python_gates_are_required_even_for_validate_only(runner) -> None:
+    run, targets = runner
+    targets.write_text('["pc-keiba-viewer"]', encoding="utf-8")
+    code, log = run("true")
+    assert code == 0
+    assert "run --filter pc-keiba-viewer python:check\n" in log
+
+
+def test_mlflow_python_gates_are_required_for_container_changes(runner) -> None:
+    run, targets = runner
+    targets.write_text('["mlflow-ui-proxy"]', encoding="utf-8")
+    code, log = run("true")
+    assert code == 0
+    assert "run --filter mlflow python:check\n" in log
+
+
+def test_private_core_compatibility_is_checked(runner) -> None:
+    run, targets = runner
+    targets.write_text('["jra-van-datalab-worker-only-probe"]', encoding="utf-8")
+    code, log = run("true")
+    assert code == 0
+    assert "run --filter jra-van-datalab-worker-only-probe core:prepare\n" in log
+    assert "run --filter jra-van-datalab-worker-only-probe test:compatibility:local\n" in log

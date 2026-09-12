@@ -32,6 +32,11 @@ jobs:
       - run: uv sync --project apps/pc-keiba-viewer --frozen --python 3.12
       - run: bunx oxfmt --check .github/deploy .github/workflows/production.yml .github/workflows/production-config-check.yml .devin
       - run: shellcheck .github/deploy/run.sh
+      - name: Check Python helper formatting and types
+        run: |
+          uv run --project scripts ruff check .github/deploy
+          uv run --project scripts ruff format --check .github/deploy
+          uv run --project apps/pc-keiba-viewer basedpyright --project .github/deploy/pyproject.toml
       - name: Test selection and immutable model transport
         env:
           PYTHONPATH: apps/finish-position-predict-container/src
