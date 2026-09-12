@@ -21,6 +21,8 @@ lib-cov
 # Coverage directory used by tools like istanbul
 coverage
 *.lcov
+# Ad-hoc cron coverage runs
+/apps/finish-position-cron/coverage-*/
 
 # nyc test coverage
 .nyc_output
@@ -212,3 +214,14 @@ tmp
 
 temp/*
 !temp/.gitignore
+
+# Generated local accuracy experiments; keep source SQL/scripts and documentation.
+# Scope these rules to experiments, not curated research snapshots or runtime assets.
+/docs/finish-position-accuracy/experiments/**/*.cbm
+/docs/finish-position-accuracy/experiments/**/*.parquet
+/docs/finish-position-accuracy/experiments/**/*.json
+/docs/finish-position-accuracy/experiments/**/*.jsonl
+/docs/finish-position-accuracy/experiments/**/*.csv
+/docs/finish-position-accuracy/experiments/**/*.txt
+# Hand-written replay protocol, not an evaluation output.
+!/docs/finish-position-accuracy/experiments/20260912-local-pg/pandas-baseline-replay-plan.json
