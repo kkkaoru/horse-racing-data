@@ -218,28 +218,29 @@ it("truncates an oversized Catalog error detail to the bounded cap", async () =>
   expect(failure instanceof Error ? failure.message.slice(-3) : "").toBe("...");
 });
 
-it("requests the dedicated ban-ei Catalog scope while preserving NAR row source", async () => {
-  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
-  const row = validFeatureRow();
-  row.category = "ban-ei";
-  row.keibajoCode = "83";
-  row.raceKey = "nar:20260715:83:01";
-  row.source = "nar";
-  const catalog = catalogReturning({
-    featureNames: ["career_win_rate"],
-    generation: "raw-iceberg-v1",
-    rows: [row],
-  });
-  await fetchRunningStyleFeaturesFromCatalog(
-    catalog,
-    { ...RACE, keibajoCode: "83", source: "nar" },
-    ["career_win_rate"],
-  );
-  const request = catalog.fetch.mock.calls[0]?.[0];
-  expect(request?.url).toBe(
-    "https://pc-keiba-r2-catalog.internal/v1/running-style-features?date=20260715&source=ban-ei&keibajoCode=83&raceBango=01",
-  );
-});
+it.each(["65", "83"])(
+  "requests the dedicated ban-ei Catalog scope for venue %s while preserving NAR row source",
+  async (keibajoCode) => {
+    const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+    const row = validFeatureRow();
+    row.category = "ban-ei";
+    row.keibajoCode = keibajoCode;
+    row.raceKey = `nar:20260715:${keibajoCode}:01`;
+    row.source = "nar";
+    const catalog = catalogReturning({
+      featureNames: ["career_win_rate"],
+      generation: "raw-iceberg-v1",
+      rows: [row],
+    });
+    await fetchRunningStyleFeaturesFromCatalog(catalog, { ...RACE, keibajoCode, source: "nar" }, [
+      "career_win_rate",
+    ]);
+    const request = catalog.fetch.mock.calls[0]?.[0];
+    expect(request?.url).toBe(
+      `https://pc-keiba-r2-catalog.internal/v1/running-style-features?date=20260715&source=ban-ei&keibajoCode=${keibajoCode}&raceBango=01`,
+    );
+  },
+);
 
 it("rejects stale or malformed generations", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");

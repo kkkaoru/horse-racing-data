@@ -3,6 +3,7 @@
 
 import { parquetReadObjects, type AsyncBuffer } from "hyparquet";
 
+import { deriveRunningStyleCategory } from "./running-style-cell-router";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
@@ -103,11 +104,14 @@ const hasFreshnessMetadata = (object: R2Object): boolean => {
   });
 };
 
+const resolveFinishPositionFeatureCategory = (params: RunningStyleRaceParams): string =>
+  deriveRunningStyleCategory({ keibajoCode: params.keibajoCode, source: params.source });
+
 export const buildFinishPositionDayBaseKey = (params: RunningStyleRaceParams): string =>
-  `${DAY_BASE_PREFIX}/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
+  `${DAY_BASE_PREFIX}/${resolveFinishPositionFeatureCategory(params)}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
 
 export const buildRunningStyleFoundationKey = (params: RunningStyleRaceParams): string =>
-  `${RUNNING_STYLE_FOUNDATION_PREFIX}/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
+  `${RUNNING_STYLE_FOUNDATION_PREFIX}/${resolveFinishPositionFeatureCategory(params)}/${params.kaisaiNen}${params.kaisaiTsukihi}/${DAY_BASE_FILE}`;
 
 const toFeatureRow = (
   raw: Record<string, unknown>,

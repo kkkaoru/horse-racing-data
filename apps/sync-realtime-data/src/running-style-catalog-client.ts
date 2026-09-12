@@ -1,6 +1,7 @@
 // Run with bun. Fixed-contract client for running-style inputs derived by the
 // catalog Worker exclusively from local-PostgreSQL-sourced raw Iceberg tables.
 
+import { deriveRunningStyleCategory } from "./running-style-cell-router";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
@@ -191,7 +192,7 @@ export const fetchRunningStyleFeaturesFromCatalog = async (
   const url = new URL("/v1/running-style-features", CATALOG_ORIGIN);
   url.searchParams.set("date", `${race.kaisaiNen}${race.kaisaiTsukihi}`);
   const keibajoCode = race.keibajoCode.padStart(2, "0");
-  const catalogSource = race.source === "nar" && keibajoCode === "83" ? "ban-ei" : race.source;
+  const catalogSource = deriveRunningStyleCategory({ keibajoCode, source: race.source });
   url.searchParams.set("source", catalogSource);
   url.searchParams.set("keibajoCode", keibajoCode);
   url.searchParams.set("raceBango", race.raceBango.padStart(2, "0"));

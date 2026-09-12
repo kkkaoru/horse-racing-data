@@ -95,7 +95,11 @@ const rawRow = (overrides: Record<string, unknown> = {}): Record<string, unknown
 });
 
 const bucketWith = (bytes: ArrayBuffer, etag = "etag-1") => {
-  const head = vi.fn(async () => ({ customMetadata: metadata, etag, size: bytes.byteLength }));
+  const head = vi.fn(async (_key: string) => ({
+    customMetadata: metadata,
+    etag,
+    size: bytes.byteLength,
+  }));
   const get = vi.fn(async (_key: string, options: R2GetOptions) => ({
     arrayBuffer: vi.fn(async () => {
       const range = options.range;
@@ -124,6 +128,44 @@ it("builds the shared finish-position day-base key", () => {
 it("builds the RS-independent daily foundation key", () => {
   expect(buildRunningStyleFoundationKey(RACE)).toBe(
     "feat-running-style-base/catalog-v1/jra/20260822/features.parquet",
+  );
+});
+
+it("routes NAR ban-ei races to the dedicated finish-position foundation", () => {
+  const banEiRace: RunningStyleRaceParams = {
+    ...RACE,
+    keibajoCode: "83",
+    source: "nar",
+  };
+  expect(buildRunningStyleFoundationKey(banEiRace)).toBe(
+    "feat-running-style-base/catalog-v1/ban-ei/20260822/features.parquet",
+  );
+  expect(buildFinishPositionDayBaseKey(banEiRace)).toBe(
+    "feat-daybase/catalog-v1/ban-ei/20260822/features.parquet",
+  );
+});
+
+it("loads NAR ban-ei rows from the dedicated category foundation", async () => {
+  const banEiRace: RunningStyleRaceParams = {
+    ...RACE,
+    keibajoCode: "83",
+    source: "nar",
+  };
+  const bytes = await parquetBytes([
+    rawRow({ category: "ban-ei", keibajo_code: "83", source: "nar" }),
+  ]);
+  const { bucket, head } = bucketWith(bytes);
+
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: banEiRace,
+  });
+
+  expect(rows).toHaveLength(1);
+  expect(rows?.[0]?.raceKey).toBe("nar:20260822:83:03");
+  expect(head.mock.calls[0]?.[0]).toBe(
+    "feat-running-style-base/catalog-v1/ban-ei/20260822/features.parquet",
   );
 });
 
