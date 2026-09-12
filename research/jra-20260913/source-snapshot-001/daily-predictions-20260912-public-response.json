@@ -1,0 +1,5 @@
+{
+  "error": "invalid_token",
+  "error_description": "Missing or invalid access token",
+  "resource_metadata": "https://pc-keiba-viewer.kkk4oru.com/.well-known/cloudflare-access-protected-resource/api/finish-predictions/daily"
+}

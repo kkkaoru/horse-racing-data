@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-09-13T01:24:51.281690+09:00",
+  "source": "read-only local PostgreSQL jvd_ra/jvd_se",
+  "source_races": 95676,
+  "daily_raw_rows": 630,
+  "special_cells": [
+    {
+      "race_id": "jra:2026:0912:09:11",
+      "race_name": "チャレンジカップ　　　　　　　　　　　　　　　　　　　　　　",
+      "cell_id": "jra-cell-8c1fd54d5a4ba6e3",
+      "canonical": "venue=09;distance=2000;season=autumn;surface=turf;class=999;race=name:チャレンジカップ",
+      "runners": 16
+    },
+    {
+      "race_id": "jra:2026:0913:06:11",
+      "race_name": "朝日杯セントライト記念　　　　　　　　　　　　　　　　　　　",
+      "cell_id": "jra-cell-1cc9628bdc7b13a2",
+      "canonical": "venue=06;distance=2200;season=autumn;surface=turf;class=999;race=name:朝日杯セントライト記念",
+      "runners": 16
+    }
+  ],
+  "limitations": [
+    "Retrospective source is not PIT attestation",
+    "NVD cross-source completeness and feature coverage not yet audited"
+  ],
+  "production_eligible": false,
+  "artifacts": [
+    {
+      "path": "research/jra-20260913/source-snapshot-001/plan-20260912.json",
+      "sha256": "0b9039304e18a36a28503d230b5eea071b221ef83a1860011593c66d118f31f8",
+      "original_sha256": "7a17b6e8dfa0ed90215f3194e091201c7169ee1ae5d8948a5ed68f34bef3c0e4"
+    },
+    {
+      "path": "research/jra-20260913/source-snapshot-001/plan-20260913.json",
+      "sha256": "44b6d613540132f28011d12c632d328942b80a0096dc0715bcfcc565640233d6",
+      "original_sha256": "779301f7e428bef48c3b90a97c25601ff8e5905c33cc42778f484f124bbaf0e6"
+    },
+    {
+      "path": "research/jra-20260913/source-snapshot-001/raw-day-starters.json",
+      "sha256": "c81c69d2cc997e105e644207b2cedd272adf56e4793f4228dd30f5bec1f2ac7a"
+    }
+  ],
+  "serialization_note": "JSON values are unchanged. sha256 verifies the committed formatted file; original_sha256, when present, preserves the original capture byte hash."
+}
