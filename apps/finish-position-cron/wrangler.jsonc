@@ -116,11 +116,11 @@
         "memory_mib": 6144,
         "disk_mb": 12000,
       },
-      // Matches the three race shards. The shared Worker slot coordinator
-      // remains the cross-role/account cap; keeping this below the shard count
-      // makes concurrent Queue deliveries fail at Container start instead of
-      // waiting on the existing bounded Queue retry path.
-      "max_instances": 3,
+      // Three addressable race shards may run concurrently. A fourth platform
+      // slot is deliberately non-addressable and absorbs Cloudflare's asynchronous
+      // stop interval after the Worker has released a terminal lease, so a new
+      // shard start does not race a still-stopping process.
+      "max_instances": 4,
       // Keep race-chain rollouts atomic so a transient first rollout can be retriggered
       // without leaving active instances pinned to the previous image.
       "rollout_step_percentage": 100,

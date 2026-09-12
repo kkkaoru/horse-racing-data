@@ -54,11 +54,12 @@ export const CONTAINER_GENERAL_SLOT_MAX = CONTAINER_MAX_INSTANCES - CONTAINER_RE
 // One shared category DO per rescore category (jra/nar/ban-ei). Combined with
 // unsharded rescore DO names this is also the max concurrent rescore instances.
 export const CONTAINER_RESCORE_SLOT_MAX = 3;
-// Keep one slot below FinishPositionRaceChainContainer.max_instances in
-// wrangler.jsonc. A terminal lease can be released before Cloudflare finishes
-// stopping its Container, so filling all three software slots races a fourth
-// start against that stopping instance and returns max_instances exceeded.
-export const RACE_CHAIN_CONTAINER_SLOT_MAX = 2;
+// Use all three bounded race-chain shards concurrently. The Container application
+// ceiling is four, leaving one non-addressable transition slot for a process that
+// Cloudflare is still stopping after its terminal lease has been released. This
+// preserves the original stop/start safety margin without idling shard 2 whenever
+// two other races are active.
+export const RACE_CHAIN_CONTAINER_SLOT_MAX = 3;
 export const CONTAINER_SLOT_STALE_MS = 20 * 60 * 1000;
 export const CONTAINER_DAY_BASE_SLOT_STALE_MS = 60 * 60 * 1000;
 export const CONTAINER_SLOT_RETRY_DELAY_SECONDS = 30;

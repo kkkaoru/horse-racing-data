@@ -51,8 +51,8 @@ test("rescore unique-DO cap is three so one category instance each", () => {
   expect(CONTAINER_RESCORE_SLOT_MAX).toBe(3);
 });
 
-test("race-chain software cap reserves one stopping-instance slot", () => {
-  expect(RACE_CHAIN_CONTAINER_SLOT_MAX).toBe(2);
+test("race-chain software cap uses all three shards while the platform reserves a transition slot", () => {
+  expect(RACE_CHAIN_CONTAINER_SLOT_MAX).toBe(3);
 });
 
 test("slot heartbeat stale window is twenty minutes", () => {
@@ -475,7 +475,7 @@ test("a stale rescore lease is dropped so a later claim can reuse that unique DO
   ]);
 });
 
-test("a third race-chain DO is capped while a stopping instance may still count", () => {
+test("a third race-chain DO uses the third shard slot", () => {
   const two: ContainerSlotLease[] = [
     makeLease({ doName: "race-chain-predict-jra-0" }),
     makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
@@ -489,9 +489,28 @@ test("a third race-chain DO is capped while a stopping instance may still count"
     workKey: "focused-full:20260826:ban-ei:83:11",
   });
 
-  expect(third.proceed).toBe(false);
-  expect(third.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
-  expect(third.leases).toStrictEqual(two);
+  expect(third.proceed).toBe(true);
+  expect(third.leases).toHaveLength(3);
+});
+
+test("a fourth race-chain DO is capped while a stopping instance may still count", () => {
+  const three: ContainerSlotLease[] = [
+    makeLease({ doName: "race-chain-predict-jra-0" }),
+    makeLease({ category: "nar", doName: "race-chain-predict-nar-0" }),
+    makeLease({ category: "ban-ei", doName: "race-chain-predict-ban-ei-0" }),
+  ];
+  const fourth = decideContainerSlotClaim(three, {
+    category: "jra",
+    doName: "race-chain-predict-jra-1",
+    kind: "focused-full",
+    now: NOW_MS,
+    staleAfterMs: CONTAINER_SLOT_STALE_MS,
+    workKey: "focused-full:20260826:jra:05:11",
+  });
+
+  expect(fourth.proceed).toBe(false);
+  expect(fourth.state).toBe(CONTAINER_SLOT_CAPPED_STATE);
+  expect(fourth.leases).toStrictEqual(three);
 });
 
 test("a stale race-chain lease is pruned before the race-chain cap is counted", () => {
