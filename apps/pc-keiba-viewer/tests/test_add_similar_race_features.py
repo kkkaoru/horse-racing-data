@@ -1385,6 +1385,8 @@ def test_staging_pipeline_computes_entity_stats(tmp_path: Path) -> None:
 def test_main_end_to_end_appends_similar_features(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("PIPELINE_SPILL_TEMP_DIR", str(tmp_path / "configured-spill"))
+    configured_spill: list[str] = []
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
@@ -1392,6 +1394,13 @@ def test_main_end_to_end_appends_similar_features(
 
     def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
         _seed_pg_schema(con)
+
+    original_attach = _fake_install_and_attach
+
+    def attach_with_spill_audit(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
+        setting = con.execute("select current_setting('temp_directory')").fetchall()[0][0]
+        configured_spill.append(Path(str(setting)).name)
+        original_attach(con, pg_url)
 
     history_scopes: list[bool] = []
     entity_scopes: list[bool] = []
@@ -1417,6 +1426,7 @@ def test_main_end_to_end_appends_similar_features(
         original_stage_entities(con, from_date, category, focused_target)
 
     monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(subject, "install_and_attach_pg", attach_with_spill_audit)
     monkeypatch.setattr(subject, "stage_similar_history", _stage_history)
     monkeypatch.setattr(subject, "stage_target_entities", _stage_entities)
     monkeypatch.setattr(
@@ -1437,6 +1447,7 @@ def test_main_end_to_end_appends_similar_features(
     subject.main()
     assert history_scopes == [True]
     assert entity_scopes == [True]
+    assert configured_spill == ["configured-spill"]
 
     verify_con = duckdb.connect(":memory:")
     rows = verify_con.execute(

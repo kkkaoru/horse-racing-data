@@ -1400,13 +1400,10 @@ def _get_years(con: _DuckDBConnectionLike, input_glob: str) -> list[int]:
 def main() -> None:
     args = parse_args()
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
-    tmp_dir = Path("/tmp/duckdb_similar_race_tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
-    con.execute(f"SET temp_directory='{tmp_dir.as_posix()}'")
     con.execute("SET max_temp_directory_size='50GB'")
     install_and_attach_pg(con, args.pg_url)
     # Whole-day input is still a narrow target set (normally one race day).
