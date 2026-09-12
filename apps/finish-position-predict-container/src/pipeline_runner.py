@@ -659,6 +659,13 @@ def _log_operational_cache_event(
     if source is not None:
         event["source"] = source
     print(json.dumps(event, separators=(",", ":"), sort_keys=True), file=sys.stderr, flush=True)
+    if cache == "market-signal-foundation":
+        race = target_race if target_race is not None else "-"
+        source_detail = "" if source is None else f" source={source}"
+        _log_pipeline_progress(
+            f"step=market-foundation status={status} category={category} "
+            f"target_race={race} reason={reason}{source_detail}"
+        )
 
 
 def _log_day_base_hit(*, category: Category, target_date: str, source: str, reason: str) -> None:
@@ -2832,7 +2839,14 @@ def _materialize_r2_market_signal_foundation(
         or artifact_head is None
         or artifact_head.identity is None
         or artifact_head.identity.etag != attestation.etag
-        or artifact_head.identity.version != attestation.version
+        # R2's Workers API exposes an opaque object.version, while the
+        # S3-compatible HEAD used by the Container returns no VersionId when
+        # bucket versioning is disabled. ETag is authoritative in that case;
+        # compare versions only when the S3 response actually supplies one.
+        or (
+            bool(artifact_head.identity.version)
+            and artifact_head.identity.version != attestation.version
+        )
     ):
         _log_operational_cache_event(
             cache="market-signal-foundation",

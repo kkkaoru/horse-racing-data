@@ -66,11 +66,14 @@ _GENERATION: Final[str] = "catalog-v1"
 _FEATURE_FILE: Final[str] = "foundation.json"
 _MAX_ROWS: Final[int] = 32
 _MAX_FEATURES: Final[int] = 524
+_CROSS_RUNTIME_FLOAT_TOLERANCE: Final[float] = 1e-12
 _RACE_ID: Final[str] = "race_id"
 _KETTO: Final[str] = "ketto_toroku_bango"
 _UMABAN: Final[str] = "umaban"
 _ODDS: Final[str] = "tansho_odds"
 _POPULARITY: Final[str] = "tansho_ninkijun"
+_ODDS_RAW: Final[str] = "tansho_odds_raw"
+_POPULARITY_RAW: Final[str] = "tansho_ninkijun_raw"
 _ODDS_SCORE: Final[str] = "odds_score"
 _POPULARITY_SCORE: Final[str] = "popularity_score"
 _CAREER_WIN_RATE: Final[str] = "career_win_rate"
@@ -223,21 +226,26 @@ def _identity_matches(
     return (
         value.get("key") == expected_key
         and value.get("etag") == expected_identity.etag
-        and value.get("version") == expected_identity.version
+        and _observed_version_matches(value.get("version"), expected_identity)
     )
+
+
+def _observed_version_matches(value: object, identity: R2ObjectIdentity) -> bool:
+    """Compare versions only when the S3-compatible HEAD exposes one."""
+    return isinstance(value, str) and (not identity.version or value == identity.version)
 
 
 def _base_identity_matches(value: object, evidence: MarketSignalBaseEvidence) -> bool:
     if not isinstance(value, dict):
         return False
-    return value == {
-        "foundationEtag": evidence.foundation_identity.etag,
-        "foundationKey": evidence.foundation_key,
-        "foundationVersion": evidence.foundation_identity.version,
-        "manifestEtag": evidence.manifest_identity.etag,
-        "manifestKey": evidence.manifest_key,
-        "manifestVersion": evidence.manifest_identity.version,
-    }
+    return (
+        value.get("foundationEtag") == evidence.foundation_identity.etag
+        and value.get("foundationKey") == evidence.foundation_key
+        and _observed_version_matches(value.get("foundationVersion"), evidence.foundation_identity)
+        and value.get("manifestEtag") == evidence.manifest_identity.etag
+        and value.get("manifestKey") == evidence.manifest_key
+        and _observed_version_matches(value.get("manifestVersion"), evidence.manifest_identity)
+    )
 
 
 def _entry_token(row: Mapping[str, object]) -> str | None:
@@ -281,8 +289,8 @@ def _snapshot_hash(rows: Sequence[Mapping[str, object]]) -> str | None:
     tokens: list[tuple[int, str]] = []
     for row in rows:
         horse_number = _positive_int(row.get(_UMABAN))
-        odds = _positive_number(row.get(_ODDS))
-        popularity = _positive_int(row.get(_POPULARITY))
+        odds = _positive_number(row.get(_ODDS_RAW))
+        popularity = _positive_int(row.get(_POPULARITY_RAW))
         if horse_number is None or odds is None or popularity is None:
             return None
         tokens.append(
@@ -311,8 +319,16 @@ def _expected_market_values(
     horse_numbers: list[int] = []
     field_sizes: list[float] = []
     for row in rows:
-        odds_value = _positive_number(row.get(_ODDS))
-        popularity_value = _positive_int(row.get(_POPULARITY))
+        odds_value = _positive_number(row.get(_ODDS_RAW))
+        popularity_value = _positive_int(row.get(_POPULARITY_RAW))
+        canonical_odds_raw = row.get(_ODDS)
+        canonical_popularity_raw = row.get(_POPULARITY)
+        canonical_odds = (
+            None if canonical_odds_raw is None else _positive_number(canonical_odds_raw)
+        )
+        canonical_popularity = (
+            None if canonical_popularity_raw is None else _positive_int(canonical_popularity_raw)
+        )
         odds_score = _finite_number(row.get(_ODDS_SCORE))
         popularity_score = _finite_number(row.get(_POPULARITY_SCORE))
         career_raw = row.get(_CAREER_WIN_RATE)
@@ -325,6 +341,8 @@ def _expected_market_values(
             or odds_score is None
             or popularity_score is None
             or horse_number is None
+            or (canonical_odds_raw is not None and canonical_odds != odds_value)
+            or (canonical_popularity_raw is not None and canonical_popularity != popularity_value)
             or (career_raw is not None and career_rate is None)
         ):
             return None
@@ -390,7 +408,12 @@ def _same_market_value(actual: object, expected: float | int | None) -> bool:
         isinstance(actual, (float, int))
         and not isinstance(actual, bool)
         and math.isfinite(float(actual))
-        and float(actual) == expected
+        and math.isclose(
+            float(actual),
+            expected,
+            rel_tol=_CROSS_RUNTIME_FLOAT_TOLERANCE,
+            abs_tol=_CROSS_RUNTIME_FLOAT_TOLERANCE,
+        )
     )
 
 

@@ -3874,8 +3874,38 @@ def test_materialize_r2_race_foundation_preserves_all_null_column_type(
     assert pq.read_schema(parquet).field("all_null").type == arrow_type(schema[-1])
 
 
+def test_market_foundation_cache_reason_is_always_recorded_as_pipeline_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress: list[str] = []
+    monkeypatch.setattr(pipeline_runner, "record_operational_progress", progress.append)
+
+    log_cache_event_attr = "_log_operational_cache_event"
+    log_cache_event = cast(Callable[..., None], getattr(pipeline_runner, log_cache_event_attr))
+    log_cache_event(
+        cache="market-signal-foundation",
+        status="miss",
+        category="jra",
+        target_date="20260824",
+        target_race="01:03",
+        reason="source-identity-mismatch",
+    )
+
+    assert progress == [
+        "step=market-foundation status=miss category=jra target_race=01:03 "
+        "reason=source-identity-mismatch"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("s3_version", "expected_hit"),
+    [("", True), ("artifact-version", True), ("stale-version", False)],
+)
 def test_materialize_market_signal_foundation_writes_typed_non_final_parquet(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    s3_version: str,
+    expected_hit: bool,
 ) -> None:
     import pyarrow.parquet as pq
 
@@ -3897,7 +3927,7 @@ def test_materialize_market_signal_foundation_writes_typed_non_final_parquet(
     source_identity = R2ObjectIdentity("source-etag", "source-version")
     foundation_identity = R2ObjectIdentity("foundation-etag", "foundation-version")
     manifest_identity = R2ObjectIdentity("manifest-etag", "manifest-version")
-    artifact_identity = R2ObjectIdentity("artifact-etag", "artifact-version")
+    artifact_identity = R2ObjectIdentity("artifact-etag", s3_version)
     readiness = pipeline_runner.FoundationReadinessSnapshot(
         expected_entries=frozenset({"H1:1"}),
         live_watermark=("20260824", 1, "none", 0, "none"),
@@ -3987,6 +4017,9 @@ def test_materialize_market_signal_foundation_writes_typed_non_final_parquet(
         readiness=readiness,
     )
 
+    if not expected_hit:
+        assert result is None
+        return
     assert result is not None
     assert "market-foundation-jra-20260824-01-03" in str(result)
     parquet = result / "race_year=2026" / "features.parquet"

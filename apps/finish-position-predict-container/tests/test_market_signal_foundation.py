@@ -193,6 +193,126 @@ def test_validate_accepts_fully_attested_equivalent_rows() -> None:
     assert result.rows[1]["form_market_edge"] is None
 
 
+def test_validate_accepts_bounded_cross_runtime_float_rounding() -> None:
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=_artifact(row_updates={"inverse_odds_market_share": 2.0 / 3.0 + 1e-14}),
+        evidence=_evidence(),
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "hit"
+    assert result.rows is not None
+
+
+def test_validate_rejects_float_difference_outside_cross_runtime_tolerance() -> None:
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=_artifact(row_updates={"inverse_odds_market_share": 2.0 / 3.0 + 1e-8}),
+        evidence=_evidence(),
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "row-value-mismatch"
+    assert result.rows is None
+
+
+def test_validate_uses_attested_raw_market_values_when_canonical_popularity_is_missing() -> None:
+    artifact = json.loads(_artifact())
+    for row in artifact["rows"]:
+        row["tansho_ninkijun"] = None
+
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=json.dumps(artifact).encode(),
+        evidence=_evidence(),
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "hit"
+    assert result.rows is not None
+
+
+def test_validate_accepts_worker_versions_when_s3_head_has_no_versions() -> None:
+    evidence = replace(
+        _evidence(),
+        foundation_identity=R2ObjectIdentity("foundation-etag", ""),
+        manifest_identity=R2ObjectIdentity("manifest-etag", ""),
+        source_identity=R2ObjectIdentity("source-etag", ""),
+    )
+
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=_artifact(),
+        evidence=evidence,
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "hit"
+    assert result.rows is not None
+
+
+def test_validate_rejects_stale_source_version_when_s3_head_exposes_version() -> None:
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=_artifact(
+            envelope_updates={
+                "source": {
+                    "etag": "source-etag",
+                    "key": _evidence().source_key,
+                    "version": "stale",
+                }
+            }
+        ),
+        evidence=_evidence(),
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "source-identity-mismatch"
+    assert result.rows is None
+
+
+def test_validate_rejects_stale_base_version_when_s3_head_exposes_version() -> None:
+    result = validate_market_signal_foundation(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        artifact_bytes=_artifact(
+            envelope_updates={
+                "base": {
+                    "foundationEtag": "foundation-etag",
+                    "foundationKey": _evidence().foundation_key,
+                    "foundationVersion": "stale",
+                    "manifestEtag": "manifest-etag",
+                    "manifestKey": _evidence().manifest_key,
+                    "manifestVersion": "manifest-version",
+                }
+            }
+        ),
+        evidence=_evidence(),
+        expected_odds_snapshot_hash=_hash("1:2:1\n2:4:2"),
+        expected_base_generation_id="base-generation",
+    )
+
+    assert result.reason == "base-identity-mismatch"
+    assert result.rows is None
+
+
 @pytest.mark.parametrize(
     "contract_updates,envelope_updates,row_updates,reason",
     [
