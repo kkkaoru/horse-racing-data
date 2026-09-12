@@ -7,6 +7,7 @@ import pytest
 
 from timesfm_finish_position.domain import FloatArray
 from timesfm_finish_position.horse_tsfm import (
+    build_horse_rolling_queries,
     build_horse_year_queries,
     forecast_horse_year,
 )
@@ -64,14 +65,56 @@ def test_build_and_forecast_horse_year_never_uses_target_year_outcomes() -> None
     assert len(queries.contexts) == 2
     assert queries.contexts[0].tolist() == [[1.0], [10.0]]
     assert queries.all_target_indices.tolist() == [2, 3, 4, 5, 6]
+    filtered = build_horse_year_queries(
+        horse_ids=horses,
+        race_dates=dates,
+        history_values=values,
+        year=2024,
+        evaluation_indices=np.asarray([2, 4], dtype=np.int64),
+    )
+    assert filtered.all_target_indices.tolist() == [2, 4]
     result = forecast_horse_year(
         queries, FakeForecaster(), fallback=np.asarray([0.5, 0.0], dtype=np.float64)
     )
     assert result.target_indices.tolist() == [2, 3, 4, 5, 6]
     assert result.history_available.tolist() == [True, True, True, False, True]
+    assert result.history_counts.tolist() == [1, 1, 1, 0, 1]
     assert result.values[0].tolist() == [2.0, 11.0]
     assert result.values[2].tolist() == [3.0, 12.0]
     assert result.values[3].tolist() == [0.5, 0.0]
+
+
+def test_rolling_queries_use_prior_observed_starts_but_not_same_or_future_dates() -> None:
+    horses, dates, values = _source()
+    queries = build_horse_rolling_queries(
+        horse_ids=horses,
+        race_dates=dates,
+        history_values=values,
+        evaluation_indices=np.asarray([2, 4, 6], dtype=np.int64),
+    )
+
+    assert queries.all_target_indices.tolist() == [2, 4, 6]
+    assert queries.contexts[0].tolist() == [[1.0], [10.0]]
+    assert queries.contexts[1].tolist() == [[1.0, 3.0], [10.0, 30.0]]
+    assert queries.contexts[2].tolist() == [[1.0, 3.0, 5.0], [10.0, 30.0, 50.0]]
+
+
+def test_horse_year_queries_keep_all_prior_starts_unless_ablation_caps_them() -> None:
+    horses = np.asarray(["h1"] * 13, dtype=np.str_)
+    dates = np.asarray(
+        [*[f"2023{month:02d}01" for month in range(1, 13)], "20240101"], dtype=np.str_
+    )
+    values = np.arange(13, dtype=np.float64).reshape((-1, 1))
+
+    complete = build_horse_year_queries(
+        horse_ids=horses, race_dates=dates, history_values=values, year=2024
+    )
+    capped = build_horse_year_queries(
+        horse_ids=horses, race_dates=dates, history_values=values, year=2024, max_history=5
+    )
+
+    assert complete.contexts[0].shape == (1, 12)
+    assert capped.contexts[0].tolist() == [[7.0, 8.0, 9.0, 10.0, 11.0]]
 
 
 def test_horse_year_queries_and_forecasts_validate_contracts() -> None:
