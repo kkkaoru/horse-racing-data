@@ -51,7 +51,10 @@ test("accepts JRA only after D1 contains every authoritative Catalog race", asyn
   ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 
   expect(fetch).toHaveBeenCalledWith(
-    new Request("https://pc-keiba-r2-catalog.internal/v1/race-keys?date=20260830"),
+    expect.objectContaining({
+      method: "GET",
+      url: "https://pc-keiba-r2-catalog.internal/v1/race-keys?date=20260830",
+    }),
   );
   expect(prepare).toHaveBeenCalledWith(expect.stringContaining("source = 'jra'"));
   expect(bind).toHaveBeenCalledWith("2026", "0830");
