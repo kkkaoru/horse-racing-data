@@ -125,7 +125,7 @@ it("recovers all 18 synthetic runners and all three rates through JSON continuat
   const fetchSite = jsonFetch({
     "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
   });
-  const text = await collectCompactText(fetchSite, compactRaceArgs);
+  const text = await collectCompactText(fetchSite, { ...compactRaceArgs, limit: 99 });
   const payload = JSON.parse(text);
   expect(payload.total).toBe(18);
   expect(payload.nextOffset).toBe(null);
@@ -158,6 +158,39 @@ it("recovers all 18 synthetic runners and all three rates through JSON continuat
     ),
   ).toBe(true);
   expect(text.length).toBeLessThan(50000);
+});
+
+it.each(["get_win_rate_heatmap_display", "get_win_rate_heatmap_compact"])(
+  "%s defaults to a small complete first horse page",
+  async (name) => {
+    const result = await callMcpTool(
+      name,
+      compactRaceArgs,
+      jsonFetch({
+        "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
+      }),
+    );
+    const payload = JSON.parse(result.content[0]?.text ?? "{}");
+    expect(result.isError).toBe(false);
+    expect(payload.rows.length).toBe(1);
+    expect(payload.rows[0].horseNumber).toBe("1");
+    expect(payload.total).toBe(18);
+    expect(payload.nextOffset).toBe(1);
+    expect(payload.encoding).toBeUndefined();
+    expect(result.content[0]?.text.length).toBeLessThan(5000);
+  },
+);
+
+it("display tool accepts explicit showStarts as a rendering opt-in", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_display",
+    {
+      ...compactRaceArgs,
+      showStarts: false,
+    },
+    failingFetch,
+  );
+  expect(result.isError).toBe(true);
 });
 
 it("returns 18 independently readable horse pages below the chunk boundary", async () => {
@@ -890,10 +923,11 @@ it("search_entities validates kind and query", async () => {
   });
 });
 
-it("get_win_rate_heatmap_display uses the same display builder as the table", async () => {
+it("get_win_rate_heatmap_display uses the same display builder as the table when requested", async () => {
   const result = await callMcpTool(
     "get_win_rate_heatmap_display",
     {
+      viewMode: "winRate",
       day: "20",
       keibajoCode: "05",
       month: "08",

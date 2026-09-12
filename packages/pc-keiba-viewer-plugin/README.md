@@ -120,7 +120,11 @@ Each row contains only `horseNumber`, `horseName`, and `heatmap`; each
 `heatmap[columnKey]` contains `name`, `starts`, `winRate`, `quinellaRate`, and
 `showRate`. All column keys from the shared row builder are retained, including
 columns that the UI may hide. Precomputed `horseRateStats` are passed through
-as on the site. The display tool and the site's rendering are unchanged.
+as on the site. The site's rendering is unchanged. The existing
+`get_win_rate_heatmap_display` tool now also defaults to compact, one-horse
+pages. Explicit `viewMode` or `showStarts` requests the legacy large display
+model; omit both for normal analysis. Horse selection and pagination apply only
+to compact output.
 
 Example: retrieve the first horse in 2026-09-12 Hanshin 4R:
 
@@ -139,7 +143,8 @@ Example: retrieve the first horse in 2026-09-12 Hanshin 4R:
 
 Repeat with the returned `nextOffset` until it is null. `total` counts selected
 horses before row pagination. An offset beyond the final horse returns an empty
-terminal page. Omit `limit` to request all selected horses. `horseNumbers` is an
+terminal page. Omit `limit` for one horse per page; explicitly set `limit: 99`
+to request all selected horses. `horseNumbers` is an
 optional nonempty array such as `["1", "02", "18"]`; omitted means all runners.
 Leading zeros and duplicates are normalized. Unknown horse numbers are errors.
 Rows remain in horse-number order, with filtering applied before offset/limit

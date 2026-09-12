@@ -15,11 +15,11 @@ const emptyRows: WinRateHeatmapRow[] = buildWinRateHeatmapRows({
   similarRows: [],
 });
 
-it("defaults to all horses and no row limit", () => {
+it("defaults to all horses selected and one horse per page", () => {
   expect(parseCompactHeatmapOptions({})).toStrictEqual({
     horseNumbers: null,
     offset: 0,
-    limit: null,
+    limit: 1,
   });
   expect(
     buildCompactHeatmap(emptyRows, { horseNumbers: null, offset: 0, limit: null }),

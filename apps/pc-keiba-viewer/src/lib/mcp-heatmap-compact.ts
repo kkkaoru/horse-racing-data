@@ -27,6 +27,7 @@ export interface CompactHeatmapPage {
 
 export const MAX_COMPACT_HEATMAP_LIMIT: number = 99;
 const FIRST_OFFSET: number = 0;
+const DEFAULT_COMPACT_HEATMAP_LIMIT: number = 1;
 const HORSE_NUMBER_PATTERN: RegExp = /^(?:0?[1-9]|[1-9]\d)$/;
 
 const isHorseNumber = (value: unknown): value is string =>
@@ -63,7 +64,7 @@ export const parseCompactHeatmapOptions = (
       ? [...new Set(horseNumbers.map((number: string) => String(Number(number))))]
       : null,
     offset,
-    limit: typeof limit === "number" ? limit : null,
+    limit: typeof limit === "number" ? limit : DEFAULT_COMPACT_HEATMAP_LIMIT,
   };
 };
 
