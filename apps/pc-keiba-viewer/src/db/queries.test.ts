@@ -390,6 +390,11 @@ it("getRaceRunners joins JRA overseas identities by the complete race-entry key"
   expect(queryText).toMatch(/identity\.umaban = se\.umaban/u);
   expect(queryText).toMatch(/identity\.horse_name_full/u);
   expect(queryText).toMatch(/identity\.source_horse_id/u);
+  expect(queryText).toMatch(/se\.data_kubun <> '\s*1\s*'/u);
+  expect(queryText).toMatch(/se\.umaban ~ '\s*\^\(0\[1-9\]\|1\[0-8\]\)\$\s*'/u);
+  expect(queryText).toMatch(/se\.ketto_toroku_bango ~ '\s*\^\[0-9\]\{10\}\$\s*'/u);
+  expect(queryText).toMatch(/se\.ketto_toroku_bango <> '\s*0000000000\s*'/u);
+  expect(queryText).toMatch(/order by cast\(se\.umaban as integer\) asc/u);
 });
 
 it("getHorseRaceResults excludes empty and all-zero identities for a JRA current race", async () => {
@@ -3261,6 +3266,10 @@ it("get-race-trainings-sql-left-joins-runners-with-no-workout-rows", async () =>
   expect(/from all_workouts/u.test(queryText)).toBe(true);
   expect(queryText).toMatch(/n\.rider_name as "trainingRiderName"/u);
   expect(queryText).toMatch(/n\.training_type/u);
+  expect(queryText).toMatch(/interval '\s*90 days\s*'/u);
+  expect(queryText).toMatch(/data_kubun <> '\s*1\s*'/u);
+  expect(queryText).toMatch(/umaban ~ '\s*\^\(0\[1-9\]\|1\[0-8\]\)\$\s*'/u);
+  expect(queryText).toMatch(/ketto_toroku_bango <> '\s*0000000000\s*'/u);
 });
 
 it("get-race-trainings-partitions workout rows by runner number for real and placeholder IDs", async () => {

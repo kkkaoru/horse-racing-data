@@ -24,7 +24,11 @@ const KV_MAX_TTL_SECONDS = 60 * 60 * 24;
 // per-race cache-bust endpoint targets a different KV key scheme, so any
 // shape change to the cached payload needs its own bump here or pre-warmed
 // entries keep serving the old shape for up to PC_KEIBA_DB_CACHE_TTL_SECONDS.
-const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v10";
+// Bumped v10->v11 on 2026-09-12 after provisional JV SE rows reached race-card
+// snapshots. The JRA runner query now rejects provisional/placeholder identities.
+// Bumped v11->v12 when the PostgreSQL training fallback gained confirmed-runner
+// validation and a bounded 90-day history window for Catalog outages.
+const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v12";
 
 declare global {
   interface CacheStorage {

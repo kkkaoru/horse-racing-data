@@ -836,7 +836,14 @@ export const getRaceRunners = cache(
             and se.kaisai_tsukihi = ${monthDay}
             and se.keibajo_code = ${keibajoCode}
             and se.race_bango = ${raceNumber}
-          order by se.umaban asc, se.ketto_toroku_bango asc
+            -- Provisional JV rows can coexist with confirmed rows because
+            -- their umaban and horse identity are part of the primary key.
+            -- Fail closed instead of rendering placeholder runners.
+            and se.data_kubun <> '1'
+            and se.umaban ~ '^(0[1-9]|1[0-8])$'
+            and se.ketto_toroku_bango ~ '^[0-9]{10}$'
+            and se.ketto_toroku_bango <> '0000000000'
+          order by cast(se.umaban as integer) asc, se.ketto_toroku_bango asc
         `);
         return jraResult.rows;
       },
@@ -3764,10 +3771,17 @@ export const getRaceTrainings = cache(
           and kaisai_tsukihi = ${monthDay}
           and keibajo_code = ${keibajoCode}
           and race_bango = ${raceNumber}
+          and data_kubun <> '1'
+          and umaban ~ '^(0[1-9]|1[0-8])$'
+          and ketto_toroku_bango ~ '^[0-9]{10}$'
+          and ketto_toroku_bango <> '0000000000'
       ),
       race_window as (
         select
-          to_char(to_date(${year} || ${monthDay}, 'YYYYMMDD') - interval '14 days', 'YYYYMMDD') as start_date,
+          -- Catalog normally supplies current netkeiba supplements. If that
+          -- service is unavailable, retain a bounded 90-day official-history
+          -- fallback rather than dropping a runner's training time entirely.
+          to_char(to_date(${year} || ${monthDay}, 'YYYYMMDD') - interval '90 days', 'YYYYMMDD') as start_date,
           ${year} || ${monthDay} as end_date
       ),
       workouts as (
