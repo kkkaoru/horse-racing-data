@@ -6,6 +6,7 @@
     "apps/pc-keiba-viewer/src/scripts/finish-position-features",
     "apps/finish-position-predict-container/src"
   ],
+  "stubPath": "apps/pc-keiba-viewer/typings",
   "pythonVersion": "3.12",
   "typeCheckingMode": "strict",
   "reportAny": "none",

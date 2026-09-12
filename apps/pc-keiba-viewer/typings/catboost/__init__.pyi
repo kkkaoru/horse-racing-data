@@ -1,0 +1,33 @@
+"""Typed subset of the CatBoost API exercised by this package."""
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Self
+
+import numpy as np
+from numpy.typing import NDArray
+
+class Pool:
+    def __init__(self, data: object, label: object = ..., **kwargs: object) -> None: ...
+
+class CatBoost:
+    tree_count_: int | None
+    feature_names_: list[str]
+    def __init__(
+        self, params: Mapping[str, object] | None = ..., **kwargs: object
+    ) -> None: ...
+    def fit(self, X: object, y: object = ..., **kwargs: object) -> Self: ...
+    def predict(self, data: object, **kwargs: object) -> NDArray[np.float64]: ...
+    def get_best_iteration(self) -> int | None: ...
+    def save_model(
+        self, fname: str | Path, format: str = ..., **kwargs: object
+    ) -> None: ...
+    def load_model(
+        self, fname: str | Path, format: str = ..., **kwargs: object
+    ) -> Self: ...
+    def get_feature_importance(
+        self, data: object = ..., **kwargs: object
+    ) -> NDArray[np.float64]: ...
+    def get_params(self, deep: bool = ...) -> dict[str, object]: ...
+
+class CatBoostRanker(CatBoost): ...
