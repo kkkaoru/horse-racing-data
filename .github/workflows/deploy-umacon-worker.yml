@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-umacon-worker-production
+  group: production-main
   cancel-in-progress: false
 
 jobs:

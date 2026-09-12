@@ -1,0 +1,64 @@
+{
+  "repo_notes": [
+    {
+      "content": "Use current source and configuration as authority. Historical docs/probes and accuracy experiments are not proof of current production state. Cover every workspace within the pages below and explain cross-package relationships. Do not publish secret values. Preserve strict coverage rules from AGENTS.md."
+    }
+  ],
+  "pages": [
+    {
+      "title": "Architecture and developer setup",
+      "purpose": "Map every apps/* and packages/* workspace, runtime, dependency, data flow, package instruction, and verification command.",
+      "parent": null
+    },
+    {
+      "title": "Data ingestion and freshness",
+      "purpose": "Document sync-realtime-data, sync-realtime-data-hot, sync-realtime-data-features, daily-keiba-sync, local-postgresql, and race-time freshness guarantees.",
+      "parent": null
+    },
+    {
+      "title": "Storage and catalog",
+      "purpose": "Document horse-racing-data-lake, horse-racing-duckdb, pc-keiba-r2-catalog, schemas, R2 access, migrations and read paths.",
+      "parent": null
+    },
+    {
+      "title": "Viewer and APIs",
+      "purpose": "Document pc-keiba-viewer UI, APIs, SSR caches, authentication and data sources.",
+      "parent": null
+    },
+    {
+      "title": "Prediction orchestration",
+      "purpose": "Document finish-position-cron and finish-position-predict-container queues, Durable Objects, model loading, retries, concurrency and deployment safety.",
+      "parent": null
+    },
+    {
+      "title": "Features and model evaluation",
+      "purpose": "Document viewer Python feature engineering, training, temporal splits, leakage controls, model promotion, historical experiments and current production provenance.",
+      "parent": null
+    },
+    {
+      "title": "Time series and weather",
+      "purpose": "Document timesfm-finish-position and venue-weather, platform requirements, feature timestamps and model consumers.",
+      "parent": null
+    },
+    {
+      "title": "MLflow and observability",
+      "purpose": "Document mlflow, mlflow-ui, mlflow-ui-proxy and pipeline-health-monitor monitoring, artifacts and incident diagnosis.",
+      "parent": null
+    },
+    {
+      "title": "Desktop and external sources",
+      "purpose": "Document JRA-VAN apps, umacon-worker, save-oversea-keiba-records and scripts desktop automation, separating Linux, macOS and Windows capabilities.",
+      "parent": null
+    },
+    {
+      "title": "Shared libraries and agent tools",
+      "purpose": "Document every packages/* library, the viewer MCP plugin, authentication and client integration.",
+      "parent": null
+    },
+    {
+      "title": "Testing and operations",
+      "purpose": "Document lefthook, package coverage gates, GitHub Actions, deployment scripts, secrets requirements and operational runbooks.",
+      "parent": null
+    }
+  ]
+}

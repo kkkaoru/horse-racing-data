@@ -1,6 +1,5 @@
+// Run with bun via the package Vitest scripts.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
 import {
   buildJraPremiumSourceRaceId,
@@ -160,11 +159,12 @@ describe("premium race parsing", () => {
     ).toStrictEqual(["202642052501", "20264201", "2026421"]);
   });
 
-  it("parses data top horses from the sample page", () => {
-    const html = readFileSync(resolve(process.cwd(), "../../tmp/_netkeiba_data_top.html"), "utf8");
+  it("parses ranked horses from a self-contained data-top page", () => {
+    const html: string =
+      '<div class="DataPickupHorseArea">\n  <dl>\n    <dt><span class="Umaban_Num">1</span></dt>\n    <dd>\n      <a class="data_top_horse_link">ヌクレオチド</a>\n      <dd class="PickupDataBox">\n        <ul>\n          <li>このコースが得意な馬</li>\n          <li>このコースに実績がある種牡馬</li>\n          <li>今回の馬場状態が得意な馬</li>\n        </ul>\n      </dd>\n    </dd>\n  </dl>\n  <dl>\n    <dt><span class="Umaban_Num">14</span></dt>\n    <dd>\n      <a class="data_top_horse_link">ウインビギニング</a>\n      <dd class="PickupDataBox">\n        <ul>\n          <li>このコースが得意な騎手</li>\n          <li>今回のレース間隔で実績がある馬</li>\n          <li>今回の馬場状態が得意な馬</li>\n        </ul>\n      </dd>\n    </dd>\n  </dl>\n  <dl>\n    <dt><span class="Umaban_Num">8</span></dt>\n    <dd>\n      <a class="data_top_horse_link">アイデアユー</a>\n      <dd class="PickupDataBox">\n        <ul>\n          <li>このコースが得意な調教師</li>\n          <li>今回の馬場状態が得意な馬</li>\n          <li>このコースで有利な枠順</li>\n        </ul>\n      </dd>\n    </dd>\n  </dl>\n</div>\n';
     const parsed = parsePremiumDataTopHorses(html, dataTopEnv);
 
-    expect(parsed).toEqual([
+    expect(parsed).toStrictEqual([
       {
         horseName: "ヌクレオチド",
         horseNumber: "1",
@@ -363,8 +363,9 @@ describe("premium race parsing", () => {
     expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(false);
   });
 
-  it("recognises the authorized comment fixture saved to tmp/netkeiba-comment.html", () => {
-    const html = readFileSync(resolve(process.cwd(), "../../tmp/netkeiba-comment.html"), "utf8");
+  it("recognises an authorized table even when a registration prompt is also present", () => {
+    const html: string =
+      '<div class="Premium_Regist_Box"></div><table id="All_Comment_Table" class="Stable_Comment Comment_Table_Show_All"><tbody></tbody></table>';
     expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(true);
   });
 });
