@@ -111,3 +111,62 @@ Requires `python3` on `PATH` (`mcp.json` `command` is `python3`; the proxy uses 
 
 After install, the skill `/pc-keiba-viewer-mcp` and MCP tools such as
 `authenticate` and `get_win_rate_heatmap_display` should appear.
+
+## Compact heatmap for MCP clients
+
+Prefer `get_win_rate_heatmap_compact` for analysis. It returns all three rates
+as numeric percentages, preserving null (unavailable) separately from zero.
+Each row contains only `horseNumber`, `horseName`, and `heatmap`; each
+`heatmap[columnKey]` contains `name`, `starts`, `winRate`, `quinellaRate`, and
+`showRate`. All column keys from the shared row builder are retained, including
+columns that the UI may hide. Precomputed `horseRateStats` are passed through
+as on the site. The display tool and the site's rendering are unchanged.
+
+Example: retrieve the first horse in 2026-09-12 Hanshin 4R:
+
+```json
+{
+  "year": "2026",
+  "month": "09",
+  "day": "12",
+  "keibajoCode": "09",
+  "raceNumber": "04",
+  "source": "jra",
+  "offset": 0,
+  "limit": 1
+}
+```
+
+Repeat with the returned `nextOffset` until it is null. `total` counts selected
+horses before row pagination. An offset beyond the final horse returns an empty
+terminal page. Omit `limit` to request all selected horses. `horseNumbers` is an
+optional nonempty array such as `["1", "02", "18"]`; omitted means all runners.
+Leading zeros and duplicates are normalized. Unknown horse numbers are errors.
+Rows remain in horse-number order, with filtering applied before offset/limit
+and after the shared statistics are built.
+
+Large responses still use the server's existing JSON-text envelope. If
+`encoding` is `json-text`, repeat exactly the same tool and arguments, adding
+`responseCursor` equal to `nextResponseCursor`. Concatenate every `dataChunk`
+before parsing the JSON; stop when `complete` is true. The cursor counts Unicode
+characters, not bytes. `limit: 1` usually avoids this extra step, but clients must
+still handle unusually long names. This transport envelope may exceed 5,000
+characters because JSON escaping and envelope fields are additional to the
+5,000-character data chunk.
+
+These are live reads, not a snapshot token: if the race data changes during
+pagination, restart from offset/cursor zero. Clients requiring an immutable
+snapshot should collect and store the upstream API payload once.
+
+Deploy the updated Worker before refreshing/reconnecting the client's MCP tool
+definitions. Confirm `get_win_rate_heatmap_compact` and its `horseNumbers`,
+`offset`, `limit`, and `responseCursor` arguments appear. If a client still shows
+the older display-only schema without `responseCursor`, it cannot continue a
+chunked response even when the current server implementation supports it.
+
+Validated locally against saved production API data for 2026-09-12 Hanshin 4R
+(JRA, venue 09, race 04): 18 horses and 252 cells matched the shared row builder.
+The serialized display/all response was 209,784 Unicode characters; compact was
+23,631 (88.7% smaller). Single-horse pages were 1,314–1,395 characters, and all
+18 pages exactly reconstructed the full compact rows. This verifies saved-data
+processing, not deployment or refreshed-client connectivity.

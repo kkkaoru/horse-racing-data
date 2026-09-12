@@ -9,10 +9,16 @@ import {
   type FinishPredictionSummaryError,
   type FinishPredictionSummaryRoute,
 } from "./mcp-finish-prediction-summary";
+import {
+  buildCompactHeatmap,
+  MAX_COMPACT_HEATMAP_LIMIT,
+  parseCompactHeatmapOptions,
+} from "./mcp-heatmap-compact";
 import { isPaddockAction, type PaddockAction } from "./paddock";
 import { inferRaceSourceFromKeibajoCode } from "./runner-format";
 import {
   buildWinRateHeatmapDisplay,
+  buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
   type WinRateHeatmapViewMode,
@@ -28,6 +34,8 @@ export interface McpSiteFetchInit {
 export type McpSiteFetch = (pathWithQuery: string, init?: McpSiteFetchInit) => Promise<Response>;
 
 interface McpJsonSchemaProperty {
+  items?: McpJsonSchemaProperty;
+  minItems?: number;
   description?: string;
   enum?: readonly (number | string | null)[];
   maximum?: number;
@@ -232,6 +240,40 @@ const RACE_ROUTE_PROPERTIES: Record<string, McpJsonSchemaProperty> = {
 };
 
 export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
+  {
+    name: "get_win_rate_heatmap_compact",
+    description:
+      "Get all three heatmap rates as numbers (percent), names and starts only, using the same row builder as the UI. Missing values remain null. horseNumbers omitted selects all runners; selection happens after statistics are built. Prefer limit: 1 and repeat with nextOffset for small, independently readable pages. Omit limit for all selected horses. If dataChunk is returned, repeat identical arguments with nextResponseCursor as responseCursor and concatenate chunks before parsing JSON. Refresh the client tool definitions after upgrading the server.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        ...RACE_ROUTE_PROPERTIES,
+        horseNumbers: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", pattern: "^(?:0?[1-9]|[1-9]\\d)$" },
+          description:
+            'Horse numbers, e.g. ["1","02"]. Duplicates are ignored. Unknown horses are rejected. Omit for all horses.',
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Zero-based row offset after filtering, in horse-number order. Use nextOffset for the next page.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_COMPACT_HEATMAP_LIMIT,
+          description:
+            "Maximum horses per page. Omit for all selected horses. Start with 1 to keep responses small.",
+        },
+        responseCursor: RESPONSE_CURSOR_PROPERTY,
+      },
+      required: ["year", "month", "day", "keibajoCode", "raceNumber"],
+      type: "object",
+    },
+  },
   {
     description:
       "Verify MCP bearer auth and that this Worker can read /api/spec (the same spec the site serves). Cloudflare Access for humans is unchanged; this tool runs only after Access and MCP bearer both succeed.",
@@ -1312,6 +1354,38 @@ export const callMcpTool = async (
   }
   if (name === "get_race_entity_recent_results") {
     return getRaceEntityRecentResults(args, fetchSite, responseCursor);
+  }
+  if (name === "get_win_rate_heatmap_compact") {
+    const parsed = parseRaceRoute(args);
+    if (typeof parsed === "string") return errorResult(parsed);
+    const options = parseCompactHeatmapOptions(args);
+    if (typeof options === "string") return errorResult(options);
+    const section = await fetchSiteJson(
+      fetchSite,
+      raceApiPath(parsed, "sections/win-rate-heatmap"),
+    );
+    if (!section.ok || !isWinRateHeatmapSectionPayload(section.value)) {
+      return errorResult("win-rate-heatmap section payload is unavailable");
+    }
+    const realtime = await fetchSiteJson(fetchSite, raceApiPath(parsed, "realtime"));
+    const compact = buildCompactHeatmap(
+      buildWinRateHeatmapRows({
+        bloodlineRows: section.value.bloodlineRows,
+        carriedWeightClassStats: section.value.carriedWeightClassStats,
+        frameStats: section.value.frameStats,
+        horseRateStats: section.value.horseRateStats,
+        horseResults: section.value.horseResults,
+        keibajoCode: parsed.keibajoCode,
+        liveWeightKgByHorse: readLiveWeights(realtime.value),
+        runners: section.value.runners,
+        similarRows: section.value.similarRows,
+        weightClassStats: section.value.weightClassStats,
+      }),
+      options,
+    );
+    return typeof compact === "string"
+      ? errorResult(compact)
+      : okChunkedJson(compact, responseCursor);
   }
   if (name === "get_win_rate_heatmap_display") {
     const parsed = parseRaceRoute(args);

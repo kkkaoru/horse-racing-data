@@ -1,3 +1,5 @@
+import { isAbsolute, relative, sep } from "node:path";
+
 import { expect, test } from "vitest";
 
 import {
@@ -156,6 +158,6 @@ test("resolveOutputPath leaves absolute paths alone", () => {
 
 test("resolveOutputPath resolves relative paths against cwd", () => {
   const resolved = resolveOutputPath("tmp/x.csv");
-  expect(resolved.endsWith("tmp/x.csv")).toBe(true);
-  expect(resolved.startsWith("/")).toBe(true);
+  expect(relative(process.cwd(), resolved).split(sep)).toStrictEqual(["tmp", "x.csv"]);
+  expect(isAbsolute(resolved)).toBe(true);
 });

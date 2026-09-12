@@ -1,3 +1,4 @@
+import { relative } from "node:path";
 // Run with bun via the pc-keiba-viewer vitest config.
 import { pathToFileURL } from "node:url";
 
@@ -58,17 +59,17 @@ it("shouldEnableCloudflareRemoteBindings only enables remote bindings with expli
 
 it("getCloudflareDevConfigPath resolves wrangler.dev.jsonc beside next.config.ts", () => {
   const configPath = getCloudflareDevConfigPath(NEXT_CONFIG_URL);
-  expect(configPath.endsWith("/apps/pc-keiba-viewer/wrangler.dev.jsonc")).toBe(true);
+  expect(relative(process.cwd(), configPath)).toBe("wrangler.dev.jsonc");
 });
 
 it("getCloudflareDevContextOptions disables remote bindings by default", () => {
   const options = getCloudflareDevContextOptions(NEXT_CONFIG_URL, undefined);
   expect(options.remoteBindings).toBe(false);
-  expect(options.configPath?.endsWith("/apps/pc-keiba-viewer/wrangler.dev.jsonc")).toBe(true);
+  expect(relative(process.cwd(), options.configPath ?? "")).toBe("wrangler.dev.jsonc");
 });
 
 it("getCloudflareDevContextOptions enables remote bindings when explicitly requested", () => {
   const options = getCloudflareDevContextOptions(NEXT_CONFIG_URL, "1");
   expect(options.remoteBindings).toBe(true);
-  expect(options.configPath?.endsWith("/apps/pc-keiba-viewer/wrangler.dev.jsonc")).toBe(true);
+  expect(relative(process.cwd(), options.configPath ?? "")).toBe("wrangler.dev.jsonc");
 });

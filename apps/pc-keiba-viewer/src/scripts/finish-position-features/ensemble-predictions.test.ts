@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -151,8 +151,10 @@ describe("ensemble cli parsing", () => {
       "/abs/out.jsonl",
     ]);
     expect(parsed.weights).toStrictEqual({ lambdarank: 0.6, top1: 0.2, top3: 0.2 });
-    expect(parsed.lambdarankJsonl).toBe("/abs/a.jsonl");
-    expect(parsed.output).toBe("/abs/out.jsonl");
+    expect(relative(join(parse(process.cwd()).root, "abs"), parsed.lambdarankJsonl)).toBe(
+      "a.jsonl",
+    );
+    expect(relative(join(parse(process.cwd()).root, "abs"), parsed.output)).toBe("out.jsonl");
   });
 });
 
