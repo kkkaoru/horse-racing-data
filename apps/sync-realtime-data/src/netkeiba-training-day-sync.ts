@@ -400,14 +400,47 @@ const purgeCatalogTrainingCache = async (
   if (!response.ok) throw new Error(`R2 Catalog purge failed with HTTP ${response.status}`);
 };
 
+const WORKOUT_TIME_FIELDS = [
+  "timeGokei10f",
+  "timeGokei9f",
+  "timeGokei8f",
+  "timeGokei7f",
+  "timeGokei6f",
+  "timeGokei5f",
+  "timeGokei4f",
+  "timeGokei3f",
+  "timeGokei2f",
+  "lapTime10f",
+  "lapTime9f",
+  "lapTime8f",
+  "lapTime7f",
+  "lapTime6f",
+  "lapTime5f",
+  "lapTime4f",
+  "lapTime3f",
+  "lapTime2f",
+  "lapTime1f",
+] as const;
+
 const hasWorkoutData = (value: unknown): boolean => {
-  if (!isRecord(value) || !Array.isArray(value.trainings)) return false;
-  return value.trainings.some(
-    (training) =>
-      isRecord(training) &&
-      typeof training.chokyoNengappi === "string" &&
-      training.chokyoNengappi.length === 8,
-  );
+  if (!isRecord(value) || !Array.isArray(value.trainings) || value.trainings.length === 0)
+    return false;
+  const coverage = new Map<string, boolean>();
+  for (const training of value.trainings) {
+    if (!isRecord(training) || typeof training.umaban !== "string" || training.umaban.length === 0)
+      return false;
+    const hasDatedWorkout =
+      typeof training.chokyoNengappi === "string" && /^\d{8}$/u.test(training.chokyoNengappi);
+    const hasRecordedTime = WORKOUT_TIME_FIELDS.some((field) => {
+      const fieldValue = training[field];
+      return typeof fieldValue === "string" && fieldValue !== "" && fieldValue !== "0000";
+    });
+    coverage.set(
+      training.umaban,
+      (coverage.get(training.umaban) ?? false) || (hasDatedWorkout && hasRecordedTime),
+    );
+  }
+  return coverage.size > 0 && Array.from(coverage.values()).every(Boolean);
 };
 
 const hasDataTop = (value: unknown): boolean =>
@@ -463,9 +496,16 @@ export const finalizeNetkeibaTrainingDay = async (
 ): Promise<string> => {
   const run = await dailyRunStatus(env, catalogRunId);
   if (run.status === "succeeded") {
-    await purgeAndWarm(env, date);
-    await markState(env.REALTIME_DB, date, "succeeded");
-    return "succeeded";
+    try {
+      await purgeAndWarm(env, date);
+      await markState(env.REALTIME_DB, date, "succeeded");
+      return "succeeded";
+    } catch (error) {
+      await markState(env.REALTIME_DB, date, "failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
   if (run.status.includes("failed") || run.error_stage !== null) {
     await markState(env.REALTIME_DB, date, "failed", {

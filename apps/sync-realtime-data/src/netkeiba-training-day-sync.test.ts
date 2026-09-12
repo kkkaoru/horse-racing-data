@@ -174,7 +174,9 @@ beforeEach(async () => {
         viewerRequests.push(request.url);
         return request.url.includes("premium-data-top")
           ? Response.json({ dataTopHorses: [{ horseNumber: "1" }] })
-          : Response.json({ trainings: [{ chokyoNengappi: "20260903" }] });
+          : Response.json({
+              trainings: [{ chokyoNengappi: "20260903", lapTime1f: "123", umaban: "01" }],
+            });
       }),
     },
     R2_CATALOG_INGESTION_TOKEN: "catalog-token",
@@ -238,8 +240,31 @@ it("recognizes only non-empty Viewer workout and data-top payloads", () => {
   expect(hasWorkoutData(null)).toBe(false);
   expect(hasWorkoutData({ trainings: null })).toBe(false);
   expect(hasWorkoutData({ trainings: [null, { chokyoNengappi: 1 }] })).toBe(false);
-  expect(hasWorkoutData({ trainings: [{ chokyoNengappi: "2026/09/03" }] })).toBe(false);
-  expect(hasWorkoutData({ trainings: [{ chokyoNengappi: "20260903" }] })).toBe(true);
+  expect(
+    hasWorkoutData({
+      trainings: [{ chokyoNengappi: "2026/09/03", lapTime1f: "123", umaban: "01" }],
+    }),
+  ).toBe(false);
+  expect(
+    hasWorkoutData({
+      trainings: [{ chokyoNengappi: "20260903", lapTime1f: "123", umaban: "01" }],
+    }),
+  ).toBe(true);
+  expect(hasWorkoutData({ trainings: [{ chokyoNengappi: "20260903", umaban: "01" }] })).toBe(false);
+  expect(
+    hasWorkoutData({
+      trainings: [{ chokyoNengappi: "20260903", lapTime1f: "0000", umaban: "01" }],
+    }),
+  ).toBe(false);
+  expect(
+    hasWorkoutData({
+      trainings: [
+        { chokyoNengappi: "20260903", lapTime1f: "123", umaban: "01" },
+        { chokyoNengappi: "", lapTime1f: "123", umaban: "02" },
+      ],
+    }),
+  ).toBe(false);
+  expect(hasWorkoutData({ trainings: [{ chokyoNengappi: "20260903", umaban: "" }] })).toBe(false);
   expect(hasDataTop(null)).toBe(false);
   expect(hasDataTop({ dataTopHorses: null })).toBe(false);
   expect(hasDataTop({ dataTopHorses: [] })).toBe(false);
@@ -289,7 +314,7 @@ it("fails closed for missing Catalog inputs and empty or unmatched workouts", as
   );
   mocks.parseWorkouts.mockReturnValue([]);
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("returned no workouts");
-  mocks.parseWorkouts.mockReturnValue([{ ...workout, horseNumber: "2" }]);
+  mocks.parseWorkouts.mockReturnValue([workout, { ...workout, horseNumber: "2" }]);
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("did not match");
 });
 
@@ -426,4 +451,14 @@ it("fails closed when Viewer warm returns an empty data section", async () => {
   await expect(
     finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
   ).rejects.toThrow("incomplete data");
+  const state = await db
+    .prepare(
+      "select status, error_message from netkeiba_training_day_sync_state where race_date = ?",
+    )
+    .bind("20260905")
+    .first<{ error_message: string | null; status: string }>();
+  expect(state).toStrictEqual({
+    error_message: "Viewer cache warm returned incomplete data for jra:2026:0905:01:01",
+    status: "failed",
+  });
 });

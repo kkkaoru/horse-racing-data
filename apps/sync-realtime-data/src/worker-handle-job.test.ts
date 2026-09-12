@@ -1,6 +1,16 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Env } from "./types";
+import type { Env, Job } from "./types";
+
+const netkeibaTrainingDayMocks = vi.hoisted(() => ({
+  finalize: vi.fn<() => Promise<string>>(),
+  sync: vi.fn<() => Promise<number>>(),
+}));
+
+vi.mock("./netkeiba-training-day-sync", () => ({
+  finalizeNetkeibaTrainingDay: netkeibaTrainingDayMocks.finalize,
+  syncNetkeibaTrainingDay: netkeibaTrainingDayMocks.sync,
+}));
 
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
@@ -240,10 +250,133 @@ const buildEnv = (overrides?: Partial<Env>): Env => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  netkeibaTrainingDayMocks.finalize.mockResolvedValue("succeeded");
+  netkeibaTrainingDayMocks.sync.mockResolvedValue(1);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("handleJob durably retries a failed netkeiba training day within its recovery window", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const send = vi.fn<Queue<Job>["send"]>(async () => ({
+    metadata: { metrics: { backlogBytes: 0, backlogCount: 1 } },
+  }));
+  const env = buildEnv({
+    REALTIME_JOBS: {
+      metrics: vi.fn<Queue<Job>["metrics"]>(async () => ({ backlogBytes: 0, backlogCount: 0 })),
+      send,
+      sendBatch: vi.fn<Queue<Job>["sendBatch"]>(async () => ({
+        metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+      })),
+    },
+    REALTIME_TEST_NOW: "2026-05-12T12:00:00.000Z",
+  });
+  netkeibaTrainingDayMocks.sync.mockRejectedValueOnce(new Error("Catalog HTTP 502"));
+
+  await handleJob(env, { date: "20260512", type: "sync-netkeiba-training-day" });
+
+  expect(send).toHaveBeenCalledWith(
+    { date: "20260512", type: "sync-netkeiba-training-day" },
+    { delaySeconds: 300 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "sync-netkeiba-training-day",
+    "retry",
+    null,
+    "Catalog HTTP 502; retryDelaySeconds=300",
+  );
+});
+
+it("handleJob stops retrying netkeiba training after the bounded recovery window", async () => {
+  const { handleJob } = await import("./worker");
+  const send = vi.fn<Queue<Job>["send"]>(async () => ({
+    metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+  }));
+  const env = buildEnv({
+    REALTIME_JOBS: {
+      metrics: vi.fn<Queue<Job>["metrics"]>(async () => ({ backlogBytes: 0, backlogCount: 0 })),
+      send,
+      sendBatch: vi.fn<Queue<Job>["sendBatch"]>(async () => ({
+        metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+      })),
+    },
+    REALTIME_TEST_NOW: "2026-05-13T22:00:00.000Z",
+  });
+  netkeibaTrainingDayMocks.sync.mockRejectedValueOnce(new Error("persistent failure"));
+
+  await expect(
+    handleJob(env, { date: "20260512", type: "sync-netkeiba-training-day" }),
+  ).rejects.toThrow("persistent failure");
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("handleJob durably retries failed netkeiba finalization", async () => {
+  const { handleJob } = await import("./worker");
+  const send = vi.fn<Queue<Job>["send"]>(async () => ({
+    metadata: { metrics: { backlogBytes: 0, backlogCount: 1 } },
+  }));
+  const env = buildEnv({
+    REALTIME_JOBS: {
+      metrics: vi.fn<Queue<Job>["metrics"]>(async () => ({ backlogBytes: 0, backlogCount: 0 })),
+      send,
+      sendBatch: vi.fn<Queue<Job>["sendBatch"]>(async () => ({
+        metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+      })),
+    },
+    REALTIME_TEST_NOW: "2026-05-12T12:00:00.000Z",
+  });
+  netkeibaTrainingDayMocks.finalize.mockRejectedValueOnce(new Error("Viewer HTTP 503"));
+
+  await handleJob(env, {
+    catalogRunId: "catalog-run",
+    date: "20260512",
+    type: "finalize-netkeiba-training-day",
+  });
+
+  expect(send).toHaveBeenCalledWith(
+    {
+      catalogRunId: "catalog-run",
+      date: "20260512",
+      type: "finalize-netkeiba-training-day",
+    },
+    { delaySeconds: 300 },
+  );
+});
+
+it("handleJob stops retrying netkeiba finalization after the recovery window", async () => {
+  const { handleJob } = await import("./worker");
+  const send = vi.fn<Queue<Job>["send"]>(async () => ({
+    metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+  }));
+  const env = buildEnv({
+    REALTIME_JOBS: {
+      metrics: vi.fn<Queue<Job>["metrics"]>(async () => ({ backlogBytes: 0, backlogCount: 0 })),
+      send,
+      sendBatch: vi.fn<Queue<Job>["sendBatch"]>(async () => ({
+        metadata: { metrics: { backlogBytes: 0, backlogCount: 0 } },
+      })),
+    },
+    REALTIME_TEST_NOW: "2026-05-13T22:00:00.000Z",
+  });
+  netkeibaTrainingDayMocks.finalize.mockRejectedValueOnce(new Error("persistent failure"));
+
+  await expect(
+    handleJob(env, {
+      catalogRunId: "catalog-run",
+      date: "20260512",
+      type: "finalize-netkeiba-training-day",
+    }),
+  ).rejects.toThrow("persistent failure");
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("shouldRetryNetkeibaTrainingDay rejects malformed dates", async () => {
+  const { shouldRetryNetkeibaTrainingDay } = await import("./worker");
+  expect(shouldRetryNetkeibaTrainingDay("invalid", new Date())).toBe(false);
 });
 
 it("handleJob disables build-daily-features without running the legacy builder", async () => {

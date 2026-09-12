@@ -1028,6 +1028,8 @@ const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
 // 03:30 JST (= 18:30 UTC) — off-peak slot for D1 retention sweeps.
 const D1_RETENTION_CRON = "30 18 * * *";
+const NETKEIBA_TRAINING_RETRY_DELAY_SECONDS = 5 * 60;
+const NETKEIBA_TRAINING_RETRY_AFTER_RACE_DAY_HOURS = 6;
 // 20:05 JST (= 11:05 UTC) — nightly prep for next 1-3 days.
 export const MULTI_DAY_PREP_CRON = "5 11 * * *";
 // 09:10 JST (= 00:10 UTC) — morning fallback for today.
@@ -1038,6 +1040,16 @@ export const TODAY_BACKFILL_CRON = "10 0 * * *";
 // full future race cards.  Preparing only +1 preserves the useful day-ahead
 // warm-up without allowing later dates to delay tomorrow's predictions.
 const MULTI_DAY_PREP_OFFSET_DAYS: readonly number[] = [1];
+export const shouldRetryNetkeibaTrainingDay = (date: string, now: Date): boolean => {
+  if (!/^\d{8}$/u.test(date)) return false;
+  const raceDayEndMs = Date.parse(
+    `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T23:59:59+09:00`,
+  );
+  return (
+    now.getTime() <= raceDayEndMs + NETKEIBA_TRAINING_RETRY_AFTER_RACE_DAY_HOURS * 60 * 60 * 1000
+  );
+};
+
 export const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
@@ -5701,13 +5713,47 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "sync-netkeiba-training-day") {
-      const count = await syncNetkeibaTrainingDay(env, job.date);
-      await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} workouts staged`);
+      try {
+        const count = await syncNetkeibaTrainingDay(env, job.date);
+        await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} workouts staged`);
+      } catch (error) {
+        if (!shouldRetryNetkeibaTrainingDay(job.date, getNow(env))) throw error;
+        await env.REALTIME_JOBS.send(
+          { date: job.date, type: "sync-netkeiba-training-day" },
+          { delaySeconds: NETKEIBA_TRAINING_RETRY_DELAY_SECONDS },
+        );
+        await logFetch(
+          env.REALTIME_DB,
+          job.type,
+          "retry",
+          null,
+          `${formatError(error)}; retryDelaySeconds=${NETKEIBA_TRAINING_RETRY_DELAY_SECONDS}`,
+        );
+      }
       return;
     }
     if (job.type === "finalize-netkeiba-training-day") {
-      const status = await finalizeNetkeibaTrainingDay(env, job.date, job.catalogRunId);
-      await logFetch(env.REALTIME_DB, job.type, "ok", null, status);
+      try {
+        const status = await finalizeNetkeibaTrainingDay(env, job.date, job.catalogRunId);
+        await logFetch(env.REALTIME_DB, job.type, "ok", null, status);
+      } catch (error) {
+        if (!shouldRetryNetkeibaTrainingDay(job.date, getNow(env))) throw error;
+        await env.REALTIME_JOBS.send(
+          {
+            catalogRunId: job.catalogRunId,
+            date: job.date,
+            type: "finalize-netkeiba-training-day",
+          },
+          { delaySeconds: NETKEIBA_TRAINING_RETRY_DELAY_SECONDS },
+        );
+        await logFetch(
+          env.REALTIME_DB,
+          job.type,
+          "retry",
+          null,
+          `${formatError(error)}; retryDelaySeconds=${NETKEIBA_TRAINING_RETRY_DELAY_SECONDS}`,
+        );
+      }
       return;
     }
     if (job.type === "plan-realtime-fetches") {
