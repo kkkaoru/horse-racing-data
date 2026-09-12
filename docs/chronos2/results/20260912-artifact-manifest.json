@@ -1,0 +1,170 @@
+{
+  "production_eligible": false,
+  "artifacts": [
+    {
+      "path": ".cache/chronos2/linux-runtime-probe.json",
+      "bytes": 684,
+      "sha256": "7e8b90b82d1b58a8c92e1c38a3d722c1494fc242d60463c2ecad853dd5dc639d"
+    },
+    {
+      "path": ".cache/chronos2/cpu-image-inspect.json",
+      "bytes": 1912,
+      "sha256": "c5266f9f1920fdbd285591c8af7c3b66a9448700b7aca77c5496f253c1f625f9"
+    },
+    {
+      "path": ".cache/chronos2/logs/final-restart-second-gates.log",
+      "bytes": 8697,
+      "sha256": "38d1a9f8f2887343b82df0d502482373f05a3bea9b2493bb048577ec9f7e2974"
+    },
+    {
+      "path": ".cache/chronos2/logs/full-ty-postfix.log",
+      "bytes": 37844,
+      "sha256": "e757fd9f38b45c98c9bdd44a7239a4e586dfc678d9ae2e01b0f13d52ea6d024f"
+    },
+    {
+      "path": "apps/timesfm-finish-position/requirements-chronos-cpu.txt",
+      "bytes": 47932,
+      "sha256": "aa5c7edbb563304724452e188b84ee50c935099bc15722f80728fbc2b30bedb8"
+    },
+    {
+      "path": "apps/timesfm-finish-position/Dockerfile.chronos",
+      "bytes": 1306,
+      "sha256": "043f1b97ee1defb757ef0a4447e3fb1897e88427c224990b861fcefd7871cf40"
+    },
+    {
+      "path": "apps/timesfm-finish-position/Dockerfile.chronos.dockerignore",
+      "bytes": 414,
+      "sha256": "a388af46df688ae59d2fe5a52755abba4c3f2f98bdf0269051c34fefc3283d69"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/report.json",
+      "bytes": 24706,
+      "sha256": "06960ad91b894dd3c09edff4b894a3e8ae118ed3dca53c05247ab95d8187cce4"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/portable-parity.json",
+      "bytes": 386,
+      "sha256": "80c4349cf58d1fd25846164f5bfefacd1c044bee9daf9f7003ea58e3930d9525"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/development-readout.json",
+      "bytes": 8791,
+      "sha256": "0739119ef0b28a3dff1bb96b1a8058270058126bf2cfb30da8e26d46d9877b73"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/development-cpu-runtime.json",
+      "bytes": 457,
+      "sha256": "7e474bc323aa8e02594e76ff52c6604e37a7f8f131508ab005ee5be6c79c917d"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/development-cpu-readout.json",
+      "bytes": 5336,
+      "sha256": "c00eafe7fc25619e1242f56236f31ec3dbad0874a520d67e11e254ec228b5fbf"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/development-cpu-predictions.parquet",
+      "bytes": 1027356,
+      "sha256": "dcce83a062888f1573afa23d36ba5cb31d3ac20c9b0dee61f651e46261477abc"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/portable/config.json",
+      "bytes": 1066,
+      "sha256": "ad5f62aa759f1d2e9fb46fb9cfc496f422c9e9f04c405d4bef6c83817e6627a6"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/portable/model.safetensors",
+      "bytes": 477930496,
+      "sha256": "b4f981aea34c56456f73f02fc5c2530d3e07592b56abe15713e51d9257ceab42"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/checkpoint/checkpoint.json",
+      "bytes": 865,
+      "sha256": "9214af2bed2fa2921816d2af9afe205069a7f0218d0f5a413b03c68627c840e8"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/checkpoint/checkpoint.safetensors",
+      "bytes": 275510757,
+      "sha256": "af88339ba696fdefc1f9da61b45acb275dced03b5132d3bcebf48887de17a9c0"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/report.json",
+      "bytes": 24750,
+      "sha256": "be8df0317e0ba7e67fb7124ecfde98922a495e148e00f4c79c0493aebd6e2efe"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/portable-parity.json",
+      "bytes": 385,
+      "sha256": "3262420e9a2c2eb347816753f3516d4fa869d73b2b41943c2fa38a5921e5c07b"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/development-readout.json",
+      "bytes": 5340,
+      "sha256": "2f880a05cb7f13b833f65a6f55fb9a5eac213ddf4cff2fcc02de8ccc593a8cf2"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/development-cpu-runtime.json",
+      "bytes": 459,
+      "sha256": "db8d9fd87deddeb9fc4c8560d293f586626f30ed813f514d8ee496b264a53eca"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/development-cpu-readout.json",
+      "bytes": 5339,
+      "sha256": "f3b310b3ed01c1355c32e28ff747534cb922f4a6c08a3aec1156ed575aec370f"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/development-cpu-predictions.parquet",
+      "bytes": 1027270,
+      "sha256": "a9acdb00910f04cd2fbb388448e37354af288a0888d1db23c519cc2a30267ea8"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/portable/config.json",
+      "bytes": 1066,
+      "sha256": "ad5f62aa759f1d2e9fb46fb9cfc496f422c9e9f04c405d4bef6c83817e6627a6"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/portable/model.safetensors",
+      "bytes": 477930480,
+      "sha256": "f64da5d2dcd979b13f81f007afe0d42d7c63eab38172eab5f64bd9828fdb98b3"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/checkpoint/checkpoint.json",
+      "bytes": 5883,
+      "sha256": "72d1bd1e3e5e02ac73476df0ff280e1bf3adee5108a36d7a25936da2c8639f8a"
+    },
+    {
+      "path": ".cache/chronos2/real-lora-001/checkpoint/checkpoint.safetensors",
+      "bytes": 246091173,
+      "sha256": "589928662fdd44085d3d2881ad4100b89b5b349679336c69c6229e3cbb7d4f30"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/fixed-holdout.json",
+      "bytes": 7464,
+      "sha256": "776adda19fdac57f1575cdaddff283c887bb8d6d98026acbcfe286fc9fcd58e5"
+    },
+    {
+      "path": ".cache/chronos2/real-head-002/holdout-cpu-predictions.parquet",
+      "bytes": 2712157,
+      "sha256": "5a90f8594ebb4542138554114e50c0f628241996bab92882195518a7823ceef0"
+    },
+    {
+      "path": "docs/chronos2/results/20260912-summary.json",
+      "bytes": 26841,
+      "sha256": "7be4e4585013183f23cd1d2dedf137669c5325f21905a6c281d69c81d6a7f9e2"
+    },
+    {
+      "path": ".cache/chronos2/data-residency-probe.json",
+      "bytes": 680,
+      "sha256": "88751b29951d915d7297ad4824d8e9d3776340cfd96a2c6f0c1940802baf0ecd"
+    },
+    {
+      "path": ".cache/chronos2/logs/cell-rustuna-full-gates.log",
+      "bytes": 8905,
+      "sha256": "1d337a73f4ba4adfb40f9c03b566af160696e243cceafc5f6ec4d44d7f508bed"
+    },
+    {
+      "path": ".cache/chronos2/logs/full-ty-final-cell.log",
+      "bytes": 37844,
+      "sha256": "e757fd9f38b45c98c9bdd44a7239a4e586dfc678d9ae2e01b0f13d52ea6d024f"
+    }
+  ]
+}
