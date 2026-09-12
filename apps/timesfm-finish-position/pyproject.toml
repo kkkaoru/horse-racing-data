@@ -17,6 +17,7 @@ lab = [
   "chronos-forecasting>=2.0.0",
   "duckdb==1.5.5",
   "lightgbm>=4.6.0",
+  "mlx-chronos2",
   "pandas>=2.2.0",
   "polars>=1.42.0",
   "prophet>=1.4.0",
@@ -69,3 +70,6 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+
+[tool.uv.sources]
+mlx-chronos2 = { git = "https://github.com/tsfm-ai/chronos2-mlx.git", rev = "5c29d275fa3c93d6dea5d975e5eb68da71bd6f3b" }
