@@ -22,8 +22,7 @@ assert_source() {
 
 assert_ignored research/jra-20260913/marketfree-pilot-001/cell/year-2023/model.cbm
 assert_ignored research/future-campaign/new-run/model.safetensors
-assert_ignored research/future-campaign/new-run/model.unknown-format
-assert_ignored research/future-campaign/new-run/predictions.json
+assert_ignored research/jra-20260913/new-run/predictions.json
 assert_ignored research/future-campaign/new-run/data.parquet
 assert_ignored research/future-campaign/new-run/results.csv
 assert_ignored research/future-campaign/new-run/response.headers
@@ -35,6 +34,12 @@ assert_ignored research/future-campaign/test-work-002/generated.sh
 assert_ignored research/future-campaign/test-full-002/current
 assert_ignored research/future-campaign/test-model-002/generated.py
 
+assert_source research/future-campaign/new-run/model.unknown-format
+assert_source research/future-campaign/new-run/run-validation
+assert_source research/future-campaign/new-run/validate.fish
+assert_source research/future-campaign/new-run/analyze.rb
+assert_source research/future-campaign/new-run/analyze.pl
+assert_source research/future-campaign/new-run/config.json
 assert_source research/jra-20260913/run-marketfree-pilot.sh
 assert_source research/future-campaign/new-run/run-validation.sh
 assert_source research/future-campaign/new-run/train.py
