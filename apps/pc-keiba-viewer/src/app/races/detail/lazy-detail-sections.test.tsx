@@ -139,12 +139,15 @@ vi.mock("./win-rate-heatmap-section", () => ({
   WinRateHeatmapSection: ({
     frameStats,
     horseResults,
+    presentation,
   }: {
     frameStats: unknown[];
     horseResults: unknown[];
+    presentation?: { version: number };
   }) => (
     <div
       data-frame-stats={frameStats.length}
+      data-presentation-version={presentation?.version}
       data-horse-results={horseResults.length}
       data-testid="win-rate-heatmap-stub"
     >
@@ -320,6 +323,7 @@ test("LazyDetailSections renders the results chart section directly below the re
   ).toBeTruthy();
   expect(heatmapStub.getAttribute("data-horse-results")).toStrictEqual("0");
   expect(heatmapStub.getAttribute("data-frame-stats")).toStrictEqual("1");
+  expect(heatmapStub.getAttribute("data-presentation-version")).toBeNull();
   expect(chartStub.getAttribute("data-runners-passed")).toStrictEqual("present");
   expect(chartStub.getAttribute("data-target-keibajo-code")).toStrictEqual("05");
   expect(chartStub.getAttribute("data-target-race-date")).toStrictEqual("20270601");

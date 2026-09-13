@@ -5,6 +5,7 @@ import { indexLiveHorseWeightKg } from "./horse-weight-class";
 import { callMcpTool, MCP_TOOL_DEFINITIONS, type McpSiteFetch } from "./mcp-tools";
 import { buildWinRateHeatmapDisplay } from "./win-rate-heatmap";
 import type { WinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
+import { buildHeatmapPresentation } from "./win-rate-heatmap-presentation";
 
 const heatmapPayload: WinRateHeatmapSectionPayload = {
   bloodlineRows: [],
@@ -923,9 +924,24 @@ it("search_entities validates kind and query", async () => {
   });
 });
 
+const collectDisplayText = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<string> => {
+  const result = await callMcpTool("get_win_rate_heatmap_display", args, fetchSite);
+  if (result.isError) throw new Error(result.content[0]?.text);
+  const text = result.content[0]?.text ?? "{}";
+  const payload = JSON.parse(text);
+  if (payload.encoding !== "json-text") return text;
+  if (payload.complete) return payload.dataChunk;
+  return (
+    payload.dataChunk +
+    (await collectDisplayText({ ...args, responseCursor: payload.nextResponseCursor }, fetchSite))
+  );
+};
+
 it("get_win_rate_heatmap_display uses the same display builder as the table when requested", async () => {
-  const result = await callMcpTool(
-    "get_win_rate_heatmap_display",
+  const result = await collectDisplayText(
     {
       viewMode: "winRate",
       day: "20",
@@ -944,8 +960,7 @@ it("get_win_rate_heatmap_display uses the same display builder as the table when
       "/api/races/2026/08/20/05/01/sections/win-rate-heatmap": heatmapPayload,
     }),
   );
-  expect(result.isError).toBe(false);
-  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual(
+  expect(JSON.parse(result)).toStrictEqual(
     JSON.parse(
       JSON.stringify(
         buildWinRateHeatmapDisplay({
@@ -964,6 +979,73 @@ it("get_win_rate_heatmap_display uses the same display builder as the table when
       ),
     ),
   );
+});
+
+it.each(["get_win_rate_heatmap_compact", "get_win_rate_heatmap_display"])(
+  "%s returns warmed values without requesting realtime data",
+  async (tool) => {
+    const presentation = buildHeatmapPresentation({
+      ...heatmapPayload,
+      runners: [],
+      keibajoCode: "09",
+      liveWeightKgByHorse: new Map(),
+    });
+    const requests: string[] = [];
+    const result = await callMcpTool(
+      tool,
+      { ...compactRaceArgs, viewMode: "winRate" },
+      async (path) => {
+        requests.push(path);
+        return Response.json({ ...heatmapPayload, presentation });
+      },
+    );
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0]?.text ?? "{}").rows).toStrictEqual([]);
+    expect(requests).toStrictEqual([
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra",
+    ]);
+  },
+);
+
+it("does not calculate an unwarmed display when a presentation cache exists", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_display",
+    { ...compactRaceArgs, viewMode: "all" },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": {
+        ...heatmapPayload,
+        presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+      },
+    }),
+  );
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0]?.text ?? "{}").error.message).toBe(
+    "win-rate-heatmap display is not warmed",
+  );
+});
+
+it("display heatmap prioritizes cached horse rates over conflicting history", async () => {
+  const result = await callMcpTool(
+    "get_win_rate_heatmap_display",
+    { ...compactRaceArgs, viewMode: "winRate" },
+    jsonFetch({
+      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": {
+        ...heatmapPayload,
+        horseRateStats: [
+          { horseNumber: "01", starts: 6, winCount: 0, quinellaCount: 0, showCount: 1 },
+        ],
+      },
+    }),
+  );
+  expect(result.isError).toBe(false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  expect(
+    payload.rows[0].swatches.find((swatch: { columnKey: string }) => swatch.columnKey === "horse"),
+  ).toMatchObject({
+    valueLabel: "0.0",
+    startsLabel: "(6)",
+    isZeroValue: true,
+  });
 });
 
 it("get_win_rate_heatmap_display rejects an invalid viewMode", async () => {

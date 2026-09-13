@@ -117,6 +117,8 @@ import {
   type WinRateHeatmapCatalogQuery,
   type WinRateHeatmapCatalogStats,
 } from "../../../lib/win-rate-heatmap-catalog.server";
+import { fetchHeatmapLiveWeights } from "../../../lib/win-rate-heatmap-live-weights.server";
+import { fetchHeatmapPartnershipRows } from "../../../lib/win-rate-heatmap-partnership.server";
 import type { FinishPositionBucketRace } from "./finish-position-bucket-section";
 import { mergePremiumTrainingReviews, type PremiumTrainingReview } from "./premium-training-merge";
 
@@ -2425,11 +2427,29 @@ export const getDetailSectionPayload = async (
   if (context === null) {
     return null;
   }
-  const [catalogStats, resultsPayload, conditionPayload] = await Promise.all([
-    loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race.source),
-    loadHeatmapSectionSource("results", params),
-    loadHeatmapSectionSource("condition", params),
-  ]);
+  const [catalogStats, resultsPayload, conditionPayload, partnershipRows, liveHorseWeights] =
+    await Promise.all([
+      loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race.source),
+      loadHeatmapSectionSource("results", params),
+      loadHeatmapSectionSource("condition", params),
+      fetchHeatmapPartnershipRows(
+        buildWinRateHeatmapCatalogQuery(
+          params,
+          context.conditionAnalysisSettings,
+          context.race.source,
+          false,
+        ),
+      ),
+      fetchHeatmapLiveWeights({
+        day: params.day,
+        month: params.month,
+        year: params.year,
+        keibajoCode: params.keibajoCode,
+        raceNumber: params.raceNumber,
+        source: context.race.source,
+      }),
+    ]);
+  if (partnershipRows === null) throw new Error("Partnership catalog binding is unavailable");
   const conditionSource = isHeatmapConditionSource(conditionPayload) ? conditionPayload : null;
   return {
     bloodlineRows: catalogStats === null ? [] : catalogStats.bloodlineRows,
@@ -2440,6 +2460,8 @@ export const getDetailSectionPayload = async (
     runners: context.runners,
     similarRows: catalogStats === null ? [] : catalogStats.similarRows,
     type: "win-rate-heatmap",
+    partnershipRows,
+    liveHorseWeights,
     weightClassStats:
       conditionSource === null ? [] : readWeightClassStats(conditionSource.weightClassStats),
   };

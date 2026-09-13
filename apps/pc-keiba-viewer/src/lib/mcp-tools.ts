@@ -24,6 +24,7 @@ import {
   type WinRateHeatmapViewMode,
 } from "./win-rate-heatmap";
 import { isWinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
+import { selectHeatmapDisplay } from "./win-rate-heatmap-presentation";
 
 export interface McpSiteFetchInit {
   body?: string;
@@ -1389,6 +1390,12 @@ export const callMcpTool = async (
     if (!section.ok || !isWinRateHeatmapSectionPayload(section.value)) {
       return errorResult("win-rate-heatmap section payload is unavailable");
     }
+    if (section.value.presentation !== undefined) {
+      const compact = buildCompactHeatmap(section.value.presentation.rows, options);
+      return typeof compact === "string"
+        ? errorResult(compact)
+        : okChunkedJson(compact, responseCursor);
+    }
     const realtime = await fetchSiteJson(fetchSite, raceApiPath(parsed, "realtime"));
     const compact = buildCompactHeatmap(
       buildWinRateHeatmapRows({
@@ -1396,6 +1403,7 @@ export const callMcpTool = async (
         carriedWeightClassStats: section.value.carriedWeightClassStats,
         frameStats: section.value.frameStats,
         horseRateStats: section.value.horseRateStats,
+        partnershipRows: section.value.partnershipRows,
         horseResults: section.value.horseResults,
         keibajoCode: parsed.keibajoCode,
         liveWeightKgByHorse: readLiveWeights(realtime.value),
@@ -1434,11 +1442,23 @@ export const callMcpTool = async (
     if (!section.ok || !isWinRateHeatmapSectionPayload(section.value)) {
       return errorResult("win-rate-heatmap section payload is unavailable");
     }
+    if (section.value.presentation !== undefined) {
+      const display = selectHeatmapDisplay(section.value.presentation, {
+        showStarts,
+        splitBloodlineLines: true,
+        viewMode,
+      });
+      return display === null
+        ? errorResult("win-rate-heatmap display is not warmed")
+        : okChunkedJson(display, responseCursor);
+    }
     const realtime = await fetchSiteJson(fetchSite, raceApiPath(parsed, "realtime"));
     const display = buildWinRateHeatmapDisplay({
       bloodlineRows: section.value.bloodlineRows,
       carriedWeightClassStats: section.value.carriedWeightClassStats,
       frameStats: section.value.frameStats,
+      horseRateStats: section.value.horseRateStats,
+      partnershipRows: section.value.partnershipRows,
       horseResults: section.value.horseResults,
       keibajoCode: parsed.keibajoCode,
       liveWeightKgByHorse: readLiveWeights(realtime.value),

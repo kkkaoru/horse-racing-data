@@ -24,6 +24,9 @@ export type WinRateHeatmapMetricKey =
   | "damSireSire"
   | "frame"
   | "horse"
+  | "horseJockey"
+  | "jockeyVenue"
+  | "jockeyTrainerVenue"
   | "jockey"
   | "jockeyFrame"
   | "sire"
@@ -82,7 +85,25 @@ export interface WinRateHeatmapHorseRateRow {
   winCount: number;
 }
 
+export interface WinRateHeatmapPartnershipRow extends Pick<
+  SimilarRaceStatsRow,
+  | "currentHorseNumbers"
+  | "name"
+  | "details"
+  | "starts"
+  | "horseCount"
+  | "winCount"
+  | "quinellaCount"
+  | "showCount"
+  | "winRate"
+  | "quinellaRate"
+  | "showRate"
+> {
+  category: "horseJockey" | "jockeyVenue" | "jockeyTrainerVenue";
+}
+
 export interface BuildWinRateHeatmapRowsInput {
+  partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
   frameStats: FrameStatsRow[];
   horseResults: WinRateHeatmapHorseResult[];
@@ -199,8 +220,11 @@ export const WIN_RATE_HEATMAP_COLUMNS: readonly WinRateHeatmapColumn[] = [
   { key: "weight", label: "馬体重" },
   { key: "carriedWeight", label: "斤量" },
   { key: "horse", label: "馬" },
+  { key: "horseJockey", label: "馬×騎手" },
   { key: "jockeyFrame", label: "騎手枠別" },
   { key: "jockey", label: "騎手" },
+  { key: "jockeyVenue", label: "騎手・同場3年" },
+  { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
   { key: "trainer", label: "調教師" },
   { key: "sire", label: "父" },
   { key: "damSire", label: "母父" },
@@ -491,7 +515,7 @@ const buildRateCell = (input: BuildRateCellInput): WinRateHeatmapCell => ({
 });
 
 const toHeatmapCell = (
-  row: BloodlineStatsRow | SimilarRaceStatsRow | undefined,
+  row: BloodlineStatsRow | SimilarRaceStatsRow | WinRateHeatmapPartnershipRow | undefined,
 ): WinRateHeatmapCell => {
   if (row === undefined) {
     return EMPTY_WIN_RATE_HEATMAP_CELL;
@@ -790,6 +814,7 @@ export const buildWinRateHeatmapRows = (
   input: BuildWinRateHeatmapRowsInput,
 ): WinRateHeatmapRow[] => {
   const similarByHorse = indexRowsByHorse(input.similarRows);
+  const partnershipByHorse = indexRowsByHorse(input.partnershipRows ?? []);
   const bloodlineByHorse = indexRowsByHorse(input.bloodlineRows);
   const uniqueBloodlineRows = uniqueBloodlineStatsByCategoryName(input.bloodlineRows);
   const splitBloodlineLines =
@@ -812,6 +837,7 @@ export const buildWinRateHeatmapRows = (
       const frameNumber = formatRunnerNumber(runner.wakuban);
       const horseName = getRunnerDisplayNames(runner).horse || "-";
       const similar = similarByHorse.get(horseNumber);
+      const partnership = partnershipByHorse.get(horseNumber);
       const bloodline = bloodlineByHorse.get(horseNumber);
       const currentWeightKg = resolveCurrentHorseWeightKg({
         bataiju: runner.bataiju,
@@ -847,6 +873,9 @@ export const buildWinRateHeatmapRows = (
             horseResultsByNumber.get(horseNumber) ?? [],
             horseRatesByNumber.get(horseNumber),
           ),
+          horseJockey: toHeatmapCell(partnership?.get("horseJockey")),
+          jockeyVenue: toHeatmapCell(partnership?.get("jockeyVenue")),
+          jockeyTrainerVenue: toHeatmapCell(partnership?.get("jockeyTrainerVenue")),
           jockey: toHeatmapCell(similar?.get("jockey")),
           jockeyFrame: toHeatmapCell(similar?.get("jockeyFrame")),
           sire: toPooledBloodlineHeatmapCell(

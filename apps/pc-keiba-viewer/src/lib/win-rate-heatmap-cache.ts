@@ -1,3 +1,4 @@
+import type { LiveHorseWeight } from "./horse-weight-class";
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 import type {
   BloodlineStatsRow,
@@ -6,14 +7,19 @@ import type {
   SimilarRaceStatsRow,
   WeightClassStatsRow,
 } from "./race-types";
-import type { WinRateHeatmapHorseRateRow, WinRateHeatmapHorseResult } from "./win-rate-heatmap";
+import type {
+  WinRateHeatmapHorseRateRow,
+  WinRateHeatmapHorseResult,
+  WinRateHeatmapPartnershipRow,
+} from "./win-rate-heatmap";
+import { isHeatmapPresentation, type HeatmapPresentation } from "./win-rate-heatmap-presentation";
 
 export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 36 * 60 * 60;
-// v18 stores one small manifest plus independently addressable display-column
+// v19 stores one small manifest plus independently addressable display-column
 // fragments. It also distinguishes an available numeric zero from a missing
 // fragment and omits history details that the heatmap never renders.
-export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v18";
-export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v17";
+export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v19";
+export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v18";
 export const WIN_RATE_HEATMAP_CACHE_URL_BASE =
   "https://pc-keiba-viewer.local/win-rate-heatmap-cache/";
 const WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT = "default";
@@ -23,6 +29,9 @@ export const WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS = [
   "weight",
   "carriedWeight",
   "horse",
+  "horseJockey",
+  "jockeyVenue",
+  "jockeyTrainerVenue",
   "jockeyFrame",
   "jockey",
   "trainer",
@@ -48,6 +57,9 @@ export interface WinRateHeatmapCacheKeyInput {
 }
 
 export interface WinRateHeatmapSectionPayload {
+  liveHorseWeights?: LiveHorseWeight[];
+  presentation?: HeatmapPresentation;
+  partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
   carriedWeightClassStats: WeightClassStatsRow[];
   frameStats: FrameStatsRow[];
@@ -75,6 +87,7 @@ export interface WinRateHeatmapRunnerIdentity {
 }
 
 export interface WinRateHeatmapCacheManifest {
+  hasPresentation?: boolean;
   fragmentKinds: readonly WinRateHeatmapCacheFragmentKind[];
   generation: string;
   runnerSignature: string;
@@ -106,6 +119,9 @@ const compareQueryEntries = (left: QueryEntry, right: QueryEntry): number => {
 export const serializeWinRateHeatmapCacheQuery = (searchParams: URLSearchParams): string => {
   const serialized = new URLSearchParams(
     [...searchParams.entries()]
+      // The route resolves source from race identity; MCP's explicit source is
+      // not a statistics option and must share the UI's warmed cache.
+      .filter(([name]) => name !== "source")
       .map(([name, value]) => ({ name, value }))
       .toSorted(compareQueryEntries)
       .map((entry) => [entry.name, entry.value]),
@@ -196,6 +212,7 @@ export const isWinRateHeatmapCacheManifest = (
   if (
     !isRecord(value) ||
     value.type !== "win-rate-heatmap-manifest" ||
+    (value.hasPresentation !== undefined && typeof value.hasPresentation !== "boolean") ||
     !isGeneration(value.generation) ||
     typeof value.runnerSignature !== "string" ||
     value.runnerSignature.length === 0 ||
@@ -224,6 +241,8 @@ export const isWinRateHeatmapSectionPayload = (
 ): value is WinRateHeatmapSectionPayload => {
   if (!isRecord(value) || value.type !== "win-rate-heatmap") return false;
   return (
+    (value.presentation === undefined || isHeatmapPresentation(value.presentation)) &&
+    (value.partnershipRows === undefined || Array.isArray(value.partnershipRows)) &&
     Array.isArray(value.bloodlineRows) &&
     Array.isArray(value.carriedWeightClassStats) &&
     Array.isArray(value.frameStats) &&

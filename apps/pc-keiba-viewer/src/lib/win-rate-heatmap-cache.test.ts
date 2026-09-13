@@ -21,10 +21,10 @@ import {
 
 const GENERATION = "123e4567-e89b-12d3-a456-426614174000";
 
-it("uses the column-fragment heatmap cache namespace v18", () => {
-  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v18");
-  expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v17");
-  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(14);
+it("uses the column-fragment heatmap cache namespace v19", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v19");
+  expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v18");
+  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(17);
 });
 
 it("uses a 36 hour heatmap cache TTL", () => {
@@ -56,12 +56,12 @@ it("keeps the previous namespace for busts but never reads it", () => {
       raceNumber: "08",
       year: "2026",
     }),
-  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v17:2026:08:29:04:08:default"]);
+  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v18:2026:08:29:04:08:default"]);
   expect(
     expandWinRateHeatmapCacheReadKeys(
-      "pc-keiba-viewer:win-rate-heatmap:v18:2026:08:29:04:08:default",
+      "pc-keiba-viewer:win-rate-heatmap:v19:2026:08:29:04:08:default",
     ),
-  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v18:2026:08:29:04:08:default"]);
+  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v19:2026:08:29:04:08:default"]);
 });
 
 it("keeps explicit query fingerprints and stable query ordering", () => {
@@ -76,6 +76,8 @@ it("keeps explicit query fingerprints and stable query ordering", () => {
     }),
   ).toBe(`${WIN_RATE_HEATMAP_CACHE_NAMESPACE}:2026:08:21:50:12:statsVenue=1`);
   expect(serializeWinRateHeatmapCacheQuery(new URLSearchParams())).toBe("default");
+  expect(serializeWinRateHeatmapCacheQuery(new URLSearchParams("source=jra"))).toBe("default");
+  expect(serializeWinRateHeatmapCacheQuery(new URLSearchParams("source=nar&a=1"))).toBe("a=1");
   expect(serializeWinRateHeatmapCacheQuery(new URLSearchParams("b=2&a=1"))).toBe("a=1&b=2");
   expect(serializeWinRateHeatmapCacheQuery(new URLSearchParams("a=2&a=1"))).toBe("a=1&a=2");
 });
@@ -116,6 +118,8 @@ it("validates a complete manifest and rejects duplicate or malformed fragments",
     type: "win-rate-heatmap-manifest",
   };
   expect(isWinRateHeatmapCacheManifest(manifest)).toBe(true);
+  expect(isWinRateHeatmapCacheManifest({ ...manifest, hasPresentation: true })).toBe(true);
+  expect(isWinRateHeatmapCacheManifest({ ...manifest, hasPresentation: "yes" })).toBe(false);
   expect(isWinRateHeatmapCacheManifest({ ...manifest, generation: "bad" })).toBe(false);
   expect(isWinRateHeatmapCacheManifest({ ...manifest, runnerSignature: "" })).toBe(false);
   expect(
@@ -167,6 +171,13 @@ it("accepts complete section payload arrays and rejects missing arrays", () => {
     weightClassStats: [],
   };
   expect(isWinRateHeatmapSectionPayload(payload)).toBe(true);
+  expect(isWinRateHeatmapSectionPayload({ ...payload, presentation: null })).toBe(false);
+  expect(
+    isWinRateHeatmapSectionPayload({
+      ...payload,
+      presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+    }),
+  ).toBe(true);
   expect(isWinRateHeatmapSectionPayload({ ...payload, weightClassStats: undefined })).toBe(false);
   expect(isWinRateHeatmapSectionPayload(null)).toBe(false);
   expect(isWinRateHeatmapSectionPayload({ type: "condition" })).toBe(false);

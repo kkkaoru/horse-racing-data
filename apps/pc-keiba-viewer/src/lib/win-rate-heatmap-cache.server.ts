@@ -1,5 +1,6 @@
 import "server-only";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
+import { indexLiveHorseWeightKg } from "./horse-weight-class";
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
@@ -8,7 +9,7 @@ import type {
   WeightClassStatsRow,
 } from "./race-types";
 import { formatRunnerNumber } from "./runner-format";
-import type { WinRateHeatmapHorseRateRow } from "./win-rate-heatmap";
+import type { WinRateHeatmapHorseRateRow, WinRateHeatmapPartnershipRow } from "./win-rate-heatmap";
 import {
   WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
   WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
@@ -23,6 +24,7 @@ import {
   type WinRateHeatmapCacheManifest,
   type WinRateHeatmapSectionPayload,
 } from "./win-rate-heatmap-cache";
+import { buildHeatmapPresentation, isHeatmapPresentation } from "./win-rate-heatmap-presentation";
 
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
@@ -296,6 +298,25 @@ const restoreSimilarRows = (
     winRate: row.winRate,
   }));
 
+const restorePartnershipRows = (
+  fragment: WinRateHeatmapCacheFragment,
+  category: WinRateHeatmapPartnershipRow["category"],
+): WinRateHeatmapPartnershipRow[] =>
+  compactRateRows(fragment).map((row) => ({
+    category,
+    currentHorseNumbers: row.currentHorseNumbers,
+    name: row.name,
+    starts: row.starts,
+    winCount: row.winCount,
+    winRate: row.winRate,
+    quinellaCount: row.quinellaCount,
+    quinellaRate: row.quinellaRate,
+    showCount: row.showCount,
+    showRate: row.showRate,
+    details: [],
+    horseCount: 0,
+  }));
+
 const assemblePayload = (
   fragments: ReadonlyMap<WinRateHeatmapCacheFragmentKind, WinRateHeatmapCacheFragment>,
   runners: Runner[],
@@ -318,6 +339,11 @@ const assemblePayload = (
     frameStats: restoreFrameRows(fragments.get("frame")!),
     horseRateStats: restoreHorseRateRows(fragments.get("horse")!),
     horseResults: [],
+    partnershipRows: [
+      ...restorePartnershipRows(fragments.get("horseJockey")!, "horseJockey"),
+      ...restorePartnershipRows(fragments.get("jockeyVenue")!, "jockeyVenue"),
+      ...restorePartnershipRows(fragments.get("jockeyTrainerVenue")!, "jockeyTrainerVenue"),
+    ],
     runners,
     similarRows: similarKinds.flatMap((kind) => restoreSimilarRows(fragments.get(kind)!, kind)),
     type: "win-rate-heatmap",
@@ -356,13 +382,26 @@ export const getCachedWinRateHeatmapPayload = async (
     }),
   );
   if (fragments.some(([, fragment]) => fragment === null)) return null;
-  return assemblePayload(
-    new Map(fragments.map(([kind, fragment]) => [kind, fragment!] as const)),
-    currentRunners,
-  );
+  const presentation =
+    manifest.hasPresentation === true
+      ? await readCachedJson(
+          `${currentKey}:presentation:${manifest.generation}`,
+          (value) => (isHeatmapPresentation(value) ? value : null),
+          storage,
+        )
+      : null;
+  return {
+    ...assemblePayload(
+      new Map(fragments.map(([kind, fragment]) => [kind, fragment!] as const)),
+      currentRunners,
+    ),
+    ...(presentation === null ? {} : { presentation }),
+  };
 };
 
-const compactRateRow = (row: BloodlineStatsRow | SimilarRaceStatsRow): CompactRateRow => ({
+const compactRateRow = (
+  row: BloodlineStatsRow | SimilarRaceStatsRow | WinRateHeatmapPartnershipRow,
+): CompactRateRow => ({
   category: row.category,
   currentHorseNumbers: row.currentHorseNumbers,
   name: row.name,
@@ -455,6 +494,24 @@ const buildFragments = (
     ["weight", payload.weightClassStats.map(compactWeightRow)],
     ["carriedWeight", payload.carriedWeightClassStats.map(compactWeightRow)],
     ["horse", buildHorseRateRows(payload)],
+    [
+      "horseJockey",
+      (payload.partnershipRows ?? [])
+        .filter((row) => row.category === "horseJockey")
+        .map(compactRateRow),
+    ],
+    [
+      "jockeyVenue",
+      (payload.partnershipRows ?? [])
+        .filter((row) => row.category === "jockeyVenue")
+        .map(compactRateRow),
+    ],
+    [
+      "jockeyTrainerVenue",
+      (payload.partnershipRows ?? [])
+        .filter((row) => row.category === "jockeyTrainerVenue")
+        .map(compactRateRow),
+    ],
     ...similarRows,
     ...bloodlineRows,
   ]);
@@ -469,15 +526,18 @@ const buildFragments = (
 export const putWinRateHeatmapCache = async ({
   cacheKey,
   payload,
+  keibajoCode,
 }: {
   cacheKey: string;
   payload: WinRateHeatmapSectionPayload;
+  keibajoCode?: string;
 }): Promise<void> => {
   const runnerSignature = buildWinRateHeatmapRunnerSignature(payload.runners);
   if (runnerSignature === null) throw new Error("Heatmap runner signature is unavailable");
   const generation = crypto.randomUUID();
   const fragments = buildFragments(payload, generation);
   const manifest: WinRateHeatmapCacheManifest = {
+    ...(keibajoCode === undefined ? {} : { hasPresentation: true }),
     fragmentKinds: WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
     generation,
     runnerSignature,
@@ -498,6 +558,24 @@ export const putWinRateHeatmapCache = async ({
       );
     }),
   );
+
+  if (keibajoCode !== undefined) {
+    const presentation = buildHeatmapPresentation({
+      ...payload,
+      keibajoCode,
+      liveWeightKgByHorse: indexLiveHorseWeightKg(payload.liveHorseWeights ?? []),
+    });
+    const presentationKey = `${cacheKey}:presentation:${generation}`;
+    const presentationBody = JSON.stringify(presentation);
+    await kv.put(presentationKey, presentationBody, {
+      expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
+    });
+    await writeCacheApi(
+      defaultCache,
+      createWinRateHeatmapCacheRequest(presentationKey),
+      presentationBody,
+    ).catch(() => undefined);
+  }
 
   const manifestBody = JSON.stringify(manifest);
   await kv.put(cacheKey, manifestBody, { expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS });

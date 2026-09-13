@@ -64,6 +64,8 @@ const {
   fetchConditionHistoryStatsFromCatalogMock,
   fetchHorseRaceResultsFromCatalogMock,
   fetchRaceTrainingsFromCatalogMock,
+  fetchHeatmapPartnershipRowsMock,
+  fetchHeatmapLiveWeightsMock,
   fetchWinRateHeatmapStatsFromCatalogMock,
   getCachedDetailSectionResponseMock,
   getDatabaseTargetMock,
@@ -72,6 +74,8 @@ const {
   fetchConditionHistoryStatsFromCatalogMock: vi.fn<() => Promise<unknown>>(),
   fetchHorseRaceResultsFromCatalogMock: vi.fn<() => Promise<unknown[] | null>>(),
   fetchRaceTrainingsFromCatalogMock: vi.fn<() => Promise<unknown[] | null>>(),
+  fetchHeatmapPartnershipRowsMock: vi.fn<() => Promise<unknown[] | null>>(),
+  fetchHeatmapLiveWeightsMock: vi.fn<() => Promise<unknown[]>>(),
   fetchWinRateHeatmapStatsFromCatalogMock:
     vi.fn<(query: Record<string, unknown>) => Promise<unknown>>(),
   getCachedDetailSectionResponseMock: vi.fn<() => Promise<Response | null>>(),
@@ -138,6 +142,12 @@ vi.mock("../../../lib/race-training-catalog.server", () => ({
   fetchRaceTrainingsFromCatalog: fetchRaceTrainingsFromCatalogMock,
 }));
 
+vi.mock("../../../lib/win-rate-heatmap-partnership.server", () => ({
+  fetchHeatmapPartnershipRows: fetchHeatmapPartnershipRowsMock,
+}));
+vi.mock("../../../lib/win-rate-heatmap-live-weights.server", () => ({
+  fetchHeatmapLiveWeights: fetchHeatmapLiveWeightsMock,
+}));
 vi.mock("../../../lib/win-rate-heatmap-catalog.server", () => ({
   fetchWinRateHeatmapStatsFromCatalog: fetchWinRateHeatmapStatsFromCatalogMock,
   groupCatalogBloodlineRows: (rows: unknown) => rows,
@@ -336,6 +346,10 @@ beforeEach(() => {
   fetchHorseRaceResultsFromCatalogMock.mockResolvedValue(null);
   fetchRaceTrainingsFromCatalogMock.mockReset();
   fetchRaceTrainingsFromCatalogMock.mockResolvedValue(null);
+  fetchHeatmapPartnershipRowsMock.mockReset();
+  fetchHeatmapPartnershipRowsMock.mockResolvedValue([]);
+  fetchHeatmapLiveWeightsMock.mockReset();
+  fetchHeatmapLiveWeightsMock.mockResolvedValue([]);
   fetchWinRateHeatmapStatsFromCatalogMock.mockReset();
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockReset();
@@ -2168,12 +2182,59 @@ it("falls back to live results when cached heatmap source JSON is invalid", asyn
   });
   expect(payload).toMatchObject({
     horseResults: [{ umaban: "03" }],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
   });
   expect(getHorseRaceResultsMock).toHaveBeenCalledTimes(1);
 });
 
+it("captures live weights in the warm payload without altering runner identities", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchHeatmapLiveWeightsMock.mockResolvedValue([{ horseNumber: "01", weight: 488 }]);
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(payload).toMatchObject({
+    liveHorseWeights: [{ horseNumber: "01", weight: 488 }],
+    runners: [OVERSEAS_RUNNER],
+  });
+  expect(fetchHeatmapLiveWeightsMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    raceNumber: "11",
+    source: "jra",
+    year: "2025",
+  });
+});
+
+it("refuses to publish a heatmap when the partnership catalog binding is unavailable", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchHeatmapPartnershipRowsMock.mockResolvedValue(null);
+  await expect(
+    getDetailSectionPayload("win-rate-heatmap", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("Partnership catalog binding is unavailable");
+});
+
 it("reuses cached results and condition payloads for heatmap assembly", async () => {
+  fetchHeatmapPartnershipRowsMock.mockResolvedValue([]);
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
@@ -2203,7 +2264,10 @@ it("reuses cached results and condition payloads for heatmap assembly", async ()
 
   expect(payload).toMatchObject({
     carriedWeightClassStats: [{ key: "55.5-57" }],
+
     horseResults: [{ umaban: "01" }],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [{ key: "480-499" }],
   });
@@ -2244,6 +2308,8 @@ it("keeps frameStats from condition payloads that omit weight class arrays", asy
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2283,6 +2349,8 @@ it("reuses cached condition payloads whose frameStats array is empty", async () 
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2323,6 +2391,8 @@ it("drops condition payloads that omit frameStats so heatmap frames stay empty",
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2363,6 +2433,8 @@ it("keeps frameStats when carriedWeightClassStats is not an array", async () => 
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2403,6 +2475,8 @@ it("keeps frameStats when weightClassStats is not an array", async () => {
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2443,6 +2517,8 @@ it("defaults omitted carriedWeightClassStats and keeps present weightClassStats"
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [{ key: "480-499" }],
   });
@@ -2482,6 +2558,8 @@ it("defaults omitted weightClassStats and keeps present carriedWeightClassStats"
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2544,6 +2622,8 @@ it("relaxes empty cell filters so heatmap rate values remain populated", async (
   expect(payload).toMatchObject({
     bloodlineRows: [{ name: "Sire", starts: 10 }],
     similarRows: [{ name: "Jockey", starts: 10 }],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
   });
   expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(2);
@@ -2603,6 +2683,8 @@ it("still builds a heatmap payload from runners when results and condition sourc
     horseResults: [],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [],
   });
@@ -2699,6 +2781,8 @@ it("assembles heatmap payload from Catalog stats, results, and condition section
     horseResults: [{ umaban: "01" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [{ details: [], name: "Jockey" }],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
     weightClassStats: [{ key: "480-499" }],
   });
@@ -2796,6 +2880,8 @@ it("drops Ban-ei heatmap age and condition-key Catalog filters so jockey and sir
   expect(payload).toMatchObject({
     bloodlineRows: [{ name: "BanEi Sire" }],
     similarRows: [{ name: "BanEi Jockey" }],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
   });
   expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toStrictEqual({
@@ -2915,6 +3001,8 @@ it("keeps heatmap horse and condition stats when Catalog stats are unavailable",
     horseResults: [{ umaban: "02" }],
     runners: [OVERSEAS_RUNNER],
     similarRows: [],
+    partnershipRows: [],
+    liveHorseWeights: [],
     type: "win-rate-heatmap",
   });
   expect(getSimilarRaceStatsMock).not.toHaveBeenCalled();

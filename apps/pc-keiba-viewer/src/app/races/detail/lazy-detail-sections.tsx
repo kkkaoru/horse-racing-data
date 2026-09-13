@@ -29,9 +29,11 @@ import type {
 } from "../../../lib/race-types";
 import {
   type WinRateHeatmapHorseRateRow,
+  type WinRateHeatmapPartnershipRow,
   type WinRateHeatmapHorseResult,
   WIN_RATE_HEATMAP_BLOODLINE_NOTE,
 } from "../../../lib/win-rate-heatmap";
+import type { HeatmapPresentation } from "../../../lib/win-rate-heatmap-presentation";
 import { AbilityTestTable } from "./ability-test-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
@@ -157,6 +159,8 @@ type SimilarPayload = {
 };
 
 type WinRateHeatmapPayload = {
+  presentation?: HeatmapPresentation;
+  partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
   carriedWeightClassStats: WeightClassStatsRow[];
   frameStats: FrameStatsRow[];
@@ -753,6 +757,8 @@ function LazyWinRateHeatmapSection(
         carriedWeightClassStats={payload.carriedWeightClassStats}
         frameStats={payload.frameStats}
         horseRateStats={payload.horseRateStats}
+        presentation={payload.presentation}
+        partnershipRows={payload.partnershipRows}
         horseResults={payload.horseResults}
         keibajoCode={props.keibajoCode}
         realtimeRequest={{

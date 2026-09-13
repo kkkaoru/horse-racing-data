@@ -244,6 +244,119 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "caches");
 });
 
+it("round trips all three independent partnership column fragments", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "partnership",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      partnershipRows: [
+        { ...rateRow("jockey"), category: "horseJockey", starts: 10, winRate: 20, winCount: 2 },
+        { ...rateRow("jockey"), category: "jockeyVenue", starts: 30, winRate: 10, winCount: 3 },
+        {
+          ...rateRow("jockey"),
+          category: "jockeyTrainerVenue",
+          starts: 40,
+          winRate: 0,
+          winCount: 0,
+        },
+      ],
+    },
+  });
+  const restored = await getCachedWinRateHeatmapPayload("partnership", [RUNNER]);
+  expect(
+    restored?.partnershipRows?.map((row) => [row.category, row.starts, row.winRate]),
+  ).toStrictEqual([
+    ["horseJockey", 10, 20],
+    ["jockeyVenue", 30, 10],
+    ["jockeyTrainerVenue", 40, 0],
+  ]);
+});
+
+it("warms presentation variants before publication and restores them from durable cache", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "warm-display",
+    payload: HEATMAP_PAYLOAD,
+    keibajoCode: "06",
+  });
+  expect(kv.put.mock.calls.at(-1)?.[0]).toBe("warm-display");
+  cache.values.clear();
+  const restored = await getCachedWinRateHeatmapPayload("warm-display", [RUNNER]);
+  expect(restored?.presentation?.version).toBe(1);
+  expect(Object.keys(restored?.presentation?.displays ?? {}).length).toBe(16);
+  expect(restored?.presentation?.rows[0]?.horseNumber).toBe("1");
+});
+
+it("refreshes precomputed weight cells without changing runner identities", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "live-weight-display",
+    keibajoCode: "06",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      liveHorseWeights: [{ horseNumber: "01", weight: 488 }],
+      weightClassStats: HEATMAP_PAYLOAD.weightClassStats.map((row) => ({
+        ...row,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      })),
+    },
+  });
+  cache.values.clear();
+  const first = await getCachedWinRateHeatmapPayload("live-weight-display", [RUNNER]);
+  expect(first?.presentation?.rows[0]?.cells.weight.name).toBe("480-499kg");
+  expect(first?.presentation?.rows[0]?.cells.weight.winRate).toBe(10);
+  expect(first?.runners).toStrictEqual([RUNNER]);
+  await putWinRateHeatmapCache({
+    cacheKey: "live-weight-display",
+    keibajoCode: "06",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      liveHorseWeights: [{ horseNumber: "01", weight: 528 }],
+      weightClassStats: HEATMAP_PAYLOAD.weightClassStats.map((row) => ({
+        ...row,
+        key: "520-539",
+        starts: 5,
+        winCount: 2,
+        winRate: 40,
+      })),
+    },
+  });
+  cache.values.clear();
+  const updated = await getCachedWinRateHeatmapPayload("live-weight-display", [RUNNER]);
+  expect(updated?.presentation?.rows[0]?.cells.weight.name).toBe("520-539kg");
+  expect(updated?.presentation?.rows[0]?.cells.weight.winRate).toBe(40);
+  expect(updated?.runners).toStrictEqual([RUNNER]);
+  expect(
+    Object.values(updated?.presentation?.displays ?? {}).every((display) => display.showWeight),
+  ).toBe(true);
+});
+
+it("publishes durable presentation despite an unavailable regional cache", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  cache.put.mockRejectedValue(new Error("Cache API unavailable"));
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "warm-display",
+    payload: HEATMAP_PAYLOAD,
+    keibajoCode: "06",
+  });
+  expect(kv.put.mock.calls.at(-1)?.[0]).toBe("warm-display");
+});
+
 it("writes compact column fragments first and publishes the manifest last", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();

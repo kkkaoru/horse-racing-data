@@ -291,7 +291,11 @@ const loadHeatmapSectionPayload = async (
 ): Promise<unknown> => {
   try {
     return await getDetailSectionPayload("win-rate-heatmap", params);
-  } catch {
+  } catch (error: unknown) {
+    console.error(
+      "Heatmap cache warm failed",
+      error instanceof Error ? error.message : "Unknown error",
+    );
     return HEATMAP_SECTION_UNAVAILABLE;
   }
 };
@@ -346,13 +350,30 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       raceNumber,
     );
     const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey, currentRunners);
-    if (cachedHeatmap && !isQueueWarm && isHeatmapCacheReady(cachedHeatmap, currentRunners)) {
+    if (
+      cachedHeatmap?.presentation !== undefined &&
+      !isQueueWarm &&
+      isHeatmapCacheReady(cachedHeatmap, currentRunners)
+    ) {
       return NextResponse.json(cachedHeatmap, {
         headers: {
           "Cache-Control": "private, max-age=0, no-store",
           "X-Win-Rate-Heatmap-Cache": "HIT",
         },
       });
+    }
+    if (!isQueueWarm) {
+      return NextResponse.json(
+        { error: "heatmap_not_warmed" },
+        {
+          status: 503,
+          headers: {
+            "Cache-Control": "private, max-age=0, no-store",
+            "Retry-After": "30",
+            "X-Win-Rate-Heatmap-Cache": "MISS",
+          },
+        },
+      );
     }
     const heatmapPayload = await loadHeatmapSectionPayload({
       day,
@@ -379,56 +400,22 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
     if (!isHeatmapCacheReady(heatmapPayload, currentRunners)) {
-      if (isQueueWarm) {
-        return NextResponse.json(
-          { error: "heatmap_catalog_unavailable" },
-          {
-            headers: {
-              "Cache-Control": "private, max-age=0, no-store",
-              "Retry-After": "30",
-            },
-            status: 503,
-          },
-        );
-      }
-      return NextResponse.json(heatmapPayload, {
-        headers: {
-          "Cache-Control": "private, max-age=0, no-store",
-          "X-Win-Rate-Heatmap-Cache": "MISS",
+      return NextResponse.json(
+        { error: "heatmap_catalog_unavailable" },
+        {
+          status: 503,
+          headers: { "Cache-Control": "private, max-age=0, no-store", "Retry-After": "30" },
         },
-      });
-    }
-    const storeHeatmap = putWinRateHeatmapCache({
-      cacheKey: heatmapCacheKey,
-      payload: heatmapPayload,
-    });
-    if (isQueueWarm) {
-      try {
-        await storeHeatmap;
-      } catch {
-        return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
-      }
-      return NextResponse.json(heatmapPayload, {
-        headers: {
-          "Cache-Control": "private, max-age=0, no-store",
-          "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
-        },
-      });
+      );
     }
     try {
-      const executionContext = await getExecutionContext();
-      if (executionContext === null) {
-        await storeHeatmap;
-      } else {
-        executionContext.waitUntil(storeHeatmap);
-      }
-    } catch {
-      return NextResponse.json(heatmapPayload, {
-        headers: {
-          "Cache-Control": "private, max-age=0, no-store",
-          "X-Win-Rate-Heatmap-Cache": "MISS",
-        },
+      await putWinRateHeatmapCache({
+        cacheKey: heatmapCacheKey,
+        keibajoCode,
+        payload: heatmapPayload,
       });
+    } catch {
+      return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
     }
     return NextResponse.json(heatmapPayload, {
       headers: {

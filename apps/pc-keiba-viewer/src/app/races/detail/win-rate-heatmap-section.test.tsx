@@ -21,6 +21,7 @@ import {
   persistHeatmapShowStartsForCurrentUser,
   persistHeatmapSplitBloodlineLinesForCurrentUser,
 } from "../../../lib/user-preferences-indexeddb";
+import { buildHeatmapPresentation } from "../../../lib/win-rate-heatmap-presentation";
 import { useRealtimeRacePayload } from "./realtime-client";
 import { WinRateHeatmapSection } from "./win-rate-heatmap-section";
 
@@ -365,6 +366,47 @@ it("shows per-metric ばんえい color-scale tracks in combined view", () => {
   ).toBeDefined();
 });
 
+it("renders the warmed presentation instead of recomputing from runners", () => {
+  const presentation = buildHeatmapPresentation({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [],
+    similarRows: [],
+  });
+  render(
+    <WinRateHeatmapSection
+      presentation={presentation}
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("勝率ヒートマップを表示する出走馬がありません。")).toBeTruthy();
+});
+
+it("reports unwarmed variants without calculating a fallback", () => {
+  render(
+    <WinRateHeatmapSection
+      presentation={{ version: 1, rows: [], combinedBloodlineRows: [], displays: {} }}
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="05"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText("勝率ヒートマップの表示キャッシュを準備中です。")).toBeTruthy();
+});
+
 it("shows an empty state when there are no runners", () => {
   render(
     <WinRateHeatmapSection
@@ -410,7 +452,7 @@ it("renders a heatmap of win rates by default without a horse-name column", () =
   expect(screen.getByText("母父父")).toBeDefined();
   expect(screen.getByText("母母父")).toBeDefined();
   expect(screen.getByText("40%以上")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(12);
+  expect(screen.getAllByText("勝").length).toBe(15);
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("20.0")).toBeDefined();
@@ -515,7 +557,7 @@ it("shows quinella-rate swatches when the quinella-rate radio is selected", () =
     "checked",
     false,
   );
-  expect(screen.getAllByText("連").length).toBe(12);
+  expect(screen.getAllByText("連").length).toBe(15);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("複")).toBeNull();
   expect(screen.getByText("30.0")).toBeDefined();
@@ -553,7 +595,7 @@ it("shows show-rate swatches when the show-rate radio is selected", () => {
     "checked",
     false,
   );
-  expect(screen.getAllByText("複").length).toBe(12);
+  expect(screen.getAllByText("複").length).toBe(15);
   expect(screen.queryByText("勝")).toBeNull();
   expect(screen.queryByText("連")).toBeNull();
   expect(screen.getByText("45.0")).toBeDefined();
@@ -587,9 +629,9 @@ it("shows win, quinella, and show swatches when the combined radio is selected",
   expect(screen.getByRole("radio", { name: /^勝率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^連対率$/ })).toHaveProperty("checked", false);
   expect(screen.getByRole("radio", { name: /^複勝率$/ })).toHaveProperty("checked", false);
-  expect(screen.getAllByText("勝").length).toBe(12);
-  expect(screen.getAllByText("連").length).toBe(12);
-  expect(screen.getAllByText("複").length).toBe(12);
+  expect(screen.getAllByText("勝").length).toBe(15);
+  expect(screen.getAllByText("連").length).toBe(15);
+  expect(screen.getAllByText("複").length).toBe(15);
   expect(screen.getByText("15.0")).toBeDefined();
   expect(screen.getAllByText("30.0").length).toBe(2);
   expect(screen.getByText("45.0")).toBeDefined();
@@ -809,7 +851,7 @@ it("shows missing frame rates as dashes when no matching frame row exists", () =
   expect(
     document.querySelector(".win-rate-heatmap-tooltip .frame-number-badge.frame-1"),
   ).toBeDefined();
-  expect(screen.getAllByRole("tooltip").length).toBe(12);
+  expect(screen.getAllByRole("tooltip").length).toBe(15);
 });
 
 it("does not pin a heatmap tooltip on click in desktop view", () => {
@@ -1467,7 +1509,7 @@ it("hides the 斤量 column for ばんえい races", () => {
   );
   expect(screen.queryByText("斤量")).toBeNull();
   expect(screen.getByText("騎手枠別")).toBeDefined();
-  expect(screen.getAllByText("勝").length).toBe(7);
+  expect(screen.getAllByText("勝").length).toBe(10);
 });
 
 it("hides the horse-weight column for overseas races even when a runner has a weight", () => {
@@ -1491,7 +1533,7 @@ it("hides the horse-weight column for overseas races even when a runner has a we
     />,
   );
   expect(screen.queryByText("馬体重")).toBeNull();
-  expect(screen.getAllByText("勝").length).toBe(12);
+  expect(screen.getAllByText("勝").length).toBe(15);
 });
 
 it("shows the horse-weight column after 枠 when a domestic runner has a published weight", () => {
@@ -1508,7 +1550,7 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
   );
   expect(screen.getByText("馬体重")).toBeDefined();
   expect(screen.queryByText("斤量")).toBeNull();
-  expect(screen.getAllByText("勝").length).toBe(13);
+  expect(screen.getAllByText("勝").length).toBe(16);
   expect(screen.getAllByText("100.0").length).toBe(2);
   expect(screen.getByText("480-499kg")).toBeDefined();
   const headings = [...document.querySelectorAll("thead tr:first-child th")].map(
@@ -1519,8 +1561,11 @@ it("shows the horse-weight column after 枠 when a domestic runner has a publish
     "枠",
     "馬体重",
     "馬",
+    "馬×騎手",
     "騎手枠別",
     "騎手",
+    "騎手・同場3年",
+    "騎手×調教師・同場10年",
     "調教師",
     "父",
     "母父",

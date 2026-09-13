@@ -37,16 +37,23 @@ import {
   getWinRateHeatmapColorScaleTracks,
   type WinRateHeatmapColorScales,
   type WinRateHeatmapHorseRateRow,
+  type WinRateHeatmapPartnershipRow,
   type WinRateHeatmapHorseResult,
   WIN_RATE_HEATMAP_VIEW_MODES,
   type WinRateHeatmapDisplaySwatch,
   type WinRateHeatmapRateMetric,
   type WinRateHeatmapViewMode,
 } from "../../../lib/win-rate-heatmap";
+import {
+  selectHeatmapDisplay,
+  type HeatmapPresentation,
+} from "../../../lib/win-rate-heatmap-presentation";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-client";
 
 interface WinRateHeatmapSectionProps {
+  presentation?: HeatmapPresentation;
+  partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
   carriedWeightClassStats?: readonly WeightClassStatsRow[];
   frameStats: FrameStatsRow[];
@@ -313,6 +320,8 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   horseRateStats,
   horseResults,
   keibajoCode,
+  presentation,
+  partnershipRows,
   realtimeRequest,
   runners,
   similarRows,
@@ -397,21 +406,28 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
       ),
     [horseWeightSnapshot, realtimePayload],
   );
-  const display = buildWinRateHeatmapDisplay({
-    bloodlineRows,
-    carriedWeightClassStats,
-    frameStats,
-    horseRateStats,
-    horseResults,
-    keibajoCode,
-    liveWeightKgByHorse,
-    runners,
-    showStarts,
-    similarRows,
-    splitBloodlineLines,
-    viewMode,
-    weightClassStats,
-  });
+  const display =
+    presentation === undefined
+      ? buildWinRateHeatmapDisplay({
+          bloodlineRows,
+          carriedWeightClassStats,
+          frameStats,
+          horseRateStats,
+          partnershipRows,
+          horseResults,
+          keibajoCode,
+          liveWeightKgByHorse,
+          runners,
+          showStarts,
+          similarRows,
+          splitBloodlineLines,
+          viewMode,
+          weightClassStats,
+        })
+      : selectHeatmapDisplay(presentation, { showStarts, splitBloodlineLines, viewMode });
+  if (display === null) {
+    return <p className="empty-state">勝率ヒートマップの表示キャッシュを準備中です。</p>;
+  }
   if (display.empty) {
     return <p className="empty-state">勝率ヒートマップを表示する出走馬がありません。</p>;
   }

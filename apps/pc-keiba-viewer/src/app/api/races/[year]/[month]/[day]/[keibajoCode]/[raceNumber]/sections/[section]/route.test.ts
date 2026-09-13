@@ -1080,6 +1080,7 @@ it("returns a cached win-rate heatmap payload with the current runner generation
     runners: [],
     similarRows: [{ category: "jockey", name: "武豊", starts: 10 }],
     type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
     weightClassStats: [],
   });
   const response = await GET(
@@ -1105,6 +1106,7 @@ it("returns a cached win-rate heatmap payload with the current runner generation
     runners: [],
     similarRows: [{ category: "jockey", name: "武豊", starts: 10 }],
     type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
     weightClassStats: [],
   });
   expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
@@ -1137,7 +1139,9 @@ it("rebuilds a heatmap cache after a same-number horse replacement", async () =>
   });
 
   const response = await GET(
-    new Request("https://example.com/api/races/2026/09/01/44/08/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/09/01/44/08/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "01",
@@ -1154,6 +1158,9 @@ it("rebuilds a heatmap cache after a same-number horse replacement", async () =>
   expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS-STORED");
   expect(getDetailSectionPayloadMock).toHaveBeenCalledTimes(1);
   expect(putWinRateHeatmapCacheMock).toHaveBeenCalledTimes(1);
+  expect(putWinRateHeatmapCacheMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "44" }),
+  );
 });
 
 it("rebuilds a heatmap cache after a frame correction", async () => {
@@ -1183,7 +1190,9 @@ it("rebuilds a heatmap cache after a frame correction", async () => {
   });
 
   const response = await GET(
-    new Request("https://example.com/api/races/2026/09/01/44/08/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/09/01/44/08/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "01",
@@ -1214,7 +1223,9 @@ it("stores a computed win-rate heatmap payload in Cache API and KV", async () =>
     weightClassStats: [],
   });
   const response = await GET(
-    new Request("https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "21",
@@ -1280,7 +1291,9 @@ it("caches a runner-only heatmap with known empty fragments", async () => {
     weightClassStats: [],
   });
   const response = await GET(
-    new Request("https://example.com/api/races/2026/08/23/04/01/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/08/23/04/01/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "23",
@@ -1316,6 +1329,7 @@ it("uses a cached heatmap whose frame fragment is explicitly empty", async () =>
     runners: [],
     similarRows: [{ category: "jockey", name: "武豊", starts: 10 }],
     type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
     weightClassStats: [],
   });
   getRaceSourceByRouteMock.mockResolvedValue("jra");
@@ -1327,6 +1341,7 @@ it("uses a cached heatmap whose frame fragment is explicitly empty", async () =>
     runners: [],
     similarRows: [{ category: "jockey", name: "武豊", starts: 10 }],
     type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
     weightClassStats: [],
   });
   const response = await GET(
@@ -1416,7 +1431,9 @@ it("caches explicit all-zero Catalog rates as valid values", async () => {
   });
 
   const response = await GET(
-    new Request("https://example.com/api/races/2026/08/23/04/11/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/08/23/04/11/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "23",
@@ -1449,7 +1466,9 @@ it("caches an explicitly available empty frame fragment separately from zero", a
     weightClassStats: [],
   });
   const response = await GET(
-    new Request("https://example.com/api/races/2026/08/23/04/11/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/08/23/04/11/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "23",
@@ -1466,29 +1485,34 @@ it("caches an explicitly available empty frame fragment separately from zero", a
   expect(putWinRateHeatmapCacheMock).toHaveBeenCalledTimes(1);
 });
 
-it("returns 503 when heatmap payload computation throws", async () => {
-  getRaceSourceByRouteMock.mockResolvedValue("jra");
-  getDetailSectionPayloadMock.mockRejectedValue(new Error("R2 Catalog heatmap stats failed: 502"));
-  const response = await GET(
-    new Request("https://example.com/api/races/2026/08/23/04/01/sections/win-rate-heatmap"),
-    {
-      params: Promise.resolve({
-        day: "23",
-        keibajoCode: "04",
-        month: "08",
-        raceNumber: "01",
-        section: "win-rate-heatmap",
-        year: "2026",
-      }),
-    },
-  );
-  expect(response.status).toBe(503);
-  expect(await response.json()).toStrictEqual({
-    error: "section_unavailable",
-    section: "win-rate-heatmap",
-  });
-  expect(putWinRateHeatmapCacheMock).not.toHaveBeenCalled();
-});
+it.each([new Error("R2 Catalog heatmap stats failed: 502"), "unavailable"])(
+  "returns 503 when heatmap payload computation throws: %s",
+  async (failure) => {
+    getRaceSourceByRouteMock.mockResolvedValue("jra");
+    getDetailSectionPayloadMock.mockRejectedValue(failure);
+    const response = await GET(
+      new Request(
+        "https://example.com/api/races/2026/08/23/04/01/sections/win-rate-heatmap?__cacheWarm=1",
+      ),
+      {
+        params: Promise.resolve({
+          day: "23",
+          keibajoCode: "04",
+          month: "08",
+          raceNumber: "01",
+          section: "win-rate-heatmap",
+          year: "2026",
+        }),
+      },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toStrictEqual({
+      error: "section_unavailable",
+      section: "win-rate-heatmap",
+    });
+    expect(putWinRateHeatmapCacheMock).not.toHaveBeenCalled();
+  },
+);
 
 it("returns 503 for queue heatmap warms when cache storage fails", async () => {
   const runners = [{ bamei: "新馬", kettoTorokuBango: "2023100001", umaban: "01" }];
@@ -1524,7 +1548,7 @@ it("returns 503 for queue heatmap warms when cache storage fails", async () => {
   expect(await response.json()).toStrictEqual({ error: "heatmap_cache_store_failed" });
 });
 
-it("still returns a computed heatmap payload when cache storage fails", async () => {
+it("never computes an unwarmed heatmap during an interactive read", async () => {
   const runners = [{ bamei: "新馬", kettoTorokuBango: "2023100001", umaban: "01" }];
   getRaceSourceByRouteMock.mockResolvedValue("jra");
   getRaceRunnersMock.mockResolvedValue(runners);
@@ -1552,18 +1576,11 @@ it("still returns a computed heatmap payload when cache storage fails", async ()
       }),
     },
   );
-  expect(response.status).toBe(200);
+  expect(response.status).toBe(503);
   expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS");
-  expect(await response.json()).toStrictEqual({
-    bloodlineRows: [{ category: "sire", name: "ディープインパクト" }],
-    carriedWeightClassStats: [],
-    frameStats: [],
-    horseResults: [],
-    runners,
-    similarRows: [],
-    type: "win-rate-heatmap",
-    weightClassStats: [],
-  });
+  expect(await response.json()).toStrictEqual({ error: "heatmap_not_warmed" });
+  expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
+  expect(putWinRateHeatmapCacheMock).not.toHaveBeenCalled();
 });
 
 it("returns 404 when a win-rate heatmap race source is missing", async () => {
@@ -1589,7 +1606,9 @@ it("returns 404 when computed heatmap payload is not the heatmap section", async
   getRaceSourceByRouteMock.mockResolvedValue("jra");
   getDetailSectionPayloadMock.mockResolvedValue({ type: "condition" });
   const response = await GET(
-    new Request("https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap"),
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheWarm=1",
+    ),
     {
       params: Promise.resolve({
         day: "21",
