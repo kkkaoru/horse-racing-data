@@ -6,6 +6,8 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
   // Used only by `next dev` via initOpenNextCloudflareForDev/getPlatformProxy.
   // Durable Objects are accessed through the production API proxy in local dev.
+  // Read the production R2 catalog directly when remote bindings are enabled.
+  "services": [{ "binding": "R2_CATALOG", "service": "pc-keiba-r2-catalog", "remote": true }],
   "kv_namespaces": [
     {
       "binding": "DETAIL_SECTION_CACHE_KV",
