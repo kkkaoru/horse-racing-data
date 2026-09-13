@@ -10,6 +10,7 @@ import {
   buildLegacyPredictContainerEnvVars,
   buildRaceChainPredictContainerEnvVars,
   FinishPositionPredictContainer,
+  FinishPositionRescoreContainer,
   RACE_CHAIN_SLEEP_AFTER,
 } from "./container-class";
 import { WATCH_REQUEST_HEADER, WATCH_RESPONSE_HEADER } from "./focused-full-watch";
@@ -323,6 +324,46 @@ test("buildLegacyPredictContainerEnvVars fixes the legacy role after inherited v
   expect(envVars.CALLER_VALUE).toBe("preserved");
   expect(envVars.NEON_DATABASE_URL).toBe("postgres://legacy-output/db");
   expect(envVars.PIPELINE_TOTAL_TIMEOUT_SECONDS).toBe("1800");
+});
+
+test.each(["http://do/predict?mode=full", "http://do/predict", "http://do/prewarm-day-base"])(
+  "rejects non-rescore work before boot: %s",
+  async (url) => {
+    const container = Reflect.construct(FinishPositionRescoreContainer, []);
+    if (!(container instanceof FinishPositionRescoreContainer))
+      throw new Error("Invalid test Container");
+    const boot = vi.fn();
+    Object.defineProperty(container, "startAndWaitForPorts", { value: boot });
+    const response = await container.fetch(new Request(url));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toStrictEqual({ error: "RESCORE_ONLY_REQUIRED", ok: false });
+    expect(boot).not.toHaveBeenCalled();
+  },
+);
+
+test("runs the existing rescore proxy with authoritative role and retains admin stop", async () => {
+  const harness = makeContainerHarness('{"racesPredicted":1,"status":"success"}\n', "0", false);
+  const container = Reflect.construct(FinishPositionRescoreContainer, []);
+  if (!(container instanceof FinishPositionRescoreContainer))
+    throw new Error("Invalid test Container");
+  const { sleepAfter, ...runtimeProperties } = Object.getOwnPropertyDescriptors(harness.container);
+  expect(sleepAfter?.value).toBe("45m");
+  Object.defineProperties(container, runtimeProperties);
+  expect(container.sleepAfter).toBe("2m");
+  const response = await container.fetch(new Request("http://do/predict?mode=rescore"));
+  expect(response.status).toBe(200);
+  expect(container.envVars?.PREDICT_CONTAINER_ROLE).toBe("rescore");
+  container.envVars = { PREDICT_CONTAINER_ROLE: "legacy" };
+  await container.fetch(new Request("http://do/predict?mode=rescore"));
+  expect(container.envVars?.PREDICT_CONTAINER_ROLE).toBe("rescore");
+  const stopped = await container.fetch(
+    new Request("http://do/__admin/stop-container", {
+      headers: { authorization: "Bearer secret-token" },
+    }),
+  );
+  expect(stopped.status).toBe(200);
+  expect(harness.destroyMock).toHaveBeenCalledTimes(1);
+  expect(harness.startAndWaitForPortsMock).toHaveBeenCalledTimes(2);
 });
 
 test("buildRaceChainPredictContainerEnvVars fixes the role after inherited variables", () => {
