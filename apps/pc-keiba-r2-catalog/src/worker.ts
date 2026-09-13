@@ -1,3 +1,5 @@
+import { createPartnershipCohortCache } from "./heatmap-partnership-cache";
+import { loadPartnershipStats } from "./heatmap-partnership-stats";
 import {
   cacheRequestFor,
   conditionHistoryStatsDescriptor,
@@ -120,6 +122,7 @@ const RACE_ENTITY_CACHE_API_TTL_SECONDS: number = 12 * 60 * 60;
 const RACE_ENTITY_KV_TTL_SECONDS: number = 36 * 60 * 60;
 const RACE_ENTITY_WARM_PATH: string = "/v1/internal/race-entity-recent-results/warm";
 const CACHE_WARM_HEADER: string = "X-PC-Keiba-Cache-Warm";
+const partnershipCohortCache = createPartnershipCohortCache();
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
@@ -1292,6 +1295,45 @@ const handlePurge = async (
   return jsonResponse({ ok: true, purged });
 };
 
+const handlePartnershipStats = async (
+  url: URL,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<Response> => {
+  const filters = parseWinRateHeatmapFilters(url);
+  if (env.CATALOG_OBJECTS === undefined)
+    return jsonResponse({ error: "partnership_snapshot_unavailable" }, 503);
+  const manifest = await readEntityCatalogManifest(env.CATALOG_OBJECTS);
+  const table = filters.source === "jra" ? "jvd_se" : "nvd_se";
+  const revision = manifest.raw[table]?.snapshotId;
+  if (revision === undefined)
+    return jsonResponse({ error: "partnership_snapshot_unavailable" }, 503);
+  const rows = await loadPartnershipStats({
+    cache: partnershipCohortCache,
+    raceBango: filters.raceBango,
+    cohort: {
+      cache: dependencies.cache,
+      kv: env.CATALOG_KV,
+      execute: (sql) => executeR2Sql(env, sql, dependencies.fetchImpl),
+      warm: url.searchParams.get("warm") === "1",
+      query: {
+        config: env,
+        horseIds: [],
+        scope: {
+          date: filters.date,
+          keibajoCode: filters.keibajoCode,
+          kind: "jockeyVenue",
+          source: filters.source,
+          revision,
+        },
+      },
+    },
+  });
+  return rows === null
+    ? jsonResponse({ error: "partnership_not_warmed" }, 503)
+    : jsonResponse({ partnershipRows: rows });
+};
+
 export const handleRequest = async (
   request: Request,
   env: Env,
@@ -1319,6 +1361,9 @@ export const handleRequest = async (
     }
     if (request.method === "GET" && url.pathname === "/v1/running-style-features") {
       return await handleRunningStyleFeatures(url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/heatmap-partnership-stats") {
+      return await handlePartnershipStats(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/win-rate-heatmap-stats") {
       return await handleWinRateHeatmapStats(url, env, dependencies);
