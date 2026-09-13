@@ -98,6 +98,7 @@ def fit_and_predict(
     x_evaluation: npt.NDArray[np.float32],
     output: Path,
     config: RankerConfig,
+    group_weights: npt.NDArray[np.float64] | None = None,
 ) -> npt.NDArray[np.float64]:
     """Train one fresh grouped model; save it without CatBoost scratch output."""
     if x_train.ndim != 2 or x_evaluation.ndim != 2 or x_train.shape[1] != x_evaluation.shape[1]:
@@ -108,6 +109,16 @@ def fit_and_predict(
         raise ValueError("Infinite features are invalid; structural missingness must be NaN")
     labels = relevance_for_top5(finishes, abnormality)
     order = np.argsort(race_ids, kind="stable")
+    ordered_weights = None
+    if group_weights is not None:
+        if group_weights.shape != finishes.shape:
+            raise ValueError("Group weights must align with training rows")
+        if not np.isfinite(group_weights).all() or np.any(group_weights <= 0):
+            raise ValueError("Group weights must be finite and positive")
+        ordered_weights = group_weights[order]
+        groups = race_ids[order]
+        if np.any((groups[1:] == groups[:-1]) & (ordered_weights[1:] != ordered_weights[:-1])):
+            raise ValueError("Weights must be constant within each race")
     output.mkdir(parents=True, exist_ok=False)
     model = CatBoostRanker(
         loss_function="YetiRank",
@@ -121,7 +132,14 @@ def fit_and_predict(
         verbose=False,
         allow_writing_files=False,
     )
-    model.fit(Pool(x_train[order], label=labels[order], group_id=race_ids[order].tolist()))
+    model.fit(
+        Pool(
+            x_train[order],
+            label=labels[order],
+            group_id=race_ids[order].tolist(),
+            group_weight=ordered_weights,
+        )
+    )
     model.save_model(str(output / "model.cbm"))
     model.save_model(str(output / "model.json"), format="json")
     scores = np.asarray(model.predict(x_evaluation), dtype=np.float64)

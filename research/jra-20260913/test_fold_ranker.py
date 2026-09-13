@@ -9,6 +9,43 @@ import numpy.typing as npt
 import pytest
 
 
+def test_positive_race_weights_follow_sorted_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = Mock()
+    factory.return_value.predict.return_value = np.array([0.6])
+    pool = Mock()
+    monkeypatch.setattr(fold_ranker, "CatBoostRanker", factory)
+    monkeypatch.setattr(fold_ranker, "Pool", pool)
+    result = fold_ranker.fit_and_predict(
+        x_train=np.array([[1], [2], [3]], dtype=np.float32),
+        finishes=np.array([1, 2, 3], dtype=np.float32),
+        abnormality=np.array(["0", "0", "0"], dtype=np.str_),
+        race_ids=np.array(["b", "a", "a"], dtype=np.str_),
+        x_evaluation=np.array([[4]], dtype=np.float32),
+        output=tmp_path / "weighted",
+        config=fold_ranker.RankerConfig(),
+        group_weights=np.array([2, 1, 1], dtype=np.float64),
+    )
+    assert result.tolist() == [0.6]
+    assert pool.call_args.kwargs["group_weight"].tolist() == [1, 1, 2]
+
+
+@pytest.mark.parametrize("values", [[1], [1, -1], [1, float("nan")], [1, 2]])
+def test_invalid_race_weights_fail(tmp_path: Path, values: list[float]) -> None:
+    with pytest.raises(ValueError, match=r"weights|Weights"):
+        fold_ranker.fit_and_predict(
+            x_train=np.array([[1], [2]], dtype=np.float32),
+            finishes=np.array([1, 2], dtype=np.float32),
+            abnormality=np.array(["0", "0"], dtype=np.str_),
+            race_ids=np.array(["a", "a"], dtype=np.str_),
+            x_evaluation=np.array([[3]], dtype=np.float32),
+            output=tmp_path / "invalid",
+            config=fold_ranker.RankerConfig(),
+            group_weights=np.asarray(values, dtype=np.float64),
+        )
+
+
 def test_market_and_noncausal_features_are_excluded() -> None:
     assert fold_ranker.market_free_features(
         [
