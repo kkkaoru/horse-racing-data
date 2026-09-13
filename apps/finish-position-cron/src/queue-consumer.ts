@@ -118,6 +118,8 @@ import {
   type BaneiRaceShadowResult,
 } from "./scoring/rescore-consumer";
 import { resolveRescoreRealtimeFetch } from "./scoring/rescore-fetch";
+import { verifyRescoreWeightGeneration } from "./scoring/rescore-preflight";
+import { sourceForCategory } from "./scoring/rescore-realtime";
 import {
   buildRetryErrorBindParams,
   buildRetryErrorInsertSql,
@@ -2397,6 +2399,22 @@ const processContainerPerRaceRescore = async (
         ) {
           deadlineExpired.value = true;
           await finishExpiredRescore({ env, message, stage: "container-start" });
+          return;
+        }
+        await verifyRescoreWeightGeneration({
+          source: sourceForCategory(category),
+          runYmd,
+          keibajoCode,
+          raceBango,
+          fetchImpl: resolveRescoreRealtimeFetch(env, fetch),
+          weightGeneration: { weightSnapshotCount, weightSnapshotFetchedAt, weightSnapshotHash },
+        });
+        if (
+          !allowAfterRaceStart &&
+          !isBeforeRaceStartDeadline({ nowMs: Date.now(), raceStartAtJst })
+        ) {
+          deadlineExpired.value = true;
+          await finishExpiredRescore({ env, message, stage: "weight-preflight" });
           return;
         }
         const attestation = await createRescoreAttestation({

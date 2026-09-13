@@ -1,6 +1,9 @@
 // Run with bun. Tests for the queue consumer (DO-backed dedup).
 
 import { beforeEach, expect, test, vi } from "vitest";
+import { verifyRescoreWeightGeneration } from "./scoring/rescore-preflight";
+
+vi.mock("./scoring/rescore-preflight", () => ({ verifyRescoreWeightGeneration: vi.fn() }));
 import type { RaceEntry } from "./cron-decision";
 import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
 import type { PredictionKvPublishResult } from "./prediction-kv-writer";
@@ -2631,6 +2634,69 @@ test("acks day-scoped skipDedup full messages without reaching the container", a
     makeEnv(),
   );
   expectSkippedMissingPerRaceScope();
+});
+
+test("deadline reached during preflight prevents Container startup", async () => {
+  const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-13T00:00:00Z"));
+  vi.mocked(verifyRescoreWeightGeneration).mockImplementationOnce(async () => {
+    nowSpy.mockReturnValue(Date.parse("2026-09-13T00:00:02Z"));
+  });
+  try {
+    await handleQueue(
+      makeBatch([
+        makeMessage({
+          daysAhead: 0,
+          keibajoCode: "05",
+          mode: "rescore",
+          raceBango: "11",
+          runYmd: "20260913",
+          raceStartAtJst: "2026-09-13T00:00:01Z",
+        }),
+      ]),
+      makeEnv(),
+    );
+    expect(stubFetchMock).not.toHaveBeenCalled();
+    expect(ackMock).toHaveBeenCalledOnce();
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+test("weight preflight failure does not start a prediction Container", async () => {
+  vi.mocked(verifyRescoreWeightGeneration).mockRejectedValueOnce(new Error("HTTP 502"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(verifyRescoreWeightGeneration).toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+});
+
+test("obsolete weight generation does not start a prediction Container", async () => {
+  vi.mocked(verifyRescoreWeightGeneration).mockRejectedValueOnce(
+    new Error("post-weight snapshot generation mismatch: race"),
+  );
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
 });
 
 test("calls stub.fetch with mode=rescore when message has mode rescore using YYYYMMDD", async () => {
