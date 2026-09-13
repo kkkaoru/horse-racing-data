@@ -26,8 +26,10 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -38,6 +40,7 @@ from predict_lib.debug_log import (
     record_operational_progress,
 )
 from predict_lib.focused_full_cache import FocusedFullCachePayload
+from predict_lib.resource_usage import ResourceWorkload
 from predict_lib.serve import (
     FOCUSED_FULL_ACCEPTED_STATUS,
     FOCUSED_FULL_ALREADY_COMPLETE_STATUS,
@@ -102,6 +105,31 @@ _release_prewarm_slot = cast(
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def isolate_resource_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Cgroup I/O is tested separately. Keep server timing tests independent of
+    # host filesystem latency and thread scheduling introduced by diagnostics.
+    monkeypatch.setattr(serve_module, "observe_resources", Mock(return_value=nullcontext()))
+
+
+def test_predict_execution_reports_workload_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    observer = Mock(return_value=nullcontext())
+    predictor = Mock(return_value=7)
+    monkeypatch.setattr(serve_module, "observe_resources", observer)
+    chunks = list(
+        serve_module.iter_predict_chunks(
+            serve_module.PredictParams(
+                category="jra", run_date="20260913", days_ahead=0, mode="rescore", race_bango="01"
+            ),
+            predictor,
+            rescore_fn=predictor,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert json.loads(chunks[-1])["racesPredicted"] == 7
+    observer.assert_called_once_with(ResourceWorkload("jra", "20260913", "rescore", "01"))
 
 
 def _noop_sleep(_: float) -> None:
@@ -261,8 +289,7 @@ def test_parse_predict_params_accepts_post_time_weight_rescore() -> None:
 
 def test_parse_predict_params_rejects_post_time_override_without_focused_rescore() -> None:
     result = parse_predict_params(
-        "category=nar&runDate=20260910&mode=full&keibajoCode=50&raceBango=11"
-        "&allowPostTimeRescore=1"
+        "category=nar&runDate=20260910&mode=full&keibajoCode=50&raceBango=11&allowPostTimeRescore=1"
     )
     assert result == "allowPostTimeRescore requires a focused mode=rescore request"
 

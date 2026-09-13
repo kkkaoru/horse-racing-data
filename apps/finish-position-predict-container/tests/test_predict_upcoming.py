@@ -21,14 +21,14 @@ import json
 import sys
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
 from typing import cast, final, override
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -82,6 +82,13 @@ from predict_upcoming import (
     score_one_race_nar_etop2,
     score_races,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_resource_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Routing/HTTP tests must not sample host memory or start telemetry threads.
+    # The resource modules have their own isolated lifecycle and failure tests.
+    monkeypatch.setattr("predict_lib.serve.observe_resources", Mock(return_value=nullcontext()))
 
 
 @pytest.fixture(autouse=True)
@@ -5388,6 +5395,7 @@ def test_full_mode_handler_flow_passes_race_scope_to_predict_fn() -> None:
     assert not isinstance(parsed, str)
 
     recorded: list[tuple[str, str, int, str | None, str | None]] = []
+    called = threading.Event()
 
     def _recording_predict(
         category: str,
@@ -5398,10 +5406,13 @@ def test_full_mode_handler_flow_passes_race_scope_to_predict_fn() -> None:
         card_max_race_bango: int | None = None,
     ) -> int:
         recorded.append((category, run_date, days_ahead, keibajo_code, race_bango))
+        called.set()
         return 1
 
     list(iter_predict_chunks(parsed, _recording_predict, sleep_fn=_noop_sleep))
 
+    # An accepted detached response need not wait for the predictor to start.
+    assert called.wait(timeout=1.0)
     assert recorded == [("jra", "20260628", 0, "01", "05")]
 
 

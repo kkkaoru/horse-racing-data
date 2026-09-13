@@ -90,6 +90,7 @@ from .debug_log import (
     parse_debug_flag,
 )
 from .focused_full_cache import FocusedFullCachePayload
+from .resource_usage import ResourceWorkload, observe_resources
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1473,6 +1474,14 @@ def _run_predict_fn(
     """
     with (
         _PIPELINE_EXEC_LOCK,
+        observe_resources(
+            ResourceWorkload(
+                category=params.category,
+                run_date=params.run_date,
+                mode=params.mode,
+                race=params.race_bango,
+            )
+        ),
         debug_logs_scope(params.debug_logs),
         _allow_post_time_rescore_scope(params.allow_post_time_rescore),
         _allow_race_scoped_day_base_scope(params.allow_race_scoped_day_base),
@@ -2861,7 +2870,14 @@ def _run_detached_prewarm_build(
     generation: int,
 ) -> None:
     try:
-        with debug_logs_scope(params.debug_logs):
+        with (
+            debug_logs_scope(params.debug_logs),
+            observe_resources(
+                ResourceWorkload(
+                    category=params.category, run_date=params.run_date, mode="day-base", race=None
+                )
+            ),
+        ):
             day_base_dir = build_fn(params.category, params.run_date, params.days_ahead)
         if day_base_dir is None:
             _PREWARM_STATES.finish(flight_key, generation, "empty", _wall_time_ms(), None)
@@ -3091,7 +3107,14 @@ def iter_prewarm_chunks(
     last_progress = time_fn()  # reset after forced emit
 
     def _call_build() -> Path | None:
-        with debug_logs_scope(params.debug_logs):
+        with (
+            debug_logs_scope(params.debug_logs),
+            observe_resources(
+                ResourceWorkload(
+                    category=params.category, run_date=params.run_date, mode="day-base", race=None
+                )
+            ),
+        ):
             return build_fn(params.category, params.run_date, params.days_ahead)
 
     day_base_dir, error, last_progress = yield from _iter_keepalive(
