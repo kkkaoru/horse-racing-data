@@ -27,7 +27,14 @@
       "class_name": "MlflowContainer",
       "image": "./Dockerfile",
       "image_build_context": "../..",
-      "instance_type": "standard-1",
+      // GraphQL observed ~0.89 GiB workload memory and ~0.98 GB disk before
+      // rollout. Canary keeps >3x observed memory headroom and raises CPU.
+      // Custom profiles require at least 1 vCPU and 3 GiB per vCPU.
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 3072,
+        "disk_mb": 4000,
+      },
       "max_instances": 1,
     },
   ],
