@@ -42,6 +42,17 @@ test("isContainerCleanupMessage accepts an exact cleanup body", () => {
   expect(isContainerCleanupQueueMessage({ body: cleanupMessage } as never)).toBe(true);
 });
 
+test("accepts rescore cleanup and rejects inherited role names", () => {
+  expect(
+    isContainerCleanupMessage({
+      ...cleanupMessage,
+      role: "rescore",
+      name: "rescore-predict-jra-1",
+    }),
+  ).toBe(true);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, role: "toString" })).toBe(false);
+});
+
 test("isContainerCleanupMessage rejects malformed cleanup bodies", () => {
   expect(isContainerCleanupMessage({ ...cleanupMessage, attempt: 0 })).toBe(false);
   expect(isContainerCleanupMessage({ ...cleanupMessage, name: "" })).toBe(false);

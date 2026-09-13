@@ -2,6 +2,8 @@
 
 import { claimContainerSlotStop, clearContainerSlot, markContainerSlotStopped } from "./do-state";
 import {
+  isPredictionContainerRole,
+  qualifyPredictionContainerDoName,
   resolveContainerNamespaceForRole,
   type PredictionContainerRole,
 } from "./race-container-routing";
@@ -10,7 +12,6 @@ import type { ContainerControlMessage, Env } from "./types";
 
 const DO_HOST = "http://do";
 const ADMIN_STOP_CONTAINER_PATH = "/__admin/stop-container";
-const RACE_CHAIN_DO_NAME_PREFIX = "race-chain-";
 
 interface EnqueueContainerStopForRoleParams {
   acceptableWorkKeys?: string[];
@@ -90,8 +91,9 @@ export const isAllowedContainerDoName = (
   name: string,
   role: PredictionContainerRole | undefined,
 ): boolean => {
-  const prefix = role === "race-chain" ? RACE_CHAIN_DO_NAME_PREFIX : "";
-  return listAllowedPredictDoNames().some((doName) => name === `${prefix}${doName}`);
+  return listAllowedPredictDoNames().some(
+    (doName) => name === qualifyPredictionContainerDoName(doName, role ?? "legacy"),
+  );
 };
 
 export const isContainerControlMessage = (value: unknown): value is ContainerControlMessage =>
@@ -111,7 +113,7 @@ export const isContainerControlMessage = (value: unknown): value is ContainerCon
       ))) &&
   (!("allowUnowned" in value) || typeof value.allowUnowned === "boolean") &&
   (!("workKey" in value) || (typeof value.workKey === "string" && value.workKey.length > 0)) &&
-  (!("role" in value) || value.role === "legacy" || value.role === "race-chain") &&
+  (!("role" in value) || isPredictionContainerRole(value.role)) &&
   (!("force" in value) || typeof value.force === "boolean");
 
 export const isContainerControlQueueMessage = (

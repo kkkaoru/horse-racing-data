@@ -4,18 +4,24 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
 
 import {
+  isPredictionContainerRole,
   qualifyPredictionContainerDoName,
   resolveContainerNamespaceForRole,
   resolveRaceContainerRoute,
+  resolveRescoreContainerRoute,
 } from "./race-container-routing";
 
 const legacyNamespace = { role: "legacy" };
 const raceNamespace = { role: "race-chain" };
+const rescoreNamespace: { role: string } = { role: "rescore" };
 
 const makeEnv = (overrides: Partial<Env> = {}): Env =>
   ({
     FINISH_POSITION_PREDICT_CONTAINER: legacyNamespace,
     FINISH_POSITION_RACE_CHAIN_CONTAINER: raceNamespace,
+    FINISH_POSITION_RESCORE_CONTAINER: rescoreNamespace,
+    RESCORE_CONTAINER_ENABLED: "1",
+    RESCORE_CONTAINER_RACES: "jra:20260913:06:04",
     RACE_CHAIN_CONTAINER_CATEGORIES: "jra,nar",
     RACE_CHAIN_CONTAINER_ENABLED: "1",
     ...overrides,
@@ -106,6 +112,85 @@ test("keeps routing independent from cache probes and falls back only when bindi
   expect(route).toStrictEqual({ namespace: raceNamespace, role: "race-chain" });
   expect(absent).toStrictEqual({ namespace: legacyNamespace, role: "legacy" });
 });
+
+test("routes only an exact first-attempt race to the small rescore binding", () => {
+  const route = resolveRescoreContainerRoute({
+    attempts: 1,
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "6",
+    raceBango: "4",
+    runYmd: "20260913",
+  });
+  expect(route).toStrictEqual({ namespace: { role: "rescore" }, role: "rescore" });
+  expect(qualifyPredictionContainerDoName("predict-jra-0", "rescore")).toBe(
+    "rescore-predict-jra-0",
+  );
+  expect(resolveContainerNamespaceForRole(makeEnv(), "rescore")).toStrictEqual({ role: "rescore" });
+});
+
+test.each<Partial<Env>>([
+  { RESCORE_CONTAINER_ENABLED: "0" },
+  { RESCORE_CONTAINER_ENABLED: undefined },
+  { FINISH_POSITION_RESCORE_CONTAINER: undefined },
+  { RESCORE_CONTAINER_RACES: undefined },
+  { RESCORE_CONTAINER_RACES: "jra:20260913:06:05" },
+])("keeps the rescore canary fail-closed for unavailable configuration %j", (overrides) => {
+  const route = resolveRescoreContainerRoute({
+    attempts: 1,
+    category: "jra",
+    env: makeEnv(overrides),
+    keibajoCode: "06",
+    raceBango: "04",
+    runYmd: "20260913",
+  });
+  expect(route).toStrictEqual({ namespace: { role: "legacy" }, role: "legacy" });
+});
+
+test("returns failed/retried rescores to legacy without resetting attempts", () => {
+  const route = resolveRescoreContainerRoute({
+    attempts: 2,
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "06",
+    raceBango: "04",
+    runYmd: "20260913",
+  });
+  expect(route).toStrictEqual({ namespace: { role: "legacy" }, role: "legacy" });
+});
+
+test("honors an explicit legacy rescore override", () => {
+  const route = resolveRescoreContainerRoute({
+    attempts: 1,
+    category: "jra",
+    env: makeEnv(),
+    forceLegacy: true,
+    keibajoCode: "06",
+    raceBango: "04",
+    runYmd: "20260913",
+  });
+  expect(route).toStrictEqual({ namespace: { role: "legacy" }, role: "legacy" });
+});
+
+test("fails closed when rescore cleanup references an unavailable binding", () => {
+  expect(() =>
+    resolveContainerNamespaceForRole(
+      makeEnv({ FINISH_POSITION_RESCORE_CONTAINER: undefined }),
+      "rescore",
+    ),
+  ).toThrow("Rescore container binding is unavailable");
+});
+
+test.each(["legacy", "race-chain", "rescore"])("recognizes the exact role %s", (role) => {
+  expect(isPredictionContainerRole(role)).toBe(true);
+});
+
+test.each(["__proto__", "toString", "constructor", "RESCORE", undefined, 42])(
+  "rejects unknown and inherited role keys %s",
+  (role) => {
+    expect(isPredictionContainerRole(role)).toBe(false);
+  },
+);
 
 test("qualifies race DO names and resolves stop bindings by explicit role", () => {
   const env = makeEnv();

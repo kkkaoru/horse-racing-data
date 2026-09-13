@@ -102,6 +102,7 @@ import {
   qualifyPredictionContainerDoName,
   resolveContainerNamespaceForRole,
   resolveRaceContainerRoute,
+  resolveRescoreContainerRoute,
   type PredictionContainerRole,
 } from "./race-container-routing";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
@@ -455,6 +456,14 @@ interface ReleaseContainerSlotBestEffortParams {
   env: Env;
   kind: ContainerSlotKind;
   workKey: string;
+}
+
+interface FetchPerRaceRescoreParams {
+  namespace: Env["FINISH_POSITION_PREDICT_CONTAINER"];
+  doId: DurableObjectId;
+  predictUrl: string;
+  message: PerRaceRescoreMessage;
+  predictDoName: string;
 }
 
 interface ContainerRequestLifecycle {
@@ -2231,14 +2240,11 @@ const isInactiveContainerDoError = (error: unknown): boolean =>
   error instanceof Error && error.message.startsWith(INACTIVE_CONTAINER_DO_ERROR_PREFIX);
 
 const fetchPerRaceRescoreWithReconnect = async (
-  env: Env,
-  doId: DurableObjectId,
-  predictUrl: string,
-  message: PerRaceRescoreMessage,
-  predictDoName: string,
+  params: FetchPerRaceRescoreParams,
 ): Promise<Response> => {
+  const { namespace, doId, predictUrl, message, predictDoName } = params;
   try {
-    return await env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(new Request(predictUrl));
+    return await namespace.get(doId).fetch(new Request(predictUrl));
   } catch (error) {
     if (!isInactiveContainerDoError(error)) throw error;
     console.warn(
@@ -2246,7 +2252,7 @@ const fetchPerRaceRescoreWithReconnect = async (
         message,
       )} doName=${predictDoName}`,
     );
-    return env.FINISH_POSITION_PREDICT_CONTAINER.get(doId).fetch(new Request(predictUrl));
+    return namespace.get(doId).fetch(new Request(predictUrl));
   }
 };
 
@@ -2345,12 +2351,19 @@ const processContainerPerRaceRescore = async (
   const allowAfterRaceStart = message.body.allowPostTimeRescore === true;
   if (await deferRescoreUntilInitialPrediction(message, env)) return;
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
-  const predictDoName = resolvePredictDoName({
+  const containerRoute = resolveRescoreContainerRoute({
+    attempts: message.attempts,
     category,
     env,
+    forceLegacy: message.body.forceLegacyContainer,
     keibajoCode,
     raceBango,
+    runYmd,
   });
+  const predictDoName = qualifyPredictionContainerDoName(
+    resolvePredictDoName({ category, env, keibajoCode, raceBango }),
+    containerRoute.role,
+  );
   if (!(await claimRescoreExecutionOrFinish(message, env, predictDoName))) return;
   if (
     !(await claimContainerSlotOrRetry({
@@ -2383,7 +2396,7 @@ const processContainerPerRaceRescore = async (
     weightSnapshotFetchedAt,
     weightSnapshotHash,
   });
-  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(predictDoName);
+  const doId = containerRoute.namespace.idFromName(predictDoName);
   const lifecycle: ContainerRequestLifecycle = { started: false, terminal: false };
   const cleanupHandedOff = { value: false };
   const deadlineExpired = { value: false };
@@ -2449,13 +2462,13 @@ const processContainerPerRaceRescore = async (
           )} doName=${predictDoName} url=${predictUrl}`,
         );
         lifecycle.started = true;
-        const response = await fetchPerRaceRescoreWithReconnect(
-          env,
+        const response = await fetchPerRaceRescoreWithReconnect({
+          namespace: containerRoute.namespace,
           doId,
           predictUrl,
-          message.body,
+          message: message.body,
           predictDoName,
-        );
+        });
         debugLog(
           message.body,
           `[predict-queue] container-fetch response ${describePredictMessage(
@@ -2566,7 +2579,7 @@ const processContainerPerRaceRescore = async (
         await handOffTerminalContainerStop({
           doName: predictDoName,
           env,
-          role: "legacy",
+          role: containerRoute.role,
           workKey: buildPredictWorkKey(message.body),
         });
         cleanupHandedOff.value = true;
@@ -2576,7 +2589,7 @@ const processContainerPerRaceRescore = async (
     await handOffTerminalContainerStop({
       doName: predictDoName,
       env,
-      role: "legacy",
+      role: containerRoute.role,
       workKey: buildPredictWorkKey(message.body),
     });
     cleanupHandedOff.value = true;
@@ -2587,7 +2600,7 @@ const processContainerPerRaceRescore = async (
       await handOffTerminalContainerStop({
         doName: predictDoName,
         env,
-        role: "legacy",
+        role: containerRoute.role,
         workKey: buildPredictWorkKey(message.body),
       });
     } else if (!lifecycle.started) {

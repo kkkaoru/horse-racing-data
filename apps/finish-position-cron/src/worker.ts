@@ -4,6 +4,7 @@ import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import {
   FinishPositionPredictContainer,
   FinishPositionRaceChainContainer,
+  FinishPositionRescoreContainer,
 } from "./container-class";
 import {
   refreshCornerFeatures,
@@ -178,7 +179,12 @@ interface AdminPrewarmDayBaseRequest {
   runYmd: string;
 }
 
-export { FinishPositionPredictContainer, FinishPositionRaceChainContainer, PredictRunCoordinator };
+export {
+  FinishPositionPredictContainer,
+  FinishPositionRaceChainContainer,
+  FinishPositionRescoreContainer,
+  PredictRunCoordinator,
+};
 
 const healthResponse = (): Response =>
   Response.json({ cron: PREDICT_CRON, name: "finish-position-cron", ok: true });
@@ -625,7 +631,8 @@ const guardedInternalRescoreRace = async (request: Request, env: Env): Promise<R
 const parseStopContainerTarget = (name: unknown): AdminContainerStopTarget | null => {
   if (typeof name !== "string") return null;
   if (isAllowedContainerDoName(name, "legacy")) return { name, role: "legacy" };
-  return isAllowedContainerDoName(name, "race-chain") ? { name, role: "race-chain" } : null;
+  if (isAllowedContainerDoName(name, "race-chain")) return { name, role: "race-chain" };
+  return isAllowedContainerDoName(name, "rescore") ? { name, role: "rescore" } : null;
 };
 
 const parseStopContainerTargets = (

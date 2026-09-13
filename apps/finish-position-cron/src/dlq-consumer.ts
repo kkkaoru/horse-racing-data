@@ -213,6 +213,14 @@ const resolveDlqContainerTargets = (
     raceBango: body.raceBango,
   });
   const legacyTarget: DlqContainerTarget = { name: baseName, role: "legacy" };
+  // A failed first attempt may have used the small binding even when its gate
+  // has since been disabled. Keep cleanup independent from rollout flags and
+  // retain the existing ownership fence on each candidate.
+  if (body.mode === "rescore" && env.FINISH_POSITION_RESCORE_CONTAINER !== undefined)
+    return [
+      legacyTarget,
+      { name: qualifyPredictionContainerDoName(baseName, "rescore"), role: "rescore" },
+    ];
   if (!isFocusedSkipDedupMessage(body)) return [legacyTarget];
   return [
     legacyTarget,

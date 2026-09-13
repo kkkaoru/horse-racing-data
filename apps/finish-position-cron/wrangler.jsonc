@@ -125,6 +125,23 @@
       // without leaving active instances pinned to the previous image.
       "rollout_step_percentage": 100,
     },
+    {
+      // HIT-only rescore canary; routing stays off until a future exact race is approved.
+      "class_name": "FinishPositionRescoreContainer",
+      "image": "../finish-position-predict-container/Dockerfile",
+      "image_build_context": "../..",
+      "image_vars": {
+        "ARTIFACT_ROLLOUT_REV": "20260912-jra-confirmed-entry-filter-v2",
+        "SOURCE_CACHE_BUSTER": "20260912-jra-confirmed-entry-filter-v2",
+      },
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 3072,
+        "disk_mb": 6000,
+      },
+      "max_instances": 1,
+      "rollout_step_percentage": 100,
+    },
   ],
   "durable_objects": {
     "bindings": [
@@ -135,6 +152,10 @@
       {
         "class_name": "FinishPositionRaceChainContainer",
         "name": "FINISH_POSITION_RACE_CHAIN_CONTAINER",
+      },
+      {
+        "class_name": "FinishPositionRescoreContainer",
+        "name": "FINISH_POSITION_RESCORE_CONTAINER",
       },
       // Strong-consistency run dedup/state coordinator (replaces KV PREDICT_STATE).
       {
@@ -155,6 +176,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["FinishPositionRaceChainContainer"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["FinishPositionRescoreContainer"],
     },
   ],
   "d1_databases": [
@@ -359,6 +384,9 @@
     // no-inline-day-base-build switch. Worker-side R2 HEAD proves presence,
     // but cannot prove the live Catalog/running-style watermark still matches.
     "RACE_CHAIN_CONTAINER_ENABLED": "1",
+    // One-race canary completed; retain the binding for pending cleanup only.
+    "RESCORE_CONTAINER_ENABLED": "0",
+    "RESCORE_CONTAINER_RACES": "",
     "RACE_CHAIN_CONTAINER_CATEGORIES": "jra,nar,ban-ei",
     // Default-off rollout for durable Container DO completion watches. The
     // legacy Queue-redelivery polling path remains authoritative until this is

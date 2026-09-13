@@ -4,6 +4,7 @@ import type { Container } from "@cloudflare/containers";
 import type { PredictRunCoordinator } from "./predict-run-coordinator";
 
 export type PredictCategory = "jra" | "nar" | "ban-ei";
+export type PredictionContainerRole = "legacy" | "race-chain" | "rescore";
 
 // "full" = full DuckDB feature build + score + write features to R2 cache.
 // "rescore" = read cached features from R2 + latest odds + re-score only (no 21y Neon scan).
@@ -24,6 +25,7 @@ export interface Env {
   // the type so local/test environments and a partially rolled-back Worker
   // fail closed to FINISH_POSITION_PREDICT_CONTAINER.
   FINISH_POSITION_RACE_CHAIN_CONTAINER?: DurableObjectNamespace<Container<Env>>;
+  FINISH_POSITION_RESCORE_CONTAINER?: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_CRON_DB: D1Database;
   // Read-only D1 binding to the sync-realtime-data DB. The per-race coordinator
   // reads realtime_race_sources.race_start_at_jst (JST ISO post-time) from here
@@ -137,6 +139,9 @@ export interface Env {
   // requires a metadata-bearing R2 day-base object at dispatch time.
   RACE_CHAIN_CONTAINER_ENABLED?: string;
   RACE_CHAIN_CONTAINER_CATEGORIES?: string;
+  RESCORE_CONTAINER_ENABLED?: string;
+  /** Exact category:date:venue:race keys; empty/absent keeps the canary off. */
+  RESCORE_CONTAINER_RACES?: string;
   // Default-off Worker producer for the attested per-race market-signal
   // foundation. A miss keeps the legacy Container layer active.
   WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED?: string;
@@ -283,7 +288,7 @@ export interface ContainerControlMessage {
   name: string;
   requestedAt: string;
   // Missing means the legacy binding for already-queued control messages.
-  role?: "legacy" | "race-chain";
+  role?: PredictionContainerRole;
   workKey?: string;
 }
 
@@ -292,7 +297,7 @@ export interface ContainerCleanupMessage {
   acceptableWorkKeys?: string[];
   attempt: number;
   name: string;
-  role: "legacy" | "race-chain";
+  role: PredictionContainerRole;
   workKey: string;
 }
 

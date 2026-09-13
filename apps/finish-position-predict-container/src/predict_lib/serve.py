@@ -82,6 +82,13 @@ from pathlib import Path
 from typing import Final, Literal, TypedDict, final
 from urllib.parse import parse_qs, urlparse
 
+from .container_role import (
+    RESCORE_ONLY_ERROR,
+    PredictContainerRole,
+    RescoreRoleRequest,
+    predict_container_role,
+    rescore_role_allows,
+)
 from .debug_log import (
     debug_log,
     debug_logs_scope,
@@ -2260,6 +2267,18 @@ def iter_predict_chunks(
                              a detached focused-full run. ``None`` reads
                              :data:`PIPELINE_TOTAL_TIMEOUT_ENV`.
     """
+    if not rescore_role_allows(
+        RescoreRoleRequest(
+            mode=params.mode,
+            single_race=has_single_race_scope(params),
+            attested=params.rescore_cache_attestation is not None,
+            rescore_available=rescore_fn is not None,
+        )
+    ):
+        yield build_result_line(
+            params.category, params.run_date, 0, status="error", error=RESCORE_ONLY_ERROR
+        )
+        return
     started = time_fn()
     debug_steps: list[str] = []
     drain_debug_progress()
@@ -2975,6 +2994,11 @@ def iter_prewarm_chunks(
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
     """
+    if predict_container_role() == PredictContainerRole.RESCORE:
+        yield build_prewarm_result_line(
+            params.category, params.run_date, status="error", error=RESCORE_ONLY_ERROR
+        )
+        return
     started = time_fn()
     drain_debug_progress()
     drain_operational_progress()

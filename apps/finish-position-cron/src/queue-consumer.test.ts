@@ -6456,6 +6456,129 @@ test("does not create a fresh rescore message when the legacy deferral deadline 
   warnSpy.mockRestore();
 });
 
+test("keeps a canary rescore reconnect and terminal cleanup in its own namespace", async () => {
+  const env = makeEnv();
+  env.FINISH_POSITION_RESCORE_CONTAINER = makeEnv().FINISH_POSITION_PREDICT_CONTAINER;
+  env.RESCORE_CONTAINER_ENABLED = "1";
+  env.RESCORE_CONTAINER_RACES = "jra:20260619:05:11";
+  const sourceLookup = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName.bind(
+    env.FINISH_POSITION_PREDICT_CONTAINER,
+  );
+  const sourceGet = env.FINISH_POSITION_PREDICT_CONTAINER.get.bind(
+    env.FINISH_POSITION_PREDICT_CONTAINER,
+  );
+  const legacyLookup = vi.fn((name: string): DurableObjectId => sourceLookup(name));
+  const smallLookup = vi.fn((name: string): DurableObjectId => sourceLookup(name));
+  const smallGet = vi.fn((id: DurableObjectId) => sourceGet(id));
+  env.FINISH_POSITION_PREDICT_CONTAINER.idFromName = legacyLookup;
+  env.FINISH_POSITION_RESCORE_CONTAINER.idFromName = smallLookup;
+  env.FINISH_POSITION_RESCORE_CONTAINER.get = smallGet;
+  stubFetchMock.mockRejectedValueOnce(
+    new Error(
+      "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
+    ),
+  );
+  await handleQueue(
+    makeBatch([
+      makeMessage(
+        {
+          category: "jra",
+          daysAhead: 0,
+          keibajoCode: "05",
+          mode: "rescore",
+          raceBango: "11",
+          runYmd: "20260619",
+        },
+        1,
+      ),
+    ]),
+    env,
+  );
+  expect(smallLookup).toHaveBeenCalledWith("rescore-predict-jra");
+  expect(smallGet).toHaveBeenCalledTimes(2);
+  expect(legacyLookup).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenCalledWith({
+    name: "rescore-predict-jra",
+    role: "rescore",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    workKey: "rescore:20260619:jra:05:11",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  smallGet.mockRestore();
+  smallLookup.mockRestore();
+  legacyLookup.mockRestore();
+});
+
+test("cleans up a failed small rescore and dispatches its next Queue attempt to legacy", async () => {
+  const env = makeEnv();
+  env.FINISH_POSITION_RESCORE_CONTAINER = makeEnv().FINISH_POSITION_PREDICT_CONTAINER;
+  env.RESCORE_CONTAINER_ENABLED = "1";
+  env.RESCORE_CONTAINER_RACES = "jra:20260619:05:11";
+  const sourceLookup = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName.bind(
+    env.FINISH_POSITION_PREDICT_CONTAINER,
+  );
+  const legacyLookup = vi.fn((name: string): DurableObjectId => sourceLookup(name));
+  const smallLookup = vi.fn((name: string): DurableObjectId => sourceLookup(name));
+  env.FINISH_POSITION_PREDICT_CONTAINER.idFromName = legacyLookup;
+  env.FINISH_POSITION_RESCORE_CONTAINER.idFromName = smallLookup;
+  stubFetchMock.mockRejectedValueOnce(new Error("container 503"));
+  await handleQueue(
+    makeBatch([
+      makeMessage(
+        {
+          category: "jra",
+          daysAhead: 0,
+          keibajoCode: "05",
+          mode: "rescore",
+          raceBango: "11",
+          runYmd: "20260619",
+        },
+        1,
+      ),
+    ]),
+    env,
+  );
+  expect(legacyLookup).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenNthCalledWith(1, {
+    name: "rescore-predict-jra",
+    role: "rescore",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    workKey: "rescore:20260619:jra:05:11",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage(
+        {
+          category: "jra",
+          daysAhead: 0,
+          keibajoCode: "05",
+          mode: "rescore",
+          raceBango: "11",
+          runYmd: "20260619",
+        },
+        2,
+      ),
+    ]),
+    env,
+  );
+  expect(legacyLookup).toHaveBeenCalledWith("predict-jra");
+  expect(smallLookup).toHaveBeenCalledTimes(1);
+  expect(controlSendMock).toHaveBeenNthCalledWith(2, {
+    name: "predict-jra",
+    role: "legacy",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    workKey: "rescore:20260619:jra:05:11",
+  });
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  smallLookup.mockRestore();
+  legacyLookup.mockRestore();
+});
+
 test("queues the rescore container stop before acknowledging a successful rescore", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(

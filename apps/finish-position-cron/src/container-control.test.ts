@@ -175,6 +175,28 @@ test("treats an already-stopped 204 response as an idempotent success", async ()
   });
 });
 
+test("stops the explicitly targeted rescore binding without touching legacy", async () => {
+  const env = makeEnv();
+  env.FINISH_POSITION_RESCORE_CONTAINER = env.FINISH_POSITION_RACE_CHAIN_CONTAINER;
+  stubFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  await consumeContainerStop(env, {
+    ...message,
+    name: "rescore-predict-jra-1",
+    role: "rescore",
+  });
+  expect(raceIdFromNameMock).toHaveBeenCalledWith("rescore-predict-jra-1");
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+});
+
+test("accepts rescore controls but never cross-role DO names", () => {
+  expect(isContainerControlMessage({ ...message, role: "rescore" })).toBe(true);
+  expect(isAllowedContainerDoName("rescore-predict-jra-1", "rescore")).toBe(true);
+  expect(isAllowedContainerDoName("predict-jra-1", "rescore")).toBe(false);
+  expect(isAllowedContainerDoName("rescore-predict-jra-1", "legacy")).toBe(false);
+  expect(isAllowedContainerDoName("race-chain-predict-jra-1", "rescore")).toBe(false);
+});
+
 test("stops the explicitly targeted race-chain binding", async () => {
   const env = makeEnv();
   stubFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));

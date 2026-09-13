@@ -97,12 +97,14 @@ describe("deployment safety", () => {
     const applications = parseContainerApplications([
       { id: "predict", name: "finish-position-cron-finishpositionpredictcontainer" },
       { id: "chain", name: "finish-position-cron-finishpositionracechaincontainer" },
+      { id: "rescore", name: "finish-position-cron-finishpositionrescorecontainer" },
       { id: "other", name: "zenz-standard-small-n5-off" },
     ]);
 
     expect(finishPositionContainerApplications(applications).map(({ id }) => id)).toEqual([
       "predict",
       "chain",
+      "rescore",
     ]);
   });
 

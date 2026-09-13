@@ -5,5 +5,6 @@ export {
   default,
   FinishPositionPredictContainer,
   FinishPositionRaceChainContainer,
+  FinishPositionRescoreContainer,
   PredictRunCoordinator,
 } from "./worker";

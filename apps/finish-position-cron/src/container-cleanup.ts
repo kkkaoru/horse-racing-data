@@ -1,6 +1,7 @@
 // Run with bun. Durable cleanup-only retries for terminal prediction Containers.
 
 import { enqueueContainerStopForRole } from "./container-control";
+import { isPredictionContainerRole } from "./race-container-routing";
 import type { ContainerCleanupMessage, Env } from "./types";
 
 interface ContainerCleanupParams {
@@ -36,7 +37,7 @@ const isAcceptableWorkKeys = (value: unknown): value is string[] =>
 export const isContainerCleanupMessage = (value: unknown): value is ContainerCleanupMessage => {
   if (!isRecord(value) || value.type !== CONTAINER_CLEANUP_TYPE) return false;
   if (typeof value.name !== "string" || value.name.length === 0) return false;
-  if (value.role !== "legacy" && value.role !== "race-chain") return false;
+  if (!isPredictionContainerRole(value.role)) return false;
   if (typeof value.workKey !== "string" || value.workKey.length === 0) return false;
   if (value.acceptableWorkKeys !== undefined && !isAcceptableWorkKeys(value.acceptableWorkKeys))
     return false;

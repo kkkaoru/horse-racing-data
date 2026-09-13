@@ -32,9 +32,7 @@ import {
 } from "./focused-full-watch";
 import type { ValidatedFocusedFullWatchPayload } from "./focused-full-watch";
 import { PREDICT_DO_INTERNAL_PURGE_PATH, purgePredictDoStorage } from "./predict-do-state-purge";
-import type { Env } from "./types";
-
-type PredictContainerRole = "legacy" | "race-chain";
+import type { Env, PredictionContainerRole as PredictContainerRole } from "./types";
 
 type PredictContainerEnvironment = Pick<
   Env,
@@ -89,6 +87,12 @@ const AUTH_HEADER = "authorization";
 const BEARER_PREFIX = "Bearer ";
 const LEGACY_CONTAINER_ROLE: PredictContainerRole = "legacy";
 const RACE_CHAIN_CONTAINER_ROLE: PredictContainerRole = "race-chain";
+const RESCORE_CONTAINER_ROLE: PredictContainerRole = "rescore";
+const RESCORE_SLEEP_AFTER: string = "2m";
+const RESCORE_ONLY_ERROR: string = "RESCORE_ONLY_REQUIRED";
+const PREDICT_PATH: string = "/predict";
+const RESCORE_MODE: string = "rescore";
+const HTTP_BAD_REQUEST: number = 400;
 
 const withHardTimeout = async <T>(operation: Promise<T>, timeoutMs: number): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -153,6 +157,10 @@ export const buildLegacyPredictContainerEnvVars = (
 export const buildRaceChainPredictContainerEnvVars = (
   options: BuildPredictContainerEnvVarsOptions,
 ): Record<string, string> => mergePredictContainerEnvVars(options, RACE_CHAIN_CONTAINER_ROLE);
+
+export const buildRescorePredictContainerEnvVars = (
+  options: BuildPredictContainerEnvVarsOptions,
+): Record<string, string> => mergePredictContainerEnvVars(options, RESCORE_CONTAINER_ROLE);
 
 const isDebugRequest = (url: URL): boolean => {
   const value = url.searchParams.get("debug");
@@ -397,6 +405,27 @@ export class FinishPositionPredictContainer extends Container<Env> {
 
 // Distinct Durable Object class gives Wrangler a separate Container
 // application/resource profile while preserving the proven request proxy.
+export class FinishPositionRescoreContainer extends FinishPositionPredictContainer {
+  override sleepAfter = RESCORE_SLEEP_AFTER;
+
+  protected override buildContainerEnvVars(): Record<string, string> {
+    return buildRescorePredictContainerEnvVars({
+      env: this.env,
+      inheritedEnvVars: this.envVars ?? EMPTY_ENV_VARS,
+    });
+  }
+
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (
+      url.pathname === PREWARM_DAY_BASE_PATH ||
+      (url.pathname === PREDICT_PATH && url.searchParams.get("mode") !== RESCORE_MODE)
+    )
+      return Response.json({ error: RESCORE_ONLY_ERROR, ok: false }, { status: HTTP_BAD_REQUEST });
+    return super.fetch(request);
+  }
+}
+
 export class FinishPositionRaceChainContainer extends FinishPositionPredictContainer {
   override sleepAfter = RACE_CHAIN_SLEEP_AFTER;
 

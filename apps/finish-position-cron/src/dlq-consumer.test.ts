@@ -526,6 +526,41 @@ test("queues terminal container cleanup for an exhausted focused-full message", 
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
+test("cleans both possible rescore bindings after the canary gate is disabled", async () => {
+  const env = makeEnv();
+  env.FINISH_POSITION_RESCORE_CONTAINER = makeEnv().FINISH_POSITION_PREDICT_CONTAINER;
+  env.RESCORE_CONTAINER_ENABLED = "0";
+  env.RACE_SHARDED_DO = "1";
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        dlqRedriveCount: 1,
+        keibajoCode: "35",
+        mode: "rescore",
+        raceBango: "08",
+      }),
+    ]),
+    env,
+  );
+  expect(controlSendMock).toHaveBeenCalledTimes(2);
+  expect(controlSendMock).toHaveBeenNthCalledWith(1, {
+    name: "predict-nar-0",
+    role: "legacy",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    workKey: "rescore:20260712:nar:35:08",
+  });
+  expect(controlSendMock).toHaveBeenNthCalledWith(2, {
+    name: "rescore-predict-nar-0",
+    role: "rescore",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    workKey: "rescore:20260712:nar:35:08",
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
 test("queues terminal shard cleanup for an exhausted rescore message", async () => {
   await handleDlqQueue(
     makeBatch([

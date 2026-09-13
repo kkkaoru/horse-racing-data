@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
 PREDICT_CONTAINER_ROLE_ENV: Final[str] = "PREDICT_CONTAINER_ROLE"
 DAY_BASE_REQUIRED_CODE: Final[str] = "DAY_BASE_REQUIRED"
+RESCORE_ONLY_ERROR: Final[str] = "RESCORE_ONLY_REQUIRED: single-race attested rescore is required"
 
 
 class PredictContainerRole(StrEnum):
@@ -16,6 +18,15 @@ class PredictContainerRole(StrEnum):
 
     LEGACY = "legacy"
     RACE_CHAIN = "race-chain"
+    RESCORE = "rescore"
+
+
+@dataclass(frozen=True)
+class RescoreRoleRequest:
+    mode: str
+    single_race: bool
+    attested: bool
+    rescore_available: bool
 
 
 class DayBaseRequiredError(RuntimeError):
@@ -31,6 +42,20 @@ def predict_container_role(
 ) -> PredictContainerRole:
     """Return the typed role, preserving legacy behavior for absent/unknown values."""
     source = os.environ if environ is None else environ
-    if source.get(PREDICT_CONTAINER_ROLE_ENV) == PredictContainerRole.RACE_CHAIN:
-        return PredictContainerRole.RACE_CHAIN
-    return PredictContainerRole.LEGACY
+    try:
+        return PredictContainerRole(source.get(PREDICT_CONTAINER_ROLE_ENV))
+    except ValueError:
+        return PredictContainerRole.LEGACY
+
+
+def rescore_role_allows(
+    request: RescoreRoleRequest,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """A small role may never reach the unattested rescore-to-full fallback."""
+    return predict_container_role(environ) != PredictContainerRole.RESCORE or (
+        request.mode == "rescore"
+        and request.single_race
+        and request.attested
+        and request.rescore_available
+    )

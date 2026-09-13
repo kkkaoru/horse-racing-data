@@ -1709,8 +1709,12 @@ def test_iter_predict_chunks_rescore_cache_miss_emits_fallback_progress() -> Non
     assert "rescore-fallback-to-full" in stages
 
 
-def test_iter_predict_chunks_attested_rescore_cache_miss_fails_closed() -> None:
+@pytest.mark.parametrize("role", ["legacy", "rescore"])
+def test_iter_predict_chunks_attested_rescore_cache_miss_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
     """A Worker-attested production miss must return to Queue without rebuilding."""
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", role)
     full_calls: list[str] = []
 
     def _full_fn(
@@ -1751,6 +1755,99 @@ def test_iter_predict_chunks_attested_rescore_cache_miss_fails_closed() -> None:
     assert all(line.get("stage") != "rescore-fallback-to-full" for line in parsed)
     assert parsed[-1]["status"] == "error"
     assert "CacheMissError" in parsed[-1]["error"]
+
+
+def test_rescore_only_role_refuses_full_prediction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "rescore")
+    full = Mock(return_value=42)
+    params = PredictParams(category="jra", run_date="20260913", days_ahead=0)
+    chunks = list(iter_predict_chunks(params, full))
+    assert len(chunks) == 1
+    assert json.loads(chunks[0])["status"] == "error"
+    assert json.loads(chunks[0])["error"] == (
+        "RESCORE_ONLY_REQUIRED: single-race attested rescore is required"
+    )
+    full.assert_not_called()
+
+
+def test_rescore_only_role_refuses_unattested_prediction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "rescore")
+    full = Mock(return_value=42)
+    rescore = Mock(return_value=1)
+    params = PredictParams(
+        category="jra",
+        run_date="20260913",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="06",
+        race_bango="04",
+    )
+    chunks = list(iter_predict_chunks(params, full, rescore_fn=rescore))
+    assert json.loads(chunks[0])["status"] == "error"
+    full.assert_not_called()
+    rescore.assert_not_called()
+
+
+def test_rescore_only_role_requires_rescore_callable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "rescore")
+    full = Mock(return_value=42)
+    params = PredictParams(
+        category="jra",
+        run_date="20260913",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="06",
+        race_bango="04",
+        rescore_cache_attestation=RescoreCacheAttestation(
+            entry_set_hash="a" * 64,
+            entry_count=10,
+            feature_cache_etag="etag",
+            feature_cache_version="version",
+            issued_at_ms=0,
+        ),
+    )
+    chunks = list(iter_predict_chunks(params, full))
+    assert json.loads(chunks[0])["status"] == "error"
+    full.assert_not_called()
+
+
+def test_rescore_only_role_runs_attested_rescore(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "rescore")
+    full = Mock(return_value=42)
+    rescore = Mock(return_value=1)
+    params = PredictParams(
+        category="jra",
+        run_date="20260913",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="06",
+        race_bango="04",
+        rescore_cache_attestation=RescoreCacheAttestation(
+            entry_set_hash="a" * 64,
+            entry_count=10,
+            feature_cache_etag="etag",
+            feature_cache_version="version",
+            issued_at_ms=0,
+        ),
+    )
+    chunks = list(iter_predict_chunks(params, full, rescore_fn=rescore, sleep_fn=_noop_sleep))
+    assert json.loads(chunks[-1])["status"] == "success"
+    assert json.loads(chunks[-1])["racesPredicted"] == 1
+    full.assert_not_called()
+    rescore.assert_called_once()
+
+
+def test_rescore_only_role_refuses_day_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "rescore")
+    build = Mock(return_value="would-build")
+    params = PrewarmParams(category="jra", run_date="20260913", days_ahead=0)
+    chunks = list(iter_prewarm_chunks(params, build))
+    assert len(chunks) == 1
+    assert json.loads(chunks[0])["status"] == "error"
+    assert json.loads(chunks[0])["error"] == (
+        "RESCORE_ONLY_REQUIRED: single-race attested rescore is required"
+    )
+    build.assert_not_called()
 
 
 def test_iter_predict_chunks_rescore_no_rescore_fn_falls_back_to_full() -> None:

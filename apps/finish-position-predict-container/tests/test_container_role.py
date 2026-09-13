@@ -8,7 +8,9 @@ from predict_lib.container_role import (
     DAY_BASE_REQUIRED_CODE,
     DayBaseRequiredError,
     PredictContainerRole,
+    RescoreRoleRequest,
     predict_container_role,
+    rescore_role_allows,
 )
 
 
@@ -33,6 +35,31 @@ def test_predict_container_role_reads_process_environment(
 ) -> None:
     monkeypatch.setenv("PREDICT_CONTAINER_ROLE", "race-chain")
     assert predict_container_role() is PredictContainerRole.RACE_CHAIN
+
+
+def test_rescore_role_requires_attested_single_race() -> None:
+    assert predict_container_role({"PREDICT_CONTAINER_ROLE": "rescore"}).value == "rescore"
+    assert rescore_role_allows(
+        RescoreRoleRequest("rescore", True, True, True),
+        {"PREDICT_CONTAINER_ROLE": "rescore"},
+    )
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        RescoreRoleRequest("full", True, True, True),
+        RescoreRoleRequest("rescore", False, True, True),
+        RescoreRoleRequest("rescore", True, False, True),
+        RescoreRoleRequest("rescore", True, True, False),
+    ],
+)
+def test_rescore_role_refuses_full_build_paths(contract: RescoreRoleRequest) -> None:
+    assert not rescore_role_allows(contract, {"PREDICT_CONTAINER_ROLE": "rescore"})
+
+
+def test_legacy_role_preserves_compatibility() -> None:
+    assert rescore_role_allows(RescoreRoleRequest("full", False, False, False), {})
 
 
 def test_day_base_required_error_exposes_machine_code() -> None:

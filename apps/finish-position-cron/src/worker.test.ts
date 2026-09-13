@@ -2049,6 +2049,23 @@ test("admin stop containers endpoint forces a stop only with an explicit active 
   );
 });
 
+test("admin stop preserves the rescore namespace without forcing an active owner", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["rescore-predict-nar-2"] }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(controlQueueSendMock).toHaveBeenCalledWith({
+    name: "rescore-predict-nar-2",
+    role: "rescore",
+    type: "container-stop",
+    requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+  });
+});
+
 test("admin stop containers endpoint accepts race-chain names with the correct role", async () => {
   const response = await handleFetch(
     adminStopContainersRequest(
