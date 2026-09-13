@@ -1,0 +1,127 @@
+{
+  "date": "2026-09-13",
+  "scope": {
+    "late_binding": "frozen cached values, not a fresh live weight replay",
+    "network": "disabled",
+    "prophet_enabled": "jra,nar,ban-ei",
+    "scope": "production score_races only; excludes HTTP/fetch/publication/full-build fallback"
+  },
+  "source": {
+    "bucket": "pc-keiba-features-archive",
+    "bytes": 87763,
+    "etag": "63785a0268e681b368a26225229a9352",
+    "key": "feat-cache/catalog-v1/jra/20260913/06/02/features.parquet",
+    "purpose": "offline same-input resource comparison; no prediction writes",
+    "sha256": "fcddb701d390c5e32934d22f7e2e226f68b4f8a2d4ea7719756e12ad2f6259cd",
+    "version": ""
+  },
+  "imageId": "sha256:2fc9cfc2ed7c3f1828142ae40f76e552e35a9d5054519f5329ba0672dde96b43",
+  "runtimeCaveats": [
+    "ARM64 Colima host with amd64 emulation; not a Cloudflare latency benchmark",
+    "Host configured with 4 CPUs and 4 GiB; 12 GiB is only the first container quota",
+    "Large profile ran first; host page cache and page-charge attribution can affect differences",
+    "card_max_race_bango=12 is explicit benchmark context, not independently verified live discovery",
+    "Cached late-binding values are frozen, not an immutable replay of the live weight generation"
+  ],
+  "comparison": "MATCH",
+  "outputSha256": "316afbedee34a94295f14346a26a1376fb6f4d7a0e025254def829507ba99b6c",
+  "runnerCount": 10,
+  "featureColumnCount": 423,
+  "servedSignatures": {
+    "jra:2026:0913:06:02": "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-703-pooled-yetirank-v2;stage1=fresh;final=jra-joken-703-pooled-yetirank-v2"
+  },
+  "profiles": [
+    {
+      "memoryGiB": 12,
+      "cpus": 4,
+      "coldSeconds": 0.9999954580000008,
+      "warmSeconds": 0.007458875000001086,
+      "telemetry": [
+        {
+          "category": "jra",
+          "container_lifetime_memory_peak_bytes": 653078528,
+          "elapsed_seconds": 0.999,
+          "event": "container-resource-usage",
+          "memory_current_bytes": 653074432,
+          "memory_limit_bytes": 12884901888,
+          "memory_measurement_source": "cgroup-v2",
+          "mode": "offline-cold-score",
+          "race": "02",
+          "run_date": "20260913",
+          "sampled_system_memory_peak_bytes": 665300992,
+          "succeeded": true,
+          "system_memory_sample_count": 5,
+          "system_memory_sample_interval_seconds": 0.25,
+          "system_memory_sampler_start_failed": false,
+          "system_memory_total_bytes": 4094664704,
+          "system_memory_used_bytes": 665300992
+        },
+        {
+          "category": "jra",
+          "container_lifetime_memory_peak_bytes": 653336576,
+          "elapsed_seconds": 0.007,
+          "event": "container-resource-usage",
+          "memory_current_bytes": 652935168,
+          "memory_limit_bytes": 12884901888,
+          "memory_measurement_source": "cgroup-v2",
+          "mode": "offline-warm-score",
+          "race": "02",
+          "run_date": "20260913",
+          "sampled_system_memory_peak_bytes": 665300992,
+          "succeeded": true,
+          "system_memory_sample_count": 2,
+          "system_memory_sample_interval_seconds": 0.25,
+          "system_memory_sampler_start_failed": false,
+          "system_memory_total_bytes": 4094664704,
+          "system_memory_used_bytes": 665300992
+        }
+      ]
+    },
+    {
+      "memoryGiB": 3,
+      "cpus": 1,
+      "coldSeconds": 0.8896897920000004,
+      "warmSeconds": 0.007705708000001366,
+      "telemetry": [
+        {
+          "category": "jra",
+          "container_lifetime_memory_peak_bytes": 267599872,
+          "elapsed_seconds": 0.889,
+          "event": "container-resource-usage",
+          "memory_current_bytes": 267595776,
+          "memory_limit_bytes": 3221225472,
+          "memory_measurement_source": "cgroup-v2",
+          "mode": "offline-cold-score",
+          "race": "02",
+          "run_date": "20260913",
+          "sampled_system_memory_peak_bytes": 649908224,
+          "succeeded": true,
+          "system_memory_sample_count": 5,
+          "system_memory_sample_interval_seconds": 0.25,
+          "system_memory_sampler_start_failed": false,
+          "system_memory_total_bytes": 4094664704,
+          "system_memory_used_bytes": 649908224
+        },
+        {
+          "category": "jra",
+          "container_lifetime_memory_peak_bytes": 267599872,
+          "elapsed_seconds": 0.007,
+          "event": "container-resource-usage",
+          "memory_current_bytes": 267325440,
+          "memory_limit_bytes": 3221225472,
+          "memory_measurement_source": "cgroup-v2",
+          "mode": "offline-warm-score",
+          "race": "02",
+          "run_date": "20260913",
+          "sampled_system_memory_peak_bytes": 650166272,
+          "succeeded": true,
+          "system_memory_sample_count": 2,
+          "system_memory_sample_interval_seconds": 0.25,
+          "system_memory_sampler_start_failed": false,
+          "system_memory_total_bytes": 4094664704,
+          "system_memory_used_bytes": 650166272
+        }
+      ]
+    }
+  ]
+}

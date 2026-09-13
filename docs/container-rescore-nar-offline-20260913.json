@@ -1,0 +1,68 @@
+{
+  "scenario": "frozen-nar-cache-not-live-replay",
+  "status": "matched",
+  "source_jobs": [118, 119],
+  "race": "nar:20260913:36:05",
+  "bucket": "pc-keiba-features-archive",
+  "key": "feat-cache/catalog-v1/nar/20260913/36/05/features.parquet",
+  "input_bytes": 78775,
+  "input_sha256": "68a1abce4343915962e78e6975ccaa43bfdbcb9cd4c5672a7c1a39da2319e581",
+  "etag": "647f35933000092d2db97f61df142ac6",
+  "version": "",
+  "head_identity_unchanged_before_after_download": true,
+  "probe_sha256": "933500498ea6fc991d3acaed42efe9592862b92a90e9166ac7b2ef1d951fd754",
+  "image": "finish-position-rescore-canary:20260913",
+  "image_id": "sha256:f5f3732cfcbdfe5da2cd38a63748c3da754a46f0a3794d4716da17d9b8a35373",
+  "artifact_manifest_root": "4a6963f9ad41b7d11f35485fae9a7561d5ef1052ed0cdbe79c659e7508804332",
+  "readiness_context": {
+    "observed_at": "2026-09-13T04:18:01.383Z",
+    "card_max_race_bango": 12,
+    "runner_count": 12,
+    "post_weight_complete": true
+  },
+  "source_parquet_columns": 370,
+  "environment": {
+    "PROPHET_SCORE_ADJUSTMENT_ENABLED": "jra,nar,ban-ei",
+    "STAGE1_PRESERVED_ODDS_GATE_ENABLED": "1",
+    "network": "none",
+    "platform": "linux/amd64"
+  },
+  "profiles": {
+    "large": {
+      "memory_gib": 12,
+      "cpu": 4,
+      "cold_seconds": 0.9022377910005162,
+      "warm_seconds": 0.5549591519993555,
+      "cgroup_lifetime_peak_bytes_after_warm": 240766976
+    },
+    "small": {
+      "memory_gib": 3,
+      "cpu": 1,
+      "cold_seconds": 0.8910838009996951,
+      "warm_seconds": 0.5565861490003954,
+      "cgroup_lifetime_peak_bytes_after_warm": 231632896
+    }
+  },
+  "all_scoring_rows_equal_across_profiles_and_cold_warm": true,
+  "served_signatures_equal": true,
+  "prediction_scores_finite": true,
+  "nonfinite_audit": {
+    "column": "weight_diff_from_avg",
+    "positions": [
+      [0, 2, 16],
+      [0, 3, 16]
+    ],
+    "encoding": { "__float__": "NaN" },
+    "imputed_or_dropped": false
+  },
+  "output_sha256": "7d61174d4a3dab44fbd59ccd25e956b75e6fd5508ae8e44b4b8ec7166cf9efb9",
+  "served_signature": "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1;stage1=fresh;final=iter40-nar-settransformer-blend-v1",
+  "limitations": [
+    "Frozen cached late bindings, not a complete immutable snapshot of the live rescore inputs.",
+    "Independent current publication completeness does not establish equality of offline rows with live predictions.",
+    "score_races only; excludes HTTP, remote reads, publication, deadlines and full-build fallback.",
+    "Sequential profiles on ARM64 host with amd64 emulation and approximately four GiB physical RAM; twelve GiB is a quota.",
+    "Not a Cloudflare maximum bound, causal performance or billed savings estimate, or permission to resize day-base.",
+    "No NAR production request was submitted to the small role."
+  ]
+}

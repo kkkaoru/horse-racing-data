@@ -1,0 +1,56 @@
+{
+  "scenario": "synthetic-complete-market-not-live-replay",
+  "status": "matched",
+  "source_job": 117,
+  "source_input_sha256": "ef3c75bbf49d315ec9cf583d11c0f16c2081632f450f3e4874b6866adb837af0",
+  "probe_sha256": "f845b222af3d3467e02e3a25df074fbfef8eb492d667035739140606ad41aaf4",
+  "image": "finish-position-rescore-canary:20260913",
+  "image_id": "sha256:f5f3732cfcbdfe5da2cd38a63748c3da754a46f0a3794d4716da17d9b8a35373",
+  "artifact_manifest_root": "4a6963f9ad41b7d11f35485fae9a7561d5ef1052ed0cdbe79c659e7508804332",
+  "runner_count": 16,
+  "source_parquet_columns": 422,
+  "card_max_race_bango": 12,
+  "recipe": {
+    "index": "zero-based original parquet row order, not horse number",
+    "odds": "2 + 3*i",
+    "popularity_rank": "i + 1",
+    "horse_weight": "480 + 2*i",
+    "refresh": ["apply_late_binding_to_entry", "recompute_market_signal_features"]
+  },
+  "environment": {
+    "PROPHET_SCORE_ADJUSTMENT_ENABLED": "jra,nar,ban-ei",
+    "STAGE1_PRESERVED_ODDS_GATE_ENABLED": "1",
+    "network": "none",
+    "platform": "linux/amd64"
+  },
+  "profiles": {
+    "large": {
+      "memory_gib": 12,
+      "cpu": 4,
+      "cold_seconds": 1.3709130550005284,
+      "warm_seconds": 0.5479123020004408,
+      "cgroup_lifetime_peak_bytes_after_warm": 498642944
+    },
+    "small": {
+      "memory_gib": 3,
+      "cpu": 1,
+      "cold_seconds": 1.3126203989995702,
+      "warm_seconds": 0.5688567390006938,
+      "cgroup_lifetime_peak_bytes_after_warm": 494743552
+    }
+  },
+  "all_scoring_rows_equal_across_profiles_and_cold_warm": true,
+  "served_signatures_equal": true,
+  "prediction_scores_finite": true,
+  "nonfinite_audit_positions": [],
+  "output_sha256": "d7dad2d51b503a418d49c9ea0114a0b1d804a557dd38052100954b68c8f458e6",
+  "served_signature": "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1;stage1=fresh;final=jra-joken-703-dirt-intermediate-qsm-gated-v1",
+  "limitations": [
+    "Synthetic complete market board and weights, not a reconstruction of live inputs.",
+    "score_races only: excludes HTTP, remote reads, publication, deadlines and full-build fallback.",
+    "Prophet enabled in configuration; this does not assert that every policy branch applies a nonzero adjustment.",
+    "ARM64 host with amd64 emulation, four CPUs and approximately four GiB RAM; twelve GiB is a quota, not physical memory.",
+    "Sequential large then small runs; page-cache effects confound performance and memory comparisons.",
+    "Not a Cloudflare memory bound, native Worker parity result, full/day-base sizing result, or billed savings measurement."
+  ]
+}
