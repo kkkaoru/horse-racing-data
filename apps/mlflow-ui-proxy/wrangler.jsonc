@@ -17,6 +17,8 @@
     ],
   },
   "vars": {
+    // Set to 0 to reconcile the whole window on every cron without deleting checkpoints.
+    "MLFLOW_SOURCE_GATE_ENABLED": "1",
     "HORSE_RACING_MLFLOW_R2_BUCKET": "mlflow-artifacts",
     "HORSE_RACING_MLFLOW_R2_PREFIX": "mlflow",
   },

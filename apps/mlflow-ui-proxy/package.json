@@ -14,7 +14,8 @@
     "check": "bun run tsc && bun run lint && bun run format:check && bun run test:coverage"
   },
   "dependencies": {
-    "@cloudflare/containers": "0.3.7"
+    "@cloudflare/containers": "0.3.7",
+    "@neondatabase/serverless": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

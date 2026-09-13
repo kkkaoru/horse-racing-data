@@ -16,6 +16,7 @@ export interface MlflowContainerNamespace {
 
 export interface Env {
   MLFLOW_CONTAINER: MlflowContainerNamespace;
+  MLFLOW_SOURCE_GATE_ENABLED?: string;
   MLFLOW_UI_USERNAME: string;
   MLFLOW_UI_PASSWORD: string;
   HORSE_RACING_MLFLOW_BACKEND_URI: string;
