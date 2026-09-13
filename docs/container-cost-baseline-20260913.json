@@ -1,0 +1,682 @@
+{
+  "recordedAt": "2026-09-12T20:26:06.905Z",
+  "scope": "Account-wide Containers; not application attribution or post-deployment savings",
+  "source": "Cloudflare Billable Usage via Executor cloudflare-billing-mcp.org.billingRead",
+  "sourceRecordCount": 613,
+  "missingContainerCosts": 0,
+  "chargePeriodEndExclusive": "2026-09-12T00:00:00Z",
+  "rows": [
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.03850168
+    },
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.5905425
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.20050526999999999
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.6199600000000001
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 4.1517975
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.05148136000000001
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.25699999999999995
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 0.9723824999999999
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.10525864999999995
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.4039400000000001
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.9813175
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.28496559
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 1.3752000000000002
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 5.4303125
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.11059482000000002
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.48956000000000016
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.1007050000000005
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.03854766999999995
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.18777999999999964
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 0.7083549999999991
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.03720003000000006
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.18878000000000042
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 0.6903075000000013
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container Egress, Oceania, Taiwan, and Korea, per GB (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.11614385999999996
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.35777999999999965
+    },
+    {
+      "from": "2026-09-01T00:00:00Z",
+      "to": "2026-09-02T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.1884899999999994
+    },
+    {
+      "from": "2026-09-02T00:00:00Z",
+      "to": "2026-09-03T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-02T00:00:00Z",
+      "to": "2026-09-03T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-02T00:00:00Z",
+      "to": "2026-09-03T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.0635631500000001
+    },
+    {
+      "from": "2026-09-02T00:00:00Z",
+      "to": "2026-09-03T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.29036
+    },
+    {
+      "from": "2026-09-02T00:00:00Z",
+      "to": "2026-09-03T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.2402474999999982
+    },
+    {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-09-04T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-09-04T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-09-04T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.05995219999999989
+    },
+    {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-09-04T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.25160000000000027
+    },
+    {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-09-04T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.1948675000000002
+    },
+    {
+      "from": "2026-09-04T00:00:00Z",
+      "to": "2026-09-05T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-04T00:00:00Z",
+      "to": "2026-09-05T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-04T00:00:00Z",
+      "to": "2026-09-05T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.09521358000000006
+    },
+    {
+      "from": "2026-09-04T00:00:00Z",
+      "to": "2026-09-05T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.34135999999999966
+    },
+    {
+      "from": "2026-09-04T00:00:00Z",
+      "to": "2026-09-05T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.920522500000002
+    },
+    {
+      "from": "2026-09-05T00:00:00Z",
+      "to": "2026-09-06T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-05T00:00:00Z",
+      "to": "2026-09-06T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-05T00:00:00Z",
+      "to": "2026-09-06T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.07760109
+    },
+    {
+      "from": "2026-09-05T00:00:00Z",
+      "to": "2026-09-06T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.29786
+    },
+    {
+      "from": "2026-09-05T00:00:00Z",
+      "to": "2026-09-06T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.546495
+    },
+    {
+      "from": "2026-09-06T00:00:00Z",
+      "to": "2026-09-07T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-06T00:00:00Z",
+      "to": "2026-09-07T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-06T00:00:00Z",
+      "to": "2026-09-07T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.14274834000000014
+    },
+    {
+      "from": "2026-09-06T00:00:00Z",
+      "to": "2026-09-07T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.36299999999999955
+    },
+    {
+      "from": "2026-09-06T00:00:00Z",
+      "to": "2026-09-07T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.746982499999999
+    },
+    {
+      "from": "2026-09-07T00:00:00Z",
+      "to": "2026-09-08T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-07T00:00:00Z",
+      "to": "2026-09-08T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-07T00:00:00Z",
+      "to": "2026-09-08T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.1517455799999999
+    },
+    {
+      "from": "2026-09-07T00:00:00Z",
+      "to": "2026-09-08T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.37163999999999986
+    },
+    {
+      "from": "2026-09-07T00:00:00Z",
+      "to": "2026-09-08T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.8807974999999986
+    },
+    {
+      "from": "2026-09-08T00:00:00Z",
+      "to": "2026-09-09T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-08T00:00:00Z",
+      "to": "2026-09-09T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-08T00:00:00Z",
+      "to": "2026-09-09T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.10308101999999991
+    },
+    {
+      "from": "2026-09-08T00:00:00Z",
+      "to": "2026-09-09T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.34446000000000027
+    },
+    {
+      "from": "2026-09-08T00:00:00Z",
+      "to": "2026-09-09T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.041885000000002
+    },
+    {
+      "from": "2026-09-09T00:00:00Z",
+      "to": "2026-09-10T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-09T00:00:00Z",
+      "to": "2026-09-10T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-09T00:00:00Z",
+      "to": "2026-09-10T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.13024613000000015
+    },
+    {
+      "from": "2026-09-09T00:00:00Z",
+      "to": "2026-09-10T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.35843999999999937
+    },
+    {
+      "from": "2026-09-09T00:00:00Z",
+      "to": "2026-09-10T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 2.5287249999999997
+    },
+    {
+      "from": "2026-09-10T00:00:00Z",
+      "to": "2026-09-11T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-10T00:00:00Z",
+      "to": "2026-09-11T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-10T00:00:00Z",
+      "to": "2026-09-11T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.09633848
+    },
+    {
+      "from": "2026-09-10T00:00:00Z",
+      "to": "2026-09-11T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.33196000000000025
+    },
+    {
+      "from": "2026-09-10T00:00:00Z",
+      "to": "2026-09-11T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 1.8579150000000026
+    },
+    {
+      "from": "2026-09-11T00:00:00Z",
+      "to": "2026-09-12T00:00:00Z",
+      "service": "Container Egress, Everywhere Else, per GB  (First 500 GB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-11T00:00:00Z",
+      "to": "2026-09-12T00:00:00Z",
+      "service": "Container Egress, North America + Europe, per GB (First 1 TB included)",
+      "currency": "USD",
+      "contractedCost": 0
+    },
+    {
+      "from": "2026-09-11T00:00:00Z",
+      "to": "2026-09-12T00:00:00Z",
+      "service": "Container Disk, per GB second (First 200 GB hours included)",
+      "currency": "USD",
+      "contractedCost": 0.05252162999999996
+    },
+    {
+      "from": "2026-09-11T00:00:00Z",
+      "to": "2026-09-12T00:00:00Z",
+      "service": "Container vCPU (First 375 vCPU-minutes included)",
+      "currency": "USD",
+      "contractedCost": 0.24029999999999974
+    },
+    {
+      "from": "2026-09-11T00:00:00Z",
+      "to": "2026-09-12T00:00:00Z",
+      "service": "Container Memory, per GiB-Second (First 25 GiB-hours included)",
+      "currency": "USD",
+      "contractedCost": 0.9975499999999965
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+# Read-only baseline before the optimization deployment. No mutations.
+query ContainerCostAttribution {
+  viewer {
+    accounts(filter: { accountTag: "78109ec18c7c85b194b19fb32e3bb149" }) {
+      containersUsageAdaptiveGroups(
+        limit: 50
+        filter: {
+          datetime_geq: "2026-09-12T00:00:00Z"
+          datetime_lt: "2026-09-12T19:40:00Z"
+        }
+        orderBy: [sum_allocatedMemory_DESC]
+      ) {
+        dimensions { applicationId }
+        sum { allocatedMemory allocatedDisk cpuTimeSec }
+      }
+      containersMetricsAdaptiveGroups(
+        limit: 3
+        filter: {
+          datetime_geq: "2026-09-12T00:00:00Z"
+          datetime_lt: "2026-09-12T19:40:00Z"
+          applicationId_in: [
+            "a03d0f99-9d0d-46da-a9a8-1e04d235dda8"
+            "a0348266-3050-47d4-9bad-b04086c1a02b"
+            "a0371eee-c2c2-4a71-bc3a-0b20aa2b59a1"
+          ]
+        }
+      ) {
+        dimensions { applicationId }
+        max { memory diskUsage }
+      }
+    }
+  }
+}

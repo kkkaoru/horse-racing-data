@@ -1,0 +1,78 @@
+{
+  "recordedAt": "2026-09-12T20:51:35.613Z",
+  "queryFile": "container-cost-attribution.graphql",
+  "from": "2026-09-12T00:00:00Z",
+  "toExclusive": "2026-09-12T19:40:00Z",
+  "response": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "containersMetricsAdaptiveGroups": [
+              {
+                "dimensions": {
+                  "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b"
+                },
+                "max": {
+                  "diskUsage": 1421058048,
+                  "memory": 5103050752
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8"
+                },
+                "max": {
+                  "diskUsage": 982466560,
+                  "memory": 956948480
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a0371eee-c2c2-4a71-bc3a-0b20aa2b59a1"
+                },
+                "max": {
+                  "diskUsage": 1416724480,
+                  "memory": 1400750080
+                }
+              }
+            ],
+            "containersUsageAdaptiveGroups": [
+              {
+                "dimensions": {
+                  "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b"
+                },
+                "sum": {
+                  "allocatedDisk": 1775799647642800,
+                  "allocatedMemory": 1144050211631122.5,
+                  "cpuTimeSec": 24239.4
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a0371eee-c2c2-4a71-bc3a-0b20aa2b59a1"
+                },
+                "sum": {
+                  "allocatedDisk": 305640272241408,
+                  "allocatedMemory": 164089371702173,
+                  "cpuTimeSec": 1778.0400000000036
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8"
+                },
+                "sum": {
+                  "allocatedDisk": 241319345831536,
+                  "allocatedMemory": 129557337279820.12,
+                  "cpuTimeSec": 6168.199999999999
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "errors": null
+  }
+}
