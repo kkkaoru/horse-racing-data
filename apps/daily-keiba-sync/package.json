@@ -21,7 +21,7 @@
     "hyparquet-compressors": "1.1.1",
     "hyparquet-writer": "0.16.8",
     "icebird": "0.8.27",
-    "iconv-lite": "0.7.2"
+    "iconv-lite": "0.7.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
