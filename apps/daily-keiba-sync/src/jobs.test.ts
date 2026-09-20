@@ -1,3 +1,4 @@
+// Run with bun via the package test scripts.
 import { readFile } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -7,6 +8,7 @@ import { makeRecord } from "./layouts.test";
 import {
   completeRun,
   createRun,
+  createRunWithDataSpec,
   getProviderAcquisitionCursor,
   getRun,
   listRunTables,
@@ -16,7 +18,7 @@ import {
   markParsed,
 } from "./state";
 import { createTableStage } from "./source-stream";
-import type { Env, SyncJob } from "./types";
+import type { AcquisitionDataSpec, Env, SyncJob } from "./types";
 
 const mocks = vi.hoisted(() => ({
   catalog: vi.fn(),
@@ -120,6 +122,7 @@ beforeAll(async () => {
     "0001_initial.sql",
     "0002_catalog_index.sql",
     "0003_acquisition_window.sql",
+    "0005_acquisition_data_spec.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await baseEnv.DB.exec(
@@ -135,6 +138,7 @@ beforeEach(async () => {
   await baseEnv.DB.exec(
     "delete from catalog_table_leases; delete from catalog_operations; delete from catalog_row_index; delete from catalog_index_chunks; delete from catalog_index_partitions; delete from sync_run_table_partitions; delete from sync_run_tables; delete from sync_runs; delete from provider_acquisition_cursors;",
   );
+  await baseEnv.DB.exec("delete from catalog_targets where table_name = 'jvd_cs'");
   queue = new RecordingQueue();
   realtimeRequests = [];
   const source = {
@@ -190,6 +194,261 @@ const prepareTable = async (
 };
 
 describe("sync queue jobs", () => {
+  test.each([false, true])(
+    "stages course rows using the virtual partition (ready=%s)",
+    async (ready) => {
+      const { run } = await createRun(baseEnv.DB, "jv", "20260904", "manual", 2, now, false);
+      await baseEnv.DB.prepare(
+        "insert into catalog_targets (table_name, provider, partition_field, created_at) values ('jvd_cs', 'jv', '__unpartitioned__', ?)",
+      )
+        .bind(now.toISOString())
+        .run();
+      if (ready)
+        await baseEnv.DB.prepare(
+          "insert into catalog_index_partitions (table_name, partition_value, status, catalog_snapshot_id, updated_at) values ('jvd_cs', '__all__', 'ready', '10', ?)",
+        )
+          .bind(now.toISOString())
+          .run();
+      await baseEnv.SOURCE_STAGING.put(
+        "course-source.ndjson",
+        sourceBody([
+          makeRecord("jvd_cs", {
+            data_kubun: "0",
+            keibajo_code: "05",
+            kyori: "1600",
+            track_code: "11",
+            course_kaishu_nengappi: "20240106",
+          }),
+        ]),
+      );
+      await handleJob(
+        {
+          type: "r2-bucket-jvlink",
+          provider: "jv",
+          runId: run.run_id,
+          runDate: "20260904",
+          advanceCursor: false,
+          stagingKey: "course-source.ndjson",
+        },
+        baseEnv,
+        now,
+      );
+      expect(queue.messages).toHaveLength(1);
+      if (ready)
+        expect(queue.messages[0]).toMatchObject({ type: "catalog-table", tableName: "jvd_cs" });
+      else
+        expect(queue.messages[0]).toMatchObject({
+          type: "index-plan",
+          tableName: "jvd_cs",
+          partitionValue: "__all__",
+        });
+      expect(
+        await baseEnv.DB.prepare(
+          "select partition_value from sync_run_table_partitions where run_id = ?",
+        )
+          .bind(run.run_id)
+          .all(),
+      ).toMatchObject({ results: [{ partition_value: "__all__" }] });
+      const tables = await listRunTables(baseEnv.DB, run.run_id);
+      const stage = await baseEnv.SOURCE_STAGING.get(tables[0]?.staging_key ?? "missing");
+      if (stage === null) throw new Error("Expected durable course stage");
+      expect(await stage.json()).toMatchObject({
+        tableName: "jvd_cs",
+        records: [{ data_kubun: "0" }],
+      });
+      expect(mocks.catalog).not.toHaveBeenCalled();
+      expect(mocks.neon).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects a course target configured with a race-year partition", async () => {
+    const { run } = await createRun(baseEnv.DB, "jv", "20260904", "manual", 2, now, false);
+    await baseEnv.DB.prepare(
+      "insert into catalog_targets (table_name, provider, partition_field, created_at) values ('jvd_cs', 'jv', 'kaisai_nen', ?)",
+    )
+      .bind(now.toISOString())
+      .run();
+    await baseEnv.SOURCE_STAGING.put("course-source.ndjson", sourceBody([makeRecord("jvd_cs")]));
+    await expect(
+      handleJob(
+        {
+          type: "r2-bucket-jvlink",
+          provider: "jv",
+          runId: run.run_id,
+          runDate: "20260904",
+          advanceCursor: false,
+          stagingKey: "course-source.ndjson",
+        },
+        baseEnv,
+        now,
+      ),
+    ).rejects.toThrow("Course target requires an unpartitioned configuration");
+    expect(queue.messages).toHaveLength(0);
+    expect(mocks.catalog).not.toHaveBeenCalled();
+    expect(mocks.neon).not.toHaveBeenCalled();
+  });
+
+  test.each<AcquisitionDataSpec>(["COMM", "RACECOMM"])(
+    "retries a %s acquisition with the persisted spec and no race cursor advance",
+    async (dataSpec) => {
+      const { run } = await createRunWithDataSpec({
+        db: baseEnv.DB,
+        provider: "jv",
+        dataSpec,
+        runDate: "20260904",
+        trigger: "manual",
+        lookbackDays: 2,
+        now,
+        force: true,
+        fromTime: "20260902000000",
+        toTime: "20260904200000",
+        cursorTime: "20260904200000",
+        advanceCursor: false,
+      });
+      const fetch = vi
+        .fn(
+          async (_input: RequestInfo | URL) =>
+            new Response('{"event":"open"}\n{"event":"close","files":0,"records":0}\n', {
+              headers: { "Content-Type": "application/x-ndjson" },
+            }),
+        )
+        .mockRejectedValueOnce(new Error("temporary source failure"));
+      const env: Env = { ...baseEnv, JV_SOURCE: { fetch } };
+      await expect(
+        acquireRun(
+          {
+            advanceCursor: false,
+            cursorTime: "20260904200000",
+            fromTime: "20260902000000",
+            provider: "jv",
+            runDate: "20260904",
+            runId: run.run_id,
+            toTime: "20260904200000",
+          },
+          env,
+          now,
+        ),
+      ).rejects.toThrow("temporary source failure");
+      await acquireRun(
+        {
+          advanceCursor: false,
+          cursorTime: "20260904200000",
+          fromTime: "20260902000000",
+          provider: "jv",
+          runDate: "20260904",
+          runId: run.run_id,
+          toTime: "20260904200000",
+        },
+        env,
+        now,
+      );
+      expect(
+        await Promise.all(fetch.mock.calls.map(async ([input]) => await new Request(input).json())),
+      ).toMatchObject([
+        { dataSpec, from: "20260902000000", to: "20260904200000" },
+        { dataSpec, from: "20260902000000", to: "20260904200000" },
+      ]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      const staged = queue.messages[0];
+      if (staged?.type !== "r2-bucket-jvlink") throw new Error("Missing JV stage job");
+      await handleJob(staged, env, now);
+      expect(await getProviderAcquisitionCursor(baseEnv.DB, "jv")).toBeNull();
+      expect(await getRun(baseEnv.DB, run.run_id)).toMatchObject({
+        status: "succeeded_empty",
+        data_spec: dataSpec,
+        advance_cursor: 0,
+      });
+    },
+  );
+
+  test("rejects a mismatched provider or COMM cursor request before source I/O", async () => {
+    const { run } = await createRunWithDataSpec({
+      db: baseEnv.DB,
+      provider: "jv",
+      dataSpec: "COMM",
+      runDate: "20260904",
+      trigger: "manual",
+      lookbackDays: 2,
+      now,
+      force: true,
+      fromTime: "20260902000000",
+      toTime: "20260904200000",
+      cursorTime: "20260904200000",
+      advanceCursor: false,
+    });
+    const fetch = vi.fn(async () => new Response("unexpected"));
+    const env: Env = { ...baseEnv, JV_SOURCE: { fetch }, NV_SOURCE: { fetch } };
+    await expect(
+      acquireRun(
+        {
+          advanceCursor: false,
+          cursorTime: "20260904200000",
+          fromTime: "20260902000000",
+          provider: "nv",
+          runDate: "20260904",
+          runId: run.run_id,
+          toTime: null,
+        },
+        env,
+        now,
+      ),
+    ).rejects.toThrow("Source acquisition provider mismatch");
+    await expect(
+      acquireRun(
+        {
+          advanceCursor: true,
+          cursorTime: "20260904200000",
+          fromTime: "20260902000000",
+          provider: "jv",
+          runDate: "20260904",
+          runId: run.run_id,
+          toTime: "20260904200000",
+        },
+        env,
+        now,
+      ),
+    ).rejects.toThrow("COMM-only acquisition cannot advance the race cursor");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(queue.messages).toStrictEqual([]);
+  });
+
+  test("rejects COMM cursor advancement from a replayed staging message before touching storage", async () => {
+    const { run } = await createRunWithDataSpec({
+      db: baseEnv.DB,
+      provider: "jv",
+      dataSpec: "COMM",
+      runDate: "20260904",
+      trigger: "manual",
+      lookbackDays: 2,
+      now,
+      force: true,
+      fromTime: "20260902000000",
+      toTime: "20260904200000",
+      cursorTime: "20260904200000",
+      advanceCursor: false,
+    });
+    const get = vi.spyOn(baseEnv.SOURCE_STAGING, "get");
+    await expect(
+      handleJob(
+        {
+          type: "r2-bucket-jvlink",
+          provider: "jv",
+          runDate: "20260904",
+          runId: run.run_id,
+          stagingKey: "must-not-be-read",
+          advanceCursor: true,
+          cursorTime: "20260904200000",
+        },
+        baseEnv,
+        now,
+      ),
+    ).rejects.toThrow("COMM-only acquisition cannot advance the race cursor");
+    expect(get).not.toHaveBeenCalled();
+    get.mockRestore();
+    expect(await getProviderAcquisitionCursor(baseEnv.DB, "jv")).toBeNull();
+    expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("queued");
+  });
+
   test("acquires the provider stream directly into R2 staging", async () => {
     const run = await createTestRun();
     await acquireRun(
@@ -702,7 +961,190 @@ describe("sync queue jobs", () => {
     expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded");
   });
 
-  test("notifies realtime discovery for each JV race day after Neon succeeds", async () => {
+  test("does not rewrite an already backed-up table on duplicate queue delivery", async () => {
+    const run = await createTestRun();
+    await prepareTable(run.run_id);
+    await markCatalogTable(baseEnv.DB, run.run_id, "nvd_ra", "99", 0, now);
+    await markNeonTable(baseEnv.DB, run.run_id, "nvd_ra", now);
+
+    await handleJob(
+      {
+        provider: "nv",
+        runDate: "20260904",
+        runId: run.run_id,
+        tableName: "nvd_ra",
+        tableStagingKey: "missing-stage.json",
+        type: "neon-table",
+      },
+      baseEnv,
+      now,
+    );
+
+    expect(mocks.neon).not.toHaveBeenCalled();
+    expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded");
+  });
+
+  test("rejects backup jobs for a table absent from the committed run", async () => {
+    const run = await createTestRun();
+    await prepareTable(run.run_id);
+    await markCatalogTable(baseEnv.DB, run.run_id, "nvd_ra", "99", 0, now);
+
+    await expect(
+      handleJob(
+        {
+          provider: "nv",
+          runDate: "20260904",
+          runId: run.run_id,
+          tableName: "nvd_se",
+          tableStagingKey: "missing-stage.json",
+          type: "neon-table",
+        },
+        baseEnv,
+        now,
+      ),
+    ).rejects.toThrow("Neon backup requires a committed Catalog table");
+    expect(mocks.neon).not.toHaveBeenCalled();
+  });
+
+  test("rejects backup jobs for unconfigured Catalog tables", async () => {
+    const run = await createTestRun();
+    await markParsed(
+      baseEnv.DB,
+      run.run_id,
+      1,
+      1,
+      [
+        {
+          ...tableRow(run.run_id),
+          catalog_status: "not_configured",
+          neon_status: "not_configured",
+        },
+      ],
+      now,
+    );
+
+    await expect(
+      handleJob(
+        {
+          provider: "nv",
+          runDate: "20260904",
+          runId: run.run_id,
+          tableName: "nvd_ra",
+          tableStagingKey: "missing-stage.json",
+          type: "neon-table",
+        },
+        baseEnv,
+        now,
+      ),
+    ).rejects.toThrow("Neon backup requires a committed Catalog table");
+    expect(mocks.neon).not.toHaveBeenCalled();
+  });
+
+  test("publishes JV race days from Catalog while Neon is unavailable and does not repeat publication", async () => {
+    const run = (
+      await createRun(
+        baseEnv.DB,
+        "jv",
+        "20260904",
+        "daily",
+        2,
+        now,
+        true,
+        "20260904100000",
+        "20260904200000",
+        "20260904200000",
+        true,
+      )
+    ).run;
+    await prepareTable(run.run_id, "jvd_ra");
+    await baseEnv.SOURCE_STAGING.put(
+      "table.json",
+      JSON.stringify(
+        createTableStage("jv", run.run_id, "jvd_ra", [
+          { kaisai_nen: "2026", kaisai_tsukihi: "0905" },
+        ]),
+      ),
+    );
+    mocks.neon.mockRejectedValue(new Error("Neon unavailable"));
+    const job: SyncJob = {
+      provider: "jv",
+      runDate: "20260904",
+      runId: run.run_id,
+      tableName: "jvd_ra",
+      tableStagingKey: "table.json",
+      type: "catalog-table",
+    };
+
+    await handleJob(job, baseEnv, now);
+    expect(realtimeRequests).toHaveLength(1);
+    expect(await realtimeRequests[0]?.json()).toStrictEqual({
+      date: "20260905",
+      type: "discover-urls",
+    });
+    expect(mocks.neon).not.toHaveBeenCalled();
+    expect((await listRunTables(baseEnv.DB, run.run_id))[0]?.neon_status).toBe("pending");
+
+    await handleJob(job, baseEnv, now);
+    expect(realtimeRequests).toHaveLength(1);
+    expect(mocks.catalog).toHaveBeenCalledTimes(1);
+    await completeRun(baseEnv.DB, run.run_id, "succeeded", 1, now);
+    queue.messages.length = 0;
+    await handleJob(job, baseEnv, now);
+    expect(queue.messages).toStrictEqual([]);
+    expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded");
+  });
+
+  test("retries failed Catalog publication without recommitting or writing Neon", async () => {
+    const run = (
+      await createRun(
+        baseEnv.DB,
+        "jv",
+        "20260904",
+        "daily",
+        2,
+        now,
+        true,
+        "20260904100000",
+        "20260904200000",
+        "20260904200000",
+        true,
+      )
+    ).run;
+    await prepareTable(run.run_id, "jvd_ra");
+    await baseEnv.SOURCE_STAGING.put(
+      "table.json",
+      JSON.stringify(
+        createTableStage("jv", run.run_id, "jvd_ra", [
+          { kaisai_nen: "2026", kaisai_tsukihi: "0905" },
+        ]),
+      ),
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValue(Response.json({ ok: true }));
+    baseEnv.REALTIME_SYNC = { fetch };
+    const job: SyncJob = {
+      provider: "jv",
+      runDate: "20260904",
+      runId: run.run_id,
+      tableName: "jvd_ra",
+      tableStagingKey: "table.json",
+      type: "catalog-table",
+    };
+
+    await expect(handleJob(job, baseEnv, now)).rejects.toThrow(
+      "Realtime scheduling notification failed",
+    );
+    expect(queue.messages).toStrictEqual([]);
+    await handleJob(job, baseEnv, now);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(mocks.catalog).toHaveBeenCalledTimes(1);
+    expect(mocks.neon).not.toHaveBeenCalled();
+    expect(queue.messages[0]?.type).toBe("neon-dispatch");
+  });
+
+  test("notifies realtime discovery for legacy JV messages after Neon succeeds", async () => {
     const run = (
       await createRun(
         baseEnv.DB,
@@ -1003,6 +1445,34 @@ describe("sync queue jobs", () => {
       ),
     ).rejects.toThrow("identity mismatch");
   });
+
+  test.each(["catalog-table", "neon-table"] satisfies ReadonlyArray<SyncJob["type"]>)(
+    "preserves a committed table when %s downstream publication fails",
+    async (type) => {
+      const run = await createTestRun();
+      await prepareTable(run.run_id);
+      await markCatalogTable(baseEnv.DB, run.run_id, "nvd_ra", "99", 0, now);
+      await markNeonTable(baseEnv.DB, run.run_id, "nvd_ra", now);
+      await recordJobFailure(
+        {
+          provider: "nv",
+          runDate: "20260904",
+          runId: run.run_id,
+          tableName: "nvd_ra",
+          tableStagingKey: "table.json",
+          type,
+        },
+        baseEnv,
+        new Error("Notification unavailable"),
+        now,
+      );
+
+      const tables = await listRunTables(baseEnv.DB, run.run_id);
+      expect(tables[0]?.catalog_status).toBe("succeeded");
+      expect(tables[0]?.neon_status).toBe("succeeded");
+      expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("publication_failed");
+    },
+  );
 
   test("records safe job failure stages", async () => {
     const run = await createTestRun();

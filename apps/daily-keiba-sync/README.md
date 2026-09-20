@@ -11,9 +11,13 @@ Cloudflare Workersだけで、JV-Link/NV-Link互換source Workerの公式デー�
 5. D1の明示allowlistにある実在tableだけを`R2CatalogJob`へ送る。未構築tableのrecordはR2に残して`not_configured`とし、Catalog retryを行わない。
 6. 初回だけ対象年partitionの既存Parquetをfile jobへ分割して主キー→file/position indexをD1に構築する。日次commitはこのindexからposition deleteを求め、新規row appendと同一Iceberg transactionでcommitする。
 7. commit後は新規Parquetだけを読んでD1 indexを更新する。table leaseにより同じCatalog tableへの並列commitを禁止する。
-8. 全対象R2 tableのcommit成功を確認した後だけ`NeonJob`をNeon Queueへ送り、同じR2 table stageを`INSERT ... ON CONFLICT DO UPDATE`する。
-9. cursorを進める通常JV runでは、Neon同期済み`jvd_ra`から開催日を抽出し、`sync-realtime-data`の`discover-urls`を日ごとに自動登録する。これによりレースURL、netkeiba premiumデータ（調教評価等）、オッズ・馬体重・結果の既存plannerが起動する。通知に失敗したrunは成功確定せず、Queue retryで再通知する。
+8. 全対象R2 tableのcommit成功を確認した後、cursorを進める通常JV runでは、Catalog確定済み`jvd_ra`のR2 stageから開催日を抽出し、`sync-realtime-data`の`discover-urls`を日ごとに自動登録する。Neonへの接続・書き込み成功は待たない。通知完了はR2 receiptへ記録し、バックアップretryによる再通知を抑止する。通知失敗時はCatalog commitを取り消さず、Queue retryで通知を再開する。
+9. 通知後に`NeonJob`をNeon Queueへ送り、同じR2 table stageを日次バックアップとして`INSERT ... ON CONFLICT DO UPDATE ... WHERE ... IS DISTINCT FROM ...`する。変更のない行は更新せず、同期済みtableの再配信ではNeonへ接続しない。旧Queue messageも通知receiptを確認して復旧する。run全体の`succeeded`は依然バックアップ完了を含む（参照系の完全分離は移行中）。
 10. monitor cronが欠損runまたは20分以上更新のないrunを検出し、JV raw stage、NV raw stage、R2 Catalog、Neonの該当する未完了stageへ振り分けて再開する。
+
+`GET /internal/run-status?runId=...`（既存REALTIME認証）は、従来のrun状態に`catalog_ready`と`neon_backup_complete`を追加します。単一SQLite読取で予定table数と成功receiptを照合し、空・不完全・未知状態のCatalog planはreadyにしません。`catalog_ready`はデータcommitの判定であり、通知配信や全拠点cache更新の保証ではありません。応答は`no-store`、run未存在は404、DB障害は詳細を伏せた503です。run全体の状態は変更せず、バックアップ復旧を継続します。この追加契約はversion `ac49abda-cd38-4c16-a6aa-55b30ab33074`でデプロイ済みです。設定・Cron・Queueの前後一致と未認証401/no-storeを確認済みです。Cloudflare MCPの認証付き管理APIから、デプロイ済みSQLで本番の実在run 3件を読取り、完了2件は両フラグtrue、空更新1件は両フラグfalseを確認しました（全SQL書込み0件）。Worker HTTP経由の認証付き読取とは区別しています。training利用側の変更もrealtime version `5d1e5132-0f71-4e37-b492-f6bc79eafbec`で反映済みです。新版のhealth 200と実Queue処理のoutcome okを本番ログで確認しましたが、training完了分岐の本番実行証明とは区別しています。
+
+通知途中の障害ではreceiptが未確定のため、成功済み日付も再通知され得ます。下流のjob登録の冪等性と組み合わせたat-least-once処理であり、exactly-onceではありません。
 
 R2 Catalogが常に先です。R2成功後にNeonだけが失敗した場合、provider再取得やR2再commitをせず、同じR2 staging objectからNeon stageだけを再試行します。Queue messageにはrecord本体を入れず、run ID、table、R2 object key等のmetadataだけを入れます。
 

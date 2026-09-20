@@ -1,9 +1,10 @@
+// Runs with bun; deployed as a Cloudflare Worker queue consumer.
 import { purgeProviderCursorCache } from "./cache";
 import { indexCatalogFile, planCatalogIndex } from "./catalog-index";
 import { isPermanentJobError, isTransientJobError } from "./errors";
 import { syncCatalogTable } from "./catalog-sync";
 import { syncNeonTable } from "./neon-sync";
-import { acquisitionBody } from "./schedule";
+import { acquisitionBodyForSpec } from "./schedule";
 import {
   acquireCatalogLease,
   advanceProviderAcquisitionCursor,
@@ -32,6 +33,7 @@ import {
   tableStagingKey,
 } from "./source-stream";
 import { putStream } from "./staging";
+import type { CatalogTargetRow } from "./state";
 import type {
   AcquisitionRequest,
   CatalogTableJob,
@@ -42,12 +44,24 @@ import type {
   R2BucketJVLinkJob,
   R2BucketNVLinkJob,
   RecoveryJob,
+  RecordRow,
+  RunRow,
   SourceService,
   SyncJob,
   TableStage,
 } from "./types";
 
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
+
+const targetPartition = (target: CatalogTargetRow, record: RecordRow): string => {
+  if (target.table_name === "jvd_cs") {
+    if (target.partition_field !== "__unpartitioned__")
+      throw new Error("Course target requires an unpartitioned configuration");
+    return "__all__";
+  }
+  const value = record[target.partition_field];
+  return typeof value === "string" ? value.trim() : "";
+};
 
 const rawStagingKey = (job: AcquisitionRequest): string =>
   `source-staging/v1/${job.provider}/${job.runDate}/${job.runId}/source.ndjson`;
@@ -85,11 +99,29 @@ const sendR2BucketJob = async (env: Env, job: R2BucketJob): Promise<void> => {
   else await env.NV_RAW_STAGE_JOBS.send(job);
 };
 
-const sourceRequest = (
+const validateAcquisitionIdentity = (
+  run: RunRow,
+  job: Pick<R2BucketJob, "provider" | "advanceCursor">,
+): void => {
+  if (run.provider !== job.provider) throw new Error("Source acquisition provider mismatch");
+  if (run.data_spec === "COMM" && job.advanceCursor)
+    throw new Error("COMM-only acquisition cannot advance the race cursor");
+};
+
+const sourceRequest = async (
   job: AcquisitionRequest,
   env: Env,
-): { request: Request; source: SourceService } => {
-  const body = JSON.stringify(acquisitionBody(job.provider, job.fromTime, job.toTime));
+): Promise<{ request: Request; source: SourceService }> => {
+  const run = await getRun(env.DB, job.runId);
+  validateAcquisitionIdentity(run, job);
+  const body = JSON.stringify(
+    acquisitionBodyForSpec({
+      provider: job.provider,
+      fromTime: job.fromTime,
+      toTime: job.toTime,
+      dataSpec: run.data_spec,
+    }),
+  );
   const token = job.provider === "jv" ? env.JRA_VAN_WORKER_API_TOKEN : env.UMMACON_WORKER_API_TOKEN;
   return {
     request: new Request("https://source.internal/acquire/stream", {
@@ -132,16 +164,22 @@ const sendJobs = async (queue: Queue<SyncJob>, jobs: readonly SyncJob[]): Promis
 };
 
 const notifyRealtimeJvRaceDays = async (
-  job: NeonDispatchJob | NeonTableJob,
+  job: CatalogTableJob | NeonDispatchJob | NeonTableJob | RecoveryJob,
   env: Env,
 ): Promise<void> => {
   if (job.provider !== "jv") return;
   const run = await getRun(env.DB, job.runId);
   if (run.advance_cursor !== 1) return;
-  const raceTable = (await listRunTables(env.DB, job.runId)).find(
-    (table) => table.table_name === "jvd_ra" && table.neon_status === "succeeded",
+  const tables = await listRunTables(env.DB, job.runId);
+  if (tables.some((table) => !["succeeded", "not_configured"].includes(table.catalog_status)))
+    return;
+  const raceTable = tables.find(
+    (table) => table.table_name === "jvd_ra" && table.catalog_status === "succeeded",
   );
   if (raceTable === undefined) return;
+  // This durable receipt is not a cache: backup retries must not redispatch published days.
+  const receiptKey: string = `realtime-notifications/v1/${job.provider}/${job.runId}.json`;
+  if ((await env.SOURCE_STAGING.head(receiptKey)) !== null) return;
   const stage = parseTableStage(
     JSON.parse(await loadText(env.SOURCE_STAGING, raceTable.staging_key)) as unknown,
   );
@@ -168,6 +206,13 @@ const notifyRealtimeJvRaceDays = async (
     );
     if (!response.ok) throw new Error("Realtime scheduling notification failed");
   }
+  await env.SOURCE_STAGING.put(
+    receiptKey,
+    JSON.stringify({ runId: job.runId, dates: [...dates] }),
+    {
+      httpMetadata: { contentType: "application/json" },
+    },
+  );
 };
 
 const completeSyncedRun = async (
@@ -185,8 +230,8 @@ export const acquireRun = async (
   env: Env,
   now = new Date(),
 ): Promise<void> => {
+  const { request, source } = await sourceRequest(job, env);
   await updateRunStatus(env.DB, job.runId, "acquiring", now);
-  const { request, source } = sourceRequest(job, env);
   const response = await source.fetch(request);
   if (!response.ok || response.body === null) throw new Error("Source acquisition failed");
   const contentType = response.headers.get("Content-Type") ?? "";
@@ -211,6 +256,7 @@ export const acquireRun = async (
 };
 
 const stageR2Bucket = async (job: R2BucketJob, env: Env, now: Date): Promise<void> => {
+  validateAcquisitionIdentity(await getRun(env.DB, job.runId), job);
   await updateRunStatus(env.DB, job.runId, "parsing", now);
   const object = await env.SOURCE_STAGING.get(job.stagingKey);
   if (object === null) throw new Error("Staging object not found");
@@ -233,14 +279,7 @@ const stageR2Bucket = async (job: R2BucketJob, env: Env, now: Date): Promise<voi
       const partitions =
         target === undefined
           ? []
-          : [
-              ...new Set(
-                table.records.map((record) => {
-                  const value = record[target.partition_field];
-                  return typeof value === "string" ? value.trim() : "";
-                }),
-              ),
-            ];
+          : [...new Set(table.records.map((record) => targetPartition(target, record)))];
       if (partitions.some((partition) => partition.length === 0))
         throw new Error("Configured catalog partition is missing");
       const ready =
@@ -340,9 +379,33 @@ const rebuildCatalogIndexes = async (
   );
 };
 
+const publishCatalogRun = async (job: CatalogTableJob, env: Env, now: Date): Promise<void> => {
+  const tables = await listRunTables(env.DB, job.runId);
+  if (
+    !tables.every(
+      (candidate) =>
+        candidate.catalog_status === "succeeded" || candidate.catalog_status === "not_configured",
+    )
+  )
+    return;
+  await notifyRealtimeJvRaceDays(job, env);
+  const run = await getRun(env.DB, job.runId);
+  if (run.status === "succeeded") return;
+  await updateRunStatus(env.DB, job.runId, "catalog_succeeded", now);
+  await env.NEON_JOBS.send({
+    provider: job.provider,
+    runDate: job.runDate,
+    runId: job.runId,
+    type: "neon-dispatch",
+  });
+};
+
 const syncCatalog = async (job: CatalogTableJob, env: Env, now: Date): Promise<void> => {
   const table = await getRunTable(env.DB, job.runId, job.tableName);
-  if (table.catalog_status === "succeeded") return;
+  if (table.catalog_status === "succeeded") {
+    await publishCatalogRun(job, env, now);
+    return;
+  }
   const partitions = await getRunTablePartitions(env.DB, job.runId, job.tableName);
   const ready = await getReadyIndexPartitions(env.DB, job.tableName, partitions);
   if (ready.size !== partitions.length) {
@@ -370,21 +433,7 @@ const syncCatalog = async (job: CatalogTableJob, env: Env, now: Date): Promise<v
   } finally {
     await releaseCatalogLease(env.DB, job.tableName, leaseOwner);
   }
-  const tables = await listRunTables(env.DB, job.runId);
-  if (
-    !tables.every(
-      (candidate) =>
-        candidate.catalog_status === "succeeded" || candidate.catalog_status === "not_configured",
-    )
-  )
-    return;
-  await updateRunStatus(env.DB, job.runId, "catalog_succeeded", now);
-  await env.NEON_JOBS.send({
-    provider: job.provider,
-    runDate: job.runDate,
-    runId: job.runId,
-    type: "neon-dispatch",
-  });
+  await publishCatalogRun(job, env, now);
 };
 
 const dispatchNeon = async (job: NeonDispatchJob, env: Env, now: Date): Promise<void> => {
@@ -396,6 +445,8 @@ const dispatchNeon = async (job: NeonDispatchJob, env: Env, now: Date): Promise<
     )
   )
     throw new Error("Neon dispatch attempted before R2 Catalog completion");
+  // Resume publication for messages enqueued before Catalog-first notification was deployed.
+  await notifyRealtimeJvRaceDays(job, env);
   const configured = tables.filter((table) => table.catalog_status === "succeeded");
   const pending = configured.filter((table) => table.neon_status !== "succeeded");
   if (pending.length === 0) {
@@ -424,8 +475,13 @@ const syncNeon = async (job: NeonTableJob, env: Env, now: Date): Promise<void> =
     )
   )
     throw new Error("Neon write attempted before R2 Catalog completion");
-  await syncNeonTable(await loadTableStage(job, env), env);
-  await markNeonTable(env.DB, job.runId, job.tableName, now);
+  const tableBefore = tablesBefore.find((table) => table.table_name === job.tableName);
+  if (tableBefore === undefined || tableBefore.catalog_status !== "succeeded")
+    throw new Error("Neon backup requires a committed Catalog table");
+  if (tableBefore.neon_status !== "succeeded") {
+    await syncNeonTable(await loadTableStage(job, env), env);
+    await markNeonTable(env.DB, job.runId, job.tableName, now);
+  }
   const tables = await listRunTables(env.DB, job.runId);
   const configured = tables.filter((table) => table.catalog_status === "succeeded");
   if (configured.every((table) => table.neon_status === "succeeded"))
@@ -479,6 +535,7 @@ const recover = async (job: RecoveryJob, env: Env, now: Date): Promise<void> => 
       tableStagingKey: table.staging_key,
       type: "catalog-table",
     }));
+  await notifyRealtimeJvRaceDays(job, env);
   if (
     tables.some(
       (table) =>
@@ -519,6 +576,16 @@ export const recordJobFailure = async (
   const permanent = isPermanentJobError(error);
   if (job.type === "catalog-table" || job.type === "neon-table") {
     const stage = job.type === "catalog-table" ? "catalog" : "neon";
+    const table = await getRunTable(env.DB, job.runId, job.tableName);
+    const committed: boolean =
+      job.type === "catalog-table"
+        ? table.catalog_status === "succeeded"
+        : table.neon_status === "succeeded";
+    if (committed) {
+      // Downstream publication failure cannot undo a durable data commit.
+      await updateRunStatus(env.DB, job.runId, "publication_failed", now, "publication");
+      return;
+    }
     if (permanent) {
       if (job.type === "catalog-table")
         await setRunTableCatalogStatus(env.DB, job.runId, job.tableName, "failed_permanent", now);
