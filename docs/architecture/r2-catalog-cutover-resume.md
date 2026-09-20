@@ -1,5 +1,13 @@
 # Production cutover implementation checkpoints
 
+## B2 catalog side: `/v1/race-history` deployed (inert) — 2026-09-20T20:44Z
+
+New route on `RaceDetailReadService`: `race-history-read.ts` + `race-history-service.ts` return the raw `jvd_se JOIN jvd_ra` history rows for up to 40 requested horse ids inside a `beforeDate`/`minDate` window (limit 2000, +1 over-fetch guard), ordered by horse id / date desc / umaban. Values stay untransformed — including `soha_time`, which the viewer re-encodes as tenths via `lpad(x,4,'0')` + `100s*600 + 10s*10 + 1s` with a minutes<60 guard — because the incumbent PostgreSQL path strips non-digits itself. Validation is fail-closed on horse-id shape/uniqueness, date validity, row identity, ordering and field count; failures log `race_history_read_failed` and alert through the M4 path. `minDate`/`limit` are optional parameters (the required/optional split is enforced explicitly).
+
+Gates: catalog **1657 tests** (79 files) passed, tsc 0, lint 0, oxfmt clean; commit `a3079d41`. Deployed catalog `23a42281-88d4-47b9-8ff0-98cdd6f9e8f8` 100% / `82804045` 0%. The route is **inert** until the viewer adopts it, so there is no production behaviour change yet. Receipts: `tmp/neon-backup-only-20260920/{b2h-catalog-test3.out,b2h-catalog-test4.out,b2h-commit.out,b2h-upload.out,b2h-deploy.out}`. Rollback: `wrangler versions deploy 82804045-3f33-43aa-be36-b9d6ac009806@100% 23a42281-88d4-47b9-8ff0-98cdd6f9e8f8@0% --name pc-keiba-r2-catalog --yes`.
+
+Viewer side (next tick): read the history through this route inside `getTimeScoreRows`' cloudflare branch, reimplement the conversions + recency/distance weighting + target-profile averages as pure functions with unit tests, keep the existing cache key parts, gate with the field-by-field Neon parity harness and 0% version-override HTML parity, then promote.
+
 ## B2 design probe for `getTimeScoreRows` — 2026-09-20T20:40Z
 
 Receipts: `tmp/neon-backup-only-20260920/b2b-table-probe.json`, helper semantics read from `apps/pc-keiba-viewer/src/db/queries.ts`. Findings:
