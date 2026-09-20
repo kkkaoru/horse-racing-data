@@ -173,41 +173,114 @@ vi.mock("./premium-race", async () => {
 });
 
 const buildDb = (): D1Database => {
-  const all = vi.fn(async () => ({ results: [] }));
-  const first = vi.fn(async () => null);
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn(() => ({ all, first, run, bind: vi.fn() }));
-  const prepare = vi.fn(() => ({ all, bind, first, run }));
-  const batch = vi.fn(async () => []);
-  const exec = vi.fn(async () => ({}));
-  return { batch, exec, prepare } as unknown as D1Database;
+  const unexpected = (): never => {
+    throw new Error("Unexpected D1 test operation");
+  };
+  const prepare = vi.fn<D1Database["prepare"]>((sql) => {
+    const bind = vi.fn<D1PreparedStatement["bind"]>();
+    const statement: D1PreparedStatement = {
+      bind,
+      all: unexpected,
+      first: unexpected,
+      raw: unexpected,
+      run: unexpected,
+    };
+    bind.mockReturnValue(statement);
+    vi.spyOn(statement, "all").mockResolvedValue({
+      success: true,
+      results: /returning 1 as changed/iu.test(sql) ? [{ changed: 1 }] : [],
+      meta: {
+        changes: 3,
+        changed_db: true,
+        duration: 0,
+        last_row_id: 1,
+        rows_read: 1,
+        rows_written: 3,
+        size_after: 1,
+      },
+    });
+    vi.spyOn(statement, "first").mockResolvedValue(null);
+    vi.spyOn(statement, "run").mockResolvedValue({
+      success: true,
+      results: [],
+      meta: {
+        changes: 1,
+        changed_db: true,
+        duration: 0,
+        last_row_id: 1,
+        rows_read: 1,
+        rows_written: 1,
+        size_after: 1,
+      },
+    });
+    return statement;
+  });
+  return {
+    prepare,
+    batch: async () => [],
+    exec: async () => ({ count: 0, duration: 0 }),
+    dump: unexpected,
+    withSession: unexpected,
+  };
 };
 
 const buildAtomicRecoveryDb = (): D1Database => {
   const state = { ownerToken: "", owned: false };
-  const prepare = vi.fn((sql: string) => ({
-    bind: vi.fn((...values: unknown[]) => ({
-      run: vi.fn(async () => {
-        if (sql.includes("insert into realtime_plan_recovery_claims")) {
-          if (state.owned) return { meta: { changes: 0 } };
-          state.owned = true;
-          state.ownerToken = String(values[1]);
-          return { meta: { changes: 1 } };
-        }
-        if (
-          sql.includes("delete from realtime_plan_recovery_claims") &&
-          state.ownerToken === String(values[1])
-        ) {
-          state.owned = false;
-          state.ownerToken = "";
-          return { meta: { changes: 1 } };
-        }
-        return { meta: { changes: 0 } };
-      }),
-    })),
-    first: vi.fn(async () => null),
-  }));
-  return { prepare } as unknown as D1Database;
+  const unexpected = (): never => {
+    throw new Error("Unexpected D1 test operation");
+  };
+  const prepare = vi.fn<D1Database["prepare"]>((sql) => {
+    const parameters: { values: readonly unknown[] } = { values: [] };
+    const bind = vi.fn<D1PreparedStatement["bind"]>();
+    const statement: D1PreparedStatement = {
+      bind,
+      all: unexpected,
+      first: unexpected,
+      raw: unexpected,
+      run: unexpected,
+    };
+    bind.mockImplementation((...values) => {
+      parameters.values = values;
+      return statement;
+    });
+    vi.spyOn(statement, "first").mockResolvedValue(null);
+    vi.spyOn(statement, "all").mockImplementation(async () => {
+      const results: { changed: number }[] = [];
+      if (sql.includes("insert into realtime_plan_recovery_claims") && !state.owned) {
+        state.owned = true;
+        state.ownerToken = String(parameters.values[1]);
+        results.push({ changed: 1 });
+      } else if (
+        sql.includes("delete from realtime_plan_recovery_claims") &&
+        state.ownerToken === String(parameters.values[1])
+      ) {
+        state.owned = false;
+        state.ownerToken = "";
+        results.push({ changed: 1 });
+      }
+      return {
+        success: true,
+        results,
+        meta: {
+          changes: 3,
+          changed_db: true,
+          duration: 0,
+          last_row_id: 1,
+          rows_read: 1,
+          rows_written: 3,
+          size_after: 1,
+        },
+      };
+    });
+    return statement;
+  });
+  return {
+    prepare,
+    batch: unexpected,
+    exec: unexpected,
+    dump: unexpected,
+    withSession: unexpected,
+  };
 };
 
 const buildEnv = (overrides?: Partial<Env>): Env => {

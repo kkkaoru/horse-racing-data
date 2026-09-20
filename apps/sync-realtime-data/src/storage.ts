@@ -698,6 +698,7 @@ export const claimTrackConditionFetch = async (
           and kaisai_tsukihi = ?
           and keibajo_code = ?
           and (fetch_lock_until is null or fetch_lock_until <= ?)
+        returning 1 as changed
       `,
     )
     .bind(
@@ -708,8 +709,8 @@ export const claimTrackConditionFetch = async (
       params.keibajoCode,
       params.now,
     )
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const failTrackConditionFetch = async (
@@ -796,11 +797,12 @@ export const claimWeightFetch = async (
             last_weight_fetch_attempt_at is null
             or last_weight_fetch_attempt_at <= ?
           )
+        returning 1 as changed
       `,
     )
     .bind(claimedAt, claimedAt, raceKey, leaseExpiredBefore)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const claimReservedWeightFetch = async (
@@ -819,11 +821,12 @@ export const claimReservedWeightFetch = async (
         where race_key = ?
           and last_weight_fetch_at is null
           and last_weight_fetch_attempt_at = ?
+        returning 1 as changed
       `,
     )
     .bind(claimedAt, claimedAt, raceKey, reservedAt)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const markResultFetchQueued = async (
@@ -866,11 +869,12 @@ export const claimResultFetch = async (
         where race_key = ?
           and result_complete_at is null
           and (result_fetch_lock_until is null or result_fetch_lock_until <= ?)
+        returning 1 as changed
       `,
     )
     .bind(lockUntil, now, raceKey, now)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const completeResultFetch = async (
@@ -2526,6 +2530,7 @@ export const claimPremiumPaddockNotificationSend = async (
         )
         values (?, 'sending', ?, ?, ?, null, null, null, ?)
         on conflict(race_key) do nothing
+        returning 1 as changed
       `,
     )
     .bind(
@@ -2535,8 +2540,8 @@ export const claimPremiumPaddockNotificationSend = async (
       params.sendAttemptAt,
       now,
     )
-    .run();
-  if (inserted.meta.changes > 0) {
+    .all<{ changed: number }>();
+  if (inserted.results.length > 0) {
     return true;
   }
 
@@ -2558,6 +2563,7 @@ export const claimPremiumPaddockNotificationSend = async (
             or last_send_attempt_at < ?
             or status not in ('sending', 'ok')
           )
+        returning 1 as changed
       `,
     )
     .bind(
@@ -2568,8 +2574,8 @@ export const claimPremiumPaddockNotificationSend = async (
       params.raceKey,
       params.lockBefore,
     )
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const recordPremiumPaddockNotificationEvent = async (

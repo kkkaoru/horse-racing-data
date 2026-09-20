@@ -64,6 +64,59 @@ import {
   upsertPremiumRaceLink,
 } from "./storage";
 
+const buildClaimDb = (returnedCounts: readonly number[]) => {
+  const unexpected = (): never => {
+    throw new Error("Unexpected D1 test operation");
+  };
+  const bind = vi.fn<D1PreparedStatement["bind"]>();
+  const statement: D1PreparedStatement = {
+    all: unexpected,
+    bind,
+    first: unexpected,
+    raw: unexpected,
+    run: unexpected,
+  };
+  const all = vi.spyOn(statement, "all");
+  returnedCounts.forEach((count) =>
+    all.mockResolvedValueOnce({
+      success: true,
+      results: count > 0 ? [{ changed: 1 }] : [],
+      meta: {
+        changes: 3,
+        changed_db: true,
+        duration: 0,
+        last_row_id: 1,
+        rows_read: 1,
+        rows_written: 3,
+        size_after: 1,
+      },
+    }),
+  );
+  vi.spyOn(statement, "run").mockResolvedValue({
+    success: true,
+    results: [],
+    meta: {
+      changes: 3,
+      changed_db: true,
+      duration: 0,
+      last_row_id: 1,
+      rows_read: 1,
+      rows_written: 3,
+      size_after: 1,
+    },
+  });
+  bind.mockReturnValue(statement);
+  const prepare = vi.fn<D1Database["prepare"]>().mockReturnValue(statement);
+  const db: D1Database = {
+    prepare,
+    batch: unexpected,
+    exec: unexpected,
+    dump: unexpected,
+    withSession: unexpected,
+  };
+  return { all, bind, db, prepare };
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -203,27 +256,19 @@ it("listPendingResultCacheBustRaceKeys returns only the bounded pending race key
   expect(bind).toHaveBeenCalledWith("2026-08-24T11:54:00+09:00", 12);
 });
 
-it("claimResultFetch returns true when changes > 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimResultFetch returns true when a source row is returned", async () => {
+  const { db, prepare } = buildClaimDb([1]);
   expect(await claimResultFetch(db, "key", "2026-05-12T13:00:00+09:00")).toBe(true);
+  expect(prepare).toHaveBeenCalledWith(expect.stringMatching(/returning 1 as changed/u));
 });
 
-it("claimResultFetch returns false when no rows changed", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimResultFetch ignores trigger changes when no source row is returned", async () => {
+  const { db } = buildClaimDb([0]);
   expect(await claimResultFetch(db, "key", "2026-05-12T13:00:00+09:00")).toBe(false);
 });
 
-it("claimTrackConditionFetch returns true when changes > 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimTrackConditionFetch returns true when a source row is returned", async () => {
+  const { db } = buildClaimDb([1]);
   const result = await claimTrackConditionFetch(db, {
     date: "20260512",
     keibajoCode: "08",
@@ -233,11 +278,8 @@ it("claimTrackConditionFetch returns true when changes > 0", async () => {
   expect(result).toBe(true);
 });
 
-it("claimTrackConditionFetch returns false when changes = 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimTrackConditionFetch ignores trigger-only changes", async () => {
+  const { db } = buildClaimDb([0]);
   expect(
     await claimTrackConditionFetch(db, {
       date: "20260512",
@@ -249,10 +291,7 @@ it("claimTrackConditionFetch returns false when changes = 0", async () => {
 });
 
 it("claimWeightFetch atomically claims an unclaimed race", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+  const { bind, db, prepare } = buildClaimDb([1]);
   const claimedAt = "2026-08-23T12:00:00+09:00";
   const leaseExpiredBefore = "2026-08-23T11:58:30+09:00";
 
@@ -274,11 +313,8 @@ it("claimWeightFetch atomically claims an unclaimed race", async () => {
   );
 });
 
-it("claimWeightFetch rejects a race with an active lease", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimWeightFetch rejects a race with an active lease despite trigger writes", async () => {
+  const { db } = buildClaimDb([0]);
 
   expect(
     await claimWeightFetch(
@@ -291,10 +327,7 @@ it("claimWeightFetch rejects a race with an active lease", async () => {
 });
 
 it("claimReservedWeightFetch fences the consumer to its watchdog reservation", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+  const { bind, db, prepare } = buildClaimDb([1]);
 
   expect(
     await claimReservedWeightFetch(
@@ -314,10 +347,7 @@ it("claimReservedWeightFetch fences the consumer to its watchdog reservation", a
 });
 
 it("claimReservedWeightFetch rejects a duplicate consumer after the token was fenced", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+  const { db } = buildClaimDb([0]);
 
   expect(
     await claimReservedWeightFetch(
@@ -470,13 +500,10 @@ it("resetEmptyResultAttempts binds raceKey and runs once", async () => {
 });
 
 it("claimResultFetch SQL excludes races whose result_complete_at is set", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+  const { db, prepare } = buildClaimDb([0]);
   await claimResultFetch(db, "key", "2026-06-28T15:00:00+09:00");
-  const sql = String(prepare.mock.calls[0]![0]);
-  expect(sql.includes("result_complete_at is null")).toBe(true);
+  expect(prepare).toHaveBeenCalledWith(expect.stringMatching(/result_complete_at is null/u));
+  expect(prepare).toHaveBeenCalledWith(expect.stringMatching(/returning 1 as changed/u));
 });
 
 it("completeTrackConditionFetch binds fetchedAt and keibajoCode", async () => {
@@ -1051,11 +1078,8 @@ it("updatePremiumPaddockNotificationState binds inputs", async () => {
   expect(bind).toHaveBeenCalledTimes(1);
 });
 
-it("claimPremiumPaddockNotificationSend returns true when changes > 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimPremiumPaddockNotificationSend returns true for an inserted source row", async () => {
+  const { db } = buildClaimDb([1]);
   const result = await claimPremiumPaddockNotificationSend(db, {
     lockBefore: "x",
     payloadFetchedAt: "x",
@@ -1066,11 +1090,8 @@ it("claimPremiumPaddockNotificationSend returns true when changes > 0", async ()
   expect(result).toBe(true);
 });
 
-it("claimPremiumPaddockNotificationSend returns false when changes = 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimPremiumPaddockNotificationSend rejects trigger-only writes in both stages", async () => {
+  const { db } = buildClaimDb([0, 0]);
   const result = await claimPremiumPaddockNotificationSend(db, {
     lockBefore: "x",
     payloadFetchedAt: "x",
@@ -1079,6 +1100,22 @@ it("claimPremiumPaddockNotificationSend returns false when changes = 0", async (
     sendAttemptAt: "x",
   });
   expect(result).toBe(false);
+});
+
+it("claimPremiumPaddockNotificationSend retries an existing row instead of trusting insert trigger changes", async () => {
+  const { all, db, prepare } = buildClaimDb([0, 1]);
+  expect(
+    await claimPremiumPaddockNotificationSend(db, {
+      lockBefore: "x",
+      payloadFetchedAt: "x",
+      payloadSignature: "sig",
+      raceKey: "key",
+      sendAttemptAt: "x",
+    }),
+  ).toBe(true);
+  expect(all).toHaveBeenCalledTimes(2);
+  expect(prepare).toHaveBeenNthCalledWith(1, expect.stringMatching(/returning 1 as changed/u));
+  expect(prepare).toHaveBeenNthCalledWith(2, expect.stringMatching(/returning 1 as changed/u));
 });
 
 it("recordPremiumPaddockNotificationEvent runs the insert", async () => {

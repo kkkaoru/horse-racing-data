@@ -31,11 +31,13 @@ export const claimRealtimePlanRecovery = async (
           claimed_at = excluded.claimed_at,
           expires_at = excluded.expires_at
         where realtime_plan_recovery_claims.expires_at <= excluded.claimed_at
+        returning 1 as changed
       `,
     )
     .bind(input.claimKey, input.ownerToken, input.claimedAt, input.expiresAt)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  // BEFORE capture triggers can write on a rejected claim; count only returned source rows.
+  return result.results.length > 0;
 };
 
 export const releaseRealtimePlanRecovery = async (
@@ -47,9 +49,10 @@ export const releaseRealtimePlanRecovery = async (
         delete from realtime_plan_recovery_claims
         where claim_key = ?
           and owner_token = ?
+        returning 1 as changed
       `,
     )
     .bind(input.claimKey, input.ownerToken)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
