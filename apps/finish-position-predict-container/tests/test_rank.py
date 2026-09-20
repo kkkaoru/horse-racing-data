@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -39,3 +42,16 @@ def test_rank_single_horse() -> None:
 
 def test_rank_empty() -> None:
     assert rank_within_race([]) == []
+
+
+@pytest.mark.parametrize("score", [math.nan, math.inf, -math.inf])
+def test_rank_rejects_nonfinite_scores_before_publishing_ranks(score: float) -> None:
+    with pytest.raises(ValueError, match="nonfinite prediction scores"):
+        rank_within_race([ScoredHorse("a", 1, 0.5), ScoredHorse("b", 2, score)])
+
+
+def test_rank_accepts_large_finite_scores_and_preserves_input() -> None:
+    horses = [ScoredHorse("a", 1, -1e300), ScoredHorse("b", 2, 1e300)]
+    ranked = rank_within_race(horses)
+    assert [horse.ketto_toroku_bango for horse in ranked] == ["b", "a"]
+    assert horses == [ScoredHorse("a", 1, -1e300), ScoredHorse("b", 2, 1e300)]

@@ -22,6 +22,15 @@ def test_rank_race_entries_assigns_ranks() -> None:
     assert [horse.predicted_rank for horse in ranked] == [1, 2]
 
 
+def test_rank_race_entries_rejects_nan_before_prediction_rows_exist() -> None:
+    entries = [
+        {"ketto_toroku_bango": "111", "umaban": 1},
+        {"ketto_toroku_bango": "222", "umaban": 2},
+    ]
+    with pytest.raises(ValueError, match="nonfinite prediction scores"):
+        rank_race_entries(entries, [0.5, float("nan")])
+
+
 def test_rank_race_entries_umaban_none_defaults_zero() -> None:
     entries = [{"ketto_toroku_bango": "111", "umaban": None}]
     ranked = rank_race_entries(entries, [0.5])

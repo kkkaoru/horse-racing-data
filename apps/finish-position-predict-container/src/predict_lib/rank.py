@@ -8,6 +8,7 @@ is deterministic across runs (important for idempotent re-runs).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Final, NamedTuple
 
@@ -37,7 +38,9 @@ def _sort_key(horse: ScoredHorse) -> tuple[float, str]:
 
 
 def rank_within_race(horses: Sequence[ScoredHorse]) -> list[RankedHorse]:
-    """Return ``horses`` ordered by score with a 1-based ``predicted_rank``."""
+    """Rank finite scores only; never publish an order from NaN or infinity."""
+    if any(not math.isfinite(horse.predicted_score) for horse in horses):
+        raise ValueError("Cannot rank nonfinite prediction scores")
     ordered = sorted(horses, key=_sort_key)
     return [
         RankedHorse(
