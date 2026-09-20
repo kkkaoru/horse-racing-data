@@ -51,22 +51,24 @@ const query = {
   keibajoCode: "06",
   raceBango: "01",
 };
-const bindingFor = (body: unknown, init: ResponseInit = {}): CatalogRaceRunnersBinding => ({
-  fetch: vi.fn<CatalogRaceRunnersBinding["fetch"]>().mockResolvedValue(
+const bindingFor = (
+  body: unknown,
+  init: ResponseInit = {},
+): { binding: CatalogRaceRunnersBinding; fetch: ReturnType<typeof vi.fn> } => {
+  const fetch = vi.fn<CatalogRaceRunnersBinding["fetch"]>().mockResolvedValue(
     Response.json(body, {
       ...init,
       headers: init.headers ?? { "cache-control": "no-store" },
     }),
-  ),
-});
+  );
+  return { binding: { fetch }, fetch };
+};
 
 it("reads runners and merges the overseas identity by umaban", async () => {
-  const binding = bindingFor({ runners: [runner], identities: [identity] });
+  const { binding, fetch } = bindingFor({ runners: [runner], identities: [identity] });
   const rows: Runner[] = await readCatalogRaceRunners(binding, query);
   expect(rows).toStrictEqual([{ ...runner, ...identity }]);
-  const request: Request | undefined = (
-    binding.fetch as unknown as { mock: { calls: [Request][] } }
-  ).mock.calls[0]?.[0];
+  const request: Request | undefined = fetch.mock.calls[0]?.[0];
   expect(request?.url).toBe(
     "https://pc-keiba-r2-catalog.internal/v1/race-runners?source=jra&date=20260920&keibajoCode=06&raceBango=01",
   );
@@ -76,7 +78,7 @@ it("reads runners and merges the overseas identity by umaban", async () => {
 
 it("leaves runners without an identity untouched", async () => {
   await expect(
-    readCatalogRaceRunners(bindingFor({ runners: [runner], identities: [] }), query),
+    readCatalogRaceRunners(bindingFor({ runners: [runner], identities: [] }).binding, query),
   ).resolves.toStrictEqual([runner]);
 });
 
@@ -108,7 +110,7 @@ it.each([
     },
   },
 ])("rejects a malformed catalog payload %j", async ({ body, init }) => {
-  await expect(readCatalogRaceRunners(bindingFor(body, init ?? {}), query)).rejects.toThrow(
+  await expect(readCatalogRaceRunners(bindingFor(body, init ?? {}).binding, query)).rejects.toThrow(
     "Catalog race runners unavailable",
   );
 });

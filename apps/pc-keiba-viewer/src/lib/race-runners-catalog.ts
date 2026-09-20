@@ -74,7 +74,10 @@ const MAX_IDENTITIES: number = 19;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const hasNullableStringFields = (value: unknown, fields: readonly string[]): boolean =>
+const hasNullableStringFields = (
+  value: unknown,
+  fields: readonly string[],
+): value is Record<string, unknown> =>
   isRecord(value) &&
   Object.keys(value).length === fields.length &&
   fields.every((field) => {
@@ -84,8 +87,8 @@ const hasNullableStringFields = (value: unknown, fields: readonly string[]): boo
 
 const isRunner = (value: unknown): value is Runner => {
   if (!hasNullableStringFields(value, RUNNER_FIELDS)) return false;
-  const umaban: unknown = Reflect.get(value as Record<string, unknown>, "umaban");
-  const ketto: unknown = Reflect.get(value as Record<string, unknown>, "kettoTorokuBango");
+  const umaban: unknown = value.umaban;
+  const ketto: unknown = value.kettoTorokuBango;
   return (
     typeof umaban === "string" && UMABAN.test(umaban) && typeof ketto === "string" && ketto !== ""
   );
@@ -93,7 +96,7 @@ const isRunner = (value: unknown): value is Runner => {
 
 const isIdentity = (value: unknown): value is CatalogRunnerIdentity => {
   if (!hasNullableStringFields(value, IDENTITY_FIELDS)) return false;
-  const umaban: unknown = Reflect.get(value as Record<string, unknown>, "umaban");
+  const umaban: unknown = value.umaban;
   return typeof umaban === "string" && UMABAN.test(umaban);
 };
 
