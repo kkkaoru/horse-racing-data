@@ -1,4 +1,4 @@
-import { releaseEnqueueLock } from "./gates/enqueue-lock-kv";
+import { acquireEnqueueLock, releaseEnqueueLock } from "./gates/enqueue-lock-kv";
 import {
   buildNarOddsLinksFromRaceUrl,
   extractOddsLinks,
@@ -31,6 +31,7 @@ import type { Env, OddsData, OddsFetchStateRow, OddsType } from "./types";
 // D1-side lock TTL; short enough that a stuck fetch recovers within the 1-min cadence window
 const ODDS_FETCH_LOCK_MINUTES = 3;
 const MS_PER_MINUTE = 60_000;
+const MS_PER_SECOND = 1000;
 // Non-retryable scrape errors leave the planner lock in place so we do not
 // spin against a known-broken row. Anything else (transient browser timeout,
 // JRA upstream stall) drops the lock so the next planner tick can retry.
@@ -38,6 +39,12 @@ const NON_RETRYABLE_ERROR_FRAGMENTS = [
   "JRA_BROWSER binding",
   "odds_fetch_state not found",
 ] satisfies readonly string[];
+const BROWSER_BACKOFF_ERROR_FRAGMENTS = [
+  "Timeout",
+  "No browser",
+  "Target page, context or browser has been closed",
+] satisfies readonly string[];
+const BROWSER_BACKOFF_LOCK_SECONDS = 900;
 // fetch_logs job_type for a successful insert that missed some odds tabs.
 // Status `warn` so dashboards can flag partial coverage without treating it
 // as a hard error.
@@ -154,6 +161,11 @@ export const isRetryableScrapeError = (error: unknown): boolean => {
   return !NON_RETRYABLE_ERROR_FRAGMENTS.some((fragment) => message.includes(fragment));
 };
 
+export const isBrowserBackoffError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return BROWSER_BACKOFF_ERROR_FRAGMENTS.some((fragment) => message.includes(fragment));
+};
+
 const logJraPartialFetch = async (
   env: Env,
   raceKey: string,
@@ -233,7 +245,13 @@ export const fetchAndStoreOdds = async (
     return { fetchedAt, inserted, latest: scrape.latest };
   } catch (error) {
     await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
-    if (isRetryableScrapeError(error)) {
+    if (isBrowserBackoffError(error)) {
+      const backoffUntil = toJstIsoString(
+        new Date(now.getTime() + BROWSER_BACKOFF_LOCK_SECONDS * MS_PER_SECOND),
+      );
+      await claimOddsFetch(env.REALTIME_HOT_DB, raceKey, backoffUntil, nowIso);
+      await acquireEnqueueLock(env, raceKey, BROWSER_BACKOFF_LOCK_SECONDS);
+    } else if (isRetryableScrapeError(error)) {
       await releaseEnqueueLock(env, raceKey);
     }
     throw error;

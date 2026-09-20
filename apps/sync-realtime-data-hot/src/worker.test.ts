@@ -1,9 +1,13 @@
 // Run with bun.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("./fetch-odds", () => ({
-  fetchAndStoreOdds: vi.fn(async () => null),
-}));
+vi.mock("./fetch-odds", async () => {
+  const actual = await vi.importActual<typeof import("./fetch-odds")>("./fetch-odds");
+  return {
+    ...actual,
+    fetchAndStoreOdds: vi.fn(async () => null),
+  };
+});
 
 vi.mock("./odds-cache", () => ({
   OddsCacheHot: class {},
@@ -1868,6 +1872,21 @@ it("handleQueue retries on error", async () => {
   } as unknown as MessageBatch<Job>;
   await handleQueue(batch, env);
   expect(retry).toHaveBeenCalledTimes(1);
+});
+
+it("handleQueue acks Playwright timeout instead of retrying", async () => {
+  vi.mocked(fetchAndStoreOdds).mockRejectedValueOnce(
+    new Error("locator.innerHTML: Timeout 10000ms exceeded."),
+  );
+  const env = buildEnv();
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const batch = {
+    messages: [{ ack, body: { raceKey: "jra:2026:0920:09:07", type: "fetch-odds" }, retry }],
+  } as unknown as MessageBatch<Job>;
+  await handleQueue(batch, env);
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(retry).not.toHaveBeenCalled();
 });
 
 it("default worker fetch dispatches to handleFetchRequest", async () => {

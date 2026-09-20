@@ -1,5 +1,5 @@
 import { getExpectedRaceCountForDate } from "./expected-race-count";
-import { fetchAndStoreOdds } from "./fetch-odds";
+import { fetchAndStoreOdds, isBrowserBackoffError } from "./fetch-odds";
 import { formatError } from "./format-error";
 import {
   isForceFreshRequest,
@@ -1057,9 +1057,19 @@ export const handleQueue = async (batch: MessageBatch<Job>, env: Env): Promise<v
       message.ack();
     } catch (error) {
       try {
-        await logFetch(env.REALTIME_HOT_DB, message.body.type, "error", null, formatError(error));
+        await logFetch(
+          env.REALTIME_HOT_DB,
+          message.body.type,
+          "error",
+          message.body.type === "fetch-odds" ? message.body.raceKey : null,
+          formatError(error),
+        );
       } catch {
         // Swallow logging failures so we still acknowledge with retry.
+      }
+      if (isBrowserBackoffError(error)) {
+        message.ack();
+        continue;
       }
       message.retry();
     }

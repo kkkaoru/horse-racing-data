@@ -26,6 +26,7 @@ import { fetchJraOddsWithPlaywright } from "./jra";
 import {
   fetchAndStoreOdds,
   getRaceStartFromState,
+  isBrowserBackoffError,
   isRetryableScrapeError,
   isSlotDue,
   resolveOddsSlotAt,
@@ -81,10 +82,11 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
   const prepareMock = vi.fn((sql: string) => {
     const lowered = sql.toLowerCase();
     if (lowered.includes("update odds_fetch_state set odds_fetch_lock_until")) {
-      const run = vi.fn(async () => ({
-        meta: { changes: options.claimChanges ?? 1 },
+      const all = vi.fn(async () => ({
+        results: (options.claimChanges ?? 1) > 0 ? [{ changed: 1 }] : [],
+        meta: { changes: 3 },
       }));
-      return { bind: vi.fn(() => ({ run })) };
+      return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("update odds_fetch_state")) {
       const run = vi.fn(async () => ({ meta: { changes: 1 } }));
@@ -401,6 +403,32 @@ it("isRetryableScrapeError stringifies non-Error rejection values to evaluate re
   expect(isRetryableScrapeError("random string failure")).toBe(true);
 });
 
+it("isBrowserBackoffError returns true for Playwright innerHTML timeout", () => {
+  expect(isBrowserBackoffError(new Error("locator.innerHTML: Timeout 10000ms exceeded."))).toBe(
+    true,
+  );
+});
+
+it("isBrowserBackoffError returns true when no browser is available", () => {
+  expect(
+    isBrowserBackoffError(
+      new Error("Unable to create new browser: code: 503: message: No browser"),
+    ),
+  ).toBe(true);
+});
+
+it("isBrowserBackoffError returns true when the page was closed", () => {
+  expect(
+    isBrowserBackoffError(
+      new Error("locator.count: Target page, context or browser has been closed"),
+    ),
+  ).toBe(true);
+});
+
+it("isBrowserBackoffError returns false for ordinary network errors", () => {
+  expect(isBrowserBackoffError(new Error("network reset"))).toBe(false);
+});
+
 it("fetchAndStoreOdds releases the enqueue lock when sale has not opened yet (K1-B)", async () => {
   // NAR sale opens at 09:00 JST; with now = 08:00 JST the slot resolver
   // returns null and we drop the lock so the next planner tick can take
@@ -438,6 +466,20 @@ it("fetchAndStoreOdds releases the enqueue lock on a retryable scrape error (K1-
     fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z")),
   ).rejects.toThrow("network reset");
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01");
+});
+
+it("fetchAndStoreOdds backoffs the enqueue lock on Playwright timeout", async () => {
+  vi.mocked(fetchOdds).mockRejectedValueOnce(
+    new Error("locator.innerHTML: Timeout 10000ms exceeded."),
+  );
+  const env = buildEnv();
+  await expect(
+    fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z")),
+  ).rejects.toThrow("locator.innerHTML: Timeout 10000ms exceeded.");
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+  expect(env.ODDS_HOT_KV.put).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01", "1", {
+    expirationTtl: 900,
+  });
 });
 
 it("fetchAndStoreOdds keeps the enqueue lock when JRA_BROWSER binding is missing (K1-B non-retryable)", async () => {
@@ -480,7 +522,7 @@ it("fetchAndStoreOdds writes only the partial-fetch warn log when missingTypes i
 
 it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to claimOddsFetch", async () => {
   const bindSpy = vi.fn((..._bindArgs: string[]) => ({
-    run: vi.fn(async () => ({ meta: { changes: 1 } })),
+    all: vi.fn(async () => ({ results: [{ changed: 1 }], meta: { changes: 3 } })),
   }));
   const prepareSpy = vi.fn((sql: string) => {
     const lowered = sql.toLowerCase();

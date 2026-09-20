@@ -37,6 +37,9 @@
     "consumers": [
       {
         "queue": "sync-realtime-data-hot-jobs",
+        // Finite recovery window, not successful processing or automatic business replay.
+        "dead_letter_queue": "sync-realtime-data-hot-ingestion-dlq",
+        "max_retries": 3,
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 4,
