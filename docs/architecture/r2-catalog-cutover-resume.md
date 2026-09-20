@@ -1,5 +1,9 @@
 # Production cutover implementation checkpoints
 
+## B2 increment (a) feasibility probed — 2026-09-20T21:02Z
+
+Receipt `tmp/neon-backup-only-20260920/b2a-table-probe.json`. All three history sources the time-score reader unions are available in R2 SQL: `pc_keiba.oversea_horse_race_history` (200; columns include `source`, `source_horse_id`, `race_date`, `distance_metres`, `finish_position`, `surface`, `going`), `pc_keiba.nvd_se` (200; `ketto_toroku_bango`, `kaisai_nen`, `kaisai_tsukihi`, `keibajo_code`, `race_bango`, `umaban`, `kohan_3f`, `bataiju`, `futan_juryo`, `time_sa`) and `pc_keiba.nvd_ra` (200; `kyori` present). The NAR `nvd_se JOIN nvd_ra` history join and a `jvd_se.soha_time` read both executed successfully. So widening `/v1/race-history` to the NAR pair plus the overseas history table needs no mirror change — only the reader/service work in the next increment.
+
 ## B2 scope finding: `getTimeScoreRows` is a multi-tick port — 2026-09-20T21:00Z
 
 Reading the whole function (`apps/pc-keiba-viewer/src/db/queries.ts:5786-6140`) shows it is not a single reader port. To reproduce it from the Catalog the following must exist, none of which is in place yet:
