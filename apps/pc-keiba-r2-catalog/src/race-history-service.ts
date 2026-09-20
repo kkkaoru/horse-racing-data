@@ -10,7 +10,7 @@ import { executeR2Sql } from "./r2-sql";
 import type { R2SqlCatalogConfig } from "./types";
 
 const REQUIRED_PARAMETERS: readonly string[] = ["horseIds", "beforeDate"];
-const OPTIONAL_PARAMETERS: readonly string[] = ["minDate", "limit"];
+const OPTIONAL_PARAMETERS: readonly string[] = ["minDate", "limit", "source"];
 const DEFAULT_LIMIT: number = 2000;
 const json = (value: unknown, status: number): Response =>
   Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -19,6 +19,12 @@ const readLimit = (value: string | null): number | null => {
   if (value === null) return DEFAULT_LIMIT;
   const parsed: number = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+// Defaults to the JRA pair so existing callers keep working unchanged.
+const readSource = (value: string | null): "jra" | "nar" | null => {
+  if (value === null) return "jra";
+  return value === "jra" || value === "nar" ? value : null;
 };
 
 export const handleRaceHistoryRead = async (
@@ -31,10 +37,12 @@ export const handleRaceHistoryRead = async (
   const beforeDate: string | null = params.get("beforeDate");
   const minDate: string | null = params.get("minDate");
   const limit: number | null = readLimit(params.get("limit"));
+  const source: "jra" | "nar" | null = readSource(params.get("source"));
   if (
     horseIds === null ||
     beforeDate === null ||
     limit === null ||
+    source === null ||
     REQUIRED_PARAMETERS.some((key) => params.getAll(key).length !== 1) ||
     OPTIONAL_PARAMETERS.some((key) => params.getAll(key).length > 1) ||
     [...params.keys()].some(
@@ -44,6 +52,7 @@ export const handleRaceHistoryRead = async (
     return json({ error: "Invalid race history request" }, 400);
   const input: RaceHistoryReadInput = {
     namespace: env.R2_SQL_NAMESPACE,
+    source,
     horseIds: horseIds === "" ? [] : horseIds.split(","),
     beforeDate,
     minDate,

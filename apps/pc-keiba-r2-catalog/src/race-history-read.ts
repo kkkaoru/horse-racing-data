@@ -1,6 +1,9 @@
 // Runs with bun; read-only Catalog history projection for the time-score reader.
+export type RaceHistorySource = "jra" | "nar";
+
 export interface RaceHistoryReadInput {
   namespace: string;
+  source: RaceHistorySource;
   horseIds: readonly string[];
   beforeDate: string;
   minDate: string | null;
@@ -45,6 +48,7 @@ const validDate = (date: string): boolean => {
 export const buildRaceHistoryReadSql = (input: RaceHistoryReadInput): string => {
   if (
     !IDENTIFIER.test(input.namespace) ||
+    (input.source !== "jra" && input.source !== "nar") ||
     input.horseIds.length === 0 ||
     input.horseIds.length > MAX_HORSE_IDS ||
     !input.horseIds.every((id) => HORSE_ID.test(id)) ||
@@ -61,9 +65,11 @@ export const buildRaceHistoryReadSql = (input: RaceHistoryReadInput): string => 
     input.minDate === null
       ? `concat(ra.kaisai_nen, ra.kaisai_tsukihi) < '${input.beforeDate}'`
       : `concat(ra.kaisai_nen, ra.kaisai_tsukihi) < '${input.beforeDate}' AND concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '${input.minDate}'`;
+  const runnerTable: string = input.source === "jra" ? "jvd_se" : "nvd_se";
+  const raceTable: string = input.source === "jra" ? "jvd_ra" : "nvd_ra";
   return `SELECT ${COLUMNS.map((column) => `se.${column}`).join(", ")}
-FROM ${input.namespace}.jvd_se se
-INNER JOIN ${input.namespace}.jvd_ra ra
+FROM ${input.namespace}.${runnerTable} se
+INNER JOIN ${input.namespace}.${raceTable} ra
   ON ra.kaisai_nen = se.kaisai_nen
   AND ra.kaisai_tsukihi = se.kaisai_tsukihi
   AND ra.keibajo_code = se.keibajo_code

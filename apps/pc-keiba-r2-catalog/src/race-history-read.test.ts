@@ -8,6 +8,7 @@ import {
 
 const input: RaceHistoryReadInput = {
   namespace: "pc_keiba",
+  source: "jra",
   horseIds: ["2021106753", "2024101291"],
   beforeDate: "20260920",
   minDate: "20230920",
@@ -48,8 +49,16 @@ it("omits the lower bound when no year window is requested", () => {
   expect(sql).toMatch("< '20260920'");
 });
 
+it("builds a NAR history read over the nvd pair", () => {
+  const sql: string = buildRaceHistoryReadSql({ ...input, source: "nar" });
+  expect(sql).toMatch("FROM pc_keiba.nvd_se se");
+  expect(sql).toMatch("INNER JOIN pc_keiba.nvd_ra ra");
+  expect(sql).not.toMatch("jvd_");
+});
+
 it.each([
   { ...input, namespace: "pc-keiba" },
+  { ...input, source: "ban-ei" as "jra" },
   { ...input, horseIds: [] },
   { ...input, horseIds: ["20211067"] },
   { ...input, horseIds: ["2021106753", "2021106753"] },
