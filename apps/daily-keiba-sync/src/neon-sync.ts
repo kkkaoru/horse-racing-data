@@ -1,3 +1,4 @@
+// Runs with bun; deployed as a Cloudflare Worker backup consumer.
 import { neon } from "@neondatabase/serverless";
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { permanentFailure, transientFailure } from "./errors";
@@ -60,7 +61,14 @@ const buildUpsert = (
   const updates = updateColumns
     .map((column) => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`)
     .join(", ");
-  const conflict = `on conflict (${primaryKey.map(quoteIdentifier).join(", ")}) do update set ${updates}`;
+  // Queue retries and overlapping acquisition windows must not rewrite unchanged backups.
+  const existingValues: string = updateColumns
+    .map((column) => `${quoteIdentifier(tableName)}.${quoteIdentifier(column)}`)
+    .join(", ");
+  const incomingValues: string = updateColumns
+    .map((column) => `excluded.${quoteIdentifier(column)}`)
+    .join(", ");
+  const conflict = `on conflict (${primaryKey.map(quoteIdentifier).join(", ")}) do update set ${updates} where row(${existingValues}) is distinct from row(${incomingValues})`;
   if (tableName !== "jvd_se") {
     return `insert into ${quoteIdentifier(tableName)} (${names}) values ${values.join(", ")} ${conflict}`;
   }

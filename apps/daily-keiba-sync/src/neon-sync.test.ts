@@ -1,3 +1,4 @@
+// Runs with bun via Vitest.
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { layoutByTable } from "./layouts";
 import { syncNeonTable } from "./neon-sync";
@@ -33,6 +34,44 @@ beforeEach(() => {
 });
 
 describe("Neon differential sync", () => {
+  test("backs up course identity and deletion markers without a fabricated race year", async () => {
+    await expect(
+      syncNeonTable(
+        stage("jvd_cs", [
+          {
+            record_id: "CS",
+            data_kubun: "0",
+            data_sakusei_nengappi: "20260918",
+            keibajo_code: "05",
+            kyori: "1600",
+            track_code: "11",
+            course_kaishu_nengappi: "20240106",
+            course_setsumei: "コース説明",
+          },
+        ]),
+        { NEON_DATABASE_URL: "postgresql://example" },
+      ),
+    ).resolves.toBe(1);
+    const sql: string = String(mocks.query.mock.calls[1]?.[0]);
+    expect(sql).toMatch(/^insert into "jvd_cs"/);
+    expect(sql).toMatch(
+      /on conflict \("keibajo_code", "kyori", "track_code", "course_kaishu_nengappi"\)/,
+    );
+    expect(sql).toMatch(/"data_kubun" = excluded\."data_kubun"/);
+    expect(sql).toMatch(/is distinct from row\(/);
+    expect(sql).not.toMatch(/kaisai_nen|delete from/i);
+    expect(mocks.query.mock.calls[1]?.[1]).toStrictEqual([
+      "CS",
+      "0",
+      "20260918",
+      "05",
+      "1600",
+      "11",
+      "20240106",
+      "コース説明",
+    ]);
+  });
+
   test("warms compute before a primary-key upsert", async () => {
     await expect(
       syncNeonTable(stage(), { NEON_DATABASE_URL: "postgresql://example" }),
@@ -66,6 +105,20 @@ describe("Neon differential sync", () => {
     expect(sql).toContain("existing.\"umaban\" = '00'");
     expect(mocks.query.mock.calls[1]?.[1]).toHaveLength(70);
   });
+
+  test.each(["nvd_ra", "jvd_se"])(
+    "updates %s backup rows only when non-key values differ, including nulls",
+    async (tableName: string) => {
+      await syncNeonTable(stage(tableName), { NEON_DATABASE_URL: "postgresql://example" });
+
+      const sql: string = String(mocks.query.mock.calls[1]?.[0]);
+      expect(sql).toMatch(/where row\(/);
+      expect(sql).toMatch(/is distinct from row\(excluded\."record_id"/);
+      expect(sql).toMatch(/do update set "record_id" = excluded\."record_id"/);
+      expect(sql).not.toMatch(/set "kaisai_nen"/);
+      expect(sql).not.toMatch(/where row\([^)]*\."kaisai_nen"/);
+    },
+  );
 
   test("retries a cold Neon compute before writing", async () => {
     mocks.query.mockRejectedValueOnce(new Error("cold"));
