@@ -1,6 +1,7 @@
 import type { RaceHistoryRow } from "./race-history-catalog";
 import { buildTimeScoreRow, buildWeightedProfile, orderTimeScoreRows } from "./time-score-pipeline";
 import type {
+  TimeScoreDetail,
   TimeScoreHistoryRow,
   TimeScoreRow,
   TimeScoreTargetProfile,
@@ -86,3 +87,25 @@ export const groupHistoryByHorseId = (
   }
   return grouped;
 };
+
+// Final step for the app boundary: `TimeScoreRow` in race-types.ts also
+// requires `jockeyName`, which the pipeline deliberately does not know about.
+export interface AppTimeScoreRow {
+  details: TimeScoreDetail[];
+  horseName: string;
+  horseNumber: string;
+  jockeyName: string;
+  score: number;
+}
+
+export const toAppTimeScoreRows = (
+  rows: readonly TimeScoreRow[],
+  jockeyByHorseNumber: ReadonlyMap<string, string>,
+): AppTimeScoreRow[] =>
+  rows.map((row) => ({
+    details: row.details,
+    horseName: row.horseName,
+    horseNumber: row.horseNumber,
+    jockeyName: jockeyByHorseNumber.get(row.horseNumber) ?? "",
+    score: row.score,
+  }));

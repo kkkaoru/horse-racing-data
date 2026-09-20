@@ -2,7 +2,11 @@
 import { expect, it } from "vitest";
 
 import type { RaceHistoryRow } from "./race-history-catalog";
-import { composeCatalogTimeScoreRows, groupHistoryByHorseId } from "./time-score-catalog";
+import {
+  composeCatalogTimeScoreRows,
+  groupHistoryByHorseId,
+  toAppTimeScoreRows,
+} from "./time-score-catalog";
 import type { CatalogTimeScoreHorse, CatalogTimeScoreInput } from "./time-score-catalog";
 import type { TimeScoreHistoryRow } from "./time-score-pipeline";
 
@@ -182,4 +186,21 @@ it("treats an empty venue or registration number as absent", () => {
   expect(scored[0]?.details.map((detail) => detail.score)).toStrictEqual([
     0.5, 0.5, 1, 0.5, 1, 0.5, 0.5,
   ]);
+});
+
+it("adds the jockey name required by the app row type", () => {
+  const composed = composeCatalogTimeScoreRows(input());
+  const rows = toAppTimeScoreRows(composed, new Map([["8", "ルメール"]]));
+  expect(rows).toStrictEqual([
+    {
+      details: composed[0]?.details,
+      horseName: "テストホース",
+      horseNumber: "8",
+      jockeyName: "ルメール",
+      score: 1,
+    },
+  ]);
+  // A horse the runner list never named falls back to an empty jockey name,
+  // matching toTimeScoreRows' toStringValue of a missing field.
+  expect(toAppTimeScoreRows(composed, new Map())[0]?.jockeyName).toBe("");
 });
