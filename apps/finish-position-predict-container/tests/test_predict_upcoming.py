@@ -626,6 +626,48 @@ def _fake_rescore_factory(
     return _fake_rescore, _per_race
 
 
+def test_serve_http_scopes_signal_handler_and_closes_server() -> None:
+    events: list[str] = []
+
+    @contextmanager
+    def signal_context() -> Generator[None, None, None]:
+        events.append("signal-installed")
+        try:
+            yield
+        finally:
+            events.append("signal-restored")
+
+    def serve() -> None:
+        events.append("serving")
+
+    with (
+        patch.object(predict_upcoming.http.server, "ThreadingHTTPServer") as server_factory,
+        patch.object(predict_upcoming, "exit_on_sigterm", signal_context),
+    ):
+        server_factory.return_value.serve_forever.side_effect = serve
+        predict_upcoming.serve_http(
+            8080, _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload
+        )
+        server_factory.assert_called_once()
+        assert server_factory.return_value.daemon_threads is True
+        server_factory.return_value.__exit__.assert_called_once()
+    assert events == ["signal-installed", "serving", "signal-restored"]
+
+
+def test_serve_http_closes_server_after_sigterm_exit() -> None:
+    with (
+        patch.object(predict_upcoming.http.server, "ThreadingHTTPServer") as server_factory,
+        patch.object(predict_upcoming, "exit_on_sigterm", nullcontext),
+    ):
+        server_factory.return_value.serve_forever.side_effect = SystemExit(0)
+        with pytest.raises(SystemExit) as stopped:
+            predict_upcoming.serve_http(
+                8080, _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload
+            )
+        assert stopped.value.code == 0
+        server_factory.return_value.__exit__.assert_called_once()
+
+
 def test_make_handler_class_predict_fn_callable_without_instance() -> None:
     """predict_fn on the handler class must be callable as a plain 3-arg function."""
     handler_cls = make_handler_class(

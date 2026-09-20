@@ -1,0 +1,22 @@
+{
+  "version": "neural-cell-policy-2024-2026-v1",
+  "default_enabled": false,
+  "default_weight": 0.05,
+  "evaluation": {
+    "years": [2024, 2025, 2026],
+    "metric": "winner-in-Top1 through winner-in-Top5 hits per production cell",
+    "decision": "ON only for cells whose MPS-trained PyTorch ranker beats the effective production policy",
+    "report": "apps/timesfm-finish-position/results/neural-cell-policy-evaluation-2024-2026.json"
+  },
+  "categories": {
+    "jra": {
+      "cells": {}
+    },
+    "nar": {
+      "cells": {}
+    },
+    "ban-ei": {
+      "cells": {}
+    }
+  }
+}

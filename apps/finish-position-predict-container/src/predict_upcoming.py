@@ -153,6 +153,8 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
+from predict_lib.neural_blend import adjust_prediction_rows_with_neural
+from predict_lib.process_signals import exit_on_sigterm
 from predict_lib.prophet_adjustment import (
     adjust_prediction_rows_with_prophet,
     configured_prophet_weight,
@@ -1388,6 +1390,23 @@ def score_races(
         )
         if served_signature is not None and served_signatures_by_race_id is not None:
             served_signatures_by_race_id[race_id] = served_signature
+        neural_adjustment = adjust_prediction_rows_with_neural(
+            rows,
+            entries,
+            category,
+            cell_variant=prophet_cell,
+            branch_variant=prophet_branch,
+            served_signature=served_signature,
+        )
+        if neural_adjustment.applied:
+            rows = neural_adjustment.rows
+            debug_log(
+                f"[neural-blend] race={race_id} category={category} "
+                f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
+                "status=applied"
+            )
+            scored.append(rows)
+            continue
         prophet_adjustment = adjust_prediction_rows_with_prophet(
             rows,
             entries,
@@ -4201,7 +4220,7 @@ def serve_http(
     )
     httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
     httpd.daemon_threads = True
-    with httpd:
+    with httpd, exit_on_sigterm():
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
         httpd.serve_forever()
 
