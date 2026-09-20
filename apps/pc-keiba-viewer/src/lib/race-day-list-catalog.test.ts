@@ -1,8 +1,17 @@
 // Run with bun. All service I/O is mocked.
 import { expect, it, vi } from "vitest";
 
-import { readCatalogRaceDayList, readCatalogRaceDayListWithJockeys } from "./race-day-list-catalog";
+import {
+  readCatalogRaceDayList,
+  readCatalogRaceDayListWithJockeys,
+  readCatalogRaceDayListWithJockeysOrStale,
+} from "./race-day-list-catalog";
 import type { CatalogRaceDetailBinding } from "./race-detail-catalog";
+import {
+  parseStaleDetailSectionEnvelope,
+  serializeStaleDetailSectionEnvelope,
+  STALE_DETAIL_SECTION_MAX_AGE_MS,
+} from "./race-detail-section-stale";
 import type { RaceListItem } from "./race-types";
 
 const race: RaceListItem = {
@@ -359,4 +368,125 @@ it("rejects malformed JSON", async () => {
   await expect(readCatalogRaceDayList({ fetch }, "20240229")).rejects.toThrow(
     "Catalog race day list unavailable",
   );
+});
+
+interface StaleKvStub {
+  entries: Map<string, string>;
+  get: (key: string) => Promise<string | null>;
+  put: (key: string, value: string, options: { expirationTtl: number }) => Promise<void>;
+}
+
+const buildStaleKvStub = (): StaleKvStub => {
+  const entries = new Map<string, string>();
+  return {
+    entries,
+    get: async (key: string): Promise<string | null> => entries.get(key) ?? null,
+    put: async (key: string, value: string): Promise<void> => {
+      entries.set(key, value);
+    },
+  };
+};
+
+const okFetch = (races: RaceListItem[]): CatalogRaceDetailBinding["fetch"] =>
+  vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(Response.json({ races }, { headers: { "cache-control": "no-store" } }));
+
+it("stores the last known good day list for the stale tier", async () => {
+  const kv = buildStaleKvStub();
+  const rows = await readCatalogRaceDayListWithJockeysOrStale(
+    { fetch: okFetch([race]) },
+    kv,
+    "20240229",
+  );
+  expect(rows).toStrictEqual([race]);
+  const envelope = parseStaleDetailSectionEnvelope(
+    kv.entries.get("pc-keiba-viewer:race-day-list-stale:v1:20240229") ?? "",
+  );
+  expect(envelope).not.toBeNull();
+  expect(JSON.parse(envelope?.payload ?? "null")).toStrictEqual({ races: [race] });
+});
+
+it("serves the last known good day list when the provider fails", async () => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const kv = buildStaleKvStub();
+  await readCatalogRaceDayListWithJockeysOrStale({ fetch: okFetch([race]) }, kv, "20240229");
+  const failing = vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(new Response("nope", { status: 503 }));
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, kv, "20240229"),
+  ).resolves.toStrictEqual([race]);
+  expect(log).toHaveBeenCalledWith('{"event":"race_day_list_stale_fallback","date":"20240229"}');
+  log.mockRestore();
+});
+
+it("rethrows when no usable stale entry exists", async () => {
+  const failing = vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(new Response("nope", { status: 503 }));
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, buildStaleKvStub(), "20240229"),
+  ).rejects.toThrow("Catalog race day list unavailable");
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, undefined, "20240229"),
+  ).rejects.toThrow("Catalog race day list unavailable");
+});
+
+it("ignores an expired stale entry", async () => {
+  const kv = buildStaleKvStub();
+  kv.entries.set(
+    "pc-keiba-viewer:race-day-list-stale:v1:20240229",
+    serializeStaleDetailSectionEnvelope(
+      JSON.stringify({ races: [race] }),
+      Date.now() - STALE_DETAIL_SECTION_MAX_AGE_MS - 1,
+    ),
+  );
+  const failing = vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(new Response("nope", { status: 503 }));
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, kv, "20240229"),
+  ).rejects.toThrow("Catalog race day list unavailable");
+});
+
+it("ignores a corrupt stale entry and a failed stale write", async () => {
+  const kv = buildStaleKvStub();
+  kv.entries.set("pc-keiba-viewer:race-day-list-stale:v1:20240229", "not json");
+  const failing = vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(new Response("nope", { status: 503 }));
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, kv, "20240229"),
+  ).rejects.toThrow("Catalog race day list unavailable");
+  const throwingKv = buildStaleKvStub();
+  throwingKv.put = async (): Promise<void> => {
+    throw new Error("kv down");
+  };
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: okFetch([race]) }, throwingKv, "20240229"),
+  ).resolves.toStrictEqual([race]);
+});
+
+it("ignores a stale entry whose payload fails validation", async () => {
+  const kv = buildStaleKvStub();
+  kv.entries.set(
+    "pc-keiba-viewer:race-day-list-stale:v1:20240229",
+    serializeStaleDetailSectionEnvelope(
+      JSON.stringify({ races: [{ ...race, keibajoCode: "bad" }] }),
+      Date.now(),
+    ),
+  );
+  const failing = vi
+    .fn<CatalogRaceDetailBinding["fetch"]>()
+    .mockResolvedValue(new Response("nope", { status: 503 }));
+  await expect(
+    readCatalogRaceDayListWithJockeysOrStale({ fetch: failing }, kv, "20240229"),
+  ).rejects.toThrow("Catalog race day list unavailable");
+});
+
+it("does not store an empty day list in the stale tier", async () => {
+  const kv = buildStaleKvStub();
+  await readCatalogRaceDayListWithJockeysOrStale({ fetch: okFetch([]) }, kv, "20240229");
+  expect(kv.entries.size).toBe(0);
 });

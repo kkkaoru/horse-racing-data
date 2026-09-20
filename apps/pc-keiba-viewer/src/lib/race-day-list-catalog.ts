@@ -4,6 +4,11 @@ import { Buffer } from "node:buffer";
 
 import { readBoundedCatalogBody } from "./catalog-read-body";
 import type { CatalogRaceDetailBinding } from "./race-detail-catalog";
+import {
+  parseStaleDetailSectionEnvelope,
+  serializeStaleDetailSectionEnvelope,
+  STALE_DETAIL_SECTION_MAX_AGE_MS,
+} from "./race-detail-section-stale";
 import type { RaceListItem } from "./race-types";
 
 interface DayListValidation {
@@ -155,3 +160,73 @@ export const readCatalogRaceDayListWithJockeys = (
   binding: CatalogRaceDetailBinding | undefined,
   date: string,
 ): Promise<RaceListItem[]> => readCatalogDayList({ binding, date, withJockeyNames: true });
+
+const STALE_CACHE_NAMESPACE: string = "pc-keiba-viewer:race-day-list-stale:v1";
+const STALE_CACHE_TTL_SECONDS: number = 60 * 60 * 24;
+
+// Only the KV surface this module uses, so tests can pass a plain stub.
+interface StaleDayListKv {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string, options: { expirationTtl: number }): Promise<void>;
+}
+
+const staleCacheKey = (date: string): string => `${STALE_CACHE_NAMESPACE}:${date}`;
+
+const readStaleRaceDayList = async (
+  kv: StaleDayListKv | undefined,
+  date: string,
+): Promise<RaceListItem[] | null> => {
+  if (kv === undefined) return null;
+  let raw: string | null = null;
+  try {
+    raw = await kv.get(staleCacheKey(date));
+  } catch {
+    return null;
+  }
+  if (raw === null || raw === "") return null;
+  const envelope = parseStaleDetailSectionEnvelope(raw);
+  if (envelope === null || Date.now() - envelope.writtenAt > STALE_DETAIL_SECTION_MAX_AGE_MS) {
+    return null;
+  }
+  try {
+    return parseRaces(JSON.parse(envelope.payload), { date, withJockeyNames: true });
+  } catch {
+    return null;
+  }
+};
+
+// Last-known-good tier: a day-list outage falls back to the most recent
+// successfully read list for that date (capped at 4h by the shared envelope
+// helper) so a catalog blip degrades to a slightly old race list instead of
+// an error page. Failures and empty lists are never stored, so a delayed
+// upstream sync can not freeze a "no data" state.
+export const readCatalogRaceDayListWithJockeysOrStale = async (
+  binding: CatalogRaceDetailBinding | undefined,
+  kv: StaleDayListKv | undefined,
+  date: string,
+): Promise<RaceListItem[]> => {
+  try {
+    const races: RaceListItem[] = await readCatalogDayList({
+      binding,
+      date,
+      withJockeyNames: true,
+    });
+    if (kv !== undefined && races.length > 0) {
+      try {
+        await kv.put(
+          staleCacheKey(date),
+          serializeStaleDetailSectionEnvelope(JSON.stringify({ races }), Date.now()),
+          { expirationTtl: STALE_CACHE_TTL_SECONDS },
+        );
+      } catch {
+        // A failed stale write must never fail a successful read.
+      }
+    }
+    return races;
+  } catch (error: unknown) {
+    const stale: RaceListItem[] | null = await readStaleRaceDayList(kv, date);
+    if (stale === null) throw error;
+    console.error(JSON.stringify({ event: "race_day_list_stale_fallback", date }));
+    return stale;
+  }
+};

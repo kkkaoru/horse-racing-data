@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { readCatalogRaceCalendar } from "../lib/race-calendar-catalog";
 import type { readCatalogRaceDayList } from "../lib/race-day-list-catalog";
 import type { readCatalogRaceDetail } from "../lib/race-detail-catalog";
-import type { RaceDetail } from "../lib/race-types";
+import type { RaceListItem, RaceDetail } from "../lib/race-types";
 import type { readCatalogRaceYears } from "../lib/race-years-catalog";
 
 const mocks = vi.hoisted(() => ({
@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
   calendar: vi.fn<typeof readCatalogRaceCalendar>(),
   years: vi.fn<typeof readCatalogRaceYears>(),
   dayList: vi.fn<typeof readCatalogRaceDayList>(),
-  dayListWithJockeys: vi.fn<typeof readCatalogRaceDayList>(),
+  dayListWithJockeys:
+    vi.fn<(binding: unknown, kv: unknown, date: string) => Promise<RaceListItem[]>>(),
   target: vi.fn<() => "cloudflare" | "local" | "neon">(),
   db: vi.fn<() => unknown>(() => {
     throw new Error("PostgreSQL must not be used");
@@ -28,7 +29,7 @@ vi.mock("../lib/race-calendar-catalog", () => ({ readCatalogRaceCalendar: mocks.
 vi.mock("../lib/race-years-catalog", () => ({ readCatalogRaceYears: mocks.years }));
 vi.mock("../lib/race-day-list-catalog", () => ({
   readCatalogRaceDayList: mocks.dayList,
-  readCatalogRaceDayListWithJockeys: mocks.dayListWithJockeys,
+  readCatalogRaceDayListWithJockeysOrStale: mocks.dayListWithJockeys,
 }));
 vi.mock("./query-cache", () => ({
   withDbQueryCache: async <T>(key: readonly unknown[], load: () => Promise<T>): Promise<T> => {
@@ -183,7 +184,11 @@ it("routes complete jockey day lists through Catalog with separate cache keys", 
   expect((await getRacesByDate("2026", "08", "16")).map((race) => race.raceBango)).toStrictEqual([
     "04",
   ]);
-  expect(mocks.dayListWithJockeys).toHaveBeenCalledWith({ fetch: mocks.fetch }, "20260816");
+  expect(mocks.dayListWithJockeys).toHaveBeenCalledWith(
+    { fetch: mocks.fetch },
+    undefined,
+    "20260816",
+  );
   expect(mocks.keys).toHaveBeenCalledWith(["getRacesByDate", "catalog-v1", "2026", "08", "16"]);
   expect(mocks.db).not.toHaveBeenCalled();
 });

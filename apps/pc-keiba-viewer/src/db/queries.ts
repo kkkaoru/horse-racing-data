@@ -29,7 +29,7 @@ import { readCatalogRaceCalendar } from "../lib/race-calendar-catalog";
 import { readCatalogRaceCourse } from "../lib/race-course-catalog";
 import {
   readCatalogRaceDayList,
-  readCatalogRaceDayListWithJockeys,
+  readCatalogRaceDayListWithJockeysOrStale,
 } from "../lib/race-day-list-catalog";
 import { readCatalogRaceDetail } from "../lib/race-detail-catalog";
 import type {
@@ -463,8 +463,9 @@ export const getRacesByDate = cache(
       async () => {
         if (getDatabaseTarget() === "cloudflare") {
           const env = await safeGetCloudflareEnv();
-          return await readCatalogRaceDayListWithJockeys(
+          return await readCatalogRaceDayListWithJockeysOrStale(
             env?.R2_RACE_DETAIL,
+            env?.DETAIL_SECTION_CACHE_KV,
             `${year}${month}${day}`,
           );
         }
