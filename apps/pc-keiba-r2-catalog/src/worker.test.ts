@@ -98,6 +98,58 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("serves a validated uncached course from R2 SQL", async () => {
+  const harness = createHarness([
+    { course_kaishu_nengappi: "20240106", course_setsumei: "コース説明" },
+  ]);
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-course?keibajoCode=05&kyori=1600&trackCode=11"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(await response.json()).toStrictEqual({
+    course: { courseKaishuNengappi: "20240106", courseSetsumei: "コース説明" },
+  });
+  expect(harness.fetchCalls).toHaveLength(1);
+  expect(harness.cacheCalls.matches).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(0);
+});
+
+it("returns course null only for a successful empty R2 result", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-course?keibajoCode=05&kyori=1600&trackCode=11"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ course: null });
+});
+
+it("rejects invalid course parameters before upstream I/O", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-course"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(400);
+  expect(harness.fetchCalls).toHaveLength(0);
+});
+
+it("does not disguise malformed course data or upstream failure as an absent course", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const harness = createHarness([{}]);
+  const request = new Request(
+    "https://catalog.test/v1/race-course?keibajoCode=05&kyori=1600&trackCode=11",
+  );
+  expect((await handleRequest(request, harness.env, harness.dependencies)).status).toBe(502);
+  harness.fetchState.response = new Response("unavailable", { status: 503 });
+  expect((await handleRequest(request, harness.env, harness.dependencies)).status).toBe(502);
+});
+
 it("serves health and rejects unknown routes", async () => {
   const harness = createHarness();
   const health = await handleRequest(
@@ -612,6 +664,50 @@ it("queries and caches race trainings with the Training-compatible envelope", as
   expect(harness.kvCalls.puts).toHaveLength(1);
 });
 
+it("serves overseas training without normalizing away the venue letter", async () => {
+  const harness = createHarness([
+    {
+      bamei: "Overseas Horse",
+      umaban: "01",
+      training_type: "ウッド",
+      training_data_source: "jra",
+      chokyo_jikoku: "0630",
+      chokyo_nengappi: "20260814",
+    },
+  ]);
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?date=20260816&keibajoCode=A8&raceBango=4"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code = 'A8'");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("race_bango = '04'");
+  expect(await response.json()).toMatchObject({
+    rows: [{ bamei: "Overseas Horse", umaban: "01" }],
+  });
+});
+it.each(["a8", "A", "A08", "A8'--"])(
+  "rejects invalid training venue %s before I/O",
+  async (value) => {
+    const harness = createHarness();
+    const url: URL = new URL("https://catalog.test/v1/race-trainings?date=20260816&raceBango=04");
+    url.searchParams.set("keibajoCode", value);
+    const response = await handleRequest(new Request(url), harness.env, harness.dependencies);
+    expect(response.status).toBe(400);
+    expect(harness.fetchCalls).toHaveLength(0);
+  },
+);
+it("rejects alphabetic training race numbers before I/O", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-trainings?date=20260816&keibajoCode=A8&raceBango=A4"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(400);
+  expect(harness.fetchCalls).toHaveLength(0);
+});
 it("requires every race-training filter", async () => {
   const harness = createHarness();
   const missingDate = await handleRequest(

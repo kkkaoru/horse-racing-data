@@ -1,3 +1,4 @@
+// Run with bun (bunx vitest).
 import { expect, it } from "vitest";
 
 import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
@@ -32,6 +33,26 @@ it("builds the year-crossing official and netkeiba workout union", () => {
   expect(sql).toMatch("n.race_bango = '01'");
 });
 
+it("preserves overseas venue identities in runner and workout filters", () => {
+  const sql = buildRaceTrainingsQuery(config, {
+    date: "20260816",
+    keibajoCode: "A8",
+    raceBango: "04",
+  });
+  expect(sql).toMatch("keibajo_code = 'A8'");
+  expect(sql).toMatch("n.keibajo_code = 'A8'");
+  expect(sql).toMatch("n.race_bango = '04'");
+});
+it.each(["a8", "A", "A08", "A8'--", " "])("rejects unsafe training venue %s", (keibajoCode) => {
+  expect(() =>
+    buildRaceTrainingsQuery(config, { date: "20260816", keibajoCode, raceBango: "04" }),
+  ).toThrow("keibajoCode must contain two uppercase alphanumeric characters");
+});
+it("keeps training race numbers numeric", () => {
+  expect(() =>
+    buildRaceTrainingsQuery(config, { date: "20260816", keibajoCode: "A8", raceBango: "A4" }),
+  ).toThrow("raceBango must contain two digits");
+});
 it("gives official rows priority only for complete signatures", () => {
   const sql = buildRaceTrainingsQuery(config, {
     date: "20260822",
@@ -100,7 +121,7 @@ it("rejects unsafe or invalid training filters", () => {
       keibajoCode: "1",
       raceBango: "01",
     }),
-  ).toThrow("keibajoCode must contain two digits");
+  ).toThrow("keibajoCode must contain two uppercase alphanumeric characters");
   expect(() =>
     buildRaceTrainingsQuery(config, {
       date: "20260822",

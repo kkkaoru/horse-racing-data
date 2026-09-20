@@ -1,3 +1,5 @@
+// Run with bun via the package scripts.
+import { buildRaceCourseQuery, normaliseRaceCourse } from "./race-course";
 import { createPartnershipCohortCache } from "./heatmap-partnership-cache";
 import { loadPartnershipStats } from "./heatmap-partnership-stats";
 import {
@@ -33,7 +35,11 @@ import {
   R2SqlQueryError,
 } from "./r2-sql";
 import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
-import { buildRaceTrainingsQuery, normaliseRaceTrainingRow } from "./race-training";
+import {
+  buildRaceTrainingsQuery,
+  normaliseRaceTrainingRow,
+  requireTrainingVenueCode,
+} from "./race-training";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import {
   readEntityCatalogHistory,
@@ -276,11 +282,18 @@ const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   gradeCode: url.searchParams.get("gradeCode"),
 });
 
-const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
-  date: requireDate(url),
-  keibajoCode: requireCode(url, "keibajoCode"),
-  raceBango: requireCode(url, "raceBango"),
-});
+const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => {
+  const date: string = requireDate(url);
+  const venue: string | null = url.searchParams.get("keibajoCode");
+  if (venue === null) throw new Error("keibajoCode is required");
+  return {
+    date,
+    keibajoCode: requireTrainingVenueCode(
+      CODE_PATTERN.test(venue) ? venue.padStart(2, "0") : venue,
+    ),
+    raceBango: requireCode(url, "raceBango"),
+  };
+};
 
 const parseFreshRaceEntryFilters = (url: URL): FreshRaceEntryFilters => ({
   date: requireDate(url),
@@ -1355,6 +1368,10 @@ export const handleRequest = async (
     }
     if (request.method === "GET" && url.pathname === BULK_FRESH_RACE_ENTRIES_PATH) {
       return await handleBulkFreshRaceEntries(request, url, env, dependencies);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/race-course") {
+      const rows = await executeR2Sql(env, buildRaceCourseQuery(env, url), dependencies.fetchImpl);
+      return jsonResponse({ course: normaliseRaceCourse(rows) });
     }
     if (request.method === "GET" && url.pathname === "/v1/race-trainings") {
       return await handleRaceTrainings(url, env, dependencies);

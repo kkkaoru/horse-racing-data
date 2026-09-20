@@ -5,6 +5,7 @@ import type { R2SqlCatalogConfig, RaceTrainingFilters, RaceTrainingRow } from ".
 const IDENTIFIER_PATTERN: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN: RegExp = /^\d{8}$/u;
 const CODE_PATTERN: RegExp = /^\d{2}$/u;
+const VENUE_CODE_PATTERN: RegExp = /^[0-9A-Z]{2}$/u;
 const LOOKBACK_DAYS: number = 14;
 const FALLBACK_LOOKBACK_DAYS: number = 90;
 const FALLBACK_WORKOUT_LIMIT: number = 3;
@@ -62,6 +63,12 @@ const requireDate = (value: string): string => {
 
 const requireCode = (value: string, label: string): string => {
   if (!CODE_PATTERN.test(value)) throw new Error(`${label} must contain two digits`);
+  return value;
+};
+
+export const requireTrainingVenueCode = (value: string): string => {
+  if (!VENUE_CODE_PATTERN.test(value))
+    throw new Error("keibajoCode must contain two uppercase alphanumeric characters");
   return value;
 };
 
@@ -127,7 +134,7 @@ export const buildRaceTrainingsQuery = (
   filters: RaceTrainingFilters,
 ): string => {
   const date = requireDate(filters.date);
-  const keibajoCode = requireCode(filters.keibajoCode, "keibajoCode");
+  const keibajoCode = requireTrainingVenueCode(filters.keibajoCode);
   const raceBango = requireCode(filters.raceBango, "raceBango");
   const startDate = workoutWindowStart(date);
   const fallbackStartDate = workoutWindowStart(date, FALLBACK_LOOKBACK_DAYS);
