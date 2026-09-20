@@ -1,5 +1,24 @@
 # Production cutover implementation checkpoints
 
+## Unit B ranking: runner reads dominate the remaining Neon traffic — 2026-09-20T20:03Z
+
+`pg_stat_statements` is **not installed** on the Neon primary, so ranking used `pg_stat_activity` sampling for `application_name='Cloudflare Hyperdrive'`: 16 samples × 10s, exactly 5 active connections per sample (80 observations). Receipts: `tmp/neon-backup-only-20260920/unitB-ranking.{mjs,json,out}`. Observed ranking (hits out of 80):
+
+| hits | statement (fingerprint)                                            | source tables                       |
+| ---- | ------------------------------------------------------------------ | ----------------------------------- |
+| 15   | `current_horses` identity/bamei/umaban projection                  | `jvd_se`/`nvd_se`                   |
+| 13   | **viewer `getRaceRunners` JRA** (`se.wakuban … identity.source …`) | `jvd_se`+`jvd_um`+overseas identity |
+| 12   | `strict_matched_races` (similar-race matching)                     | `nvd_ra`                            |
+| 10   | `current_runners`                                                  | `nvd_se`                            |
+| 7    | `matched_races`                                                    | `jvd_ra`                            |
+| 7    | `race_entry_corner_features`                                       | corner features                     |
+| 5    | `current_entries`                                                  | `nvd_se`                            |
+| 3    | **viewer `getRaceRunners` NAR**                                    | `nvd_se`+`nvd_nu`+`nvd_um`          |
+
+Runner reads (`getRaceRunners` 13+3, plus the runner-derived `current_*` projections 15+10+5) account for ~54% of remaining Hyperdrive observations, so **B1 = `/v1/race-runners` on the Catalog `RaceDetailReadService`** (`apps/pc-keiba-r2-catalog/src/race-detail-service.ts:64-73` dispatches the DO routes) covering both sources, then the viewer `getRaceRunners` cloudflare branch (`apps/pc-keiba-viewer/src/db/queries.ts:825`).
+
+Rejected shortcut: the D1 `daily_race_entries` table (`apps/sync-realtime-data/migrations/0024_daily_race_entries.sql`) is **not** a substitute — it is cron-built _from_ Neon for completed days, and lacks `wakuban`, `moshoku_code`, `bataiju`, `zogen_*`, raw `corner_*`, `blinker_shiyo_kubun` and the overseas identity fields the runner payload renders.
+
 ## M2+M3 viewer resilience deployed — 2026-09-20T20:00Z
 
 **M2 (commit `534c6a51`)**: `readCatalogRaceDayListWithJockeysOrStale` keeps a last-known-good day list in `DETAIL_SECTION_CACHE_KV` (`pc-keiba-viewer:race-day-list-stale:v1:<yyyymmdd>`, 24h KV TTL, shared 4h stale envelope + JST-independent max-age cap) and serves it only when a fresh catalog read fails; failures, empties and corrupt/expired entries are never stored or served.
