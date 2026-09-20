@@ -1,5 +1,9 @@
 # Production cutover implementation checkpoints
 
+## B2 increment (a) complete: `/v1/race-history` covers all three sources — 2026-09-20T21:10Z
+
+Added `source=overseas` (commit `2c15e4d5`): reads `oversea_horse_race_history` for `source='netkeiba'` rows and returns `{rows:[{sourceHorseId, raceDate, distanceMetres}]}`, converting the compact `YYYYMMDD` bounds to the `YYYY-MM-DD` strings that table stores; `jra`/`nar` responses are unchanged so the committed viewer adapter keeps working. Catalog **33 targeted tests** green, tsc 0, lint 0, oxfmt clean. Deployed catalog `fbff9d7f-4238-4503-b336-f7d0246c421b` 100% / `88a836f0` 0%; still inert for the viewer. Rollback: `wrangler versions deploy 88a836f0-a1c5-448e-abc6-1cc0c1ba45a6@100% fbff9d7f-4238-4503-b336-f7d0246c421b@0% --name pc-keiba-r2-catalog --yes`. Receipts: `tmp/neon-backup-only-20260920/{b2a-os-test4.out,b2a-os-commit.out,b2a-os-deploy.out}`. The viewer adapter still needs an overseas reader before `getTimeScoreRows` can consume it.
+
 ## B2 increment (a) part 1: NAR history deployed; overseas source characterised — 2026-09-20T21:06Z
 
 `/v1/race-history` now accepts an optional `source` parameter (`jra` default, `nar` supported) and selects the matching `nvd_se JOIN nvd_ra` pair; the response shape and the JRA default are unchanged, so the committed viewer adapter keeps working (commit `1b9386e2`; catalog **1657+ tests** green, tsc/lint/oxfmt clean). Deployed catalog `88a836f0-a1c5-448e-abc6-1cc0c1ba45a6` 100% / `23a42281` 0%; the route is still inert for the viewer. Rollback: `wrangler versions deploy 23a42281-88d4-47b9-8ff0-98cdd6f9e8f8@100% 88a836f0-a1c5-448e-abc6-1cc0c1ba45a6@0% --name pc-keiba-r2-catalog --yes`. Receipts: `tmp/neon-backup-only-20260920/{b2a-nar-test.out,b2a-commit.out,b2a-upload.out,b2a-deploy.out}`.
