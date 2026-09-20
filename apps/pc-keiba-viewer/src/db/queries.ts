@@ -32,6 +32,7 @@ import {
   readCatalogRaceDayListWithJockeysOrStale,
 } from "../lib/race-day-list-catalog";
 import { readCatalogRaceDetail } from "../lib/race-detail-catalog";
+import { readCatalogRaceRunners } from "../lib/race-runners-catalog";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -842,6 +843,15 @@ export const getRaceRunners = cache(
         raceNumber,
       ],
       async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceRunners(env?.R2_RACE_DETAIL, {
+            source,
+            date: `${year}${month}${day}`,
+            keibajoCode,
+            raceBango: raceNumber,
+          });
+        }
         const table = source === "jra" ? jvdSe : nvdSe;
         const monthDay = `${month}${day}`;
 
