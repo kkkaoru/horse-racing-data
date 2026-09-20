@@ -2,13 +2,17 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { handleRaceRunnersRead } from "./race-runners-service";
 import type { R2SqlCatalogConfig } from "./types";
-const mocks = vi.hoisted(() => ({ query: vi.fn<typeof import("./r2-sql").executeR2Sql>() }));
+const mocks = vi.hoisted(() => ({
+  query: vi.fn<typeof import("./r2-sql").executeR2Sql>(),
+  alertSend: vi.fn<(message: unknown) => Promise<void>>(),
+}));
 vi.mock("./r2-sql", () => ({ executeR2Sql: mocks.query }));
 const env: R2SqlCatalogConfig = {
   R2_SQL_ACCOUNT_ID: "account",
   R2_SQL_BUCKET_NAME: "catalog",
   R2_SQL_NAMESPACE: "pc_keiba",
   R2_SQL_TOKEN: "test-provider-token",
+  INGESTION_ALERTS: { send: mocks.alertSend },
 };
 const runnerRow = (): Record<string, unknown> => ({
   wakuban: "1",
@@ -42,6 +46,7 @@ const runnerRow = (): Record<string, unknown> => ({
 });
 beforeEach(() => {
   mocks.query.mockReset().mockResolvedValue([]);
+  mocks.alertSend.mockReset().mockResolvedValue(undefined);
 });
 
 it.each(["POST", "PUT", "PATCH", "DELETE", "HEAD"])("rejects %s before I/O", async (method) => {
@@ -143,6 +148,12 @@ it("sanitizes provider failures and invalid rows", async () => {
   expect(await failed.json()).toStrictEqual({ error: "Catalog race runners unavailable" });
   expect(log).toHaveBeenCalledWith('{"event":"race_runners_read_failed"}');
   expect(JSON.stringify(log.mock.calls)).not.toContain("private provider detail");
+  expect(mocks.alertSend).toHaveBeenCalledWith(
+    expect.objectContaining({
+      checkName: "catalog-read-failure",
+      fields: [{ name: "event", value: "race_runners_read_failed" }],
+    }),
+  );
   mocks.query.mockReset().mockResolvedValue([{ umaban: "99" }]);
   const malformed: Response = await handleRaceRunnersRead(
     new Request(

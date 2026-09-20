@@ -1,5 +1,6 @@
 // Runs with bun; this handler is reachable only through the trusted binding.
 import { boundedAuditFetch } from "./d1-audit";
+import { notifyReadFailure } from "./read-failure-alert";
 import { executeR2Sql } from "./r2-sql";
 import {
   buildRaceRunnersReadSql,
@@ -52,6 +53,7 @@ export const handleRaceRunnersRead = async (
     return json(result, 200);
   } catch {
     console.error(JSON.stringify({ event: "race_runners_read_failed" }));
+    await notifyReadFailure(env.INGESTION_ALERTS, { event: "race_runners_read_failed" });
     return json({ error: "Catalog race runners unavailable" }, 503);
   }
 };

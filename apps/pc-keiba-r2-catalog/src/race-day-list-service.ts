@@ -1,5 +1,6 @@
 // Runs with bun; fixed single-day read, bounded provider I/O and no shared request state.
 import { boundedAuditFetch } from "./d1-audit";
+import { notifyReadFailure } from "./read-failure-alert";
 import { executeR2Sql } from "./r2-sql";
 import {
   buildRaceDayListReadSql,
@@ -85,6 +86,10 @@ const handleDayListRequest = async ({
     }
   }
   console.error(JSON.stringify({ event: failureEvent, ...describeReadError(lastError) }));
+  await notifyReadFailure(env.INGESTION_ALERTS, {
+    event: failureEvent,
+    ...describeReadError(lastError),
+  });
   return json({ error: "Catalog race day list unavailable" }, 503);
 };
 

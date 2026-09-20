@@ -92,6 +92,7 @@ export interface R2SqlCatalogConfig {
   R2_SQL_BUCKET_NAME: string;
   R2_SQL_NAMESPACE: string;
   R2_SQL_TOKEN: string;
+  INGESTION_ALERTS?: { send(message: unknown): Promise<void> };
 }
 
 export interface Env extends R2SqlCatalogConfig {

@@ -2,16 +2,21 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { handleRaceDayListRead } from "./race-day-list-service";
 import type { R2SqlCatalogConfig } from "./types";
-const mocks = vi.hoisted(() => ({ query: vi.fn<typeof import("./r2-sql").executeR2Sql>() }));
+const mocks = vi.hoisted(() => ({
+  query: vi.fn<typeof import("./r2-sql").executeR2Sql>(),
+  alertSend: vi.fn<(message: unknown) => Promise<void>>(),
+}));
 vi.mock("./r2-sql", () => ({ executeR2Sql: mocks.query }));
 const env: R2SqlCatalogConfig = {
   R2_SQL_ACCOUNT_ID: "account",
   R2_SQL_BUCKET_NAME: "catalog",
   R2_SQL_NAMESPACE: "pc_keiba",
   R2_SQL_TOKEN: "test-provider-token",
+  INGESTION_ALERTS: { send: mocks.alertSend },
 };
 beforeEach(() => {
   mocks.query.mockReset().mockResolvedValue([]);
+  mocks.alertSend.mockReset().mockResolvedValue(undefined);
 });
 
 it.each(["POST", "PUT", "PATCH", "DELETE", "HEAD"])("rejects %s before I/O", async (method) => {
@@ -122,6 +127,15 @@ it("sanitizes upstream failures without retry", async () => {
   expect(log).toHaveBeenCalledWith('{"event":"race_day_list_read_failed","errorName":"Error"}');
   expect(JSON.stringify(log.mock.calls)).not.toContain("private provider detail");
   expect(mocks.query).toHaveBeenCalledTimes(1);
+  expect(mocks.alertSend).toHaveBeenCalledTimes(1);
+  expect(mocks.alertSend.mock.calls[0]?.[0]).toMatchObject({
+    checkName: "catalog-read-failure",
+    severity: "warning",
+    fields: [
+      { name: "event", value: "race_day_list_read_failed" },
+      { name: "errorName", value: "Error" },
+    ],
+  });
   log.mockRestore();
 });
 it("retries a transient provider 503 once and returns the recovered rows", async () => {
@@ -153,6 +167,7 @@ it("retries a transient provider 503 once and returns the recovered rows", async
   );
   expect(response.status).toBe(200);
   expect(mocks.query).toHaveBeenCalledTimes(2);
+  expect(mocks.alertSend).not.toHaveBeenCalled();
 });
 it("does not retry a non-transient provider 400", async () => {
   const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
