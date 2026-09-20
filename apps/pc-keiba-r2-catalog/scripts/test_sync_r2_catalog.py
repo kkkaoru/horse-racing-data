@@ -14,13 +14,14 @@ import argparse
 import contextlib
 import io
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
+from pyiceberg.exceptions import TableAlreadyExistsError
 from pyiceberg.types import TimestamptzType
 
 import sync_r2_catalog as subject
@@ -45,6 +46,7 @@ def sync_args(
     tables: str | None = None,
     dry_run: bool = True,
     force: bool = False,
+    create_only: bool = False,
     year_scope: subject.YearScope | None = None,
 ) -> SimpleNamespace:
     """Mirror the full argparse namespace so tests cannot drift from parse_args."""
@@ -54,6 +56,7 @@ def sync_args(
         tables=tables,
         dry_run=dry_run,
         force=force,
+        create_only=create_only,
         year_scope=year_scope,
     )
 
@@ -184,6 +187,157 @@ class FakeCatalog:
         return table
 
 
+class CreateOnlyTests(unittest.TestCase):
+    def test_cli_accepts_explicit_create_only_master(self) -> None:
+        args = subject.parse_args(["--full", "--tables", "jvd_cs", "--create-only"])
+        self.assertTrue(args.create_only)
+        self.assertTrue(args.full)
+        self.assertEqual(args.tables, "jvd_cs")
+
+    def test_create_only_rejects_date_before_source_connection(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            self.assertRaisesRegex(ValueError, "--create-only requires"),
+        ):
+            subject.run(
+                sync_args(date="20260916", tables="jvd_cs", create_only=True),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+
+    def test_create_only_rejects_implicit_inventory(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            self.assertRaisesRegex(ValueError, "--create-only requires"),
+        ):
+            subject.run(
+                sync_args(full=True, create_only=True),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+
+    def test_create_only_rejects_multiple_masters(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            self.assertRaisesRegex(ValueError, "--create-only requires"),
+        ):
+            subject.run(
+                sync_args(full=True, tables="jvd_cs,jvd_um", create_only=True),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+
+    def test_create_only_rejects_date_keyed_table(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            self.assertRaisesRegex(ValueError, "--create-only requires"),
+        ):
+            subject.run(
+                sync_args(full=True, tables="jvd_ra", create_only=True),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+
+    def test_create_only_rejects_year_scope(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            self.assertRaisesRegex(ValueError, "--create-only requires"),
+        ):
+            subject.run(
+                sync_args(
+                    full=True,
+                    tables="jvd_cs",
+                    create_only=True,
+                    year_scope=subject.YearScope("2025", "2030"),
+                ),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+
+    def test_atomic_conflict_never_loads_or_overwrites_cached_table(self) -> None:
+        table = FakeTable(sample_data())
+        catalog = FakeCatalog(table)
+        cache = {"ns.test_table": table}
+        with (
+            patch.object(catalog, "table_exists") as exists,
+            patch.object(
+                catalog, "create_table", side_effect=TableAlreadyExistsError("exists")
+            ),
+            self.assertRaises(TableAlreadyExistsError),
+        ):
+            subject.sync_table(
+                catalog,
+                "ns",
+                TEST_SPEC,
+                sample_data(),
+                full=True,
+                target_date=None,
+                run_id="create-conflict-test",
+                table_cache=cache,
+                create_only=True,
+            )
+        exists.assert_not_called()
+        self.assertEqual(catalog.load_calls, 0)
+        self.assertEqual(table.overwrite_calls, 0)
+        self.assertEqual(table.append_calls, 0)
+        self.assertEqual(table.delete_calls, 0)
+        self.assertIs(cache["ns.test_table"], table)
+
+    def test_create_only_run_creates_one_master_and_verifies_rows(self) -> None:
+        data = pa.table(
+            {
+                "record_id": ["CS"],
+                "data_kubun": ["1"],
+                "data_sakusei_nengappi": ["20260916"],
+                "keibajo_code": ["06"],
+                "kyori": ["1800"],
+                "track_code": ["24"],
+                "course_kaishu_nengappi": ["20140315"],
+                "course_setsumei": ["course"],
+            }
+        )
+        catalog = FakeCatalog()
+        with (
+            patch.object(subject, "connect_source") as connect,
+            patch.object(subject, "create_catalog", return_value=catalog),
+            patch.object(subject, "compute_source_marker", return_value=(1, "marker")),
+            patch.object(subject, "extract_source", return_value=data),
+            patch.object(subject, "load_existing_table") as load,
+            patch.object(subject, "append_manifest") as manifest,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(
+                subject.run(
+                    sync_args(
+                        full=True, tables="jvd_cs", create_only=True, dry_run=False
+                    ),
+                    subject.Settings("pg", "uri", "wh", "ns", "token"),
+                ),
+                0,
+            )
+        load.assert_not_called()
+        connect.return_value.close.assert_called_once()
+        manifest.assert_called_once()
+        self.assertTrue(catalog.created)
+        if catalog.table is None:
+            self.fail("Expected a newly created master table")
+        self.assertEqual(
+            catalog.table.data.to_pylist(),
+            [
+                {
+                    "record_id": "CS",
+                    "data_kubun": "1",
+                    "data_sakusei_nengappi": "20260916",
+                    "keibajo_code": "06",
+                    "kyori": "1800",
+                    "track_code": "24",
+                    "course_kaishu_nengappi": "20140315",
+                    "course_setsumei": "course",
+                }
+            ],
+        )
+
+
 class ValidationTests(unittest.TestCase):
     def test_table_inventory_contains_only_raw_local_postgresql_tables(self) -> None:
         self.assertEqual(
@@ -192,6 +346,7 @@ class ValidationTests(unittest.TestCase):
                 "jvd_se",
                 "jvd_ra",
                 "jvd_um",
+                "jvd_cs",
                 "jvd_hc",
                 "jvd_wc",
                 "netkeiba_training_workouts",
@@ -214,6 +369,7 @@ class ValidationTests(unittest.TestCase):
             masters,
             {
                 "jvd_um",
+                "jvd_cs",
                 "nvd_um",
                 "nvd_nu",
                 "jvd_hn",
@@ -226,6 +382,52 @@ class ValidationTests(unittest.TestCase):
                 "oversea_person_win_rate_stats",
             },
         )
+
+    def test_course_table_preserves_revision_key_and_raw_source_marker(self) -> None:
+        self.assertEqual(
+            subject.parse_tables("jvd_cs"),
+            [
+                subject.TableSpec(
+                    "jvd_cs",
+                    ("keibajo_code", "kyori", "track_code", "course_kaishu_nengappi"),
+                )
+            ],
+        )
+        self.assertTrue(subject.TABLE_SPECS["jvd_cs"].is_master)
+        self.assertEqual(
+            subject.TABLE_SPECS["jvd_cs"].source_marker_extra_hash_columns,
+            ("record_id", "data_sakusei_nengappi"),
+        )
+
+    def test_default_table_selection_includes_course_master(self) -> None:
+        self.assertEqual(len(subject.parse_tables(None)), 19)
+        self.assertEqual(subject.parse_tables(None)[3].name, "jvd_cs")
+
+    def test_course_full_query_keeps_all_revisions(self) -> None:
+        self.assertEqual(
+            subject.source_query(subject.TABLE_SPECS["jvd_cs"], None),
+            (
+                (
+                    'SELECT * FROM source_pg.public."jvd_cs" ORDER BY "keibajo_code", '
+                    '"kyori", "track_code", "course_kaishu_nengappi"'
+                ),
+                [],
+            ),
+        )
+
+    def test_course_date_mode_rejects_before_connecting_or_writing(self) -> None:
+        with (
+            patch.object(subject, "connect_source") as connect,
+            patch.object(subject, "create_catalog") as catalog,
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "masters require --full"),
+        ):
+            subject.run(
+                sync_args(date="20260916", tables="jvd_cs", dry_run=False),
+                subject.Settings("pg", "uri", "wh", "ns", None),
+            )
+        connect.assert_not_called()
+        catalog.assert_not_called()
 
     def test_parse_date_rejects_format_and_calendar_errors(self) -> None:
         self.assertEqual(subject.parse_date("20260715"), "20260715")
@@ -321,7 +523,9 @@ class ValidationTests(unittest.TestCase):
         netkeiba_sql, netkeiba_params = subject.source_query(
             subject.TABLE_SPECS["netkeiba_training_workouts"], "20260715"
         )
-        self.assertIn('FROM source_pg.public."netkeiba_training_workouts"', netkeiba_sql)
+        self.assertIn(
+            'FROM source_pg.public."netkeiba_training_workouts"', netkeiba_sql
+        )
         self.assertIn('"kaisai_nen" = ?', netkeiba_sql)
         self.assertIn('"kaisai_tsukihi" = ?', netkeiba_sql)
         self.assertEqual(netkeiba_params, ["2026", "0715"])
@@ -445,7 +649,12 @@ class ValidationTests(unittest.TestCase):
                     type=tokyo_type,
                 ),
                 "naive_at": pa.array(
-                    [datetime(2026, 7, 15, 12, 34), None],
+                    [
+                        datetime(2026, 7, 15, 12, 34, tzinfo=timezone.utc).replace(
+                            tzinfo=None
+                        ),
+                        None,
+                    ],
                     type=pa.timestamp("us"),
                 ),
             }
@@ -934,8 +1143,15 @@ class SyncTests(unittest.TestCase):
             patch.object(subject, "load_settings", return_value=settings),
             patch.object(subject, "run", side_effect=RuntimeError("token failed")),
             contextlib.redirect_stdout(output),
+            self.assertLogs(level="ERROR") as logs,
         ):
             self.assertEqual(subject.main(["--full"]), 1)
+        self.assertEqual(
+            logs.output,
+            [
+                "ERROR:sync_r2_catalog:Catalog sync failed\nRuntimeError: [redacted] failed"
+            ],
+        )
         self.assertNotIn("token failed", output.getvalue())
         self.assertIn("[redacted] failed", output.getvalue())
 
@@ -1024,9 +1240,11 @@ class SyncTests(unittest.TestCase):
         args = sync_args(date="20260715", tables="jvd_um")
         settings = subject.Settings("pg", "uri", "wh", "ns", None)
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            with self.assertRaisesRegex(ValueError, "masters require --full"):
-                subject.run(args, settings)
+        with (
+            contextlib.redirect_stdout(output),
+            self.assertRaisesRegex(ValueError, "masters require --full"),
+        ):
+            subject.run(args, settings)
         self.assertIn("skip_master_requires_full", output.getvalue())
 
 
@@ -1199,7 +1417,9 @@ class SkipUnchangedTests(unittest.TestCase):
         result = self._sync(table, data, skip_if_unchanged=True, source_marker=marker)
         self.assertEqual(result.status, "replaced")
         self.assertEqual(
-            table.properties[subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)],
+            table.properties[
+                subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+            ],
             subject.stored_fingerprint_value(fingerprint),
         )
         self.assertEqual(
@@ -1342,9 +1562,7 @@ class NarrowedPlanTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", side_effect=extract_source),
             patch.object(subject, "sync_table", side_effect=sync_table),
-            patch.object(
-                subject, "compute_source_marker", return_value=(2, "1:2|||0")
-            ),
+            patch.object(subject, "compute_source_marker", return_value=(2, "1:2|||0")),
             patch.object(subject, "source_years", return_value=source_years),
             patch.object(subject, "target_years", side_effect=target_years),
             patch.object(subject, "append_manifest"),
@@ -1445,9 +1663,7 @@ class ManifestFlushTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", return_value=sample_data()),
             patch.object(subject, "sync_table", side_effect=sync_table),
-            patch.object(
-                subject, "compute_source_marker", return_value=(2, "1:2|||0")
-            ),
+            patch.object(subject, "compute_source_marker", return_value=(2, "1:2|||0")),
             patch.object(subject, "source_years", return_value={"2012", "2018"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest", side_effect=append_manifest),
@@ -1464,8 +1680,15 @@ class ManifestFlushTests(unittest.TestCase):
         self.assertNotIn("manifest_flush_failed", log)
 
     def test_flush_failure_is_reported_without_masking_the_real_error(self) -> None:
-        appended, log = self._failing_run(
-            append_manifest_side_effect=RuntimeError("catalog unreachable")
+        with self.assertLogs(level="ERROR") as logs:
+            appended, log = self._failing_run(
+                append_manifest_side_effect=RuntimeError("catalog unreachable")
+            )
+        self.assertEqual(
+            logs.output,
+            [
+                "ERROR:sync_r2_catalog:Catalog manifest flush failed\nRuntimeError: catalog unreachable"
+            ],
         )
         self.assertEqual(appended, [1])
         self.assertIn("manifest_flush_failed", log)
@@ -1504,9 +1727,7 @@ class ForcePropagationTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", return_value=sample_data()),
             patch.object(subject, "sync_table", side_effect=sync_table),
-            patch.object(
-                subject, "compute_source_marker", return_value=(2, "1:2|||0")
-            ),
+            patch.object(subject, "compute_source_marker", return_value=(2, "1:2|||0")),
             patch.object(subject, "source_years", return_value={"2012"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest"),
@@ -1542,9 +1763,7 @@ class ForcePropagationTests(unittest.TestCase):
                     "nvd_ra", "skipped", 2, 2, "abc", "abc", 1
                 ),
             ),
-            patch.object(
-                subject, "compute_source_marker", return_value=(2, "1:2|||0")
-            ),
+            patch.object(subject, "compute_source_marker", return_value=(2, "1:2|||0")),
             patch.object(subject, "source_years", return_value={"2012"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest", side_effect=append_manifest),
@@ -1562,13 +1781,13 @@ class SourceMarkerTests(unittest.TestCase):
             subject.pg_slice_predicate(
                 subject.TABLE_SPECS["nvd_ra"], None, target_scope=FIVE_YEAR_SCOPE
             ),
-            '"kaisai_nen" >= \'2025\' AND "kaisai_nen" < \'2030\'',
+            "\"kaisai_nen\" >= '2025' AND \"kaisai_nen\" < '2030'",
         )
         self.assertEqual(
             subject.pg_slice_predicate(
                 subject.TABLE_SPECS["jvd_hc"], None, target_scope=FIVE_YEAR_SCOPE
             ),
-            '"chokyo_nengappi" >= \'20250101\' AND "chokyo_nengappi" < \'20300101\'',
+            "\"chokyo_nengappi\" >= '20250101' AND \"chokyo_nengappi\" < '20300101'",
         )
         self.assertEqual(
             subject.pg_slice_predicate(subject.TABLE_SPECS["nvd_um"], None),
@@ -1576,7 +1795,7 @@ class SourceMarkerTests(unittest.TestCase):
         )
         self.assertEqual(
             subject.pg_slice_predicate(subject.TABLE_SPECS["nvd_ra"], "20260715"),
-            '"kaisai_nen" = \'2026\' AND "kaisai_tsukihi" = \'0715\'',
+            "\"kaisai_nen\" = '2026' AND \"kaisai_tsukihi\" = '0715'",
         )
         with self.assertRaisesRegex(ValueError, "mutually exclusive"):
             subject.pg_slice_predicate(
@@ -1588,7 +1807,7 @@ class SourceMarkerTests(unittest.TestCase):
     def test_marker_sql_aliases_aggregates_and_hashes_primary_key(self) -> None:
         sql = subject.source_marker_sql(
             subject.TABLE_SPECS["nvd_se"],
-            '"kaisai_nen" >= \'2010\' AND "kaisai_nen" < \'2015\'',
+            "\"kaisai_nen\" >= '2010' AND \"kaisai_nen\" < '2015'",
         )
         self.assertIn("AS row_count", sql)
         self.assertIn("AS min_sakusei", sql)
@@ -1629,7 +1848,7 @@ WHERE TRUE
         )
         self.assertIn('min("updated_at")::text', sql)
         self.assertIn('max("updated_at")::text', sql)
-        self.assertIn('coalesce("updated_at"::text, \'\')', sql)
+        self.assertIn("coalesce(\"updated_at\"::text, '')", sql)
         self.assertIn("race_source", sql)
         self.assertIn('FROM public."oversea_runner_identity"', sql)
         self.assertNotIn("data_sakusei_nengappi", sql)
@@ -1640,11 +1859,11 @@ WHERE TRUE
     ) -> None:
         sql = subject.source_marker_sql(
             subject.TABLE_SPECS["netkeiba_training_workouts"],
-            '"kaisai_nen" = \'2026\' AND "kaisai_tsukihi" = \'0822\'',
+            "\"kaisai_nen\" = '2026' AND \"kaisai_tsukihi\" = '0822'",
         )
         self.assertIn('min("updated_at")::text', sql)
         self.assertIn('max("updated_at")::text', sql)
-        self.assertIn('coalesce("updated_at"::text, \'\')', sql)
+        self.assertIn("coalesce(\"updated_at\"::text, '')", sql)
         self.assertIn("keibajo_code", sql)
         self.assertIn("race_bango", sql)
         self.assertIn("ketto_toroku_bango", sql)
@@ -1665,7 +1884,9 @@ WHERE TRUE
             source_marker_range_column='updated_at"; drop table x',
             source_marker_extra_hash_columns=("updated_at",),
         )
-        with self.assertRaisesRegex(ValueError, "unsupported source marker range column"):
+        with self.assertRaisesRegex(
+            ValueError, "unsupported source marker range column"
+        ):
             subject.source_marker_sql(spec, "TRUE")
 
     def test_stored_source_marker_is_versioned_and_order_stable(self) -> None:
@@ -1788,9 +2009,7 @@ class SkipBeforeExtractTests(unittest.TestCase):
         with (
             patch.object(subject, "connect_source", return_value=self.Connection()),
             patch.object(subject, "create_catalog", return_value=FakeCatalog(table)),
-            patch.object(
-                subject, "compute_source_marker", return_value=(2, "1:fresh")
-            ),
+            patch.object(subject, "compute_source_marker", return_value=(2, "1:fresh")),
             patch.object(subject, "extract_source", side_effect=extract_source),
             patch.object(
                 subject,
@@ -1849,9 +2068,7 @@ class SkipBeforeExtractTests(unittest.TestCase):
 
     def test_target_years_reuses_the_table_cache(self) -> None:
         table = FakeTable(sample_data())
-        partitions = pa.Table.from_pylist(
-            [{"partition": {"kaisai_nen": "2012"}}]
-        )
+        partitions = pa.Table.from_pylist([{"partition": {"kaisai_nen": "2012"}}])
         table.inspect = SimpleNamespace(partitions=lambda: partitions)
         catalog = FakeCatalog(table)
         cache = {"pc_keiba.test_table": table}

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -26,7 +27,7 @@ from urllib.parse import urlparse
 import duckdb
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.ipc as ipc
+from pyarrow import ipc
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThan
 from pyiceberg.io.pyarrow import pyarrow_to_schema, schema_to_pyarrow
@@ -35,7 +36,7 @@ from pyiceberg.schema import Schema
 from pyiceberg.table.name_mapping import MappedField, NameMapping
 from pyiceberg.transforms import IdentityTransform, TruncateTransform
 
-
+LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 DEFAULT_PG_URL: Final[str] = (
     "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
 )
@@ -127,6 +128,10 @@ TABLE_SPECS: Final[dict[str, TableSpec]] = {
             ("kaisai_nen", "kaisai_tsukihi"),
         ),
         TableSpec("jvd_um", ("ketto_toroku_bango",)),
+        TableSpec(
+            "jvd_cs",
+            ("keibajo_code", "kyori", "track_code", "course_kaishu_nengappi"),
+        ),
         TableSpec(
             "jvd_hc",
             ("tracen_kubun", "chokyo_nengappi", "chokyo_jikoku", "ketto_toroku_bango"),
@@ -260,7 +265,7 @@ def parse_date(value: str) -> str:
     if not re.fullmatch(r"\d{8}", value):
         raise argparse.ArgumentTypeError("date must use YYYYMMDD")
     try:
-        datetime.strptime(value, "%Y%m%d")
+        datetime.strptime(value, "%Y%m%d").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid calendar date: {value}") from exc
     return value
@@ -330,6 +335,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="refresh the containing calendar-year partition for YYYYMMDD",
     )
     parser.add_argument("--tables", help="comma-separated allowlisted table names")
+    parser.add_argument(
+        "--create-only",
+        action="store_true",
+        help="bootstrap one explicit full master; atomically fail if it already exists",
+    )
     parser.add_argument(
         "--dry-run", action="store_true", help="read and validate PG only"
     )
@@ -500,10 +510,13 @@ def normalize_timestamptz_to_utc(data: pa.Table) -> pa.Table:
     changed = False
     for field in data.schema:
         field_type = field.type
-        if pa.types.is_timestamp(field_type) and field_type.tz != "UTC":
-            if field_type.tz is not None:
-                field_type = pa.timestamp(field_type.unit, tz="UTC")
-                changed = True
+        if (
+            pa.types.is_timestamp(field_type)
+            and field_type.tz != "UTC"
+            and field_type.tz is not None
+        ):
+            field_type = pa.timestamp(field_type.unit, tz="UTC")
+            changed = True
         fields.append(
             pa.field(
                 field.name,
@@ -709,10 +722,11 @@ def ensure_table(
     spec: TableSpec,
     *,
     cache: dict[str, Any] | None = None,
+    create_only: bool = False,
 ) -> Any:
-    if cache is not None and identifier in cache:
+    if not create_only and cache is not None and identifier in cache:
         return cache[identifier]
-    if catalog.table_exists(identifier):
+    if not create_only and catalog.table_exists(identifier):
         table = catalog.load_table(identifier)
         table.refresh()
     else:
@@ -914,9 +928,9 @@ def source_marker_sql(spec: TableSpec, predicate: str) -> str:
     )
     # Preserve the exact legacy JV marker expression so existing Iceberg
     # source-fingerprint properties keep matching without a version bump.
-    if (
-        range_column == "data_sakusei_nengappi"
-        and extra_hash_columns == ("record_id", "data_sakusei_nengappi")
+    if range_column == "data_sakusei_nengappi" and extra_hash_columns == (
+        "record_id",
+        "data_sakusei_nengappi",
     ):
         pk_concat = " || chr(31) || ".join(
             f"coalesce(\"{column}\"::text, '')" for column in primary_key
@@ -963,8 +977,7 @@ def compute_source_marker(
         pg_slice_predicate(spec, target_date, target_scope=target_scope),
     )
     row = connection.execute(
-        "SELECT * FROM postgres_query("
-        f"{sql_string(PG_ALIAS)}, {sql_string(sql)})"
+        f"SELECT * FROM postgres_query({sql_string(PG_ALIAS)}, {sql_string(sql)})"
     ).fetchone()
     row_count = int(row[0])
     return row_count, stored_source_marker(
@@ -1010,6 +1023,7 @@ def sync_table(
     skip_if_unchanged: bool = False,
     source_marker: str | None = None,
     table_cache: dict[str, Any] | None = None,
+    create_only: bool = False,
 ) -> SyncResult:
     if target_date is not None:
         if target_scope is None:
@@ -1023,7 +1037,12 @@ def sync_table(
     load_started = time.perf_counter()
     cached = table_cache is not None and identifier in table_cache
     table = ensure_table(
-        catalog, identifier, source_data, spec, cache=table_cache
+        catalog,
+        identifier,
+        source_data,
+        spec,
+        cache=table_cache,
+        create_only=create_only,
     )
     validate_existing_table(table, spec, full=full)
     emit(
@@ -1320,6 +1339,16 @@ def redact_error(exc: BaseException, settings: Settings) -> str:
 
 def run(args: argparse.Namespace, settings: Settings) -> int:
     selected = parse_tables(args.tables)
+    if args.create_only and (
+        not args.full
+        or args.tables is None
+        or len(selected) != 1
+        or not selected[0].is_master
+        or args.year_scope is not None
+    ):
+        raise ValueError(
+            "--create-only requires one explicit --full master without --year-scope"
+        )
     target_date = args.date
     if target_date is not None:
         selected_date_tables = [spec for spec in selected if not spec.is_master]
@@ -1406,7 +1435,11 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 identifier = f"{settings.namespace}.{spec.name}"
                 load_started = time.perf_counter()
                 cached = identifier in table_cache
-                table = load_existing_table(catalog, identifier, cache=table_cache)
+                table = (
+                    None
+                    if args.create_only
+                    else load_existing_table(catalog, identifier, cache=table_cache)
+                )
                 emit(
                     "phase_timing",
                     phase="load_table",
@@ -1416,11 +1449,7 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                     year_scope=partition_scope.label if partition_scope else None,
                     date=partition_date,
                 )
-                if (
-                    table is not None
-                    and not args.force
-                    and source_marker is not None
-                ):
+                if table is not None and not args.force and source_marker is not None:
                     validate_existing_table(table, spec, full=full_write)
                     marker_key = source_fingerprint_key(
                         partition_date, partition_scope, full=full_write
@@ -1516,6 +1545,7 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 skip_if_unchanged=not args.force,
                 source_marker=source_marker,
                 table_cache=table_cache,
+                create_only=args.create_only,
             )
             emit_result(
                 spec,
@@ -1596,9 +1626,7 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 f"--year-scope {only_scope.label} matched no source scope "
                 "in the selected tables"
             )
-        statuses = [
-            row.column("status").to_pylist()[0] for row in manifest_rows
-        ]
+        statuses = [row.column("status").to_pylist()[0] for row in manifest_rows]
         emit(
             "run_summary",
             slices=len(statuses),
@@ -1617,6 +1645,15 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                     catalog, settings.namespace, manifest_rows, run_id=run_id
                 )
             except Exception as flush_error:
+                # Never attach the original traceback: it can contain credentials.
+                LOGGER.error(
+                    "Catalog manifest flush failed",
+                    exc_info=(
+                        RuntimeError,
+                        RuntimeError(redact_error(flush_error, settings)),
+                        None,
+                    ),
+                )
                 emit(
                     "manifest_flush_failed",
                     error_type=type(flush_error).__name__,
@@ -1634,6 +1671,11 @@ def main(argv: list[str] | None = None) -> int:
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
+        # Retain redacted diagnostics without leaking the original traceback.
+        LOGGER.error(
+            "Catalog sync failed",
+            exc_info=(RuntimeError, RuntimeError(redact_error(exc, settings)), None),
+        )
         emit(
             "sync_failed",
             error_type=type(exc).__name__,

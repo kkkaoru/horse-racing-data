@@ -48,10 +48,13 @@ uv run sync_r2_catalog.py --date 20260715 --dry-run
 uv run sync_r2_catalog.py --date 20260715 --tables nvd_se,nvd_ra
 uv run sync_r2_catalog.py --date 20260715 --tables jvd_se,jvd_hc,jvd_wc,netkeiba_training_workouts
 uv run sync_r2_catalog.py --full --tables jvd_um,nvd_um,nvd_nu,jvd_hn,jvd_bt
+uv run sync_r2_catalog.py --full --tables jvd_cs --create-only --dry-run
 uv run sync_r2_catalog.py --full --tables jvd_ra --year-scope 2010-2014
 uv run sync_r2_catalog.py --full --force
 uv run sync_r2_catalog.py --full --tables oversea_runner_identity,oversea_runner_source_id,oversea_horse_race_history,oversea_person_race_history,oversea_horse_pedigree,oversea_person_win_rate_stats
 uv run test_sync_r2_catalog.py
+uvx ruff check --config 'lint.isort.known-first-party = ["sync_r2_catalog"]' sync_r2_catalog.py test_sync_r2_catalog.py
+uvx ruff format --check sync_r2_catalog.py test_sync_r2_catalog.py
 uv run sync_entity_history.py --full
 uv run sync_entity_history.py --year 2026
 uv run publish_entity_catalog_manifest.py --skip-upload
@@ -110,7 +113,21 @@ chokyo_nengappi)`. `netkeiba_training_workouts` follows the race-date year
 partition and uses `updated_at` for its source marker. Date mode uses the requested date only to select its calendar
 year, extracts that entire year from local PostgreSQL, and atomically rewrites
 the year partition. It never reads Catalog rows to seed or merge that write.
-Master tables are skipped and require `--full`.
+Master tables are skipped and require `--full`. This includes `jvd_cs` course
+information: all eight raw columns and every revision keyed by
+`(keibajo_code, kyori, track_code, course_kaishu_nengappi)` are retained. The
+Viewer's latest-revision projection is not a seed or replacement for this raw
+master. Verify the local source and full snapshot before switching readers.
+
+For the initial bootstrap, `--create-only` requires `--full`, one explicitly
+selected master, and no `--year-scope`. It bypasses existing-table loading and
+cached handles and uses the Catalog's atomic `create_table` operation: an
+existing table or a concurrent creator causes failure, never replacement.
+`--dry-run` still performs local reads only and cannot prove remote absence.
+After any uncertain write result, inspect the table and manifest before taking
+further action; do not automatically retry, delete, or fall back to replacement.
+Ordinary subsequent refreshes omit `--create-only` and retain full readback
+fingerprint verification.
 
 Full mode maps source and target year sets to stable five-year scopes aligned
 to years divisible by five (for example `1995-1999`). Each scope is extracted
