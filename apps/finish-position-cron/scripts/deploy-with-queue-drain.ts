@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildDeploymentPredictionRequests,
+  buildDeploymentCommand,
+  buildDeploymentStopRequest,
   DEPLOYMENT_DRAIN_QUEUES,
   filterIncompleteDeploymentRaces,
   parseCompletedDeploymentRaceKeys,
@@ -90,8 +92,8 @@ const stopSupersededContainers = async (): Promise<void> => {
   if (names.length !== unsafe.length) {
     throw new Error("An active prediction Container has no canonical name");
   }
-  await postAdmin(ADMIN_STOP_PATH, { names, overrideActive: true });
-  console.log(`[rolling-deploy] superseded old-model Containers names=${names.join(",")}`);
+  await postAdmin(ADMIN_STOP_PATH, buildDeploymentStopRequest(names));
+  console.log(`[rolling-deploy] requested ownership-guarded stops names=${names.join(",")}`);
 };
 
 const waitForContainerDrain = async (): Promise<void> => {
@@ -115,7 +117,7 @@ const waitForContainerDrain = async (): Promise<void> => {
 
 const deployWorkerAndContainers = async (attemptsRemaining: number): Promise<void> => {
   try {
-    await runCommand(["bunx", "wrangler", "deploy"]);
+    await runCommand(buildDeploymentCommand(process.env.PREDICTION_DEPLOY_CONFIG));
   } catch (error) {
     if (attemptsRemaining <= 1) throw error;
     console.log(

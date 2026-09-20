@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildDeploymentPredictionRequest,
   buildDeploymentPredictionRequests,
+  buildDeploymentCommand,
+  buildDeploymentStopRequest,
   DEPLOYMENT_DRAIN_QUEUES,
   filterIncompleteDeploymentRaces,
   findLiveContainerInstances,
@@ -19,6 +21,27 @@ import {
 } from "./deploy-safety";
 
 describe("deployment safety", () => {
+  it("retains the normal deployment command without a maintenance config", () => {
+    expect(buildDeploymentCommand(undefined)).toStrictEqual(["bunx", "wrangler", "deploy"]);
+  });
+
+  it("passes an explicit maintenance config without bypassing deployment", () => {
+    expect(buildDeploymentCommand("/work/maintenance.json")).toStrictEqual([
+      "bunx",
+      "wrangler",
+      "deploy",
+      "--config",
+      "/work/maintenance.json",
+    ]);
+  });
+
+  it("never forces deployment stops past active ownership", () => {
+    expect(buildDeploymentStopRequest(["predict-jra", "race-chain-predict-nar-1"])).toStrictEqual({
+      names: ["predict-jra", "race-chain-predict-nar-1"],
+      overrideActive: false,
+    });
+  });
+
   it("pauses only queues that can start prediction Containers", () => {
     expect(DEPLOYMENT_DRAIN_QUEUES).toEqual([
       "finish-position-predict-queue",

@@ -149,6 +149,17 @@ export const finishPositionContainerApplications = (
 
 const LIVE_CONTAINER_STATES: readonly string[] = ["running", "starting"];
 
+// A maintenance config may keep HTTP/cron admission closed through the rollout.
+export const buildDeploymentCommand = (configPath: string | undefined): string[] =>
+  configPath === undefined
+    ? ["bunx", "wrangler", "deploy"]
+    : ["bunx", "wrangler", "deploy", "--config", configPath];
+
+// Deployment must never bypass an execution lease or focused-full watch.
+export const buildDeploymentStopRequest = (
+  names: readonly string[],
+): { names: readonly string[]; overrideActive: false } => ({ names, overrideActive: false });
+
 export const isLiveContainerState = (state: string): boolean =>
   LIVE_CONTAINER_STATES.includes(state);
 
