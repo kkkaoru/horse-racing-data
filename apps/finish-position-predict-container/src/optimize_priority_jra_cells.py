@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Final, cast
@@ -14,7 +15,14 @@ from typing import Final, cast
 import pyarrow.dataset as ds
 
 from build_jra_cell_manifest import atomic_write, load_races
-from evaluate_jra_cell_models import aggregate_evaluations, evaluate_fold
+from evaluate_jra_cell_models import (
+    REPORT_VERSION as EVALUATION_REPORT_VERSION,
+)
+from evaluate_jra_cell_models import (
+    aggregate_evaluations,
+    evaluate_fold,
+    validate_evaluation_checkpoint,
+)
 from predict_lib.jra_cell_scope import (
     MINIMUM_DIVERSE_TRAINING_RACES,
     JraCellKey,
@@ -26,9 +34,16 @@ from predict_lib.jra_cell_scope import (
     group_observed_cells,
 )
 from predict_lib.rank_relevance import DEFAULT_RELEVANCE_MODE, RELEVANCE_MODES
+from predict_lib.teacher_catalog import (
+    add_teacher_evidence_arguments,
+    require_teacher_catalog,
+    teacher_catalog_from_arguments,
+)
 from train_jra_cell_models import DatasetLike, numeric_feature_names
 
-REPORT_VERSION: Final[str] = "jra-priority-cell-optimization-v6"
+REPORT_VERSION: Final[str] = "jra-priority-cell-optimization-v9"
+# Encounter old slots and reject incompatible folds instead of silently refitting.
+_CHECKPOINT_SLOT_VERSION: Final[str] = "jra-priority-cell-optimization-v6"
 TARGET_DATE: Final[date] = date(2026, 9, 5)
 PRIORITY_RACES: Final[dict[str, str]] = {
     "nakayama-1r-obstacle-open": "jra:2026:0905:06:01",
@@ -62,6 +77,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Immutable revision covering the PostgreSQL export and feature snapshot",
     )
+    add_teacher_evidence_arguments(parser)
     args = parser.parse_args(argv)
     if not args.pg_url:
         parser.error("--pg-url or DATABASE_URL_LOCAL is required")
@@ -209,7 +225,7 @@ def build_checkpoint_path(
 ) -> Path:
     production_plan = getattr(args, "production_plan", None)
     contract = {
-        "version": REPORT_VERSION,
+        "version": _CHECKPOINT_SLOT_VERSION,
         "candidate": candidate_key,
         "target_date": args.target_date.isoformat(),
         "iterations": args.iterations,
@@ -296,6 +312,7 @@ def evaluate_candidate(
     *,
     include_predictions: bool = False,
 ) -> dict[str, object]:
+    teacher_catalog = require_teacher_catalog(args)
     candidate_key = _candidate_key(strategy, depth, learning_rate)
     folds: list[dict[str, object]] = []
     for year in years:
@@ -309,7 +326,9 @@ def evaluate_candidate(
         )
         fold: dict[str, object] = {}
         if args.resume and checkpoint.exists():
-            cached = cast(dict[str, object], json.loads(checkpoint.read_text(encoding="utf-8")))
+            cached = validate_evaluation_checkpoint(
+                json.loads(checkpoint.read_text(encoding="utf-8")), teacher_catalog=teacher_catalog
+            )
             if not include_predictions or cached.get("predictions") is not None:
                 fold = cached
         if not fold:
@@ -319,6 +338,10 @@ def evaluate_candidate(
                 or not scope.is_diverse
             ):
                 fold = {
+                    "version": EVALUATION_REPORT_VERSION,
+                    "teacher_evidence": asdict(teacher_catalog.references),
+                    "training_roster_admitted": False,
+                    "evaluation_roster_admitted": False,
                     "evaluation_year": year,
                     "status": "insufficient-diverse-training-scope",
                     "training_race_count": len(scope.training_race_ids),
@@ -332,6 +355,7 @@ def evaluate_candidate(
                     learning_rate=learning_rate,
                     thread_count=args.thread_count,
                     relevance_mode=args.relevance_mode,
+                    teacher_catalog=teacher_catalog,
                 )
                 fold = evaluate_fold(
                     dataset,
@@ -395,6 +419,7 @@ def evaluate_candidate(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    args.teacher_catalog = teacher_catalog_from_arguments(args)
     races = load_races(args.pg_url, "20000101", args.target_date.strftime("%Y%m%d"))
     priority_cells = resolve_priority_cells(races, priority_races=args.priority_races)
     grouped = group_observed_cells(
@@ -524,6 +549,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     report = {
         "version": REPORT_VERSION,
+        "evaluation_contract": EVALUATION_REPORT_VERSION,
+        "teacher_evidence": asdict(require_teacher_catalog(args).references),
         "generated_at": datetime.now().astimezone().isoformat(),
         "target_date": args.target_date.isoformat(),
         "input_revision": args.input_revision,

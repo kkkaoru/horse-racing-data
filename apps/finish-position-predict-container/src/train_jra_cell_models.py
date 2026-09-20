@@ -8,11 +8,13 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Final, Protocol, cast
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -26,6 +28,16 @@ from predict_lib.rank_relevance import (
     parse_relevance_mode,
     rank_gains,
 )
+from predict_lib.teacher_catalog import (
+    TeacherCatalog,
+    add_teacher_evidence_arguments,
+    teacher_catalog_from_arguments,
+)
+from predict_lib.training_frame import admit_training_frame
+from predict_lib.training_labels import outcome_rank_gains
+
+ROSTER_TRAINING_CONTRACT: Final[str] = "supplied-roster-evidence-explicit-status-gains-v1"
+TRAINING_FINISH_CONTRACT: Final[str] = "positive-integer-classified-only-no-row-removal-v1"
 
 IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
     {
@@ -50,6 +62,9 @@ IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
 LABEL_COLUMNS: Final[frozenset[str]] = frozenset(
     {
         "finish_position",
+        "teacher_finish",
+        "teacher_disposition",
+        "teacher_relevance",
         "finish_norm",
         "target_corner_1_norm",
         "target_corner_2_norm",
@@ -67,6 +82,25 @@ REQUIRED_COLUMNS: Final[tuple[str, ...]] = (
 )
 
 
+class SchemaFieldLike(Protocol):
+    name: str
+    type: object
+
+
+class TableLike(Protocol):
+    def to_pandas(self) -> pd.DataFrame: ...
+
+
+class DatasetFieldLike(Protocol):
+    def isin(self, values: list[str]) -> object: ...
+
+
+class DatasetLike(Protocol):
+    schema: Iterable[SchemaFieldLike]
+
+    def to_table(self, *, columns: list[str], filter: object) -> TableLike: ...
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="train_jra_cell_models")
     parser.add_argument("--features-root", type=Path, required=True)
@@ -79,10 +113,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--thread-count", type=int, default=6)
     parser.add_argument("--relevance-mode", choices=RELEVANCE_MODES, default=DEFAULT_RELEVANCE_MODE)
     parser.add_argument("--fixed-iterations", action="store_true")
+    add_teacher_evidence_arguments(parser)
     return parser.parse_args(argv)
 
 
-def numeric_feature_names(schema: pa.Schema) -> list[str]:
+def numeric_feature_names(schema: Iterable[SchemaFieldLike]) -> list[str]:
     excluded = IDENTITY_COLUMNS | LABEL_COLUMNS
     return [
         field.name
@@ -97,11 +132,33 @@ def numeric_feature_names(schema: pa.Schema) -> list[str]:
     ]
 
 
-def relevance_labels(values: pd.Series) -> np.ndarray:
+def relevance_labels(values: pd.Series) -> npt.NDArray[np.int32]:
     numeric = cast(pd.Series, pd.to_numeric(values, errors="coerce"))
     ranks = numeric.fillna(0).astype(int)
     mapped = ranks.map({1: 3, 2: 2, 3: 1}).fillna(0)
     return mapped.to_numpy(dtype=np.int32)
+
+
+def _is_boolean_finish(value: object) -> bool:
+    return isinstance(value, (bool, np.bool_))
+
+
+def require_classified_training_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Preserve loaded teachers; without outcome evidence, never discard unranked rows.
+
+    This validates labels, not independent starter identities or roster completeness.
+    Legitimate DNF/DQ/nonstarter handling requires a separate authoritative status join.
+    """
+    raw = frame["finish_position"]
+    finishes = pd.Series(pd.to_numeric(raw, errors="coerce"), index=frame.index, dtype="float64")
+    valid = finishes.gt(0) & finishes.lt(float("inf")) & finishes.mod(1).eq(0)
+    if bool(raw.map(_is_boolean_finish).any()) or not bool(valid.all()):
+        raise ValueError(
+            "Unresolved training finish status requires authoritative outcome evidence"
+        )
+    result = frame.copy()
+    result["finish_position"] = finishes
+    return result
 
 
 def chronological_race_split(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -110,10 +167,19 @@ def chronological_race_split(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Data
         .drop_duplicates()
         .sort_values(["race_date", "race_id"])
     )
-    if len(races) < 4:
+    if races.isna().any().any() or races["race_id"].duplicated().any():
+        raise ValueError("Each race requires exactly one nonmissing calendar date and identity")
+    if len(races) < 4 or races["race_date"].nunique() < 2:
         return frame.copy(), frame.iloc[0:0].copy()
     validation_count = max(2, math.ceil(len(races) * 0.1))
-    validation_ids = cast(pd.Series, races.iloc[-validation_count:]["race_id"]).astype(str).tolist()
+    boundary = races.iloc[-validation_count]["race_date"]
+    first_date = races.iloc[0]["race_date"]
+    validation_mask = (
+        races["race_date"] > first_date
+        if boundary == first_date
+        else races["race_date"] >= boundary
+    )
+    validation_ids = cast(pd.Series, races.loc[validation_mask, "race_id"]).astype(str).tolist()
     race_id_series = cast(pd.Series, frame["race_id"]).astype(str)
     validation = cast(pd.DataFrame, frame[race_id_series.isin(validation_ids)]).copy()
     training = cast(pd.DataFrame, frame[~race_id_series.isin(validation_ids)]).copy()
@@ -169,16 +235,6 @@ def atomic_json(path: Path, payload: object) -> None:
         raise
 
 
-class DatasetFieldLike(Protocol):
-    def isin(self, values: list[str]) -> object: ...
-
-
-class DatasetLike(Protocol):
-    schema: pa.Schema
-
-    def to_table(self, *, columns: list[str], filter: object) -> pa.Table: ...
-
-
 def load_feature_rows(
     dataset: DatasetLike,
     race_ids: Sequence[str],
@@ -195,7 +251,7 @@ def load_feature_rows(
     return table.to_pandas()
 
 
-def feature_matrix(frame: pd.DataFrame, feature_names: Sequence[str]) -> np.ndarray:
+def feature_matrix(frame: pd.DataFrame, feature_names: Sequence[str]) -> npt.NDArray[np.float64]:
     values = frame.loc[:, list(feature_names)].apply(pd.to_numeric, errors="coerce")
     return values.fillna(0.0).to_numpy(dtype=np.float64)
 
@@ -219,9 +275,21 @@ def build_rank_pool(
     relevance_mode: RelevanceMode = DEFAULT_RELEVANCE_MODE,
 ) -> Pool:
     ordered = frame.sort_values(["race_id", "umaban"]).reset_index(drop=True)
-    group_ids = pd.factorize(ordered["race_id"].astype(str), sort=False)[0]
     finish_positions = cast(pd.Series, ordered["finish_position"])
     labels = rank_gains(finish_positions.tolist(), mode=relevance_mode) if with_labels else None
+    return _ordered_rank_pool(ordered, feature_names, labels=labels)
+
+
+def build_admitted_rank_pool(frame: pd.DataFrame, feature_names: Sequence[str]) -> Pool:
+    ordered = frame.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    labels = ordered["teacher_relevance"].to_numpy(dtype=np.float64)
+    return _ordered_rank_pool(ordered, feature_names, labels=labels)
+
+
+def _ordered_rank_pool(
+    ordered: pd.DataFrame, feature_names: Sequence[str], *, labels: npt.NDArray[np.float64] | None
+) -> Pool:
+    group_ids = pd.factorize(ordered["race_id"].astype(str), sort=False)[0]
     return Pool(
         data=feature_matrix(ordered, feature_names),
         label=labels,
@@ -291,6 +359,8 @@ def train_cell(
     feature_names: Sequence[str],
     output_root: Path,
     args: argparse.Namespace,
+    *,
+    teacher_catalog: TeacherCatalog,
 ) -> dict[str, object]:
     model_version = cast(str, cell["model_version"])
     training_ids = cast(list[str], cell["training_race_ids"])
@@ -298,13 +368,22 @@ def train_cell(
     validate_diverse_training_scope(cell, model_version)
     iterations, depth, learning_rate = resolve_training_parameters(cell, args, model_version)
     relevance_mode = resolve_cell_relevance_mode(cell, args)
-    historical = load_feature_rows(dataset, training_ids, feature_names)
-    finish_positions = cast(
-        pd.Series, pd.to_numeric(historical["finish_position"], errors="coerce")
+    required_races = frozenset(training_ids)
+    admitted = admit_training_frame(
+        load_feature_rows(dataset, training_ids, feature_names),
+        evidence=teacher_catalog.for_scope(required_races),
+        required_race_ids=required_races,
     )
-    historical = cast(pd.DataFrame, historical[finish_positions > 0]).copy()
+    historical = admitted.active
+    historical["teacher_relevance"] = outcome_rank_gains(
+        admitted.matching.active_outcomes, mode=relevance_mode
+    )
     complete_training_race_count = validate_complete_training_races(historical, model_version)
     training, validation = chronological_race_split(historical)
+    target = load_feature_rows(dataset, target_ids, feature_names)
+    expected_target_rows = int(cast(int, cell["target_runner_count"]))
+    validate_target_feature_coverage(target, target_ids, expected_target_rows, model_version)
+    target_pool = build_rank_pool(target, feature_names, with_labels=False)
     tuning_model = CatBoostRanker(
         loss_function="YetiRank",
         eval_metric="NDCG:top=3",
@@ -317,13 +396,9 @@ def train_cell(
         thread_count=args.thread_count,
         verbose=False,
     )
-    training_pool = build_rank_pool(
-        training, feature_names, with_labels=True, relevance_mode=relevance_mode
-    )
+    training_pool = build_admitted_rank_pool(training, feature_names)
     validation_pool = (
-        build_rank_pool(validation, feature_names, with_labels=True, relevance_mode=relevance_mode)
-        if not validation.empty
-        else None
+        build_admitted_rank_pool(validation, feature_names) if not validation.empty else None
     )
     tuning_model.fit(training_pool, eval_set=validation_pool, early_stopping_rounds=30)
     validation_metrics: dict[str, float | int] | None = None
@@ -353,17 +428,11 @@ def train_cell(
         thread_count=args.thread_count,
         verbose=False,
     )
-    model.fit(
-        build_rank_pool(historical, feature_names, with_labels=True, relevance_mode=relevance_mode)
-    )
+    model.fit(build_admitted_rank_pool(historical, feature_names))
     artifact_dir = output_root / "finish-position" / "jra" / model_version
     artifact_dir.mkdir(parents=True, exist_ok=True)
     model_path = artifact_dir / "model.json"
     model.save_model(model_path, format="json")
-    target = load_feature_rows(dataset, target_ids, feature_names)
-    expected_target_rows = int(cast(int, cell["target_runner_count"]))
-    validate_target_feature_coverage(target, target_ids, expected_target_rows, model_version)
-    target_pool = build_rank_pool(target, feature_names, with_labels=False)
     target_scores = np.asarray(model.predict(target_pool), dtype=np.float64)
     ordered_target = target.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     ordered_target["predicted_score"] = target_scores
@@ -403,6 +472,13 @@ def train_cell(
             "target_day_outcomes_allowed": False,
         },
         "validation_metrics": validation_metrics,
+        "training_finish_contract": ROSTER_TRAINING_CONTRACT,
+        "teacher_evidence": asdict(teacher_catalog.references),
+        "training_feature_withdrawn_runner_count": len(admitted.withdrawn),
+        "training_source_withdrawn_runner_count": sum(
+            len(audit.withdrawn_indices) for audit in admitted.matching.audits
+        ),
+        "independent_training_roster_attested": False,
         "requested_training_parameters": {
             "fixed_iterations": getattr(args, "fixed_iterations", False),
             "relevance_mode": relevance_mode,
@@ -439,8 +515,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     feature_names = numeric_feature_names(dataset.schema)
     if not feature_names:
         raise ValueError("feature dataset has no numeric model features")
+    teacher_catalog = teacher_catalog_from_arguments(args)
     results = [
-        train_cell(dataset, cell, feature_names, args.output_root, args) for cell in selected
+        train_cell(
+            dataset, cell, feature_names, args.output_root, args, teacher_catalog=teacher_catalog
+        )
+        for cell in selected
     ]
     report = {
         "version": plan["version"],

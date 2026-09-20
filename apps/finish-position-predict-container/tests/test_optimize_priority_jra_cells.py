@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from argparse import Namespace
 from dataclasses import replace
@@ -22,6 +23,29 @@ from optimize_priority_jra_cells import (
     select_development_candidate,
 )
 from predict_lib.jra_cell_scope import JraRace, JraRaceIndex, cell_for_race
+from predict_lib.teacher_catalog import TeacherCatalog
+from predict_lib.training_roster_match import EvidenceReferences
+from train_jra_cell_models import TableLike
+
+
+@pytest.fixture
+def teacher_cli_args(tmp_path: Path) -> list[str]:
+    declarations = tmp_path / "declarations.json"
+    outcomes = tmp_path / "outcomes.json"
+    declarations.write_text(
+        '{"version":"independent-declarations-v1","races":[]}', encoding="utf-8"
+    )
+    outcomes.write_text('{"version":"runner-outcomes-v1","races":[]}', encoding="utf-8")
+    return [
+        "--teacher-declarations",
+        str(declarations),
+        "--teacher-outcomes",
+        str(outcomes),
+        "--teacher-declarations-sha256",
+        hashlib.sha256(declarations.read_bytes()).hexdigest(),
+        "--teacher-outcomes-sha256",
+        hashlib.sha256(outcomes.read_bytes()).hexdigest(),
+    ]
 
 
 def race(race_id: str, venue: str = "06", distance: int = 1600) -> JraRace:
@@ -135,7 +159,7 @@ def test_candidate_checkpoint_records_independent_cell_training_scope(tmp_path: 
     class UnusedDataset:
         schema: pa.Schema = pa.schema([("feature", pa.float64())])
 
-        def to_table(self, *, columns: list[str], filter: object) -> pa.Table:
+        def to_table(self, *, columns: list[str], filter: object) -> TableLike:
             raise AssertionError("insufficient scope must not load training data")
 
     args = Namespace(
@@ -144,6 +168,7 @@ def test_candidate_checkpoint_records_independent_cell_training_scope(tmp_path: 
         relevance_mode="top3",
         thread_count=1,
         input_revision="snapshot",
+        teacher_catalog=TeacherCatalog(EvidenceReferences("a" * 64, "b" * 64), {}),
         features_root=tmp_path,
         checkpoint_dir=tmp_path / "checkpoints",
         resume=False,
@@ -286,10 +311,14 @@ def test_priority_races_from_plan_selects_one_representative_per_cell(
     }
 
 
-def test_cli_rejects_production_plan_with_explicit_priority_race(tmp_path: Path) -> None:
+def test_cli_rejects_production_plan_with_explicit_priority_race(
+    tmp_path: Path,
+    teacher_cli_args: list[str],
+) -> None:
     with pytest.raises(SystemExit):
         parse_args(
             [
+                *teacher_cli_args,
                 "--pg-url",
                 "postgresql://localhost/test",
                 "--features-root",
@@ -308,9 +337,10 @@ def test_cli_rejects_production_plan_with_explicit_priority_race(tmp_path: Path)
         )
 
 
-def test_cli_accepts_dated_target_and_provenance() -> None:
+def test_cli_accepts_dated_target_and_provenance(teacher_cli_args: list[str]) -> None:
     args = parse_args(
         [
+            *teacher_cli_args,
             "--pg-url",
             "postgresql://localhost/test",
             "--features-root",
@@ -337,10 +367,12 @@ def test_cli_accepts_dated_target_and_provenance() -> None:
 @pytest.mark.parametrize("bounds", [(2024, 2025), (2023, 2020), (1999, 2023)])
 def test_cli_keeps_expanded_development_strictly_before_holdout(
     bounds: tuple[int, int],
+    teacher_cli_args: list[str],
 ) -> None:
     with pytest.raises(SystemExit):
         parse_args(
             [
+                *teacher_cli_args,
                 "--pg-url",
                 "postgresql://localhost/test",
                 "--features-root",
@@ -359,9 +391,10 @@ def test_cli_keeps_expanded_development_strictly_before_holdout(
         )
 
 
-def test_cli_accepts_longer_past_only_development_window() -> None:
+def test_cli_accepts_longer_past_only_development_window(teacher_cli_args: list[str]) -> None:
     args = parse_args(
         [
+            *teacher_cli_args,
             "--pg-url",
             "postgresql://localhost/test",
             "--features-root",
@@ -403,6 +436,7 @@ def test_cli_accepts_longer_past_only_development_window() -> None:
 @pytest.mark.parametrize("complete", [True, False])
 @pytest.mark.parametrize("development_year_from", [2006, 2020])
 def test_development_only_does_not_evaluate_holdout(
+    teacher_cli_args: list[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     complete: bool,
@@ -425,13 +459,20 @@ def test_development_only_does_not_evaluate_holdout(
         result["all_requested_years_evaluated"] = complete
         return result
 
-    monkeypatch.setattr(optimization, "load_races", lambda *_args: [historical, target])
-    monkeypatch.setattr(optimization.ds, "dataset", lambda *_args, **_kwargs: EmptyDataset())
+    def load_races(*_args: object) -> list[JraRace]:
+        return [historical, target]
+
+    def load_dataset(*_args: object, **_kwargs: object) -> EmptyDataset:
+        return EmptyDataset()
+
+    monkeypatch.setattr(optimization, "load_races", load_races)
+    monkeypatch.setattr(optimization.ds, "dataset", load_dataset)
     monkeypatch.setattr(optimization, "evaluate_candidate", evaluate)
     output = tmp_path / "report.json"
     assert (
         optimization.main(
             [
+                *teacher_cli_args,
                 "--pg-url",
                 "postgresql://localhost/test",
                 "--features-root",
@@ -499,3 +540,119 @@ def test_development_only_does_not_evaluate_holdout(
         )
         assert report["cells"][0]["selected_candidate_key"] is None
         assert report["cells"][0]["development_eligible"] is False
+
+
+@pytest.mark.parametrize("override", [["--pg-url", ""], ["--input-revision", " "]])
+def test_cli_rejects_empty_required_values(
+    teacher_cli_args: list[str], override: list[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                *teacher_cli_args,
+                "--pg-url",
+                "postgresql://localhost/test",
+                "--features-root",
+                "features",
+                "--output",
+                "report.json",
+                "--checkpoint-dir",
+                "cache",
+                "--input-revision",
+                "snapshot",
+                *override,
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"target_date": "2026-09-05", "cells": None},
+        {"target_date": "2026-09-05", "cells": [None]},
+        {"target_date": "2026-09-05", "cells": [{}]},
+    ],
+)
+def test_invalid_production_plan_is_rejected(tmp_path: Path, payload: object) -> None:
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="production plan"):
+        priority_races_from_plan(path, target_date=date(2026, 9, 5))
+
+
+@pytest.mark.parametrize("scenario", ["report", "invalid-strategy", "no-features"])
+def test_main_holdout_orchestration_and_early_failures(
+    tmp_path: Path,
+    teacher_cli_args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    target = race("jra:2026:0905:06:11")
+    historical = replace(target, race_id="past", race_date=date(2023, 9, 5), venue="09")
+    calls: list[object] = []
+
+    class Dataset:
+        schema: pa.Schema = pa.schema(
+            [] if scenario == "no-features" else [("feature", pa.float64())]
+        )
+
+    def load(*_args: object) -> list[JraRace]:
+        return [historical, target]
+
+    def dataset(*_args: object, **_kwargs: object) -> Dataset:
+        return Dataset()
+
+    def evaluate(*args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append(args[6])
+        return {
+            **candidate(1, guard=True),
+            "all_requested_years_evaluated": True,
+            "strategy": None if scenario == "invalid-strategy" else "entrant-history",
+            "depth": 6,
+            "learning_rate": 0.05,
+        }
+
+    monkeypatch.setattr(optimization, "load_races", load)
+    monkeypatch.setattr(optimization.ds, "dataset", dataset)
+    monkeypatch.setattr(optimization, "evaluate_candidate", evaluate)
+    output = tmp_path / "report.json"
+    argv = [
+        *teacher_cli_args,
+        "--pg-url",
+        "postgresql://localhost/test",
+        "--features-root",
+        str(tmp_path),
+        "--output",
+        str(output),
+        "--checkpoint-dir",
+        str(tmp_path / "cache"),
+        "--input-revision",
+        "snapshot",
+        "--priority-race",
+        "test=jra:2026:0905:06:11",
+    ]
+    if scenario == "no-features":
+        with pytest.raises(ValueError, match="no numeric model features"):
+            optimization.main(argv)
+        assert calls == []
+        assert not output.exists()
+        return
+    if scenario == "invalid-strategy":
+        with pytest.raises(ValueError, match="selected scope strategy must be a string"):
+            optimization.main(argv)
+        assert len(calls) == 6
+        assert not output.exists()
+        return
+    assert optimization.main(argv) == 0
+    assert len(calls) == 7
+    assert calls[-1] == (2024, 2025, 2026)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["version"] == "jra-priority-cell-optimization-v9"
+    assert report["evaluation_contract"] == "jra-cell-walk-forward-v8"
+    assert report["cells"][0]["production_eligible"] is False
+    assert (
+        report["cells"][0]["production_eligibility_reason"]
+        == "requires-current-prophet-v6.1-same-identity-comparison"
+    )
+    assert report["cells"][0]["market_guard_eligible"] is False

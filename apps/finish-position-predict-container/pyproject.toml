@@ -60,7 +60,11 @@ testpaths = ["tests"]
 branch = true
 
 [tool.coverage.report]
-# "\\.\\.\\." excludes Protocol method stubs ("..."), which are definitionally
-# unexecutable — not a code-hiding pragma.
-exclude_lines = ["if __name__ == .__main__.:", "raise SystemExit", "\\.\\.\\."]
+# Exclude only bare/inline ellipsis stubs, never tuple[T, ...] annotations:
+# matching a function signature would exclude its entire executable body.
+exclude_lines = [
+  "if __name__ == .__main__.:",
+  "raise SystemExit",
+  "(^\\s*|:\\s*)\\.\\.\\.(\\s*(#.*)?)?$",
+]
 show_missing = true
