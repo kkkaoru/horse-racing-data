@@ -1,3 +1,9 @@
+// Runs with bun; claim decisions are exercised with real SQLite capture triggers installed.
+import {
+  buildD1CapturePlan,
+  D1_CAPTURE_TABLE,
+} from "../../pc-keiba-r2-catalog/src/d1-change-capture";
+import { discoverD1CaptureSchema } from "../../pc-keiba-r2-catalog/src/d1-capture-schema";
 import { readFile } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -9,6 +15,7 @@ import {
   completeIndexChunk,
   completeRun,
   createRun,
+  createRunWithDataSpec,
   finalizeIndexPartition,
   findCatalogPositions,
   getCatalogOperation,
@@ -57,6 +64,7 @@ beforeAll(async () => {
     "0001_initial.sql",
     "0002_catalog_index.sql",
     "0003_acquisition_window.sql",
+    "0005_acquisition_data_spec.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await db.exec(
@@ -66,19 +74,169 @@ beforeAll(async () => {
         .join(" "),
     );
   }
+  const plans = await Promise.all(
+    ["sync_runs", "catalog_table_leases", "catalog_index_partitions"].map(async (table) => {
+      const schema = await discoverD1CaptureSchema(
+        table,
+        async ({ sql, params }) =>
+          (
+            await db
+              .prepare(sql)
+              .bind(...params)
+              .all<Record<string, unknown>>()
+          ).results,
+      );
+      return buildD1CapturePlan({ ...schema, captureId: "state-test" });
+    }),
+  );
+  await db.batch(
+    plans
+      .flatMap((plan, position) => [
+        ...(position === 0 ? [plan.createOutbox] : []),
+        ...plan.triggers.map(({ sql }) => sql),
+      ])
+      .map((sql) => db.prepare(sql)),
+  );
 });
 
 beforeEach(async () => {
   await db.exec(
     "delete from catalog_table_leases; delete from catalog_operations; delete from catalog_row_index; delete from catalog_index_chunks; delete from catalog_index_partitions; delete from sync_run_table_partitions; delete from sync_run_tables; delete from sync_runs; delete from provider_acquisition_cursors;",
   );
+  await db.prepare(`DELETE FROM ${D1_CAPTURE_TABLE}`).run();
 });
 
 afterAll(async () => {
   await miniflare.dispose();
 });
 
+test("a journalled conflict must not grant a competing Catalog lease", async () => {
+  expect(await acquireCatalogLease(db, "jv_ra", "owner-a", now)).toBe(true);
+  expect(await acquireCatalogLease(db, "jv_ra", "owner-b", now)).toBe(false);
+  expect(
+    await db
+      .prepare(
+        `SELECT count(*) AS n FROM ${D1_CAPTURE_TABLE} WHERE table_name='catalog_table_leases' AND operation='touch'`,
+      )
+      .first(),
+  ).toStrictEqual({ n: 1 });
+});
+
 describe("D1 sync state", () => {
+  test("persists a COMM-only run atomically without advancing the race cursor", async () => {
+    const created = await createRunWithDataSpec({
+      db,
+      provider: "jv",
+      dataSpec: "COMM",
+      runDate: "20260903",
+      trigger: "manual",
+      lookbackDays: 7,
+      now,
+      force: true,
+      fromTime: "20260827000000",
+      toTime: "20260903010000",
+      cursorTime: "20260903010000",
+      advanceCursor: false,
+    });
+    expect(created.created).toBe(true);
+    expect(await getRun(db, created.run.run_id)).toMatchObject({
+      data_spec: "COMM",
+      advance_cursor: 0,
+      from_time: "20260827000000",
+      to_time: "20260903010000",
+    });
+    expect(await getProviderAcquisitionCursor(db, "jv")).toBeNull();
+  });
+
+  test("a deduplicated existing run keeps RACE even when the proposed policy changes", async () => {
+    await createRun(db, "jv", "20260903", "daily", 2, now, false);
+    const duplicate = await createRunWithDataSpec({
+      db,
+      provider: "jv",
+      dataSpec: "RACECOMM",
+      runDate: "20260903",
+      trigger: "daily",
+      lookbackDays: 2,
+      now,
+      force: false,
+      fromTime: "20260901000000",
+      toTime: "20260903010000",
+      cursorTime: "20260903010000",
+      advanceCursor: true,
+    });
+    expect(duplicate.created).toBe(false);
+    expect(duplicate.run.data_spec).toBe("RACE");
+    const next = await createRunWithDataSpec({
+      db,
+      provider: "jv",
+      dataSpec: "RACECOMM",
+      runDate: "20260904",
+      trigger: "daily",
+      lookbackDays: 2,
+      now,
+      force: false,
+      fromTime: "20260903010000",
+      toTime: "20260904010000",
+      cursorTime: "20260904010000",
+      advanceCursor: true,
+    });
+    expect(next.run).toMatchObject({ data_spec: "RACECOMM", advance_cursor: 1 });
+  });
+
+  test("rejects invalid provider and cursor combinations before creating acquisition runs", async () => {
+    await expect(
+      createRunWithDataSpec({
+        db,
+        provider: "nv",
+        dataSpec: "COMM",
+        runDate: "20260903",
+        trigger: "manual",
+        lookbackDays: 7,
+        now,
+        force: true,
+        fromTime: "20260827000000",
+        toTime: null,
+        cursorTime: "20260903010000",
+        advanceCursor: false,
+      }),
+    ).rejects.toThrow("NV acquisition requires RACE");
+    await expect(
+      createRunWithDataSpec({
+        db,
+        provider: "jv",
+        dataSpec: "COMM",
+        runDate: "20260903",
+        trigger: "daily",
+        lookbackDays: 7,
+        now,
+        force: true,
+        fromTime: "20260827000000",
+        toTime: "20260903010000",
+        cursorTime: "20260903010000",
+        advanceCursor: true,
+      }),
+    ).rejects.toThrow("COMM-only acquisition cannot advance the race cursor");
+    expect(await db.prepare("select count(*) as n from sync_runs").first()).toStrictEqual({ n: 0 });
+  });
+
+  test("the database also fences NV/COMM and COMM cursor mutation", async () => {
+    const nv = await createRun(db, "nv", "20260903", "daily", 2, now, false);
+    await expect(
+      db
+        .prepare("update sync_runs set data_spec = 'COMM' where run_id = ?")
+        .bind(nv.run.run_id)
+        .run(),
+    ).rejects.toThrow("CHECK constraint failed");
+    const jv = await createRun(db, "jv", "20260903", "daily", 2, now, false);
+    await expect(
+      db
+        .prepare("update sync_runs set data_spec = 'COMM', advance_cursor = 1 where run_id = ?")
+        .bind(jv.run.run_id)
+        .run(),
+    ).rejects.toThrow("CHECK constraint failed");
+    expect((await getRun(db, jv.run.run_id)).data_spec).toBe("RACE");
+  });
+
   test("deduplicates daily runs and permits forced manual runs", async () => {
     const first = await createRun(
       db,

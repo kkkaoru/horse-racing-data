@@ -1,8 +1,11 @@
+// Runs with bun; verifies Worker routing and read-only readiness responses.
+import { readFile } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { PermanentJobError } from "./errors";
 import { layoutByTable } from "./layouts";
 import {
+  adminRun,
   adminTrigger,
   fetchHandler,
   jobQueueName,
@@ -17,10 +20,11 @@ const mocks = vi.hoisted(() => ({
   acquireRun: vi.fn(),
   cachedCursor: vi.fn(),
   createRun: vi.fn(),
+  createRunWithDataSpec: vi.fn(),
   dailyRun: vi.fn(),
   handleJob: vi.fn(),
   latestRun: vi.fn(),
-  getRun: vi.fn(),
+  getRunReadiness: vi.fn(),
   getReadyIndexPartitions: vi.fn(),
   listTargets: vi.fn(),
   markParsed: vi.fn(),
@@ -36,13 +40,14 @@ vi.mock("./cache", () => ({
   purgeAllProviderCursorCaches: mocks.purgeAllCaches,
   purgeProviderCursorCache: mocks.purgeCursorCache,
 }));
+vi.mock("./run-readiness", () => ({ getRunReadiness: mocks.getRunReadiness }));
 vi.mock("./state", () => ({
   createRun: mocks.createRun,
+  createRunWithDataSpec: mocks.createRunWithDataSpec,
   getDailyRun: mocks.dailyRun,
   getLatestRun: mocks.latestRun,
   getProviderAcquisitionCursor: mocks.providerCursor,
   getReadyIndexPartitions: mocks.getReadyIndexPartitions,
-  getRun: mocks.getRun,
   listCatalogTargets: mocks.listTargets,
   markParsed: mocks.markParsed,
   updateRunStatus: mocks.updateRunStatus,
@@ -108,6 +113,7 @@ class TestBatch implements MessageBatch<SyncJob> {
 
 const run = (status = "queued", updatedAt = "2026-09-03T10:00:00.000Z"): RunRow => ({
   advance_cursor: 1,
+  data_spec: "RACE",
   catalog_tables: 0,
   completed_at: null,
   cursor_time: "20260903190000",
@@ -154,6 +160,21 @@ beforeAll(async () => {
     },
   });
   env = await miniflare.getBindings<Env>();
+  const migrations: readonly string[] = await Promise.all(
+    [
+      "0001_initial.sql",
+      "0002_catalog_index.sql",
+      "0003_acquisition_window.sql",
+      "0005_acquisition_data_spec.sql",
+    ].map((name) => readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8")),
+  );
+  await env.DB.exec(
+    migrations
+      .join("\n")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join(" "),
+  );
 });
 
 beforeEach(() => {
@@ -168,9 +189,14 @@ beforeEach(() => {
   mocks.acquireRun.mockReset().mockResolvedValue(undefined);
   mocks.cachedCursor.mockReset().mockResolvedValue(null);
   mocks.createRun.mockReset().mockResolvedValue({ created: true, run: run() });
+  mocks.createRunWithDataSpec.mockReset().mockResolvedValue({ created: true, run: run() });
   mocks.dailyRun.mockReset().mockResolvedValue(run("succeeded"));
   mocks.latestRun.mockReset().mockResolvedValue(run());
-  mocks.getRun.mockReset().mockResolvedValue(run());
+  mocks.getRunReadiness.mockReset().mockResolvedValue({
+    ...run(),
+    catalog_ready: true,
+    neon_backup_complete: false,
+  });
   mocks.getReadyIndexPartitions.mockReset().mockResolvedValue(new Set(["2026"]));
   mocks.markParsed.mockReset().mockResolvedValue(undefined);
   mocks.providerCursor.mockReset().mockResolvedValue(null);
@@ -266,19 +292,182 @@ describe("daily sync Worker", () => {
       expect.any(Date),
     );
     expect(queue.messages).toEqual([]);
-    expect(mocks.createRun).toHaveBeenCalledWith(
-      expect.anything(),
-      "nv",
-      "20260903",
-      "manual",
-      5,
-      expect.any(Date),
-      true,
-      "20260829000000",
-      null,
-      expect.stringMatching(/^20\d{12}$/),
-      false,
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith({
+      db: expect.anything(),
+      provider: "nv",
+      dataSpec: "RACE",
+      runDate: "20260903",
+      trigger: "manual",
+      lookbackDays: 5,
+      now: expect.any(Date),
+      force: true,
+      fromTime: "20260829000000",
+      toTime: null,
+      cursorTime: expect.stringMatching(/^20\d{12}$/),
+      advanceCursor: false,
+    });
+  });
+
+  test.each(["COMM", "RACECOMM"])(
+    "pins manual %s requests without advancing the race cursor",
+    async (dataSpec) => {
+      mocks.listTargets.mockResolvedValueOnce([
+        { table_name: "jvd_cs", partition_field: "__unpartitioned__" },
+      ]);
+      mocks.createRunWithDataSpec.mockResolvedValueOnce({
+        created: true,
+        run: { ...run(), data_spec: dataSpec, advance_cursor: 0 },
+      });
+      const response = await adminRun(
+        new Request("https://example/admin/run", {
+          method: "POST",
+          body: JSON.stringify({
+            provider: "jv",
+            dataSpec,
+            fromTime: "20260901000000",
+            toTime: "20260904090000",
+          }),
+        }),
+        env,
+        new Date("2026-09-04T00:00:00Z"),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        dataSpec,
+        fromTime: "20260901000000",
+        toTime: "20260904090000",
+      });
+      expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith({
+        db: expect.anything(),
+        provider: "jv",
+        dataSpec,
+        runDate: "20260904",
+        trigger: "manual",
+        lookbackDays: 7,
+        now: expect.any(Date),
+        force: true,
+        fromTime: "20260901000000",
+        toTime: "20260904090000",
+        cursorTime: "20260904090000",
+        advanceCursor: false,
+      });
+      expect(mocks.acquireRun).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "jv", advanceCursor: false }),
+        env,
+        expect.any(Date),
+      );
+      expect(mocks.cachedCursor).not.toHaveBeenCalled();
+      expect(mocks.createRun).not.toHaveBeenCalled();
+    },
+  );
+
+  test("the authenticated COMM endpoint persists the spec in actual D1 state", async () => {
+    const state = await vi.importActual<typeof import("./state")>("./state");
+    mocks.createRunWithDataSpec.mockImplementationOnce(state.createRunWithDataSpec);
+    mocks.listTargets.mockResolvedValueOnce([
+      { table_name: "jvd_cs", partition_field: "__unpartitioned__" },
+    ]);
+    const response = await fetchHandler(
+      new Request("https://example/admin/run", {
+        method: "POST",
+        headers: { Authorization: "Bearer admin" },
+        body: JSON.stringify({
+          provider: "jv",
+          dataSpec: "COMM",
+          runDate: "20260904",
+          fromTime: "20260901000000",
+          toTime: "20260904090000",
+        }),
+      }),
+      env,
     );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ dataSpec: "COMM" });
+    expect(
+      await env.DB.prepare(
+        "select data_spec, advance_cursor, from_time, to_time from sync_runs where data_spec = 'COMM'",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          data_spec: "COMM",
+          advance_cursor: 0,
+          from_time: "20260901000000",
+          to_time: "20260904090000",
+        },
+      ],
+    });
+    expect(await state.getProviderAcquisitionCursor(env.DB, "jv")).toBeNull();
+  });
+
+  test.each([
+    { dataSpec: "BAD", provider: "jv", fromTime: "20260901000000", toTime: "20260904090000" },
+    { dataSpec: null, provider: "jv", fromTime: "20260901000000", toTime: "20260904090000" },
+    { dataSpec: 1, provider: "jv", fromTime: "20260901000000", toTime: "20260904090000" },
+    { dataSpec: "COMM", provider: "nv", fromTime: "20260901000000", toTime: "20260904090000" },
+    { dataSpec: "RACECOMM", provider: "nv", fromTime: "20260901000000", toTime: "20260904090000" },
+    { dataSpec: "COMM", provider: "jv", toTime: "20260904090000" },
+    { dataSpec: "COMM", provider: "jv", fromTime: "20260901000000" },
+    { dataSpec: "COMM", provider: "jv", fromTime: "20260901000000", toTime: "20260904100000" },
+    { dataSpec: "COMM", provider: "jv", fromTime: "20260901000000", toTime: null },
+  ])("rejects unsafe COMM/spec requests before state or source I/O: %j", async (body) => {
+    const response = await adminRun(
+      new Request("https://example/admin/run", { method: "POST", body: JSON.stringify(body) }),
+      env,
+      new Date("2026-09-04T00:00:00Z"),
+    );
+    expect(response.status).toBe(400);
+    expect(mocks.listTargets).not.toHaveBeenCalled();
+    expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
+    expect(mocks.acquireRun).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { targets: [] },
+    { targets: [{ table_name: "jvd_cs", partition_field: "kaisai_nen" }] },
+    { targets: [{ table_name: "jvd_ra", partition_field: "__unpartitioned__" }] },
+  ])(
+    "requires an enabled unpartitioned CS target before COMM creation: %j",
+    async ({ targets }) => {
+      mocks.listTargets.mockResolvedValueOnce(targets);
+      const response = await adminRun(
+        new Request("https://example/admin/run", {
+          method: "POST",
+          body: JSON.stringify({
+            provider: "jv",
+            dataSpec: "COMM",
+            fromTime: "20260901000000",
+            toTime: "20260904090000",
+          }),
+        }),
+        env,
+        new Date("2026-09-04T00:00:00Z"),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toStrictEqual({
+        error: "COMM Catalog target is not configured",
+      });
+      expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
+      expect(mocks.acquireRun).not.toHaveBeenCalled();
+    },
+  );
+
+  test("COMM acquisition remains authenticated before reading configuration", async () => {
+    const response = await fetchHandler(
+      new Request("https://example/admin/run", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "jv",
+          dataSpec: "COMM",
+          fromTime: "20260901000000",
+          toTime: "20260904090000",
+        }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+    expect(mocks.listTargets).not.toHaveBeenCalled();
+    expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
   });
 
   test("records acquisition failures without misreporting them as invalid input", async () => {
@@ -339,7 +528,7 @@ describe("daily sync Worker", () => {
   });
 
   test("uses safe manual defaults and avoids requeueing an existing run", async () => {
-    mocks.createRun.mockResolvedValueOnce({ created: false, run: run() });
+    mocks.createRunWithDataSpec.mockResolvedValueOnce({ created: false, run: run() });
     const response = await fetchHandler(
       new Request("https://example/admin/run", {
         body: JSON.stringify({ provider: "jv" }),
@@ -410,19 +599,20 @@ describe("daily sync Worker", () => {
       runDate: "20260904",
       runId: "run-1",
     });
-    expect(mocks.createRun).toHaveBeenCalledWith(
-      expect.anything(),
-      "nv",
-      "20260904",
-      "daily",
-      2,
-      expect.any(Date),
-      false,
-      "20260902000000",
-      null,
-      expect.any(String),
-      true,
-    );
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith({
+      db: expect.anything(),
+      provider: "nv",
+      dataSpec: "RACE",
+      runDate: "20260904",
+      trigger: "daily",
+      lookbackDays: 2,
+      now: expect.any(Date),
+      force: false,
+      fromTime: "20260902000000",
+      toTime: null,
+      cursorTime: expect.any(String),
+      advanceCursor: true,
+    });
 
     const futureRunResponse = await fetchHandler(
       new Request("https://example/admin/trigger", {
@@ -433,19 +623,20 @@ describe("daily sync Worker", () => {
       env,
     );
     expect(await futureRunResponse.json()).toMatchObject({ runDate: "20260905" });
-    expect(mocks.createRun).toHaveBeenLastCalledWith(
-      expect.anything(),
-      "jv",
-      "20260905",
-      "daily",
-      2,
-      expect.any(Date),
-      false,
-      "20260903000000",
-      expect.any(String),
-      expect.any(String),
-      true,
-    );
+    expect(mocks.createRunWithDataSpec).toHaveBeenLastCalledWith({
+      db: expect.anything(),
+      provider: "jv",
+      dataSpec: "RACE",
+      runDate: "20260905",
+      trigger: "daily",
+      lookbackDays: 2,
+      now: expect.any(Date),
+      force: false,
+      fromTime: "20260903000000",
+      toTime: expect.any(String),
+      cursorTime: expect.any(String),
+      advanceCursor: true,
+    });
 
     const forcedRunResponse = await fetchHandler(
       new Request("https://example/admin/trigger", {
@@ -461,19 +652,20 @@ describe("daily sync Worker", () => {
       env,
     );
     expect(forcedRunResponse.status).toBe(200);
-    expect(mocks.createRun).toHaveBeenLastCalledWith(
-      expect.anything(),
-      "nv",
-      "20260904",
-      "daily",
-      2,
-      expect.any(Date),
-      true,
-      "20260902000000",
-      null,
-      expect.any(String),
-      true,
-    );
+    expect(mocks.createRunWithDataSpec).toHaveBeenLastCalledWith({
+      db: expect.anything(),
+      provider: "nv",
+      dataSpec: "RACE",
+      runDate: "20260904",
+      trigger: "daily",
+      lookbackDays: 2,
+      now: expect.any(Date),
+      force: true,
+      fromTime: "20260902000000",
+      toTime: null,
+      cursorTime: expect.any(String),
+      advanceCursor: true,
+    });
 
     const monitorResponse = await fetchHandler(
       new Request("https://example/admin/trigger", {
@@ -519,7 +711,7 @@ describe("daily sync Worker", () => {
         new Date("2026-09-04T01:34:31Z"),
       );
       expect(response.status).toBe(400);
-      expect(mocks.createRun).not.toHaveBeenCalled();
+      expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
       expect(mocks.dailyRun).not.toHaveBeenCalled();
       expect(mocks.acquireRun).not.toHaveBeenCalled();
     },
@@ -557,7 +749,7 @@ describe("daily sync Worker", () => {
       expect(response.status).toBe(400);
     }
 
-    mocks.createRun.mockRejectedValueOnce(new Error("private failure"));
+    mocks.createRunWithDataSpec.mockRejectedValueOnce(new Error("private failure"));
     const failed = await fetchHandler(
       new Request("https://example/admin/trigger", {
         body: JSON.stringify({ action: "run", provider: "jv" }),
@@ -604,6 +796,73 @@ describe("daily sync Worker", () => {
       );
       expect(invalid.status).toBe(400);
     }
+  });
+
+  test("queues the explicit unpartitioned course target", async () => {
+    mocks.listTargets.mockResolvedValueOnce([
+      { table_name: "jvd_cs", partition_field: "__unpartitioned__" },
+    ]);
+    const response = await fetchHandler(
+      new Request("https://example/admin/index", {
+        body: JSON.stringify({ partitionValue: "__all__", provider: "jv", tableName: "jvd_cs" }),
+        headers: { Authorization: "Bearer admin", "Content-Type": "application/json" },
+        method: "POST",
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(queue.messages).toHaveLength(1);
+    expect(queue.messages[0]).toMatchObject({
+      partitionValue: "__all__",
+      provider: "jv",
+      tableName: "jvd_cs",
+      type: "index-plan",
+    });
+  });
+
+  test.each([
+    {
+      tableName: "jvd_cs",
+      partitionField: "__unpartitioned__",
+      partitionValue: "2026",
+      provider: "jv",
+    },
+    {
+      tableName: "jvd_cs",
+      partitionField: "kaisai_nen",
+      partitionValue: "__all__",
+      provider: "jv",
+    },
+    {
+      tableName: "jvd_cs",
+      partitionField: "__unpartitioned__",
+      partitionValue: "__all__",
+      provider: "nv",
+    },
+    {
+      tableName: "nvd_ra",
+      partitionField: "kaisai_nen",
+      partitionValue: "__all__",
+      provider: "nv",
+    },
+  ])("rejects a mismatched unpartitioned index request: %j", async (entry) => {
+    mocks.listTargets.mockResolvedValueOnce([
+      { table_name: entry.tableName, partition_field: entry.partitionField },
+    ]);
+    const response = await fetchHandler(
+      new Request("https://example/admin/index", {
+        body: JSON.stringify({
+          partitionValue: entry.partitionValue,
+          provider: entry.provider,
+          tableName: entry.tableName,
+        }),
+        headers: { Authorization: "Bearer admin", "Content-Type": "application/json" },
+        method: "POST",
+      }),
+      env,
+    );
+    expect(response.status).toBe(400);
+    expect(queue.messages).toHaveLength(0);
   });
 
   test("queues only an explicitly configured partition index", async () => {
@@ -690,19 +949,20 @@ describe("daily sync Worker", () => {
       { cron: "0 11 * * *", noRetry: vi.fn(), scheduledTime: Date.parse("2026-09-03T11:00:00Z") },
       env,
     );
-    expect(mocks.createRun).toHaveBeenCalledWith(
-      expect.anything(),
-      "jv",
-      "20260903",
-      "daily",
-      2,
-      expect.any(Date),
-      false,
-      "20260903193000",
-      "20260903200000",
-      "20260903200000",
-      true,
-    );
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith({
+      db: expect.anything(),
+      provider: "jv",
+      dataSpec: "RACE",
+      runDate: "20260903",
+      trigger: "daily",
+      lookbackDays: 2,
+      now: expect.any(Date),
+      force: false,
+      fromTime: "20260903193000",
+      toTime: "20260903200000",
+      cursorTime: "20260903200000",
+      advanceCursor: true,
+    });
     await scheduled(
       { cron: "0 17 * * *", noRetry: vi.fn(), scheduledTime: Date.parse("2026-09-03T17:00:00Z") },
       env,
@@ -717,7 +977,7 @@ describe("daily sync Worker", () => {
     const now = new Date("2026-09-03T12:00:00Z");
     mocks.dailyRun.mockResolvedValueOnce(null);
     await monitor(env, "jv", "20260903", now);
-    expect(mocks.createRun).toHaveBeenCalledTimes(1);
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledTimes(1);
 
     mocks.dailyRun.mockResolvedValueOnce(run("succeeded"));
     await monitor(env, "jv", "20260903", now);
@@ -961,8 +1221,102 @@ describe("daily sync Worker", () => {
       env,
     );
     expect(response.status).toBe(200);
-    const payload = (await response.json()) as { run_id: string };
-    expect(payload.run_id).toBe("run-1");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toStrictEqual(
+      expect.objectContaining({
+        run_id: "run-1",
+        catalog_ready: true,
+        neon_backup_complete: false,
+      }),
+    );
+    expect(mocks.getRunReadiness).toHaveBeenCalledTimes(1);
+    expect(mocks.getRunReadiness.mock.calls[0]?.[1]).toBe("12345678-1234-1234-1234-123456789abc");
+  });
+
+  test("serves real SQLite Catalog receipts through the authenticated HTTP handler", async () => {
+    const state = await vi.importActual<typeof import("./state")>("./state");
+    const readiness = await vi.importActual<typeof import("./run-readiness")>("./run-readiness");
+    const now: Date = new Date("2026-09-16T00:00:00Z");
+    const { run: stored } = await state.createRun(env.DB, "jv", "20260916", "manual", 1, now, true);
+    await state.markParsed(
+      env.DB,
+      stored.run_id,
+      1,
+      1,
+      [
+        {
+          table_name: "netkeiba_training_workouts",
+          staging_key: "training-stage",
+          source_records: 1,
+          catalog_status: "succeeded",
+          neon_status: "failed_permanent",
+          partitions: [],
+        },
+      ],
+      now,
+    );
+    await state.updateRunStatus(env.DB, stored.run_id, "neon_failed", now, "neon-schema");
+    mocks.getRunReadiness.mockImplementationOnce(readiness.getRunReadiness);
+    const url: URL = new URL("https://daily.test/internal/run-status");
+    url.searchParams.set("runId", stored.run_id);
+    const response = await fetchHandler(
+      new Request(url, { headers: { Authorization: "Bearer realtime-admin" } }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toStrictEqual(
+      expect.objectContaining({
+        catalog_ready: true,
+        neon_backup_complete: false,
+        status: "neon_failed",
+        error_stage: "neon-schema",
+      }),
+    );
+    expect((await state.getRun(env.DB, stored.run_id)).status).toBe("neon_failed");
+    expect(
+      (await state.getRunTable(env.DB, stored.run_id, "netkeiba_training_workouts")).neon_status,
+    ).toBe("failed_permanent");
+    expect(queue.messages).toStrictEqual([]);
+  });
+
+  test("authenticates before reading internal readiness", async () => {
+    const response = await fetchHandler(
+      new Request(
+        "https://daily.test/internal/run-status?runId=12345678-1234-1234-1234-123456789abc",
+      ),
+      env,
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(mocks.getRunReadiness).not.toHaveBeenCalled();
+  });
+
+  test("returns an uncached 404 only for an absent run", async () => {
+    mocks.getRunReadiness.mockResolvedValueOnce(null);
+    const response = await fetchHandler(
+      new Request(
+        "https://daily.test/internal/run-status?runId=12345678-1234-1234-1234-123456789abc",
+        { headers: { Authorization: "Bearer realtime-admin" } },
+      ),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("does not disguise storage failures as a missing run or leak details", async () => {
+    mocks.getRunReadiness.mockRejectedValueOnce(new Error("private storage detail"));
+    const response = await fetchHandler(
+      new Request(
+        "https://daily.test/internal/run-status?runId=12345678-1234-1234-1234-123456789abc",
+        { headers: { Authorization: "Bearer realtime-admin" } },
+      ),
+      env,
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toStrictEqual({ error: "Run status unavailable" });
   });
 
   test("acks successful queue messages and retries safe failures", async () => {

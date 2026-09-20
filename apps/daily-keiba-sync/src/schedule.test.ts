@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   acquisitionBody,
+  acquisitionBodyForSpec,
   defaultAcquisitionWindow,
   CRON_JV_DAILY,
   CRON_JV_MONITOR,
@@ -11,6 +12,44 @@ import {
 } from "./schedule";
 
 describe("daily schedule", () => {
+  test("preserves the explicitly persisted JV acquisition spec", () => {
+    expect(
+      acquisitionBodyForSpec({
+        provider: "jv",
+        dataSpec: "COMM",
+        fromTime: "20260901000000",
+        toTime: "20260903110000",
+      }),
+    ).toStrictEqual({ dataSpec: "COMM", from: "20260901000000", to: "20260903110000" });
+    expect(
+      acquisitionBodyForSpec({
+        provider: "jv",
+        dataSpec: "RACECOMM",
+        fromTime: "20260901000000",
+        toTime: "20260903110000",
+      }),
+    ).toStrictEqual({ dataSpec: "RACECOMM", from: "20260901000000", to: "20260903110000" });
+  });
+
+  test("preserves NV RACE and rejects unsupported NV specs", () => {
+    expect(
+      acquisitionBodyForSpec({
+        provider: "nv",
+        dataSpec: "RACE",
+        fromTime: "20260901000000",
+        toTime: null,
+      }),
+    ).toStrictEqual({ dataSpec: "RACE", fromTime: "20260901000000", option: 1 });
+    expect(() =>
+      acquisitionBodyForSpec({
+        provider: "nv",
+        dataSpec: "COMM",
+        fromTime: "20260901000000",
+        toTime: null,
+      }),
+    ).toThrow("NV acquisition requires RACE");
+  });
+
   test("maps all four UTC crons to their JST actions", () => {
     expect(scheduledAction(CRON_NV_DAILY)).toEqual({ action: "run", provider: "nv" });
     expect(scheduledAction(CRON_NV_MONITOR)).toEqual({ action: "monitor", provider: "nv" });

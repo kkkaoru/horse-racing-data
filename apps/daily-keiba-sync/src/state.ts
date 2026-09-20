@@ -1,4 +1,5 @@
-import type { Provider, RunRow, TriggerKind } from "./types";
+// Runs with bun; RETURNING excludes trigger side effects from claim decisions.
+import type { AcquisitionDataSpec, Provider, RunRow, TriggerKind } from "./types";
 
 export interface CatalogTargetRow {
   partition_field: string;
@@ -29,7 +30,75 @@ export interface IndexChunkRow {
   table_name: string;
 }
 
+export interface AcquisitionRunInput {
+  db: D1Database;
+  provider: Provider;
+  dataSpec: AcquisitionDataSpec;
+  runDate: string;
+  trigger: TriggerKind;
+  lookbackDays: number;
+  now: Date;
+  force: boolean;
+  fromTime: string | null;
+  toTime: string | null;
+  cursorTime: string | null;
+  advanceCursor: boolean;
+}
+
 const nowIso = (now: Date): string => now.toISOString();
+
+export const createRunWithDataSpec = async ({
+  db,
+  provider,
+  dataSpec,
+  runDate,
+  trigger,
+  lookbackDays,
+  now,
+  force,
+  fromTime,
+  toTime,
+  cursorTime,
+  advanceCursor,
+}: AcquisitionRunInput): Promise<{ created: boolean; run: RunRow }> => {
+  if (provider === "nv" && dataSpec !== "RACE") throw new Error("NV acquisition requires RACE");
+  if (dataSpec === "COMM" && advanceCursor)
+    throw new Error("COMM-only acquisition cannot advance the race cursor");
+  const runId = crypto.randomUUID();
+  const dedupeKey = force
+    ? `${provider}:${runDate}:${trigger}:${runId}`
+    : `${provider}:${runDate}:daily`;
+  const timestamp = nowIso(now);
+  const result = await db
+    .prepare(
+      `insert or ignore into sync_runs (
+         run_id, dedupe_key, provider, run_date, trigger_kind, lookback_days,
+         from_time, to_time, cursor_time, advance_cursor, data_spec, status, created_at, updated_at
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?) returning 1 as changed`,
+    )
+    .bind(
+      runId,
+      dedupeKey,
+      provider,
+      runDate,
+      trigger,
+      lookbackDays,
+      fromTime,
+      toTime,
+      cursorTime,
+      advanceCursor ? 1 : 0,
+      dataSpec,
+      timestamp,
+      timestamp,
+    )
+    .all<{ changed: number }>();
+  const run = await db
+    .prepare("select * from sync_runs where dedupe_key = ?")
+    .bind(dedupeKey)
+    .first<RunRow>();
+  if (run === null) throw new Error("D1 did not return the created sync run");
+  return { created: result.results.length === 1, run };
+};
 
 export const createRun = async (
   db: D1Database,
@@ -43,41 +112,21 @@ export const createRun = async (
   toTime: string | null = null,
   cursorTime: string | null = null,
   advanceCursor = false,
-): Promise<{ created: boolean; run: RunRow }> => {
-  const runId = crypto.randomUUID();
-  const dedupeKey = force
-    ? `${provider}:${runDate}:${trigger}:${runId}`
-    : `${provider}:${runDate}:daily`;
-  const timestamp = nowIso(now);
-  const result = await db
-    .prepare(
-      `insert or ignore into sync_runs (
-         run_id, dedupe_key, provider, run_date, trigger_kind, lookback_days,
-         from_time, to_time, cursor_time, advance_cursor, status, created_at, updated_at
-       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
-    )
-    .bind(
-      runId,
-      dedupeKey,
-      provider,
-      runDate,
-      trigger,
-      lookbackDays,
-      fromTime,
-      toTime,
-      cursorTime,
-      advanceCursor ? 1 : 0,
-      timestamp,
-      timestamp,
-    )
-    .run();
-  const run = await db
-    .prepare("select * from sync_runs where dedupe_key = ?")
-    .bind(dedupeKey)
-    .first<RunRow>();
-  if (run === null) throw new Error("D1 did not return the created sync run");
-  return { created: result.meta.changes === 1, run };
-};
+): Promise<{ created: boolean; run: RunRow }> =>
+  await createRunWithDataSpec({
+    db,
+    provider,
+    dataSpec: "RACE",
+    runDate,
+    trigger,
+    lookbackDays,
+    now,
+    force,
+    fromTime,
+    toTime,
+    cursorTime,
+    advanceCursor,
+  });
 
 export const getRun = async (db: D1Database, runId: string): Promise<RunRow> => {
   const run = await db
@@ -498,11 +547,12 @@ export const acquireCatalogLease = async (
          expires_at = excluded.expires_at,
          updated_at = excluded.updated_at
        where catalog_table_leases.expires_at <= excluded.updated_at
-          or catalog_table_leases.owner_id = excluded.owner_id`,
+          or catalog_table_leases.owner_id = excluded.owner_id
+       returning 1 as changed`,
     )
     .bind(tableName, ownerId, expiresAt, nowIso(now))
-    .run();
-  return result.meta.changes === 1;
+    .all<{ changed: number }>();
+  return result.results.length === 1;
 };
 
 export const releaseCatalogLease = async (
@@ -549,11 +599,12 @@ export const beginIndexPartition = async (
        on conflict(table_name, partition_value) do update set
          status = 'planning', updated_at = excluded.updated_at
        where catalog_index_partitions.status in ('pending', 'failed')
-          or catalog_index_partitions.updated_at <= ?`,
+          or catalog_index_partitions.updated_at <= ?
+       returning 1 as changed`,
     )
     .bind(tableName, partitionValue, timestamp, staleBefore)
-    .run();
-  return result.meta.changes === 1;
+    .all<{ changed: number }>();
+  return result.results.length === 1;
 };
 
 export const clearIndexPartition = async (
@@ -683,11 +734,12 @@ export const finalizeIndexPartition = async (
   const result = await db
     .prepare(
       `update catalog_index_partitions set status = 'ready', updated_at = ?
-       where table_name = ? and partition_value = ? and total_chunks = completed_chunks`,
+       where table_name = ? and partition_value = ? and total_chunks = completed_chunks
+       returning 1 as changed`,
     )
     .bind(nowIso(now), tableName, partitionValue)
-    .run();
-  return result.meta.changes === 1;
+    .all<{ changed: number }>();
+  return result.results.length === 1;
 };
 
 export const getIndexChunk = async (db: D1Database, chunkId: string): Promise<IndexChunkRow> => {

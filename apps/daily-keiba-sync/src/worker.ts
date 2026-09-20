@@ -1,3 +1,5 @@
+// Runs with bun; deployed as a Cloudflare Worker.
+import { getRunReadiness } from "./run-readiness";
 import {
   getCachedProviderCursor,
   purgeAllProviderCursorCaches,
@@ -16,19 +18,39 @@ import {
 } from "./schedule";
 import {
   createRun,
+  createRunWithDataSpec,
   getDailyRun,
   getLatestRun,
   getProviderAcquisitionCursor,
   getReadyIndexPartitions,
-  getRun,
   listCatalogTargets,
   markParsed,
   updateRunStatus,
 } from "./state";
 import type { AcquisitionWindow } from "./schedule";
 import { createTableStage, tableStagingKey } from "./source-stream";
-import type { Env, Provider, RecordRow, RecordValue, RunRow, SyncJob, TriggerKind } from "./types";
+import type {
+  AcquisitionDataSpec,
+  Env,
+  Provider,
+  RecordRow,
+  RecordValue,
+  RunRow,
+  SyncJob,
+  TriggerKind,
+} from "./types";
 
+interface RequestedAcquisitionWindow extends AcquisitionWindow {
+  dataSpec: AcquisitionDataSpec;
+}
+
+interface AdminRunRequest extends RequestedAcquisitionWindow {
+  lookbackDays: number;
+  provider: Provider;
+  runDate: string;
+}
+
+const STATUS_HEADERS: Readonly<Record<string, string>> = { "Cache-Control": "no-store" };
 const MAX_LOOKBACK_DAYS = 31;
 const JV_RAW_STAGE_QUEUE = "daily-keiba-sync-jv-raw-stage-jobs";
 const NEON_QUEUE = "daily-keiba-sync-neon-jobs";
@@ -93,7 +115,7 @@ const startAcquisition = async (
   lookbackDays: number,
   force: boolean,
   now: Date,
-  requestedWindow?: AcquisitionWindow,
+  requestedWindow?: RequestedAcquisitionWindow,
 ): Promise<RunRow> => {
   const advanceCursor = trigger !== "manual";
   const cursorTime = jstTimestamp(now.getTime());
@@ -103,23 +125,25 @@ const startAcquisition = async (
         getProviderAcquisitionCursor(env.DB, provider),
       )
     : null;
-  const window = requestedWindow ?? {
+  const window: RequestedAcquisitionWindow = requestedWindow ?? {
+    dataSpec: "RACE",
     fromTime: previousCursor ?? fallbackWindow.fromTime,
     toTime: provider === "jv" ? cursorTime : null,
   };
-  const { created, run } = await createRun(
-    env.DB,
+  const { created, run } = await createRunWithDataSpec({
+    db: env.DB,
     provider,
+    dataSpec: window.dataSpec,
     runDate,
     trigger,
     lookbackDays,
     now,
     force,
-    window.fromTime,
-    window.toTime,
+    fromTime: window.fromTime,
+    toTime: window.toTime,
     cursorTime,
     advanceCursor,
-  );
+  });
   if (created) {
     try {
       await acquireRun(
@@ -195,16 +219,16 @@ const scheduled = async (event: ScheduledController, env: Env): Promise<void> =>
   await monitor(env, action.provider, runDate, now);
 };
 
-interface AdminRunRequest {
-  fromTime: string;
-  lookbackDays: number;
-  provider: Provider;
-  runDate: string;
-  toTime: string | null;
-}
-
 const parseAdminRunRequest = (value: Record<string, unknown>, now: Date): AdminRunRequest => {
   const provider = parseProvider(value.provider);
+  const dataSpec = value.dataSpec === undefined ? "RACE" : value.dataSpec;
+  if (dataSpec !== "RACE" && dataSpec !== "COMM" && dataSpec !== "RACECOMM")
+    throw new Error("Invalid acquisition spec");
+  if (
+    dataSpec !== "RACE" &&
+    (provider !== "jv" || value.fromTime === undefined || value.toTime === undefined)
+  )
+    throw new Error("COMM acquisition requires JV and an explicit window");
   const runDate = parseRunDate(value.runDate, jstDate(now.getTime()));
   const lookbackDays = parseLookback(value.lookbackDays, BOOTSTRAP_LOOKBACK_DAYS);
   const defaultWindow = defaultAcquisitionWindow(provider, runDate, lookbackDays);
@@ -220,8 +244,12 @@ const parseAdminRunRequest = (value: Record<string, unknown>, now: Date): AdminR
         : parseProviderTime(value.toTime, "to time");
   if (provider === "nv" && value.toTime !== undefined)
     throw new Error("NV acquisition does not accept an end time");
-  if (toTime !== null && fromTime > toTime) throw new Error("Invalid acquisition window");
-  return { fromTime, lookbackDays, provider, runDate, toTime };
+  if (
+    toTime !== null &&
+    (fromTime > toTime || (dataSpec !== "RACE" && toTime > jstTimestamp(now.getTime())))
+  )
+    throw new Error("Invalid acquisition window");
+  return { dataSpec, fromTime, lookbackDays, provider, runDate, toTime };
 };
 
 const adminRun = async (request: Request, env: Env, now: Date): Promise<Response> => {
@@ -234,6 +262,16 @@ const adminRun = async (request: Request, env: Env, now: Date): Promise<Response
     return Response.json({ error: "Invalid request" }, { status: 400 });
   }
   try {
+    if (parsed.dataSpec !== "RACE") {
+      const targets = await listCatalogTargets(env.DB, parsed.provider);
+      if (
+        !targets.some(
+          (target) =>
+            target.table_name === "jvd_cs" && target.partition_field === "__unpartitioned__",
+        )
+      )
+        return Response.json({ error: "COMM Catalog target is not configured" }, { status: 409 });
+    }
     const run = await startAcquisition(
       env,
       parsed.provider,
@@ -242,9 +280,10 @@ const adminRun = async (request: Request, env: Env, now: Date): Promise<Response
       parsed.lookbackDays,
       true,
       now,
-      { fromTime: parsed.fromTime, toTime: parsed.toTime },
+      { dataSpec: parsed.dataSpec, fromTime: parsed.fromTime, toTime: parsed.toTime },
     );
     return Response.json({
+      dataSpec: run.data_spec,
       fromTime: parsed.fromTime,
       provider: run.provider,
       runDate: run.run_date,
@@ -300,15 +339,18 @@ const adminIndex = async (request: Request, env: Env, now: Date): Promise<Respon
   if (!isObject(value)) return Response.json({ error: "Invalid request" }, { status: 400 });
   try {
     const provider = parseProvider(value.provider);
-    if (
-      typeof value.tableName !== "string" ||
-      typeof value.partitionValue !== "string" ||
-      !/^20\d{2}$/.test(value.partitionValue)
-    )
+    if (typeof value.tableName !== "string" || typeof value.partitionValue !== "string")
       throw new Error("Invalid index target");
     const targets = await listCatalogTargets(env.DB, provider);
-    if (!targets.some((target) => target.table_name === value.tableName))
-      throw new Error("Catalog target is not configured");
+    const target = targets.find((candidate) => candidate.table_name === value.tableName);
+    if (target === undefined) throw new Error("Catalog target is not configured");
+    const validPartition =
+      target.table_name === "jvd_cs"
+        ? provider === "jv" &&
+          target.partition_field === "__unpartitioned__" &&
+          value.partitionValue === "__all__"
+        : /^20\d{2}$/.test(value.partitionValue);
+    if (!validPartition) throw new Error("Invalid index partition");
     const runId = `index-${crypto.randomUUID()}`;
     const runDate = jstDate(now.getTime());
     await env.R2_CATALOG_JOBS.send({
@@ -459,15 +501,21 @@ const fetchHandler = async (request: Request, env: Env): Promise<Response> => {
     (request.method === "GET" && url.pathname === "/internal/run-status")
   ) {
     if (!isAuthorized(request, env.REALTIME_ADMIN_TOKEN))
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
+      return Response.json({ error: "Unauthorized" }, { status: 401, headers: STATUS_HEADERS });
     if (request.method === "POST") return await stageExternalTable(request, env, new Date());
     const runId = url.searchParams.get("runId");
     if (runId === null || !/^[0-9a-f-]{36}$/u.test(runId))
-      return Response.json({ error: "Invalid query" }, { status: 400 });
+      return Response.json({ error: "Invalid query" }, { status: 400, headers: STATUS_HEADERS });
     try {
-      return Response.json(await getRun(env.DB, runId));
+      const run = await getRunReadiness(env.DB, runId);
+      return run === null
+        ? new Response(null, { status: 404, headers: STATUS_HEADERS })
+        : Response.json(run, { headers: STATUS_HEADERS });
     } catch {
-      return new Response(null, { status: 404 });
+      return Response.json(
+        { error: "Run status unavailable" },
+        { status: 503, headers: STATUS_HEADERS },
+      );
     }
   }
   if (!isAuthorized(request, env.ADMIN_TOKEN))

@@ -1,4 +1,6 @@
+// Runs in Workers; verification runs with bun package scripts.
 export type Provider = "jv" | "nv";
+export type AcquisitionDataSpec = "RACE" | "COMM" | "RACECOMM";
 export type TriggerKind = "daily" | "manual" | "monitor";
 
 export interface AcquisitionRequest {
@@ -115,6 +117,7 @@ export interface TableStage {
 
 export interface RunRow {
   advance_cursor: number;
+  data_spec: AcquisitionDataSpec;
   catalog_tables: number;
   completed_at: string | null;
   cursor_time: string | null;

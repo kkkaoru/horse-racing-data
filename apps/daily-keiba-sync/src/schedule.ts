@@ -1,4 +1,5 @@
-import type { Provider } from "./types";
+// Runs in Workers; verification runs with bun package scripts.
+import type { AcquisitionDataSpec, Provider } from "./types";
 
 export const CRON_NV_DAILY = "0 16 * * *";
 export const CRON_NV_MONITOR = "0 17 * * *";
@@ -10,6 +11,11 @@ export const BOOTSTRAP_LOOKBACK_DAYS = 7;
 export interface ScheduledAction {
   action: "monitor" | "run";
   provider: Provider;
+}
+
+export interface ExplicitAcquisitionRequest extends AcquisitionWindow {
+  provider: Provider;
+  dataSpec: AcquisitionDataSpec;
 }
 
 const ACTIONS: Readonly<Record<string, ScheduledAction>> = Object.freeze({
@@ -58,4 +64,14 @@ export const acquisitionBody = (
   if (provider === "nv") return { dataSpec: "RACE", fromTime, option: 1 };
   if (toTime === null) throw new Error("JV acquisition requires an end time");
   return { dataSpec: "RACE", from: fromTime, to: toTime };
+};
+
+export const acquisitionBodyForSpec = ({
+  provider,
+  dataSpec,
+  fromTime,
+  toTime,
+}: ExplicitAcquisitionRequest): Readonly<Record<string, number | string>> => {
+  if (provider === "nv" && dataSpec !== "RACE") throw new Error("NV acquisition requires RACE");
+  return { ...acquisitionBody(provider, fromTime, toTime), dataSpec };
 };
