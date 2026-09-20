@@ -1,5 +1,9 @@
 # Production cutover implementation checkpoints
 
+## B2 increment (b) SQL layer landed and probe-verified — 2026-09-20T21:20Z
+
+`apps/pc-keiba-r2-catalog/src/race-matched-profile-read.ts` (commit `238f0712`, 10 tests, tsc/lint/oxfmt clean) ports the cell-matching predicate family and builds the target-profile query; `time-score-sql.ts` (`906064bd`) supplies the tenths/numeric/window helpers. Probe `tmp/neon-backup-only-20260920/b2b-split-probe.json` confirms the two constructs the port depends on that were not previously probed: **`split_part(trim(kyoso_joken_meisho), ' ', 1)` returns 200** and the **code→label CASE key returns 200**, and the `years` window (`concat(kaisai_nen, kaisai_tsukihi) < '20260920' AND >= '20160920'`) returns 35,376 rows. So the committed SQL uses only constructs proven against the live mirror. Only the cell-matching family is ported; the legacy predicate family remains a follow-up (as does wiring the route).
+
 ## B2 increment (b) de-risked: every construct the matched-races port needs works in R2 SQL — 2026-09-20T21:14Z
 
 Receipt `tmp/neon-backup-only-20260920/b2b-sql-probe.json`. Probed against real tables and all returned 200: **`IS NOT DISTINCT FROM`** (so the cell-matching predicates are portable after all), `grade_code IN ('A','F')`, a **correlated subquery** for the runner-count condition, `avg(try_cast(nullif(kohan_3f,'000') AS DOUBLE))` over `kakutei_chakujun IN ('01','02','03')` (returned 352.7 tenths / 475.2 kg), and `replace(btrim(coalesce(x,'')), chr(12288), '')` for the ideographic-space trim. So increment (b) does not need the legacy-only fallback that was previously assumed: both predicate families can be expressed.
