@@ -21,6 +21,33 @@ interface DayListRequest {
 const json = (value: unknown, status: number): Response =>
   Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
 
+const TRANSIENT_R2_SQL_STATUSES: ReadonlySet<number> = new Set([408, 425, 429, 500, 502, 503, 504]);
+const READ_ATTEMPTS: number = 2;
+const RETRY_DELAY_MS: number = 250;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Only provider-transient failures are retried; validation failures, 4xx and
+// malformed data must fail fast so real corruption is never masked.
+const isTransientReadError = (error: unknown): boolean => {
+  if (error instanceof DOMException)
+    return error.name === "AbortError" || error.name === "TimeoutError";
+  if (error instanceof TypeError) return true;
+  if (typeof error !== "object" || error === null) return false;
+  const status: unknown = Reflect.get(error, "status");
+  return typeof status === "number" && TRANSIENT_R2_SQL_STATUSES.has(status);
+};
+
+const describeReadError = (error: unknown): Record<string, unknown> => {
+  if (typeof error !== "object" || error === null) return {};
+  const name: unknown = Reflect.get(error, "name");
+  const status: unknown = Reflect.get(error, "status");
+  return {
+    ...(typeof name === "string" ? { errorName: name } : {}),
+    ...(typeof status === "number" ? { status } : {}),
+  };
+};
+
 const handleDayListRequest = async ({
   request,
   env,
@@ -43,20 +70,22 @@ const handleDayListRequest = async ({
   } catch {
     return json({ error: "Invalid race day list request" }, 400);
   }
-  try {
-    return json(
-      {
-        races: await read({
-          input,
-          query: async (sql) => executeR2Sql(env, sql, boundedAuditFetch(fetch)),
-        }),
-      },
-      200,
-    );
-  } catch {
-    console.error(JSON.stringify({ event: failureEvent }));
-    return json({ error: "Catalog race day list unavailable" }, 503);
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < READ_ATTEMPTS; attempt += 1) {
+    try {
+      const races: RaceDayListRow[] = await read({
+        input,
+        query: async (sql) => executeR2Sql(env, sql, boundedAuditFetch(fetch)),
+      });
+      return json({ races }, 200);
+    } catch (error: unknown) {
+      lastError = error;
+      if (attempt + 1 >= READ_ATTEMPTS || !isTransientReadError(error)) break;
+      await sleep(RETRY_DELAY_MS);
+    }
   }
+  console.error(JSON.stringify({ event: failureEvent, ...describeReadError(lastError) }));
+  return json({ error: "Catalog race day list unavailable" }, 503);
 };
 
 export const handleRaceDayListRead = (

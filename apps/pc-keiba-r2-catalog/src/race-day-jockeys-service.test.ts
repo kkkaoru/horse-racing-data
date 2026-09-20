@@ -110,7 +110,9 @@ it("sanitizes failures without retrying or falling back", async () => {
   );
   expect(response.status).toBe(503);
   expect(await response.json()).toStrictEqual({ error: "Catalog race day list unavailable" });
-  expect(log).toHaveBeenCalledWith('{"event":"race_day_list_with_jockeys_read_failed"}');
+  expect(log).toHaveBeenCalledWith(
+    '{"event":"race_day_list_with_jockeys_read_failed","errorName":"Error"}',
+  );
   expect(mocks.query).toHaveBeenCalledTimes(1);
   log.mockRestore();
 });

@@ -426,11 +426,13 @@ const parseJson = (text: string): unknown => {
 // running-style-features's ORDER BY fallback in worker.ts.
 export class R2SqlQueryError extends Error {
   readonly code: number | string | undefined;
+  readonly status: number | undefined;
 
-  constructor(message: string, code: number | string | undefined) {
+  constructor(message: string, code: number | string | undefined, status?: number) {
     super(message);
     this.name = "R2SqlQueryError";
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -588,6 +590,7 @@ export const executeR2Sql = async (
     throw new R2SqlQueryError(
       `R2 SQL HTTP ${String(response.status)}${suffix}`,
       cloudflareErrorCode(payload),
+      response.status,
     );
   }
   return parseRows(parseJson(text));

@@ -119,8 +119,64 @@ it("sanitizes upstream failures without retry", async () => {
   expect(response.status).toBe(503);
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(await response.json()).toStrictEqual({ error: "Catalog race day list unavailable" });
-  expect(log).toHaveBeenCalledWith('{"event":"race_day_list_read_failed"}');
+  expect(log).toHaveBeenCalledWith('{"event":"race_day_list_read_failed","errorName":"Error"}');
+  expect(JSON.stringify(log.mock.calls)).not.toContain("private provider detail");
   expect(mocks.query).toHaveBeenCalledTimes(1);
+  log.mockRestore();
+});
+it("retries a transient provider 503 once and returns the recovered rows", async () => {
+  const transient = Object.assign(new Error("R2 SQL HTTP 503"), { status: 503 });
+  mocks.query.mockRejectedValueOnce(transient).mockResolvedValueOnce([
+    {
+      source: "nar",
+      kaisai_nen: "2024",
+      kaisai_tsukihi: "0229",
+      keibajo_code: "36",
+      race_bango: "01",
+      kyosomei_hondai: "競走",
+      kyosomei_fukudai: null,
+      grade_code: "",
+      kyoso_shubetsu_code: "11",
+      kyoso_kigo_code: null,
+      juryo_shubetsu_code: "1",
+      kyoso_joken_code: "005",
+      kyoso_joken_meisho: null,
+      kyori: "1600",
+      track_code: "11",
+      hasso_jikoku: "1000",
+      shusso_tosu: "18",
+    },
+  ]);
+  const response: Response = await handleRaceDayListRead(
+    new Request("https://catalog.internal/v1/race-day-list?date=20240229"),
+    env,
+  );
+  expect(response.status).toBe(200);
+  expect(mocks.query).toHaveBeenCalledTimes(2);
+});
+it("does not retry a non-transient provider 400", async () => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  mocks.query.mockRejectedValue(Object.assign(new Error("R2 SQL HTTP 400"), { status: 400 }));
+  const response: Response = await handleRaceDayListRead(
+    new Request("https://catalog.internal/v1/race-day-list?date=20240229"),
+    env,
+  );
+  expect(response.status).toBe(503);
+  expect(mocks.query).toHaveBeenCalledTimes(1);
+  expect(log).toHaveBeenCalledWith(
+    '{"event":"race_day_list_read_failed","errorName":"Error","status":400}',
+  );
+  log.mockRestore();
+});
+it("retries an aborted provider read once", async () => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  mocks.query.mockRejectedValue(new DOMException("aborted", "AbortError"));
+  const response: Response = await handleRaceDayListRead(
+    new Request("https://catalog.internal/v1/race-day-list?date=20240229"),
+    env,
+  );
+  expect(response.status).toBe(503);
+  expect(mocks.query).toHaveBeenCalledTimes(2);
   log.mockRestore();
 });
 it("treats malformed provider data as failure, not empty success", async () => {
