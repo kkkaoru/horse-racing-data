@@ -1,5 +1,21 @@
 # Production cutover implementation checkpoints
 
+## Remaining-Neon elimination: mirror probe results and the next unit — 2026-09-20T23:35Z
+
+Probed which of the hot Neon tables actually exist in the R2 mirror (`tmp/neon-backup-only-20260920/p1-mirror-probe.out`; R2 SQL REST, warehouse `pc-keiba-r2-catalog`, namespace `pc_keiba`):
+
+| table                                    | R2                     |
+| ---------------------------------------- | ---------------------- |
+| `race_running_style_model_predictions`   | **mirrored, 519 rows** |
+| `race_finish_position_model_predictions` | missing (40010)        |
+| `race_entry_corner_features`             | missing (40010)        |
+| `race_entry_corner_model_predictions`    | missing (40010)        |
+| `nvd_ns`                                 | missing (40010)        |
+
+So of the two tables that still show fresh Neon index scans, only the running-style one is portable today; the finish-position prediction readers, the corner-feature readers and `getRaceAbilityTests` are all BLOCKED on mirroring and should be recorded as prerequisites rather than ported around. The single feasible hot unit is therefore the **running-style prediction reader** (`getActiveRunningStylePredictions` and, if it shares the table, `getRunningStyleBucketEvaluation`): add a catalog-side read (inert first) plus a `getDatabaseTarget() === "cloudflare"` branch in the viewer, port any non-trivial compute into pure unit-tested helpers, gate on coverage >= 95 / tsc / lint, then 0% deploy with version-override parity before promoting, and finally re-sample Hyperdrive to show `race_running_style_model_predictions` no longer gets new scans while the running-style section is served.
+
+Worker-level dependencies still outstanding (verified by grep of `wrangler*.jsonc`): the `hyperdrive` binding remains in `apps/pc-keiba-viewer/wrangler.jsonc:123` (prod) and `wrangler.dev.jsonc:32`, `apps/sync-realtime-data/wrangler.jsonc:266`, and `apps/sync-realtime-data-hot/wrangler.jsonc:91`; `daily-keiba-sync`, `mlflow`/`mlflow-ui-proxy` and `running_style_model_*` are also still Neon-dependent. Remove the viewer binding only once no viewer reader needs Neon.
+
 ## Re-investigation: Neon dependency down, no error regression, one pre-existing 503 to fix — 2026-09-20T23:10Z
 
 **Neon dependency has clearly dropped.** Hyperdrive showed zero active queries and zero connections to Neon, and `jvd_ra`/`nvd_ra`/`jvd_se`/`nvd_se` recorded no new index scans while race pages were served (200) — the time-score `matched_races` query that topped the 05:46 sample is gone. The only tables with fresh scans were `race_finish_position_model_predictions` and `race_running_style_model_predictions` (Unit C/D work).
