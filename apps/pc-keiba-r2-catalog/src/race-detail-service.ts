@@ -6,6 +6,7 @@ import { handleRaceCalendarRead } from "./race-calendar-service";
 import { handleRaceYearsRead } from "./race-years-service";
 import { handleRaceDayListRead, handleRaceDayListWithJockeysRead } from "./race-day-list-service";
 import { handleRaceHistoryRead } from "./race-history-service";
+import { handleRaceMatchedProfileRead } from "./race-matched-profile-service";
 import { handleRaceRunnersRead } from "./race-runners-service";
 import {
   buildRaceDetailReadSql,
@@ -71,6 +72,8 @@ export class RaceDetailReadService extends WorkerEntrypoint<R2SqlCatalogConfig> 
     if (path === "/v1/race-day-list") return await handleRaceDayListRead(request, this.env);
     if (path === "/v1/race-runners") return await handleRaceRunnersRead(request, this.env);
     if (path === "/v1/race-history") return await handleRaceHistoryRead(request, this.env);
+    if (path === "/v1/race-matched-profile")
+      return await handleRaceMatchedProfileRead(request, this.env);
     if (path === "/v1/race-years") return await handleRaceYearsRead(request, this.env);
     if (path === "/v1/race-calendar") return await handleRaceCalendarRead(request, this.env);
     if (path !== SERVICE_PATH) return json({ error: "Not found" }, 404);
