@@ -39,6 +39,7 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../lib/race-classification";
+import { loadOptionalRaceDetailData } from "../../../lib/race-detail-optional-data";
 import {
   buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
@@ -276,7 +277,11 @@ const loadRaceDetailSnapshotFromDb = async (params: {
   const [courseInfo, runners, sameVenueRaces] = await Promise.all([
     getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
     getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
-    getSameVenueRacesByDate(source, year, month, day, keibajoCode),
+    loadOptionalRaceDetailData(
+      () => getSameVenueRacesByDate(source, year, month, day, keibajoCode),
+      [],
+      { data: "same_venue_races", date: `${year}${month}${day}`, keibajoCode, source },
+    ),
   ]);
   return { courseInfo, race, runners, sameVenueRaces };
 };
