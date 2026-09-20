@@ -32,6 +32,9 @@ import {
   readCatalogRaceDayListWithJockeysOrStale,
 } from "../lib/race-day-list-catalog";
 import { readCatalogRaceDetail } from "../lib/race-detail-catalog";
+import { readCatalogRaceHistory } from "../lib/race-history-catalog";
+import { readCatalogOverseasRaceHistory } from "../lib/race-history-overseas-catalog";
+import { readCatalogRaceMatchedProfile } from "../lib/race-matched-profile-catalog";
 import { readCatalogRaceRunners } from "../lib/race-runners-catalog";
 import type {
   AbilityTest,
@@ -81,6 +84,19 @@ import {
   type RunningStyleBucketMetrics,
 } from "../lib/running-style-prediction-dimensions";
 import { scaleRunningStyleEvaluationFromCM } from "../lib/running-style-prediction-evaluation";
+import {
+  composeCatalogTimeScoreRows,
+  groupHistoryByHorseId,
+  toAppTimeScoreRows,
+} from "../lib/time-score-catalog";
+import type { CatalogTimeScoreHorse } from "../lib/time-score-catalog";
+import type { TimeScoreHistoryRow } from "../lib/time-score-pipeline";
+import {
+  normaliseHorseName,
+  normaliseHorseNumber,
+  parseDigitsOnly,
+  parseHorseNumberSort,
+} from "../lib/time-score-scoring";
 import {
   putTopRaceWindowsCache,
   readTopRaceWindowsWithSwr,
@@ -5783,6 +5799,111 @@ export const getTimeScoreRows = cache(
     return withDbQueryCache(
       ["getTimeScoreRows", TIME_SCORE_QUERY_VERSION, race, settings],
       async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          const binding = env?.R2_RACE_DETAIL;
+          const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+          const runners = await readCatalogRaceRunners(binding, {
+            source: race.source,
+            date: raceDate,
+            keibajoCode: race.keibajoCode,
+            raceBango: race.raceBango,
+          });
+          const horses: CatalogTimeScoreHorse[] = [];
+          const historyHorseIds: string[] = [];
+          for (const runner of runners) {
+            const rawId: string = (runner.kettoTorokuBango ?? "").trim();
+            // An all-zero registration number is usable only through the
+            // overseas mapping, exactly like the SQL's current_horses CTE.
+            const historyHorseId: string | null =
+              rawId === "" ? null : /^0+$/u.test(rawId) ? (runner.sourceHorseId ?? null) : rawId;
+            horses.push({
+              horseNumber: normaliseHorseNumber(runner.umaban),
+              horseNumberSort: parseHorseNumberSort(runner.umaban),
+              horseName: normaliseHorseName(runner.bamei),
+              historyHorseId,
+              currentAge: parseDigitsOnly(runner.barei),
+            });
+            if (historyHorseId !== null && /^\d{10}$/u.test(historyHorseId)) {
+              historyHorseIds.push(historyHorseId);
+            }
+          }
+          const historyByHorseId: Map<string, TimeScoreHistoryRow[]> =
+            historyHorseIds.length === 0
+              ? new Map()
+              : groupHistoryByHorseId(
+                  await readCatalogRaceHistory(binding, {
+                    horseIds: historyHorseIds,
+                    beforeDate: raceDate,
+                    minDate: null,
+                    limit: 4000,
+                  }),
+                );
+          if (historyHorseIds.length > 0) {
+            const overseasRows = await readCatalogOverseasRaceHistory(binding, {
+              horseIds: historyHorseIds,
+              beforeDate: raceDate,
+              minDate: null,
+              limit: 4000,
+            });
+            for (const row of overseasRows) {
+              const bucket: TimeScoreHistoryRow[] = historyByHorseId.get(row.sourceHorseId) ?? [];
+              bucket.push({
+                horseNumber: "",
+                raceDate: row.raceDate.replaceAll("-", ""),
+                keibajoCode: null,
+                distance: row.distanceMetres,
+                raceTime: null,
+                last3f: null,
+                bodyWeight: null,
+                carriedWeight: null,
+                margin: null,
+              });
+              historyByHorseId.set(row.sourceHorseId, bucket);
+            }
+          }
+          const flags: string[] = [];
+          if (settings.includeVenue) flags.push("includeVenue");
+          if (settings.includeDistance) flags.push("includeDistance");
+          if (settings.includeAge) flags.push("includeAge");
+          if (settings.includeClass) flags.push("includeClass");
+          if (settings.includeConditionKey) flags.push("includeConditionKey");
+          if (settings.includeTrackCode) flags.push("includeTrackCode");
+          if (settings.includeGrade) flags.push("includeGrade");
+          if (settings.includeRaceTitle) flags.push("includeRaceTitle");
+          if (settings.includeMonthWindow) flags.push("includeMonthWindow");
+          if (settings.includeRunnerCount) flags.push("includeRunnerCount");
+          const target = await readCatalogRaceMatchedProfile(binding, {
+            source: race.source,
+            date: raceDate,
+            keibajoCode: race.keibajoCode,
+            raceBango: race.raceBango,
+            kyori: race.kyori ?? "",
+            kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
+            kyosoJokenCode: race.kyosoJokenCode ?? "",
+            kyosoJokenMeisho: race.kyosoJokenMeisho ?? "",
+            trackCode: race.trackCode ?? "",
+            gradeCode: race.gradeCode ?? "",
+            kyosomeiHondai: race.kyosomeiHondai ?? "",
+            years: String(settings.years ?? 3),
+            limit: 5000,
+            flags,
+            runnerCount: settings.runnerCount,
+          });
+          return toAppTimeScoreRows(
+            composeCatalogTimeScoreRows({
+              raceDate,
+              keibajoCode: race.keibajoCode,
+              targetDistance: parseDigitsOnly(race.kyori),
+              target,
+              horses,
+              historyByHorseId,
+            }),
+            // The incumbent SQL emits no jockey at all, so the Catalog branch
+            // mirrors its empty jockeyName rather than inventing one.
+            new Map(),
+          );
+        }
         const statsSource = getSingleStatsSource(race, settings);
         const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
         const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;

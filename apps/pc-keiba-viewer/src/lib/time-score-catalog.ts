@@ -90,13 +90,15 @@ export const groupHistoryByHorseId = (
 
 // Final step for the app boundary: `TimeScoreRow` in race-types.ts also
 // requires `jockeyName`, which the pipeline deliberately does not know about.
-export interface AppTimeScoreRow {
+// A type alias (not an interface) so it satisfies the app's
+// `Record<string, unknown>`-extending row type without a cast.
+export type AppTimeScoreRow = {
   details: TimeScoreDetail[];
   horseName: string;
   horseNumber: string;
   jockeyName: string;
   score: number;
-}
+};
 
 export const toAppTimeScoreRows = (
   rows: readonly TimeScoreRow[],

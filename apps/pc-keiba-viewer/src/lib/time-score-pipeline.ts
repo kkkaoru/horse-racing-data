@@ -30,21 +30,24 @@ export interface TimeScoreTargetProfile {
   targetMargin: number | null;
 }
 
-export interface TimeScoreDetail {
+// Declared as type aliases (not interfaces) so they satisfy the app's
+// `Record<string, unknown>`-extending row types via TypeScript's implicit
+// index signature, avoiding a cast at the db boundary.
+export type TimeScoreDetail = {
   label: string;
   value: number | null;
   target: number | null;
   score: number;
   weight: number;
   reason: string;
-}
+};
 
-export interface TimeScoreRow {
+export type TimeScoreRow = {
   horseNumber: string;
   horseName: string;
   score: number;
   details: TimeScoreDetail[];
-}
+};
 
 export interface WeightedProfile {
   weightedRaceTime: number | null;
