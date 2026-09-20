@@ -1,7 +1,12 @@
 // Run with bun (bunx vitest).
 import type { CatalogSource } from "./types";
 
-export type PartnershipKind = "horseJockey" | "jockeyVenue" | "jockeyTrainerVenue";
+export type PartnershipKind =
+  | "horseJockey"
+  | "jockeyVenue"
+  | "jockeyTrainerVenue"
+  | "ownerVenue"
+  | "jockeyTrainerOwner";
 
 export interface PartnershipScope {
   date: string;
@@ -9,9 +14,11 @@ export interface PartnershipScope {
   kind: PartnershipKind;
   source: CatalogSource;
   revision: string;
+  surface?: string;
 }
 
 export interface PartnershipHistory {
+  surface: string;
   date: string;
   finishPosition: number | null;
   horseId: string | null;
@@ -21,6 +28,7 @@ export interface PartnershipHistory {
   resultId: string;
   source: CatalogSource;
   trainerId: string | null;
+  ownerId?: string | null;
 }
 
 export interface PartnershipCounts {
@@ -47,8 +55,18 @@ const WINDOWS: Record<PartnershipKind, number | null> = {
   horseJockey: null,
   jockeyTrainerVenue: 10,
   jockeyVenue: 3,
+  ownerVenue: 30,
+  jockeyTrainerOwner: 30,
 };
-const CACHE_VERSION: string = "heatmap-partnership-v1";
+const CACHE_VERSION: string = "heatmap-partnership-v2";
+const SURFACES: readonly string[] = ["芝", "ダート", "障害", "サンド", "ばんえい"];
+
+export const partnershipSurface = (scope: PartnershipScope): string => {
+  if (scope.kind === "horseJockey") return "all-surfaces";
+  if (scope.surface === undefined || !SURFACES.includes(scope.surface))
+    throw new Error("Partnership target surface is unavailable");
+  return scope.surface;
+};
 
 const validDate = (date: string): boolean => {
   if (!DATE_PATTERN.test(date)) return false;
@@ -80,15 +98,32 @@ export const partnershipStartDate = (scope: PartnershipScope): string | null => 
 
 export const partnershipCacheKey = (scope: PartnershipScope): string => {
   validatePartnershipScope(scope);
-  // No target race number: all races at the venue on this date share this cohort.
-  const venue: string = scope.kind === "horseJockey" ? "all-venues" : scope.keibajoCode;
-  return [CACHE_VERSION, scope.revision, scope.source, scope.date, venue, scope.kind]
+  // No race number: races on the same date, venue and surface share this cohort.
+  const venue: string =
+    scope.kind === "horseJockey" || scope.kind === "jockeyTrainerOwner"
+      ? "all-venues"
+      : scope.keibajoCode;
+  return [
+    CACHE_VERSION,
+    scope.revision,
+    scope.source,
+    scope.date,
+    venue,
+    scope.kind === "jockeyTrainerOwner" ? "jockeyTrainerOwner-all-sources" : scope.kind,
+    partnershipSurface(scope),
+  ]
     .map(encodeURIComponent)
     .join(":");
 };
 
 const entityKey = (row: PartnershipHistory, kind: PartnershipKind): string | null => {
+  if (kind === "ownerVenue") return row.ownerId?.trim() ? JSON.stringify([row.ownerId]) : null;
   if (row.jockeyId === null || row.jockeyId.trim() === "") return null;
+  if (kind === "jockeyTrainerOwner") {
+    return row.trainerId?.trim() && row.ownerId?.trim()
+      ? JSON.stringify([row.trainerId, row.jockeyId, row.ownerId])
+      : null;
+  }
   if (kind === "jockeyVenue") return JSON.stringify([row.jockeyId]);
   const partner: string | null = kind === "horseJockey" ? row.horseId : row.trainerId;
   return partner === null || partner.trim() === "" ? null : JSON.stringify([partner, row.jockeyId]);
@@ -99,13 +134,17 @@ const compareCounts = (left: PartnershipCounts, right: PartnershipCounts): numbe
 
 export const aggregatePartnership = (input: AggregatePartnershipInput): PartnershipAggregate => {
   const start: string | null = partnershipStartDate(input.scope);
+  const surface: string = partnershipSurface(input.scope);
   const eligible: PartnershipHistory[] = input.history.filter(
     (row) =>
       validDate(row.date) &&
       row.date < input.scope.date &&
       (start === null || row.date >= start) &&
-      row.source === input.scope.source &&
-      (input.scope.kind === "horseJockey" || row.keibajoCode === input.scope.keibajoCode),
+      (input.scope.kind === "jockeyTrainerOwner" || row.source === input.scope.source) &&
+      (input.scope.kind === "horseJockey" ||
+        ((input.scope.kind === "jockeyTrainerOwner" ||
+          row.keibajoCode === input.scope.keibajoCode) &&
+          row.surface === surface)),
   );
   const unique: Map<string, PartnershipHistory> = new Map(
     eligible.map((row) => [row.resultId, row]),

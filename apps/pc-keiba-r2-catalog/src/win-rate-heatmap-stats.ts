@@ -229,7 +229,7 @@ const sqlStringList = (codes: ReadonlyArray<string>): string =>
 const paddedTrackCodeSql = (column: string): string =>
   `lpad(btrim(coalesce(${column}, '')), 2, '0')`;
 
-const trackSurfaceSql = (column: string): string => `CASE
+export const trackSurfaceSql = (column: string): string => `CASE
     WHEN ${paddedTrackCodeSql(column)} IN (${sqlStringList(TURF_TRACK_CODES)}) THEN '芝'
     WHEN ${paddedTrackCodeSql(column)} IN (${sqlStringList(DIRT_TRACK_CODES)}) THEN 'ダート'
     WHEN ${paddedTrackCodeSql(column)} IN (${sqlStringList(SAND_TRACK_CODES)}) THEN 'サンド'

@@ -1,5 +1,9 @@
 // Run with bun (bunx vitest).
-import type { PartnershipKind, PartnershipScope } from "./heatmap-partnership";
+import {
+  partnershipSurface,
+  type PartnershipKind,
+  type PartnershipScope,
+} from "./heatmap-partnership";
 import type { PartnershipCohortCache, PartnershipCohortRequest } from "./heatmap-partnership-cache";
 import { buildPartnershipEntriesQuery } from "./heatmap-partnership-sql";
 
@@ -20,9 +24,12 @@ export interface PartnershipStatsRequest {
 }
 
 interface Target {
+  surface: string | null;
   horseId: string | null;
   jockeyId: string | null;
   trainerId: string | null;
+  ownerId: string | null;
+  ownerName: string;
   horseName: string;
   jockeyName: string;
   trainerName: string;
@@ -36,7 +43,13 @@ interface Counts {
   shows: number;
 }
 
-const KINDS: readonly PartnershipKind[] = ["horseJockey", "jockeyVenue", "jockeyTrainerVenue"];
+const KINDS: readonly PartnershipKind[] = [
+  "horseJockey",
+  "jockeyVenue",
+  "jockeyTrainerVenue",
+  "ownerVenue",
+  "jockeyTrainerOwner",
+];
 const ZERO_COUNTS: Counts = { starts: 0, wins: 0, places: 0, shows: 0 };
 
 const text = (value: unknown): string | null =>
@@ -61,19 +74,26 @@ const counts = (row: Record<string, unknown>): Counts => {
   return result;
 };
 const target = (row: Record<string, unknown>): Target => ({
+  surface: text(row.surface),
   horseId: text(row.horse_id),
   jockeyId: text(row.jockey_id),
   trainerId: text(row.trainer_id),
+  ownerId: text(row.owner_id),
+  ownerName: text(row.owner_name) ?? "不明",
   horseName: text(row.horse_name) ?? "不明",
   jockeyName: text(row.jockey_name) ?? "不明",
   trainerName: text(row.trainer_name) ?? "不明",
   umaban: count(row.umaban),
 });
 const partnerId = (entry: Target, kind: PartnershipKind): string | null => {
+  if (kind === "ownerVenue") return entry.ownerId;
   if (kind === "jockeyVenue") return entry.jockeyId;
   return kind === "horseJockey" ? entry.horseId : entry.trainerId;
 };
 const displayName = (entry: Target, kind: PartnershipKind): string => {
+  if (kind === "ownerVenue") return entry.ownerName;
+  if (kind === "jockeyTrainerOwner")
+    return `${entry.jockeyName} × ${entry.trainerName} × ${entry.ownerName}`;
   if (kind === "jockeyVenue") return entry.jockeyName;
   return kind === "horseJockey"
     ? `${entry.horseName} × ${entry.jockeyName}`
@@ -86,14 +106,26 @@ const mappedRows = (input: {
 }): PartnershipStatsRow[] => {
   const index: Map<string, Counts> = new Map(
     input.values.map((row) => [
-      JSON.stringify([text(row.partner_id), text(row.jockey_id)]),
+      JSON.stringify([
+        text(row.partner_id),
+        text(row.jockey_id),
+        input.kind === "jockeyTrainerOwner" ? text(row.owner_id) : null,
+      ]),
       counts(row),
     ]),
   );
   return input.entries.flatMap((entry) => {
     const partner: string | null = partnerId(entry, input.kind);
-    if (entry.umaban <= 0 || partner === null || entry.jockeyId === null) return [];
-    const rate: Counts = index.get(JSON.stringify([partner, entry.jockeyId])) ?? ZERO_COUNTS;
+    const jockey: string | null = input.kind === "ownerVenue" ? "owner" : entry.jockeyId;
+    const owner: string | null = input.kind === "jockeyTrainerOwner" ? entry.ownerId : null;
+    if (
+      entry.umaban <= 0 ||
+      partner === null ||
+      jockey === null ||
+      (input.kind === "jockeyTrainerOwner" && owner === null)
+    )
+      return [];
+    const rate: Counts = index.get(JSON.stringify([partner, jockey, owner])) ?? ZERO_COUNTS;
     return [
       { kind: input.kind, umaban: entry.umaban, name: displayName(entry, input.kind), ...rate },
     ];
@@ -112,6 +144,14 @@ export const loadPartnershipStats = async (
       }),
     )
   ).map(target);
+  if (entries.length === 0) return null;
+  const surface: string = partnershipSurface({
+    ...input.cohort.query.scope,
+    kind: "jockeyVenue",
+    surface: entries[0]?.surface ?? "",
+  });
+  if (entries.some((entry) => entry.surface !== surface))
+    throw new Error("Partnership target surfaces are inconsistent");
   const horseIds: string[] = entries.flatMap((entry) =>
     entry.horseId === null ? [] : [entry.horseId],
   );
@@ -119,7 +159,7 @@ export const loadPartnershipStats = async (
   // Bound R2 SQL concurrency to the two queries inside each shared cohort.
   for (const kind of KINDS) {
     if (kind === "horseJockey" && horseIds.length === 0) continue;
-    const scope: PartnershipScope = { ...input.cohort.query.scope, kind };
+    const scope: PartnershipScope = { ...input.cohort.query.scope, kind, surface };
     const cohort = await input.cache.load({
       ...input.cohort,
       query: { ...input.cohort.query, scope, horseIds },

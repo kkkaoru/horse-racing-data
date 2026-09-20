@@ -44,6 +44,7 @@ const harness = (revision: string): Harness => {
             rows: sql.includes("AS horse_id")
               ? [
                   {
+                    surface: "芝",
                     umaban: "01",
                     horse_id: "2023100001",
                     jockey_id: "j1",
@@ -88,9 +89,9 @@ it("warms shared cohorts and exposes all three independent column rows", async (
       },
     ],
   });
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(7);
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(11);
   expect((await handleRequest(new Request(url), test.env, test.dependencies)).status).toBe(200);
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(8);
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(12);
 });
 
 it("returns a cache-miss status without running history aggregation on reads", async () => {

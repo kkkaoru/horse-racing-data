@@ -10,6 +10,7 @@ import {
 } from "./heatmap-partnership";
 
 const scope: PartnershipScope = {
+  surface: "芝",
   date: "20260913",
   keibajoCode: "06",
   kind: "jockeyVenue",
@@ -17,6 +18,7 @@ const scope: PartnershipScope = {
   source: "jra",
 };
 const history: PartnershipHistory = {
+  surface: "芝",
   date: "20230913",
   finishPosition: 1,
   horseId: "horse-1",
@@ -27,6 +29,104 @@ const history: PartnershipHistory = {
   source: "jra",
   trainerId: "trainer-1",
 };
+
+it.each(["jockeyVenue", "jockeyTrainerVenue"] satisfies PartnershipScope["kind"][])(
+  "separates turf, dirt and jumps for %s",
+  (kind) => {
+    const mixed: PartnershipHistory[] = [
+      history,
+      { ...history, surface: "ダート", resultId: "dirt", raceId: "dirt", finishPosition: 4 },
+      { ...history, surface: "障害", resultId: "jump", raceId: "jump", finishPosition: 2 },
+    ];
+    expect(
+      aggregatePartnership({ scope: { ...scope, kind, surface: "芝" }, history: mixed }).rows.map(
+        (row) => [row.starts, row.wins],
+      ),
+    ).toStrictEqual([[1, 1]]);
+    expect(
+      aggregatePartnership({
+        scope: { ...scope, kind, surface: "ダート" },
+        history: mixed,
+      }).rows.map((row) => [row.starts, row.wins]),
+    ).toStrictEqual([[1, 0]]);
+    expect(
+      aggregatePartnership({ scope: { ...scope, kind, surface: "障害" }, history: mixed }).raceIds,
+    ).toStrictEqual(["jump"]);
+    expect(
+      new Set(
+        ["芝", "ダート", "障害"].map((surface) => partnershipCacheKey({ ...scope, kind, surface })),
+      ).size,
+    ).toBe(3);
+  },
+);
+
+it.each([undefined, "", "unknown", "芝' OR TRUE"])(
+  "rejects missing or invalid cohort surface %j",
+  (surface) => {
+    expect(() => partnershipCacheKey({ ...scope, surface })).toThrow(
+      "target surface is unavailable",
+    );
+  },
+);
+
+it("uses independent thirty-year owner cohorts with exact identities and surfaces", () => {
+  const ownerHistory: PartnershipHistory[] = [
+    { ...history, ownerId: "o1", date: "19960913", jockeyId: null },
+    { ...history, ownerId: "o1", resultId: "away", keibajoCode: "09", finishPosition: 2 },
+    { ...history, ownerId: "o2", resultId: "other-owner", finishPosition: 3 },
+    { ...history, ownerId: "o1", resultId: "dirt", surface: "ダート" },
+    { ...history, ownerId: "o1", resultId: "old", date: "19960912" },
+    { ...history, ownerId: "o1", resultId: "today", date: "20260913" },
+    { ...history, ownerId: null, resultId: "missing" },
+  ];
+  expect(partnershipStartDate({ ...scope, kind: "ownerVenue" })).toBe("19960913");
+  expect(partnershipStartDate({ ...scope, kind: "jockeyTrainerOwner" })).toBe("19960913");
+  expect(
+    aggregatePartnership({ scope: { ...scope, kind: "ownerVenue" }, history: ownerHistory }).rows,
+  ).toStrictEqual([
+    { entityKey: '["o1"]', starts: 1, wins: 1, places: 1, shows: 1 },
+    { entityKey: '["o2"]', starts: 1, wins: 0, places: 0, shows: 1 },
+  ]);
+  expect(
+    aggregatePartnership({ scope: { ...scope, kind: "jockeyTrainerOwner" }, history: ownerHistory })
+      .rows,
+  ).toStrictEqual([
+    { entityKey: '["trainer-1","jockey-1","o1"]', starts: 1, wins: 0, places: 1, shows: 1 },
+    { entityKey: '["trainer-1","jockey-1","o2"]', starts: 1, wins: 0, places: 0, shows: 1 },
+  ]);
+  expect(partnershipCacheKey({ ...scope, kind: "jockeyTrainerOwner", keibajoCode: "09" })).toBe(
+    "heatmap-partnership-v2:snapshot-1:jra:20260913:all-venues:jockeyTrainerOwner-all-sources:%E8%8A%9D",
+  );
+});
+
+it("includes the identical triple in both JRA and NAR, but excludes other surfaces and owners", () => {
+  expect(
+    aggregatePartnership({
+      scope: { ...scope, kind: "jockeyTrainerOwner" },
+      history: [
+        { ...history, ownerId: "o1" },
+        {
+          ...history,
+          ownerId: "o1",
+          source: "nar",
+          keibajoCode: "44",
+          resultId: "nar",
+          finishPosition: 2,
+        },
+        {
+          ...history,
+          ownerId: "o1",
+          source: "nar",
+          keibajoCode: "44",
+          resultId: "dirt",
+          surface: "ダート",
+        },
+      ],
+    }).rows,
+  ).toStrictEqual([
+    { entityKey: '["trainer-1","jockey-1","o1"]', starts: 2, wins: 1, places: 2, shows: 2 },
+  ]);
+});
 
 it("uses fixed windows and clamps leap-day anniversaries", () => {
   expect(partnershipStartDate(scope)).toBe("20230913");
@@ -47,13 +147,13 @@ it("rejects invalid dates, venues and missing data revisions", () => {
 
 it("keys shared cohorts independently of target race and separates revisions and scopes", () => {
   expect(partnershipCacheKey(scope)).toBe(
-    "heatmap-partnership-v1:snapshot-1:jra:20260913:06:jockeyVenue",
+    "heatmap-partnership-v2:snapshot-1:jra:20260913:06:jockeyVenue:%E8%8A%9D",
   );
   expect(partnershipCacheKey({ ...scope, kind: "horseJockey", keibajoCode: "05" })).toBe(
-    "heatmap-partnership-v1:snapshot-1:jra:20260913:all-venues:horseJockey",
+    "heatmap-partnership-v2:snapshot-1:jra:20260913:all-venues:horseJockey:all-surfaces",
   );
   expect(partnershipCacheKey({ ...scope, revision: "snapshot:2" })).toBe(
-    "heatmap-partnership-v1:snapshot%3A2:jra:20260913:06:jockeyVenue",
+    "heatmap-partnership-v2:snapshot%3A2:jra:20260913:06:jockeyVenue:%E8%8A%9D",
   );
 });
 

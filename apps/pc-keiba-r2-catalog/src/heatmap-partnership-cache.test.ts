@@ -26,6 +26,7 @@ const makeRequest = (): PartnershipCohortRequest => ({
     },
     horseIds: [],
     scope: {
+      surface: "芝",
       date: "20260913",
       keibajoCode: "06",
       kind: "jockeyVenue",
@@ -60,6 +61,27 @@ it("coalesces shared warm work and reuses both target-race and value memory cach
     expect.any(String),
     { expirationTtl: 129600 },
   );
+});
+
+it("does not reuse a turf cohort for dirt or obstacle races", async () => {
+  const request = makeRequest();
+  const cache = createPartnershipCohortCache();
+  await cache.load(request);
+  expect(
+    await cache.load({
+      ...request,
+      warm: false,
+      query: { ...request.query, scope: { ...request.query.scope, surface: "ダート" } },
+    }),
+  ).toBeNull();
+  expect(
+    await cache.load({
+      ...request,
+      warm: false,
+      query: { ...request.query, scope: { ...request.query.scope, surface: "障害" } },
+    }),
+  ).toBeNull();
+  expect(request.execute).toHaveBeenCalledTimes(2);
 });
 
 it("read-only misses never aggregate or write fictitious empty values", async () => {

@@ -6,6 +6,7 @@ import {
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
   isBanEiKeibajo,
+  trackSurfaceSql,
   normaliseBloodlineRow,
   normaliseSimilarRow,
   normaliseWinRateHeatmapStatsPayload,
@@ -29,6 +30,13 @@ const jraFilters: WinRateHeatmapStatsFilters = {
   source: "jra",
   years: 10,
 };
+
+it("shares the surface classifier with partnership history queries", () => {
+  expect(trackSurfaceSql("ra.track_code")).toMatch("THEN '芝'");
+  expect(trackSurfaceSql("ra.track_code")).toMatch("THEN 'ダート'");
+  expect(trackSurfaceSql("ra.track_code")).toMatch("THEN '障害'");
+  expect(trackSurfaceSql("ra.track_code")).toMatch("ELSE ''");
+});
 
 it("uses R2 SQL regexp_match null checks rather than unsupported DuckDB regexp_matches", () => {
   const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters);
