@@ -1,7 +1,8 @@
 // Run with bun.
 import { expect, it } from "vitest";
 
-import { composeCatalogTimeScoreRows } from "./time-score-catalog";
+import type { RaceHistoryRow } from "./race-history-catalog";
+import { composeCatalogTimeScoreRows, groupHistoryByHorseId } from "./time-score-catalog";
 import type { CatalogTimeScoreHorse, CatalogTimeScoreInput } from "./time-score-catalog";
 import type { TimeScoreHistoryRow } from "./time-score-pipeline";
 
@@ -101,4 +102,84 @@ it("keeps two horses sharing one registration number apart by horse number", () 
   );
   expect(rows.map((row) => row.horseNumber)).toStrictEqual(["1", "2"]);
   expect(rows.map((row) => row.score)).toStrictEqual([1, 1]);
+});
+
+const history = (overrides: Partial<RaceHistoryRow> = {}): RaceHistoryRow => ({
+  kettoTorokuBango: "2021106753",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0601",
+  keibajoCode: "05",
+  raceBango: "08",
+  umaban: "08",
+  kyori: "1600",
+  sohaTime: "1110",
+  kohan3f: "0340",
+  bataiju: "480",
+  futanJuryo: "0550",
+  timeSa: "0005",
+  kakuteiChakujun: "01",
+  ...overrides,
+});
+
+it("groups history rows by registration number and converts every field", () => {
+  const grouped = groupHistoryByHorseId([
+    history(),
+    history({ umaban: "10", keibajoCode: "06" }),
+    history({ kettoTorokuBango: "2022100001", kyori: null }),
+  ]);
+  expect([...grouped.keys()]).toStrictEqual(["2021106753", "2022100001"]);
+  expect(grouped.get("2021106753")).toStrictEqual([
+    {
+      horseNumber: "8",
+      raceDate: "20260601",
+      keibajoCode: "05",
+      distance: 1600,
+      raceTime: 710,
+      last3f: 340,
+      bodyWeight: 480,
+      carriedWeight: 550,
+      margin: 5,
+    },
+    {
+      horseNumber: "10",
+      raceDate: "20260601",
+      keibajoCode: "06",
+      distance: 1600,
+      raceTime: 710,
+      last3f: 340,
+      bodyWeight: 480,
+      carriedWeight: 550,
+      margin: 5,
+    },
+  ]);
+  expect(grouped.get("2022100001")?.[0]?.distance).toBeNull();
+});
+
+it("treats an empty venue or registration number as absent", () => {
+  const grouped = groupHistoryByHorseId([
+    history({
+      keibajoCode: "",
+      umaban: null,
+      kohan3f: null,
+      futanJuryo: null,
+      timeSa: null,
+      sohaTime: null,
+    }),
+    history({ kettoTorokuBango: "  " }),
+  ]);
+  expect([...grouped.keys()]).toStrictEqual(["2021106753"]);
+  const only = grouped.get("2021106753")?.[0];
+  expect(only?.keibajoCode).toBeNull();
+  expect(only?.horseNumber).toBe("0");
+  expect(only?.raceTime).toBeNull();
+  expect(only?.last3f).toBeNull();
+  expect(only?.carriedWeight).toBeNull();
+  expect(only?.margin).toBeNull();
+  // A row whose metrics are all null is still emitted, scored only from the
+  // distance and venue components.
+  const scored = composeCatalogTimeScoreRows(input({ historyByHorseId: grouped }));
+  expect(scored).toHaveLength(1);
+  expect(scored[0]?.details.map((detail) => detail.score)).toStrictEqual([
+    0.5, 0.5, 1, 0.5, 1, 0.5, 0.5,
+  ]);
 });
