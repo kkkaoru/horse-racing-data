@@ -34,6 +34,9 @@ export type WinRateHeatmapMetricKey =
   | "sireSire"
   | "sireSireSire"
   | "trainer"
+  | "ownerVenue"
+  | "jockeyTrainerOwner"
+  | "owner"
   | "weight";
 
 export type WinRateHeatmapRateKey = "quinellaRate" | "showRate" | "winRate";
@@ -99,7 +102,12 @@ export interface WinRateHeatmapPartnershipRow extends Pick<
   | "quinellaRate"
   | "showRate"
 > {
-  category: "horseJockey" | "jockeyVenue" | "jockeyTrainerVenue";
+  category:
+    | "horseJockey"
+    | "jockeyVenue"
+    | "jockeyTrainerVenue"
+    | "ownerVenue"
+    | "jockeyTrainerOwner";
 }
 
 export interface BuildWinRateHeatmapRowsInput {
@@ -226,6 +234,9 @@ export const WIN_RATE_HEATMAP_COLUMNS: readonly WinRateHeatmapColumn[] = [
   { key: "jockeyVenue", label: "騎手・同場3年" },
   { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
   { key: "trainer", label: "調教師" },
+  { key: "ownerVenue", label: "馬主・同場レース30年" },
+  { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+  { key: "owner", label: "馬主" },
   { key: "sire", label: "父" },
   { key: "damSire", label: "母父" },
   { key: "sireSire", label: "父父" },
@@ -521,7 +532,13 @@ const toHeatmapCell = (
     return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
   return {
-    name: row.name,
+    name:
+      "statsSource" in row &&
+      row.statsSource === "netkeiba" &&
+      "statsScope" in row &&
+      row.statsScope === "all-published-results"
+        ? `${row.name}（netkeiba・公開全成績）`
+        : row.name,
     quinellaCount: toHeatmapNumber(row.quinellaCount),
     quinellaRate: toHeatmapNumber(row.quinellaRate),
     showCount: toHeatmapNumber(row.showCount),
@@ -899,6 +916,9 @@ export const buildWinRateHeatmapRows = (
             splitBloodlineLines,
           ),
           trainer: toHeatmapCell(similar?.get("trainer")),
+          ownerVenue: toHeatmapCell(partnership?.get("ownerVenue")),
+          jockeyTrainerOwner: toHeatmapCell(partnership?.get("jockeyTrainerOwner")),
+          owner: toHeatmapCell(similar?.get("owner")),
           weight: toWeightHeatmapCell(currentWeightKg, weightClassRates, input.keibajoCode),
         },
         frameNumber,

@@ -45,6 +45,8 @@ it("warms independent catalog stats and maps all rates without using similar-con
         row,
         { ...row, kind: "jockeyVenue", starts: 0, wins: 0, places: 0, shows: 0 },
         { ...row, kind: "jockeyTrainerVenue" },
+        { ...row, kind: "ownerVenue" },
+        { ...row, kind: "jockeyTrainerOwner" },
       ],
     }),
   );
@@ -62,6 +64,8 @@ it("warms independent catalog stats and maps all rates without using similar-con
     ["horseJockey", "1", 16.7, 33.3, 50],
     ["jockeyVenue", "1", 0, 0, 0],
     ["jockeyTrainerVenue", "1", 16.7, 33.3, 50],
+    ["ownerVenue", "1", 16.7, 33.3, 50],
+    ["jockeyTrainerOwner", "1", 16.7, 33.3, 50],
   ]);
   expect(fetch).toHaveBeenCalledWith(
     "https://pc-keiba-r2-catalog.internal/v1/heatmap-partnership-stats?year=2026&month=09&day=13&keibajoCode=06&raceNumber=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1&warm=1",

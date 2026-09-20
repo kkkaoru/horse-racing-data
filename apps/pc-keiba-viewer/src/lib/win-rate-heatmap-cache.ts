@@ -15,11 +15,10 @@ import type {
 import { isHeatmapPresentation, type HeatmapPresentation } from "./win-rate-heatmap-presentation";
 
 export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 36 * 60 * 60;
-// v19 stores one small manifest plus independently addressable display-column
-// fragments. It also distinguishes an available numeric zero from a missing
-// fragment and omits history details that the heatmap never renders.
-export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v19";
-export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v18";
+// v22 also invalidates owner-triple presentations limited to one data source.
+// It retains the compact manifest and independently addressable column fragments.
+export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v22";
+export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v19";
 export const WIN_RATE_HEATMAP_CACHE_URL_BASE =
   "https://pc-keiba-viewer.local/win-rate-heatmap-cache/";
 const WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT = "default";
@@ -35,6 +34,9 @@ export const WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS = [
   "jockeyFrame",
   "jockey",
   "trainer",
+  "ownerVenue",
+  "jockeyTrainerOwner",
+  "owner",
   "sire",
   "damSire",
   "sireSire",

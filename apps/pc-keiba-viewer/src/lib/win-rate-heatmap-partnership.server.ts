@@ -11,6 +11,8 @@ const KINDS: readonly WinRateHeatmapPartnershipRow["category"][] = [
   "horseJockey",
   "jockeyVenue",
   "jockeyTrainerVenue",
+  "ownerVenue",
+  "jockeyTrainerOwner",
 ];
 const RATE_SCALE: number = 1000;
 const RATE_PRECISION: number = 10;

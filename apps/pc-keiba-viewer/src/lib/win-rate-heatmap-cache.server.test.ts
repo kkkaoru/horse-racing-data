@@ -244,7 +244,7 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "caches");
 });
 
-it("round trips all three independent partnership column fragments", async () => {
+it("round trips independent owner and partnership fragments and same-condition owners", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();
   setDefaultCache(cache);
@@ -253,7 +253,10 @@ it("round trips all three independent partnership column fragments", async () =>
     cacheKey: "partnership",
     payload: {
       ...HEATMAP_PAYLOAD,
+      similarRows: [{ ...rateRow("jockey"), category: "owner", starts: 20, winRate: 5 }],
       partnershipRows: [
+        { ...rateRow("jockey"), category: "ownerVenue", starts: 100, winRate: 25 },
+        { ...rateRow("jockey"), category: "jockeyTrainerOwner", starts: 200, winRate: 30 },
         { ...rateRow("jockey"), category: "horseJockey", starts: 10, winRate: 20, winCount: 2 },
         { ...rateRow("jockey"), category: "jockeyVenue", starts: 30, winRate: 10, winCount: 3 },
         {
@@ -273,7 +276,12 @@ it("round trips all three independent partnership column fragments", async () =>
     ["horseJockey", 10, 20],
     ["jockeyVenue", 30, 10],
     ["jockeyTrainerVenue", 40, 0],
+    ["ownerVenue", 100, 25],
+    ["jockeyTrainerOwner", 200, 30],
   ]);
+  expect(restored?.similarRows.map((row) => [row.category, row.starts, row.winRate])).toStrictEqual(
+    [["owner", 20, 5]],
+  );
 });
 
 it("warms presentation variants before publication and restores them from durable cache", async () => {

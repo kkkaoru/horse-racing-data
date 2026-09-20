@@ -415,6 +415,92 @@ const horseSecond: HorseRaceResult = {
   zogenSa: null,
 };
 
+it("discloses published-population provenance without filling unavailable heatmap cells", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "A4",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    similarRows: [
+      {
+        ...similarJockey,
+        statsSource: "netkeiba",
+        statsScope: "all-published-results",
+        starts: 20,
+        winCount: 0,
+        winRate: 0,
+      },
+    ],
+    partnershipRows: [],
+  });
+
+  expect(rows[0]?.cells.jockey.name).toBe("Jockey A（netkeiba・公開全成績）");
+  expect(rows[0]?.cells.jockey.winRate).toBe(0);
+  expect(rows[0]?.cells.jockey.starts).toBe(20);
+  expect(rows[0]?.cells.trainer.winRate).toBeNull();
+  expect(rows[0]?.cells.trainer.starts).toBeNull();
+});
+
+it("does not claim a published-population scope when provenance does not establish it", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "A4",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    similarRows: [
+      { ...similarJockey, statsSource: "netkeiba" },
+      { ...similarTrainer, statsSource: "jv", statsScope: "japan-all-venues-10y" },
+    ],
+    partnershipRows: [],
+  });
+
+  expect(rows[0]?.cells.jockey.name).toBe("Jockey A");
+  expect(rows[0]?.cells.trainer.name).toBe("Shared Trainer");
+});
+
+it("keeps all three owner columns separate for every rate", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [runnerOne],
+    similarRows: [{ ...similarTrainer, category: "owner", name: "Owner" }],
+    partnershipRows: [
+      {
+        ...similarTrainer,
+        category: "ownerVenue",
+        starts: 100,
+        winRate: 20,
+        quinellaRate: 30,
+        showRate: 40,
+      },
+      {
+        ...similarTrainer,
+        category: "jockeyTrainerOwner",
+        starts: 200,
+        winRate: 25,
+        quinellaRate: 35,
+        showRate: 45,
+      },
+    ],
+  });
+  expect(
+    [rows[0]?.cells.ownerVenue, rows[0]?.cells.jockeyTrainerOwner, rows[0]?.cells.owner].map(
+      (cell) => [cell?.starts, cell?.winRate, cell?.quinellaRate, cell?.showRate],
+    ),
+  ).toStrictEqual([
+    [100, 20, 30, 40],
+    [200, 25, 35, 45],
+    [50, 10, 16, 20],
+  ]);
+});
+
 it("keeps partnership and venue statistics independent of same-condition rows", () => {
   const rows = buildWinRateHeatmapRows({
     bloodlineRows: [],
@@ -487,6 +573,9 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
     { key: "sireSire", label: "父父" },
@@ -512,6 +601,9 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
     { key: "sireSire", label: "父父" },
@@ -535,6 +627,9 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
     { key: "sireSire", label: "父父" },
@@ -562,6 +657,9 @@ it("limits ばんえい heatmap bloodline columns to 父 and 母父", () => {
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
   ]);
@@ -614,6 +712,36 @@ it("maps jockeyFrame similar stats onto 騎手枠別 instead of reusing generic 
       ],
     })[0]?.cells,
   ).toStrictEqual({
+    ownerVenue: {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+    jockeyTrainerOwner: {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+    owner: {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
     carriedWeight: {
       name: "55.5kg以上57kg以下",
       quinellaCount: null,
@@ -841,6 +969,9 @@ it("keeps 騎手枠別 visible for ばんえい races", () => {
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
   ]);
@@ -1093,6 +1224,36 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -1270,6 +1431,36 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
     },
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: "Dam Sire Beta",
           quinellaCount: 22,
@@ -1476,6 +1667,36 @@ it("looks up frame rates by wakuban when the stored frame number is zero-padded"
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -1679,6 +1900,36 @@ it("treats non-finite frame rates as missing heatmap values", () => {
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -1940,6 +2191,36 @@ it("ignores frame stats whose frame number cannot be displayed", () => {
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -2132,6 +2413,36 @@ it("skips horse results whose current number cannot be displayed", () => {
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         carriedWeight: {
           name: "55.5kg以上57kg以下",
           quinellaCount: 1,
@@ -2328,6 +2639,36 @@ it("treats blank, zero, and non-numeric finish positions as missing horse rates"
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -2520,6 +2861,36 @@ it("uses a dash when the runner has no displayable horse name", () => {
   ).toStrictEqual([
     {
       cells: {
+        ownerVenue: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        jockeyTrainerOwner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        owner: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
         damSire: {
           name: null,
           quinellaCount: null,
@@ -2935,6 +3306,9 @@ it("uses the ばんえい color scale on heatmap cells and hides extra bloodline
     { key: "jockeyVenue", label: "騎手・同場3年" },
     { key: "jockeyTrainerVenue", label: "騎手×調教師・同場10年" },
     { key: "trainer", label: "調教師" },
+    { key: "ownerVenue", label: "馬主・同場レース30年" },
+    { key: "jockeyTrainerOwner", label: "騎手×調教師×馬主30年" },
+    { key: "owner", label: "馬主" },
     { key: "sire", label: "父" },
     { key: "damSire", label: "母父" },
   ]);

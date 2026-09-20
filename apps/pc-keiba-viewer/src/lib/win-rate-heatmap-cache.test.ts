@@ -21,10 +21,10 @@ import {
 
 const GENERATION = "123e4567-e89b-12d3-a456-426614174000";
 
-it("uses the column-fragment heatmap cache namespace v19", () => {
-  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v19");
-  expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v18");
-  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(17);
+it("uses v22 to prevent regional cache hits before cross-source owner triples", () => {
+  expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v22");
+  expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v19");
+  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(20);
 });
 
 it("uses a 36 hour heatmap cache TTL", () => {
@@ -56,12 +56,12 @@ it("keeps the previous namespace for busts but never reads it", () => {
       raceNumber: "08",
       year: "2026",
     }),
-  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v18:2026:08:29:04:08:default"]);
+  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v19:2026:08:29:04:08:default"]);
   expect(
     expandWinRateHeatmapCacheReadKeys(
-      "pc-keiba-viewer:win-rate-heatmap:v19:2026:08:29:04:08:default",
+      "pc-keiba-viewer:win-rate-heatmap:v22:2026:08:29:04:08:default",
     ),
-  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v19:2026:08:29:04:08:default"]);
+  ).toStrictEqual(["pc-keiba-viewer:win-rate-heatmap:v22:2026:08:29:04:08:default"]);
 });
 
 it("keeps explicit query fingerprints and stable query ordering", () => {

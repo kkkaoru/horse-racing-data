@@ -321,7 +321,12 @@ const assemblePayload = (
   fragments: ReadonlyMap<WinRateHeatmapCacheFragmentKind, WinRateHeatmapCacheFragment>,
   runners: Runner[],
 ): WinRateHeatmapSectionPayload => {
-  const similarKinds = ["jockeyFrame", "jockey", "trainer"] as const;
+  const similarKinds = [
+    "jockeyFrame",
+    "jockey",
+    "trainer",
+    "owner",
+  ] satisfies SimilarRaceStatsRow["category"][];
   const bloodlineKinds = [
     "sire",
     "damSire",
@@ -343,6 +348,8 @@ const assemblePayload = (
       ...restorePartnershipRows(fragments.get("horseJockey")!, "horseJockey"),
       ...restorePartnershipRows(fragments.get("jockeyVenue")!, "jockeyVenue"),
       ...restorePartnershipRows(fragments.get("jockeyTrainerVenue")!, "jockeyTrainerVenue"),
+      ...restorePartnershipRows(fragments.get("ownerVenue")!, "ownerVenue"),
+      ...restorePartnershipRows(fragments.get("jockeyTrainerOwner")!, "jockeyTrainerOwner"),
     ],
     runners,
     similarRows: similarKinds.flatMap((kind) => restoreSimilarRows(fragments.get(kind)!, kind)),
@@ -468,10 +475,12 @@ const buildFragments = (
   generation: string,
 ): WinRateHeatmapCacheFragment[] => {
   const similarRows = new Map(
-    (["jockeyFrame", "jockey", "trainer"] as const).map((kind) => [
-      kind,
-      payload.similarRows.filter((row) => row.category === kind).map(compactRateRow),
-    ]),
+    (["jockeyFrame", "jockey", "trainer", "owner"] satisfies SimilarRaceStatsRow["category"][]).map(
+      (kind) => [
+        kind,
+        payload.similarRows.filter((row) => row.category === kind).map(compactRateRow),
+      ],
+    ),
   );
   const bloodlineRows = new Map(
     (
@@ -510,6 +519,18 @@ const buildFragments = (
       "jockeyTrainerVenue",
       (payload.partnershipRows ?? [])
         .filter((row) => row.category === "jockeyTrainerVenue")
+        .map(compactRateRow),
+    ],
+    [
+      "ownerVenue",
+      (payload.partnershipRows ?? [])
+        .filter((row) => row.category === "ownerVenue")
+        .map(compactRateRow),
+    ],
+    [
+      "jockeyTrainerOwner",
+      (payload.partnershipRows ?? [])
+        .filter((row) => row.category === "jockeyTrainerOwner")
         .map(compactRateRow),
     ],
     ...similarRows,
