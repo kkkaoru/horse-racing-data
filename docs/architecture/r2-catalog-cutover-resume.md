@@ -1,5 +1,9 @@
 # Production cutover implementation checkpoints
 
+## Viewer day-list candidate proven via quoted version override — 2026-09-20T18:53Z
+
+Read-only probe with the existing Access service token. **Root cause of the 401 blocker was two-fold**: (a) unauthenticated probes cannot pass Access, and (b) the override header must use a **quoted Structured Header String**. Unquoted `pc-keiba-viewer=a7e112cb…` arrived at the Worker but was ignored and served incumbent **4c3d13a0**. Quoted `pc-keiba-viewer="a7e112cb-32b4-4f8e-a5ee-6168be6ba8ee"` executed **a7e112cb** (viewer tail event 1789930396265, 200/ok, 3384 ms) and the same window contains Catalog `RaceDetailReadService /v1/race-day-list-with-jockeys?date=20260920` **200/ok, 1865 ms** (event 1789930397458) — deployed-path proof that the candidate reads the day list from R2 Catalog, not Neon. Day page `/races/2026/09/20` was byte-identical to the incumbent response (74,910 bytes, 12 race links, no error page). Receipts: `tmp/neon-backup-only-20260920/{daypage-probe2.json,viewer-tail-probe3.jsonl,catalog-tail-probe3.jsonl,override-probe-verified.json}`. **Do not 100% a7e112cb without user approval**; promotion is a production traffic change. The earlier "Do not pull Access credentials" note is superseded only for read-only probes by the user's explicit instruction; workers.dev stays disabled and no credential was printed. Sampled one date; provider parity remains the 5-fixture/203-row and 84-date/3,087-race evidence.
+
 ## Viewer Access blocks unauthenticated probes — 2026-09-19T22:50Z
 
 Race detail `/races/2025/01/05/06/03` and `/health` also **401** with WWW-Authenticate. Access covers the custom domain. Do not 100% **a7e112cb**. Do not enable workers.dev. Do not pull Access credentials. Stay **4c3d13a0 100% / a7e112cb 0%**.
