@@ -1,3 +1,4 @@
+// Runs with bun via the package Vitest scripts.
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { layoutByTable } from "./layouts";
@@ -61,6 +62,17 @@ vi.mock("./state", () => ({
   updateReadyIndexPartitionSnapshots: mocks.updatePartitionSnapshots,
   upsertCatalogIndex: mocks.upsertIndex,
 }));
+
+const COURSE_ROW: RecordRow = {
+  record_id: "CS",
+  data_kubun: "0",
+  data_sakusei_nengappi: "20260918",
+  keibajo_code: "05",
+  kyori: "1600",
+  track_code: "11",
+  course_kaishu_nengappi: "20240106",
+  course_setsumei: "course description",
+};
 
 let miniflare: Miniflare;
 let bucket: R2Bucket;
@@ -197,6 +209,155 @@ beforeEach(() => {
 });
 
 describe("Worker-native Iceberg table sync", () => {
+  test("replaces a course record without inventing a race year and retains its deletion marker", async () => {
+    mocks.load.mockResolvedValue({ metadata: metadata("jvd_cs") });
+    mocks.readObjects.mockResolvedValue([COURSE_ROW]);
+    mocks.manifests.mockResolvedValue([
+      {
+        entries: [
+          {
+            data_file: {
+              content: 0,
+              file_path: "s3://pc-keiba-r2-catalog/course.parquet",
+              file_size_in_bytes: 100n,
+              partition: {},
+              record_count: 1n,
+            },
+            snapshot_id: 99n,
+            status: 1,
+          },
+        ],
+      },
+    ]);
+    mocks.positions.mockResolvedValue([
+      {
+        file_path: "s3://pc-keiba-r2-catalog/course.parquet",
+        row_key: "course",
+        row_position: 0,
+      },
+    ]);
+    await expect(
+      syncCatalogTable(tableStage("jvd_cs", [COURSE_ROW]), env()),
+    ).resolves.toStrictEqual({ deletedRows: 1, records: 1, snapshotId: "99" });
+    expect(mocks.getPartition.mock.calls.map((call) => call.slice(1))).toStrictEqual([
+      ["jvd_cs", "__all__"],
+      ["jvd_cs", "__all__"],
+    ]);
+    expect(mocks.readObjects).toHaveBeenCalledWith(
+      expect.objectContaining({
+        columns: ["keibajo_code", "kyori", "track_code", "course_kaishu_nengappi"],
+      }),
+    );
+    expect(mocks.append).toHaveBeenCalledWith({
+      records: [
+        {
+          record_id: "CS",
+          data_kubun: "0",
+          data_sakusei_nengappi: "20260918",
+          keibajo_code: "05",
+          kyori: "1600",
+          track_code: "11",
+          course_kaishu_nengappi: "20240106",
+          course_setsumei: "course description",
+        },
+      ],
+    });
+    expect(mocks.delete).toHaveBeenCalledWith({
+      deletes: [{ file_path: "s3://pc-keiba-r2-catalog/course.parquet", pos: 0n }],
+      mode: "parquet",
+    });
+    expect(mocks.upsertIndex.mock.calls[0]?.slice(1, 4)).toStrictEqual([
+      "jvd_cs",
+      "99",
+      [
+        {
+          filePath: "s3://pc-keiba-r2-catalog/course.parquet",
+          partitionValue: "__all__",
+          position: 0,
+          rowKey: "05\u001f1600\u001f11\u001f20240106",
+        },
+      ],
+    ]);
+  });
+
+  test.each([
+    { specs: [] },
+    { specs: [{ "spec-id": 1, fields: [] }] },
+    {
+      specs: [
+        { "spec-id": 0, fields: [{ "source-id": 4, name: "keibajo_code", transform: "identity" }] },
+      ],
+    },
+    {
+      specs: [
+        { "spec-id": 0, fields: [] },
+        { "spec-id": 1, fields: [{ "source-id": 4, name: "keibajo_code", transform: "identity" }] },
+      ],
+    },
+  ])("rejects missing or partitioned course specs before writing: %j", async ({ specs }) => {
+    mocks.load.mockResolvedValue({ metadata: { ...metadata("jvd_cs"), "partition-specs": specs } });
+    await expect(syncCatalogTable(tableStage("jvd_cs", [COURSE_ROW]), env())).rejects.toMatchObject(
+      { safeStage: "catalog-schema" },
+    );
+    expect(mocks.startOperation).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  test("requires a ready course index at the current snapshot before recording an attempt", async () => {
+    mocks.load.mockResolvedValue({ metadata: metadata("jvd_cs") });
+    mocks.getPartition.mockResolvedValue({ catalog_snapshot_id: "9", status: "ready" });
+    await expect(syncCatalogTable(tableStage("jvd_cs", [COURSE_ROW]), env())).rejects.toMatchObject(
+      { safeStage: "catalog-index-stale" },
+    );
+    expect(mocks.getPartition.mock.calls.map((call) => call.slice(1))).toStrictEqual([
+      ["jvd_cs", "__all__"],
+    ]);
+    expect(mocks.startOperation).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  test("resumes committed course indexing without repeating its append", async () => {
+    mocks.load.mockResolvedValue({ metadata: metadata("jvd_cs") });
+    mocks.readObjects.mockResolvedValue([COURSE_ROW]);
+    mocks.getOperation.mockReset().mockResolvedValue({
+      base_snapshot_id: "10",
+      committed_snapshot_id: "99",
+      deleted_rows: 1,
+      status: "committed",
+    });
+    await expect(
+      syncCatalogTable(tableStage("jvd_cs", [COURSE_ROW]), env()),
+    ).resolves.toMatchObject({ snapshotId: "99" });
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.markIndexed).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertIndex.mock.calls[0]?.slice(1, 4)).toStrictEqual([
+      "jvd_cs",
+      "99",
+      [
+        {
+          filePath: "s3://pc-keiba-r2-catalog/data.parquet",
+          partitionValue: "__all__",
+          position: 0,
+          rowKey: "05\u001f1600\u001f11\u001f20240106",
+        },
+      ],
+    ]);
+  });
+
+  test("does not retry a course append after an uncertain commit", async () => {
+    mocks.load.mockResolvedValue({ metadata: metadata("jvd_cs") });
+    mocks.getOperation.mockReset().mockResolvedValue({
+      base_snapshot_id: "9",
+      committed_snapshot_id: null,
+      deleted_rows: 0,
+      status: "planned",
+    });
+    await expect(syncCatalogTable(tableStage("jvd_cs", [COURSE_ROW]), env())).rejects.toMatchObject(
+      { safeStage: "catalog-commit-uncertain" },
+    );
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
   test("normalizes an unsupported table write codec before syncing", async () => {
     const zstdMetadata = {
       ...metadata(),

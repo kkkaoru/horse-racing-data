@@ -1,3 +1,4 @@
+// Runs in Workers; verification runs with bun package scripts.
 import {
   icebergManifests,
   icebergTransaction,
@@ -57,6 +58,12 @@ const currentSchema = (metadata: CatalogMetadata) => {
 const validateSchema = (tableName: string, metadata: CatalogMetadata): void => {
   const layout = layoutByTable(tableName);
   const fields = currentSchema(metadata).fields;
+  if (
+    tableName === "jvd_cs" &&
+    (!metadata["partition-specs"].some((spec) => spec["spec-id"] === metadata["default-spec-id"]) ||
+      metadata["partition-specs"].some((spec) => spec.fields.length !== 0))
+  )
+    throw new Error("Course master requires unpartitioned Iceberg metadata");
   if (fields.length !== layout.columns.length)
     throw new Error("Iceberg schema column count mismatch");
   for (let index = 0; index < fields.length; index += 1) {
@@ -72,7 +79,8 @@ const validateSchema = (tableName: string, metadata: CatalogMetadata): void => {
   }
 };
 
-const partitionValue = (row: RecordRow): string => {
+const partitionValue = (tableName: string, row: RecordRow): string => {
+  if (tableName === "jvd_cs") return "__all__";
   const value = row.kaisai_nen;
   if (typeof value !== "string") throw new Error("Catalog row has no partition value");
   return value.trim();
@@ -179,13 +187,16 @@ const indexCommittedRows = async (
       entry.data_file.file_path,
       Number(entry.data_file.file_size_in_bytes),
     );
-    const columns = [...new Set([...layout.primaryKey, "kaisai_nen"])];
+    const columns =
+      tableName === "jvd_cs"
+        ? [...layout.primaryKey]
+        : [...new Set([...layout.primaryKey, "kaisai_nen"])];
     const values: readonly unknown[] = await parquetReadObjects({ columns, compressors, file });
     for (let position = 0; position < values.length; position += 1) {
       const row = parsePhysicalRow(values[position], columns);
       indexed.push({
         filePath: entry.data_file.file_path,
-        partitionValue: partitionValue(row),
+        partitionValue: partitionValue(tableName, row),
         position,
         rowKey: rowKey(layout, row),
       });
@@ -262,7 +273,9 @@ export const syncCatalogTable = async (
   if (operation === null) {
     // Validate before recording a commit attempt: rebuilding an index must not
     // leave a planned operation pinned to an obsolete snapshot.
-    for (const partition of new Set(stage.records.map(partitionValue))) {
+    for (const partition of new Set(
+      stage.records.map((row) => partitionValue(stage.tableName, row)),
+    )) {
       const index = await getIndexPartition(env.DB, stage.tableName, partition);
       if (index?.status !== "ready" || index.catalog_snapshot_id !== String(baseSnapshotId))
         throw transientFailure("catalog-index-stale", new Error("snapshot mismatch"));
@@ -279,7 +292,9 @@ export const syncCatalogTable = async (
     if (String(baseSnapshotId) !== operation.base_snapshot_id)
       throw permanentFailure("catalog-commit-uncertain", new Error("snapshot advanced"));
     const layout = layoutByTable(stage.tableName);
-    const partitions = [...new Set(stage.records.map(partitionValue))];
+    const partitions = [
+      ...new Set(stage.records.map((row) => partitionValue(stage.tableName, row))),
+    ];
     for (const partition of partitions) {
       const index = await getIndexPartition(env.DB, stage.tableName, partition);
       if (

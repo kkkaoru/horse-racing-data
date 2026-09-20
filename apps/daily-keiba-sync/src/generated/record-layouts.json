@@ -128,6 +128,21 @@
       "primaryKey": ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"],
       "recordBytes": 50
     },
+    "jvd_cs": {
+      "recordType": "CS",
+      "columns": [
+        { "name": "record_id", "width": 2 },
+        { "name": "data_kubun", "width": 1 },
+        { "name": "data_sakusei_nengappi", "width": 8 },
+        { "name": "keibajo_code", "width": 2 },
+        { "name": "kyori", "width": 4 },
+        { "name": "track_code", "width": 2 },
+        { "name": "course_kaishu_nengappi", "width": 8 },
+        { "name": "course_setsumei", "width": 6800 }
+      ],
+      "primaryKey": ["keibajo_code", "kyori", "track_code", "course_kaishu_nengappi"],
+      "recordBytes": 6829
+    },
     "jvd_h1": {
       "recordType": "H1",
       "columns": [
