@@ -1,0 +1,89 @@
+{
+  "scope": "Application attributed usage, not priced billing",
+  "success": true,
+  "status": 200,
+  "result": {
+    "viewer": {
+      "accounts": [
+        {
+          "sep13": [
+            {
+              "dimensions": {
+                "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b"
+              },
+              "sum": {
+                "allocatedDisk": 241098800598120,
+                "allocatedMemory": 155326719551062.62,
+                "cpuTimeSec": 3729.329999999997
+              }
+            },
+            {
+              "dimensions": {
+                "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8"
+              },
+              "sum": {
+                "allocatedDisk": 52499815202400,
+                "allocatedMemory": 42278435501315.92,
+                "cpuTimeSec": 4913.009999999999
+              }
+            },
+            {
+              "dimensions": {
+                "applicationId": "a0371eee-c2c2-4a71-bc3a-0b20aa2b59a1"
+              },
+              "sum": {
+                "allocatedDisk": 55559922726024,
+                "allocatedMemory": 29828506384570.04,
+                "cpuTimeSec": 381.19000000000136
+              }
+            },
+            {
+              "dimensions": {
+                "applicationId": "a03d47b2-64c8-47be-9b50-c12280facd8c"
+              },
+              "sum": {
+                "allocatedDisk": 629983406268,
+                "allocatedMemory": 338219765867.9677,
+                "cpuTimeSec": 27.739999999999995
+              }
+            }
+          ],
+          "sep14": [
+            {
+              "dimensions": {
+                "applicationId": "a0371eee-c2c2-4a71-bc3a-0b20aa2b59a1"
+              },
+              "sum": {
+                "allocatedDisk": 568738558997880,
+                "allocatedMemory": 305339188858757.7,
+                "cpuTimeSec": 2235.489999999998
+              }
+            },
+            {
+              "dimensions": {
+                "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b"
+              },
+              "sum": {
+                "allocatedDisk": 170100797309100,
+                "allocatedMemory": 109586604219916.4,
+                "cpuTimeSec": 1984.839999999997
+              }
+            },
+            {
+              "dimensions": {
+                "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8"
+              },
+              "sum": {
+                "allocatedDisk": 41619728722512,
+                "allocatedMemory": 33516632574671.426,
+                "cpuTimeSec": 3810.3199999999993
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "messages": []
+}

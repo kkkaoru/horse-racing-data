@@ -1,0 +1,120 @@
+{
+  "status": "live_rescore_publication_and_control_cleanup_verified_idle_sigterm_unobserved",
+  "live_rescore": {
+    "run_ymd": "20260916",
+    "race_key": "nar:50:01",
+    "role": "legacy",
+    "instance_name": "predict-nar-0",
+    "expected_runners": 8,
+    "weight_snapshot_at": "2026-09-16T09:53:30+09:00",
+    "prediction_generated_at": "2026-09-16T00:54:31.723648Z",
+    "post_at": "2026-09-16T10:40:00+09:00",
+    "worker_duration_ms": 59533,
+    "neon_and_kv_post_weight_complete": true,
+    "kv_single_generation_matches_neon": true,
+    "inactive_at": "2026-09-16T00:54:51Z",
+    "stop_path": "normal control queue -> admin-stop -> destroy, not idle SIGTERM",
+    "source_jobs": [209, 214, 215]
+  },
+  "worker_version": "73b86345-9699-40fa-96d2-750fdaaac674",
+  "worker_traffic_percent": 100,
+  "production_rollouts": [
+    {
+      "application": "legacy",
+      "version": 254,
+      "id": "265cadba-24c4-4f2d-820d-d94048107853",
+      "status": "completed",
+      "target_percent": 100,
+      "completed_at": "2026-09-15T18:51:42.699000064Z"
+    },
+    {
+      "application": "race-chain",
+      "version": 133,
+      "id": "ff58aeda-a40c-40fc-966d-e3e7c2d00d0d",
+      "status": "completed",
+      "target_percent": 100,
+      "completed_at": "2026-09-15T18:49:21.259000064Z"
+    },
+    {
+      "application": "small-disabled",
+      "version": 2,
+      "id": "9afc91f0-c6b0-42e8-89d8-db9ba2049d5d",
+      "status": "completed",
+      "target_percent": 100,
+      "completed_at": "2026-09-15T18:49:12.905999872Z"
+    }
+  ],
+  "restoration_verified": {
+    "http": true,
+    "previews": true,
+    "cron_count": 10,
+    "both_start_queues_unpaused": true,
+    "source_job": 200
+  },
+  "post_deploy_initial_prediction_readiness": { "complete": 48, "total": 48, "source_job": 197 },
+  "maintenance_wrapper_exit": {
+    "code": 1,
+    "reason": "Idle-only postcheck ran before progressive rollouts completed; ingress restoration succeeded. Exact transient health response was not retained."
+  },
+  "candidate_image": "finish-position-sigterm:20260916",
+  "candidate_image_id": "sha256:dd29d0d67628c00732fe0629eafc5b57ad768b747af1d74a8322029fd791f3a0",
+  "artifact_manifest_root": "4a6963f9ad41b7d11f35485fae9a7561d5ef1052ed0cdbe79c659e7508804332",
+  "python": {
+    "passed": 2325,
+    "existing_skips": 1,
+    "coverage_percent": 97.11,
+    "full_lint_type_format_passed": true
+  },
+  "worker_coverage_percent": {
+    "statements": 97.73,
+    "branches": 95.1,
+    "functions": 98.83,
+    "lines": 98.3
+  },
+  "http_shutdown": {
+    "job": 174,
+    "ping_status": 200,
+    "ping_body": "ok",
+    "running_after_sigterm": false,
+    "exit_code": 0,
+    "source_mounts": false
+  },
+  "offline_fixtures": [
+    {
+      "name": "frozen_jra",
+      "job": 177,
+      "preserved_odds_gate": "0",
+      "matches_archived_rows_and_signature": true,
+      "output_sha256": "9e6e8faaf6f9078f9ddc9e47061213196de341b13e0254bf1dfb5ac86d379a6e"
+    },
+    {
+      "name": "synthetic_fresh_jra_qsm",
+      "job": 173,
+      "preserved_odds_gate": "1",
+      "matches_archived_rows_and_signature": true,
+      "output_sha256": "d7dad2d51b503a418d49c9ea0114a0b1d804a557dd38052100954b68c8f458e6"
+    },
+    {
+      "name": "frozen_nar_transformer_blend",
+      "job": 173,
+      "preserved_odds_gate": "1",
+      "matches_archived_rows_and_signature": true,
+      "output_sha256": "7d61174d4a3dab44fbd59ccd25e956b75e6fd5508ae8e44b4b8ec7166cf9efb9"
+    }
+  ],
+  "jra_configuration_isolation": {
+    "initial_comparison_failed": true,
+    "candidate_gate_1_output_sha256": "632acc9c6ffbe6a42476bd730a8c8a81a5cfd41bb83d3aa7985de157d3d0a294",
+    "candidate_gate_0_reproduces_archive_exactly": true,
+    "archive_gate_setting_recorded": false,
+    "old_image_available_for_simultaneous_comparison": false,
+    "production_flags_changed": false
+  },
+  "limitations": [
+    "Archived output comparisons, not a simultaneous old/new image test: old image tag and immutable ID were absent in jobs 175/176.",
+    "Frozen and synthetic inputs, not exact live input/publication replay or full-build sizing evidence.",
+    "Network-disabled local Linux Containers on an ARM64 host with amd64 emulation; no predictions submitted or rewritten.",
+    "Prediction deployment requires independently established admission/drain safety; empty inventory is insufficient.",
+    "No causal 50-percent cost-reduction claim."
+  ]
+}

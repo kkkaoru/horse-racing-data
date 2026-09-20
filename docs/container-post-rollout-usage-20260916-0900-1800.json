@@ -1,0 +1,48 @@
+{
+  "recorded_at": "2026-09-16T09:11:43.015Z",
+  "source_job": 224,
+  "scope": "Sum of returned hourly allocation groups, not priced billing or normalized savings",
+  "from": "2026-09-16T00:00:00Z",
+  "to_exclusive": "2026-09-16T09:00:00Z",
+  "queried_hour_count": 9,
+  "applications": [
+    {
+      "role": "legacy",
+      "application_id": "a0348266-3050-47d4-9bad-b04086c1a02b",
+      "returned_hour_groups": 8,
+      "allocated_memory_byte_seconds": 31181276024017.64,
+      "allocated_memory_gib_seconds": 29039.826266484,
+      "allocated_disk_byte_seconds": 48399710444140,
+      "cpu_seconds": 697.6200000000001,
+      "configured_memory_gib": 12,
+      "equivalent_aggregate_instance_minutes": 40.333092036783334
+    },
+    {
+      "role": "mlflow",
+      "application_id": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8",
+      "returned_hour_groups": 9,
+      "allocated_memory_byte_seconds": 19182513338020.49,
+      "allocated_memory_gib_seconds": 17865.107709560998,
+      "allocated_disk_byte_seconds": 23820143612748,
+      "cpu_seconds": 2267.79,
+      "configured_memory_gib": 3,
+      "equivalent_aggregate_instance_minutes": 99.25059838645
+    }
+  ],
+  "readiness_checkpoint": {
+    "source_job": 221,
+    "checked_at": "2026-09-16T09:06:04.679Z",
+    "initial_complete": 48,
+    "race_count": 48,
+    "post_weight_complete": 38,
+    "weight_ready_pending": 0,
+    "not_a_usage_denominator": "Checkpoint is later than the usage cutoff and includes initial predictions generated before the window."
+  },
+  "limitations": [
+    "Recent hours can be incomplete because of ingestion lag.",
+    "An absent application/hour group does not independently prove zero usage.",
+    "Aggregate instance-minutes are not wall time for one instance or one job.",
+    "This window is not a complete UTC billing day and does not isolate identical workloads.",
+    "No causal 50-percent cost reduction or live idle-SIGTERM result is established."
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "recorded_at": "2026-09-16T02:10:06.763Z",
+  "scope": "Read-only production observations after rollout; not a causal savings estimate",
+  "publication": {
+    "checked_at": "2026-09-16T02:09:38.454Z",
+    "run_ymd": "20260916",
+    "race_count": 48,
+    "initial_complete": 48,
+    "post_weight_complete": 3,
+    "observed_post_weight_runner_counts": [8, 8, 5],
+    "available_weight_awaiting_publication": 0,
+    "initial_incomplete_before_post": 0,
+    "neon_kv_generation_and_post_weight_checks_passed": true,
+    "source_job": 217
+  },
+  "next_day": {
+    "run_ymd": "20260917",
+    "readiness_race_count": 0,
+    "prewarm_expected_catalog_race_count": 48,
+    "discovery_race_count": 0,
+    "status": "inventory_not_ready_not_zero_expected_work",
+    "deferred_prewarm_reached_dlq": true,
+    "observer_replayed_or_reset_retries": false
+  },
+  "usage": {
+    "source_job": 218,
+    "from": "2026-09-16T00:00:00Z",
+    "to_exclusive": "2026-09-16T02:00:00Z",
+    "maintenance_and_rollout_excluded": true,
+    "applications": [
+      {
+        "role": "legacy",
+        "application_id": "a0348266-3050-47d4-9bad-b04086c1a02b",
+        "allocated_memory_byte_seconds": 5218271531414.921,
+        "allocated_memory_gib_seconds": 4859.89407768,
+        "allocated_disk_byte_seconds": 8099823462800,
+        "cpu_seconds": 127.67000000000013,
+        "configured_memory_gib": 12,
+        "equivalent_aggregate_instance_seconds": 404.99117314
+      },
+      {
+        "role": "mlflow",
+        "application_id": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8",
+        "allocated_memory_byte_seconds": 1594526021703.1992,
+        "allocated_memory_gib_seconds": 1485.0180798239999,
+        "allocated_disk_byte_seconds": 1980024106432,
+        "cpu_seconds": 176.68,
+        "configured_memory_gib": 3,
+        "equivalent_aggregate_instance_seconds": 495.00602660799996
+      }
+    ],
+    "limitations": [
+      "Recent usage can be affected by ingestion lag.",
+      "Equivalent instance-seconds are aggregated allocation exposure, not one job duration.",
+      "Window includes prewarm activity as well as three rescores; do not divide the whole total by three as pure rescore cost.",
+      "Initial predictions were generated before this window; this is not a full-build or full-day workload sample.",
+      "No priced invoice total or normalized 50-percent savings result is established."
+    ]
+  },
+  "end_of_raceday": {
+    "source_job": 219,
+    "checked_at": "2026-09-16T12:10:01.763Z",
+    "run_ymd": "20260916",
+    "races": 48,
+    "missing_initially_seen_race_keys": [],
+    "initial_complete": 48,
+    "post_weight_complete": 48,
+    "expected_runner_total": 487,
+    "all_kv_generations_match_neon": true,
+    "all_latest_generations_after_weight_snapshot_and_fetch": true,
+    "all_latest_generations_before_post": true,
+    "minimum_generation_lead_seconds": 1995.361,
+    "actual_kv_write_times_for_all_races_verified": false,
+    "next_day_discovered_races": 48,
+    "next_day_initial_complete": 0,
+    "next_day_first_post": "2026-09-17T10:40:00+09:00"
+  },
+  "production_idle_sigterm_verified": false,
+  "observed_cleanup_path": "control queue -> admin-stop -> destroy",
+  "full_build_sizing_verified": false,
+  "authenticated_mlflow_browser_ui_verified": false,
+  "monitoring": {
+    "tail_job": 209,
+    "tail_exit": 124,
+    "tail_exit_reason": "planned hard runtime limit",
+    "tail_process_confirmed_gone": true,
+    "replacement_tail_started": false,
+    "end_of_raceday_readiness_job": 219,
+    "later_contracted_usage_job": 220
+  }
+}
