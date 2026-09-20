@@ -210,8 +210,7 @@ def _assert_frames_match(old_frame: pd.DataFrame, new_frame: pd.DataFrame) -> No
     new_sorted = new_frame.sort_values(["race_id", "umaban"]).reset_index(drop=True)
 
     assert list(old_sorted.columns) == list(new_sorted.columns), (
-        f"column set/order mismatch: old={list(old_sorted.columns)} "
-        f"new={list(new_sorted.columns)}"
+        f"column set/order mismatch: old={list(old_sorted.columns)} new={list(new_sorted.columns)}"
     )
     assert len(old_sorted) == len(new_sorted), (
         f"row count mismatch: old={len(old_sorted)} new={len(new_sorted)}"

@@ -8,9 +8,11 @@ from predict_lib.stage1_top1_swap import apply_top1_score_swap
 
 
 def test_apply_top1_score_swap_preserves_base_when_top1_agrees() -> None:
-    assert apply_top1_score_swap(
-        ["H1", "H2", "H3"], [3.0, 2.0, 1.0], [5.0, 4.0, 0.0]
-    ) == [3.0, 2.0, 1.0]
+    assert apply_top1_score_swap(["H1", "H2", "H3"], [3.0, 2.0, 1.0], [5.0, 4.0, 0.0]) == [
+        3.0,
+        2.0,
+        1.0,
+    ]
 
 
 def test_apply_top1_score_swap_exchanges_only_base_and_companion_top() -> None:

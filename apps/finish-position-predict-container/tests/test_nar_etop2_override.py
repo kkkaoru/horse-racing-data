@@ -41,9 +41,7 @@ ADOPT_OTHER: str = "other"
 REJECT_C: str = "C"
 REJECT_OP: str = "OP"
 REJECT_MUKATSU: str = "MUKATSU"
-HISTORICAL_ADOPT_CLASSES: frozenset[str] = frozenset(
-    {ADOPT_A, ADOPT_B, ADOPT_NEW, ADOPT_OTHER}
-)
+HISTORICAL_ADOPT_CLASSES: frozenset[str] = frozenset({ADOPT_A, ADOPT_B, ADOPT_NEW, ADOPT_OTHER})
 
 
 def _enable_historical_adopt_classes(monkeypatch: pytest.MonkeyPatch) -> None:

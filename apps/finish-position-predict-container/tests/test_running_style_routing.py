@@ -60,9 +60,7 @@ def test_load_running_style_cell_routing_parses_full_shape(tmp_path: Path) -> No
             default_variant_id="latest",
             rule_variant_ids=("tokyo-turf",),
             variants={
-                "latest": RunningStyleVariant(
-                    model_key="running-style/models/jra/latest.flatbin"
-                ),
+                "latest": RunningStyleVariant(model_key="running-style/models/jra/latest.flatbin"),
                 "tokyo-turf": RunningStyleVariant(
                     model_key="running-style/models/jra/cells/tokyo-turf.flatbin"
                 ),

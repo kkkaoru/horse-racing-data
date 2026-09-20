@@ -415,9 +415,7 @@ def test_baked_nar_transformer_artifact_is_clean_and_shape_consistent() -> None:
     assert scorer.mean.shape == (113,)
     assert scorer.std.shape == (113,)
     assert len(scorer.seeds) == 3
-    assert {
-        seed["numeric_projection.weight"].shape for seed in scorer.seeds
-    } == {(96, 113)}
+    assert {seed["numeric_projection.weight"].shape for seed in scorer.seeds} == {(96, 113)}
 
 
 def test_seed_rank_mean_two_seeds(tmp_path: Path) -> None:

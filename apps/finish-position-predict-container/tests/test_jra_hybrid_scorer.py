@@ -31,9 +31,9 @@ def _weights(seed: int = 1) -> dict[str, np.ndarray]:
         "categorical_embeddings.1.weight": generator.normal(size=(3, dimensions)).astype(
             np.float32
         ),
-        "race_categorical_embeddings.0.weight": generator.normal(
-            size=(3, dimensions)
-        ).astype(np.float32),
+        "race_categorical_embeddings.0.weight": generator.normal(size=(3, dimensions)).astype(
+            np.float32
+        ),
     }
     for prefix in ("input_norm", "encoder.layers.0.ln1", "encoder.layers.0.ln2", "encoder.ln"):
         weights[f"{prefix}.weight"] = np.ones(dimensions, dtype=np.float32)

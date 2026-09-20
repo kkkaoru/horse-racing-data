@@ -27,9 +27,7 @@ def apply_top1_score_swap(
     is valid and returns an empty list. Misaligned sequences fail closed.
     """
     if len(horse_ids) != len(base_scores) or len(horse_ids) != len(companion_scores):
-        raise ValueError(
-            "horse_ids, base_scores, and companion_scores must have equal lengths"
-        )
+        raise ValueError("horse_ids, base_scores, and companion_scores must have equal lengths")
     adjusted = [float(score) for score in base_scores]
     if not adjusted:
         return adjusted

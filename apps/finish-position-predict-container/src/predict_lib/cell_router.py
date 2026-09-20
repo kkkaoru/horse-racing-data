@@ -583,9 +583,7 @@ class CellRouter:
         if not entries:
             return routing.default_variant
         first = entries[0]
-        named_variant = _lookup_named_race_variant(
-            entry=first, routing=routing, category=category
-        )
+        named_variant = _lookup_named_race_variant(entry=first, routing=routing, category=category)
         if named_variant is not None:
             return named_variant
         # len(entries) is the count of rows actually being scored for this
@@ -849,8 +847,7 @@ def _parse_named_race_prerace_route(value: object) -> NamedRacePreraceRoute:
     extra = set(payload) - {"when", "model_version", "variant"}
     if extra:
         raise ValueError(
-            "named_race_cells.json: prerace_router route unknown keys "
-            f"{sorted(extra)}"
+            f"named_race_cells.json: prerace_router route unknown keys {sorted(extra)}"
         )
     if "when" not in payload:
         raise ValueError("named_race_cells.json: prerace_router route requires when")
@@ -872,9 +869,7 @@ def _parse_named_race_prerace_router(value: object) -> NamedRacePreraceRouter:
     payload = _as_mapping(value, "prerace_router")
     extra = set(payload) - {"routes"}
     if extra:
-        raise ValueError(
-            f"named_race_cells.json: prerace_router unknown keys {sorted(extra)}"
-        )
+        raise ValueError(f"named_race_cells.json: prerace_router unknown keys {sorted(extra)}")
     if "routes" not in payload:
         raise ValueError("named_race_cells.json: prerace_router requires routes")
     routes = tuple(
@@ -903,9 +898,7 @@ def _parse_named_race_cell(value: object) -> NamedRaceCell:
         rerank_model_version=_optional_str(payload=cell, field="rerank_model_version"),
         routing_mode=_optional_str(payload=cell, field="routing_mode"),
         prerace_router=(
-            None
-            if prerace_payload is None
-            else _parse_named_race_prerace_router(prerace_payload)
+            None if prerace_payload is None else _parse_named_race_prerace_router(prerace_payload)
         ),
     )
 
@@ -1009,9 +1002,7 @@ def _register_named_race_prerace_lock_variants(
             )
             continue
         if existing.model_version != route.model_version:
-            raise ValueError(
-                f"named_race_cells.json: variant '{route.variant}' already exists"
-            )
+            raise ValueError(f"named_race_cells.json: variant '{route.variant}' already exists")
 
 
 def apply_named_race_cells(

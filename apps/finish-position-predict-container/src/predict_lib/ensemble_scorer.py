@@ -129,8 +129,7 @@ def score_with_ensemble(
         raise ValueError(message)
     member_versions = list(member_scores.keys())
     normalized_list = [
-        normalize_within_race(race_id, member_scores[mv], tiebreak)
-        for mv in member_versions
+        normalize_within_race(race_id, member_scores[mv], tiebreak) for mv in member_versions
     ]
     weight_list = [weights[mv] for mv in member_versions]
     return blend_normalized(normalized_list, weight_list)

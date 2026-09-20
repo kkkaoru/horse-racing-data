@@ -355,9 +355,7 @@ def load_ensemble_manifest(
     registered = PER_CLASS_MODEL_VERSIONS.get((category, kyoso_joken_code))
     if registered is None:
         return None
-    path = build_per_class_manifest_path(
-        models_dir, category, kyoso_joken_code, registered
-    )
+    path = build_per_class_manifest_path(models_dir, category, kyoso_joken_code, registered)
     if not path.is_file():
         return None
     try:

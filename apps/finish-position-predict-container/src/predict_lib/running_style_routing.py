@@ -37,9 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-RUNNING_STYLE_ROUTING_PATH: Final[Path] = (
-    Path(__file__).parent / "running_style_cell_routing.json"
-)
+RUNNING_STYLE_ROUTING_PATH: Final[Path] = Path(__file__).parent / "running_style_cell_routing.json"
 RUNNING_STYLE_ROUTING_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "nar", "ban-ei"})
 
 

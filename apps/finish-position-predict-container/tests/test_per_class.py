@@ -334,10 +334,7 @@ def test_resolve_falls_back_when_category_not_enabled_banei() -> None:
 def test_resolve_returns_base_fallback_when_kyoso_joken_code_is_none() -> None:
     # The default production gate is empty, so JRA falls back before any
     # historical registry / normalisation path can route a per-class model.
-    assert (
-        resolve_per_class_model_version("jra", None)
-        == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", None) == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_falls_back_when_no_registered_model_for_named_code() -> None:
@@ -349,19 +346,13 @@ def test_resolve_falls_back_when_no_registered_model_for_named_code() -> None:
 def test_resolve_returns_base_fallback_for_unknown_kyoso_code() -> None:
     # Unknown JRA codes also fall back by default because no category is opted
     # into the dormant helper.
-    assert (
-        resolve_per_class_model_version("jra", "999")
-        == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "999") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_ignores_historical_nar_registry_by_default() -> None:
     # The historical NAR registry remains available for fixtures, but production
     # calls fall back unless a test explicitly patches the enabled categories.
-    assert (
-        resolve_per_class_model_version("nar", "NEW")
-        == NAR_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "NEW") == NAR_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_registered_model_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -398,8 +389,7 @@ def test_resolve_ignores_registry_when_category_not_enabled(
         {("ban-ei", "999"): "banei-cb-class999-v8"},
     )
     assert (
-        per_class.resolve_per_class_model_version("ban-ei", "999")
-        == BANEI_FALLBACK_MODEL_VERSION
+        per_class.resolve_per_class_model_version("ban-ei", "999") == BANEI_FALLBACK_MODEL_VERSION
     )
 
 
@@ -470,39 +460,28 @@ def test_per_class_model_versions_keeps_historical_nar_ensembles() -> None:
 def test_resolve_returns_base_fallback_for_703_after_iter19_flip() -> None:
     # iter 19 (2026-06-13): 703 no longer has a per-class registry entry;
     # the resolver returns the category-global iter 19 base.
-    assert (
-        resolve_per_class_model_version("jra", "703") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "703") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_base_fallback_for_010_after_iter19_flip() -> None:
     # iter 19 (2026-06-13): 010 no longer has a per-class registry entry.
-    assert (
-        resolve_per_class_model_version("jra", "010") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "010") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_base_fallback_for_005_after_iter19_flip() -> None:
     # iter 19 (2026-06-13): 005 no longer has a per-class registry entry.
-    assert (
-        resolve_per_class_model_version("jra", "005") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "005") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_base_fallback_for_016_after_iter19_flip() -> None:
     # iter 19 (2026-06-13): 016 no longer has a per-class registry entry.
-    assert (
-        resolve_per_class_model_version("jra", "016") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "016") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_base_fallback_for_other_after_iter19_flip() -> None:
     # iter 19 (2026-06-13): the ``"other"`` virtual bucket is no longer
     # registered for JRA — the resolver returns the category-global iter 19 base.
-    assert (
-        resolve_per_class_model_version("jra", "other")
-        == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "other") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_per_class_codes_for_jra_returns_empty_after_iter19_base_only_flip() -> None:
@@ -707,9 +686,7 @@ def test_load_ensemble_manifest_rejects_payload_with_wrong_category(
     )
     payload = _canonical_nar_new_payload()
     payload["category"] = "jra"
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -723,9 +700,7 @@ def test_load_ensemble_manifest_rejects_payload_with_wrong_code(
     )
     payload = _canonical_nar_new_payload()
     payload["kyoso_joken_code"] = "MUKATSU"
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -739,9 +714,7 @@ def test_load_ensemble_manifest_rejects_payload_with_missing_model_version(
     )
     payload = _canonical_nar_new_payload()
     del payload["model_version"]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -755,9 +728,7 @@ def test_load_ensemble_manifest_rejects_payload_with_missing_ensemble_type(
     )
     payload = _canonical_nar_new_payload()
     del payload["ensemble_type"]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -771,9 +742,7 @@ def test_load_ensemble_manifest_rejects_payload_with_non_list_members(
     )
     payload = _canonical_nar_new_payload()
     payload["members"] = "not-a-list"
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -787,9 +756,7 @@ def test_load_ensemble_manifest_rejects_payload_with_empty_members(
     )
     payload = _canonical_nar_new_payload()
     payload["members"] = []
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -803,9 +770,7 @@ def test_load_ensemble_manifest_rejects_payload_with_non_dict_member(
     )
     payload = _canonical_nar_new_payload()
     payload["members"] = ["not-a-dict"]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -819,9 +784,7 @@ def test_load_ensemble_manifest_rejects_member_with_missing_model_version(
     )
     payload = _canonical_nar_new_payload()
     payload["members"] = [{"weight": 0.5, "is_baseline": False}]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -837,9 +800,7 @@ def test_load_ensemble_manifest_rejects_member_with_non_numeric_weight(
     payload["members"] = [
         {"model_version": "m", "weight": "0.5", "is_baseline": True},
     ]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -857,9 +818,7 @@ def test_load_ensemble_manifest_rejects_member_with_bool_weight(
     payload["members"] = [
         {"model_version": "m", "weight": True, "is_baseline": False},
     ]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -875,9 +834,7 @@ def test_load_ensemble_manifest_rejects_member_with_non_bool_is_baseline(
     payload["members"] = [
         {"model_version": "m", "weight": 0.5, "is_baseline": "yes"},
     ]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -915,9 +872,7 @@ def test_load_ensemble_manifest_accepts_integer_weight(
     payload["members"] = [
         {"model_version": "m", "weight": 1, "is_baseline": True},
     ]
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     result = load_ensemble_manifest(tmp_path, "nar", "NEW")
     assert result is not None
     assert result.members[0].weight == 1.0
@@ -933,9 +888,7 @@ def test_load_ensemble_manifest_rejects_payload_with_non_string_model_version(
     )
     payload = _canonical_nar_new_payload()
     payload["model_version"] = 23
-    _write_manifest(
-        tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload
-    )
+    _write_manifest(tmp_path, "nar", "NEW", NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION, payload)
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -1230,8 +1183,6 @@ def test_load_ensemble_manifest_returns_none_for_jra_other_after_iter19_flip(
     assert load_ensemble_manifest(tmp_path, "jra", "other") is None
 
 
-
-
 def test_resolve_per_class_resolution_returns_iter19_base_for_unknown_kyoso_code(
     tmp_path: Path,
 ) -> None:
@@ -1340,10 +1291,7 @@ def test_resolve_returns_registered_nar_new_ensemble_string_when_enabled(
 ) -> None:
     _enable_per_class_categories(monkeypatch, "nar")
     # NAR NEW was historically activated 2026-06-05 with the iter 30 ensemble.
-    assert (
-        resolve_per_class_model_version("nar", "NEW")
-        == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "NEW") == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_returns_registered_nar_mukatsu_ensemble_string_when_enabled(
@@ -1360,28 +1308,21 @@ def test_resolve_returns_registered_nar_c_ensemble_string_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_per_class_categories(monkeypatch, "nar")
-    assert (
-        resolve_per_class_model_version("nar", "C") == NAR_CLASS_C_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "C") == NAR_CLASS_C_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_returns_registered_nar_a_ensemble_string_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_per_class_categories(monkeypatch, "nar")
-    assert (
-        resolve_per_class_model_version("nar", "A") == NAR_CLASS_A_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "A") == NAR_CLASS_A_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_returns_registered_nar_op_ensemble_string_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_per_class_categories(monkeypatch, "nar")
-    assert (
-        resolve_per_class_model_version("nar", "OP")
-        == NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "OP") == NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_returns_registered_nar_other_ensemble_string_when_enabled(
@@ -1389,10 +1330,7 @@ def test_resolve_returns_registered_nar_other_ensemble_string_when_enabled(
 ) -> None:
     _enable_per_class_categories(monkeypatch, "nar")
     # The literal ``"other"`` argument is the post-normalisation key.
-    assert (
-        resolve_per_class_model_version("nar", "other")
-        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "other") == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_falls_back_for_nar_b_class_unregistered_when_enabled(
@@ -1412,10 +1350,7 @@ def test_resolve_routes_unknown_nar_code_to_other_ensemble_when_enabled(
     _enable_per_class_categories(monkeypatch, "nar")
     # Unknown sub-class strings collapse to ``"other"`` before the lookup —
     # same routing as NULL.
-    assert (
-        resolve_per_class_model_version("nar", "X")
-        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", "X") == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
 
 
 def test_resolve_routes_nar_null_subclass_to_other_ensemble_when_enabled(
@@ -1424,10 +1359,7 @@ def test_resolve_routes_nar_null_subclass_to_other_ensemble_when_enabled(
     _enable_per_class_categories(monkeypatch, "nar")
     # NULL ``nar_subclass`` (NAR row with no meisho match → ``other``) hits
     # the registered ``other`` ensemble only under explicit legacy opt-in.
-    assert (
-        resolve_per_class_model_version("nar", None)
-        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("nar", None) == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
 
 
 # --- Historical Phase F: NAR ensemble manifest load tests ---------------
@@ -1764,16 +1696,12 @@ def test_jra_per_class_codes_for_is_empty_after_iter19_base_only_flip() -> None:
 def test_resolve_per_class_model_version_jra_005_returns_iter19_base() -> None:
     # 005 no longer has a registry entry — all JRA codes route to the iter 19
     # category-global base model.
-    assert (
-        resolve_per_class_model_version("jra", "005") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "005") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_per_class_model_version_jra_other_returns_iter19_base() -> None:
     # The virtual ``"other"`` bucket is also unregistered for JRA after iter 19.
-    assert (
-        resolve_per_class_model_version("jra", "other") == JRA_FALLBACK_MODEL_VERSION
-    )
+    assert resolve_per_class_model_version("jra", "other") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_per_class_resolution_jra_returns_string_not_ensemble(

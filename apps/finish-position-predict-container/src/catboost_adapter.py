@@ -18,9 +18,7 @@ RAW_FORMULA_VAL: str = "RawFormulaVal"
 
 
 class CatBoostModelLike(Protocol):
-    def predict(
-        self, data: Sequence[Sequence[float]], prediction_type: str
-    ) -> Sequence[float]: ...
+    def predict(self, data: Sequence[Sequence[float]], prediction_type: str) -> Sequence[float]: ...
 
 
 class CatBoostBooster:
@@ -39,9 +37,7 @@ class CatBoostBooster:
     def feature_names_(self) -> Sequence[str]:
         """Expose the native training order for artifact-contract validation."""
         raw = getattr(self._model, "feature_names_", ())
-        if not isinstance(raw, (list, tuple)) or not all(
-            isinstance(name, str) for name in raw
-        ):
+        if not isinstance(raw, (list, tuple)) or not all(isinstance(name, str) for name in raw):
             return ()
         return tuple(raw)
 
@@ -56,9 +52,7 @@ def load_catboost_booster(model_path: str) -> BoosterLike:
 
 
 class CatBoostClassifierLike(Protocol):
-    def predict_proba(
-        self, data: Sequence[Sequence[float]]
-    ) -> Sequence[Sequence[float]]: ...
+    def predict_proba(self, data: Sequence[Sequence[float]]) -> Sequence[Sequence[float]]: ...
 
 
 class CatBoostProbabilityModel:
@@ -69,9 +63,7 @@ class CatBoostProbabilityModel:
     def __init__(self, model: CatBoostClassifierLike) -> None:
         self._model = model
 
-    def predict_proba(
-        self, matrix: Sequence[Sequence[float]]
-    ) -> Sequence[Sequence[float]]:
+    def predict_proba(self, matrix: Sequence[Sequence[float]]) -> Sequence[Sequence[float]]:
         raw = self._model.predict_proba(matrix)
         return [[float(value) for value in row] for row in raw]
 

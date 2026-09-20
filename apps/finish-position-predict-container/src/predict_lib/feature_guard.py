@@ -77,9 +77,7 @@ def race_missing_feature_fraction(
     """
     if not entries:
         return 0.0
-    return sum(
-        missing_feature_fraction(entry, feature_names) for entry in entries
-    ) / len(entries)
+    return sum(missing_feature_fraction(entry, feature_names) for entry in entries) / len(entries)
 
 
 def is_degenerate_feature_matrix(

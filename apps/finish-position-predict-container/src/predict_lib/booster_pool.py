@@ -147,9 +147,7 @@ class BoosterPool:
         return tuple(sorted(self.boosters))
 
 
-def load_booster_from_path(
-    model_path: Path, architecture: Architecture
-) -> BoosterLike:
+def load_booster_from_path(model_path: Path, architecture: Architecture) -> BoosterLike:
     """Load a single CatBoost / XGBoost / LightGBM model from ``model_path``.
 
     Dispatches by ``architecture``: ``"catboost"`` -> CatBoost JSON (used by

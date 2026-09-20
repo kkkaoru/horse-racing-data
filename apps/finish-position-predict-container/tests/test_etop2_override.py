@@ -215,9 +215,7 @@ def test_result_length_matches_input() -> None:
     for n in (1, 2, 3, 8, 18):
         cb_scores = list(range(n, 0, -1))
         xgb_scores = [float(i) for i in range(n)]
-        result = apply_etop2_scores(
-            [float(s) for s in cb_scores], xgb_scores, race_class="703"
-        )
+        result = apply_etop2_scores([float(s) for s in cb_scores], xgb_scores, race_class="703")
         assert len(result) == n
 
 
@@ -256,11 +254,11 @@ def test_not_active_single_horse() -> None:
 def test_active_consistent_with_apply() -> None:
     """is_etop2_override_active() == (argmax changed by apply_etop2_scores)."""
     test_cases = [
-        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], "703"),   # should fire
-        ([5.0, 4.0, 3.0], [9.0, 2.0, 0.5], "703"),   # XGB#1==CB#1, no fire
-        ([5.0, 4.0, 3.0], [0.5, 0.3, 9.0], "703"),   # XGB#1==CB#3, no fire
-        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], "701"),   # class 701, no fire
-        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], None),    # None class, fires
+        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], "703"),  # should fire
+        ([5.0, 4.0, 3.0], [9.0, 2.0, 0.5], "703"),  # XGB#1==CB#1, no fire
+        ([5.0, 4.0, 3.0], [0.5, 0.3, 9.0], "703"),  # XGB#1==CB#3, no fire
+        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], "701"),  # class 701, no fire
+        ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], None),  # None class, fires
     ]
     for cb, xgb, cls in test_cases:
         active = is_etop2_override_active(cb, xgb, race_class=cls)
@@ -269,8 +267,7 @@ def test_active_consistent_with_apply() -> None:
         new_argmax = new_scores.index(max(new_scores))
         changed = original_argmax != new_argmax
         assert active == changed, (
-            f"is_active={active} but argmax_changed={changed} for "
-            f"cb={cb} xgb={xgb} class={cls}"
+            f"is_active={active} but argmax_changed={changed} for cb={cb} xgb={xgb} class={cls}"
         )
 
 

@@ -286,9 +286,7 @@ def test_load_member_feature_names_raises_when_feature_names_not_list(
     """A ``feature_names`` value that is not a list (e.g. a string) raises
     ``ValueError`` — caught by the same ``isinstance(..., list)`` guard as the
     absent-key case."""
-    path = _write_metadata_json(
-        tmp_path / ITER20_BASE, {"feature_names": "feature_a,feature_b"}
-    )
+    path = _write_metadata_json(tmp_path / ITER20_BASE, {"feature_names": "feature_a,feature_b"})
     with pytest.raises(ValueError, match="missing feature_names"):
         load_member_feature_names(path)
 
@@ -297,9 +295,7 @@ def test_load_member_feature_names_raises_when_item_not_string(tmp_path: Path) -
     """A ``feature_names`` list with a non-string item (e.g. an int) raises
     ``ValueError`` — the positional scorer needs every column name to be a
     string."""
-    path = _write_metadata_json(
-        tmp_path / ITER20_BASE, {"feature_names": ["feature_a", 7]}
-    )
+    path = _write_metadata_json(tmp_path / ITER20_BASE, {"feature_names": ["feature_a", 7]})
     with pytest.raises(ValueError, match="not all strings"):
         load_member_feature_names(path)
 
@@ -637,9 +633,7 @@ def test_load_booster_from_path_lightgbm_real_round_trip(tmp_path: Path) -> None
         dtype=numpy.float64,
     )
     labels = numpy.array([0, 1, 2, 0, 1, 2])
-    dataset = lightgbm.Dataset(
-        train_rows, label=labels, group=[3, 3], feature_name=feature_names
-    )
+    dataset = lightgbm.Dataset(train_rows, label=labels, group=[3, 3], feature_name=feature_names)
     params = {
         "objective": "lambdarank",
         "num_leaves": 4,
