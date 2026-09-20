@@ -70,6 +70,38 @@ Do not commit a real profile. Do not paste live selectors into tests, docs, or c
 
 Horse rows map to `oversea_horse_race_history` with explicit source provenance. Person rows map to `oversea_person_race_history`; a missing source horse link remains null and the published horse name is retained. Empty source fields are never replaced with synthetic JV identifiers.
 
+## Resumable history collection
+
+From this package directory:
+
+```sh
+bun run history collect /private/history-plan.json /private/history-snapshot 50
+bun run history status /private/history-snapshot
+```
+
+Run only one collector per snapshot directory. Re-run the same command to resume: completed pages and archived responses are reused rather than cold-refetched. A completed snapshot is immutable evidence, not a claim that the source has no newer results; refreshing a changing source requires a separately reviewed snapshot/baseline workflow.
+
+The private plan requires `kind` (`horse`, `owner`, `jockey`, or `trainer`), the observed `sourceId` and HTTPS `initialUrl`, explicit `encoding`, `initialHtmlPath` (null or a normal-browser HTML export), and `profile`. The profile contains `markup` (the result parser profile described above), `populationPattern` (a regular expression capturing the source-declared total), `nextLabels`, and `emptyMarker`. Use only observed public navigation and actual markup. Do not infer totals from the number of fetched rows, guess endpoints, or bypass login/paywall restrictions.
+
+The collector archives raw bytes, fetch metadata, decoded HTML, and an atomic parsed-row/checkpoint file under the private directory. HTTP redirects/access failures, parse failures, changing totals, pagination loops, or a terminal count mismatch do not count as success. An explicit source zero is distinct from missing data and from zero real-world starts. A configured browser export is preferred for its initial page; it does not authorize automated access-control bypasses.
+
+Exit codes: `0` = archival completion, `2` = bounded chunk paused, `1` = blocked/failure. Reports deliberately say `databasePublished: false`. `status` describes checkpoint completion, not freshness or the last acquisition error; retain the collection report when diagnosing blocked pages.
+
+**Database publication is a separate stage.** `prepareHistoryArchive` validates source scope, preserves genuine missing runner/finish records as `sourcePartialRows`, rejects other invalid canonical rows and conflicting duplicates, and reports archival coverage. `buildMissingHistoryStatements` selects only candidates without an exact all-column database match. `createHistoryDatabase` inserts that delta inside a transaction, verifies both the delta and full canonical input before commit, and reports submitted/inserted/verified counts. Existing conflicting records cause rollback, not overwrite. These APIs do not write JV rows, models, forecasts, or runner mappings. The CLI connects these stages with explicit target selection:
+
+```sh
+bun run history prepare /private/history-snapshot local
+bun run history apply /private/history-snapshot local --confirm-write
+```
+
+For production, use `production` instead of `local`. Set the corresponding private environment variable `OVERSEA_HISTORY_LOCAL_DATABASE_URL` or `OVERSEA_HISTORY_PRODUCTION_DATABASE_URL` outside shell history/logs. Production requires an explicit TLS mode (`require`, `verify-ca`, or `verify-full`). Connections have bounded connection/statement timeouts and are closed after each operation.
+
+Preparation is read-only against the database; it writes a private `database-prepared.json` binding the exact plan/archive bytes and target configuration. Review its counts before apply. Apply rejects changed artifacts/targets, reselects missing rows within the transaction, and writes `database-receipt.json` only after commit and full readback. A durable receipt prevents accidental apply replay. If commit succeeded but receipt persistence failed, retry safely reselects missing rows instead of blindly resubmitting the old batch. Keep separate publication directories for separate database targets; reuse the immutable plan/archive files rather than refetching source pages.
+
+An operation's `status: complete` means that operation finished, not full source availability. Check `databasePublished`, `sourceComplete`, `sourcePartialRows`, and `canonicalCoverageComplete` together. Records with genuine missing runner/finish evidence remain in the archive and are not invented to satisfy canonical validation. Publication commands do not refresh source snapshots, synthesize statistics, or activate forecasts.
+
+Keep plans, fetched markup, credentials, source-partial evidence and database receipts outside version control. Never treat archived counts, queue acceptance, a successful HTTP response, or partial canonical publication as complete coverage.
+
 ## Data flow
 
 1. Load both documents concurrently, preferring the supplied local files and otherwise making one HTTP request per source.
@@ -131,3 +163,70 @@ bun run --filter save-oversea-keiba-records test:coverage
 ```
 
 The Vitest configuration requires at least 95% statements, branches, functions, and lines coverage.
+
+## Targeted production requests (existing Worker authority)
+
+`production` prepares and submits one overseas race through the existing
+`daily-keiba-sync` staging → Catalog → Neon pipeline. It does not deploy Workers,
+copy the local database, bypass the legacy-replica guard, advance the daily cursor,
+or activate prediction models.
+
+Prerequisites: Bun, authenticated Wrangler, and an already-authorized Executor
+`cloudflare-api.user.<profile>` integration. Authorization prompts require operator
+approval; the CLI never approves them. Supply these non-secret resource settings
+through the environment (and the local PostgreSQL settings above):
+
+| Variable                         | Purpose                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`          | Explicit account for Wrangler; checked against the managed API account before staging |
+| `PC_KEIBA_CLOUDFLARE_PROFILE`    | Existing Executor Cloudflare user-profile name                                        |
+| `PC_KEIBA_SYNC_DATABASE_ID`      | Current daily-sync D1 database ID                                                     |
+| `PC_KEIBA_CATALOG_QUEUE_ID`      | Current Catalog queue ID, not its name                                                |
+| `PC_KEIBA_SOURCE_STAGING_BUCKET` | Current daily-sync source-staging bucket name                                         |
+
+From this app directory, with the environment already loaded:
+
+```sh
+bun run production prepare /private/operator/race-request 2026 0919 A4 05
+# Review production-input.json and production-plan.json before proceeding.
+bun run production apply /private/operator/race-request --confirm-production
+bun run production status /private/operator/race-request
+```
+
+- `prepare` only reads the selected local race and writes owner-only local artifacts.
+  It refuses to overwrite a durable request. Complete source column layouts, one
+  overseas race, distinct runners and the declared field size must agree.
+- `apply` requires explicit confirmation and an unchanged plan. It checks the
+  managed account, uploads both immutable stages, downloads and verifies their
+  SHA-256 digests, registers a manual run with `advance_cursor=0`, then submits
+  exactly two Catalog jobs. Existing Worker leases/indexes and Neon mirroring
+  remain authoritative. No other date or table is requested.
+- Queue acceptance is **not publication**. Use `status` and require both tables
+  to report `catalog_status=succeeded` and `neon_status=succeeded`, with the run
+  itself succeeded. Verify actual production rows and the authenticated UI.
+- A local acceptance receipt prevents duplicate submissions. If an operation
+  fails between registration, queue submission and receipt persistence, inspect
+  `status` and the existing run before any recovery. Do not delete the receipt,
+  regenerate a run ID, or blindly retry `apply`.
+- These requests publish only `jvd_ra` and `jvd_se`. Local source-ID and master
+  backfills are not silently replicated to production. Missing genuine JV horse
+  numbers remain unknown; never invent a numeric identifier to satisfy a UI filter.
+
+### Prediction publication contract
+
+`src/prediction-publication.ts` exports `buildPredictionStatements` and
+`publishPredictions` for an approved database transaction adapter. Supply the
+validated race request, the complete prediction JSON array, and one generation
+timestamp. It checks all runner identities, unique ranks, finite scores and
+probability ranges before opening the transaction. All statements are scoped to
+`overseas-lgbm-fp-v3`, source `overseas`, and the selected race. The module performs
+no DDL, deletes, master writes, or active-model changes. `UMABAN_XX` is permitted
+only as a prediction-row identity for a runner whose real JV number is unknown;
+it is never written to JV source/master tables.
+
+The adapter must verify the registered production field, execute the complete
+generation atomically, and read back all runners before committing. The current
+Viewer reads these predictions from Neon; Catalog success alone is insufficient.
+A Viewer that filters out zero JV horse numbers can still hide legitimately
+registered overseas runners. Treat that as a Viewer compatibility blocker, not
+as permission to fabricate identifiers or deploy unrelated working-tree changes.

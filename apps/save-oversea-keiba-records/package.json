@@ -7,11 +7,14 @@
     "format:check": "bunx oxfmt --check",
     "lint": "bunx oxlint",
     "save": "bun run src/main.ts",
+    "production": "bun run src/production-main.ts",
+    "history": "bun run src/history-main.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tsc": "bunx tsc --noEmit"
   },
   "dependencies": {
+    "iconv-lite": "0.7.2",
     "pg": "8.21.0"
   },
   "devDependencies": {
