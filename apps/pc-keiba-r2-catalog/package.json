@@ -10,6 +10,14 @@
     "lint": "bunx oxlint",
     "smoke:r2-sql": "bun run scripts/smoke-r2-sql.ts",
     "smoke:running-style": "bun run scripts/smoke-running-style-r2-sql.ts",
+    "migrate:vectors": "bun run scripts/run-vector-backfill.ts",
+    "migrate:d1": "bun run scripts/run-d1-backfill.ts",
+    "d1:snapshot:publish": "uv run scripts/publish_d1_snapshot.py",
+    "d1:snapshot:test": "uv run scripts/test_publish_d1_snapshot.py && uv run scripts/test_publish_d1_manifests.py",
+    "d1:manifests:publish": "uv run scripts/publish_d1_manifests.py",
+    "d1:capture:export": "bun run scripts/run-d1-capture.ts",
+    "d1:capture:publish": "uv run scripts/publish_d1_capture.py",
+    "d1:capture:test": "uv run scripts/test_publish_d1_capture.py",
     "sync": "uv run scripts/sync_r2_catalog.py",
     "sync:entity-history": "uv run scripts/sync_entity_history.py",
     "sync:entity-history:full": "uv run scripts/sync_entity_history.py --full",
@@ -28,12 +36,16 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
+    "@neondatabase/serverless": "catalog:",
     "@types/bun": "1.3.14",
     "@vitest/coverage-v8": "catalog:",
+    "esbuild": "catalog:",
+    "miniflare": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
+    "vitest-mock-extended": "5.1.1",
     "wrangler": "catalog:"
   }
 }

@@ -7,5 +7,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types", "@types/bun", "vitest/globals"]
   },
-  "include": ["scripts/**/*.ts", "src/**/*.ts", "vitest.config.ts"]
+  "include": ["scripts/**/*.ts", "src/**/*.ts", "test-support/**/*.ts", "vitest.config.ts"]
 }
