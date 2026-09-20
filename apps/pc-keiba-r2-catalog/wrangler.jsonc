@@ -1,9 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "pc-keiba-r2-catalog",
-  "main": "src/index.ts",
+  "main": "src/vector-gateway.ts",
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-07-14",
+  "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.1,
@@ -18,10 +19,45 @@
   // R2_SQL_TOKEN, ADMIN_TOKEN, FINISH_POSITION_ATTESTATION_TOKEN,
   // RACE_ENTITY_CURSOR_SECRET, and RACE_ENTITY_WARM_TOKEN must be configured
   // with `wrangler secret put`.
+  // Archive observation only, independent of prediction jobs and business-ingestion schedules.
+  "triggers": { "crons": ["2-57/5 * * * *"] },
+  "queues": {
+    "producers": [
+      { "binding": "INGESTION_DLQ_METRICS", "queue": "sync-realtime-data-hot-ingestion-dlq" },
+      { "binding": "INGESTION_ALERTS", "queue": "pipeline-health-alerts" },
+    ],
+    "consumers": [
+      {
+        "queue": "sync-realtime-data-hot-ingestion-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_concurrency": 1,
+        // Archive only. Failed archival must not burn through retries before the 14-day retention window.
+        "max_retries": 100,
+        "retry_delay": 86400,
+      },
+    ],
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "INGESTION_INBOX", "class_name": "IngestionInbox" },
+      { "name": "INGESTION_ARCHIVE_JOURNAL", "class_name": "IngestionArchiveJournal" },
+    ],
+  },
+  "migrations": [
+    { "tag": "ingestion-inbox-v1", "new_sqlite_classes": ["IngestionInbox"] },
+    { "tag": "ingestion-archive-journal-v1", "new_sqlite_classes": ["IngestionArchiveJournal"] },
+  ],
   "kv_namespaces": [
     {
       "binding": "CATALOG_KV",
       "id": "357d43e67aa24dcd87e883e3b241d901",
+    },
+  ],
+  "vectorize": [
+    {
+      "binding": "CORNER_VECTORS",
+      "index_name": "pc-keiba-corner-v1",
     },
   ],
   "r2_buckets": [
