@@ -303,11 +303,11 @@ export const claimOddsFetch = async (
 ): Promise<boolean> => {
   const result = await db
     .prepare(
-      `update odds_fetch_state set odds_fetch_lock_until = ?, updated_at = ? where race_key = ? and (odds_fetch_lock_until is null or odds_fetch_lock_until <= ?)`,
+      `update odds_fetch_state set odds_fetch_lock_until = ?, updated_at = ? where race_key = ? and (odds_fetch_lock_until is null or odds_fetch_lock_until <= ?) returning 1 as changed`,
     )
     .bind(lockUntil, now, raceKey, now)
-    .run();
-  return result.meta.changes > 0;
+    .all<{ changed: number }>();
+  return result.results.length > 0;
 };
 
 export const completeOddsFetch = async (

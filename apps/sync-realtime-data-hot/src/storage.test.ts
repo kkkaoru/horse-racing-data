@@ -23,6 +23,43 @@ import {
   upsertOddsFetchState,
 } from "./storage";
 
+const buildClaimDb = (returned: boolean) => {
+  const unexpected = (): never => {
+    throw new Error("Unexpected D1 test operation");
+  };
+  const bind = vi.fn<D1PreparedStatement["bind"]>();
+  const statement: D1PreparedStatement = {
+    bind,
+    all: unexpected,
+    first: unexpected,
+    raw: unexpected,
+    run: unexpected,
+  };
+  bind.mockReturnValue(statement);
+  vi.spyOn(statement, "all").mockResolvedValue({
+    success: true,
+    results: returned ? [{ changed: 1 }] : [],
+    meta: {
+      changes: 3,
+      changed_db: true,
+      duration: 0,
+      last_row_id: 1,
+      rows_read: 1,
+      rows_written: 3,
+      size_after: 1,
+    },
+  });
+  const prepare = vi.fn<D1Database["prepare"]>().mockReturnValue(statement);
+  const db: D1Database = {
+    prepare,
+    batch: unexpected,
+    exec: unexpected,
+    dump: unexpected,
+    withSession: unexpected,
+  };
+  return { db, prepare };
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -225,11 +262,8 @@ it("markOddsFetchQueued issues batched updates", async () => {
   expect(batch).toHaveBeenCalledTimes(1);
 });
 
-it("claimOddsFetch returns true when changes > 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn(() => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimOddsFetch returns true for a returned source row despite extra trigger writes", async () => {
+  const { db, prepare } = buildClaimDb(true);
   expect(
     await claimOddsFetch(
       db,
@@ -238,13 +272,11 @@ it("claimOddsFetch returns true when changes > 0", async () => {
       "2026-05-28T10:00:00+09:00",
     ),
   ).toBe(true);
+  expect(prepare).toHaveBeenCalledWith(expect.stringMatching(/returning 1 as changed/u));
 });
 
-it("claimOddsFetch returns false when no rows changed", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn(() => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
+it("claimOddsFetch rejects trigger-only writes without a returned source row", async () => {
+  const { db } = buildClaimDb(false);
   expect(
     await claimOddsFetch(
       db,
