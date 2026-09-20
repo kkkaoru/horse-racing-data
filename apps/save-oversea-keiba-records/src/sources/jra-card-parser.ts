@@ -19,6 +19,10 @@ interface RunnerBasics {
 
 const BODY_PATTERN: RegExp = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i;
 const RUNNER_PATTERN: RegExp = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+// Official scratched entries replace the published horse number with this marker.
+// Do not invent a number from row order or include them in the active field.
+const WITHDRAWN_NUMBER_PATTERN: RegExp =
+  /<td\s+class="num"[^>]*>\s*<span\s+class="cap"[^>]*>\s*取消\s*<\/span>\s*<\/td>/i;
 const TAG_PATTERN: RegExp = /<[^>]+>/g;
 const WHITESPACE_PATTERN: RegExp = /\s+/g;
 const TRAINER_COUNTRY_PATTERN: RegExp = /\s*\(([^)]+)\)$/;
@@ -188,7 +192,9 @@ const parseOfficialJraCard = (html: string): ParsedJraRace => {
     fieldName: "race name",
   });
   const body: string = requiredCapture({ html, pattern: BODY_PATTERN, fieldName: "runner table" });
-  const runnerMatches: RegExpMatchArray[] = Array.from(body.matchAll(RUNNER_PATTERN));
+  const runnerMatches: RegExpMatchArray[] = Array.from(body.matchAll(RUNNER_PATTERN)).filter(
+    (matched: RegExpMatchArray): boolean => !WITHDRAWN_NUMBER_PATTERN.test(matched[0]),
+  );
   if (runnerMatches.length === 0) {
     throw new Error("JRA card has no runners.");
   }

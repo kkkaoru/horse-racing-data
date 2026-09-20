@@ -84,6 +84,35 @@ test("parses race metadata and runner details from a compact JRA card", () => {
   });
 });
 
+test("excludes officially withdrawn entries without inventing horse numbers", () => {
+  const card: string = CARD_HTML.replace(
+    '<td class="num">1</td>',
+    '<td class="num">\n<span class="cap">取消</span>\n</td>',
+  );
+  expect(parseJraCard(card).runners.map((runner) => runner.horseNumber)).toStrictEqual([2]);
+  expect(parseJraCard(card).runners.map((runner) => runner.horseName)).toStrictEqual([
+    "サンプルホース",
+  ]);
+});
+
+test("rejects a card with only withdrawn entries", () => {
+  const card: string = CARD_HTML.replace(
+    /<td class="num">\d<\/td>/g,
+    '<td class="num"><span class="cap">取消</span></td>',
+  );
+  expect(() => parseJraCard(card)).toThrow("JRA card has no runners.");
+});
+
+test("does not interpret a cancellation in unrelated content as a scratched entry", () => {
+  const card: string = CARD_HTML.replace("TEST OWNER", '<span class="cap">取消</span>');
+  expect(parseJraCard(card).runners.map((runner) => runner.horseNumber)).toStrictEqual([1, 2]);
+});
+
+test("rejects an unpublished number without an official withdrawal marker", () => {
+  const card: string = CARD_HTML.replace('<td class="num">1</td>', '<td class="num"></td>');
+  expect(() => parseJraCard(card)).toThrow("JRA card is missing runner horse number.");
+});
+
 test("returns a null grade when the race name has no supported grade suffix", () => {
   expect(parseJraCard(CARD_HTML.replace(" (G1)", "")).grade).toBe(null);
 });
