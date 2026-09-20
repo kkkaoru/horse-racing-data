@@ -96,6 +96,18 @@ def parse_args() -> argparse.Namespace:
         help="Independent cell worker processes; 1 is fastest on the measured dataset",
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--trends-root",
+        type=Path,
+        default=None,
+        help="Directory holding <folder>/prophet-entity-trends-<year>.parquet trends",
+    )
+    parser.add_argument(
+        "--trends-2026",
+        action="append",
+        dest="trends_2026",
+        help="<category>=<path> per-runner trend parquet used for 2026 instead of the baked lookup",
+    )
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be at least 1")
@@ -208,22 +220,29 @@ def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parents[3]
     trends: dict[tuple[str, str, str], float] = {}
+    trends_root = args.trends_root or (root / "apps/timesfm-finish-position/tmp")
     for category, folder in (
         ("jra", "prophet-jra-lab"),
         ("nar", "prophet-lab"),
         ("ban-ei", "prophet-lab"),
     ):
         for year in ("2024", "2025"):
-            loaded = load_lab_trends(
-                root
-                / "apps/timesfm-finish-position/tmp"
-                / folder
-                / f"prophet-entity-trends-{year}.parquet"
-            )
+            loaded = load_lab_trends(trends_root / folder / f"prophet-entity-trends-{year}.parquet")
             trends.update(
                 ((category, race_id, horse_id), value)
                 for (race_id, horse_id), value in loaded.items()
             )
+    per_runner_2026_categories: set[str] = set()
+    for override in args.trends_2026 or ():
+        category, separator, raw_path = override.partition("=")
+        if not separator or category not in {"jra", "nar", "ban-ei"}:
+            parser_error = "--trends-2026 expects <category>=<path>"
+            raise SystemExit(parser_error)
+        per_runner_2026_categories.add(category)
+        trends.update(
+            ((category, race_id, horse_id), value)
+            for (race_id, horse_id), value in load_lab_trends(Path(raw_path)).items()
+        )
 
     lookup_table = pq.read_table(
         root / "apps/pc-keiba-viewer/finish-position/lookups/"
@@ -363,7 +382,7 @@ def main() -> None:
             continue
 
         race_id = f"{source}:{year}{month_day}:{venue}:{race}"
-        if year in ("2024", "2025"):
+        if year in ("2024", "2025") or category in per_runner_2026_categories:
             for entry in entries:
                 trend = trends.get((category, race_id, str(entry["ketto_toroku_bango"])))
                 entry["prophet_entity_performance_mean"] = trend
