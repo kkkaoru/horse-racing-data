@@ -88,3 +88,20 @@ it("sanitizes provider failures and alerts", async () => {
   );
   log.mockRestore();
 });
+it("serves the overseas history shape for source=overseas", async () => {
+  mocks.query.mockResolvedValue([
+    { source_horse_id: "2021106753", race_date: "2026-04-26", distance_metres: "1600" },
+  ]);
+  const response: Response = await handleRaceHistoryRead(
+    new Request(
+      "https://catalog.internal/v1/race-history?horseIds=2021106753&beforeDate=20260920&source=overseas",
+    ),
+    env,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    rows: [{ sourceHorseId: "2021106753", raceDate: "2026-04-26", distanceMetres: "1600" }],
+  });
+  expect(mocks.query.mock.calls[0]?.[1]).toMatch("FROM pc_keiba.oversea_horse_race_history");
+  expect(mocks.query.mock.calls[0]?.[1]).toMatch("race_date < '2026-09-20'");
+});
