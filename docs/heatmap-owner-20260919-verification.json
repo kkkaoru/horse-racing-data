@@ -1,0 +1,418 @@
+{
+  "verifiedAt": "2026-09-18T19:49:40.438Z",
+  "races": 46,
+  "runners": 514,
+  "cells": 1542,
+  "rateValues": 4626,
+  "records": [
+    {
+      "key": "09-01",
+      "runners": 8,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-01",
+      "runners": 9,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-02",
+      "runners": 8,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-02",
+      "runners": 8,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-03",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-03",
+      "runners": 12,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-04",
+      "runners": 12,
+      "surface": "障害",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-04",
+      "runners": 16,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-05",
+      "runners": 10,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-05",
+      "runners": 12,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-06",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-06",
+      "runners": 12,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-07",
+      "runners": 12,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-07",
+      "runners": 14,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-08",
+      "runners": 6,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-08",
+      "runners": 14,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-09",
+      "runners": 14,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-09",
+      "runners": 9,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-10",
+      "runners": 15,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-10",
+      "runners": 12,
+      "surface": "芝",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-11",
+      "runners": 16,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-11",
+      "runners": 14,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "09-12",
+      "runners": 16,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "06-12",
+      "runners": 16,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-01",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-02",
+      "runners": 9,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-03",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-01",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-04",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-02",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-05",
+      "runners": 9,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-03",
+      "runners": 9,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-06",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-04",
+      "runners": 12,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-07",
+      "runners": 9,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-05",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-08",
+      "runners": 9,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-06",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-09",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-07",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-10",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-08",
+      "runners": 10,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-11",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-09",
+      "runners": 11,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "83-12",
+      "runners": 10,
+      "surface": "ばんえい",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    },
+    {
+      "key": "55-10",
+      "runners": 14,
+      "surface": "ダート",
+      "independentThirtyYearCountsMatch": true,
+      "sameConditionOwnerSourceMatch": true,
+      "allThreeRatesMatch": true
+    }
+  ],
+  "cacheNamespace": "pc-keiba-viewer:win-rate-heatmap:v22",
+  "normalApiStatus": 200,
+  "normalApiCache": "HIT",
+  "displayVariantsPerRace": 16,
+  "versions": {
+    "catalog": "d6c21437-6215-44b3-a8e7-eeafbba7e2f6",
+    "viewer": "d67c9ede-1e5e-44d0-94b9-75c5dd9d06fe"
+  },
+  "httpSmoke": [
+    {
+      "path": "/races/2026/09/19/09/01",
+      "pageStatus": 200,
+      "assetStatus": 200,
+      "scope": "HTTP delivery; interactive browser blocked by Access login"
+    },
+    {
+      "path": "/races/2026/09/19/09/02",
+      "pageStatus": 200,
+      "assetStatus": 200,
+      "scope": "HTTP delivery; interactive browser blocked by Access login"
+    },
+    {
+      "path": "/races/2026/09/19/83/01",
+      "pageStatus": 200,
+      "assetStatus": 200,
+      "scope": "HTTP delivery; interactive browser blocked by Access login"
+    },
+    {
+      "path": "/races/2026/09/19/55/01",
+      "pageStatus": 200,
+      "assetStatus": 200,
+      "scope": "HTTP delivery; interactive browser blocked by Access login"
+    },
+    {
+      "path": "/races/2026/09/19/09/04",
+      "pageStatus": 200,
+      "assetStatus": 200,
+      "scope": "HTTP delivery; interactive browser blocked by Access login"
+    }
+  ],
+  "interactiveBrowser": "Not verified: Cloudflare Access login required"
+}

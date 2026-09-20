@@ -1,0 +1,487 @@
+{
+  "date": "2026-09-19",
+  "catalog": {
+    "version": "b68478a8-a874-448c-85ab-86158cf95b88",
+    "verifiedAt": "2026-09-18T17:50:33.416Z",
+    "settingsUnchanged": true,
+    "bytesVerified": true
+  },
+  "viewer": {
+    "version": "22f29a0d-b1b8-4e00-a5eb-deb1128b3597",
+    "verifiedAt": "2026-09-18T18:10:38.014Z",
+    "settingsUnchanged": true,
+    "all46Prewarmed": true
+  },
+  "cacheNamespaces": {
+    "cohort": "heatmap-partnership-v2",
+    "display": "pc-keiba-viewer:win-rate-heatmap:v20"
+  },
+  "verification": {
+    "races": 46,
+    "runners": 514,
+    "cells": 1028,
+    "results": [
+      {
+        "key": "09-01",
+        "runners": 8,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:39.674Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-01",
+        "runners": 9,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:40.993Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-02",
+        "runners": 8,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:42.421Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-02",
+        "runners": 8,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:43.540Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-03",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:45.307Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-03",
+        "runners": 12,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:46.658Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-04",
+        "runners": 12,
+        "surface": "障害",
+        "checkedAt": "2026-09-18T18:10:48.256Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-04",
+        "runners": 16,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:50.110Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-05",
+        "runners": 10,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:51.507Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-05",
+        "runners": 12,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:52.651Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-06",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:54.066Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-06",
+        "runners": 12,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:55.710Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-07",
+        "runners": 12,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:10:57.792Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-07",
+        "runners": 14,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:10:59.843Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-08",
+        "runners": 6,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:11:00.919Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-08",
+        "runners": 14,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:02.452Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-09",
+        "runners": 14,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:03.613Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-09",
+        "runners": 9,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:11:04.566Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-10",
+        "runners": 15,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:11:05.738Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-10",
+        "runners": 12,
+        "surface": "芝",
+        "checkedAt": "2026-09-18T18:11:07.051Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-11",
+        "runners": 16,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:08.672Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-11",
+        "runners": 14,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:10.115Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "09-12",
+        "runners": 16,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:11.564Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "06-12",
+        "runners": 16,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:12.950Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-01",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:13.913Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-02",
+        "runners": 9,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:15.412Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-03",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:16.377Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-01",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:17.741Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-04",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:19.000Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-02",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:20.240Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-05",
+        "runners": 9,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:21.973Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-03",
+        "runners": 9,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:23.145Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-06",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:24.232Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-04",
+        "runners": 12,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:25.848Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-07",
+        "runners": 9,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:27.060Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-05",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:28.307Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-08",
+        "runners": 9,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:29.252Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-06",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:30.349Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-09",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:31.352Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-07",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:33.119Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-10",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:34.089Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-08",
+        "runners": 10,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:35.479Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-11",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:36.496Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-09",
+        "runners": 11,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:39.848Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "83-12",
+        "runners": 10,
+        "surface": "ばんえい",
+        "checkedAt": "2026-09-18T18:11:41.100Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      },
+      {
+        "key": "55-10",
+        "runners": 14,
+        "surface": "ダート",
+        "checkedAt": "2026-09-18T18:11:42.632Z",
+        "cache": "HIT",
+        "independentCountsMatch": true
+      }
+    ]
+  },
+  "pageSmoke": [
+    {
+      "path": "/races/2026/09/19/09/01",
+      "status": 200,
+      "asset": "/_next/static/chunks/27jktro2p5rq9.js",
+      "assetStatus": 200,
+      "at": "2026-09-18T18:11:18.051Z"
+    },
+    {
+      "path": "/races/2026/09/19/09/02",
+      "status": 200,
+      "asset": "/_next/static/chunks/27jktro2p5rq9.js",
+      "assetStatus": 200,
+      "at": "2026-09-18T18:11:22.541Z"
+    },
+    {
+      "path": "/races/2026/09/19/09/04",
+      "status": 200,
+      "asset": "/_next/static/chunks/27jktro2p5rq9.js",
+      "assetStatus": 200,
+      "at": "2026-09-18T18:11:27.251Z"
+    },
+    {
+      "path": "/races/2026/09/19/83/01",
+      "status": 200,
+      "asset": "/_next/static/chunks/27jktro2p5rq9.js",
+      "assetStatus": 200,
+      "at": "2026-09-18T18:11:50.203Z"
+    },
+    {
+      "path": "/races/2026/09/19/55/01",
+      "status": 200,
+      "asset": "/_next/static/chunks/27jktro2p5rq9.js",
+      "assetStatus": 200,
+      "at": "2026-09-18T18:12:02.422Z"
+    }
+  ],
+  "sourceFingerprints": [
+    {
+      "path": "apps/pc-keiba-r2-catalog/src/heatmap-partnership.ts",
+      "sha256": "f264d379b29eafdeb89f40d41b3f61b4cf25ea9b43f25c93e5d6d3dea75c5534"
+    },
+    {
+      "path": "apps/pc-keiba-r2-catalog/src/heatmap-partnership-sql.ts",
+      "sha256": "dc7c3892ee45cbd9eb290fe60a425f2ea6c6c27815d5a442d87c0216466b0c20"
+    },
+    {
+      "path": "apps/pc-keiba-r2-catalog/src/heatmap-partnership-stats.ts",
+      "sha256": "40ed036ae2aadd0393caa42e21f4f2ab7f9d7635f5016c307036067e813d3e13"
+    },
+    {
+      "path": "apps/pc-keiba-r2-catalog/src/win-rate-heatmap-stats.ts",
+      "sha256": "496f1c3b9fbd9527d06d772a42b4edcdf8a059e0b11957fb8f4ffff41b7136e9"
+    },
+    {
+      "path": "apps/pc-keiba-viewer/src/lib/win-rate-heatmap-cache.ts",
+      "sha256": "e21ceb0fb4a3f23121ae1dc91f38446cd6e02c236343320a1831390d8c969f31"
+    }
+  ],
+  "bundleIsolation": {
+    "catalog": {
+      "modules": [
+        "heatmap-partnership.ts",
+        "heatmap-partnership-sql.ts",
+        "heatmap-partnership-stats.ts"
+      ],
+      "productionHash": "249cfe4fa96e06da025febdd8e1b3d59daeac4f04c078451a762f356396b962e",
+      "candidateHash": "80edbda36d33e9d9f2bc6899e4ba837003ece38aca2c8b801b77d93e65146add",
+      "outsideModulesUnchanged": true,
+      "baselineModuleParity": true
+    },
+    "viewer": {
+      "oldHash": "5c8bacac94eb564624be7ca86d5a8211a02f7985e4827c556ef5a9ac26b6aeb3",
+      "newHash": "032e656c0a81abe9b341905f5ddcabb792252477b717b84479921d5dc121b9a7",
+      "replacements": 2,
+      "onlyCacheNamespaceChanged": true
+    }
+  },
+  "tests": {
+    "catalog": {
+      "passed": 1561,
+      "coverage": [99.29, 97.76, 99.67, 99.74]
+    },
+    "viewer": {
+      "passed": 5323,
+      "coverage": [98.72, 96.47, 99.13, 98.84]
+    },
+    "python": {
+      "passed": 5277,
+      "coverage": 97.39,
+      "warnings": 27
+    }
+  }
+}
