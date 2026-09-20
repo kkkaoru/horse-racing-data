@@ -8,6 +8,8 @@ pre-commit:
       exclude:
         # Native ML model JSON is loader-sensitive; formatting can change XGBoost numeric token types.
         - "apps/finish-position-predict-container/models/finish-position/**/model.json"
+        # Vendor skill docs from ~/.agents/skills-stroage; do not reformat hard-linked copies.
+        - ".agents/**"
       run: bunx oxfmt --check {staged_files}
     oxlint:
       glob: "*.ts"

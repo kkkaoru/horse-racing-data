@@ -1,0 +1,2 @@
+# Vendor skill docs from ~/.agents/skills-stroage; do not lint whitespace on hard-linked copies.
+.agents/** -whitespace
