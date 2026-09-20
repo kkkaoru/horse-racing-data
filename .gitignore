@@ -223,7 +223,6 @@ temp/*
 /docs/finish-position-accuracy/experiments/**/*.jsonl
 /docs/finish-position-accuracy/experiments/**/*.csv
 /docs/finish-position-accuracy/experiments/**/*.txt
-# Research source/artifact rules are centralized in research/.gitignore.
 
 # Hand-written replay protocol, not an evaluation output.
 !/docs/finish-position-accuracy/experiments/20260912-local-pg/pandas-baseline-replay-plan.json
