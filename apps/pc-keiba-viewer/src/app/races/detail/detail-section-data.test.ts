@@ -605,7 +605,7 @@ it("bloodline payload filters thin overseas samples and discloses the venue fall
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
 });
 
-it("similar payload uses broad JV stats for overseas races and suppresses samples below 20 starts", async () => {
+it("similar payload uses published-population scope for overseas races and suppresses samples below 20 starts", async () => {
   getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
   getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
   getSimilarRaceStatsMock.mockResolvedValueOnce([
@@ -655,7 +655,7 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
     settings: {
       includeAge: false,
       includeClass: false,
-      includeDistance: true,
+      includeDistance: false,
       includeRaceTitle: false,
       includeSurface: false,
       includeTurn: false,
@@ -666,6 +666,106 @@ it("similar payload uses broad JV stats for overseas races and suppresses sample
   });
   expect(getSimilarRaceStatsMock).toHaveBeenCalledOnce();
   expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+});
+
+it("retains partial published overseas statistics in time-score with provenance and incomplete status", async () => {
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getRaceTimeStatsMock.mockResolvedValue({
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 0,
+    targetRaces: [],
+  });
+  getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A4" });
+  getRaceRunnersMock.mockResolvedValueOnce([
+    { ...OVERSEAS_RUNNER, umaban: "01" },
+    { ...OVERSEAS_RUNNER, umaban: "02" },
+    { ...OVERSEAS_RUNNER, umaban: "04" },
+    { ...OVERSEAS_RUNNER, umaban: "07" },
+  ]);
+  getSimilarRaceStatsMock.mockResolvedValueOnce([
+    {
+      category: "jockey",
+      currentHorseNumbers: "7",
+      details: [],
+      horseCount: 10,
+      name: "Published Jockey",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+      statsSource: "netkeiba",
+      statsScope: "all-published-results",
+    },
+    {
+      category: "trainer",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 10,
+      name: "Thin Trainer",
+      quinellaCount: 3,
+      quinellaRate: 15,
+      showCount: 4,
+      showRate: 20,
+      starts: 19,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  getBloodlineStatsMock.mockResolvedValue([]);
+
+  const payload = await getDetailSectionPayload("time-score", {
+    day: "19",
+    keibajoCode: "A4",
+    month: "09",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({
+    similarRows: [
+      {
+        name: "Published Jockey",
+        starts: 20,
+        currentHorseNumbers: "7",
+        statsSource: "netkeiba",
+        statsScope: "all-published-results",
+      },
+    ],
+    settings: { includeDistance: false, includeVenue: false },
+    similarStatsIncomplete: true,
+    similarStatsFallback: true,
+    type: "time-score",
+  });
+  expect(getSimilarRaceStatsMock).toHaveBeenCalledOnce();
+});
+
+it("preserves explicitly requested overseas distance filtering", async () => {
+  getRaceDetailMock.mockResolvedValueOnce({ ...JRA_RACE, keibajoCode: "A8" });
+  getRaceRunnersMock.mockResolvedValueOnce([OVERSEAS_RUNNER]);
+
+  const context = await getDetailStatsContext({
+    day: "28",
+    keibajoCode: "A8",
+    month: "12",
+    query: { similarStatsDistance: "1" },
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(context?.statsSettings.includeDistance).toBe(true);
 });
 
 it("keeps the first similar bloodline rows when the bloodline fallback times out", async () => {
@@ -1790,9 +1890,9 @@ it("finish-position bucket returns a null evaluation when every tier misses", as
   expect(data.bucketModelVersion).toBe("jra-cb-v7-lineage-wf-21y");
 });
 
-it("training payload decodes netkeiba oikiri.html as utf-8 and merges parsed reviews into trainings", async () => {
+it("training payload decodes netkeiba oikiri.html as utf-8 and merges parsed reviews into Catalog trainings", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
-  getRaceTrainingsMock.mockResolvedValueOnce([
+  fetchRaceTrainingsFromCatalogMock.mockResolvedValueOnce([
     {
       babamawari: null,
       bamei: "テストホース",
@@ -1896,7 +1996,7 @@ it("training payload decodes netkeiba oikiri.html as utf-8 and merges parsed rev
     raceBango: "11",
     year: "2025",
   });
-  expect(getRaceTrainingsMock).toHaveBeenCalledTimes(1);
+  expect(getRaceTrainingsMock).not.toHaveBeenCalled();
   fetchMock.mockRestore();
 });
 
@@ -2012,7 +2112,7 @@ it("training payload uses Catalog workout times and ignores D1 trainingWorkouts"
 it("training payload returns empty trainingReviews when netkeiba oikiri.html returns non-ok", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
   fetchRaceTrainingsFromCatalogMock.mockResolvedValueOnce([]);
-  getRaceTrainingsMock.mockResolvedValueOnce([]);
+  getRaceTrainingsMock.mockRejectedValueOnce(new Error("Neon must not be contacted."));
   const fetchMock = vi
     .spyOn(globalThis, "fetch")
     .mockResolvedValueOnce(
@@ -2037,10 +2137,48 @@ it("training payload returns empty trainingReviews when netkeiba oikiri.html ret
     trainings: [],
     type: "training",
   });
+  expect(getRaceTrainingsMock).not.toHaveBeenCalled();
   fetchMock.mockRestore();
 });
 
-it("training payload uses the PostgreSQL fallback directly for local development", async () => {
+it("training payload fails closed when Catalog is unavailable instead of reading Neon", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(null);
+  fetchRaceTrainingsFromCatalogMock.mockResolvedValueOnce(null);
+  getRaceTrainingsMock.mockRejectedValueOnce(new Error("Neon must not be contacted."));
+
+  await expect(
+    getDetailSectionPayload("training", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("R2 Catalog race trainings are unavailable.");
+  expect(getRaceTrainingsMock).not.toHaveBeenCalled();
+});
+
+it("training payload propagates Catalog errors without reading Neon", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(null);
+  fetchRaceTrainingsFromCatalogMock.mockRejectedValueOnce(new Error("Catalog request failed."));
+
+  await expect(
+    getDetailSectionPayload("training", {
+      day: "28",
+      keibajoCode: "06",
+      month: "12",
+      query: {},
+      raceNumber: "11",
+      raceSource: "jra",
+      year: "2025",
+    }),
+  ).rejects.toThrow("Catalog request failed.");
+  expect(getRaceTrainingsMock).not.toHaveBeenCalled();
+});
+
+it("training payload uses PostgreSQL directly for local development", async () => {
   getDatabaseTargetMock.mockReturnValue("local");
   getRaceDetailMock.mockResolvedValueOnce(null);
   getRaceTrainingsMock.mockResolvedValueOnce([]);
@@ -2187,6 +2325,30 @@ it("falls back to live results when cached heatmap source JSON is invalid", asyn
     type: "win-rate-heatmap",
   });
   expect(getHorseRaceResultsMock).toHaveBeenCalledTimes(1);
+});
+
+it("requests same-condition owner counts on both initial and relaxed heatmap queries", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  await getDetailSectionPayload("win-rate-heatmap", {
+    day: "19",
+    keibajoCode: "06",
+    month: "09",
+    query: {},
+    raceNumber: "01",
+    raceSource: "jra",
+    year: "2026",
+  });
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledTimes(2);
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ includeOwner: true, includeJockeyFrame: true }),
+  );
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ includeOwner: true, includeJockeyFrame: true }),
+  );
 });
 
 it("captures live weights in the warm payload without altering runner identities", async () => {
@@ -2797,6 +2959,7 @@ it("assembles heatmap payload from Catalog stats, results, and condition section
     includeDistance: false,
     includeGrade: false,
     includeJockeyFrame: true,
+    includeOwner: true,
     includeRaceTitle: true,
     includeSurface: false,
     includeTrackCode: false,
@@ -2892,6 +3055,7 @@ it("drops Ban-ei heatmap age and condition-key Catalog filters so jockey and sir
     includeDistance: true,
     includeGrade: false,
     includeJockeyFrame: true,
+    includeOwner: true,
     includeRaceTitle: false,
     includeSurface: false,
     includeTrackCode: false,
@@ -2950,6 +3114,7 @@ it("sends the 10-year Catalog window when similar stats years are all", async ()
     includeDistance: false,
     includeGrade: false,
     includeJockeyFrame: true,
+    includeOwner: true,
     includeRaceTitle: true,
     includeSurface: false,
     includeTrackCode: false,

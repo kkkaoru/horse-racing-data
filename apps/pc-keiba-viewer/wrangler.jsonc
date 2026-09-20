@@ -30,6 +30,11 @@
       "binding": "R2_CATALOG",
       "service": "pc-keiba-r2-catalog",
     },
+    {
+      "binding": "R2_RACE_DETAIL",
+      "service": "pc-keiba-r2-catalog",
+      "entrypoint": "RaceDetailReadService",
+    },
   ],
   "images": {
     "binding": "IMAGES",

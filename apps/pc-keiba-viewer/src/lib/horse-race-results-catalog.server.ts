@@ -3,6 +3,7 @@ import "server-only";
 import { safeGetCloudflareEnv } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import type { HorseRaceResult } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
 
 export interface HorseRaceResultsCatalogQuery {
   day: string;
@@ -228,6 +229,9 @@ const fetchCatalogResultsResponse = async (
 export const fetchHorseRaceResultsFromCatalog = async (
   query: HorseRaceResultsCatalogQuery,
 ): Promise<HorseRaceResult[] | null> => {
+  // Catalog accepts numeric venue codes and has no supplementary overseas histories.
+  // Preserve the caller's PostgreSQL fallback rather than treating this as an outage.
+  if (isOverseasKeibajoCode(query.keibajoCode)) return null;
   const env = await safeGetCloudflareEnv();
   const catalog = env?.R2_CATALOG;
   if (!catalog) return null;

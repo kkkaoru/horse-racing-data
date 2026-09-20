@@ -217,6 +217,17 @@ it("coerces numeric Catalog fields and keeps optional result columns", async () 
   ]);
 });
 
+it("uses the supplementary history fallback for overseas venues without contacting Catalog", async () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+
+  await expect(
+    fetchHorseRaceResultsFromCatalog({ ...query, keibajoCode: "A8" }),
+  ).resolves.toBeNull();
+  expect(safeGetCloudflareEnvMock).not.toHaveBeenCalled();
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it("returns null when the Catalog binding is unavailable", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue(null);
   await expect(fetchHorseRaceResultsFromCatalog(query)).resolves.toBeNull();

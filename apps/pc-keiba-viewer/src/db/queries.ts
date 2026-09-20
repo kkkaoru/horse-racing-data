@@ -1,8 +1,9 @@
 // Run with bun.
 import "server-only";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
+import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import {
   getAllFinishPositionCellRoutingOffLabelVariantModelVersions,
@@ -24,6 +25,13 @@ import {
 } from "../lib/prediction-kv-cache";
 import { readPredictionKvText, writePredictionKvText } from "../lib/prediction-kv-cache.server";
 import { parsePredictionProbability } from "../lib/prediction-probability";
+import { readCatalogRaceCalendar } from "../lib/race-calendar-catalog";
+import { readCatalogRaceCourse } from "../lib/race-course-catalog";
+import {
+  readCatalogRaceDayList,
+  readCatalogRaceDayListWithJockeys,
+} from "../lib/race-day-list-catalog";
+import { readCatalogRaceDetail } from "../lib/race-detail-catalog";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -61,6 +69,7 @@ import type {
   TimeScoreRow,
   WeightClassStatsRow,
 } from "../lib/race-types";
+import { readCatalogRaceYears } from "../lib/race-years-catalog";
 import {
   inferRaceSourceFromKeibajoCode,
   isBanEiKeibajoCode,
@@ -76,11 +85,10 @@ import {
   readTopRaceWindowsWithSwr,
   type TopRaceWindowsPayload,
 } from "../lib/top-races-cache.server";
-import { getDb } from "./client";
+import { getDatabaseTarget, getDb } from "./client";
 import { isRunningStyleLabel, type RunningStyleLabel } from "./corner-running-style-parsers";
 import { withDbQueryCache } from "./query-cache";
 import {
-  jvdCs,
   jvdRa,
   jvdSe,
   jvdUm,
@@ -98,6 +106,9 @@ import {
 const BLOODLINE_STATS_QUERY_VERSION = "v5";
 const ENTITY_RESULTS_QUERY_VERSION = "v2-mssd";
 const RACE_TIME_STATS_QUERY_VERSION = "v2-mssd";
+
+const compareSameVenueRaceNumbers = (left: RaceListItem, right: RaceListItem): number =>
+  left.raceBango.localeCompare(right.raceBango);
 
 const raceTimeTenthsSql = (column: ReturnType<typeof sql>) => {
   const cleaned = sql`btrim(coalesce(${column}, ''))`;
@@ -349,12 +360,18 @@ export const getActiveRunningStylePredictions = cache(
 
 export const getRaceYears = cache(
   async (): Promise<RaceYearSummary[]> =>
-    withDbQueryCache(["getRaceYears"], async () => {
-      const result = await getDb().execute<{
-        year: string;
-        race_count: string;
-        day_count: string;
-      }>(sql`
+    withDbQueryCache(
+      ["getRaceYears", getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1"],
+      async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceYears(env?.R2_RACE_DETAIL);
+        }
+        const result = await getDb().execute<{
+          year: string;
+          race_count: string;
+          day_count: string;
+        }>(sql`
     select
       kaisai_nen as year,
       sum(race_count) as race_count,
@@ -372,24 +389,35 @@ export const getRaceYears = cache(
     order by kaisai_nen desc
   `);
 
-      return result.rows.map((row) => ({
-        year: row.year,
-        raceCount: Number(row.race_count),
-        dayCount: Number(row.day_count),
-      }));
-    }),
+        return result.rows.map((row) => ({
+          year: row.year,
+          raceCount: Number(row.race_count),
+          dayCount: Number(row.day_count),
+        }));
+      },
+    ),
 );
 
 export const getRaceDaySummaries = cache(
   async (year: string): Promise<RaceDaySummary[]> =>
-    withDbQueryCache(["getRaceDaySummaries", year], async () => {
-      const result = await getDb().execute<{
-        year: string;
-        month: string;
-        day: string;
-        jra_count: string;
-        nar_count: string;
-      }>(sql`
+    withDbQueryCache(
+      [
+        "getRaceDaySummaries",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1",
+        year,
+      ],
+      async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceCalendar(env?.R2_RACE_DETAIL, year);
+        }
+        const result = await getDb().execute<{
+          year: string;
+          month: string;
+          day: string;
+          jra_count: string;
+          nar_count: string;
+        }>(sql`
     select
       kaisai_nen as year,
       substring(kaisai_tsukihi from 1 for 2) as month,
@@ -411,21 +439,37 @@ export const getRaceDaySummaries = cache(
     order by kaisai_nen desc, kaisai_tsukihi desc
   `);
 
-      return result.rows.map((row) => ({
-        year: row.year,
-        month: row.month,
-        day: row.day,
-        jraCount: Number(row.jra_count),
-        narCount: Number(row.nar_count),
-      }));
-    }),
+        return result.rows.map((row) => ({
+          year: row.year,
+          month: row.month,
+          day: row.day,
+          jraCount: Number(row.jra_count),
+          narCount: Number(row.nar_count),
+        }));
+      },
+    ),
 );
 
 export const getRacesByDate = cache(
   async (year: string, month: string, day: string): Promise<RaceListItem[]> => {
-    return withDbQueryCache(["getRacesByDate", year, month, day], async () => {
-      const monthDay = `${month}${day}`;
-      const result = await getDb().execute<RaceListItem>(sql`
+    return withDbQueryCache(
+      [
+        "getRacesByDate",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1",
+        year,
+        month,
+        day,
+      ],
+      async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceDayListWithJockeys(
+            env?.R2_RACE_DETAIL,
+            `${year}${month}${day}`,
+          );
+        }
+        const monthDay = `${month}${day}`;
+        const result = await getDb().execute<RaceListItem>(sql`
     select *
     from (
       select
@@ -489,16 +533,29 @@ export const getRacesByDate = cache(
     order by "hassoJikoku" asc nulls last, "keibajoCode" asc, "raceBango" asc, source asc
   `);
 
-      return result.rows;
-    });
+        return result.rows;
+      },
+    );
   },
 );
 
 export const getRacesByDateWithoutJockeyNames = cache(
   async (year: string, month: string, day: string): Promise<RaceListItem[]> => {
-    return withDbQueryCache(["getRacesByDateWithoutJockeyNames", year, month, day], async () => {
-      const monthDay = `${month}${day}`;
-      const result = await getDb().execute<RaceListItem>(sql`
+    return withDbQueryCache(
+      [
+        "getRacesByDateWithoutJockeyNames",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1",
+        year,
+        month,
+        day,
+      ],
+      async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceDayList(env?.R2_RACE_DETAIL, `${year}${month}${day}`);
+        }
+        const monthDay = `${month}${day}`;
+        const result = await getDb().execute<RaceListItem>(sql`
     select *
     from (
       select
@@ -548,8 +605,9 @@ export const getRacesByDateWithoutJockeyNames = cache(
     order by "hassoJikoku" asc nulls last, "keibajoCode" asc, "raceBango" asc, source asc
   `);
 
-      return result.rows;
-    });
+        return result.rows;
+      },
+    );
   },
 );
 
@@ -562,8 +620,26 @@ export const getSameVenueRacesByDate = cache(
     keibajoCode: string,
   ): Promise<RaceListItem[]> => {
     return withDbQueryCache(
-      ["getSameVenueRacesByDate", source, year, month, day, keibajoCode],
+      [
+        "getSameVenueRacesByDate",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1",
+        source,
+        year,
+        month,
+        day,
+        keibajoCode,
+      ],
       async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          const races: RaceListItem[] = await readCatalogRaceDayList(
+            env?.R2_RACE_DETAIL,
+            `${year}${month}${day}`,
+          );
+          return races
+            .filter((race) => race.source === source && race.keibajoCode === keibajoCode)
+            .toSorted(compareSameVenueRaceNumbers);
+        }
         const monthDay = `${month}${day}`;
         const table = source === "jra" ? jvdRa : nvdRa;
         const result = await getDb().execute<RaceListItem>(sql`
@@ -613,6 +689,18 @@ const hasRaceRow = async (
   keibajoCode: string,
   raceNumber: string,
 ): Promise<boolean> => {
+  if (getDatabaseTarget() === "cloudflare") {
+    return (
+      (await getRaceDetail(
+        source,
+        year,
+        monthDay.slice(0, 2),
+        monthDay.slice(2),
+        keibajoCode,
+        raceNumber,
+      )) !== null
+    );
+  }
   const table = source === "jra" ? jvdRa : nvdRa;
   const result = await getDb().execute<{ one: number }>(sql`
     select 1 as one
@@ -636,7 +724,15 @@ export const getRaceSourceByRoute = cache(
     raceNumber: string,
   ): Promise<RaceSource | null> =>
     withDbQueryCache(
-      ["getRaceSourceByRoute", "v2-single-table", year, month, day, keibajoCode, raceNumber],
+      [
+        "getRaceSourceByRoute",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "v2-single-table",
+        year,
+        month,
+        day,
+        keibajoCode,
+        raceNumber,
+      ],
       async () => {
         const monthDay = `${month}${day}`;
         const [primary, secondary] = raceSourceLookupOrder(keibajoCode);
@@ -661,8 +757,26 @@ export const getRaceDetail = cache(
     raceNumber: string,
   ): Promise<RaceDetail | null> => {
     return withDbQueryCache(
-      ["getRaceDetail", source, year, month, day, keibajoCode, raceNumber],
+      [
+        "getRaceDetail",
+        getDatabaseTarget() === "cloudflare" ? "catalog-v1" : "postgres-v1",
+        source,
+        year,
+        month,
+        day,
+        keibajoCode,
+        raceNumber,
+      ],
       async () => {
+        if (getDatabaseTarget() === "cloudflare") {
+          const env = await safeGetCloudflareEnv();
+          return await readCatalogRaceDetail(env?.R2_RACE_DETAIL, {
+            source,
+            date: `${year}${month}${day}`,
+            keibajoCode,
+            raceBango: raceNumber,
+          });
+        }
         const table = source === "jra" ? jvdRa : nvdRa;
         const [race] = await getDb()
           .select({
@@ -717,7 +831,15 @@ export const getRaceRunners = cache(
     raceNumber: string,
   ): Promise<Runner[]> => {
     return withDbQueryCache(
-      ["getRaceRunners", source, year, month, day, keibajoCode, raceNumber],
+      [
+        /^[A-Z][0-9A-Z]$/u.test(keibajoCode) ? "getRaceRunners-overseas-v2" : "getRaceRunners",
+        source,
+        year,
+        month,
+        day,
+        keibajoCode,
+        raceNumber,
+      ],
       async () => {
         const table = source === "jra" ? jvdSe : nvdSe;
         const monthDay = `${month}${day}`;
@@ -838,11 +960,29 @@ export const getRaceRunners = cache(
             and se.race_bango = ${raceNumber}
             -- Provisional JV rows can coexist with confirmed rows because
             -- their umaban and horse identity are part of the primary key.
-            -- Fail closed instead of rendering placeholder runners.
+            -- Overseas starters can have genuine published numbers without a JV horse ID.
+            -- Keep domestic/provisional exclusions and prefer a confirmed identity if present.
             and se.data_kubun <> '1'
             and se.umaban ~ '^(0[1-9]|1[0-8])$'
             and se.ketto_toroku_bango ~ '^[0-9]{10}$'
-            and se.ketto_toroku_bango <> '0000000000'
+            and (
+              se.ketto_toroku_bango <> '0000000000'
+              or (
+                se.keibajo_code ~ '^[A-Z][0-9A-Z]$'
+                and btrim(se.bamei, ' 　') <> ''
+                and not exists (
+                  select 1 from jvd_se confirmed
+                  where confirmed.kaisai_nen = se.kaisai_nen
+                    and confirmed.kaisai_tsukihi = se.kaisai_tsukihi
+                    and confirmed.keibajo_code = se.keibajo_code
+                    and confirmed.race_bango = se.race_bango
+                    and confirmed.umaban = se.umaban
+                    and confirmed.data_kubun <> '1'
+                    and confirmed.ketto_toroku_bango ~ '^[0-9]{10}$'
+                    and confirmed.ketto_toroku_bango <> '0000000000'
+                )
+              )
+            )
           order by cast(se.umaban as integer) asc, se.ketto_toroku_bango asc
         `);
         return jraResult.rows;
@@ -2448,25 +2588,8 @@ export const getRaceCourseInfo = cache(
       return null;
     }
 
-    return withDbQueryCache(["getRaceCourseInfo", keibajoCode, kyori, trackCode], async () => {
-      const [course] = await getDb()
-        .select({
-          courseKaishuNengappi: jvdCs.courseKaishuNengappi,
-          courseSetsumei: jvdCs.courseSetsumei,
-        })
-        .from(jvdCs)
-        .where(
-          and(
-            eq(jvdCs.keibajoCode, keibajoCode),
-            eq(jvdCs.kyori, kyori),
-            eq(jvdCs.trackCode, trackCode),
-          ),
-        )
-        .orderBy(desc(jvdCs.courseKaishuNengappi))
-        .limit(1);
-
-      return course ?? null;
-    });
+    const env = await safeGetCloudflareEnv();
+    return readCatalogRaceCourse(env?.R2_CATALOG, { keibajoCode, kyori, trackCode });
   },
 );
 

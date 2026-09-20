@@ -1,3 +1,4 @@
+// Runs with Bun for development and verification; deployed through the Cloudflare adapter.
 import "server-only";
 import { getDatabaseTarget } from "../../../db/client";
 import {
@@ -400,7 +401,7 @@ const fetchPremiumRacePayload = async (
   }
 };
 
-const getRaceTrainingsWithCatalogFallback = async (
+const getRaceTrainingsWithCatalog = async (
   source: RaceSource,
   year: string,
   month: string,
@@ -416,9 +417,10 @@ const getRaceTrainingsWithCatalogFallback = async (
       raceBango: raceNumber,
       year,
     });
-    if (catalogRows && catalogRows.length > 0) {
-      return catalogRows;
+    if (catalogRows === null) {
+      throw new Error("R2 Catalog race trainings are unavailable.");
     }
+    return catalogRows;
   }
   return getRaceTrainings(source, year, month, day, keibajoCode, raceNumber);
 };
@@ -1214,7 +1216,9 @@ export const getDetailStatsContext = async ({
   );
   const statsSettings: SimilarRaceStatsSettings =
     isOverseasKeibajoCode(race.keibajoCode) && !hasExplicitStatsState(query, "similar")
-      ? relaxAllConditionAnalysisSettings(baseStatsSettings)
+      ? // Overseas snapshots describe published populations, not distance-matched JV rows.
+        // Explicit user settings take the branch below and are never relaxed here.
+        { ...relaxAllConditionAnalysisSettings(baseStatsSettings), includeDistance: false }
       : banEiRace && !hasExplicitStatsState(query, "similar")
         ? // Ban-ei titles are commonly one-off sponsor or dedication labels; class is the
           // repeatable comparison boundary, while exact-title filtering collapses history.
@@ -1734,7 +1738,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
   if (section === "training") {
     const [race, trainings] = await Promise.all([
       getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRaceTrainingsWithCatalogFallback(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceTrainingsWithCatalog(raceSource, year, month, day, keibajoCode, raceNumber),
     ]);
     const premiumPayload = race
       ? await fetchPremiumRacePayload(race)
@@ -2396,7 +2400,7 @@ const loadHeatmapCatalogStats = async (
   source: RaceSource,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
   const catalogStats = await fetchWinRateHeatmapStatsFromCatalog({
-    ...buildWinRateHeatmapCatalogQuery(params, settings, source, false),
+    ...buildWinRateHeatmapCatalogQuery(params, settings, source, true),
     includeJockeyFrame: true,
   });
   if (
@@ -2410,7 +2414,7 @@ const loadHeatmapCatalogStats = async (
       params,
       relaxAllConditionAnalysisSettings(settings),
       source,
-      false,
+      true,
     ),
     includeJockeyFrame: true,
   });

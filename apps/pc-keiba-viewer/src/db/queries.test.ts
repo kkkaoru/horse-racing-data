@@ -18,6 +18,7 @@ const { executeMock, readPredictionKvTextMock, withDbQueryCacheMock, writePredic
   }));
 
 vi.mock("./client", () => ({
+  getDatabaseTarget: vi.fn<() => "local">(() => "local"),
   getDb: vi.fn<GetDbFn>(() => ({
     execute: executeMock,
   })),
@@ -395,6 +396,45 @@ it("getRaceRunners joins JRA overseas identities by the complete race-entry key"
   expect(queryText).toMatch(/se\.ketto_toroku_bango ~ '\s*\^\[0-9\]\{10\}\$\s*'/u);
   expect(queryText).toMatch(/se\.ketto_toroku_bango <> '\s*0000000000\s*'/u);
   expect(queryText).toMatch(/order by cast\(se\.umaban as integer\) asc/u);
+});
+
+it("getRaceRunners preserves domestic cache keys", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("jra", "2026", "09", "19", "05", "01");
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getRaceRunners",
+    "jra",
+    "2026",
+    "09",
+    "19",
+    "05",
+    "01",
+  ]);
+});
+
+it("getRaceRunners admits named overseas unknown-JV starters only without a confirmed duplicate", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("jra", "2026", "09", "19", "A4", "05");
+  expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
+    "getRaceRunners-overseas-v2",
+    "jra",
+    "2026",
+    "09",
+    "19",
+    "A4",
+    "05",
+  ]);
+  const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  expect(queryText).toMatch(/or\s*\(\s*se\.keibajo_code ~ '\^\[A-Z\]\[0-9A-Z\]\$'/u);
+  expect(queryText).toMatch(/btrim\(se\.bamei, ' 　'\) <> ''/u);
+  expect(queryText).toMatch(/not exists\s*\(\s*select 1 from jvd_se confirmed/u);
+  expect(queryText).toMatch(/confirmed\.kaisai_nen = se\.kaisai_nen/u);
+  expect(queryText).toMatch(/confirmed\.kaisai_tsukihi = se\.kaisai_tsukihi/u);
+  expect(queryText).toMatch(/confirmed\.keibajo_code = se\.keibajo_code/u);
+  expect(queryText).toMatch(/confirmed\.race_bango = se\.race_bango/u);
+  expect(queryText).toMatch(/confirmed\.umaban = se\.umaban/u);
+  expect(queryText).toMatch(/confirmed\.data_kubun <> '1'/u);
+  expect(queryText).toMatch(/confirmed\.ketto_toroku_bango <> '0000000000'/u);
 });
 
 it("getHorseRaceResults excludes empty and all-zero identities for a JRA current race", async () => {

@@ -1,3 +1,4 @@
+// Runs in the Viewer runtime; verified with bun package scripts.
 import "server-only";
 import {
   boolean,
@@ -82,6 +83,7 @@ const horseMasterColumns = {
 };
 
 export const jvdCs = pgTable("jvd_cs", {
+  dataKubun: varchar("data_kubun", { length: 1 }),
   keibajoCode: varchar("keibajo_code", { length: 2 }).notNull(),
   kyori: varchar("kyori", { length: 4 }).notNull(),
   trackCode: varchar("track_code", { length: 2 }).notNull(),

@@ -156,6 +156,7 @@ declare global {
     PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     RACE_TREND_ROOM?: PcKeibaDurableObjectNamespace;
     R2_CATALOG?: { fetch: typeof fetch };
+    R2_RACE_DETAIL?: { fetch: typeof fetch };
     REALTIME_DATA?: { fetch: typeof fetch };
     REALTIME_DB?: PcKeibaD1Database;
     REALTIME_FEATURES?: { fetch: typeof fetch };

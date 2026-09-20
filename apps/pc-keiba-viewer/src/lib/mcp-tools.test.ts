@@ -1025,20 +1025,29 @@ it("does not calculate an unwarmed display when a presentation cache exists", as
 });
 
 it("display heatmap prioritizes cached horse rates over conflicting history", async () => {
-  const result = await callMcpTool(
-    "get_win_rate_heatmap_display",
-    { ...compactRaceArgs, viewMode: "winRate" },
-    jsonFetch({
-      "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": {
-        ...heatmapPayload,
-        horseRateStats: [
-          { horseNumber: "01", starts: 6, winCount: 0, quinellaCount: 0, showCount: 1 },
-        ],
-      },
-    }),
-  );
-  expect(result.isError).toBe(false);
-  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  const fetchSite = jsonFetch({
+    "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": {
+      ...heatmapPayload,
+      horseRateStats: [
+        { horseNumber: "01", starts: 6, winCount: 0, quinellaCount: 0, showCount: 1 },
+      ],
+    },
+  });
+  const collect = async (responseCursor: unknown): Promise<string> => {
+    const result = await callMcpTool(
+      "get_win_rate_heatmap_display",
+      { ...compactRaceArgs, viewMode: "winRate", responseCursor },
+      fetchSite,
+    );
+    expect(result.isError).toBe(false);
+    const text = result.content[0]?.text ?? "{}";
+    const chunk = JSON.parse(text);
+    if (chunk.encoding !== "json-text") return text;
+    return chunk.complete
+      ? chunk.dataChunk
+      : chunk.dataChunk + (await collect(chunk.nextResponseCursor));
+  };
+  const payload = JSON.parse(await collect(undefined));
   expect(
     payload.rows[0].swatches.find((swatch: { columnKey: string }) => swatch.columnKey === "horse"),
   ).toMatchObject({
