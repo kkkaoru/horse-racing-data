@@ -1,3 +1,4 @@
+// Runs with bun; validates Catalog readiness independently of backup completion.
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { Env, Job } from "./types";
@@ -347,7 +348,96 @@ it("fails closed when Daily Sync staging is missing or rejects the day", async (
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("staging response");
 });
 
-it("keeps finalization queued until the Catalog-first run succeeds", async () => {
+it("finalizes a committed Catalog run while the Neon backup is pending", async () => {
+  dailyBinding().fetch = vi.fn(async () =>
+    Response.json({
+      catalog_ready: true,
+      neon_backup_complete: false,
+      status: "neon_pending",
+      error_stage: null,
+    }),
+  );
+  expect(
+    await finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+  ).toBe("succeeded");
+  expect(mocks.bust).toHaveBeenCalledTimes(1);
+  expect(env.PC_KEIBA_VIEWER?.fetch).toHaveBeenCalledTimes(2);
+  expect(queue.messages).toStrictEqual([]);
+});
+
+it("does not turn an independent backup failure into a serving failure", async () => {
+  dailyBinding().fetch = vi.fn(async () =>
+    Response.json({
+      catalog_ready: true,
+      neon_backup_complete: false,
+      status: "neon_failed",
+      error_stage: "neon-schema",
+    }),
+  );
+  expect(
+    await finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+  ).toBe("succeeded");
+  expect(
+    (
+      await db
+        .prepare("select status from netkeiba_training_day_sync_state where race_date = '20260905'")
+        .first<{ status: string }>()
+    )?.status,
+  ).toBe("succeeded");
+  expect(queue.messages).toStrictEqual([]);
+});
+
+it("does not override explicit incomplete Catalog readiness with aggregate success", async () => {
+  dailyBinding().fetch = vi.fn(async () =>
+    Response.json({
+      catalog_ready: false,
+      neon_backup_complete: true,
+      status: "succeeded",
+      error_stage: null,
+    }),
+  );
+  expect(
+    await finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+  ).toBe("catalog_pending");
+  expect(mocks.bust).not.toHaveBeenCalled();
+  expect(env.PC_KEIBA_VIEWER?.fetch).not.toHaveBeenCalled();
+  expect(queue.messages).toHaveLength(1);
+});
+
+it("still rejects Catalog failure when explicit readiness is false", async () => {
+  dailyBinding().fetch = vi.fn(async () =>
+    Response.json({
+      catalog_ready: false,
+      neon_backup_complete: false,
+      status: "catalog_failed",
+      error_stage: "catalog-transaction",
+    }),
+  );
+  await expect(
+    finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+  ).rejects.toThrow("training run failed");
+  expect(mocks.bust).not.toHaveBeenCalled();
+});
+
+it.each([null, "true", 1, {}])(
+  "rejects malformed explicit Catalog readiness: %j",
+  async (catalogReady) => {
+    dailyBinding().fetch = vi.fn(async () =>
+      Response.json({
+        catalog_ready: catalogReady,
+        status: "succeeded",
+        error_stage: null,
+      }),
+    );
+    await expect(
+      finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+    ).rejects.toThrow("Invalid daily-keiba-sync Catalog readiness");
+    expect(mocks.bust).not.toHaveBeenCalled();
+    expect(queue.messages).toStrictEqual([]);
+  },
+);
+
+it("keeps finalization queued until the legacy aggregate run succeeds", async () => {
   dailyStatus = "catalog_succeeded";
   expect(
     await finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),

@@ -44,6 +44,7 @@ interface WorkoutRecord extends Record<string, null | number | string> {
 }
 
 interface DailyRunStatus {
+  catalog_ready: boolean;
   error_stage: string | null;
   status: string;
 }
@@ -374,7 +375,12 @@ const dailyRunStatus = async (env: Env, runId: string): Promise<DailyRunStatus> 
   if (!response.ok) throw new Error(`daily-keiba-sync status failed with HTTP ${response.status}`);
   const value: unknown = await response.json();
   if (!isRecord(value)) throw new Error("Invalid daily-keiba-sync status response");
+  if (value.catalog_ready !== undefined && typeof value.catalog_ready !== "boolean")
+    throw new Error("Invalid daily-keiba-sync Catalog readiness");
   return {
+    // An older deployment only proves readiness after its complete pipeline succeeds.
+    // Explicit false from the new projection must never fall back to aggregate success.
+    catalog_ready: value.catalog_ready ?? value.status === "succeeded",
     error_stage: value.error_stage === null ? null : requireString(value.error_stage, "errorStage"),
     status: requireString(value.status, "status"),
   };
@@ -495,7 +501,7 @@ export const finalizeNetkeibaTrainingDay = async (
   catalogRunId: string,
 ): Promise<string> => {
   const run = await dailyRunStatus(env, catalogRunId);
-  if (run.status === "succeeded") {
+  if (run.catalog_ready) {
     try {
       await purgeAndWarm(env, date);
       await markState(env.REALTIME_DB, date, "succeeded");
@@ -517,7 +523,7 @@ export const finalizeNetkeibaTrainingDay = async (
     { catalogRunId, date, type: "finalize-netkeiba-training-day" },
     { delaySeconds: FINALIZE_DELAY_SECONDS },
   );
-  return run.status;
+  return run.status === "succeeded" ? "catalog_pending" : run.status;
 };
 
 export const netkeibaTrainingDaySyncInternals = {
