@@ -835,6 +835,49 @@ it("validates a day foundation against every authoritative race entry set", asyn
   expect(isRunningStyleDayFoundationComplete(complete)).toBe(false);
 });
 
+it("shares completed fallback bytes across a date but not across invocations", async () => {
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { loadRunningStyleFeaturesFromFinishPositionDayBase } =
+    await import("./running-style-finish-feature-hit");
+  const { validateFeatureCoverage } = await import("./running-style-feature-parquet");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0513",
+        keibajo_code: "08",
+        race_bango: "02",
+        source: "jra",
+      },
+    ],
+    source: "catalog",
+  });
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  const read = vi.fn(async () => new ArrayBuffer(1));
+  vi.mocked(loadRunningStyleFeaturesFromFinishPositionDayBase).mockImplementation(
+    async (params) => {
+      if (params.byteRangeCache === undefined) throw new Error("Date read cache missing");
+      await params.byteRangeCache.read("same-object-etag-range", read);
+      return rows();
+    },
+  );
+  await expect(
+    materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513"),
+  ).resolves.toStrictEqual({ date: "20260513", materialized: 2, scanned: 2, skipped: 0 });
+  expect(read).toHaveBeenCalledTimes(1);
+  await materializeRunningStyleFeatureParquetsForDate(makeEnv("1"), "20260513");
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
 it("skips per-race R2 scans when the complete day foundation matches Catalog entries", async () => {
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");

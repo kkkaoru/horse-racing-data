@@ -3,10 +3,18 @@
 
 import { parquetReadObjects, type AsyncBuffer } from "hyparquet";
 
+import type { ByteRangeCache } from "./byte-range-cache";
 import { deriveRunningStyleCategory } from "./running-style-cell-router";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
+
+interface R2AsyncBufferParams {
+  bucket: R2Bucket;
+  key: string;
+  object: R2Object;
+  byteRangeCache: ByteRangeCache | undefined;
+}
 
 const DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
@@ -220,18 +228,28 @@ const readRaceRows = async (
   });
 };
 
-const r2AsyncBuffer = (bucket: R2Bucket, key: string, object: R2Object): AsyncBuffer => ({
+const r2AsyncBuffer = ({
+  bucket,
+  key,
+  object,
+  byteRangeCache,
+}: R2AsyncBufferParams): AsyncBuffer => ({
   byteLength: object.size,
   slice: async (start, end) => {
-    const rangeEnd = end === undefined ? object.size : end;
-    const ranged = await bucket.get(key, {
-      onlyIf: { etagMatches: object.etag },
-      range: { length: rangeEnd - start, offset: start },
-    });
-    if (ranged === null || !("arrayBuffer" in ranged)) {
-      throw new Error(`R2 object changed while reading: ${key}`);
-    }
-    return ranged.arrayBuffer();
+    const rangeEnd: number = end === undefined ? object.size : end;
+    const load = async (): Promise<ArrayBuffer> => {
+      const ranged = await bucket.get(key, {
+        onlyIf: { etagMatches: object.etag },
+        range: { length: rangeEnd - start, offset: start },
+      });
+      if (ranged === null || !("arrayBuffer" in ranged)) {
+        throw new Error(`R2 object changed while reading: ${key}`);
+      }
+      return ranged.arrayBuffer();
+    };
+    return byteRangeCache === undefined
+      ? load()
+      : byteRangeCache.read(JSON.stringify([key, object.etag, start, rangeEnd]), load);
   },
 });
 
@@ -244,6 +262,8 @@ const rememberDayBase = (key: string, value: CachedDayBase): void => {
 };
 
 export const loadRunningStyleFeaturesFromFinishPositionDayBase = async (params: {
+  // Only share this completed-byte cache within one invocation and one bucket.
+  byteRangeCache?: ByteRangeCache;
   bucket: R2Bucket | undefined;
   featureNames: ReadonlyArray<string>;
   race: RunningStyleRaceParams;
@@ -265,7 +285,12 @@ export const loadRunningStyleFeaturesFromFinishPositionDayBase = async (params: 
     }
     const rows = await readRaceRows({
       featureNames: params.featureNames,
-      file: r2AsyncBuffer(params.bucket, key, head),
+      file: r2AsyncBuffer({
+        bucket: params.bucket,
+        key,
+        object: head,
+        byteRangeCache: params.byteRangeCache,
+      }),
       race: params.race,
     });
     rememberDayBase(cacheKey, { etag: head.etag, rows });

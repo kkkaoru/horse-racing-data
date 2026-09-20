@@ -5,6 +5,7 @@ import { Writable } from "node:stream";
 import { ParquetSchema, ParquetWriter } from "@dsnp/parquetjs";
 import { beforeEach, expect, it, vi } from "vitest";
 
+import { createByteRangeCache } from "./byte-range-cache";
 import type { RunningStyleRaceParams } from "./running-style-features";
 import {
   buildFinishPositionDayBaseKey,
@@ -390,6 +391,69 @@ it("misses when the binding, object, watermark, race, or requested feature is ab
       race: RACE,
     }),
   ).resolves.toBeNull();
+});
+
+it("reuses immutable pages across races while preserving rows and HEAD checks", async () => {
+  const bytes = await parquetBytes([rawRow(), rawRow({ race_bango: "04", f1: 2.5 })]);
+  const { bucket, get, head } = bucketWith(bytes);
+  const byteRangeCache = createByteRangeCache();
+  const first = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    byteRangeCache,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  const firstReads = get.mock.calls.length;
+  expect(firstReads).toBeGreaterThan(0);
+  get.mockClear();
+  const second = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    byteRangeCache,
+    featureNames: ["f1"],
+    race: { ...RACE, raceBango: "4" },
+  });
+  expect(get.mock.calls.length).toBeLessThan(firstReads);
+  expect(first?.map((row) => row.perHorseFeatures.f1)).toStrictEqual([1.25]);
+  expect(second?.map((row) => row.perHorseFeatures.f1)).toStrictEqual([2.5]);
+  expect(second?.map((row) => row.raceKey)).toStrictEqual(["jra:20260822:04:04"]);
+  expect(head).toHaveBeenCalledTimes(2);
+});
+
+it("does not reuse byte ranges across ETags or waive freshness metadata", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { bucket, get, head } = bucketWith(bytes);
+  const byteRangeCache = createByteRangeCache();
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    byteRangeCache,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  get.mockClear();
+  head.mockResolvedValue({ customMetadata: metadata, etag: "etag-2", size: bytes.byteLength });
+  await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    byteRangeCache,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  expect(get.mock.calls.length).toBeGreaterThan(0);
+  expect(get.mock.calls[0]?.[1]?.onlyIf).toStrictEqual({ etagMatches: "etag-2" });
+  head.mockResolvedValue({
+    customMetadata: { ...metadata, "row-count": "" },
+    etag: "etag-2",
+    size: bytes.byteLength,
+  });
+  get.mockClear();
+  await expect(
+    loadRunningStyleFeaturesFromFinishPositionDayBase({
+      bucket,
+      byteRangeCache,
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toBeNull();
+  expect(get).not.toHaveBeenCalled();
 });
 
 it("misses invalid rows and rejects a vanished or inconsistent ranged body", async () => {

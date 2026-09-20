@@ -1,6 +1,7 @@
 // Run with bun. Materializes a versioned R2 Parquet cache from the authoritative
 // local-PostgreSQL-sourced raw Iceberg tables exposed by the catalog Worker.
 
+import { createByteRangeCache, type ByteRangeCache } from "./byte-range-cache";
 import { formatError } from "./format-error";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
@@ -26,6 +27,14 @@ import type { RaceHorseFeatureRow } from "./running-style-r2";
 import { listRunningStyleRacesByDate } from "./running-style-race-list";
 import type { Env } from "./types";
 
+interface FoundationRaceParams {
+  env: Env;
+  row: RegisteredRaceRow;
+  featureNames: ReadonlyArray<string>;
+  authoritativeEntrySignature: string | undefined;
+  byteRangeCache: ByteRangeCache;
+}
+
 const ENABLED_FLAG = "1";
 const REQUIRE_DAY_BASE_CACHE_HIT_FLAG = "1";
 // R2 SQL can spend over a minute planning a cold multi-year history query.
@@ -48,6 +57,7 @@ const isCatalogExecutionResourceError = (error: unknown): boolean =>
   );
 
 export interface MaterializeRunningStyleFeatureParquetParams {
+  byteRangeCache?: ByteRangeCache;
   env: Env;
   featureNames: ReadonlyArray<string>;
   race: RunningStyleRaceParams;
@@ -257,6 +267,7 @@ const loadAuthoritativeFeatureRows = async (
   }
   try {
     const hit = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+      ...(params.byteRangeCache === undefined ? {} : { byteRangeCache: params.byteRangeCache }),
       bucket: params.env.FEATURES_ARCHIVE,
       featureNames: params.featureNames,
       race: params.race,
@@ -452,12 +463,16 @@ export const isRunningStyleDayFoundationComplete = (params: {
   });
 };
 
-const loadOrBuildFoundationRace = async (
-  env: Env,
-  row: RegisteredRaceRow,
-  featureNames: ReadonlyArray<string>,
-  authoritativeEntrySignature: string | undefined,
-): Promise<{ rebuilt: boolean; rows: ReadonlyArray<RaceHorseFeatureRow> }> => {
+const loadOrBuildFoundationRace = async ({
+  env,
+  row,
+  featureNames,
+  authoritativeEntrySignature,
+  byteRangeCache,
+}: FoundationRaceParams): Promise<{
+  rebuilt: boolean;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
+}> => {
   const race = buildRaceParamsFromRegisteredRow(row);
   const key = buildRunningStyleFeatureParquetKey(race);
   try {
@@ -489,7 +504,7 @@ const loadOrBuildFoundationRace = async (
     // A missing or stale per-race cache is rebuilt from the Catalog below.
   }
   // Reuse the attested day foundation instead of rebuilding history per race.
-  const rows = await loadAuthoritativeFeatureRows({ env, race, featureNames });
+  const rows = await loadAuthoritativeFeatureRows({ env, race, featureNames, byteRangeCache });
   if (rows.length === 0)
     throw new Error(
       `no running-style feature rows found for race ${buildRunningStyleRaceKey(race)}`,
@@ -525,6 +540,9 @@ export const materializeRunningStyleFeatureParquetsForDate = async (
     listRunningStyleRacesByDate(env, date),
     fetchRunningStyleFeatureCoverageFromCatalog(env.PC_KEIBA_R2_CATALOG, date),
   ]);
+  // Keep source precedence and per-race validation unchanged, but reuse immutable
+  // footer/identity/column pages across the date's sequential race reads.
+  const byteRangeCache: ByteRangeCache = createByteRangeCache();
   let materialized = 0;
   let scanned = 0;
   let skipped = 0;
@@ -565,14 +583,15 @@ export const materializeRunningStyleFeatureParquetsForDate = async (
       }
       const rows: RaceHorseFeatureRow[] = [];
       for (const race of sourceRaces) {
-        const result = await loadOrBuildFoundationRace(
+        const result = await loadOrBuildFoundationRace({
           env,
-          race,
-          header.feature_names,
-          catalogCoverage.entrySignatures.get(
+          row: race,
+          featureNames: header.feature_names,
+          authoritativeEntrySignature: catalogCoverage.entrySignatures.get(
             buildRunningStyleRaceKey(buildRaceParamsFromRegisteredRow(race)),
           ),
-        );
+          byteRangeCache,
+        });
         rows.push(...result.rows);
         materialized += result.rebuilt ? 1 : 0;
         skipped += result.rebuilt ? 0 : 1;
