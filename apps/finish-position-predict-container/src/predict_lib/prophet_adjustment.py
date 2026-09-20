@@ -104,6 +104,51 @@ def _adjusted_row_sort_key(row: Sequence[object]) -> tuple[float, str]:
     return (-(score if score is not None else -math.inf), str(row[ROW_KETTO_INDEX]))
 
 
+def apply_centered_trend_adjustment(
+    rows: Sequence[Sequence[object]],
+    trends_by_horse: Mapping[str, float],
+    weight: float,
+) -> ProphetAdjustmentResult:
+    """Apply the scale-preserving centered trend adjustment to routed rows.
+
+    Missing runner trends receive the race mean, hence a zero adjustment. The
+    normal model rows are returned unchanged unless at least half the field and
+    at least two runners carry a finite trend. Degenerate score or trend spreads
+    also fail safely to the original rows.
+    """
+    copied_rows = [list(row) for row in rows]
+    if not copied_rows:
+        return ProphetAdjustmentResult(copied_rows, False, "empty-rows")
+
+    required = max(
+        MINIMUM_ELIGIBLE_RUNNERS, math.ceil(len(copied_rows) * MINIMUM_ELIGIBLE_FRACTION)
+    )
+    if len(trends_by_horse) < required:
+        return ProphetAdjustmentResult(copied_rows, False, "insufficient-coverage")
+
+    available_trends = list(trends_by_horse.values())
+    trend_mean = sum(available_trends) / len(available_trends)
+    aligned_trends = [
+        trends_by_horse.get(str(row[ROW_KETTO_INDEX]), trend_mean) for row in copied_rows
+    ]
+    scores = [_finite_number(row[ROW_SCORE_INDEX]) for row in copied_rows]
+    if any(score is None for score in scores):
+        return ProphetAdjustmentResult(copied_rows, False, "invalid-score")
+    finite_scores = [score for score in scores if score is not None]
+    score_mean = sum(finite_scores) / len(finite_scores)
+    score_std = _population_standard_deviation(finite_scores, score_mean)
+    trend_std = _population_standard_deviation(aligned_trends, trend_mean)
+    if score_std <= MINIMUM_STANDARD_DEVIATION or trend_std <= MINIMUM_STANDARD_DEVIATION:
+        return ProphetAdjustmentResult(copied_rows, False, "degenerate-spread")
+
+    for row, score, trend in zip(copied_rows, finite_scores, aligned_trends, strict=True):
+        row[ROW_SCORE_INDEX] = score + weight * score_std * (trend - trend_mean) / trend_std
+    copied_rows.sort(key=_adjusted_row_sort_key)
+    for rank, row in enumerate(copied_rows, start=1):
+        row[ROW_RANK_INDEX] = rank
+    return ProphetAdjustmentResult(copied_rows, True, "applied")
+
+
 def adjust_prediction_rows_with_prophet(
     rows: Sequence[Sequence[object]],
     entries: Sequence[Mapping[str, object]],
@@ -144,30 +189,4 @@ def adjust_prediction_rows_with_prophet(
         if coverage is not None and coverage >= 1.0 and trend is not None and horse_id:
             trends_by_horse[horse_id] = trend
 
-    required = max(
-        MINIMUM_ELIGIBLE_RUNNERS, math.ceil(len(copied_rows) * MINIMUM_ELIGIBLE_FRACTION)
-    )
-    if len(trends_by_horse) < required:
-        return ProphetAdjustmentResult(copied_rows, False, "insufficient-coverage")
-
-    available_trends = list(trends_by_horse.values())
-    trend_mean = sum(available_trends) / len(available_trends)
-    aligned_trends = [
-        trends_by_horse.get(str(row[ROW_KETTO_INDEX]), trend_mean) for row in copied_rows
-    ]
-    scores = [_finite_number(row[ROW_SCORE_INDEX]) for row in copied_rows]
-    if any(score is None for score in scores):
-        return ProphetAdjustmentResult(copied_rows, False, "invalid-score")
-    finite_scores = [score for score in scores if score is not None]
-    score_mean = sum(finite_scores) / len(finite_scores)
-    score_std = _population_standard_deviation(finite_scores, score_mean)
-    trend_std = _population_standard_deviation(aligned_trends, trend_mean)
-    if score_std <= MINIMUM_STANDARD_DEVIATION or trend_std <= MINIMUM_STANDARD_DEVIATION:
-        return ProphetAdjustmentResult(copied_rows, False, "degenerate-spread")
-
-    for row, score, trend in zip(copied_rows, finite_scores, aligned_trends, strict=True):
-        row[ROW_SCORE_INDEX] = score + weight * score_std * (trend - trend_mean) / trend_std
-    copied_rows.sort(key=_adjusted_row_sort_key)
-    for rank, row in enumerate(copied_rows, start=1):
-        row[ROW_RANK_INDEX] = rank
-    return ProphetAdjustmentResult(copied_rows, True, "applied")
+    return apply_centered_trend_adjustment(copied_rows, trends_by_horse, weight)
