@@ -14,7 +14,7 @@
 // explicit destroy through container-cleanup.ts, so this does not turn an
 // otherwise idle instance into a permanent charge.
 
-import { Container } from "@cloudflare/containers";
+import { Container, type StopParams } from "@cloudflare/containers";
 import { shouldRenewFocusedFullActivity } from "./container-status-activity";
 import {
   buildFocusedFullCompletionCallbackUrl,
@@ -215,6 +215,21 @@ export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
   override sleepAfter = SLEEP_AFTER;
   override enableInternet = true;
+
+  override async onActivityExpired(): Promise<void> {
+    // The SDK logs expiry even when already stopped; record the runtime flag
+    // before delegating, without renewing activity or changing its signal policy.
+    console.log("[predict-container-lifecycle] idle-expired", {
+      running: this.ctx.container?.running === true,
+    });
+    await super.onActivityExpired();
+  }
+
+  override onStop(params: StopParams): void {
+    // Worker log metadata supplies the DO and version identity for correlation.
+    // An expiry callback alone is not evidence of a successful process exit.
+    console.log("[predict-container-lifecycle] stopped", params);
+  }
 
   protected buildContainerEnvVars(): Record<string, string> {
     return buildLegacyPredictContainerEnvVars({

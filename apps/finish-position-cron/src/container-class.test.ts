@@ -1,9 +1,14 @@
 // Run with bun. Tests for authoritative Container role environment merging.
 
 import { expect, test, vi } from "vitest";
+import { Container } from "@cloudflare/containers";
 
 vi.mock("@cloudflare/containers", () => ({
-  Container: class {},
+  Container: class {
+    onActivityExpired(): Promise<void> {
+      return Promise.resolve();
+    }
+  },
 }));
 
 import {
@@ -60,6 +65,97 @@ const WATCH_PAYLOAD: ValidatedFocusedFullWatchPayload = {
 
 const FOCUSED_PREDICT_URL =
   "http://do/predict?mode=full&category=jra&runDate=20260824&keibajoCode=05&raceBango=09";
+
+test("idle lifecycle logging delegates without renewing or destroying active work", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const expire = vi.spyOn(Container.prototype, "onActivityExpired");
+  try {
+    await harness.container.onActivityExpired();
+    expect(log).toHaveBeenCalledWith("[predict-container-lifecycle] idle-expired", {
+      running: true,
+    });
+    expect(expire).toHaveBeenCalledTimes(1);
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+    expect(harness.renewActivityTimeoutMock).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    expire.mockRestore();
+  }
+});
+
+test("idle lifecycle logging distinguishes an already stopped runtime", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  harness.runtimeContainer.running = false;
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const expire = vi.spyOn(Container.prototype, "onActivityExpired");
+  try {
+    await harness.container.onActivityExpired();
+    expect(log).toHaveBeenCalledWith("[predict-container-lifecycle] idle-expired", {
+      running: false,
+    });
+    expect(expire).toHaveBeenCalledTimes(1);
+    expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    expire.mockRestore();
+  }
+});
+
+test("idle lifecycle logging does not treat an absent runtime as running", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  const context: unknown = Reflect.get(harness.container, "ctx");
+  if (typeof context !== "object" || context === null) throw new Error("Missing test context");
+  Object.defineProperty(context, "container", { value: undefined });
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const expire = vi.spyOn(Container.prototype, "onActivityExpired");
+  try {
+    await harness.container.onActivityExpired();
+    expect(log).toHaveBeenCalledWith("[predict-container-lifecycle] idle-expired", {
+      running: false,
+    });
+    expect(expire).toHaveBeenCalledTimes(1);
+  } finally {
+    log.mockRestore();
+    expire.mockRestore();
+  }
+});
+
+test("idle lifecycle logging preserves SDK failures", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const expire = vi
+    .spyOn(Container.prototype, "onActivityExpired")
+    .mockRejectedValue(new Error("signal failed"));
+  try {
+    await expect(harness.container.onActivityExpired()).rejects.toThrow("signal failed");
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    expire.mockRestore();
+  }
+});
+
+test("stop lifecycle logging retains exit reason and code without a new action", () => {
+  const harness = makeContainerHarness("", "0", false);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  try {
+    harness.container.onStop({ exitCode: 0, reason: "runtime_signal" });
+    harness.container.onStop({ exitCode: 137, reason: "exit" });
+    expect(log).toHaveBeenNthCalledWith(1, "[predict-container-lifecycle] stopped", {
+      exitCode: 0,
+      reason: "runtime_signal",
+    });
+    expect(log).toHaveBeenNthCalledWith(2, "[predict-container-lifecycle] stopped", {
+      exitCode: 137,
+      reason: "exit",
+    });
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+    expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+  }
+});
 
 const makeContainerHarness = (
   responseBody: string,
