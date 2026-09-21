@@ -1,4 +1,5 @@
 // Runs with bun through Vitest; no provider I/O.
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import {
   buildRaceRunnersIdentitySql,
@@ -15,6 +16,21 @@ const JRA: RaceRunnersReadInput = {
   raceBango: "01",
 };
 const NAR: RaceRunnersReadInput = { ...JRA, source: "nar", keibajoCode: "54", raceBango: "08" };
+
+// The R2 catalog mirror is generated from the local PostgreSQL mirror, so the
+// checked-in reference holds the offline source of truth for the columns R2 SQL
+// can project. Keeping the projection inside that list is what the bloodline
+// regression broke: `se.sire_name` is absent from the JV/NV `se` snapshot, R2
+// SQL answered 40004 (No field named se.sire_name), the read 503'd, and the
+// viewer replaced the whole race page with an error boundary.
+const MIRROR_REFERENCE: string = readFileSync(
+  new URL("../../../apps/local-postgresql/docs/pc-keiba-postgresql-reference.md", import.meta.url),
+  "utf8",
+);
+const mirrorColumns = (table: string): Set<string> => {
+  const section: string = MIRROR_REFERENCE.split(`### \`${table}\``)[1]!.split("\n### ")[0]!;
+  return new Set([...section.matchAll(/^\| `([a-z0-9_]+)`/gmu)].map((match) => match[1]!));
+};
 
 const runnerRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   wakuban: "1",
@@ -91,6 +107,29 @@ it("projects bloodline names from the master join only", () => {
     .split("\nFROM ")[0]!
     .replace(/^SELECT /u, "");
   expect(select.split(", ")).toHaveLength(28);
+});
+
+it("projects only columns that exist in the mirror tables", () => {
+  for (const input of [JRA, NAR]) {
+    const sql: string = buildRaceRunnersReadSql(input);
+    const aliases = new Map(
+      [...sql.matchAll(/(?:FROM|JOIN)\s+\S+\.(\w+)\s+(\w+)/gu)].map((match) => [
+        match[2]!,
+        match[1]!,
+      ]),
+    );
+    expect(aliases.size, `${input.source} runner SQL table aliases`).toBe(
+      input.source === "jra" ? 2 : 1,
+    );
+    for (const [, alias, column] of sql.matchAll(/\b(\w+)\.(\w+)/gu)) {
+      const table: string | undefined = aliases.get(alias!);
+      if (table === undefined) continue;
+      expect(
+        mirrorColumns(table).has(column!),
+        `${table}.${column} is not a column of the mirror table`,
+      ).toBe(true);
+    }
+  }
 });
 
 it("builds a NAR runner read without the provisional filter or bloodline join", () => {
