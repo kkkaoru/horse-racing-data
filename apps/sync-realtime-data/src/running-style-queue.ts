@@ -60,8 +60,7 @@ import type { Env, RunningStylePredictionJob } from "./types";
 const ENABLED_FLAG = "1";
 const NEON_SYNC_PENDING_MESSAGE = "Running-style Neon sync pending";
 const ACTIVE_PROCESSING_TTL_MS = 5 * 60 * 1000;
-const FINISH_POSITION_DAY_BASE_URL =
-  "https://finish-position-cron.internal/api/admin/prewarm-day-base";
+const FINISH_POSITION_RUN_URL = "https://finish-position-cron.internal/run";
 const NEON_SYNC_MAX_ATTEMPTS = 3;
 const NEON_SYNC_RETRY_DELAY_MS = 200;
 
@@ -261,12 +260,14 @@ const triggerFinishPositionAfterDayBaseHit = async (
   }
   const body = {
     category,
-    generatePredictionsAfterHit: true,
+    keibajoCode: job.keibajoCode,
+    raceBango: job.raceBango,
     runYmd: buildFinishPositionRunYmd(job),
+    skipDedup: true,
   };
   try {
     const response = await binding.fetch(
-      new Request(FINISH_POSITION_DAY_BASE_URL, {
+      new Request(FINISH_POSITION_RUN_URL, {
         body: JSON.stringify(body),
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         method: "POST",
@@ -331,19 +332,16 @@ const triggerFinishPositionDayWhenReady = async (
       parquetExportedRows: 0,
     };
   }
+  const category = deriveRunningStyleCategory(job);
+  const triggerResult = await triggerFinishPositionAfterDayBaseHit(env, job, category);
   try {
     const raceList = await listRunningStyleRacesByDate(env, buildFinishPositionRunYmd(job));
     const sourceRaces = raceList.races.filter((race) => race.source === job.source);
     if (sourceRaces.length === 0) {
       const reason = `no authoritative ${job.source} races registered for ${buildFinishPositionRunYmd(job)}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
-      return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
-        parquetExportedRows: 0,
-      };
+      console.log(`running-style parquet export deferred for ${raceKey}: ${reason}`);
+      return { ...triggerResult, parquetExportedRows: 0 };
     }
-    const category = deriveRunningStyleCategory(job);
     const categoryRaces = sourceRaces.filter(
       (race) =>
         deriveRunningStyleCategory({ keibajoCode: race.keibajo_code, source: race.source }) ===
@@ -366,13 +364,10 @@ const triggerFinishPositionDayWhenReady = async (
       );
     });
     if (incompleteRace !== undefined) {
-      const reason = `running-style ${category} day is incomplete; waiting for ${incompleteRace.raceKey}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
-      return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
-        parquetExportedRows: 0,
-      };
+      console.log(
+        `running-style parquet export deferred for ${raceKey}: waiting for ${incompleteRace.raceKey}`,
+      );
+      return { ...triggerResult, parquetExportedRows: 0 };
     }
 
     // The R2 object is shared by source, so publish only after the current
@@ -381,11 +376,9 @@ const triggerFinishPositionDayWhenReady = async (
     // partial snapshot after every race.
     const parquetExportResult = await exportRunningStylesToR2(env, job);
     if (typeof parquetExportResult === "string") {
-      const reason = `R2 Parquet export failed: ${parquetExportResult}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
+      console.log(`running-style parquet export failed for ${raceKey}: ${parquetExportResult}`);
       return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
+        ...triggerResult,
         parquetExportError: parquetExportResult,
         parquetExportedRows: 0,
       };
@@ -397,15 +390,13 @@ const triggerFinishPositionDayWhenReady = async (
     );
     if (parquetExportResult < expectedRows) {
       const reason = `R2 Parquet export row count ${parquetExportResult} is below expected ${category} day horse count ${expectedRows}`;
-      console.log(`finish-position trigger skipped for ${raceKey}: ${reason}`);
+      console.log(`running-style parquet export failed for ${raceKey}: ${reason}`);
       return {
-        finishPositionTriggerError: reason,
-        finishPositionTriggerMode: "skipped",
+        ...triggerResult,
+        parquetExportError: reason,
         parquetExportedRows: parquetExportResult,
       };
     }
-
-    const triggerResult = await triggerFinishPositionAfterDayBaseHit(env, job, category);
     return {
       ...triggerResult,
       parquetExportedRows: parquetExportResult,
@@ -414,8 +405,8 @@ const triggerFinishPositionDayWhenReady = async (
     const reason = formatError(error);
     console.error(formatErrorLogLine("Running-style day barrier failed", { raceKey }, error));
     return {
-      finishPositionTriggerError: reason,
-      finishPositionTriggerMode: "skipped",
+      ...triggerResult,
+      finishPositionTriggerError: triggerResult.finishPositionTriggerError ?? reason,
       parquetExportedRows: 0,
     };
   }

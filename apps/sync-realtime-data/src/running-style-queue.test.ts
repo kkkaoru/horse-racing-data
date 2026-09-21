@@ -315,13 +315,15 @@ it("arms finish-position generation through the day-base service binding", async
   expect(summary?.finishPositionTriggerMode).toBe("service-binding");
   expect(summary?.finishPositionTriggerError).toBeUndefined();
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(request.url).toBe("https://finish-position-cron.internal/api/admin/prewarm-day-base");
+  expect(request.url).toBe("https://finish-position-cron.internal/run");
   expect(request.method).toBe("POST");
   expect(request.headers.get("authorization")).toBe("Bearer secret-token");
   expect(await request.json()).toStrictEqual({
     category: "jra",
-    generatePredictionsAfterHit: true,
+    keibajoCode: "08",
+    raceBango: "01",
     runYmd: "20260512",
+    skipDedup: true,
   });
 });
 
@@ -443,9 +445,7 @@ it("does not trigger finish-position when the same-day R2 export is skipped", as
   expect(summary?.parquetExportedRows).toBe(0);
   expect(summary?.parquetExportError).toBe("archive binding unavailable");
   expect(summary?.finishPositionTriggerMode).toBe("skipped");
-  expect(summary?.finishPositionTriggerError).toBe(
-    "R2 Parquet export failed: archive binding unavailable",
-  );
+  expect(summary?.finishPositionTriggerError).toBe("missing FINISH_POSITION_CRON binding");
 });
 
 it("uses a deterministic R2 export error when a skipped result has no reason", async () => {
@@ -468,9 +468,7 @@ it("uses a deterministic R2 export error when a skipped result has no reason", a
 
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.parquetExportError).toBe("running-style Parquet export was skipped");
-  expect(summary?.finishPositionTriggerError).toBe(
-    "R2 Parquet export failed: running-style Parquet export was skipped",
-  );
+  expect(summary?.finishPositionTriggerError).toBe("missing FINISH_POSITION_CRON binding");
 });
 
 it("does not trigger finish-position when the same-day R2 export is incomplete", async () => {
@@ -494,7 +492,8 @@ it("does not trigger finish-position when the same-day R2 export is incomplete",
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.parquetExportedRows).toBe(2);
   expect(summary?.finishPositionTriggerMode).toBe("skipped");
-  expect(summary?.finishPositionTriggerError).toBe(
+  expect(summary?.finishPositionTriggerError).toBe("missing FINISH_POSITION_CRON binding");
+  expect(summary?.parquetExportError).toBe(
     "R2 Parquet export row count 2 is below expected jra day horse count 3",
   );
 });
@@ -514,7 +513,7 @@ it("captures same-day R2 export failures without falling back to Neon reads", as
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.parquetExportedRows).toBe(0);
   expect(summary?.parquetExportError).toBe("R2 write failed");
-  expect(summary?.finishPositionTriggerError).toBe("R2 Parquet export failed: R2 write failed");
+  expect(summary?.finishPositionTriggerError).toBe("missing FINISH_POSITION_CRON binding");
 });
 
 it("does not replace the by-day export while the current category is incomplete", async () => {
@@ -528,6 +527,9 @@ it("does not replace the by-day export while the current category is incomplete"
   const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const send = vi.fn(async (_message: unknown) => {});
+  const fetch = vi.fn<typeof globalThis.fetch>(
+    async (_input) => new Response("queued", { status: 202 }),
+  );
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(syncFailedState(1));
   vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW]);
@@ -562,16 +564,29 @@ it("does not replace the by-day export while the current category is incomplete"
   );
 
   const summary = await handleRunningStylePredictionJob(
-    buildEnv({ FINISH_POSITION_PREDICT_QUEUE: { send } as never }),
+    buildEnv({
+      FINISH_POSITION_CRON: { fetch },
+      FINISH_POSITION_PREDICT_QUEUE: { send } as never,
+      TRIGGER_TOKEN: "secret-token",
+    }),
     JOB,
   );
 
-  expect(summary?.finishPositionTriggerError).toBe(
-    "running-style jra day is incomplete; waiting for jra:20260512:08:02",
-  );
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
   expect(summary?.parquetExportedRows).toBe(0);
   expect(exportRunningStyleParquetForDay).not.toHaveBeenCalled();
   expect(send).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const request = fetch.mock.calls[0]![0] as Request;
+  expect(request.url).toBe("https://finish-position-cron.internal/run");
+  expect(await request.json()).toStrictEqual({
+    category: "jra",
+    keibajoCode: "08",
+    raceBango: "01",
+    runYmd: "20260512",
+    skipDedup: true,
+  });
 });
 
 it("exports and triggers NAR without waiting for an incomplete ban-ei race", async () => {
@@ -641,8 +656,10 @@ it("exports and triggers NAR without waiting for an incomplete ban-ei race", asy
   const request = fetch.mock.calls[0]![0] as Request;
   expect(await request.json()).toStrictEqual({
     category: "nar",
-    generatePredictionsAfterHit: true,
+    keibajoCode: "45",
+    raceBango: "01",
     runYmd: "20260512",
+    skipDedup: true,
   });
 });
 
@@ -714,8 +731,10 @@ it("keeps the ban-ei barrier and trigger separate from NAR", async () => {
   const request = fetch.mock.calls[0]![0] as Request;
   expect(await request.json()).toStrictEqual({
     category: "ban-ei",
-    generatePredictionsAfterHit: true,
+    keibajoCode: "65",
+    raceBango: "02",
     runYmd: "20260512",
+    skipDedup: true,
   });
 });
 
