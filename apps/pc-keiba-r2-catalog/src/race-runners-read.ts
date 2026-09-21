@@ -127,6 +127,14 @@ export const buildRaceRunnersReadSql = (input: RaceRunnersReadInput): string => 
     input.source === "jra"
       ? "\n  AND coalesce(btrim(se.ijo_kubun_code), '0') NOT IN ('1', '2')"
       : "";
+  // JV/NV `se` snapshots carry no bloodline columns, so the last three runner
+  // projections come from the master join instead of `se` itself.
+  const bloodlineColumns: readonly string[] = ["sire_name", "sire_sire_name", "dam_sire_name"];
+  const runnerColumns: string = RUNNER_COLUMNS.filter(
+    ({ column }) => !bloodlineColumns.includes(column),
+  )
+    .map(({ column }) => `se.${column}`)
+    .join(", ");
   const bloodline: string =
     input.source === "jra"
       ? `um.ketto_joho_01b AS sire_name, um.ketto_joho_03b AS sire_sire_name, um.ketto_joho_05b AS dam_sire_name`
@@ -135,7 +143,7 @@ export const buildRaceRunnersReadSql = (input: RaceRunnersReadInput): string => 
     input.source === "jra"
       ? `\nLEFT JOIN ${input.namespace}.${masterTable} um ON um.ketto_toroku_bango = se.ketto_toroku_bango`
       : "";
-  return `SELECT ${RUNNER_COLUMNS.map(({ column }) => `se.${column}`).join(", ")}, ${bloodline}
+  return `SELECT ${runnerColumns}, ${bloodline}
 FROM ${input.namespace}.${runnerTable} se${masterJoin}
 WHERE se.kaisai_nen = '${input.date.slice(0, 4)}'
   AND se.kaisai_tsukihi = '${input.date.slice(4)}'

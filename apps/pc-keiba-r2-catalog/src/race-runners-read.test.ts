@@ -78,6 +78,21 @@ it("builds a JRA runner read with the provisional filter and bloodline join", ()
   expect(sql).not.toMatch("oversea_runner_identity");
 });
 
+it("projects bloodline names from the master join only", () => {
+  // JV/NV `se` snapshots have no bloodline columns, so selecting `se.sire_name`
+  // makes R2 SQL reject the whole statement (error 40004) and the read 503s.
+  for (const input of [JRA, NAR]) {
+    const sql: string = buildRaceRunnersReadSql(input);
+    expect(sql).not.toMatch(/se\.sire_name/u);
+    expect(sql).not.toMatch(/se\.sire_sire_name/u);
+    expect(sql).not.toMatch(/se\.dam_sire_name/u);
+  }
+  const select: string = buildRaceRunnersReadSql(JRA)
+    .split("\nFROM ")[0]!
+    .replace(/^SELECT /u, "");
+  expect(select.split(", ")).toHaveLength(28);
+});
+
 it("builds a NAR runner read without the provisional filter or bloodline join", () => {
   const sql: string = buildRaceRunnersReadSql(NAR);
   expect(sql).toMatch("FROM pc_keiba.nvd_se se");
