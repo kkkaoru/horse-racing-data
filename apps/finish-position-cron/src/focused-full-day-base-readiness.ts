@@ -78,12 +78,18 @@ const parseMetadata = (object: R2Object | null): DayBaseMetadata | null => {
   const rsContentHashValue = metadata["rs-content-hash"]?.trim();
   if (rsContentHashValue !== undefined && rsContentHashValue.length === 0) return null;
   const rsContentHash = rsContentHashValue ?? null;
-  const rsPredictedAtMax = metadata["rs-predicted-at-max"]?.trim() ?? "";
+  const rsPredictedRaw = metadata["rs-predicted-at-max"]?.trim() ?? "";
   const rowCount = numericMetadata(metadata, "row-count");
   const rsRowCount = numericMetadata(metadata, "rs-row-count");
-  if (maxSourceUpdated.length === 0 || rsPredictedAtMax.length === 0) return null;
-  if (rowCount === null || rowCount === 0 || rsRowCount === null) return null;
-  return { maxSourceUpdated, rowCount, rsContentHash, rsPredictedAtMax, rsRowCount };
+  if (maxSourceUpdated.length === 0) return null;
+  if (rowCount === null || rowCount === 0) return null;
+  return {
+    maxSourceUpdated,
+    rowCount,
+    rsContentHash,
+    rsPredictedAtMax: rsPredictedRaw.length === 0 ? NO_RUNNING_STYLE_WATERMARK : rsPredictedRaw,
+    rsRowCount: rsRowCount ?? 0,
+  };
 };
 
 const parseCandidateMetadata = (watermark: DaybaseWatermark): DayBaseMetadata | null => {
@@ -227,11 +233,19 @@ const compareWithLiveWatermark = async (
       ready: false,
       reason: `running-style-race-count-${String(live.readyRunningStyleRaceCount)}-of-${String(live.runningStyleRaceCount)}`,
     };
-  if (metadata.rsRowCount !== live.rsRowCount)
+  // A pre-RS foundation (rs-row-count 0 / none) is the Worker HIT path after
+  // running-style rows land in D1. Requiring parquet metadata to already match
+  // live RS forced a Container rebuild and left 2026-09-22 without predictions.
+  const preRsFoundation =
+    metadata.rsRowCount === 0 &&
+    metadata.rsPredictedAtMax === NO_RUNNING_STYLE_WATERMARK &&
+    live.rsRowCount > 0;
+  if (!preRsFoundation && metadata.rsRowCount !== live.rsRowCount)
     return {
       ready: false,
       reason: `rs-row-count-${String(metadata.rsRowCount)}-of-${String(live.rsRowCount)}`,
     };
+  if (preRsFoundation) return { ready: true, reason: READY_REASON };
   if (metadata.rsContentHash !== null) {
     return metadata.rsContentHash === live.rsContentHash
       ? { ready: true, reason: READY_REASON }

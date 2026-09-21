@@ -266,6 +266,15 @@ test("rejects malformed in-process candidate watermarks before live probes", asy
   expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
+test("accepts a pre-RS foundation after live running-style rows complete", async () => {
+  featureHeadMock.mockResolvedValueOnce(
+    metadataObject({ "rs-predicted-at-max": "none", "rs-row-count": "0" }),
+  );
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "jra", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+});
+
 test("rejects a canonical artifact from an older running-style generation", async () => {
   featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-row-count": "1" }));
   await expect(
