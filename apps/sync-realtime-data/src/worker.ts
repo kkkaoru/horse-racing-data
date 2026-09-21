@@ -5919,23 +5919,17 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         materialize.materializeError !== undefined &&
         (materialize.publishedSources?.length ?? 0) === 0
       ) {
-        const prewarmErrors = await requestRunningStyleFoundationPrewarmForDate(
-          env,
-          job.date,
-        ).catch((error: unknown) => [formatError(error)]);
-        await logFetch(
-          env.REALTIME_DB,
-          job.type,
-          "skipped",
-          null,
-          JSON.stringify({
-            date: job.date,
-            materializeError: materialize.materializeError,
-            prewarmErrors,
-            reason: "running-style foundation not ready",
-          }),
-        );
-        return;
+        // Catalog 502 on one NAR race must not skip JRA. Planner gates each
+        // category on Worker feat-daybase HIT and enqueues those races.
+        await requestRunningStyleFoundationPrewarmForDate(env, job.date).catch((error: unknown) => {
+          console.error(
+            formatErrorLogLine(
+              "Running-style foundation prewarm request failed",
+              { date: job.date },
+              error,
+            ),
+          );
+        });
       }
       // A failed NAR warm must not block an already published JRA day. The planner
       // independently gates each category's foundation before it enqueues any race.

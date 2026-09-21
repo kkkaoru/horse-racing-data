@@ -575,14 +575,7 @@ it.each([undefined, []])(
       expect.anything(),
       "20260512",
     );
-    expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
-    expect(vi.mocked(logFetch).mock.calls.at(-1)).toEqual([
-      expect.anything(),
-      "plan-running-style-predictions",
-      "skipped",
-      null,
-      expect.stringContaining("foundation missing"),
-    ]);
+    expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
   },
 );
 
@@ -609,8 +602,7 @@ it("handleJob acknowledges a strict-barrier skip when the bounded prewarm reques
     type: "plan-running-style-predictions",
   });
 
-  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
-  expect(vi.mocked(logFetch).mock.calls.at(-1)?.[4]).toContain("prewarm failed");
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
 });
 
 it("handleJob continues running-style planning when feature warm throws", async () => {
