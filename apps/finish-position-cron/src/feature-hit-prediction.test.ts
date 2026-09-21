@@ -172,7 +172,7 @@ test("fans out one full prediction per category race after the caller proves a H
     skipDedup: true,
   });
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0",
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=2 duplicates=0 skippedIncomplete=0",
   );
   logSpy.mockRestore();
 });
@@ -241,12 +241,12 @@ test("reports only newly reserved races when another producer already owns one",
     fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
   ).resolves.toBe(1);
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=1",
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=1 skippedIncomplete=0",
   );
   logSpy.mockRestore();
 });
 
-test("fails closed before fanout when any running-style race is incomplete", async () => {
+test("enqueues only races whose running-style rows are complete", async () => {
   const readyRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "01" };
   const incompleteRace: RaceEntry = { category: "jra", keibajoCode: "01", raceBango: "02" };
   enumerateTodaysRacesMock.mockResolvedValue([readyRace, incompleteRace]);
@@ -259,14 +259,25 @@ test("fails closed before fanout when any running-style race is incomplete", asy
 
   await expect(
     fanOutPredictionsAfterDayBaseHit({ category: "jra", env, runYmd: "20260822" }),
-  ).rejects.toThrow(
-    "Running-style barrier incomplete category=jra runYmd=20260822 ready=1 expected=2",
-  );
+  ).resolves.toBe(1);
 
   expect(getRunningStyleRaceReadinessMock).toHaveBeenCalledTimes(1);
-  expect(enqueuePredictMock).not.toHaveBeenCalled();
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
+  expect(enqueuePredictMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    env,
+    keibajoCode: "01",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-08-22",
+    runYmd: "20260822",
+    skipDedup: true,
+  });
   expect(warnSpy).not.toHaveBeenCalled();
-  expect(logSpy).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[feature-hit-prediction] enqueued category=jra runYmd=20260822 races=1 duplicates=0 skippedIncomplete=1",
+  );
   warnSpy.mockRestore();
   logSpy.mockRestore();
 });
@@ -296,7 +307,7 @@ test("fans out every ban-ei race without requiring optional running-style state"
   );
   expect(warnSpy).not.toHaveBeenCalled();
   expect(logSpy).toHaveBeenCalledWith(
-    "[feature-hit-prediction] enqueued category=ban-ei runYmd=20260824 races=2 duplicates=0",
+    "[feature-hit-prediction] enqueued category=ban-ei runYmd=20260824 races=2 duplicates=0 skippedIncomplete=0",
   );
   warnSpy.mockRestore();
   logSpy.mockRestore();

@@ -6,21 +6,33 @@ import { enqueuePredict } from "./queue-producer";
 import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 
 const {
+  assembleAttestedRaceCachesMock,
   failFocusedFullRaceEnqueueMock,
   featureHeadMock,
   focusedFullPredictionCompleteMock,
+  getDayBaseRaceFoundationReadinessMock,
   reserveFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceRepairMock,
 } = vi.hoisted(() => ({
+  assembleAttestedRaceCachesMock: vi.fn(async () => ({ reason: "ok", status: "fallback" })),
   failFocusedFullRaceEnqueueMock: vi.fn(async () => undefined),
   featureHeadMock: vi.fn(async (): Promise<R2Object | null> => null),
   focusedFullPredictionCompleteMock: vi.fn(async (): Promise<boolean> => true),
+  getDayBaseRaceFoundationReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   reserveFocusedFullRaceEnqueueMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
   reserveFocusedFullRaceRepairMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
+}));
+
+vi.mock("./attested-race-cache-assembler", () => ({
+  assembleAttestedRaceCaches: assembleAttestedRaceCachesMock,
+}));
+
+vi.mock("./day-base-race-materializer", () => ({
+  getDayBaseRaceFoundationReadiness: getDayBaseRaceFoundationReadinessMock,
 }));
 
 vi.mock("./do-state", () => ({
@@ -70,6 +82,10 @@ beforeEach(() => {
   focusedFullPredictionCompleteMock.mockResolvedValue(true);
   reserveFocusedFullRaceEnqueueMock.mockReset();
   reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: true });
+  assembleAttestedRaceCachesMock.mockReset();
+  assembleAttestedRaceCachesMock.mockResolvedValue({ reason: "ok", status: "fallback" });
+  getDayBaseRaceFoundationReadinessMock.mockReset();
+  getDayBaseRaceFoundationReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   lifecyclePrepareMock.mockClear();
   lifecycleRunMock.mockClear();
 });
@@ -903,4 +919,86 @@ test("enqueuePredict rescore Queue failure does not release a focused-full reser
     }),
   ).rejects.toThrow("rescore queue unavailable");
   expect(failFocusedFullRaceEnqueueMock).not.toHaveBeenCalled();
+});
+
+test("enqueuePredict warms the race foundation before sending a full prediction", async () => {
+  getDayBaseRaceFoundationReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "foundation-miss",
+  });
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "06",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-09-22",
+    runYmd: "20260922",
+  });
+  expect(getDayBaseRaceFoundationReadinessMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.anything(),
+    raceNumber: "01",
+    runYmd: "20260922",
+    venueCode: "06",
+  });
+  expect(assembleAttestedRaceCachesMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.anything(),
+    runYmd: "20260922",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict skips assembly when the race foundation is already ready", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "06",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-09-22",
+    runYmd: "20260922",
+  });
+  expect(getDayBaseRaceFoundationReadinessMock).toHaveBeenCalledTimes(1);
+  expect(assembleAttestedRaceCachesMock).not.toHaveBeenCalled();
+  expect(sendMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict still sends when race cache warm fails", async () => {
+  getDayBaseRaceFoundationReadinessMock.mockRejectedValueOnce(new Error("r2 unavailable"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "06",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-09-22",
+    runYmd: "20260922",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(errorSpy).toHaveBeenCalledWith(
+    "Failed to warm race predict cache:",
+    "Error: r2 unavailable",
+  );
+  errorSpy.mockRestore();
+});
+
+test("enqueuePredict does not warm caches for rescore", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 0,
+    env: makeEnv(),
+    keibajoCode: "06",
+    mode: "rescore",
+    raceBango: "01",
+    runDate: "2026-09-22",
+    runYmd: "20260922",
+  });
+  expect(getDayBaseRaceFoundationReadinessMock).not.toHaveBeenCalled();
+  expect(assembleAttestedRaceCachesMock).not.toHaveBeenCalled();
 });

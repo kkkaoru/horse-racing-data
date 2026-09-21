@@ -1,5 +1,5 @@
-// Run with bun. Fan out the first per-race prediction only after the category's
-// fresh day-base object has been confirmed as a cache HIT.
+// Run with bun. Fan out the first prediction for each race whose running-style
+// rows are complete after a day-base HIT. Incomplete later races stay queued.
 
 import { enumerateTodaysRaces } from "./cron-decision";
 import { enqueuePredict } from "./queue-producer";
@@ -44,13 +44,10 @@ export const fanOutPredictionsAfterDayBaseHit = async (
           races: categoryRaces,
           runYmd: params.runYmd,
         });
-  const incomplete = runningStyle.filter((race) => race.reason !== null);
-  if (incomplete.length > 0) {
-    throw new Error(
-      `Running-style barrier incomplete category=${params.category} runYmd=${params.runYmd} ready=${String(categoryRaces.length - incomplete.length)} expected=${String(categoryRaces.length)}`,
-    );
-  }
-  const readyRaces = categoryRaces;
+  const readyRaces = runningStyle
+    .filter((entry) => entry.reason === null)
+    .map((entry) => entry.race);
+  const skippedIncomplete = categoryRaces.length - readyRaces.length;
   const runDate = buildRunDate(params.runYmd);
   const daysAhead = resolveDaysAhead(params.runYmd, params.env.PREDICT_DAYS_AHEAD);
   const enqueueResults: PredictCategory[][] = [];
@@ -83,7 +80,7 @@ export const fanOutPredictionsAfterDayBaseHit = async (
   }
   const enqueuedCount = enqueueResults.flat().length;
   console.log(
-    `[feature-hit-prediction] enqueued category=${params.category} runYmd=${params.runYmd} races=${enqueuedCount} duplicates=${readyRaces.length - enqueuedCount}`,
+    `[feature-hit-prediction] enqueued category=${params.category} runYmd=${params.runYmd} races=${enqueuedCount} duplicates=${readyRaces.length - enqueuedCount} skippedIncomplete=${String(skippedIncomplete)}`,
   );
   return enqueuedCount;
 };

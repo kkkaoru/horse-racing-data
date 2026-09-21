@@ -2,7 +2,9 @@
 // Production generation is per-race only: both keibajoCode and raceBango are
 // required on every enqueue (see per-race-scope-guard.ts).
 
+import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseRaceFoundationReadiness } from "./day-base-race-materializer";
 import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
 import {
   failFocusedFullRaceEnqueue,
@@ -81,8 +83,30 @@ const isExistingPredictionFresh = async (
   });
 };
 
+const warmRacePredictCache = async (input: EnqueueCategoryParams): Promise<void> => {
+  if (input.params.mode !== "full") return;
+  try {
+    const foundation = await getDayBaseRaceFoundationReadiness({
+      category: input.category,
+      env: input.params.env,
+      raceNumber: input.params.raceBango,
+      runYmd: input.params.runYmd,
+      venueCode: input.params.keibajoCode,
+    });
+    if (foundation.ready) return;
+    await assembleAttestedRaceCaches({
+      category: input.category,
+      env: input.params.env,
+      runYmd: input.params.runYmd,
+    });
+  } catch (error) {
+    console.error("Failed to warm race predict cache:", String(error));
+  }
+};
+
 const enqueueCategory = async (input: EnqueueCategoryParams): Promise<boolean> => {
   const { category, params } = input;
+  await warmRacePredictCache(input);
   const now = new Date();
   const reservationId =
     params.mode === "full" && params.skipDedup === true && params.force !== true
