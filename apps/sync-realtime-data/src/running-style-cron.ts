@@ -726,9 +726,11 @@ export const planRunningStylePredictionsForDate = async (
       fetchRunningStyleFeatureCoverageFromCatalog(env.PC_KEIBA_R2_CATALOG, date),
     ]);
   if (statesResult.status === "rejected") throw statesResult.reason;
-  if (catalogCoverageResult.status === "rejected") throw catalogCoverageResult.reason;
   const states = statesResult.value;
-  const catalogCoverage = catalogCoverageResult.value;
+  const catalogCoverage =
+    catalogCoverageResult.status === "fulfilled"
+      ? catalogCoverageResult.value
+      : { counts: new Map<string, number>(), entrySignatures: new Map<string, string>() };
   // Transient D1 audits must not trigger blind re-inference. A successful
   // Catalog + D1 identity audit, however, is authoritative and invalidates a
   // completed generation after cancellation or horse replacement.
@@ -739,6 +741,9 @@ export const planRunningStylePredictionsForDate = async (
         : []),
       ...(predictionSignaturesResult.status === "rejected"
         ? [formatError(predictionSignaturesResult.reason)]
+        : []),
+      ...(catalogCoverageResult.status === "rejected"
+        ? [formatError(catalogCoverageResult.reason)]
         : []),
     ].join("; ") || undefined;
   const predictionCounts =

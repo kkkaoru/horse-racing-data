@@ -397,6 +397,48 @@ it("gates only the missing category foundation and triggers one forced prewarm",
   );
 });
 
+it("enqueues running-style jobs when catalog race-features 502s but feat-daybase HITs", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { fetchRunningStyleFeatureCoverageFromCatalog } =
+    await import("./running-style-catalog-client");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0922",
+        keibajo_code: "06",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(fetchRunningStyleFeatureCoverageFromCatalog).mockRejectedValueOnce(
+    new Error("HTTP 502 duplicate runners"),
+  );
+  const head = vi.fn(async (key: string) =>
+    key === "feat-daybase/catalog-v1/jra/20260922/features.parquet"
+      ? { etag: "day-base", size: 2048 }
+      : null,
+  );
+  const send = vi.fn(queueSendOk);
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      FEATURES_ARCHIVE: { head } as unknown as R2Bucket,
+      RUNNING_STYLE_JOBS: {
+        metrics: vi.fn(queueMetricsOk),
+        send,
+        sendBatch: vi.fn(queueSendOk),
+      },
+    }),
+    "20260922",
+    new Date("2026-09-21T16:05:00.000Z"),
+  );
+  expect(summary.enqueued).toBe(1);
+  expect(summary.planError).toContain("HTTP 502 duplicate runners");
+});
+
 it("enqueues running-style jobs when feat-daybase is already on R2", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
