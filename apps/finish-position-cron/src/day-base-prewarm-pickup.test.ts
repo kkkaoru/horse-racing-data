@@ -93,6 +93,18 @@ test("buildDayBaseObjectKey is the catalog-v1 day-base path", () => {
   );
 });
 
+test("headDayBaseObject can accept an object that has no watermark metadata", async () => {
+  const object = { size: 10 };
+  headMock.mockResolvedValueOnce(object);
+  const found = await headDayBaseObject({
+    category: "nar",
+    env: createPickupEnv({ head: headMock }),
+    requireWatermark: false,
+    runYmd: "20260922",
+  });
+  expect(found).toBe(object);
+});
+
 test("headDayBaseObject ignores an object that has no watermark metadata", async () => {
   headMock.mockResolvedValueOnce({ size: 10 });
   const found = await headDayBaseObject({

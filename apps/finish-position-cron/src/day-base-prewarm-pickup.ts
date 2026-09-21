@@ -24,6 +24,7 @@ interface PrewarmCachePickupParams {
 interface HeadDayBaseObjectParams {
   category: PredictCategory;
   env: Pick<Env, "FEATURES_CACHE">;
+  requireWatermark?: boolean;
   runYmd: string;
 }
 
@@ -133,6 +134,7 @@ export const headDayBaseObject = async (
 ): Promise<R2Object | null> => {
   const found = await params.env.FEATURES_CACHE.head(buildDayBaseObjectKey(params));
   if (found === null) return null;
+  if (params.requireWatermark === false) return found;
   return hasDayBaseWatermarkMetadata(found) ? found : null;
 };
 

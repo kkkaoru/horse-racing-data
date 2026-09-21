@@ -439,7 +439,7 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
   const skipWorkerObjectHead = attempt === DAY_BASE_PICKUP_FIRST_ATTEMPT;
   const cachedObject = skipWorkerObjectHead
     ? null
-    : await headDayBaseObject({ category, env, runYmd });
+    : await headDayBaseObject({ category, env, requireWatermark: false, runYmd });
   if (cachedObject !== null) {
     await finishFoundationPickup({
       attempt,
