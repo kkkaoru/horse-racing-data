@@ -61,6 +61,7 @@ const ACTIVE_STATUSES = new Set(["pending", "processing"]);
 const FINISH_POSITION_DAY_BASE_URL =
   "https://finish-position-cron.internal/api/admin/prewarm-day-base";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
+const FINISH_POSITION_DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_FILE = "features.parquet";
 const FOUNDATION_NONE_WATERMARK = "none";
 const FOUNDATION_PREWARM_MARKER_PREFIX = "control:running-style-foundation-prewarm:v1";
@@ -268,6 +269,15 @@ export const buildRunningStyleFoundationKeyForCategory = (
 ): string =>
   `${RUNNING_STYLE_FOUNDATION_PREFIX}/${category}/${date}/${RUNNING_STYLE_FOUNDATION_FILE}`;
 
+const buildFinishPositionDayBaseKeyForCategory = (
+  category: RunningStyleCellCategory,
+  date: string,
+): string =>
+  `${FINISH_POSITION_DAY_BASE_PREFIX}/${category}/${date}/${RUNNING_STYLE_FOUNDATION_FILE}`;
+
+const isFinishPositionDayBaseReady = (object: R2Object | null): boolean =>
+  object !== null && object.size > 0;
+
 const isNonNegativeIntegerMetadata = (value: string | undefined): boolean => {
   if (value === undefined || value.trim().length === 0) return false;
   const parsed = Number(value);
@@ -296,8 +306,13 @@ const inspectRunningStyleFoundation = async (
   const object = await params.env.FEATURES_ARCHIVE.head(
     buildRunningStyleFoundationKeyForCategory(params.category, params.date),
   );
-  const ready = isRunningStyleFoundationReady(object);
-  return { ready };
+  if (isRunningStyleFoundationReady(object)) return { ready: true };
+  // Worker inference HITs feat-daybase. Do not force a Container rebuild of
+  // that object just to mint feat-running-style-base watermarks.
+  const dayBase = await params.env.FEATURES_ARCHIVE.head(
+    buildFinishPositionDayBaseKeyForCategory(params.category, params.date),
+  );
+  return { ready: isFinishPositionDayBaseReady(dayBase) };
 };
 
 const buildRunningStyleFoundationPrewarmMarkerKey = (
@@ -350,10 +365,8 @@ const triggerRunningStyleFoundationPrewarm = async (
       new Request(FINISH_POSITION_DAY_BASE_URL, {
         body: JSON.stringify({
           category: params.category,
-          // A final day-base can be fresh while this earlier foundation is
-          // absent. Force is required so that prewarm rebuilds the base and
-          // cannot short-circuit on that later-stage object.
-          force: true,
+          // Worker HIT of feat-daybase is enough to generate running-style
+          // features. Never force a Container rebuild of a landed day-base.
           generatePredictionsAfterHit: true,
           runYmd: params.date,
         }),

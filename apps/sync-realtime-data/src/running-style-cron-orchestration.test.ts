@@ -365,6 +365,7 @@ it("gates only the missing category foundation and triggers one forced prewarm",
   expect(head.mock.calls.map(([key]) => key)).toStrictEqual([
     "feat-running-style-base/catalog-v1/nar/20260824/features.parquet",
     "feat-running-style-base/catalog-v1/ban-ei/20260824/features.parquet",
+    "feat-daybase/catalog-v1/ban-ei/20260824/features.parquet",
   ]);
   expect(send).toHaveBeenCalledWith({
     kaisaiNen: "2026",
@@ -383,7 +384,6 @@ it("gates only the missing category foundation and triggers one forced prewarm",
   expect(request.headers.get("authorization")).toBe("Bearer trigger-token");
   expect(await request.json()).toStrictEqual({
     category: "ban-ei",
-    force: true,
     generatePredictionsAfterHit: true,
     runYmd: "20260824",
   });
@@ -395,6 +395,57 @@ it("gates only the missing category foundation and triggers one forced prewarm",
     expect.any(String),
     { expirationTtl: 900 },
   );
+});
+
+it("enqueues running-style jobs when feat-daybase is already on R2", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0922",
+        keibajo_code: "06",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  const head = vi.fn(async (key: string) =>
+    key === "feat-daybase/catalog-v1/jra/20260922/features.parquet"
+      ? { etag: "day-base", size: 2048 }
+      : null,
+  );
+  const fetch = vi.fn<typeof globalThis.fetch>(
+    async (_input) => new Response(null, { status: 202 }),
+  );
+  const send = vi.fn(queueSendOk);
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      FEATURES_ARCHIVE: { head } as unknown as R2Bucket,
+      FINISH_POSITION_CRON: { fetch },
+      RUNNING_STYLE_JOBS: {
+        metrics: vi.fn(queueMetricsOk),
+        send,
+        sendBatch: vi.fn(queueSendOk),
+      },
+    }),
+    "20260922",
+    new Date("2026-09-21T15:42:00.000Z"),
+  );
+  expect(summary.enqueued).toBe(1);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(send).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0922",
+    keibajoCode: "06",
+    predictedAt: "2026-09-21T15:42:00.000Z",
+    raceBango: "01",
+    raceKey: "jra:20260922:06:01",
+    source: "jra",
+    type: "generate-running-style-predictions",
+  });
 });
 
 it("suppresses another forced prewarm while the category build marker is active", async () => {
