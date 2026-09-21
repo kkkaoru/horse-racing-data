@@ -214,6 +214,54 @@ it("warms cheaper sections before heatmap and retries unstored heatmap responses
   expect(heatmapMessage.ack).toHaveBeenCalledTimes(1);
 });
 
+it("retries extra heatmap messages so one warm cannot exceed wall time", async () => {
+  const worker = {
+    fetch: vi.fn<FetchFn>().mockResolvedValue(
+      new Response("{}", {
+        headers: { "X-Win-Rate-Heatmap-Cache": "MISS-STORED" },
+        status: 200,
+      }),
+    ),
+  };
+  const firstHeatmap = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "22",
+      keibajoCode: "06",
+      month: "09",
+      raceNumber: "01",
+      section: "win-rate-heatmap" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  const secondHeatmap = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "22",
+      keibajoCode: "06",
+      month: "09",
+      raceNumber: "02",
+      section: "win-rate-heatmap" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [firstHeatmap, secondHeatmap], queue: "pc-keiba-detail-section-cache-warm" },
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(worker.fetch).toHaveBeenCalledTimes(1);
+  expect(firstHeatmap.ack).toHaveBeenCalledTimes(1);
+  expect(firstHeatmap.retry).not.toHaveBeenCalled();
+  expect(secondHeatmap.retry).toHaveBeenCalledTimes(1);
+  expect(secondHeatmap.ack).not.toHaveBeenCalled();
+});
+
 it("schedule-ssr-warm-throws-on-non-ok-response", async () => {
   const worker = buildOpenNextWorker(new Response("nope", { status: 504 }));
   const env = buildEnv();

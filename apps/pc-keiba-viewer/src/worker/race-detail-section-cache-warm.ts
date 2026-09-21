@@ -16,7 +16,6 @@ const SCHEDULE_PATH = "/api/cache-warm/race-detail-sections";
 const RACE_TREND_SCHEDULE_PATH = "/api/cache-warm/race-trends";
 const RACE_DETAIL_SSR_SCHEDULE_PATH = "/api/cache-warm/race-detail-ssr";
 const WARM_IN_BATCH_CONCURRENCY = 2;
-const HEATMAP_WARM_CONCURRENCY = 1;
 const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
 
 type CacheWarmMessage =
@@ -332,7 +331,14 @@ export const handleRaceDetailSectionCacheQueue = async (
   await mapInChunks(otherMessages, WARM_IN_BATCH_CONCURRENCY, (message) =>
     warmQueueMessage(openNextWorker, message, env, ctx),
   );
-  await mapInChunks(heatmapMessages, HEATMAP_WARM_CONCURRENCY, (message) =>
-    warmQueueMessage(openNextWorker, message, env, ctx),
-  );
+  // One heatmap per invocation. Sequential heatmap warms in a batch of 3
+  // exceeded worker wall time, so 2026-09-22 never stored heatmap cache.
+  const firstHeatmap = heatmapMessages[0];
+  if (firstHeatmap === undefined) {
+    return;
+  }
+  heatmapMessages.slice(1).forEach((message) => {
+    message.retry();
+  });
+  await warmQueueMessage(openNextWorker, firstHeatmap, env, ctx);
 };
