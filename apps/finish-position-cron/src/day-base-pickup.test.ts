@@ -75,6 +75,7 @@ import {
   consumeDayBasePickup,
   DAY_BASE_PICKUP_DELAY_SECONDS,
   DAY_BASE_PICKUP_FIRST_ATTEMPT,
+  DAY_BASE_READINESS_RETRY_SECONDS,
   DAY_BASE_PICKUP_MAX_ATTEMPTS,
   DAY_BASE_PICKUP_TYPE,
   enqueueDayBasePickup,
@@ -759,18 +760,65 @@ test("consumeDayBasePickup keeps polling after the running-style foundation land
     {
       attempt: 8,
       category: "nar",
-      force: true,
       generatePredictionsAfterHit: true,
       runYmd: "20260824",
       type: "day-base-pickup",
     },
-    { delaySeconds: 180 },
+    { delaySeconds: DAY_BASE_READINESS_RETRY_SECONDS },
   );
   expect(containerFetchMock).not.toHaveBeenCalled();
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
   expect(logSpy).toHaveBeenCalledWith(
     "[day-base-pickup] foundation-landed category=nar runYmd=20260824 attempt=7",
+  );
+  logSpy.mockRestore();
+});
+
+test("consumeDayBasePickup does not wake the Container once R2 already has the foundation", async () => {
+  headDayBaseObjectMock.mockResolvedValueOnce({ size: 1 });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: {
+      attempt: 2,
+      category: "jra",
+      force: true,
+      generatePredictionsAfterHit: true,
+      runYmd: "20260922",
+      type: "day-base-pickup",
+    },
+  });
+
+  expect(pickUpPrewarmDayBaseWithOutcomeMock).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[day-base-pickup] foundation-landed category=jra runYmd=20260922 attempt=2",
+  );
+  logSpy.mockRestore();
+});
+
+test("consumeDayBasePickup fans out on the Worker after the foundation lands ready", async () => {
+  pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValueOnce("foundation-landed");
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: {
+      attempt: 2,
+      category: "jra",
+      force: true,
+      generatePredictionsAfterHit: true,
+      runYmd: "20260922",
+      type: "day-base-pickup",
+    },
+  });
+
+  expect(pickUpPrewarmDayBaseWithOutcomeMock).toHaveBeenCalledTimes(1);
+  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledTimes(1);
+  expect(logSpy).toHaveBeenCalledWith(
+    "[day-base-pickup] landed category=jra runYmd=20260922 attempt=2",
   );
   logSpy.mockRestore();
 });
@@ -949,35 +997,24 @@ test("consumeDayBasePickup rebuilds for a deterministic source row-count mismatc
   warnSpy.mockRestore();
 });
 
-test("consumeDayBasePickup rebuilds for a deterministic RS timestamp mismatch", async () => {
+test("consumeDayBasePickup polls without rebuild for an RS timestamp mismatch", async () => {
   getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
     ready: false,
     reason: "rs-predicted-at-max-mismatch",
   });
-  containerFetchMock.mockResolvedValueOnce(
-    new Response('{"type":"result","status":"success"}\n', { status: 200 }),
-  );
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   await consumeDayBasePickup({ env: makeEnv(), message: pickupBody });
 
-  expect(containerFetchMock).toHaveBeenCalledTimes(1);
-  expect(releaseContainerSlotMock).toHaveBeenCalledWith({
-    doName: "predict-ban-ei",
-    env: expect.any(Object),
-    kind: "day-base",
-    workKey: "day-base-stale:20260817:ban-ei",
-  });
+  expect(containerFetchMock).not.toHaveBeenCalled();
   expect(queueSendMock).toHaveBeenCalledWith(
     {
-      attempt: 1,
+      attempt: 2,
       category: "ban-ei",
       runYmd: "20260817",
       type: "day-base-pickup",
     },
     { delaySeconds: 180 },
   );
-  warnSpy.mockRestore();
 });
 
 test("consumeDayBasePickup does not rebuild for a transient readiness probe error", async () => {

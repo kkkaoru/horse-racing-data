@@ -5,7 +5,7 @@
 // missing and every later race logs r2-missing-object. This module re-enqueues
 // pickup after the first-day build (10-15m) has had time to commit.
 
-import { pickUpPrewarmDayBaseWithOutcome } from "./day-base-prewarm-pickup";
+import { headDayBaseObject, pickUpPrewarmDayBaseWithOutcome } from "./day-base-prewarm-pickup";
 import { CONTAINER_DAY_BASE_SLOT_STALE_MS, type ContainerSlotKind } from "./container-slot-cap";
 import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { handOffContainerStopOrCleanup } from "./container-cleanup";
@@ -21,6 +21,7 @@ import type { DayBasePickupMessage, Env, PredictCategory } from "./types";
 interface EnqueueDayBasePickupParams {
   attempt: number;
   category: PredictCategory;
+  delaySeconds?: number;
   env: Env;
   generationId?: string;
   runYmd: string;
@@ -48,6 +49,10 @@ interface ExhaustDayBasePickupParams extends CleanupDayBaseWorkParams {
   attempt: number;
 }
 
+interface FinishFoundationPickupParams extends CompleteLandedDayBaseParams {
+  attempt: number;
+}
+
 interface RestartStaleDayBaseParams {
   category: PredictCategory;
   env: Env;
@@ -65,6 +70,9 @@ type StaleRestartOutcome = "accepted" | "busy" | "completed" | "failed";
 
 export const DAY_BASE_PICKUP_TYPE = "day-base-pickup";
 export const DAY_BASE_PICKUP_DELAY_SECONDS = 180;
+// After the parquet is in R2, remaining work is Worker D1/R2 readiness (running-style
+// rows), not another 3-minute wait for the Container. Poll that on the Worker.
+export const DAY_BASE_READINESS_RETRY_SECONDS = 30;
 // The Python day-base pipeline has a 30-minute deadline. Twelve 3-minute
 // pickup polls cover 36 minutes, leaving a bounded margin for the final
 // upload/readiness check and owner-safe stop handoff. Eight polls (24 minutes)
@@ -80,10 +88,7 @@ const STALE_REBUILD_DAYS_AHEAD: number = 0;
 const STALE_REBUILD_ACCEPTED_PATTERN: RegExp = /"status"\s*:\s*"accepted"/u;
 const STALE_REBUILD_COMPLETED_PATTERN: RegExp = /"status"\s*:\s*"success"/u;
 const STALE_ROW_COUNT_REASON_PATTERN: RegExp = /^(?:rs|source)-row-count-\d+-of-\d+$/u;
-const STALE_EXACT_REASONS: ReadonlySet<string> = new Set([
-  "rs-predicted-at-max-mismatch",
-  "source-watermark-mismatch",
-]);
+const STALE_EXACT_REASONS: ReadonlySet<string> = new Set(["source-watermark-mismatch"]);
 const DAY_BASE_SLOT_KIND: ContainerSlotKind = "day-base";
 const GENERATION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,128}$/u;
 
@@ -130,9 +135,10 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
     ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),
     ...(params.force === true ? { force: true } : {}),
   };
-  await params.env.PREDICT_QUEUE.send(message, { delaySeconds: DAY_BASE_PICKUP_DELAY_SECONDS });
+  const delaySeconds = params.delaySeconds ?? DAY_BASE_PICKUP_DELAY_SECONDS;
+  await params.env.PREDICT_QUEUE.send(message, { delaySeconds });
   console.log(
-    `[day-base-pickup] scheduled category=${params.category} runYmd=${params.runYmd} attempt=${params.attempt} delaySeconds=${DAY_BASE_PICKUP_DELAY_SECONDS}`,
+    `[day-base-pickup] scheduled category=${params.category} runYmd=${params.runYmd} attempt=${params.attempt} delaySeconds=${String(delaySeconds)}`,
   );
 };
 
@@ -287,6 +293,45 @@ const restartStaleDayBase = async (
   }
 };
 
+const finishFoundationPickup = async (params: FinishFoundationPickupParams): Promise<void> => {
+  const { attempt, category, env, runYmd } = params;
+  console.log(
+    `[day-base-pickup] foundation-landed category=${category} runYmd=${runYmd} attempt=${String(attempt)}`,
+  );
+  if (env.RUNNING_STYLE_PLAN_JOBS) {
+    await kickRunningStylePlan({ date: runYmd, env }).catch((error: unknown) => {
+      console.warn(
+        `[day-base-pickup] running-style planner kick failed category=${category} runYmd=${runYmd}: ${String(error)}`,
+      );
+    });
+  }
+  if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
+    await exhaustDayBasePickup(params);
+    return;
+  }
+  const foundationReadiness = await getFocusedFullDayBaseReadiness({
+    category,
+    env,
+    runYmd,
+  }).catch(() => ({ ready: false, reason: "readiness-error" }));
+  if (foundationReadiness.ready) {
+    console.log(
+      `[day-base-pickup] landed category=${category} runYmd=${runYmd} attempt=${String(attempt)}`,
+    );
+    await completeLandedDayBase(params);
+    return;
+  }
+  await enqueueDayBasePickup({
+    attempt: attempt + 1,
+    category,
+    delaySeconds: DAY_BASE_READINESS_RETRY_SECONDS,
+    env,
+    ...dayBaseGenerationFields(params.generationId),
+    ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),
+    runYmd,
+  });
+};
+
 export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): Promise<void> => {
   const { env, message } = params;
   const { category, runYmd, attempt, generationId } = message;
@@ -388,9 +433,28 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     });
     return;
   }
+  // After the first force attempt, FEATURES_CACHE is the source of truth.
+  // Hitting /prewarm-day-base-cache on every retry keeps a standard-4 warm
+  // for hours while running-style rows catch up.
+  const skipWorkerObjectHead = attempt === DAY_BASE_PICKUP_FIRST_ATTEMPT;
+  const cachedObject = skipWorkerObjectHead
+    ? null
+    : await headDayBaseObject({ category, env, runYmd });
+  if (cachedObject !== null) {
+    await finishFoundationPickup({
+      attempt,
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      generatePredictionsAfterHit: message.generatePredictionsAfterHit === true,
+      runYmd,
+    });
+    return;
+  }
   // An old R2 object can still be present while the detached build is
   // producing a new watermark. Only a successful container pickup may prove
-  // this generation landed; presence alone must not acknowledge the message.
+  // this generation landed; presence alone must not acknowledge the message
+  // on the first forced rebuild.
   const pickupOutcome = await pickUpPrewarmDayBaseWithOutcome({ category, env, runYmd });
   if (pickupOutcome === "transient-error") {
     throw new Error(
@@ -398,38 +462,12 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     );
   }
   if (pickupOutcome === "foundation-landed") {
-    console.log(
-      `[day-base-pickup] foundation-landed category=${category} runYmd=${runYmd} attempt=${attempt}`,
-    );
-    // A future-day foundation can land before sync-realtime-data's normal
-    // today/tomorrow running-style cron window. Kick its idempotent planner
-    // on every pickup retry so the final readiness cannot wait for rollover.
-    if (env.RUNNING_STYLE_PLAN_JOBS) {
-      await kickRunningStylePlan({ date: runYmd, env }).catch((error: unknown) => {
-        console.warn(
-          `[day-base-pickup] running-style planner kick failed category=${category} runYmd=${runYmd}: ${String(error)}`,
-        );
-      });
-    }
-    if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
-      await exhaustDayBasePickup({
-        attempt,
-        category,
-        env,
-        ...dayBaseGenerationFields(generationId),
-        runYmd,
-      });
-      return;
-    }
-    await enqueueDayBasePickup({
-      attempt: attempt + 1,
+    await finishFoundationPickup({
+      attempt,
       category,
       env,
       ...dayBaseGenerationFields(generationId),
-      ...(message.generatePredictionsAfterHit === true
-        ? { generatePredictionsAfterHit: true }
-        : {}),
-      ...(message.force === true ? { force: true } : {}),
+      generatePredictionsAfterHit: message.generatePredictionsAfterHit === true,
       runYmd,
     });
     return;
