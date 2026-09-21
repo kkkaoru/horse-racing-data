@@ -1132,7 +1132,7 @@ test("claimContainerSlot stores the first unique DO lease", async () => {
   vi.useRealTimers();
 });
 
-test("day-base generation fence preempts a later date and rejects its redelivery", async () => {
+test("day-base generation fence preempts an earlier date and rejects its redelivery", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(20_000);
   storageMap.set("container-slots", {
@@ -1144,12 +1144,12 @@ test("day-base generation fence preempts a later date and rejects its redelivery
         kind: "day-base",
         rescoreHolders: 0,
         timestamp: 20_000,
-        workKey: "day-base:20260827:nar",
+        workKey: "day-base:20260825:nar",
       },
     ],
   });
   storageMap.set("day-base-generations", {
-    nar: { runYmd: "20260827", updatedAt: 10_000 },
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
   });
   const coordinator = makeCoordinator();
 
@@ -1157,10 +1157,10 @@ test("day-base generation fence preempts a later date and rejects its redelivery
     coordinator.claimDayBaseGeneration({
       category: "nar",
       phase: "start",
-      runYmd: "20260825",
+      runYmd: "20260827",
     }),
   ).resolves.toStrictEqual({
-    preemptedWorkKey: "day-base:20260827:nar",
+    preemptedWorkKey: "day-base:20260825:nar",
     proceed: false,
     state: "preempting",
   });
@@ -1168,11 +1168,11 @@ test("day-base generation fence preempts a later date and rejects its redelivery
     coordinator.claimDayBaseGeneration({
       category: "nar",
       phase: "pickup",
-      runYmd: "20260827",
+      runYmd: "20260825",
     }),
   ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
   expect(storageMap.get("day-base-generations")).toStrictEqual({
-    nar: { runYmd: "20260825", updatedAt: 20_000 },
+    nar: { runYmd: "20260827", updatedAt: 20_000 },
   });
   expect(storageMap.get("container-slots")).toStrictEqual({
     leases: [
@@ -1183,18 +1183,18 @@ test("day-base generation fence preempts a later date and rejects its redelivery
         kind: "day-base",
         rescoreHolders: 0,
         timestamp: 20_000,
-        workKey: "day-base:20260827:nar",
+        workKey: "day-base:20260825:nar",
       },
     ],
   });
   vi.useRealTimers();
 });
 
-test("day-base generation fence activates the earliest requested date without a lease", async () => {
+test("day-base generation fence activates the latest requested date without a lease", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(25_000);
   storageMap.set("day-base-generations", {
-    nar: { runYmd: "20260827", updatedAt: 10_000 },
+    nar: { runYmd: "20260825", updatedAt: 10_000 },
   });
   const coordinator = makeCoordinator();
 
@@ -1202,14 +1202,14 @@ test("day-base generation fence activates the earliest requested date without a 
     coordinator.claimDayBaseGeneration({
       category: "nar",
       phase: "start",
-      runYmd: "20260825",
+      runYmd: "20260827",
     }),
   ).resolves.toStrictEqual({ proceed: true, state: "active" });
   await expect(
     coordinator.claimDayBaseGeneration({
       category: "nar",
       phase: "pickup",
-      runYmd: "20260825",
+      runYmd: "20260827",
     }),
   ).resolves.toStrictEqual({ proceed: true, state: "active" });
   await expect(
@@ -1226,9 +1226,30 @@ test("day-base generation fence activates the earliest requested date without a 
   vi.useRealTimers();
 });
 
+test("a live later day-base reservation without a lease still fences earlier starts", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000 + 3 * 60 * 1000);
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260827", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260827", updatedAt: 10_000 },
+  });
+  vi.useRealTimers();
+});
+
 test("an abandoned day-base reservation expires when it has no live lease", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(200_000);
+  vi.setSystemTime(10_000 + 60 * 60 * 1000 + 1);
   storageMap.set("day-base-generations", {
     nar: { runYmd: "20260825", updatedAt: 10_000 },
   });
@@ -1242,7 +1263,7 @@ test("an abandoned day-base reservation expires when it has no live lease", asyn
     }),
   ).resolves.toStrictEqual({ proceed: true, state: "active" });
   expect(storageMap.get("day-base-generations")).toStrictEqual({
-    nar: { runYmd: "20260827", updatedAt: 200_000 },
+    nar: { runYmd: "20260827", updatedAt: 10_000 + 60 * 60 * 1000 + 1 },
   });
   vi.useRealTimers();
 });
@@ -1492,7 +1513,8 @@ test("generation-scoped day-base claims are idempotent across start and pickup d
 
 test("a stale token reservation can advance while retired generations stay fenced", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(250_000);
+  const now = 10_000 + 60 * 60 * 1000 + 1;
+  vi.setSystemTime(now);
   storageMap.set("day-base-generations", {
     nar: {
       generationId: "generation-a",
@@ -1516,7 +1538,7 @@ test("a stale token reservation can advance while retired generations stay fence
       generationId: "generation-b",
       retiredGenerationIds: ["generation-old", "generation-a"],
       runYmd: "20260826",
-      updatedAt: 250_000,
+      updatedAt: now,
     },
   });
   await expect(
@@ -2130,7 +2152,7 @@ test("rejects a destroyed-stage marker without the matching stop fence owner", a
   const coordinator = makeCoordinator();
   await expect(
     coordinator.markContainerSlotStopped({ doName: "predict-jra-1", workKey: "missing-work" }),
-  ).rejects.toThrow("Container stop fence ownership lost doName=predict-jra-1");
+  ).resolves.toBeUndefined();
 
   storageMap.set("container-stop-fences", {
     "predict-jra-1": { claimedAtMs: 1, requestedAtMs: 1, workKey: "actual-work" },

@@ -63,7 +63,10 @@ const FOCUSED_FULL_ACTIVE_WATCHES_KEY = "focused-full-active-watches";
 const FOCUSED_FULL_WATCH_OUTBOX_ALARM_DELAY_MS = 150_000;
 const RESCORE_ENQUEUE_CLAIM_STALE_MS = 5 * 60 * 1000;
 const RESCORE_EXECUTION_CLAIM_STALE_MS = 31 * 60 * 1000;
-const DAY_BASE_GENERATION_RESERVATION_STALE_MS = 2 * 60 * 1000;
+// Must outlast the detached Python DAY_CHAIN (30m) and pickup delay (180s).
+// A 2-minute tombstone let a new generation UUID preempt an in-flight build
+// before the first pickup refresh, so JRA/NAR never reached a day-base HIT.
+const DAY_BASE_GENERATION_RESERVATION_STALE_MS = 60 * 60 * 1000;
 const HTTP_OK = 200;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_NOT_FOUND = 404;
@@ -1165,11 +1168,14 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         await this.ctx.storage.put(DAY_BASE_GENERATIONS_KEY, generations);
         return { proceed: true, state: "active" };
       }
+      // Newer runYmd wins. An older stuck repair (today's missing day-base
+      // retrying all evening) must not supersede or preempt tomorrow's first
+      // prewarm; that starvation left 2026-09-22 without predictions.
       if (
         params.force !== true &&
         current !== undefined &&
         !currentMatchesIncoming &&
-        params.runYmd >= current.runYmd &&
+        params.runYmd <= current.runYmd &&
         (currentReservationFresh || currentLeaseActive)
       ) {
         return { proceed: false, state: "superseded" };
@@ -1180,7 +1186,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const replacesCurrent =
         current === undefined ||
         (!currentMatchesIncoming && params.force === true) ||
-        params.runYmd < current.runYmd ||
+        params.runYmd > current.runYmd ||
         (!currentMatchesIncoming && !currentReservationFresh && !currentLeaseActive);
       if (!replacesCurrent && !currentMatchesIncoming) {
         return { proceed: false, state: "superseded" };
@@ -1426,10 +1432,15 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const fence = stopFences[params.doName];
       const ownerKeys =
         params.acceptableWorkKeys ?? (params.workKey === undefined ? undefined : [params.workKey]);
+      if (fence === undefined) {
+        // Idempotent: a retried stop after the fence was already cleared must
+        // not throw. Throwing redelivers container-stop and can destroy a live
+        // day-base DAY_CHAIN (pred:fp then stays 404).
+        return;
+      }
       if (
-        fence === undefined ||
-        (ownerKeys !== undefined &&
-          (fence.workKey === undefined || !ownerKeys.includes(fence.workKey)))
+        ownerKeys !== undefined &&
+        (fence.workKey === undefined || !ownerKeys.includes(fence.workKey))
       ) {
         throw new Error(`Container stop fence ownership lost doName=${params.doName}`);
       }
