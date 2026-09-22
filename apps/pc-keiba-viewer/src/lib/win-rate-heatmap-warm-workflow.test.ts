@@ -183,6 +183,7 @@ it("skips the warm when the heatmap cache already hits", async () => {
     "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap",
   );
   expect(request?.headers.get("X-PC-Keiba-Cache-Warm")).toBe("workflow");
+  expect(request?.signal.aborted).toBe(false);
 });
 
 it("does not read heatmap bodies larger than the bounded drain limit", async () => {
@@ -218,6 +219,24 @@ it("accepts responses without a body", async () => {
     "01",
   );
   expect(status).toBe("hit");
+});
+
+it("bounds each self request with a 120 second abort timeout", async () => {
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+  await warmHeatmapRace(
+    async () => new Response(null, { headers: { "X-Win-Rate-Heatmap-Cache": "HIT" } }),
+    {
+      day: "23",
+      keibajoCode: "30",
+      month: "09",
+      raceNumbers: ["05"],
+      source: "nar",
+      year: "2026",
+    },
+    "05",
+  );
+  expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+  timeoutSpy.mockRestore();
 });
 
 it("warms and stores the heatmap on a cache miss", async () => {
@@ -341,8 +360,8 @@ it("runs one durable step per race in order", async () => {
   ]);
   expect(names).toStrictEqual(["warm-30-01", "warm-30-02"]);
   expect(configs[0]).toStrictEqual({
-    retries: { backoff: "exponential", delay: "30 seconds", limit: 4 },
-    timeout: "5 minutes",
+    retries: { backoff: "exponential", delay: "15 seconds", limit: 6 },
+    timeout: "3 minutes",
   });
 });
 

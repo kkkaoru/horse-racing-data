@@ -95,9 +95,12 @@ const HEATMAP_CACHE_HEADER = "X-Win-Rate-Heatmap-Cache";
 const CACHE_WARM_HEADER = "X-PC-Keiba-Cache-Warm";
 const CACHE_WARM_HEADER_VALUE = "workflow";
 const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
+// A warm normally takes 10-20s, but an occasional self request hangs until
+// the step timeout. Abort each request early and retry instead of waiting.
+const HEATMAP_FETCH_TIMEOUT_MS = 120_000;
 const HEATMAP_WARM_STEP_CONFIG: HeatmapWarmStepConfig = {
-  retries: { backoff: "exponential", delay: "30 seconds", limit: 4 },
-  timeout: "5 minutes",
+  retries: { backoff: "exponential", delay: "15 seconds", limit: 6 },
+  timeout: "3 minutes",
 };
 // Instance ids are deterministic per slot so duplicate triggers inside one
 // slot are skipped by createBatch; a later slot re-sweeps after scratches.
@@ -146,9 +149,12 @@ const discardResponseBody = async (response: Response): Promise<Response> => {
 };
 
 const fetchHeatmap = (fetchSelf: HeatmapWarmFetch, url: URL): Promise<Response> =>
-  fetchSelf(new Request(url, { headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE } })).then(
-    discardResponseBody,
-  );
+  fetchSelf(
+    new Request(url, {
+      headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE },
+      signal: AbortSignal.timeout(HEATMAP_FETCH_TIMEOUT_MS),
+    }),
+  ).then(discardResponseBody);
 
 const isHeatmapHit = (response: Response): boolean =>
   response.ok && response.headers.get(HEATMAP_CACHE_HEADER) === "HIT";
