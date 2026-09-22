@@ -208,6 +208,31 @@ it("repairs an invalid cached identity from the authoritative Catalog", async ()
   );
 });
 
+it("collapses byte-identical duplicate foundation rows before the identity guard", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  // The NAR mirror holds four identical copies of every runner, and the
+  // Container's day foundation parquet inherits them.
+  const row = rows()[0]!;
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([row, row, row, row]);
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockResolvedValue([]);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1", "1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toMatchObject({ rows: [row] });
+  expect(fetchRunningStyleFeaturesFromCatalog).not.toHaveBeenCalled();
+  expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+});
+
 it("fails closed when every strict-cache fallback has an invalid entry identity", async () => {
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");

@@ -101,6 +101,20 @@ interface PostgresFallbackResult {
 
 class InvalidRunningStyleFeatureIdentityError extends Error {}
 
+// The NAR mirror carries several byte-identical copies of the same runner row,
+// so the Container's day foundation parquet can hold four identical rows per
+// horse. Collapse them before the identity guards: the guards exist to catch
+// genuine conflicts, not duplicated mirror bytes.
+const dedupeIdenticalRows = (rows: ReadonlyArray<RaceHorseFeatureRow>): RaceHorseFeatureRow[] => {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = JSON.stringify(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const assertRunningStyleFeatureIdentities = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
   race: RunningStyleRaceParams,
@@ -235,7 +249,7 @@ const loadRunningStyleFoundationRows = async (
   }
   try {
     const raceKey = buildRunningStyleRaceKey(params.race);
-    const rows = (await cached.rows).filter((row) => row.raceKey === raceKey);
+    const rows = dedupeIdenticalRows((await cached.rows).filter((row) => row.raceKey === raceKey));
     if (rows.length === 0) return null;
     assertRunningStyleFeatureIdentities(rows, params.race);
     const coverage = validateFeatureCoverage(rows, params.featureNames);
@@ -266,12 +280,13 @@ const loadAuthoritativeFeatureRows = async (
     );
   }
   try {
-    const hit = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    const dayBaseRows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
       ...(params.byteRangeCache === undefined ? {} : { byteRangeCache: params.byteRangeCache }),
       bucket: params.env.FEATURES_ARCHIVE,
       featureNames: params.featureNames,
       race: params.race,
     });
+    const hit = dayBaseRows === null ? null : dedupeIdenticalRows(dayBaseRows);
     if (hit !== null && hit.length > 0) {
       assertRunningStyleFeatureIdentities(hit, params.race);
       console.log(
