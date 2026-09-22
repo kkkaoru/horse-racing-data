@@ -758,6 +758,48 @@ def _drop_shared_catalog_connection(
         connection.close()
 
 
+_LOCAL_PARQUET_CONNECTION_CACHE: list[tuple[object, duckdb.DuckDBPyConnection]] = []
+"""Process-wide DuckDB connection for local day-base parquet scans.
+
+:func:`day_base_covers_entry_list` runs once per race (up to ~60x per
+card), and each ``duckdb.connect(":memory:")`` pays extension load +
+allocator setup before even touching the local files. A single shared
+connection amortizes that; every scan is a self-contained
+``read_parquet(glob)`` SELECT with no temp state, so sharing pins nothing
+stale. The stored ``duckdb.connect`` identity forces a reconnect when
+tests monkeypatch it, and a failed query drops the connection so the next
+call reconnects instead of failing closed forever."""
+
+
+def _shared_local_parquet_connection() -> duckdb.DuckDBPyConnection:
+    """Return the process-wide connection for local parquet reads."""
+    import duckdb
+
+    connect = duckdb.connect
+    with _SOURCE_CONNECTION_LOCK:
+        if _LOCAL_PARQUET_CONNECTION_CACHE:
+            cached_connect, cached = _LOCAL_PARQUET_CONNECTION_CACHE[0]
+            if cached_connect is connect:
+                return cached
+            with suppress(Exception):
+                cached.close()
+            _LOCAL_PARQUET_CONNECTION_CACHE.clear()
+        connection = connect(":memory:")
+        _LOCAL_PARQUET_CONNECTION_CACHE.append((connect, connection))
+        return connection
+
+
+def _drop_shared_local_parquet_connection(
+    connection: duckdb.DuckDBPyConnection,
+) -> None:
+    """Drop a poisoned shared local connection so the next call reconnects."""
+    with _SOURCE_CONNECTION_LOCK:
+        if _LOCAL_PARQUET_CONNECTION_CACHE and _LOCAL_PARQUET_CONNECTION_CACHE[0][1] is connection:
+            _LOCAL_PARQUET_CONNECTION_CACHE.pop()
+    with suppress(Exception):
+        connection.close()
+
+
 def _query_source_rows(
     database_url: str,
     sql: str,
@@ -2253,8 +2295,6 @@ def day_base_covers_entry_list(
     ``LAYER_CHAIN`` path), never toward trusting a possibly-stale cache.
     """
     try:
-        import duckdb
-
         if not _is_ymd_target_date(target_date):
             return False
         keibajo_code, race_bango = target_race.split(":", 1)
@@ -2291,7 +2331,7 @@ def day_base_covers_entry_list(
         selected_columns = (
             "ketto_toroku_bango" if expected_entry_tokens is None else "ketto_toroku_bango, umaban"
         )
-        con = duckdb.connect(":memory:")
+        con = _shared_local_parquet_connection()
         try:
             rows = con.execute(
                 f"SELECT DISTINCT {selected_columns} FROM "
@@ -2305,8 +2345,9 @@ def day_base_covers_entry_list(
                     race_bango,
                 ],
             ).fetchall()
-        finally:
-            con.close()
+        except Exception:
+            _drop_shared_local_parquet_connection(con)
+            raise
         day_base_horses = {str(row[0]).strip() for row in rows if row[0]}
         if expected_entry_tokens is None:
             return current_horses is not None and current_horses.issubset(day_base_horses)

@@ -3467,6 +3467,78 @@ def test_day_base_covers_entry_list_false_for_non_ymd_target_date(
     assert query_calls == []
 
 
+def test_day_base_covers_entry_list_reuses_shared_local_connection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import duckdb
+
+    first_dir = tmp_path / "first"
+    _write_day_base_parquet(first_dir, [("jra:2026:0712:05:11", "H1")])
+    second_dir = tmp_path / "second"
+    _write_day_base_parquet(second_dir, [("jra:2026:0712:05:11", "H1")])
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H1",)],
+    )
+    monkeypatch.setattr(pipeline_runner, "_LOCAL_PARQUET_CONNECTION_CACHE", [])
+    connects = 0
+    real_connect = duckdb.connect
+
+    def counting_connect(database: str) -> duckdb.DuckDBPyConnection:
+        nonlocal connects
+        connects += 1
+        return real_connect(database)
+
+    monkeypatch.setattr(duckdb, "connect", counting_connect)
+
+    first = pipeline_runner.day_base_covers_entry_list(
+        first_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
+    )
+    second = pipeline_runner.day_base_covers_entry_list(
+        second_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert first is True
+    assert second is True
+    assert connects == 1
+
+
+def test_day_base_covers_entry_list_recovers_after_local_connection_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import duckdb
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H1",)],
+    )
+    poisoned = duckdb.connect(":memory:")
+    poisoned.close()
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_LOCAL_PARQUET_CONNECTION_CACHE",
+        [(duckdb.connect, poisoned)],
+    )
+
+    # Fail closed on the poisoned connection, then self-heal: the failure
+    # drops the cached connection so the retry reconnects.
+    assert (
+        pipeline_runner.day_base_covers_entry_list(
+            day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
+        )
+        is False
+    )
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is True
+
+
 # ---------------------------------------------------------------------------
 # build_pipeline_from_day_base
 # ---------------------------------------------------------------------------
