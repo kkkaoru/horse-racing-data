@@ -7,7 +7,6 @@
 // stored a heatmap. One Workflow instance per (date, venue) now warms races
 // sequentially, each race in its own durable step with retries.
 
-import { drainResponseBody } from "./bounded-response-drain";
 import {
   buildDetailSectionApiPath,
   DETAIL_SECTION_CACHE_WARM_PARAM,
@@ -139,9 +138,16 @@ const buildHeatmapUrl = (params: HeatmapWarmWorkflowParams, raceNumber: string):
     INTERNAL_ORIGIN,
   );
 
+// Only status and cache header matter. Heatmap payloads exceed the 1 MiB
+// bounded drain, so cancel the body instead of reading it.
+const discardResponseBody = async (response: Response): Promise<Response> => {
+  await response.body?.cancel();
+  return response;
+};
+
 const fetchHeatmap = (fetchSelf: HeatmapWarmFetch, url: URL): Promise<Response> =>
   fetchSelf(new Request(url, { headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE } })).then(
-    drainResponseBody,
+    discardResponseBody,
   );
 
 const isHeatmapHit = (response: Response): boolean =>

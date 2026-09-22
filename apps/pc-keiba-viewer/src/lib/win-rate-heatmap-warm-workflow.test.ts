@@ -185,6 +185,41 @@ it("skips the warm when the heatmap cache already hits", async () => {
   expect(request?.headers.get("X-PC-Keiba-Cache-Warm")).toBe("workflow");
 });
 
+it("does not read heatmap bodies larger than the bounded drain limit", async () => {
+  const largeBody = new Response("x".repeat(2 * 1024 * 1024), {
+    headers: { "X-Win-Rate-Heatmap-Cache": "HIT" },
+  });
+  const status = await warmHeatmapRace(
+    async () => largeBody,
+    {
+      day: "23",
+      keibajoCode: "30",
+      month: "09",
+      raceNumbers: ["01"],
+      source: "nar",
+      year: "2026",
+    },
+    "01",
+  );
+  expect(status).toBe("hit");
+});
+
+it("accepts responses without a body", async () => {
+  const status = await warmHeatmapRace(
+    async () => new Response(null, { headers: { "X-Win-Rate-Heatmap-Cache": "HIT" } }),
+    {
+      day: "23",
+      keibajoCode: "30",
+      month: "09",
+      raceNumbers: ["01"],
+      source: "nar",
+      year: "2026",
+    },
+    "01",
+  );
+  expect(status).toBe("hit");
+});
+
 it("warms and stores the heatmap on a cache miss", async () => {
   const fetchSelf = vi
     .fn<(request: Request) => Promise<Response>>()
