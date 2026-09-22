@@ -103,9 +103,10 @@ it("projects bloodline names from the master join only", () => {
     expect(sql).not.toMatch(/se\.sire_sire_name/u);
     expect(sql).not.toMatch(/se\.dam_sire_name/u);
   }
-  const select: string = buildRaceRunnersReadSql(JRA)
-    .split("\nFROM ")[0]!
-    .replace(/^SELECT /u, "");
+  const projection: string = buildRaceRunnersReadSql(JRA).split("\nFROM ")[0]!;
+  // Duplicate mirror rows must collapse in the engine before the row bound.
+  expect(projection).toMatch("SELECT DISTINCT ");
+  const select: string = projection.replace(/^SELECT DISTINCT /u, "");
   expect(select.split(", ")).toHaveLength(28);
 });
 
@@ -253,7 +254,9 @@ it("rejects duplicate, unordered and oversized runner lists", async () => {
   await expect(
     readRaceRunners({
       input: JRA,
-      query: async () => [runnerRow(), runnerRow()],
+      // Same umaban and horse but a different value: not a byte-identical
+      // duplicate, so the identity conflict must still fail.
+      query: async () => [runnerRow(), runnerRow({ tansho_odds: "0456" })],
     }),
   ).rejects.toThrow("Duplicate race runner identity");
   await expect(
@@ -279,6 +282,20 @@ it("rejects duplicate, unordered and oversized runner lists", async () => {
   ).rejects.toThrow("Too many race runners");
 });
 
+it("collapses byte-identical duplicate rows before the identity guards", async () => {
+  // 2026-09-22 54/03 held four identical copies of every NAR runner row; they
+  // tripped the duplicate-identity guard and the race page failed.
+  const result = await readRaceRunners({
+    input: JRA,
+    query: async (sql) =>
+      sql.includes("oversea_runner_identity")
+        ? [identityRow(), identityRow()]
+        : [runnerRow(), runnerRow(), runnerRow()],
+  });
+  expect(result.runners).toHaveLength(1);
+  expect(result.identities).toHaveLength(1);
+});
+
 it("rejects NAR rows that carry bloodline names and malformed identity rows", async () => {
   await expect(
     readRaceRunners({ input: NAR, query: async () => [runnerRow({ sire_name: "Nicobar" })] }),
@@ -296,7 +313,9 @@ it("rejects NAR rows that carry bloodline names and malformed identity rows", as
     readRaceRunners({
       input: JRA,
       query: async (sql) =>
-        sql.includes("oversea_runner_identity") ? [identityRow(), identityRow()] : [runnerRow()],
+        sql.includes("oversea_runner_identity")
+          ? [identityRow(), { ...identityRow(), source_horse_id: "2021100676" }]
+          : [runnerRow()],
     }),
   ).rejects.toThrow("Duplicate overseas identity");
   await expect(

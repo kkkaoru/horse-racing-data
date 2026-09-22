@@ -1,4 +1,5 @@
 // Runs with bun; read-only Catalog runner projection preserving absence versus provider failure.
+import { dedupeIdenticalRows } from "./normalise";
 export interface RaceRunnersReadInput {
   namespace: string;
   source: "jra" | "nar";
@@ -143,7 +144,11 @@ export const buildRaceRunnersReadSql = (input: RaceRunnersReadInput): string => 
     input.source === "jra"
       ? `\nLEFT JOIN ${input.namespace}.${masterTable} um ON um.ketto_toroku_bango = se.ketto_toroku_bango`
       : "";
-  return `SELECT ${runnerColumns}, ${bloodline}
+  // The NAR mirror carries several byte-identical copies of the same runner
+  // row (2026-09-22 54/03 held four of each). Without DISTINCT they tripped the
+  // duplicate-identity guard and the whole race page failed, so collapse them
+  // in the engine before the row bound is applied.
+  return `SELECT DISTINCT ${runnerColumns}, ${bloodline}
 FROM ${input.namespace}.${runnerTable} se${masterJoin}
 WHERE se.kaisai_nen = '${input.date.slice(0, 4)}'
   AND se.kaisai_tsukihi = '${input.date.slice(4)}'
@@ -253,12 +258,14 @@ export const readRaceRunners = async (
   options: RaceRunnersReadOptions,
 ): Promise<RaceRunnersResult> => {
   const runners: Record<string, string | null>[] = parseRunnerRows(
-    await options.query(buildRaceRunnersReadSql(options.input)),
+    dedupeIdenticalRows(await options.query(buildRaceRunnersReadSql(options.input))),
     options.input,
   );
   if (options.input.source !== "jra") return { runners, identities: [] };
   return {
     runners,
-    identities: parseIdentityRows(await options.query(buildRaceRunnersIdentitySql(options.input))),
+    identities: parseIdentityRows(
+      dedupeIdenticalRows(await options.query(buildRaceRunnersIdentitySql(options.input))),
+    ),
   };
 };
