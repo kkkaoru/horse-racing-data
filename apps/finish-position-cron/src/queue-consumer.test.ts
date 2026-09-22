@@ -7288,7 +7288,7 @@ test("restarts a resumed focused pipeline when its heartbeat is stale", async ()
   stubFetchMock.mockResolvedValueOnce(
     Response.json({
       error: null,
-      lastProgressAtMs: Date.now() - 5 * 60 * 1000,
+      lastProgressAtMs: Date.now() - 21 * 60 * 1000,
       raceKey: "jra:20260822:07:09",
       status: "running",
     }),

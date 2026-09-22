@@ -35,7 +35,6 @@ test.each([
   { ...running, startedAtMs: 2000001 },
   { ...running, lastProgressAtMs: 2000001 },
   { ...running, lastProgressAtMs: 999999 },
-  { ...running, lastProgressAtMs: 1759999 },
   { ...running, startedAtMs: 140000 },
 ])("does not renew idle, expired or invalid status %#", (payload) => {
   expect(
@@ -45,9 +44,16 @@ test.each([
 test("accepts the progress boundary but not the absolute deadline boundary", () => {
   expect(
     shouldRenewFocusedFullActivity({
-      nowMs: 2000000,
+      nowMs: 2200000,
       raceKey: "nar:20260906:54:09",
-      payload: { ...running, lastProgressAtMs: 1760000 },
+      payload: { ...running, lastProgressAtMs: 1000000 },
     }),
   ).toBe(true);
+  expect(
+    shouldRenewFocusedFullActivity({
+      nowMs: 2200001,
+      raceKey: "nar:20260906:54:09",
+      payload: { ...running, lastProgressAtMs: 1000000 },
+    }),
+  ).toBe(false);
 });

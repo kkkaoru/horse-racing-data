@@ -45,7 +45,13 @@ export const WATCH_RESPONSE_HEADER: string = "x-focused-full-watch-id";
 export const FOCUSED_FULL_WATCH_POLL_SECONDS: number = 30;
 export const FOCUSED_FULL_WATCH_BACKUP_SECONDS: number = 150;
 export const FOCUSED_FULL_WATCH_TIMEOUT_MS: number = 31 * 60 * 1000;
-export const FOCUSED_FULL_WATCH_PROGRESS_STALE_MS: number = 4 * 60 * 1000;
+// The Container reports progress per pipeline stage, but model inference is one
+// silent block: a 地方 NAR focused-full run measured 986s end to end whose last
+// 14 minutes emitted nothing. A four-minute progress bound therefore declared
+// the watch stale while the run was healthy, the Worker stopped the Container
+// mid-inference and no prediction row ever reached Neon. Keep the stale bound
+// above that silent block while staying under the overall watch timeout.
+export const FOCUSED_FULL_WATCH_PROGRESS_STALE_MS: number = 20 * 60 * 1000;
 
 const PREDICT_PATH: string = "/predict";
 const STATUS_PATH: string = "/focused-full-status";
