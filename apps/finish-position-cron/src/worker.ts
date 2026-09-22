@@ -173,6 +173,7 @@ interface AdminCompleteFocusedFullRaceRequest extends RaceScopedPredictRequest {
 
 interface AdminPrewarmDayBaseRequest {
   category?: PredictCategory;
+  debug?: boolean;
   force?: boolean;
   generatePredictionsAfterHit?: boolean;
   generationId?: string;
@@ -460,6 +461,8 @@ const parseAdminPrewarmDayBaseBody = (
   const category = body[CATEGORY_FIELD];
   const force = body[FORCE_FIELD];
   if (force !== undefined && typeof force !== "boolean") return null;
+  const debug = body[DEBUG_FIELD];
+  if (debug !== undefined && typeof debug !== "boolean") return null;
   const generatePredictionsAfterHit = body.generatePredictionsAfterHit;
   if (generatePredictionsAfterHit !== undefined && typeof generatePredictionsAfterHit !== "boolean")
     return null;
@@ -473,13 +476,17 @@ const parseAdminPrewarmDayBaseBody = (
     generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {};
   const generationFlag = typeof generationId === "string" ? { generationId } : {};
   const forceFlag = force === true ? { force: true } : {};
+  const debugFlag = debug === true ? { debug: true } : {};
   if (category === undefined) {
-    return generatePredictionsAfterHit === true || force === true || generationId !== undefined
+    return generatePredictionsAfterHit === true ||
+      force === true ||
+      debug === true ||
+      generationId !== undefined
       ? null
       : { runYmd };
   }
   if (!isValidRescoreCategory(category)) return null;
-  return { category, ...forceFlag, ...predictionFlag, ...generationFlag, runYmd };
+  return { category, ...debugFlag, ...forceFlag, ...predictionFlag, ...generationFlag, runYmd };
 };
 
 const parseAdminCompleteFocusedFullRaceBody = (
@@ -835,6 +842,7 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
     const outcome = await prewarmCategoryWithOutcome({
       category: parsed.category,
       daysAhead,
+      ...(parsed.debug === true ? { debug: true } : {}),
       env,
       generationId,
       ...(parsed.force === true ? { force: true } : {}),

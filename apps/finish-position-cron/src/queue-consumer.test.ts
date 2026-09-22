@@ -990,7 +990,6 @@ test("fails closed before claims when exact foundation remains absent after Work
   expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledWith({
     category: "jra",
     env: expect.anything(),
-    force: true,
     runYmd: "20260603",
   });
   expect(warnSpy).toHaveBeenCalledWith(

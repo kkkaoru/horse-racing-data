@@ -1747,10 +1747,14 @@ const deferFocusedFullUntilDayBaseReady = async (
         venueCode: keibajoCode,
       });
       if (!foundation.ready) {
+        // No `force: true` here: when the manifest is already attested
+        // against the current day-base etag, a rebuild re-decodes the same
+        // parquet and re-PUTs identical foundations (up to 96 PUTs) on every
+        // deferred message. A rebuild still happens exactly when the source
+        // changed, because the attested-manifest fast path returns null then.
         const materialized = await assembleAttestedRaceCaches({
           category,
           env,
-          force: true,
           runYmd,
         });
         if (materialized.status !== "materialized") {
@@ -1790,7 +1794,6 @@ const deferFocusedFullUntilDayBaseReady = async (
     const repair = await enqueueDayBaseRepairOnce({
       category,
       env,
-      ...(message.body.force === true ? { force: true } : {}),
       runYmd,
     });
     const delaySeconds = computeRetryDelaySeconds(message.attempts);

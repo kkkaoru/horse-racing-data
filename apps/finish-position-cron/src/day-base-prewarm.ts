@@ -71,6 +71,7 @@ interface PrewarmResultLine extends PrewarmNdjsonLine {
 interface PrewarmCategoryParams {
   category: PredictCategory;
   daysAhead: number;
+  debug?: boolean;
   env: Env;
   generationId?: string;
   runYmd: string;
@@ -187,6 +188,10 @@ const buildPrewarmUrl = (params: PrewarmUrlParams): string => {
   });
   if (params.force === true) searchParams.set("force", "1");
   if (params.rebuild === true) searchParams.set("rebuild", "1");
+  // `debug=1` makes the Container stream per-layer daybase progress as NDJSON, which the
+  // Worker logs as `[daybase-pipeline-timing] step=daybase-...`. Opt-in only: a wedged
+  // production build is otherwise unobservable because Container stdout is not shipped.
+  if (params.debug === true) searchParams.set("debug", "1");
   return `${PREWARM_HOST}${PREWARM_PATH}?${searchParams.toString()}`;
 };
 
@@ -388,6 +393,7 @@ export const prewarmCategoryWithOutcome = async (
     // could not be established by the Worker.
     ...(params.force === true && readinessProbe !== "verified-miss" ? { force: true } : {}),
     ...(readinessProbe === "verified-miss" ? { rebuild: true } : {}),
+    ...(params.debug === true ? { debug: true } : {}),
     runYmd,
   });
   const generation = await claimDayBaseGeneration({

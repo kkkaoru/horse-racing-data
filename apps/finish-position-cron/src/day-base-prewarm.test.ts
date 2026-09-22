@@ -532,6 +532,28 @@ test("prewarmCategory falls back to Container freshness when the Worker probe fa
   warnSpy.mockRestore();
 });
 
+test("prewarmCategory forwards the debug flag so Container stage progress is logged", async () => {
+  getDayBasePrewarmHitReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await prewarmCategory({
+    category: "jra",
+    daysAhead: 0,
+    debug: true,
+    env: makeEnv(),
+    runYmd: "20260922",
+  });
+
+  const firstCall = containerDoFetchMock.mock.calls[0];
+  if (firstCall === undefined) throw new Error("expected a fetch");
+  const request = firstCall[0];
+  if (!isRequest(request)) throw new Error("expected a Request");
+  expect(request.url).toBe(
+    "http://do/prewarm-day-base?category=jra&daysAhead=0&runDate=20260922&debug=1",
+  );
+  warnSpy.mockRestore();
+});
+
 test("prewarmCategory does not trust a merely present FEATURES_CACHE object", async () => {
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 87257 });
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
