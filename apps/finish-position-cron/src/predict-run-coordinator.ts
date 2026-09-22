@@ -1185,12 +1185,15 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       // fence only covers a live newer generation: a completed or stale
       // record, or a generation-less (unconsumed legacy) reservation,
       // releases it so today's repair is never starved by tomorrow's
-      // untouched reservation.
+      // untouched reservation. `force` bypasses artifact freshness and
+      // same-date ownership, never cross-date ownership: an older forced
+      // repair must not preempt a live newer build, or the mutual-kill
+      // livelock returns.
       if (
-        params.force !== true &&
         current !== undefined &&
         !currentMatchesIncoming &&
         params.runYmd <= current.runYmd &&
+        (params.force !== true || params.runYmd < current.runYmd) &&
         (reservationFencesIncoming ||
           (params.runYmd < current.runYmd &&
             current.completed !== true &&

@@ -1158,6 +1158,33 @@ test("day-base generation fence keeps an older date superseded while the newer l
   vi.useRealTimers();
 });
 
+test("day-base generation fence keeps an older forced repair superseded while the newer lease lapses", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  // Regression: 2026-09-22's forced repair preempted 2026-09-23's live
+  // build (`force` bypassed the fence), restarting the mutual-kill
+  // livelock. `force` bypasses artifact freshness, never cross-date
+  // ownership -- no container slots here, so the newer lease has lapsed.
+  storageMap.set("day-base-generations", {
+    nar: { generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      force: true,
+      generationId: "older-gen",
+      phase: "start",
+      runYmd: "20260922",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  vi.useRealTimers();
+});
+
 test("day-base generation fence releases an older date once the newer record completes", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(20_000);
