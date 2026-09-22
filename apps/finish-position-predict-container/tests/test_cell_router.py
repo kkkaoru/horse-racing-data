@@ -37,6 +37,7 @@ from predict_lib.cell_router import (
     load_named_race_cells,
     overlay_race_name_onto_entry,
     overlay_race_names_on_races,
+    race_name_table_for_source,
     resolve_dimension,
     rule_is_effective,
 )
@@ -1291,6 +1292,14 @@ def test_overlay_then_resolve_variant_matches_sapporo_suzuran_from_fukudai() -> 
         },
     )
     assert router.resolve_variant("jra", overlaid["jra:2026:0829:01:10"]) == "sapporo_suzuran"
+
+
+def test_race_name_table_for_source_maps_all_categories() -> None:
+    assert race_name_table_for_source("jra") == "jvd_ra"
+    assert race_name_table_for_source("nar") == "nvd_ra"
+    assert race_name_table_for_source("ban-ei") == "nvd_ra"
+    with pytest.raises(ValueError, match="unsupported race_id source"):
+        race_name_table_for_source("overseas")
 
 
 def test_build_race_name_catalog_query_uses_jvd_ra_for_jra() -> None:

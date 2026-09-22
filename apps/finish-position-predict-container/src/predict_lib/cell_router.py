@@ -370,16 +370,25 @@ def overlay_race_names_on_races(
     }
 
 
+def race_name_table_for_source(source: str) -> str:
+    """Return the ``pg.*_ra`` table holding official names for ``source``.
+
+    The table name comes from a fixed map so caller-supplied race ids cannot
+    inject SQL; raises ``ValueError`` for unknown sources."""
+    table = _RACE_NAME_TABLE_BY_SOURCE.get(source)
+    if table is None:
+        message = f"unsupported race_id source for race-name lookup: {source}"
+        raise ValueError(message)
+    return table
+
+
 def build_race_name_catalog_query(parts: RaceIdParts) -> tuple[str, tuple[object, ...]]:
     """Return ``(sql, params)`` that reads official names from ``jvd_ra``/``nvd_ra``.
 
     The table name is taken from a fixed source map so caller-supplied race ids
     cannot inject SQL.
     """
-    table = _RACE_NAME_TABLE_BY_SOURCE.get(parts.source)
-    if table is None:
-        message = f"unsupported race_id source for race-name lookup: {parts.source}"
-        raise ValueError(message)
+    table = race_name_table_for_source(parts.source)
     sql = (
         f"select kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
         f"from pg.{table} "

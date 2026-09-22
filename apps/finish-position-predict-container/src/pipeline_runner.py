@@ -45,12 +45,12 @@ import threading
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import IO, Final
+from typing import IO, TYPE_CHECKING, Final
 
 from predict_lib.conn_url import is_catalog_source_url
 from predict_lib.container_role import (
@@ -111,6 +111,9 @@ from predict_lib.serve import (
     current_market_signal_foundation_attestation,
     pipeline_total_timeout_seconds,
 )
+
+if TYPE_CHECKING:
+    import duckdb
 
 PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline"))
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
@@ -701,6 +704,60 @@ def _log_day_base_miss(*, category: Category, target_date: str, reason: str) -> 
     )
 
 
+_SOURCE_CONNECTION_LOCK = threading.RLock()
+_CATALOG_CONNECTION_CACHE: dict[str, tuple[object, duckdb.DuckDBPyConnection]] = {}
+"""Process-wide catalog connections keyed by ``database_url``.
+
+The Iceberg REST attach (12 tables + the race-entry view) dominates the
+per-query cost, so one connection per source amortizes it across all
+per-race calls instead of re-attaching ~60x per day-base build. DuckDB
+resolves the current Iceberg snapshot on every scan, so sharing does not
+pin stale table state; the watermark sidecar + R2 HEAD check stays the
+fail-closed freshness backstop. The stored ``duckdb.connect`` identity
+forces a reconnect when tests monkeypatch it, keeping unit tests isolated
+without a global reset hook."""
+
+
+def _shared_catalog_connection(database_url: str) -> duckdb.DuckDBPyConnection:
+    """Return the process-wide catalog-attached connection for ``database_url``."""
+    import duckdb
+
+    layer_dir = str(LAYER_DIR)
+    if layer_dir not in sys.path:
+        sys.path.insert(0, layer_dir)
+    from _catalog_attach import attach_source_catalog
+
+    connect = duckdb.connect
+    with _SOURCE_CONNECTION_LOCK:
+        cached = _CATALOG_CONNECTION_CACHE.get(database_url)
+        if cached is not None and cached[0] is connect:
+            return cached[1]
+        if cached is not None:
+            with suppress(Exception):
+                cached[1].close()
+        connection = connect(":memory:")
+        try:
+            attach_source_catalog(connection, database_url)
+        except Exception:
+            with suppress(Exception):
+                connection.close()
+            raise
+        _CATALOG_CONNECTION_CACHE[database_url] = (connect, connection)
+        return connection
+
+
+def _drop_shared_catalog_connection(
+    database_url: str, connection: duckdb.DuckDBPyConnection
+) -> None:
+    """Drop a poisoned shared connection so the next call reconnects."""
+    with _SOURCE_CONNECTION_LOCK:
+        cached = _CATALOG_CONNECTION_CACHE.get(database_url)
+        if cached is not None and cached[1] is connection:
+            _CATALOG_CONNECTION_CACHE.pop(database_url, None)
+    with suppress(Exception):
+        connection.close()
+
+
 def _query_source_rows(
     database_url: str,
     sql: str,
@@ -712,40 +769,124 @@ def _query_source_rows(
     adapter attaches the Cloudflare Iceberg REST catalog as ``pg``, preserving
     the existing ``pg.<table>`` SQL contract without opening Postgres. The
     Postgres branch remains available for offline training and parity checks.
+
+    Queries share one process-wide connection per source (see
+    :data:`_CATALOG_CONNECTION_CACHE`); the lock serializes the
+    ``ThreadingHTTPServer`` workers sharing it.
     """
-    import duckdb
-
-    layer_dir = str(LAYER_DIR)
-    if layer_dir not in sys.path:
-        sys.path.insert(0, layer_dir)
-    from _catalog_attach import attach_source_catalog
-
-    connection = duckdb.connect(":memory:")
-    try:
-        attach_source_catalog(connection, database_url)
-        return connection.execute(sql, list(params)).fetchall()
-    finally:
-        connection.close()
+    connection = _shared_catalog_connection(database_url)
+    with _SOURCE_CONNECTION_LOCK:
+        try:
+            return connection.execute(sql, list(params)).fetchall()
+        except Exception:
+            _drop_shared_catalog_connection(database_url, connection)
+            raise
 
 
 def query_race_names(source_url: str, race_ids: Sequence[str]) -> dict[str, dict[str, object]]:
-    """Load official kyosomei fields for races whose feature parquet omitted them."""
-    from predict_lib.cell_router import build_race_name_catalog_query
-    from predict_lib.race_id import parse_race_id
+    """Load official kyosomei fields for races whose feature parquet omitted them.
 
-    names: dict[str, dict[str, object]] = {}
+    Race ids are grouped by source table so a full card resolves in at most
+    three catalog queries (``jvd_ra`` + ``nvd_ra``) instead of one per race.
+    """
+    from predict_lib.cell_router import race_name_table_for_source
+    from predict_lib.race_id import RaceIdParts, format_race_id, parse_race_id
+
+    grouped: dict[str, list[RaceIdParts]] = {}
     for race_id in race_ids:
-        sql, params = build_race_name_catalog_query(parse_race_id(race_id))
-        rows = _query_source_rows(source_url, sql, params)
-        if not rows:
-            continue
-        hondai, fukudai, kakkonai = rows[0]
-        names[race_id] = {
-            "kyosomei_hondai": hondai,
-            "kyosomei_fukudai": fukudai,
-            "kyosomei_kakkonai": kakkonai,
-        }
+        parts = parse_race_id(race_id)
+        grouped.setdefault(parts.source, []).append(parts)
+    names: dict[str, dict[str, object]] = {}
+    for source, parts_list in grouped.items():
+        table = race_name_table_for_source(source)
+        sql = (
+            "select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
+            "kyosomei_hondai, kyosomei_fukudai, kyosomei_kakkonai "
+            f"from pg.{table} "
+            "where (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango) "
+            f"in ({', '.join(['(?, ?, ?, ?)'] * len(parts_list))})"
+        )
+        params: list[object] = []
+        for parts in parts_list:
+            params.extend(
+                (parts.kaisai_nen, parts.kaisai_tsukihi, parts.keibajo_code, parts.race_bango)
+            )
+        for row in _query_source_rows(source_url, sql, params):
+            race_id = format_race_id(
+                RaceIdParts(
+                    source=source,
+                    kaisai_nen=str(row[0]),
+                    kaisai_tsukihi=str(row[1]),
+                    keibajo_code=str(row[2]),
+                    race_bango=str(row[3]),
+                )
+            )
+            names.setdefault(
+                race_id,
+                {
+                    "kyosomei_hondai": row[4],
+                    "kyosomei_fukudai": row[5],
+                    "kyosomei_kakkonai": row[6],
+                },
+            )
     return names
+
+
+_RS_CONNECTION_CACHE: dict[tuple[str, str], tuple[object, duckdb.DuckDBPyConnection]] = {}
+"""Process-wide httpfs+R2 connections keyed by ``(account_id, bucket)``.
+
+``install httpfs`` + ``load httpfs`` + secret creation is paid once per
+bucket; the per-call ``read_parquet`` scan still re-reads the day's shard
+so RS freshness semantics are unchanged. Same connect-identity guard as
+:func:`_shared_catalog_connection` keeps monkeypatched unit tests isolated."""
+
+
+def _shared_rs_connection(r2_config: R2Config) -> duckdb.DuckDBPyConnection:
+    """Return the process-wide R2-configured connection for the RS bucket."""
+    import duckdb
+
+    key = (r2_config.account_id, r2_config.bucket)
+    connect = duckdb.connect
+    with _SOURCE_CONNECTION_LOCK:
+        cached = _RS_CONNECTION_CACHE.get(key)
+        if cached is not None and cached[0] is connect:
+            return cached[1]
+        if cached is not None:
+            with suppress(Exception):
+                cached[1].close()
+        connection = connect(":memory:")
+        try:
+            connection.execute("install httpfs; load httpfs;")
+            connection.execute(
+                f"""
+                create or replace secret r2_secret (
+                  type s3,
+                  key_id '{r2_config.access_key_id}',
+                  secret '{r2_config.secret_access_key}',
+                  endpoint '{r2_config.account_id}.r2.cloudflarestorage.com',
+                  region 'auto',
+                  url_style 'path'
+                )
+                """
+            )
+        except Exception:
+            with suppress(Exception):
+                connection.close()
+            raise
+        _RS_CONNECTION_CACHE[key] = (connect, connection)
+        return connection
+
+
+def _drop_shared_rs_connection(
+    r2_config: R2Config, connection: duckdb.DuckDBPyConnection
+) -> None:
+    """Drop a poisoned shared RS connection so the next call reconnects."""
+    with _SOURCE_CONNECTION_LOCK:
+        cached = _RS_CONNECTION_CACHE.get((r2_config.account_id, r2_config.bucket))
+        if cached is not None and cached[1] is connection:
+            _RS_CONNECTION_CACHE.pop((r2_config.account_id, r2_config.bucket), None)
+    with suppress(Exception):
+        connection.close()
 
 
 def _se_table_and_filter(category: Category) -> tuple[str, str]:
@@ -979,23 +1120,11 @@ def _compute_rs_watermark(
         venue_predicate = "keibajo_code <> ?"
         venue_params = ("83",)
     try:
-        connection = duckdb.connect(":memory:")
-        try:
-            connection.execute("install httpfs; load httpfs;")
-            connection.execute(
-                f"""
-                create or replace secret r2_secret (
-                  type s3,
-                  key_id '{r2_config.access_key_id}',
-                  secret '{r2_config.secret_access_key}',
-                  endpoint '{r2_config.account_id}.r2.cloudflarestorage.com',
-                  region 'auto',
-                  url_style 'path'
-                )
-                """
-            )
-            rows = connection.execute(
-                f"""
+        connection = _shared_rs_connection(r2_config)
+        with _SOURCE_CONNECTION_LOCK:
+            try:
+                rows = connection.execute(
+                    f"""
                 select source, kaisai_nen || kaisai_tsukihi, keibajo_code,
                        race_bango, umaban, ketto_toroku_bango,
                        p_nige, p_senkou, p_sashi, p_oikomi,
@@ -1004,10 +1133,11 @@ def _compute_rs_watermark(
                  where {venue_predicate}
                  limit 1025
                 """,
-                (glob, *venue_params),
-            ).fetchall()
-        finally:
-            connection.close()
+                    (glob, *venue_params),
+                ).fetchall()
+            except Exception:
+                _drop_shared_rs_connection(r2_config, connection)
+                raise
     except duckdb.IOException as exc:
         if "No files found that match" not in str(exc):
             debug_log(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import perf_counter
@@ -4569,10 +4570,23 @@ def test_group_parquet_rows_rejects_non_dataframe() -> None:
 
 
 def test_query_race_names_maps_catalog_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, Sequence[object]]] = []
+
     def fake_query(
-        _database_url: str, _sql: str, _params: Sequence[object] = ()
+        _database_url: str, sql: str, params: Sequence[object] = ()
     ) -> list[tuple[object, ...]]:
-        return [("農林水産省賞典　新潟記念", "サマー２０００シリーズ", "")]
+        captured.append((sql, params))
+        return [
+            (
+                "2026",
+                "0830",
+                "04",
+                "08",
+                "農林水産省賞典　新潟記念",
+                "サマー２０００シリーズ",
+                "",
+            )
+        ]
 
     monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query)
     names = pipeline_runner.query_race_names(
@@ -4586,6 +4600,95 @@ def test_query_race_names_maps_catalog_row(monkeypatch: pytest.MonkeyPatch) -> N
             "kyosomei_kakkonai": "",
         }
     }
+    assert len(captured) == 1
+    assert "from pg.jvd_ra" in captured[0][0]
+    assert list(captured[0][1]) == ["2026", "0830", "04", "08"]
+
+
+def test_query_race_names_batches_sources_into_one_query_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, Sequence[object]]] = []
+
+    def fake_query(
+        _database_url: str, sql: str, params: Sequence[object] = ()
+    ) -> list[tuple[object, ...]]:
+        captured.append((sql, params))
+        if "jvd_ra" in sql:
+            return [
+                ("2026", "0830", "04", "08", "新潟記念", "", ""),
+                ("2026", "0830", "05", "11", "新潟２歳Ｓ", "", ""),
+            ]
+        return [("2026", "0830", "42", "01", "門別競馬", "", "")]
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query)
+    names = pipeline_runner.query_race_names(
+        "r2-catalog://pc-keiba",
+        [
+            "jra:2026:0830:04:08",
+            "jra:2026:0830:05:11",
+            "nar:2026:0830:42:01",
+        ],
+    )
+    assert len(captured) == 2
+    assert set(names) == {
+        "jra:2026:0830:04:08",
+        "jra:2026:0830:05:11",
+        "nar:2026:0830:42:01",
+    }
+    assert names["jra:2026:0830:05:11"]["kyosomei_hondai"] == "新潟２歳Ｓ"
+    jra_call = next(call for call in captured if "jvd_ra" in call[0])
+    assert jra_call[0].count("(?, ?, ?, ?)") == 2
+    assert list(jra_call[1]) == ["2026", "0830", "04", "08", "2026", "0830", "05", "11"]
+
+
+def test_query_race_names_rejects_unknown_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _database_url, _sql, _params=(): [],
+    )
+    with pytest.raises(ValueError, match="unsupported race_id source"):
+        pipeline_runner.query_race_names("r2-catalog://pc-keiba", ["xx:2026:0830:04:08"])
+
+
+def test_shared_catalog_connection_reuses_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    import duckdb
+
+    connects = 0
+
+    class FakeConnection:
+        def execute(self, *_args: object, **_kwargs: object) -> FakeConnection:
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [("2026", "0830", "04", "08", "Hondai", "Fukudai", "Kakko")]
+
+        def close(self) -> None:
+            return None
+
+    def fake_connect(_database: str) -> FakeConnection:
+        nonlocal connects
+        connects += 1
+        return FakeConnection()
+
+    monkeypatch.setattr(duckdb, "connect", fake_connect)
+    monkeypatch.setattr(pipeline_runner, "_CATALOG_CONNECTION_CACHE", {})
+
+    attached: list[str] = []
+    fake_module = types.ModuleType("_catalog_attach")
+
+    def _record_attach(_connection: object, database_url: str) -> None:
+        attached.append(database_url)
+
+    fake_module.__dict__["attach_source_catalog"] = _record_attach
+    monkeypatch.setitem(sys.modules, "_catalog_attach", fake_module)
+    race_ids = ["jra:2026:0830:04:08"]
+    first = pipeline_runner.query_race_names("r2-catalog://pc-keiba", race_ids)
+    second = pipeline_runner.query_race_names("r2-catalog://pc-keiba", race_ids)
+    assert first == second != {}
+    assert connects == 1
+    assert attached == ["r2-catalog://pc-keiba"]
 
 
 def test_query_race_names_skips_empty_catalog_row(monkeypatch: pytest.MonkeyPatch) -> None:
