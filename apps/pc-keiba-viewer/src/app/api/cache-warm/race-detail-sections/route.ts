@@ -11,6 +11,7 @@ import {
   type DetailSectionQueueWarmSection,
 } from "../../../../lib/race-detail-section-cache";
 import { isCornerPacePredictionSupported } from "../../../../lib/race-pace-prediction";
+import { startHeatmapWarmWorkflows } from "../../../../lib/win-rate-heatmap-warm-workflow";
 
 export const dynamic = "force-dynamic";
 
@@ -102,11 +103,19 @@ export async function POST(request: Request) {
     );
   }
 
-  await sendBatches(queue, messages);
+  // Heatmaps are warmed by HeatmapWarmWorkflow (one instance per venue).
+  const workflow = env.HEATMAP_WARM_WORKFLOW;
+  const [, heatmap] = await Promise.all([
+    sendBatches(queue, messages),
+    workflow === undefined
+      ? Promise.resolve(null)
+      : startHeatmapWarmWorkflows({ date: target, nowMs: Date.now(), races, workflow }),
+  ]);
 
   return NextResponse.json({
     date: `${target.year}-${target.month}-${target.day}`,
     enqueued: messages.length,
+    heatmapInstanceIds: heatmap?.instanceIds ?? [],
     raceCount: races.length,
   });
 }

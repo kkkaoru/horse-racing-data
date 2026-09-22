@@ -15,8 +15,8 @@ const INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
 const SCHEDULE_PATH = "/api/cache-warm/race-detail-sections";
 const RACE_TREND_SCHEDULE_PATH = "/api/cache-warm/race-trends";
 const RACE_DETAIL_SSR_SCHEDULE_PATH = "/api/cache-warm/race-detail-ssr";
+const WIN_RATE_HEATMAP_SCHEDULE_PATH = "/api/cache-warm/win-rate-heatmaps";
 const WARM_IN_BATCH_CONCURRENCY = 2;
-const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
 
 type CacheWarmMessage =
   | DetailSectionCacheWarmMessage
@@ -137,12 +137,33 @@ export const scheduleRaceDetailSsrCacheWarm = async (
   }
 };
 
+export const scheduleTodayWinRateHeatmapWarm = async (
+  params: ScheduleTodayRaceDetailSectionCacheParams,
+): Promise<void> => {
+  const url = new URL(WIN_RATE_HEATMAP_SCHEDULE_PATH, INTERNAL_ORIGIN);
+  url.searchParams.set("date", params.todayJstYmd);
+  const response = await fetchSelf(
+    params.openNextWorker,
+    new Request(url, {
+      headers: {
+        "X-PC-Keiba-Cache-Warm": "scheduled",
+      },
+      method: "POST",
+    }),
+    params.env,
+    params.ctx,
+  ).then(drainResponseBody);
+  if (!response.ok) {
+    throw new Error(`win rate heatmap warm schedule failed: ${response.status}`);
+  }
+};
+
 const warmDetailSection = async (
   openNextWorker: OpenNextWorker,
   message: DetailSectionCacheWarmMessage,
   env: CloudflareEnv,
   ctx: PcKeibaExecutionContext,
-): Promise<Response> => {
+): Promise<void> => {
   const url = new URL(buildDetailSectionApiPath(message), INTERNAL_ORIGIN);
   url.searchParams.set(DETAIL_SECTION_CACHE_WARM_PARAM, "1");
   const response = await fetchSelf(
@@ -158,7 +179,6 @@ const warmDetailSection = async (
   if (!response.ok) {
     throw new Error(`race detail cache warm failed: ${response.status} ${url.pathname}`);
   }
-  return response;
 };
 
 const warmRaceTrend = async (
@@ -221,12 +241,8 @@ const isHeatmapWarmMessage = (message: CacheWarmMessage): boolean =>
   !isRaceDetailSsrCacheWarmMessage(message) &&
   message.section === "win-rate-heatmap";
 
-const assertHeatmapCacheStored = (response: Response): void => {
-  const header = response.headers.get("X-Win-Rate-Heatmap-Cache");
-  if (header !== null && HEATMAP_STORED_HEADERS.some((value) => value === header)) {
-    return;
-  }
-  throw new Error(`heatmap cache was not stored: ${header ?? "missing"}`);
+const ackMessage = (message: QueueWarmItem): void => {
+  message.ack();
 };
 
 const mapInChunks = async <T>(
@@ -308,10 +324,7 @@ const warmQueueMessage = async (
       message.ack();
       return;
     }
-    const response = await warmDetailSection(openNextWorker, message.body, env, ctx);
-    if (message.body.section === "win-rate-heatmap") {
-      assertHeatmapCacheStored(response);
-    }
+    await warmDetailSection(openNextWorker, message.body, env, ctx);
     message.ack();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -326,19 +339,12 @@ export const handleRaceDetailSectionCacheQueue = async (
   env: CloudflareEnv,
   ctx: PcKeibaExecutionContext,
 ): Promise<void> => {
-  const heatmapMessages = batch.messages.filter((message) => isHeatmapWarmMessage(message.body));
-  const otherMessages = batch.messages.filter((message) => !isHeatmapWarmMessage(message.body));
-  await mapInChunks(otherMessages, WARM_IN_BATCH_CONCURRENCY, (message) =>
-    warmQueueMessage(openNextWorker, message, env, ctx),
+  // Heatmaps are warmed by HeatmapWarmWorkflow. Ack legacy heatmap messages
+  // so the backlog stops spending consumer concurrency on them.
+  batch.messages.filter((message) => isHeatmapWarmMessage(message.body)).forEach(ackMessage);
+  await mapInChunks(
+    batch.messages.filter((message) => !isHeatmapWarmMessage(message.body)),
+    WARM_IN_BATCH_CONCURRENCY,
+    (message) => warmQueueMessage(openNextWorker, message, env, ctx),
   );
-  // One heatmap per invocation. Sequential heatmap warms in a batch of 3
-  // exceeded worker wall time, so 2026-09-22 never stored heatmap cache.
-  const firstHeatmap = heatmapMessages[0];
-  if (firstHeatmap === undefined) {
-    return;
-  }
-  heatmapMessages.slice(1).forEach((message) => {
-    message.retry();
-  });
-  await warmQueueMessage(openNextWorker, firstHeatmap, env, ctx);
 };

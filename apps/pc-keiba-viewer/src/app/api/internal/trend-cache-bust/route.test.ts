@@ -525,7 +525,9 @@ it("POST enqueues immediate changed-hash rebuilds only for scoped affected races
   );
   expect(sendBatch).toHaveBeenCalledOnce();
   const queuedBodies = sendBatch.mock.calls[0]?.[0].map((message) => message.body) ?? [];
-  expect(queuedBodies).toHaveLength(18);
+  // 2 races x (7 default sections + 1 SSR). Heatmaps go through HeatmapWarmWorkflow.
+  expect(queuedBodies).toHaveLength(16);
+  expect(queuedBodies).not.toContainEqual(expect.objectContaining({ section: "win-rate-heatmap" }));
   expect(queuedBodies).toContainEqual(
     expect.objectContaining({
       keibajoCode: "05",

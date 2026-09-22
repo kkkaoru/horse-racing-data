@@ -53,6 +53,12 @@ vi.mock("./worker/paddock-room", () => ({
   },
 }));
 
+vi.mock("./worker/heatmap-warm-workflow", () => ({
+  HeatmapWarmWorkflow: class FakeHeatmapWarmWorkflow {
+    public readonly name = "fake-heatmap-warm";
+  },
+}));
+
 vi.mock("./worker/race-trend-room", () => ({
   RaceTrendRoom: class FakeRaceTrendRoom {
     public readonly name = "fake-race-trend";
@@ -64,12 +70,14 @@ const {
   scheduleDueRaceTrendCacheMock,
   scheduleRaceDetailSsrCacheWarmMock,
   scheduleTodayRaceDetailSectionCacheMock,
+  scheduleTodayWinRateHeatmapWarmMock,
   scheduleTomorrowRaceDetailSectionCacheMock,
 } = vi.hoisted(() => ({
   handleRaceDetailSectionCacheQueueMock: vi.fn<QueueFn>(),
   scheduleDueRaceTrendCacheMock: vi.fn<ScheduleDueTrendFn>(),
   scheduleRaceDetailSsrCacheWarmMock: vi.fn<ScheduleSsrFn>(),
   scheduleTodayRaceDetailSectionCacheMock: vi.fn<ScheduleTodayFn>(),
+  scheduleTodayWinRateHeatmapWarmMock: vi.fn<ScheduleTodayFn>(),
   scheduleTomorrowRaceDetailSectionCacheMock: vi.fn<ScheduleTomorrowFn>(),
 }));
 
@@ -78,6 +86,7 @@ vi.mock("./worker/race-detail-section-cache-warm", () => ({
   scheduleDueRaceTrendCache: scheduleDueRaceTrendCacheMock,
   scheduleRaceDetailSsrCacheWarm: scheduleRaceDetailSsrCacheWarmMock,
   scheduleTodayRaceDetailSectionCache: scheduleTodayRaceDetailSectionCacheMock,
+  scheduleTodayWinRateHeatmapWarm: scheduleTodayWinRateHeatmapWarmMock,
   scheduleTomorrowRaceDetailSectionCache: scheduleTomorrowRaceDetailSectionCacheMock,
 }));
 
@@ -105,6 +114,8 @@ beforeEach(() => {
   scheduleDueRaceTrendCacheMock.mockReset();
   scheduleRaceDetailSsrCacheWarmMock.mockReset();
   scheduleTodayRaceDetailSectionCacheMock.mockReset();
+  scheduleTodayWinRateHeatmapWarmMock.mockReset();
+  scheduleTodayWinRateHeatmapWarmMock.mockResolvedValue(undefined);
   scheduleTomorrowRaceDetailSectionCacheMock.mockReset();
   scheduleDueRaceTrendCacheMock.mockResolvedValue(undefined);
   scheduleRaceDetailSsrCacheWarmMock.mockResolvedValue(undefined);
@@ -152,14 +163,19 @@ it("cron-every-5-min-utc-warms-due-race-trend", () => {
   expect(scheduleTodayRaceDetailSectionCacheMock).toHaveBeenCalledTimes(0);
 });
 
-it("cron-every-15-min-utc-warms-ssr-cache-without-date", () => {
+it("cron-every-15-min-utc-warms-ssr-cache-without-date-and-sweeps-today-heatmaps", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-22T23:00:00.000Z"));
   const env = buildEnv();
   const ctx = buildCtx();
   worker.scheduled({ cron: "*/15 0-14 * * *" }, env, ctx);
-  expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+  expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
   expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(1);
   const ssrOptions = scheduleRaceDetailSsrCacheWarmMock.mock.calls[0]?.[3];
   expect(ssrOptions).toBeUndefined();
+  expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(1);
+  expect(scheduleTodayWinRateHeatmapWarmMock.mock.calls[0]?.[0].todayJstYmd).toBe("2026-09-23");
+  vi.useRealTimers();
 });
 
 it("cron-unknown-schedule-does-not-warm-anything", () => {
@@ -171,6 +187,7 @@ it("cron-unknown-schedule-does-not-warm-anything", () => {
   expect(scheduleTodayRaceDetailSectionCacheMock).toHaveBeenCalledTimes(0);
   expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(0);
   expect(scheduleDueRaceTrendCacheMock).toHaveBeenCalledTimes(0);
+  expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(0);
 });
 
 it("queue-handler-delegates-to-cache-queue-worker", async () => {

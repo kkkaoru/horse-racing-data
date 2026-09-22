@@ -59,6 +59,15 @@ declare global {
     sendBatch(messages: Array<{ body: Body }>): Promise<void>;
   }
 
+  interface PcKeibaWorkflowInstanceCreateOptions<Params = unknown> {
+    id: string;
+    params: Params;
+  }
+
+  interface PcKeibaWorkflow<Params = unknown> {
+    createBatch(batch: PcKeibaWorkflowInstanceCreateOptions<Params>[]): Promise<unknown[]>;
+  }
+
   interface PcKeibaMessage<Body = unknown> {
     ack(): void;
     body: Body;
@@ -144,6 +153,7 @@ declare global {
     MCP_OAUTH_KV?: PcKeibaKvNamespace;
     MCP_OAUTH_SIGNING_KEY?: string;
     DETAIL_SECTION_CACHE_QUEUE?: PcKeibaQueue;
+    HEATMAP_WARM_WORKFLOW?: PcKeibaWorkflow;
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;
     PADDOCK_STATE_KV?: PcKeibaKvNamespace;

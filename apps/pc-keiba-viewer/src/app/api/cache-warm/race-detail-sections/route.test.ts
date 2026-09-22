@@ -191,6 +191,37 @@ it("POST enqueues default sections for a JRA race using the queue's sendBatch", 
     "similar",
     "time-score",
     "training",
-    "win-rate-heatmap",
   ]);
+  expect(body.heatmapInstanceIds).toStrictEqual([]);
+});
+
+it("POST starts one heatmap workflow per venue when the workflow binding exists", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-22T23:00:00.000Z"));
+  const createBatchMock = vi.fn<(batch: unknown[]) => Promise<unknown[]>>(async () => []);
+  getRacesByDateMock.mockResolvedValue([
+    buildJraRow({ keibajoCode: "05", raceBango: "02" }),
+    buildJraRow({ keibajoCode: "05", raceBango: "01" }),
+  ]);
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    ...buildQueueEnv(),
+    HEATMAP_WARM_WORKFLOW: { createBatch: createBatchMock },
+  });
+  const response = await POST(buildAuthedRequest("?date=2026-05-29"));
+  const body = await readJsonRecord(response);
+  expect(body.heatmapInstanceIds).toStrictEqual(["heatmap-20260529-05-16mqk"]);
+  expect(createBatchMock.mock.calls[0]?.[0]).toStrictEqual([
+    {
+      id: "heatmap-20260529-05-16mqk",
+      params: {
+        day: "29",
+        keibajoCode: "05",
+        month: "05",
+        raceNumbers: ["01", "02"],
+        source: "jra",
+        year: "2026",
+      },
+    },
+  ]);
+  vi.useRealTimers();
 });

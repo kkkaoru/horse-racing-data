@@ -1,3 +1,4 @@
+export { HeatmapWarmWorkflow } from "./worker/heatmap-warm-workflow";
 export { PaddockRoom } from "./worker/paddock-room";
 export { RaceTrendRoom } from "./worker/race-trend-room";
 // @ts-ignore OpenNext generates this file before Wrangler bundles the Worker.
@@ -22,6 +23,7 @@ import {
   scheduleDueRaceTrendCache,
   scheduleRaceDetailSsrCacheWarm,
   scheduleTodayRaceDetailSectionCache,
+  scheduleTodayWinRateHeatmapWarm,
   scheduleTomorrowRaceDetailSectionCache,
 } from "./worker/race-detail-section-cache-warm";
 
@@ -104,6 +106,16 @@ export default {
     }
     if (controller.cron === "*/15 0-14 * * *") {
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
+      // Re-sweep today's heatmaps: scratches change the runner signature and
+      // turn a stored heatmap into a miss. HIT races are skipped cheaply.
+      ctx.waitUntil(
+        scheduleTodayWinRateHeatmapWarm({
+          ctx,
+          env,
+          openNextWorker,
+          todayJstYmd: formatTodayJstDate(new Date()),
+        }),
+      );
     }
   },
 };

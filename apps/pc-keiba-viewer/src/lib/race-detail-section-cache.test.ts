@@ -160,7 +160,6 @@ describe("race detail section cache helpers", () => {
       "training",
       "condition",
       "similar",
-      "win-rate-heatmap",
       "bloodline",
       "overall-score",
     ]);

@@ -66,13 +66,14 @@ export const DETAIL_SECTION_CACHEABLE_SECTIONS = [
 
 export const DETAIL_SECTION_QUEUE_HEATMAP_SECTION = "win-rate-heatmap";
 
+// Win-rate heatmap is warmed by HeatmapWarmWorkflow, not by this queue: in the
+// shared queue heatmap messages were dropped after max_retries under backlog.
 export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
   "time-score",
   "results",
   "training",
   "condition",
   "similar",
-  DETAIL_SECTION_QUEUE_HEATMAP_SECTION,
   "bloodline",
   "overall-score",
 ] as const;

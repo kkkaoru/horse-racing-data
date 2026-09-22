@@ -9,6 +9,7 @@ import {
   scheduleDueRaceTrendCache,
   scheduleRaceDetailSsrCacheWarm,
   scheduleTodayRaceDetailSectionCache,
+  scheduleTodayWinRateHeatmapWarm,
   scheduleTomorrowRaceDetailSectionCache,
 } from "./race-detail-section-cache-warm";
 
@@ -59,6 +60,36 @@ it("schedule-today-posts-correct-url-with-date-query", async () => {
   expect(request.method).toBe("POST");
   expect(request.headers.get("X-PC-Keiba-Cache-Warm")).toBe("scheduled");
   expect(response.bodyUsed).toBe(true);
+});
+
+it("schedule-today-heatmap-posts-to-heatmap-endpoint-with-date", async () => {
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
+  await scheduleTodayWinRateHeatmapWarm({
+    ctx: buildCtx(),
+    env: buildEnv(),
+    openNextWorker: worker,
+    todayJstYmd: "2026-09-23",
+  });
+  const request = getFirstRequest(worker);
+  expect(request.url).toBe(
+    "https://pc-keiba-viewer.local/api/cache-warm/win-rate-heatmaps?date=2026-09-23",
+  );
+  expect(request.method).toBe("POST");
+  expect(request.headers.get("X-PC-Keiba-Cache-Warm")).toBe("scheduled");
+  expect(response.bodyUsed).toBe(true);
+});
+
+it("schedule-today-heatmap-throws-on-non-ok-response", async () => {
+  const worker = buildOpenNextWorker(new Response("nope", { status: 503 }));
+  await expect(
+    scheduleTodayWinRateHeatmapWarm({
+      ctx: buildCtx(),
+      env: buildEnv(),
+      openNextWorker: worker,
+      todayJstYmd: "2026-09-23",
+    }),
+  ).rejects.toThrow("win rate heatmap warm schedule failed: 503");
 });
 
 it("schedule-today-throws-on-non-ok-response", async () => {
@@ -144,23 +175,9 @@ it("schedule-ssr-warm-with-date-adds-query", async () => {
   );
 });
 
-it("warms cheaper sections before heatmap and retries unstored heatmap responses", async () => {
+it("acks legacy heatmap messages without warming them", async () => {
   const worker = {
-    fetch: vi
-      .fn<FetchFn>()
-      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response("{}", {
-          headers: { "X-Win-Rate-Heatmap-Cache": "MISS" },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response("{}", {
-          headers: { "X-Win-Rate-Heatmap-Cache": "MISS-STORED" },
-          status: 200,
-        }),
-      ),
+    fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),
   };
   const resultsMessage = {
     ack: vi.fn<() => void>(),
@@ -188,78 +205,53 @@ it("warms cheaper sections before heatmap and retries unstored heatmap responses
       year: "2026",
     },
   };
-  const env = buildEnv();
-  const ctx = buildCtx();
-  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
   await handleRaceDetailSectionCacheQueue(
     worker,
     { messages: [heatmapMessage, resultsMessage], queue: "pc-keiba-detail-section-cache-warm" },
-    env,
-    ctx,
+    buildEnv(),
+    buildCtx(),
   );
+  expect(worker.fetch).toHaveBeenCalledTimes(1);
   const firstUrl = worker.fetch.mock.calls[0]?.[0];
   expect(firstUrl).toBeInstanceOf(Request);
   if (!(firstUrl instanceof Request)) throw new Error("Request expected");
   expect(new URL(firstUrl.url).pathname).toBe("/api/races/2026/08/22/07/10/sections/results");
   expect(resultsMessage.ack).toHaveBeenCalledTimes(1);
-  expect(heatmapMessage.retry).toHaveBeenCalledTimes(1);
-  expect(heatmapMessage.ack).not.toHaveBeenCalled();
-  expect(consoleMock).toHaveBeenCalledTimes(1);
-  await handleRaceDetailSectionCacheQueue(
-    worker,
-    { messages: [heatmapMessage], queue: "pc-keiba-detail-section-cache-warm" },
-    env,
-    ctx,
-  );
   expect(heatmapMessage.ack).toHaveBeenCalledTimes(1);
+  expect(heatmapMessage.retry).not.toHaveBeenCalled();
 });
 
-it("retries extra heatmap messages so one warm cannot exceed wall time", async () => {
+it("retries a section warm that returns a non-ok response", async () => {
   const worker = {
-    fetch: vi.fn<FetchFn>().mockResolvedValue(
-      new Response("{}", {
-        headers: { "X-Win-Rate-Heatmap-Cache": "MISS-STORED" },
-        status: 200,
-      }),
-    ),
+    fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("nope", { status: 500 })),
   };
-  const firstHeatmap = {
+  const resultsMessage = {
     ack: vi.fn<() => void>(),
     retry: vi.fn<() => void>(),
     body: {
       day: "22",
-      keibajoCode: "06",
-      month: "09",
-      raceNumber: "01",
-      section: "win-rate-heatmap" as const,
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "results" as const,
       source: "jra" as const,
       year: "2026",
     },
   };
-  const secondHeatmap = {
-    ack: vi.fn<() => void>(),
-    retry: vi.fn<() => void>(),
-    body: {
-      day: "22",
-      keibajoCode: "06",
-      month: "09",
-      raceNumber: "02",
-      section: "win-rate-heatmap" as const,
-      source: "jra" as const,
-      year: "2026",
-    },
-  };
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
   await handleRaceDetailSectionCacheQueue(
     worker,
-    { messages: [firstHeatmap, secondHeatmap], queue: "pc-keiba-detail-section-cache-warm" },
+    { messages: [resultsMessage], queue: "pc-keiba-detail-section-cache-warm" },
     buildEnv(),
     buildCtx(),
   );
-  expect(worker.fetch).toHaveBeenCalledTimes(1);
-  expect(firstHeatmap.ack).toHaveBeenCalledTimes(1);
-  expect(firstHeatmap.retry).not.toHaveBeenCalled();
-  expect(secondHeatmap.retry).toHaveBeenCalledTimes(1);
-  expect(secondHeatmap.ack).not.toHaveBeenCalled();
+  expect(resultsMessage.retry).toHaveBeenCalledTimes(1);
+  expect(resultsMessage.ack).not.toHaveBeenCalled();
+  expect(consoleMock).toHaveBeenCalledWith(
+    "[pc-keiba-viewer] race detail cache warm failed",
+    "race detail cache warm failed: 500 /api/races/2026/08/22/07/10/sections/results",
+  );
+  consoleMock.mockRestore();
 });
 
 it("schedule-ssr-warm-throws-on-non-ok-response", async () => {
