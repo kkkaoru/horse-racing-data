@@ -70,10 +70,15 @@ const CONTAINER_DESTROY_HARD_TIMEOUT_MS = 15_000;
 const CONTAINER_STATUS_HARD_TIMEOUT_MS = 5_000;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
 const SLEEP_AFTER = "45m";
-// Race-chain status is polled every 30 seconds while work is active. A two-
-// minute idle fallback survives those polls but bounds leaked/failed cleanup
-// to minutes instead of inheriting the day-base builder's 45-minute lease.
-export const RACE_CHAIN_SLEEP_AFTER = "2m";
+// Race-chain status is polled every 30 seconds while work is active, but a
+// focused-full /predict answers `accepted` immediately and detaches the real
+// run, so polling can end while the container is still building. A 地方 NAR run
+// measured 986s (16.4m) end-to-end on 2026-09-22 while this bound was two
+// minutes: the container slept mid-run, no prediction row reached Neon and
+// every 地方 race lost its 着順予測. Keep the idle fallback at the pipeline's own
+// ceiling (PIPELINE_TOTAL_TIMEOUT_SECONDS = 1800s) so a container can never be
+// reclaimed before the run it is executing has given up on itself.
+export const RACE_CHAIN_SLEEP_AFTER = "30m";
 const MODELS_DIR_DEFAULT = "/models";
 const PIPELINE_TOTAL_TIMEOUT_SECONDS_DEFAULT = "1800";
 const EMPTY_ENV_VALUE = "";

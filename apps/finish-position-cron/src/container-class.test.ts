@@ -307,8 +307,10 @@ test.each(["bad json", "http failure"])(
   },
 );
 
-test("bounds an idle race-chain Container independently from the day-base lease", () => {
-  expect(RACE_CHAIN_SLEEP_AFTER).toBe("2m");
+test("keeps an idle race-chain Container alive for a full detached run", () => {
+  // A 地方 focused-full run measured 986s end to end; a shorter idle bound
+  // reclaimed the Container mid-run and no prediction ever reached Neon.
+  expect(RACE_CHAIN_SLEEP_AFTER).toBe("30m");
 });
 
 test("returns missing prewarm status without starting a stopped Container", async () => {
