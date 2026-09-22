@@ -421,7 +421,7 @@ it("fails closed when fresh entrant rows are empty or duplicated", async () => {
   const emptyHarness = createHarness();
   const duplicateHarness = createHarness([
     { ketto_toroku_bango: "2023100001", umaban: 1 },
-    { ketto_toroku_bango: "2023100001", umaban: 1 },
+    { ketto_toroku_bango: "2023100001", umaban: 2 },
   ]);
   const empty = await handleRequest(
     new Request(

@@ -208,6 +208,12 @@ it("fails closed for empty, invalid, or duplicate fresh entrants", () => {
       { ketto_toroku_bango: "2023100002", umaban: 1 },
     ]),
   ).toThrow("fresh race entries contain duplicates");
+  expect(
+    normaliseFreshRaceEntries([
+      { ketto_toroku_bango: "2023100001", umaban: 1 },
+      { ketto_toroku_bango: "2023100001", umaban: 1 },
+    ]),
+  ).toStrictEqual([{ kettoTorokuBango: "2023100001", umaban: 1 }]);
 });
 
 it("normalises, scopes, sorts, and permits the same horse number in different bulk races", () => {
@@ -328,6 +334,27 @@ it("fails closed for empty, malformed, mismatched-source, or duplicate bulk entr
       "jra",
     ),
   ).toThrow("fresh race entries contain an invalid ketto_toroku_bango");
+  expect(
+    normaliseBulkFreshRaceEntries(
+      [
+        {
+          keibajo_code: "07",
+          ketto_toroku_bango: "2023100001",
+          race_bango: "01",
+          source: "jra",
+          umaban: 1,
+        },
+        {
+          keibajo_code: "07",
+          ketto_toroku_bango: "2023100001",
+          race_bango: "01",
+          source: "jra",
+          umaban: 1,
+        },
+      ],
+      "jra",
+    ),
+  ).toHaveLength(1);
 });
 
 it("rejects unsafe namespace, date, and race filters", () => {

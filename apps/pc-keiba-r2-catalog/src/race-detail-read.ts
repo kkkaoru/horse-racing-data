@@ -1,4 +1,6 @@
 // Runs with bun; read-only Catalog projection preserving absence versus provider failure.
+import { dedupeIdenticalRows } from "./normalise";
+
 export interface RaceDetailReadInput {
   namespace: string;
   source: "jra" | "nar";
@@ -83,8 +85,10 @@ export const readRaceDetail = async (
 ): Promise<Record<string, string | null> | null> => {
   const rows: unknown[] = await options.query(buildRaceDetailReadSql(options.input));
   if (rows.length === 0) return null;
-  if (rows.length !== 1) throw new Error("Ambiguous race detail identity");
-  const row: Record<string, string | null> = parseDetailRow(rows[0]);
+  // R2 SQL's distributed planner can return the same physical row more than once, so only a
+  // genuine identity conflict (two different rows for one race) is ambiguous.
+  const [row, ...conflicts] = dedupeIdenticalRows(rows.map(parseDetailRow));
+  if (row === undefined || conflicts.length > 0) throw new Error("Ambiguous race detail identity");
   if (
     row.kaisaiNen !== options.input.date.slice(0, 4) ||
     row.kaisaiTsukihi !== options.input.date.slice(4) ||

@@ -141,6 +141,12 @@ it("rejects invalid or duplicate race-feature runner identities", () => {
       { ...baseRaw(), ketto_toroku_bango: "2023100002", umaban: 2 },
     ]),
   ).toHaveLength(2);
+  expect(
+    normaliseDailyRaceEntryRows([
+      { ...baseRaw(), umaban: 1 },
+      { ...baseRaw(), umaban: 1 },
+    ]),
+  ).toHaveLength(1);
 });
 
 it("normalises an Iceberg race-key row into the raw Hyperdrive shape", () => {

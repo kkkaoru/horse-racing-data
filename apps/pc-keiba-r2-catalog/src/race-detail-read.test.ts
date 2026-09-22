@@ -120,9 +120,18 @@ it("returns authoritative absence without another provider call", async () => {
   expect(await readRaceDetail({ input, query })).toBeNull();
   expect(query).toHaveBeenCalledTimes(1);
 });
-it("rejects duplicate rows even if identical", async () => {
+it("collapses identical duplicate rows returned by the R2 SQL planner", async () => {
+  const detail = await readRaceDetail({ input, query: vi.fn().mockResolvedValue([row, row, row]) });
+  expect(detail).toMatchObject({
+    kaisaiNen: "2026",
+    raceBango: "11",
+    kyori: "1800",
+    source: "jra",
+  });
+});
+it("rejects conflicting duplicate rows for one race", async () => {
   await expect(
-    readRaceDetail({ input, query: vi.fn().mockResolvedValue([row, row]) }),
+    readRaceDetail({ input, query: vi.fn().mockResolvedValue([row, { ...row, kyori: "1600" }]) }),
   ).rejects.toThrow("Ambiguous race detail identity");
 });
 it.each([null, [], 1, "row", { ...row, kyori: 1800 }, { ...row, tenko_code: undefined }])(

@@ -89,10 +89,23 @@ export const normaliseDailyRaceEntryRow = (raw: Record<string, unknown>): DailyR
   zogen_sa: numericOrNull(raw.zogen_sa),
 });
 
+// R2 SQL's distributed planner can return the same physical row more than once (the
+// partition fault documented in race-day-list-read.ts). Collapse byte-identical rows so
+// the identity guards below only fail on genuine conflicts.
+export const dedupeIdenticalRows = <T>(rows: ReadonlyArray<T>): T[] => {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = JSON.stringify(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 export const normaliseDailyRaceEntryRows = (
   rows: ReadonlyArray<Record<string, unknown>>,
 ): DailyRaceEntryRow[] => {
-  const normalised = rows.map(normaliseDailyRaceEntryRow);
+  const normalised = dedupeIdenticalRows(rows.map(normaliseDailyRaceEntryRow));
   const horsesByRace = new Map<string, Set<string>>();
   const numbersByRace = new Map<string, Set<number>>();
   for (const row of normalised) {

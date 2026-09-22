@@ -100,6 +100,7 @@ it("rejects invalid and duplicate runner identities", () => {
   expect(() =>
     normaliseRunningStyleRows([row(), { ...row(), ketto_toroku_bango: "2023100002", umaban: 7 }]),
   ).toThrow("duplicate runners");
+  expect(normaliseRunningStyleRows([row(), row()]).rows).toHaveLength(1);
 });
 
 it("rejects rows missing required identity fields", () => {

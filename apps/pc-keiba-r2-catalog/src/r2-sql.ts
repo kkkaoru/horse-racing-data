@@ -9,6 +9,8 @@ import type {
   SourceScope,
 } from "./types";
 
+import { dedupeIdenticalRows } from "./normalise";
+
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{2}$/u;
@@ -521,11 +523,13 @@ export const normaliseFreshRaceEntries = (
   rows: ReadonlyArray<Record<string, unknown>>,
 ): FreshRaceEntry[] => {
   if (rows.length === 0) throw new Error("fresh race entries are empty");
-  const entries = rows.map(
-    (row): FreshRaceEntry => ({
-      kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
-      umaban: normaliseFreshUmaban(row.umaban),
-    }),
+  const entries = dedupeIdenticalRows(
+    rows.map(
+      (row): FreshRaceEntry => ({
+        kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
+        umaban: normaliseFreshUmaban(row.umaban),
+      }),
+    ),
   );
   const kettoCount = new Set(entries.map((entry) => entry.kettoTorokuBango)).size;
   const umabanCount = new Set(entries.map((entry) => entry.umaban)).size;
@@ -548,14 +552,16 @@ export const normaliseBulkFreshRaceEntries = (
   expectedSource: BulkFreshRaceEntryFilters["source"],
 ): BulkFreshRaceEntry[] => {
   if (rows.length === 0) throw new Error("fresh race entries are empty");
-  const entries = rows.map(
-    (row): BulkFreshRaceEntry => ({
-      keibajoCode: normaliseFreshCode(row.keibajo_code, "keibajo_code"),
-      kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
-      raceBango: normaliseFreshCode(row.race_bango, "race_bango"),
-      source: normaliseFreshSource(row.source, expectedSource),
-      umaban: normaliseFreshUmaban(row.umaban),
-    }),
+  const entries = dedupeIdenticalRows(
+    rows.map(
+      (row): BulkFreshRaceEntry => ({
+        keibajoCode: normaliseFreshCode(row.keibajo_code, "keibajo_code"),
+        kettoTorokuBango: normaliseFreshKetto(row.ketto_toroku_bango),
+        raceBango: normaliseFreshCode(row.race_bango, "race_bango"),
+        source: normaliseFreshSource(row.source, expectedSource),
+        umaban: normaliseFreshUmaban(row.umaban),
+      }),
+    ),
   );
   const kettoCount = new Set(
     entries.map((entry) => bulkRaceEntryKey(entry, entry.kettoTorokuBango)),

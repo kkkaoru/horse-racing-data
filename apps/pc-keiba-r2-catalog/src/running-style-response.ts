@@ -1,3 +1,5 @@
+import { dedupeIdenticalRows } from "./normalise";
+
 const EXCLUDED_FEATURE_COLUMNS = new Set([
   "bamei",
   "category",
@@ -115,7 +117,7 @@ export const normaliseRunningStyleRows = (
   rows: ReadonlyArray<Record<string, unknown>>,
 ): RunningStyleResponseBody => {
   const featureNames = featureNamesFor(rows);
-  const normalised = rows.map((row) => normaliseRow(row, featureNames));
+  const normalised = dedupeIdenticalRows(rows.map((row) => normaliseRow(row, featureNames)));
   const horsesByRace = new Map<string, Set<string>>();
   const numbersByRace = new Map<string, Set<number>>();
   for (const row of normalised) {
