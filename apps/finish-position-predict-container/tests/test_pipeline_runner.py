@@ -1290,6 +1290,11 @@ def test_build_day_base_resets_stale_day_dir_before_building(
     stale_final = stale_day_dir / "final"
     stale_final.mkdir(parents=True)
     (stale_final / "stale.parquet").write_bytes(b"STALE")
+    # A spill checkpoint from the preempted attempt must SURVIVE the reset so the
+    # retry can resume instead of re-paying the full source scan.
+    spill_checkpoint = stale_day_dir / "duckdb-spill" / "table_spill" / "horse_history.parquet"
+    spill_checkpoint.parent.mkdir(parents=True)
+    spill_checkpoint.write_bytes(b"CHECKPOINT")
 
     def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
         return ["base", str(args[5])]
@@ -1309,6 +1314,7 @@ def test_build_day_base_resets_stale_day_dir_before_building(
     assert result is not None
     assert result.exists()
     assert not (result / "stale.parquet").exists()
+    assert spill_checkpoint.read_bytes() == b"CHECKPOINT"
 
 
 def test_build_day_base_writes_watermark_for_catalog_source(
@@ -2205,6 +2211,38 @@ def test_ensure_day_base_catalog_source_watermark_match_returns_local_dir(
 
     assert result == final_dir
     assert r2_calls == []
+
+
+def test_ensure_day_base_known_watermark_skips_recompute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A caller-supplied same-call watermark must not re-query Catalog/RS.
+
+    Regression guard for the foundation-miss fallback in
+    ``build_upcoming_feature_rows_split``: ``_foundation_readiness_snapshot``
+    already combined the entrant and running-style halves seconds earlier,
+    so ``ensure_day_base`` must trust it instead of paying a second Catalog
+    Iceberg attach plus a second running-style R2 scan."""
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_dir = _day_base_dir("nar", "20260923")
+    final_dir = day_dir / "final"
+    hive_dir = final_dir / "race_year=2026"
+    hive_dir.mkdir(parents=True)
+    (hive_dir / "features.parquet").write_bytes(b"TRUSTED")
+    stored = ("20260923", 750, "none", 0, "none")
+    _write_watermark(day_dir, stored)
+
+    def _fail_recompute(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("compute_day_base_watermark must not run")
+
+    monkeypatch.setattr(pipeline_runner, "compute_day_base_watermark", _fail_recompute)
+
+    result = pipeline_runner.ensure_day_base(
+        "nar", "20260923", 0, "r2-catalog://pc-keiba", None, known_watermark=stored
+    )
+
+    assert result == final_dir
 
 
 def test_ensure_day_base_catalog_source_banei_none_rs_match_returns_local_dir(

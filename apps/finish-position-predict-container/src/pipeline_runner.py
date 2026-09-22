@@ -116,6 +116,11 @@ PIPELINE_DIR: Final[Path] = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline")
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
 LAYER_DIR: Final[Path] = PIPELINE_DIR / "finish-position-features"
 WORK_DIR: Final[Path] = Path("/tmp/predict-upcoming")
+DUCKDB_SPILL_DIRNAME: Final[str] = "duckdb-spill"
+"""Name of the DuckDB spill directory holding stage checkpoints
+(``table_spill/*.parquet``). Exempted from the day-base work-dir reset below so
+``try_restore`` can resume a preempted/retried build instead of re-paying the
+full multi-year source scan."""
 RACE_CHAIN_RUNNER: Final[Path] = Path(__file__).with_name("race_chain_runner.py")
 RACE_CHAIN_FUSED_ENABLED_ENV: Final[str] = "RACE_CHAIN_FUSED_ENABLED"
 RACE_ID_FIELD: Final[str] = "race_id"
@@ -575,7 +580,7 @@ def _final_parquet_dir(category: Category) -> Path:
 
 def _duckdb_temp_dir(category: Category, target_date: str, target_race: str | None) -> Path:
     target_label = target_race.replace(":", "-") if target_race is not None else "all"
-    return WORK_DIR / "duckdb-spill" / f"{category}-{target_date}-{target_label}"
+    return WORK_DIR / DUCKDB_SPILL_DIRNAME / f"{category}-{target_date}-{target_label}"
 
 
 def _day_base_dir(category: Category, target_date: str) -> Path:
@@ -1611,10 +1616,24 @@ def build_day_base(
     # leave partial base/layer dirs behind -- reset unconditionally before
     # building (mirrors _reset_category_work_dirs's rationale for the
     # per-race path, scoped to this day-base's own isolated dir tree).
-    shutil.rmtree(day_dir, ignore_errors=True)
+    #
+    # ``duckdb-spill`` is deliberately EXEMPT from that reset. It holds the
+    # DuckDB stage checkpoints (``table_spill/*.parquet``) that
+    # ``try_restore``/SQL-fingerprint validation replays, so a preempted build
+    # that is retried inside the same container lifetime resumes where it
+    # stopped. Wiping it made every retry restart the whole source scan, which
+    # is why repeated preemption could never converge.
+    if day_dir.exists():
+        for stale in day_dir.iterdir():
+            if stale.name == DUCKDB_SPILL_DIRNAME:
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+            else:
+                stale.unlink(missing_ok=True)
     day_dir.mkdir(parents=True, exist_ok=True)
     base_dir = day_dir / "base"
-    duckdb_temp_dir = day_dir / "duckdb-spill"
+    duckdb_temp_dir = day_dir / DUCKDB_SPILL_DIRNAME
     duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
     source_watermark_file = day_dir / _SOURCE_WATERMARK_SIDECAR_FILENAME
     chain = day_chain_for(category)
@@ -1859,6 +1878,8 @@ def ensure_day_base(
     days_ahead: int,
     database_url: str,
     r2_config: R2Config | None,
+    *,
+    known_watermark: DayBaseWatermark | None = None,
 ) -> Path | None:
     """Resolve the cached day-base parquet dir for category+day, or ``None``.
 
@@ -1914,12 +1935,28 @@ def ensure_day_base(
        day-base synchronously via :func:`build_day_base` or fall back to the
        full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
        function itself never blocks on a multi-minute build.
+
+    ``known_watermark`` accepts a live watermark the caller already computed
+    for this same category+day in the same call (currently the
+    :func:`_foundation_readiness_snapshot` in
+    :func:`build_upcoming_feature_rows_split`, which combines the Catalog
+    entrant half with the running-style half). Passing it skips the
+    redundant :func:`compute_day_base_watermark` re-query -- one Catalog
+    Iceberg attach plus one running-style R2 scan -- on the
+    foundation-miss fallback path. Same-instant reuse, not staleness:
+    the value is fresher than a recompute against a source that may have
+    changed between the two queries. ``None`` (default) keeps the
+    recompute for every other caller.
     """
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
     if is_catalog_source_url(database_url):
-        watermark = compute_day_base_watermark(
-            category, target_date, database_url, r2_config=r2_config
+        watermark = (
+            known_watermark
+            if known_watermark is not None
+            else compute_day_base_watermark(
+                category, target_date, database_url, r2_config=r2_config
+            )
         )
         if watermark is None:
             miss_reason = _WATERMARK_RS_UNAVAILABLE_REASON
@@ -3041,7 +3078,16 @@ def build_upcoming_feature_rows_split(
         foundation_hit = day_base_dir is not None
         if day_base_dir is None:
             day_base_dir = ensure_day_base(
-                category, target_date, days_ahead, database_url, r2_config
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                r2_config,
+                known_watermark=(
+                    foundation_readiness.live_watermark
+                    if foundation_readiness is not None
+                    else None
+                ),
             )
         if day_base_dir is None:
             if role is PredictContainerRole.RACE_CHAIN:
