@@ -25,7 +25,12 @@ const MAX_DAY_BASE_BYTES = 16 * 1024 * 1024;
 const MAX_UNCOMPRESSED_PARQUET_BYTES = 16 * 1024 * 1024;
 const MAX_DAY_BASE_ROWS = 1_024;
 const MAX_FEATURE_COLUMNS = 512;
-const MAX_RACES = 64;
+// NAR runs six venues on a single day (up to ~80 races), so a 64-race bound
+// rejected every 地方 day with "race-limit" and left per-race foundations (and
+// therefore predictions) impossible to materialize. The other bounds --
+// MAX_DAY_BASE_ROWS, MAX_RACE_JSON_BYTES, MAX_TOTAL_JSON_BYTES -- still cap the
+// work per invocation.
+const MAX_RACES = 96;
 const MAX_ROWS_PER_RACE = 32;
 const MAX_RANGE_REQUESTS = 256;
 const MAX_RANGE_BYTES = 48 * 1024 * 1024;

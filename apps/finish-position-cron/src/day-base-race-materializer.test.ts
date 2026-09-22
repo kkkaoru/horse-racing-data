@@ -401,7 +401,7 @@ describe("day-base per-race foundation materializer", () => {
     ["feature-hash", ""],
     ["race-count", "NaN"],
     ["race-count", "0"],
-    ["race-count", "65"],
+    ["race-count", "97"],
     ["row-count", "NaN"],
     ["row-count", "0"],
     ["row-count", "1025"],
@@ -665,7 +665,7 @@ describe("day-base per-race foundation materializer", () => {
   });
 
   test("enforces race and per-race row bounds", async () => {
-    const tooManyRaces = Array.from({ length: 65 }, (_, index) =>
+    const tooManyRaces = Array.from({ length: 97 }, (_, index) =>
       validRow({ race_id: `jra:2026:0823:${index + 1}:01` }),
     );
     const raceBucket = makeBucket(new Uint8Array([1]));
