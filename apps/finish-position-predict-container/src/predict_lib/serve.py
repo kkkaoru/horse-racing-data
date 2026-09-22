@@ -782,7 +782,15 @@ class PrewarmParams:
     ``pipeline_runner.build_day_base``), never a single race.
     """
 
-    __slots__ = ("category", "days_ahead", "debug_logs", "force", "rebuild", "run_date")
+    __slots__ = (
+        "category",
+        "days_ahead",
+        "debug_logs",
+        "force",
+        "rebuild",
+        "run_date",
+        "sync",
+    )
 
     def __init__(
         self,
@@ -792,6 +800,7 @@ class PrewarmParams:
         debug_logs: bool = False,
         force: bool = False,
         rebuild: bool = False,
+        sync: bool = False,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -799,6 +808,9 @@ class PrewarmParams:
         self.debug_logs: bool = debug_logs
         self.force: bool = force
         self.rebuild: bool = rebuild
+        # sync=1 keeps the HTTP response open until the parquet result line is
+        # written. The Worker proxy commits R2 before this process can exit.
+        self.sync: bool = sync
 
 
 def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
@@ -846,6 +858,9 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
         return f"invalid rebuild: {raw_rebuild!r}; must be 0 or 1"
     if raw_force == "1" and raw_rebuild == "1":
         return "force and rebuild cannot both be enabled"
+    raw_sync = _first_qs(qs, "sync")
+    if raw_sync is not None and raw_sync not in ("0", "1"):
+        return f"invalid sync: {raw_sync!r}; must be 0 or 1"
 
     debug_logs = parse_debug_flag(_first_qs(qs, "debug"))
     return PrewarmParams(
@@ -855,6 +870,7 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
         debug_logs=debug_logs,
         force=raw_force == "1",
         rebuild=raw_rebuild == "1",
+        sync=raw_sync == "1",
     )
 
 

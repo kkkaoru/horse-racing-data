@@ -14,13 +14,26 @@ vi.mock("@cloudflare/containers", () => ({
 import {
   buildLegacyPredictContainerEnvVars,
   buildRaceChainPredictContainerEnvVars,
+  containerDeliveryTimeoutMs,
   FinishPositionPredictContainer,
   FinishPositionRescoreContainer,
   RACE_CHAIN_SLEEP_AFTER,
+  SYNC_DAY_BASE_TIMEOUT_MS,
 } from "./container-class";
 import { WATCH_REQUEST_HEADER, WATCH_RESPONSE_HEADER } from "./focused-full-watch";
 import type { FocusedFullWatchBody, ValidatedFocusedFullWatchPayload } from "./focused-full-watch";
 import { PREDICT_DO_INTERNAL_PURGE_PATH } from "./predict-do-state-purge";
+
+test("sync day-base holds the container socket long enough to commit R2", () => {
+  expect(
+    containerDeliveryTimeoutMs(
+      new URL("http://do/prewarm-day-base?category=nar&runDate=20260923&sync=1"),
+    ),
+  ).toBe(SYNC_DAY_BASE_TIMEOUT_MS);
+  expect(
+    containerDeliveryTimeoutMs(new URL("http://do/prewarm-day-base?category=nar&runDate=20260923")),
+  ).toBe(65_000);
+});
 
 interface RuntimeContainerHarness {
   getTcpPort: ReturnType<typeof vi.fn>;

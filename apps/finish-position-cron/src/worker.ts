@@ -70,6 +70,7 @@ import {
   shouldRunRunningStyleKickTomorrowPrewarmCron,
 } from "./running-style-kick";
 import { getRunDateJst, getRunYmdJst } from "./time";
+import { handleAdminRaceDay, isAdminRaceDayRequest, RaceDayWorkflow } from "./race-day-workflow";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
   ContainerControlMessage,
@@ -185,6 +186,7 @@ export {
   FinishPositionRaceChainContainer,
   FinishPositionRescoreContainer,
   PredictRunCoordinator,
+  RaceDayWorkflow,
 };
 
 const healthResponse = (): Response =>
@@ -1117,6 +1119,9 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   }
   if (isAdminMaterializeDayBaseRequest(request.method, url.pathname)) {
     return guardedAdminMaterializeDayBase(request, env);
+  }
+  if (isAdminRaceDayRequest(request.method, url.pathname)) {
+    return handleAdminRaceDay(request, env);
   }
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);

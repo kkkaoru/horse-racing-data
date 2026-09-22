@@ -48,6 +48,11 @@ export interface Env {
   // so Cloudflare Access on the public viewer hostname cannot reject them.
   // Optional to preserve the public-origin fallback in local/test runtimes.
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
+  RACE_DAY_WORKFLOW?: Workflow<{
+    category: PredictCategory;
+    runYmd: string;
+    warmHeatmap?: boolean;
+  }>;
   // Optional viewer origin override for prediction-cache-bust. Unset/blank
   // falls back to https://pc-keiba-viewer.kkk4oru.com.
   PC_KEIBA_VIEWER_ORIGIN?: string;

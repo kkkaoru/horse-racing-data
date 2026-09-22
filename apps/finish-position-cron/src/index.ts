@@ -7,4 +7,5 @@ export {
   FinishPositionRaceChainContainer,
   FinishPositionRescoreContainer,
   PredictRunCoordinator,
+  RaceDayWorkflow,
 } from "./worker";

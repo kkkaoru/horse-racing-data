@@ -564,6 +564,13 @@
       "bucket_name": "pc-keiba-features-archive",
     },
   ],
+  "workflows": [
+    {
+      "binding": "RACE_DAY_WORKFLOW",
+      "class_name": "RaceDayWorkflow",
+      "name": "finish-position-race-day",
+    },
+  ],
   "services": [
     {
       "binding": "PC_KEIBA_VIEWER",

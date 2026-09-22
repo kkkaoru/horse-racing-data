@@ -3971,6 +3971,17 @@ def test_parse_prewarm_params_force_invalid() -> None:
     assert result == "invalid force: 'true'; must be 0 or 1"
 
 
+def test_parse_prewarm_params_sync_streams_result() -> None:
+    result = parse_prewarm_params("category=nar&runDate=20260923&sync=1")
+    assert isinstance(result, PrewarmParams)
+    assert result.sync is True
+
+
+def test_parse_prewarm_params_sync_invalid() -> None:
+    result = parse_prewarm_params("category=nar&runDate=20260923&sync=yes")
+    assert result == "invalid sync: 'yes'; must be 0 or 1"
+
+
 def test_parse_prewarm_params_rebuild_enabled() -> None:
     result = parse_prewarm_params("category=jra&runDate=20260712&rebuild=1")
     assert isinstance(result, PrewarmParams)

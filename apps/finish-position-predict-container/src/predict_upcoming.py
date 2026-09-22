@@ -4072,7 +4072,12 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 parquet_payload_fn=self.prewarm_parquet_payload_fn,
                 existing_object_fn=self.prewarm_existing_object_fn,
                 commit_fn=self.prewarm_commit_fn,
-                background_fn=self.prewarm_background_fn,
+                # Detach only when the Worker cannot hold the socket. sync=1
+                # streams the parquet back so the container can exit with the
+                # response instead of waiting for a later memory pickup.
+                background_fn=(
+                    None if prewarm_result.sync else self.prewarm_background_fn
+                ),
                 invalidate_fn=_invalidate_previous_payload,
             ):
                 size_line = f"{len(chunk):X}\r\n".encode()

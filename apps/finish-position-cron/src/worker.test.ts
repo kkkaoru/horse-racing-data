@@ -727,6 +727,17 @@ test("admin pickup-day-base exposes terminal cleanup failure as a retryable HTTP
   });
 });
 
+test("admin race-day rejects unauthenticated requests", async () => {
+  const response = await handleFetch(
+    new Request("https://cron.example/api/admin/race-day", {
+      body: JSON.stringify({ runYmd: "20260923" }),
+      method: "POST",
+    }),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+});
+
 test("admin prewarm-day-base rejects unauthenticated requests", async () => {
   const response = await handleFetch(adminPrewarmDayBaseRequest(null, "{}"), makeEnv());
   expect(response.status).toBe(401);

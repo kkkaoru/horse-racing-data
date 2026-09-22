@@ -66,6 +66,15 @@ const DEFAULT_PORT = 8080;
 const CONTAINER_INSTANCE_GET_TIMEOUT_MS = 20_000;
 const CONTAINER_PORT_READY_TIMEOUT_MS = 60_000;
 const CONTAINER_DELIVERY_HARD_TIMEOUT_MS = 65_000;
+// Day-base SQL is the only long container call. A Workflow step holds this
+// socket and commits R2 from the stream; the container must not detach and
+// then stay warm for a pickup that can miss the in-memory payload.
+export const SYNC_DAY_BASE_TIMEOUT_MS = 25 * 60 * 1000;
+
+export const containerDeliveryTimeoutMs = (url: URL): number =>
+  url.pathname === PREWARM_DAY_BASE_PATH && url.searchParams.get("sync") === "1"
+    ? SYNC_DAY_BASE_TIMEOUT_MS
+    : CONTAINER_DELIVERY_HARD_TIMEOUT_MS;
 const CONTAINER_DESTROY_HARD_TIMEOUT_MS = 15_000;
 const CONTAINER_STATUS_HARD_TIMEOUT_MS = 5_000;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
@@ -366,7 +375,7 @@ export class FinishPositionPredictContainer extends Container<Env> {
             });
       const response = await withHardTimeout(
         this.containerFetch(forwardedRequest),
-        CONTAINER_DELIVERY_HARD_TIMEOUT_MS,
+        containerDeliveryTimeoutMs(url),
       );
       console.log(
         `[predict-container-do] delivery headers ${requestSummary} status=${response.status} durationMs=${

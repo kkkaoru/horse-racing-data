@@ -1344,6 +1344,54 @@ def test_make_handler_class_prewarm_fn_not_bound_method() -> None:
     )
 
 
+def test_sync_prewarm_streams_result_instead_of_detaching() -> None:
+    detached: list[object] = []
+
+    def _background(fn: object) -> None:
+        detached.append(fn)
+
+    def _payload(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int], None]:
+        return (
+            "YQ==",
+            f"feat-daybase/catalog-v1/{category}/{run_date}/features.parquet",
+            {
+                "maxDataSakuseiNengappi": "20260923",
+                "rowCount": 1,
+                "rsContentHash": "none",
+                "rsPredictedAtMax": "none",
+                "rsRowCount": 1,
+            },
+            None,
+        )
+
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
+        _fake_prewarm,
+        _payload,
+        prewarm_background_fn=_background,
+    )
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _get(
+            port, "/prewarm-day-base?category=nar&runDate=20260923&sync=1"
+        )
+        assert status == 200
+        assert b'"status": "success"' in body
+        assert detached == []
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
 # ---------------------------------------------------------------------------
 # make_handler_class — focused-full cache wiring
 # ---------------------------------------------------------------------------
