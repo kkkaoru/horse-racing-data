@@ -321,10 +321,21 @@ const finishFoundationPickup = async (params: FinishFoundationPickupParams): Pro
     await completeLandedDayBase(params);
     return;
   }
+  // The reschedule path used to drop the readiness reason, which made a wedged day base
+  // indistinguishable from a slow build in production logs.
+  console.warn(
+    `[day-base-pickup] foundation-not-ready category=${category} runYmd=${runYmd} attempt=${String(attempt)} reason=${foundationReadiness.reason}`,
+  );
+  // A missing parquet means the Container build is still the thing being waited on
+  // (~19 minutes for a JRA day base), so poll it on the build cadence. The 30s
+  // readiness retry is for the post-parquet window, where only Worker-side D1/R2
+  // readiness remains. Polling a missing day base every 30s burned the 12-poll
+  // budget in 6 minutes and stopped the build before it could upload.
+  const buildPending = foundationReadiness.reason === "day-base-missing-or-invalid";
   await enqueueDayBasePickup({
     attempt: attempt + 1,
     category,
-    delaySeconds: DAY_BASE_READINESS_RETRY_SECONDS,
+    delaySeconds: buildPending ? DAY_BASE_PICKUP_DELAY_SECONDS : DAY_BASE_READINESS_RETRY_SECONDS,
     env,
     ...dayBaseGenerationFields(params.generationId),
     ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),

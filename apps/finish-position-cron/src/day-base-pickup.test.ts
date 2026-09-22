@@ -743,6 +743,7 @@ test("consumeDayBasePickup keeps polling after the running-style foundation land
   });
   pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValueOnce("foundation-landed");
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   await consumeDayBasePickup({
     env: makeEnv(),
@@ -772,9 +773,52 @@ test("consumeDayBasePickup keeps polling after the running-style foundation land
   expect(logSpy).toHaveBeenCalledWith(
     "[day-base-pickup] foundation-landed category=nar runYmd=20260824 attempt=7",
   );
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-pickup] foundation-not-ready category=nar runYmd=20260824 attempt=7 reason=rs-row-count-368-of-479",
+  );
+  warnSpy.mockRestore();
   logSpy.mockRestore();
 });
 
+test("consumeDayBasePickup waits on the build cadence while the day base is missing", async () => {
+  getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "day-base-missing-or-invalid",
+  });
+  pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValueOnce("foundation-landed");
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: {
+      attempt: 4,
+      category: "jra",
+      force: true,
+      generatePredictionsAfterHit: true,
+      runYmd: "20260922",
+      type: "day-base-pickup",
+    },
+  });
+
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 5,
+      category: "jra",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260922",
+      type: "day-base-pickup",
+    },
+    { delaySeconds: DAY_BASE_PICKUP_DELAY_SECONDS },
+  );
+  expect(containerFetchMock).not.toHaveBeenCalled();
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[day-base-pickup] foundation-not-ready category=jra runYmd=20260922 attempt=4 reason=day-base-missing-or-invalid",
+  );
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
+});
 test("consumeDayBasePickup does not wake the Container once R2 already has the foundation", async () => {
   headDayBaseObjectMock.mockResolvedValueOnce({ size: 1 });
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
