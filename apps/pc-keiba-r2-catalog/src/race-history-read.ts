@@ -98,6 +98,10 @@ const COLUMNS: readonly string[] = [
   "time_sa",
   "kakutei_chakujun",
 ];
+// Distance is the one history field the runner mirror does not carry: it lives
+// on the race row. Bare `se.kyori` made R2 SQL reject the query outright
+// ("No field named se.kyori"), so every history read failed.
+const COLUMN_TABLES: Readonly<Record<string, "ra">> = { kyori: "ra" };
 const IDENTIFIER: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE: RegExp = /^\d{8}$/u;
 const HORSE_ID: RegExp = /^\d{10}$/u;
@@ -136,7 +140,10 @@ export const buildRaceHistoryReadSql = (input: RaceHistoryReadInput): string => 
       : `concat(ra.kaisai_nen, ra.kaisai_tsukihi) < '${input.beforeDate}' AND concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '${input.minDate}'`;
   const runnerTable: string = input.source === "jra" ? "jvd_se" : "nvd_se";
   const raceTable: string = input.source === "jra" ? "jvd_ra" : "nvd_ra";
-  return `SELECT ${COLUMNS.map((column) => `se.${column}`).join(", ")}
+  const selectList: string = COLUMNS.map(
+    (column) => `${COLUMN_TABLES[column] ?? "se"}.${column}`,
+  ).join(", ");
+  return `SELECT ${selectList}
 FROM ${input.namespace}.${runnerTable} se
 INNER JOIN ${input.namespace}.${raceTable} ra
   ON ra.kaisai_nen = se.kaisai_nen

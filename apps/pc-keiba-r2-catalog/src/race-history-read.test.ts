@@ -41,6 +41,10 @@ it("builds a bounded JRA history read over the requested horses", () => {
   expect(sql).toMatch("ORDER BY se.ketto_toroku_bango ASC");
   expect(sql).toMatch("LIMIT 2001");
   expect(sql).not.toMatch("regexp_replace");
+  // jvd_se/nvd_se have no kyori column: R2 SQL rejects the whole query when
+  // distance is read from the runner mirror instead of the race row.
+  expect(sql).toMatch("ra.kyori");
+  expect(sql).not.toMatch("se.kyori");
 });
 
 it("omits the lower bound when no year window is requested", () => {
