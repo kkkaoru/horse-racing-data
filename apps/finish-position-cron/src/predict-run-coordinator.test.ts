@@ -1132,6 +1132,70 @@ test("claimContainerSlot stores the first unique DO lease", async () => {
   vi.useRealTimers();
 });
 
+test("day-base generation fence keeps an older date superseded while the newer lease lapses", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  // No container-slots: the newer generation's lease lapsed (container
+  // stop/restart). The older repair must not hijack the record -- otherwise
+  // every newer takeback stop-containers the live build and neither date
+  // ever lands.
+  storageMap.set("day-base-generations", {
+    nar: { generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "older-gen",
+      phase: "start",
+      runYmd: "20260922",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "superseded" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  vi.useRealTimers();
+});
+
+test("day-base generation fence releases an older date once the newer record completes", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("day-base-generations", {
+    nar: { completed: true, generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "older-gen",
+      phase: "start",
+      runYmd: "20260922",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  vi.useRealTimers();
+});
+
+test("day-base generation fence releases an older date once the newer record goes stale", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000 + 61 * 60 * 1000);
+  storageMap.set("day-base-generations", {
+    nar: { generationId: "newer-gen", runYmd: "20260923", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      generationId: "older-gen",
+      phase: "start",
+      runYmd: "20260922",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  vi.useRealTimers();
+});
+
 test("day-base generation fence preempts an earlier date and rejects its redelivery", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(20_000);
@@ -1226,9 +1290,45 @@ test("day-base generation fence activates the latest requested date without a le
   vi.useRealTimers();
 });
 
-test("a live later day-base reservation without a lease still fences earlier starts", async () => {
+test("a lease-less later day-base reservation does not fence an earlier repair", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(10_000 + 3 * 60 * 1000);
+  const now = 10_000 + 3 * 60 * 1000;
+  vi.setSystemTime(now);
+  storageMap.set("day-base-generations", {
+    nar: { runYmd: "20260827", updatedAt: 10_000 },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimDayBaseGeneration({
+      category: "nar",
+      phase: "start",
+      runYmd: "20260825",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "active" });
+  expect(storageMap.get("day-base-generations")).toStrictEqual({
+    nar: { runYmd: "20260825", updatedAt: now },
+  });
+  vi.useRealTimers();
+});
+
+test("a live later day-base build still fences an earlier repair", async () => {
+  vi.useFakeTimers();
+  const now = 10_000 + 3 * 60 * 1000;
+  vi.setSystemTime(now);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar",
+        holders: 1,
+        kind: "day-base",
+        rescoreHolders: 0,
+        timestamp: now,
+        workKey: "day-base:20260827:nar",
+      },
+    ],
+  });
   storageMap.set("day-base-generations", {
     nar: { runYmd: "20260827", updatedAt: 10_000 },
   });

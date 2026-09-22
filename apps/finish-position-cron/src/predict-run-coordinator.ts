@@ -1139,6 +1139,13 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           isSameDayBaseGeneration(identity, current)
         );
       });
+      // A lease-less reservation is a tombstone for its own runYmd only: the
+      // 60m stale window must keep fending off duplicate builds of that same
+      // date, but letting it fence *other* dates starved today's repair for a
+      // full hour while tomorrow's unconsumed reservation sat there.
+      const reservationFencesIncoming = currentMatchesIncoming
+        ? currentReservationFresh
+        : currentLeaseActive;
 
       // A Queue redelivery from a generation that was already preempted must
       // never regain ownership, even when its original `force` bit is still
@@ -1170,13 +1177,25 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       }
       // Newer runYmd wins. An older stuck repair (today's missing day-base
       // retrying all evening) must not supersede or preempt tomorrow's first
-      // prewarm; that starvation left 2026-09-22 without predictions.
+      // prewarm; that starvation left 2026-09-22 without predictions. The
+      // fence must also hold while the newer generation's lease lapses
+      // (container stop/restart): without it the older chain hijacks the
+      // record, and every newer takeback then stop-containers the live
+      // build -- a mutual-kill livelock where neither date ever lands. The
+      // fence only covers a live newer generation: a completed or stale
+      // record, or a generation-less (unconsumed legacy) reservation,
+      // releases it so today's repair is never starved by tomorrow's
+      // untouched reservation.
       if (
         params.force !== true &&
         current !== undefined &&
         !currentMatchesIncoming &&
         params.runYmd <= current.runYmd &&
-        (currentReservationFresh || currentLeaseActive)
+        (reservationFencesIncoming ||
+          (params.runYmd < current.runYmd &&
+            current.completed !== true &&
+            current.generationId !== undefined &&
+            now - current.updatedAt < DAY_BASE_GENERATION_RESERVATION_STALE_MS))
       ) {
         return { proceed: false, state: "superseded" };
       }
@@ -1187,7 +1206,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         current === undefined ||
         (!currentMatchesIncoming && params.force === true) ||
         params.runYmd > current.runYmd ||
-        (!currentMatchesIncoming && !currentReservationFresh && !currentLeaseActive);
+        (!currentMatchesIncoming && !reservationFencesIncoming);
       if (!replacesCurrent && !currentMatchesIncoming) {
         return { proceed: false, state: "superseded" };
       }
