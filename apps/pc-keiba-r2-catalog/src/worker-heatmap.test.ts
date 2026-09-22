@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { cacheRequestFor, heatmapStatsDescriptor, kvKeyFor } from "./cache";
 import type { CacheStore, Env, Fetcher, KvStore, WorkerDependencies } from "./types";
@@ -90,6 +90,42 @@ it("coalesces concurrent heatmap misses into one R2 SQL pair", async () => {
   ]);
   expect(first.status).toBe(200);
   expect(second.status).toBe(200);
+  expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
+});
+
+it("bounds heatmap R2 SQL requests with a 60 second abort signal", async () => {
+  const harness = createHeatmapHarness();
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+  const signals: Array<AbortSignal | null | undefined> = [];
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      signals.push(init?.signal);
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(response.status).toBe(200);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[60_000], [60_000]]);
+  expect(signals.map((signal) => signal instanceof AbortSignal)).toStrictEqual([true, true]);
+  timeoutSpy.mockRestore();
+});
+
+it("re-executes a heatmap query after an aborted R2 SQL request", async () => {
+  const harness = createHeatmapHarness();
+  const attempts: string[] = [];
+  const failingDependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async () => {
+      attempts.push("aborted");
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    },
+  };
+  const failed = await handleRequest(new Request(heatmapUrl), harness.env, failingDependencies);
+  expect(failed.ok).toBe(false);
+  const retried = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
+  expect(retried.status).toBe(200);
+  expect(attempts).toStrictEqual(["aborted", "aborted"]);
   expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
 });
 

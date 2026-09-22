@@ -82,6 +82,7 @@ import type {
   BulkFreshRaceEntryFilters,
   CatalogSource,
   Env,
+  Fetcher,
   FreshRaceEntryFilters,
   HorseRaceResultsFilters,
   HorseRaceResultsSourceScope,
@@ -131,6 +132,7 @@ const CACHE_WARM_HEADER: string = "X-PC-Keiba-Cache-Warm";
 const partnershipCohortCache = createPartnershipCohortCache();
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
+const HEATMAP_R2_SQL_TIMEOUT_MS = 60_000;
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
 // the protocol's limit" -- see running-style-feature-ctes.ts's
 // includeOrderBy docstring for why this happens and only for large-enough
@@ -554,14 +556,24 @@ const conditionHistoryCoalesceKey = (filters: WinRateHeatmapStatsFilters): strin
     filters.includeRaceTitle === true ? "1" : "0",
   ].join(":");
 
+// R2 SQL occasionally never answers a heatmap query (seen 2026-09-23: CPU
+// 2ms, wall 900s+). Unbounded, the coalesced promise hangs for the isolate's
+// lifetime and every retry joins it. A normal heatmap query finishes in
+// seconds, so abort it and let the caller retry with a fresh query.
+const withRequestTimeout =
+  (fetchImpl: Fetcher, timeoutMs: number): Fetcher =>
+  (input, init) =>
+    fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+
 const heatmapStatsBody = async (
   env: Env,
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
 ): Promise<string> => {
+  const fetchImpl = withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS);
   const [bloodlineRows, similarRows] = await Promise.all([
-    executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), fetchImpl),
+    executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), fetchImpl),
   ]);
   return JSON.stringify(normaliseWinRateHeatmapStatsPayload({ bloodlineRows, similarRows }));
 };
@@ -1327,7 +1339,12 @@ const handlePartnershipStats = async (
     cohort: {
       cache: dependencies.cache,
       kv: env.CATALOG_KV,
-      execute: (sql) => executeR2Sql(env, sql, dependencies.fetchImpl),
+      execute: (sql) =>
+        executeR2Sql(
+          env,
+          sql,
+          withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+        ),
       warm: url.searchParams.get("warm") === "1",
       query: {
         config: env,
