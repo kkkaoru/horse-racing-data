@@ -8,7 +8,7 @@ import {
   type MatchedProfileSettings,
   type TargetProfile,
 } from "./race-matched-profile-read";
-import { executeR2Sql } from "./r2-sql";
+import { executeR2Sql, R2SqlQueryError } from "./r2-sql";
 import type { R2SqlCatalogConfig } from "./types";
 
 const REQUIRED_PARAMETERS: readonly string[] = [
@@ -61,6 +61,18 @@ const readOptionalNumber = (value: string | null): number | null | undefined => 
 };
 
 const emptyToNull = (value: string): string | null => (value === "" ? null : value);
+
+// A sanitized failure class: never the provider message (it can carry private
+// detail), only enough to tell a timeout from an R2 SQL error or a bad result.
+export const classifyMatchedProfileFailure = (error: unknown): string => {
+  if (error instanceof R2SqlQueryError)
+    return `r2_sql:${String(error.status ?? "-")}:${String(error.code ?? "-")}`;
+  if (error instanceof DOMException) return `abort:${error.name}`;
+  if (error instanceof Error && error.message.startsWith("Invalid target profile"))
+    return "invalid_result";
+  if (error instanceof Error && error.message.includes("byte limit")) return "byte_limit";
+  return "unknown";
+};
 
 export const handleRaceMatchedProfileRead = async (
   request: Request,
@@ -128,8 +140,13 @@ export const handleRaceMatchedProfileRead = async (
       executeR2Sql(env, sql, boundedAuditFetch(fetch)),
     );
     return json({ profile }, 200);
-  } catch {
-    console.error(JSON.stringify({ event: "race_matched_profile_read_failed" }));
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "race_matched_profile_read_failed",
+        reason: classifyMatchedProfileFailure(error),
+      }),
+    );
     await notifyReadFailure(env.INGESTION_ALERTS, { event: "race_matched_profile_read_failed" });
     return json({ error: "Catalog matched profile unavailable" }, 503);
   }

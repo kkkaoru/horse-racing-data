@@ -1,12 +1,19 @@
 // Runs with bun through Vitest; upstream I/O is mocked.
 import { beforeEach, expect, it, vi } from "vitest";
-import { handleRaceMatchedProfileRead } from "./race-matched-profile-service";
+import { R2SqlQueryError } from "./r2-sql";
+import {
+  classifyMatchedProfileFailure,
+  handleRaceMatchedProfileRead,
+} from "./race-matched-profile-service";
 import type { R2SqlCatalogConfig } from "./types";
 const mocks = vi.hoisted(() => ({
   query: vi.fn<typeof import("./r2-sql").executeR2Sql>(),
   alertSend: vi.fn<(message: unknown) => Promise<void>>(),
 }));
-vi.mock("./r2-sql", () => ({ executeR2Sql: mocks.query }));
+vi.mock("./r2-sql", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./r2-sql")>()),
+  executeR2Sql: mocks.query,
+}));
 const env: R2SqlCatalogConfig = {
   R2_SQL_ACCOUNT_ID: "account",
   R2_SQL_BUCKET_NAME: "catalog",
@@ -95,7 +102,9 @@ it("sanitizes provider failures and alerts", async () => {
   const response: Response = await handleRaceMatchedProfileRead(new Request(validUrl), env);
   expect(response.status).toBe(503);
   expect(await response.json()).toStrictEqual({ error: "Catalog matched profile unavailable" });
-  expect(log).toHaveBeenCalledWith('{"event":"race_matched_profile_read_failed"}');
+  expect(log).toHaveBeenCalledWith(
+    '{"event":"race_matched_profile_read_failed","reason":"unknown"}',
+  );
   expect(JSON.stringify(log.mock.calls)).not.toContain("private provider detail");
   expect(mocks.alertSend).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -104,4 +113,26 @@ it("sanitizes provider failures and alerts", async () => {
     }),
   );
   log.mockRestore();
+});
+
+it("classifies R2 SQL matched profile failures by status and code", () => {
+  expect(classifyMatchedProfileFailure(new R2SqlQueryError("private", 40004, 400))).toBe(
+    "r2_sql:400:40004",
+  );
+  expect(classifyMatchedProfileFailure(new R2SqlQueryError("private", undefined))).toBe(
+    "r2_sql:-:-",
+  );
+});
+
+it("classifies aborted, invalid, oversized and unknown matched profile failures", () => {
+  expect(
+    classifyMatchedProfileFailure(new DOMException("The operation timed out", "TimeoutError")),
+  ).toBe("abort:TimeoutError");
+  expect(classifyMatchedProfileFailure(new Error("Invalid target profile result"))).toBe(
+    "invalid_result",
+  );
+  expect(
+    classifyMatchedProfileFailure(new Error("Audit provider response exceeds byte limit")),
+  ).toBe("byte_limit");
+  expect(classifyMatchedProfileFailure("raw")).toBe("unknown");
 });
