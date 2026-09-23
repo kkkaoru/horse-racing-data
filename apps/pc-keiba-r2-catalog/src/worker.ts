@@ -565,6 +565,32 @@ const withRequestTimeout =
   (input, init) =>
     fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
 
+// Identify which heatmap query fails (bloodline or similar) and how long it
+// ran, so a race whose R2 SQL never answers can be diagnosed from logs.
+const logHeatmapQueryFailure = async (
+  query: "bloodline" | "similar",
+  filters: WinRateHeatmapStatsFilters,
+  rows: Promise<Record<string, unknown>[]>,
+): Promise<Record<string, unknown>[]> => {
+  const startedAt = Date.now();
+  try {
+    return await rows;
+  } catch (error) {
+    console.error(
+      "[pc-keiba-r2-catalog] heatmap R2 SQL query failed",
+      JSON.stringify({
+        date: filters.date,
+        detail: error instanceof Error ? error.message : String(error),
+        elapsedMs: Date.now() - startedAt,
+        keibajoCode: filters.keibajoCode,
+        query,
+        raceBango: filters.raceBango,
+      }),
+    );
+    throw error;
+  }
+};
+
 const heatmapStatsBody = async (
   env: Env,
   dependencies: WorkerDependencies,
@@ -572,8 +598,16 @@ const heatmapStatsBody = async (
 ): Promise<string> => {
   const fetchImpl = withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS);
   const [bloodlineRows, similarRows] = await Promise.all([
-    executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), fetchImpl),
-    executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), fetchImpl),
+    logHeatmapQueryFailure(
+      "bloodline",
+      filters,
+      executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), fetchImpl),
+    ),
+    logHeatmapQueryFailure(
+      "similar",
+      filters,
+      executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), fetchImpl),
+    ),
   ]);
   return JSON.stringify(normaliseWinRateHeatmapStatsPayload({ bloodlineRows, similarRows }));
 };

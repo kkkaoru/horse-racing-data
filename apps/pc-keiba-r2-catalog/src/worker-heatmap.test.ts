@@ -121,12 +121,43 @@ it("re-executes a heatmap query after an aborted R2 SQL request", async () => {
       throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
     },
   };
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const failed = await handleRequest(new Request(heatmapUrl), harness.env, failingDependencies);
   expect(failed.ok).toBe(false);
+  const failureLogs = consoleError.mock.calls
+    .filter((call) => call[0] === "[pc-keiba-r2-catalog] heatmap R2 SQL query failed")
+    .map((call) => {
+      const parsed: unknown = JSON.parse(String(call[1]));
+      return isRecord(parsed) ? [parsed.query, parsed.detail, parsed.raceBango] : [];
+    });
+  expect(failureLogs.toSorted()).toStrictEqual([
+    ["bloodline", "The operation was aborted due to timeout", "08"],
+    ["similar", "The operation was aborted due to timeout", "08"],
+  ]);
+  consoleError.mockRestore();
   const retried = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
   expect(retried.status).toBe(200);
   expect(attempts).toStrictEqual(["aborted", "aborted"]);
   expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
+});
+
+it("logs non-Error heatmap query failures as strings", async () => {
+  const harness = createHeatmapHarness();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: () => Promise.reject(new Error("raw").message),
+  };
+  const failed = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(failed.ok).toBe(false);
+  const details = consoleError.mock.calls
+    .filter((call) => call[0] === "[pc-keiba-r2-catalog] heatmap R2 SQL query failed")
+    .map((call) => {
+      const parsed: unknown = JSON.parse(String(call[1]));
+      return isRecord(parsed) ? parsed.detail : null;
+    });
+  expect(details).toStrictEqual(["raw", "raw"]);
+  consoleError.mockRestore();
 });
 
 it("stores heatmap stats with a 36 hour catalog cache TTL", async () => {
