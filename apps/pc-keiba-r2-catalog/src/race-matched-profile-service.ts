@@ -45,6 +45,8 @@ const ALL_PARAMETERS: readonly string[] = [
   ...OPTIONAL_PARAMETERS,
 ];
 const DEFAULT_LIMIT: number = 5000;
+const R2_SQL_PARSE_ERROR_CODE: number = 40004;
+const PARSE_ERROR_DETAIL_LENGTH: number = 160;
 const json = (value: unknown, status: number): Response =>
   Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
 
@@ -65,6 +67,10 @@ const emptyToNull = (value: string): string | null => (value === "" ? null : val
 // A sanitized failure class: never the provider message (it can carry private
 // detail), only enough to tell a timeout from an R2 SQL error or a bad result.
 export const classifyMatchedProfileFailure = (error: unknown): string => {
+  // 40004 is an R2 SQL parse error; its message is the parser position (no
+  // data), which is what identifies the unsupported syntax.
+  if (error instanceof R2SqlQueryError && error.code === R2_SQL_PARSE_ERROR_CODE)
+    return `r2_sql:${String(error.status ?? "-")}:${String(error.code)}:${error.message.slice(0, PARSE_ERROR_DETAIL_LENGTH)}`;
   if (error instanceof R2SqlQueryError)
     return `r2_sql:${String(error.status ?? "-")}:${String(error.code ?? "-")}`;
   if (error instanceof DOMException) return `abort:${error.name}`;

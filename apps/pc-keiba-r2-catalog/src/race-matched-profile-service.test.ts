@@ -116,8 +116,13 @@ it("sanitizes provider failures and alerts", async () => {
 });
 
 it("classifies R2 SQL matched profile failures by status and code", () => {
-  expect(classifyMatchedProfileFailure(new R2SqlQueryError("private", 40004, 400))).toBe(
-    "r2_sql:400:40004",
+  expect(
+    classifyMatchedProfileFailure(
+      new R2SqlQueryError("R2 SQL HTTP 400: 40004 Expected: ), found: when", 40004, 400),
+    ),
+  ).toBe("r2_sql:400:40004:R2 SQL HTTP 400: 40004 Expected: ), found: when");
+  expect(classifyMatchedProfileFailure(new R2SqlQueryError("private", 40018, 400))).toBe(
+    "r2_sql:400:40018",
   );
   expect(classifyMatchedProfileFailure(new R2SqlQueryError("private", undefined))).toBe(
     "r2_sql:-:-",
