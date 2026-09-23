@@ -18,11 +18,27 @@ const RACE_TREND_SCHEDULE_PATH = "/api/cache-warm/race-trends";
 const RACE_DETAIL_SSR_SCHEDULE_PATH = "/api/cache-warm/race-detail-ssr";
 const WIN_RATE_HEATMAP_SCHEDULE_PATH = "/api/cache-warm/win-rate-heatmaps";
 const WARM_IN_BATCH_CONCURRENCY = 2;
+// A hung self request held a consumer slot for up to 15 minutes (overall-score
+// canceled at 930s on 2026-09-23). Abort it and let the queue retry instead.
+const QUEUE_WARM_REQUEST_TIMEOUT_MS = 120_000;
 
 type CacheWarmMessage =
   | DetailSectionCacheWarmMessage
   | RaceDetailSsrCacheWarmMessage
   | RaceTrendCacheWarmMessage;
+
+interface CacheWarmBatchEntry {
+  date: string;
+  kind: string;
+  ms: number;
+  result: "ack" | "retry";
+}
+
+interface TimedWarmParams {
+  ctx: PcKeibaExecutionContext;
+  env: CloudflareEnv;
+  openNextWorker: OpenNextWorker;
+}
 
 interface QueueWarmItem {
   ack(): void;
@@ -173,6 +189,7 @@ const warmDetailSection = async (
       headers: {
         "X-PC-Keiba-Cache-Warm": "queue",
       },
+      signal: AbortSignal.timeout(QUEUE_WARM_REQUEST_TIMEOUT_MS),
     }),
     env,
     ctx,
@@ -195,6 +212,7 @@ const warmRaceTrend = async (
       headers: {
         "X-PC-Keiba-Cache-Warm": "queue",
       },
+      signal: AbortSignal.timeout(QUEUE_WARM_REQUEST_TIMEOUT_MS),
     }),
     env,
     ctx,
@@ -219,6 +237,7 @@ const warmRaceDetailSsr = async (
     new Request(url, {
       headers: { "X-PC-Keiba-Cache-Warm": "queue" },
       method: "POST",
+      signal: AbortSignal.timeout(QUEUE_WARM_REQUEST_TIMEOUT_MS),
     }),
     env,
     ctx,
@@ -247,18 +266,6 @@ const isPastRaceMessage = (message: CacheWarmMessage, todayJstYmd: string): bool
 
 const ackMessage = (message: QueueWarmItem): void => {
   message.ack();
-};
-
-const mapInChunks = async <T>(
-  items: readonly T[],
-  chunkSize: number,
-  mapper: (item: T) => Promise<void>,
-): Promise<void> => {
-  if (items.length === 0) {
-    return;
-  }
-  await Promise.all(items.slice(0, chunkSize).map(mapper));
-  await mapInChunks(items.slice(chunkSize), chunkSize, mapper);
 };
 
 const warmQueueMessage = async (
@@ -337,6 +344,52 @@ const warmQueueMessage = async (
   }
 };
 
+const warmKindOf = (message: CacheWarmMessage): string =>
+  isRaceTrendCacheWarmMessage(message) || isRaceDetailSsrCacheWarmMessage(message)
+    ? message.kind
+    : message.section;
+
+// Runs one warm and reports which of ack/retry it chose and how long it took,
+// so batch logs show where consumer time goes.
+const timedWarm = async (
+  params: TimedWarmParams,
+  message: QueueWarmItem,
+): Promise<CacheWarmBatchEntry> => {
+  const startedAt = Date.now();
+  const outcome: { result: "ack" | "retry" } = { result: "ack" };
+  await warmQueueMessage(
+    params.openNextWorker,
+    {
+      ack: () => message.ack(),
+      body: message.body,
+      retry: () => {
+        outcome.result = "retry";
+        message.retry();
+      },
+    },
+    params.env,
+    params.ctx,
+  );
+  return {
+    date: `${message.body.year}${message.body.month}${message.body.day}`,
+    kind: warmKindOf(message.body),
+    ms: Date.now() - startedAt,
+    result: outcome.result,
+  };
+};
+
+const mapInChunksCollect = async <T, R>(
+  items: readonly T[],
+  chunkSize: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> =>
+  items.length === 0
+    ? []
+    : [
+        ...(await Promise.all(items.slice(0, chunkSize).map(mapper))),
+        ...(await mapInChunksCollect(items.slice(chunkSize), chunkSize, mapper)),
+      ];
+
 export const handleRaceDetailSectionCacheQueue = async (
   openNextWorker: OpenNextWorker,
   batch: PcKeibaMessageBatch<CacheWarmMessage>,
@@ -348,12 +401,24 @@ export const handleRaceDetailSectionCacheQueue = async (
   // 2026-09-23 about half of the consumer's warms were 9/21-9/22 races). Ack
   // both without warming; past races still compute on demand.
   const todayJstYmd = formatTodayJstDate(new Date());
-  const isSkipped = (message: QueueWarmItem): boolean =>
-    isHeatmapWarmMessage(message.body) || isPastRaceMessage(message.body, todayJstYmd);
-  batch.messages.filter(isSkipped).forEach(ackMessage);
-  await mapInChunks(
-    batch.messages.filter((message) => !isSkipped(message)),
+  const heatmaps = batch.messages.filter((message) => isHeatmapWarmMessage(message.body));
+  const past = batch.messages.filter(
+    (message) =>
+      !isHeatmapWarmMessage(message.body) && isPastRaceMessage(message.body, todayJstYmd),
+  );
+  [...heatmaps, ...past].forEach(ackMessage);
+  const warms = await mapInChunksCollect(
+    batch.messages.filter((message) => !heatmaps.includes(message) && !past.includes(message)),
     WARM_IN_BATCH_CONCURRENCY,
-    (message) => warmQueueMessage(openNextWorker, message, env, ctx),
+    (message) => timedWarm({ ctx, env, openNextWorker }, message),
+  );
+  console.log(
+    JSON.stringify({
+      event: "cache_warm_batch",
+      size: batch.messages.length,
+      skippedHeatmap: heatmaps.length,
+      skippedPast: past.length,
+      warms,
+    }),
   );
 };

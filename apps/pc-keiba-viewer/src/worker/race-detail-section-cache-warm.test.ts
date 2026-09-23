@@ -52,6 +52,139 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("logs one cache warm batch summary with skips and per-warm outcomes", async () => {
+  const worker = {
+    fetch: vi
+      .fn<FetchFn>()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(new Response("nope", { status: 500 })),
+  };
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    {
+      messages: [
+        {
+          ack: vi.fn<() => void>(),
+          retry: vi.fn<() => void>(),
+          body: {
+            day: "21",
+            keibajoCode: "07",
+            month: "08",
+            raceNumber: "01",
+            section: "results" as const,
+            source: "jra" as const,
+            year: "2026",
+          },
+        },
+        {
+          ack: vi.fn<() => void>(),
+          retry: vi.fn<() => void>(),
+          body: {
+            day: "22",
+            keibajoCode: "07",
+            month: "08",
+            raceNumber: "02",
+            section: "win-rate-heatmap" as const,
+            source: "jra" as const,
+            year: "2026",
+          },
+        },
+        {
+          ack: vi.fn<() => void>(),
+          retry: vi.fn<() => void>(),
+          body: {
+            day: "22",
+            keibajoCode: "07",
+            month: "08",
+            raceNumber: "03",
+            section: "results" as const,
+            source: "jra" as const,
+            year: "2026",
+          },
+        },
+        {
+          ack: vi.fn<() => void>(),
+          retry: vi.fn<() => void>(),
+          body: {
+            day: "22",
+            keibajoCode: "07",
+            month: "08",
+            raceNumber: "04",
+            section: "results" as const,
+            source: "jra" as const,
+            year: "2026",
+          },
+        },
+      ],
+      queue: "pc-keiba-detail-section-cache-warm",
+    },
+    buildEnv(),
+    buildCtx(),
+  );
+  const logged: unknown = JSON.parse(String(consoleLog.mock.calls[0]?.[0]));
+  if (typeof logged !== "object" || logged === null || !("warms" in logged))
+    throw new Error("batch log expected");
+  const warms: unknown[] = Array.isArray(logged.warms) ? logged.warms : [];
+  expect("size" in logged ? logged.size : null).toBe(4);
+  expect("skippedHeatmap" in logged ? logged.skippedHeatmap : null).toBe(1);
+  expect("skippedPast" in logged ? logged.skippedPast : null).toBe(1);
+  expect(
+    warms.map((warm) =>
+      typeof warm === "object" &&
+      warm !== null &&
+      "kind" in warm &&
+      "result" in warm &&
+      "date" in warm &&
+      "ms" in warm
+        ? [warm.date, warm.kind, warm.result, typeof warm.ms]
+        : [],
+    ),
+  ).toStrictEqual([
+    ["20260822", "results", "ack", "number"],
+    ["20260822", "results", "retry", "number"],
+  ]);
+  consoleLog.mockRestore();
+  consoleError.mockRestore();
+});
+
+it("bounds each queue self request with a 120 second abort timeout", async () => {
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+  const worker = {
+    fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),
+  };
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    {
+      messages: [
+        {
+          ack: vi.fn<() => void>(),
+          retry: vi.fn<() => void>(),
+          body: {
+            day: "22",
+            keibajoCode: "07",
+            month: "08",
+            raceNumber: "10",
+            section: "results" as const,
+            source: "jra" as const,
+            year: "2026",
+          },
+        },
+      ],
+      queue: "pc-keiba-detail-section-cache-warm",
+    },
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+  const request = worker.fetch.mock.calls[0]?.[0];
+  expect(request instanceof Request ? request.signal.aborted : null).toBe(false);
+  timeoutSpy.mockRestore();
+  consoleLog.mockRestore();
+});
+
 it("acks past-race messages without warming them", async () => {
   const worker = {
     fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),
