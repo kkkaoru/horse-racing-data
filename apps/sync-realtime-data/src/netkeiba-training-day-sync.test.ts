@@ -105,6 +105,16 @@ beforeAll(async () => {
     .run();
   await db
     .prepare(
+      `create table realtime_race_sources (
+        race_key text primary key,
+        source text not null,
+        kaisai_nen text not null,
+        kaisai_tsukihi text not null
+      )`,
+    )
+    .run();
+  await db
+    .prepare(
       `create table netkeiba_training_day_sync_state (
         race_date text primary key,
         status text not null,
@@ -119,6 +129,19 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await db.prepare("delete from realtime_race_sources").run();
+  await db
+    .prepare(
+      "insert into realtime_race_sources (race_key, source, kaisai_nen, kaisai_tsukihi) values (?, ?, ?, ?)",
+    )
+    .bind("jra:2026:0905:01:01", "jra", "2026", "0905")
+    .run();
+  await db
+    .prepare(
+      "insert into realtime_race_sources (race_key, source, kaisai_nen, kaisai_tsukihi) values (?, ?, ?, ?)",
+    )
+    .bind("nar:2026:0923:30:01", "nar", "2026", "0923")
+    .run();
   await db.prepare("delete from premium_race_links").run();
   await db.prepare("delete from netkeiba_training_day_sync_state").run();
   await db
@@ -553,7 +576,7 @@ it("fails closed when Viewer warm returns an empty data section", async () => {
   });
 });
 
-it("skips a day without premium links before calling the Catalog or recording state", async () => {
+it("skips a day without JRA races before calling the Catalog or recording state", async () => {
   const catalogFetch = vi.fn<(request: Request) => Promise<Response>>(async () =>
     Response.json({ entries: [] }),
   );
@@ -568,4 +591,16 @@ it("skips a day without premium links before calling the Catalog or recording st
       .bind("20260923")
       .first<{ n: number }>(),
   ).toStrictEqual({ n: 0 });
+});
+
+it("still fails and records a JRA day whose premium links are missing", async () => {
+  await db.prepare("delete from premium_race_links").run();
+  await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("source rows are missing");
+  expect(
+    await env.REALTIME_DB.prepare(
+      "select status from netkeiba_training_day_sync_state where race_date = ?",
+    )
+      .bind("20260905")
+      .first<{ status: string }>(),
+  ).toStrictEqual({ status: "failed" });
 });
