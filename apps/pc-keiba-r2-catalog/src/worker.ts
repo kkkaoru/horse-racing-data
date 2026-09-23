@@ -22,6 +22,12 @@ import {
   trainingDescriptor,
   type CacheDescriptor,
 } from "./cache";
+import {
+  buildConditionCorrelationCareerQuery,
+  buildConditionCorrelationEntriesQuery,
+  buildConditionCorrelationTargetQuery,
+  composeConditionCorrelationRows,
+} from "./condition-correlation";
 import { coalesce } from "./inflight";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRows } from "./normalise";
 import {
@@ -1157,9 +1163,25 @@ const conditionHistoryStatsBody = async (
     executeR2Sql(env, buildConditionRaceTimeStatsQuery(env, filters), dependencies.fetchImpl),
     executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
   ]);
+  // Race-time correlation inputs; without them the viewer recomputed the
+  // correlation rows with an 11-25s PostgreSQL query for every race.
+  const [correlationTargetRows, correlationEntryRows] = await Promise.all([
+    executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
+  ]);
+  const correlationCareerRows = await executeR2Sql(
+    env,
+    buildConditionCorrelationCareerQuery(env, filters),
+    dependencies.fetchImpl,
+  );
   return JSON.stringify(
     normaliseConditionHistoryStatsPayload({
       carriedRows,
+      correlationRows: composeConditionCorrelationRows({
+        careerRows: correlationCareerRows,
+        entryRows: correlationEntryRows,
+        targetRows: correlationTargetRows,
+      }),
       finishRows,
       frameRows,
       raceTimeRows,

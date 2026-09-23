@@ -305,10 +305,36 @@ export interface ConditionTargetRace {
   trainerName: string;
 }
 
+export type ConditionCorrelationKey =
+  | "horseShow"
+  | "horseWin"
+  | "jockeyShow"
+  | "odds"
+  | "ownerShow"
+  | "popularity"
+  | "trainerShow";
+
+export interface ConditionCorrelationDetail {
+  key: ConditionCorrelationKey;
+  label: string;
+  reason: string;
+  score: number;
+  target: number | null;
+  value: number | null;
+  weight: number;
+}
+
+export interface ConditionCorrelationRow {
+  details: ConditionCorrelationDetail[];
+  horseName: string;
+  horseNumber: string;
+  score: number;
+}
+
 export interface ConditionRaceTimeStats {
   averageKohan3f: number | null;
   averageRaceTime: number | null;
-  correlationRows: [];
+  correlationRows: ConditionCorrelationRow[];
   fastestDetail: null;
   fastestKohan3f: number | null;
   fastestRaceTime: number | null;

@@ -11,6 +11,9 @@ const conditionUrl =
   "https://catalog.test/v1/condition-history-stats?year=2026&month=08&day=22&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1";
 
 const queryKind = (query: string): string => {
+  if (query.includes("career_history")) return "correlation-career";
+  if (query.includes("AS top3_count")) return "correlation-target";
+  if (query.includes("AS horse_name") && query.includes("AS odds")) return "correlation-entries";
   if (query.includes("AS body_weight")) return "weight";
   if (query.includes("AS carried_weight")) return "carried";
   if (query.includes("IN (1, 2, 3, 4, 5)")) return "finish";
@@ -132,6 +135,46 @@ const createConditionHarness = () => {
               wakuban: "03",
               win_odds: "32",
             },
+          ],
+        },
+        success: true,
+      });
+    }
+    if (kind === "correlation-target") {
+      return Response.json({
+        result: {
+          rows: [{ average_odds: 6.5, average_popularity: 3.2, top3_count: 30, win_count: 10 }],
+        },
+        success: true,
+      });
+    }
+    if (kind === "correlation-entries") {
+      return Response.json({
+        result: {
+          rows: [
+            {
+              horse_name: "イクイノックス",
+              jockey_name: "ルメール",
+              ketto_toroku_bango: "2019105219",
+              odds: 1.3,
+              owner_name: "シルク",
+              popularity: 1,
+              trainer_name: "木村",
+              umaban: "05",
+            },
+          ],
+        },
+        success: true,
+      });
+    }
+    if (kind === "correlation-career") {
+      return Response.json({
+        result: {
+          rows: [
+            { entity: "2019105219", kind: "horse", show_count: 10, starts: 10, win_count: 8 },
+            { entity: "ルメール", kind: "jockey", show_count: 600, starts: 1000, win_count: 300 },
+            { entity: "木村", kind: "trainer", show_count: 250, starts: 500, win_count: 100 },
+            { entity: "シルク", kind: "owner", show_count: 800, starts: 2000, win_count: 300 },
           ],
         },
         success: true,
@@ -260,7 +303,78 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
     raceTimeStats: {
       averageKohan3f: 35,
       averageRaceTime: 1400,
-      correlationRows: [],
+      correlationRows: [
+        {
+          details: [
+            {
+              key: "horseShow",
+              label: "出走馬の複勝率",
+              reason: "対象レース1〜3着馬の対象レース前の複勝率平均との差",
+              score: 1,
+              target: 100,
+              value: 100,
+              weight: 0.2,
+            },
+            {
+              key: "horseWin",
+              label: "出走馬の勝率",
+              reason: "対象レース1〜3着馬の対象レース前の勝率平均との差",
+              score: 0.53,
+              target: 33.3,
+              value: 80,
+              weight: 0.1,
+            },
+            {
+              key: "jockeyShow",
+              label: "騎手の複勝率",
+              reason: "今回騎乗予定騎手の今回レース前の複勝率を評価",
+              score: 0.6,
+              target: null,
+              value: 60,
+              weight: 0.15,
+            },
+            {
+              key: "trainerShow",
+              label: "調教師の複勝率",
+              reason: "今回出走馬の調教師の今回レース前の複勝率を評価",
+              score: 0.5,
+              target: null,
+              value: 50,
+              weight: 0.15,
+            },
+            {
+              key: "ownerShow",
+              label: "馬主の複勝率",
+              reason: "今回出走馬の馬主の今回レース前の複勝率を評価",
+              score: 0.4,
+              target: null,
+              value: 40,
+              weight: 0.15,
+            },
+            {
+              key: "popularity",
+              label: "人気順",
+              reason: "対象レース1〜3着馬の人気平均との差",
+              score: 0.56,
+              target: 3.2,
+              value: 1,
+              weight: 0.125,
+            },
+            {
+              key: "odds",
+              label: "単勝オッズ",
+              reason: "対象レース1〜3着馬の単勝オッズ平均との差",
+              score: 0.48,
+              target: 6.5,
+              value: 1.3,
+              weight: 0.125,
+            },
+          ],
+          horseName: "イクイノックス",
+          horseNumber: "5",
+          score: 0.61,
+        },
+      ],
       fastestDetail: null,
       fastestKohan3f: 34,
       fastestRaceTime: 1330,
@@ -300,7 +414,12 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
   });
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(6, 8).toSorted()).toStrictEqual([
+    "correlation-entries",
+    "correlation-target",
+  ]);
+  expect(harness.fetchCalls.slice(8)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
     date: "20260822",
@@ -329,7 +448,12 @@ it("omits the carried-weight query for Ban'ei venues", async () => {
   expect(response.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
   expect(harness.fetchCalls.slice(2, 3)).toStrictEqual(["finish"]);
-  expect(harness.fetchCalls.slice(3).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(3, 5).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(5, 7).toSorted()).toStrictEqual([
+    "correlation-entries",
+    "correlation-target",
+  ]);
+  expect(harness.fetchCalls.slice(7)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error("expected object");
@@ -346,7 +470,12 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   expect(second.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual(["race-time", "target-races"]);
+  expect(harness.fetchCalls.slice(6, 8).toSorted()).toStrictEqual([
+    "correlation-entries",
+    "correlation-target",
+  ]);
+  expect(harness.fetchCalls.slice(8)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
 });
 

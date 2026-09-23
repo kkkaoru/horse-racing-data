@@ -366,7 +366,7 @@ it("aggregates horse-level finish rows into counted stats with details", () => {
 });
 
 it("maps race-time scalars and returns zeros when the query is empty", () => {
-  expect(normaliseRaceTimeStats(undefined, [])).toStrictEqual({
+  expect(normaliseRaceTimeStats(undefined, [], [])).toStrictEqual({
     averageKohan3f: null,
     averageRaceTime: null,
     correlationRows: [],
@@ -390,6 +390,7 @@ it("maps race-time scalars and returns zeros when the query is empty", () => {
         race_count: "8",
       },
       [],
+      [],
     ),
   ).toStrictEqual({
     averageKohan3f: 35.2,
@@ -408,6 +409,7 @@ it("maps race-time scalars and returns zeros when the query is empty", () => {
 it("normalises the combined payload and min-max frame scores", () => {
   expect(
     normaliseConditionHistoryStatsPayload({
+      correlationRows: [],
       carriedRows: [
         {
           class_key: "55.5-57",
@@ -579,6 +581,7 @@ it("normalises the combined payload and min-max frame scores", () => {
 it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
   expect(
     normaliseConditionHistoryStatsPayload({
+      correlationRows: [],
       carriedRows: [],
       finishRows: [],
       frameRows: [
@@ -647,6 +650,7 @@ it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
   ]);
   expect(
     normaliseConditionHistoryStatsPayload({
+      correlationRows: [],
       carriedRows: [],
       finishRows: [],
       frameRows: [
@@ -705,10 +709,12 @@ it("rejects incomplete aggregate rows", () => {
         race_count: 2n ** 1024n,
       },
       [],
+      [],
     ),
   ).toThrow("R2 SQL row is missing race_count");
   expect(() =>
     normaliseConditionHistoryStatsPayload({
+      correlationRows: [],
       carriedRows: [],
       finishRows: [],
       frameRows: [

@@ -1,6 +1,7 @@
 // Run with bun (bunx vitest).
 
 import type {
+  ConditionCorrelationRow,
   ConditionFinishPositionDetail,
   ConditionFinishPositionStatsRow,
   ConditionFrameStatsRow,
@@ -159,17 +160,17 @@ const roundedOrNull = (value: unknown, scale: number): number | null => {
 const integerSelect = (expr: string, empty: string): string =>
   `try_cast(nullif(btrim(coalesce(${expr}, '')), '${empty}') AS INT)`;
 
-const doubleSelect = (expr: string): string =>
+export const doubleSelect = (expr: string): string =>
   `try_cast(nullif(btrim(coalesce(${expr}, '')), '') AS DOUBLE)`;
 
 const raceTimeTenthsSelect = (expr: string): string => encodedRaceTimeTenthsSql(doubleSelect(expr));
 
-const trimmedNameSql = (column: string): string =>
+export const trimmedNameSql = (column: string): string =>
   `coalesce(nullif(btrim(replace(coalesce(${column}, ''), chr(12288), '')), ''), '-')`;
 
 const paddedCodeSql = (column: string): string => `lpad(btrim(coalesce(${column}, '')), 2, '0')`;
 
-const matchedHistoryArmSql = (input: {
+export const matchedHistoryArmSql = (input: {
   env: R2SqlCatalogConfig;
   extraJoin: string;
   extraWhere: string;
@@ -655,12 +656,13 @@ export const normaliseTargetRaceRow = (raw: Record<string, unknown>): ConditionT
 export const normaliseRaceTimeStats = (
   raw: Record<string, unknown> | undefined,
   targetRaces: ConditionTargetRace[],
+  correlationRows: ConditionCorrelationRow[],
 ): ConditionRaceTimeStats => {
-  if (raw === undefined) return { ...emptyRaceTimeStats(), targetRaces };
+  if (raw === undefined) return { ...emptyRaceTimeStats(), correlationRows, targetRaces };
   return {
     averageKohan3f: roundedOrNull(raw.average_kohan_3f, RATE_SCALE),
     averageRaceTime: roundedOrNull(raw.average_race_time, RATE_SCALE),
-    correlationRows: EMPTY_CORRELATION_ROWS,
+    correlationRows,
     fastestDetail: null,
     fastestKohan3f: roundedOrNull(raw.fastest_kohan_3f, RATE_SCALE),
     fastestRaceTime: roundedOrNull(raw.fastest_race_time, RATE_SCALE),
@@ -673,6 +675,7 @@ export const normaliseRaceTimeStats = (
 
 export const normaliseConditionHistoryStatsPayload = (input: {
   carriedRows: ReadonlyArray<Record<string, unknown>>;
+  correlationRows: ConditionCorrelationRow[];
   finishRows: ReadonlyArray<Record<string, unknown>>;
   frameRows: ReadonlyArray<Record<string, unknown>>;
   raceTimeRows: ReadonlyArray<Record<string, unknown>>;
@@ -685,6 +688,7 @@ export const normaliseConditionHistoryStatsPayload = (input: {
   raceTimeStats: normaliseRaceTimeStats(
     input.raceTimeRows[0],
     input.targetRaceRows.map(normaliseTargetRaceRow),
+    input.correlationRows,
   ),
   weightClassStats: input.weightRows.map(normaliseWeightClassRow),
 });
