@@ -8,6 +8,10 @@ import { withDbRetry } from "./db-retry";
 
 const DEFAULT_TTL_SECONDS = 60 * 60;
 const KV_MAX_TTL_SECONDS = 60 * 60 * 24;
+// Warm sections spend most of their time before any Catalog call (27s of a
+// 31s time-score warm on 2026-09-23). Log slow uncached loads by query name
+// (the first key part; never the parameters) to find them.
+const SLOW_DB_QUERY_MS = 3000;
 // Bumped v3->v4 on 2026-07-18 for the emergency finish-position quality gate
 // rollout, then v4->v5 the same day when the gate was replaced with the
 // transparency/user-choice redesign (isQualityGated -> predictedScoreStddev).
@@ -182,7 +186,17 @@ export const withDbQueryCache = async <T>(
     ttlSeconds: getCacheTtlSeconds(),
   });
   const ttlSeconds = policy.ttlSeconds;
-  const loadWithRetry = (): Promise<T> => withDbRetry(load);
+  const loadWithRetry = async (): Promise<T> => {
+    const startedAt = Date.now();
+    const value = await withDbRetry(load);
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= SLOW_DB_QUERY_MS) {
+      console.warn(
+        JSON.stringify({ elapsedMs, event: "slow_db_query", query: String(keyParts[0]) }),
+      );
+    }
+    return value;
+  };
 
   if (ttlSeconds <= 0 || !canUseQueryCache()) {
     return loadWithRetry();

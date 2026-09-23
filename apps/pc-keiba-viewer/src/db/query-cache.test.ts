@@ -59,3 +59,23 @@ test("retains expensive detail data across minute boundaries", async () => {
   ).toStrictEqual([{ horses: 16 }]);
   expect(load).toHaveBeenCalledTimes(1);
 });
+
+test("logs uncached loads that take at least three seconds by query name only", async () => {
+  vi.stubGlobal("caches", undefined);
+  vi.stubEnv("PC_KEIBA_DB_CACHE_TTL_SECONDS", "3600");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const clock = vi.spyOn(Date, "now");
+  clock.mockReturnValueOnce(1_000).mockReturnValueOnce(1_000).mockReturnValueOnce(4_500);
+  await withDbQueryCache(["getTimeScoreRows", "2026", "09", "23"], async () => [{ rows: 1 }]);
+  expect(warn).toHaveBeenCalledWith(
+    '{"elapsedMs":3500,"event":"slow_db_query","query":"getTimeScoreRows"}',
+  );
+});
+
+test("does not log fast uncached loads", async () => {
+  vi.stubGlobal("caches", undefined);
+  vi.stubEnv("PC_KEIBA_DB_CACHE_TTL_SECONDS", "0");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await withDbQueryCache(["getRaceRunners", "2026", "09", "23"], async () => [{ horses: 1 }]);
+  expect(warn).not.toHaveBeenCalled();
+});

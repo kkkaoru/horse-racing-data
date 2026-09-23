@@ -63,7 +63,10 @@
     "consumers": [
       {
         "queue": "pc-keiba-detail-section-cache-warm",
-        "max_batch_size": 3,
+        // 10 (was 3): ~94% of a backlog batch is skipped past-day/heatmap
+        // messages, so small batches capped drain rate. Worst case 10 warms /
+        // 2 in flight x 120s abort = 10 min, inside the 15 min consumer limit.
+        "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 5,
         "max_concurrency": 2,
