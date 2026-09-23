@@ -21,20 +21,23 @@ import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readines
 const readiness = vi.mocked(getFocusedFullDayBaseReadiness);
 const fanout = vi.mocked(fanOutPredictionsAfterDayBaseHit);
 
+const containerGet = vi.fn(() => ({
+  fetch: vi.fn(
+    async () =>
+      new Response(
+        '{"type":"result","status":"success","parquetBase64":"YQ==","parquetKey":"feat.parquet"}\n',
+      ),
+  ),
+}));
+const workflowCreate = vi.fn(async () => ({ id: "race-day-nar-20260923" }));
+
 const env = {
   FINISH_POSITION_PREDICT_CONTAINER: {
-    get: vi.fn(() => ({
-      fetch: vi.fn(
-        async () =>
-          new Response(
-            '{"type":"result","status":"success","parquetBase64":"YQ==","parquetKey":"feat.parquet"}\n',
-          ),
-      ),
-    })),
+    get: containerGet,
     idFromName: vi.fn(() => ({ name: "predict-nar" })),
   },
   PC_KEIBA_VIEWER: { fetch: vi.fn(async () => new Response("warmed")) },
-  RACE_DAY_WORKFLOW: { create: vi.fn(async () => ({ id: "race-day-nar-20260923" })) },
+  RACE_DAY_WORKFLOW: { create: workflowCreate },
   TRIGGER_TOKEN: "secret-token",
 } as unknown as Env;
 
@@ -78,7 +81,7 @@ test("workflow builds once when day-base is missing", async () => {
     ),
   };
   await runRaceDay(env, step, { category: "jra", runYmd: "20260923" });
-  expect(env.FINISH_POSITION_PREDICT_CONTAINER.get).toHaveBeenCalled();
+  expect(containerGet).toHaveBeenCalled();
 });
 
 test("workflow class delegates to the same runner", async () => {
@@ -108,7 +111,7 @@ test("admin race-day starts one workflow per category and warms heatmaps once", 
     env,
   );
   expect(response.status).toBe(200);
-  expect(env.RACE_DAY_WORKFLOW?.create).toHaveBeenCalledTimes(3);
+  expect(workflowCreate).toHaveBeenCalledTimes(3);
 });
 
 test("admin race-day rejects a bad token", async () => {
