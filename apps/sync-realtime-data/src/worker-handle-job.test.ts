@@ -556,7 +556,6 @@ it.each([undefined, []])(
       await import("./running-style-cron");
     const { materializeRunningStyleFeatureParquetsForDate } =
       await import("./running-style-feature-materialize");
-    const { logFetch } = await import("./storage");
     vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
       date: "20260512",
       materializeError: "foundation missing",
@@ -585,7 +584,6 @@ it("handleJob acknowledges a strict-barrier skip when the bounded prewarm reques
     await import("./running-style-cron");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
-  const { logFetch } = await import("./storage");
   vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
     date: "20260512",
     materializeError: "foundation missing",
