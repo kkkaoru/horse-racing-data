@@ -34,6 +34,9 @@ interface CatalogGroupableRateRow {
 
 export interface WinRateHeatmapCatalogStats {
   bloodlineRows: BloodlineStatsRow[];
+  // Set when the catalog's bloodline query failed; bloodlineRows is empty and
+  // the caller must source bloodline stats elsewhere.
+  bloodlineUnavailable?: true;
   similarRows: SimilarRaceStatsRow[];
 }
 
@@ -327,6 +330,7 @@ export const fetchWinRateHeatmapStatsFromCatalog = async (
   }
   return {
     bloodlineRows: bloodlineRows.filter((row) => row !== null).map(toBloodlineStatsRow),
+    ...(payload.bloodlineUnavailable === true ? { bloodlineUnavailable: true } : {}),
     similarRows: similarRows.filter((row) => row !== null).map(toSimilarStatsRow),
   };
 };

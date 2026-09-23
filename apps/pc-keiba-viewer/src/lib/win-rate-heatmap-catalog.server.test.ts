@@ -239,6 +239,49 @@ it("maps zero-start Catalog rows to zero rates", async () => {
   });
 });
 
+it("propagates the Catalog bloodlineUnavailable flag with the similar rows", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      bloodlineRows: [],
+      bloodlineUnavailable: true,
+      similarRows: [
+        {
+          details: [],
+          kind: "jockey",
+          name: "武豊",
+          places: 3,
+          shows: 5,
+          starts: 10,
+          umaban: 1,
+          wins: 1,
+        },
+      ],
+    }),
+  );
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+
+  await expect(fetchWinRateHeatmapStatsFromCatalog(query)).resolves.toStrictEqual({
+    bloodlineRows: [],
+    bloodlineUnavailable: true,
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "武豊",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 5,
+        showRate: 50,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+  });
+});
+
 it("accepts numeric Catalog fields that stringify to identifiers", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
     Response.json({

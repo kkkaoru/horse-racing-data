@@ -2394,30 +2394,46 @@ const loadHeatmapSectionSource = async (
   }
 };
 
+// The catalog flags bloodlineUnavailable when its bloodline R2 SQL query
+// failed (NAR 30/05 on 2026-09-23 never answered). Fill those rows from the
+// database, the same source other sections use when the catalog is absent.
+const fillUnavailableHeatmapBloodline = async (
+  stats: WinRateHeatmapCatalogStats | null,
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+): Promise<WinRateHeatmapCatalogStats | null> =>
+  stats?.bloodlineUnavailable === true
+    ? { bloodlineRows: await getBloodlineStats(race, settings), similarRows: stats.similarRows }
+    : stats;
+
 const loadHeatmapCatalogStats = async (
   params: DetailSectionParams,
   settings: SimilarRaceStatsSettings,
-  source: RaceSource,
+  race: RaceDetail,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
-  const catalogStats = await fetchWinRateHeatmapStatsFromCatalog({
-    ...buildWinRateHeatmapCatalogQuery(params, settings, source, true),
-    includeJockeyFrame: true,
-  });
+  const catalogStats = await fillUnavailableHeatmapBloodline(
+    await fetchWinRateHeatmapStatsFromCatalog({
+      ...buildWinRateHeatmapCatalogQuery(params, settings, race.source, true),
+      includeJockeyFrame: true,
+    }),
+    race,
+    settings,
+  );
   if (
     catalogStats === null ||
     (hasRateRows(catalogStats.similarRows) && hasRateRows(catalogStats.bloodlineRows))
   ) {
     return catalogStats;
   }
-  return await fetchWinRateHeatmapStatsFromCatalog({
-    ...buildWinRateHeatmapCatalogQuery(
-      params,
-      relaxAllConditionAnalysisSettings(settings),
-      source,
-      true,
-    ),
-    includeJockeyFrame: true,
-  });
+  const relaxedSettings = relaxAllConditionAnalysisSettings(settings);
+  return await fillUnavailableHeatmapBloodline(
+    await fetchWinRateHeatmapStatsFromCatalog({
+      ...buildWinRateHeatmapCatalogQuery(params, relaxedSettings, race.source, true),
+      includeJockeyFrame: true,
+    }),
+    race,
+    relaxedSettings,
+  );
 };
 
 export const getDetailSectionPayload = async (
@@ -2433,7 +2449,7 @@ export const getDetailSectionPayload = async (
   }
   const [catalogStats, resultsPayload, conditionPayload, partnershipRows, liveHorseWeights] =
     await Promise.all([
-      loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race.source),
+      loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race),
       loadHeatmapSectionSource("results", params),
       loadHeatmapSectionSource("condition", params),
       fetchHeatmapPartnershipRows(

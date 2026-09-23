@@ -2351,6 +2351,63 @@ it("requests same-condition owner counts on both initial and relaxed heatmap que
   );
 });
 
+it("fills heatmap bloodline rows from the database when the catalog flags them unavailable", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    bloodlineUnavailable: true,
+    similarRows: [
+      {
+        category: "jockey",
+        currentHorseNumbers: "1",
+        details: [],
+        horseCount: 0,
+        name: "武豊",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 5,
+        showRate: 50,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+  });
+  getBloodlineStatsMock.mockResolvedValue([
+    {
+      category: "sire",
+      currentHorseNumbers: "1",
+      details: [],
+      horseCount: 1,
+      name: "ディープインパクト",
+      quinellaCount: 4,
+      quinellaRate: 20,
+      showCount: 6,
+      showRate: 30,
+      starts: 20,
+      winCount: 2,
+      winRate: 10,
+    },
+  ]);
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "23",
+    keibajoCode: "06",
+    month: "09",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+  expect(payload).toMatchObject({
+    bloodlineRows: [{ category: "sire", name: "ディープインパクト", starts: 20 }],
+    similarRows: [{ category: "jockey", name: "武豊", starts: 10 }],
+    type: "win-rate-heatmap",
+  });
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledOnce();
+});
+
 it("captures live weights in the warm payload without altering runner identities", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
