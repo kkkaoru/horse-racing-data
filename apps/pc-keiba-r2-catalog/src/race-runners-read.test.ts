@@ -1,5 +1,7 @@
 // Runs with bun through Vitest; no provider I/O.
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import {
   buildRaceRunnersIdentitySql,
@@ -24,7 +26,10 @@ const NAR: RaceRunnersReadInput = { ...JRA, source: "nar", keibajoCode: "54", ra
 // SQL answered 40004 (No field named se.sire_name), the read 503'd, and the
 // viewer replaced the whole race page with an error boundary.
 const MIRROR_REFERENCE: string = readFileSync(
-  new URL("../../../apps/local-postgresql/docs/pc-keiba-postgresql-reference.md", import.meta.url),
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../apps/local-postgresql/docs/pc-keiba-postgresql-reference.md",
+  ),
   "utf8",
 );
 const mirrorColumns = (table: string): Set<string> => {
