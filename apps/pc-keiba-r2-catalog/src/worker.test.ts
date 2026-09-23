@@ -1859,9 +1859,11 @@ it("queries R2 SQL for heatmap stats and maps empty details arrays", async () =>
       },
     ],
   });
-  expect(harness.fetchCalls).toHaveLength(2);
+  // bloodline, known-pedigree count, similar
+  expect(harness.fetchCalls).toHaveLength(3);
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("ketto_joho_01b");
-  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("'jockey' AS kind");
+  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("SELECT count(*) AS known");
+  expect(String(harness.fetchCalls[2]?.init?.body)).toMatch("'jockey' AS kind");
   expect(harness.cacheCalls.puts).toHaveLength(1);
   expect(harness.kvCalls.puts).toHaveLength(1);
 });
@@ -1941,7 +1943,8 @@ it("queries NAR heatmap stats with optional filters off and ignores rows-shaped 
   );
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toStrictEqual({ bloodlineRows: [], similarRows: [] });
-  expect(harness.fetchCalls).toHaveLength(2);
+  // bloodline, known-pedigree count, similar
+  expect(harness.fetchCalls).toHaveLength(3);
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("FROM pc_keiba.nvd_se se");
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("FROM pc_keiba.jvd_se se");
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("UNION ALL");
