@@ -96,10 +96,12 @@ const CACHE_WARM_HEADER = "X-PC-Keiba-Cache-Warm";
 const CACHE_WARM_HEADER_VALUE = "workflow";
 const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
 // A warm normally takes 10-20s, but an occasional self request hangs until
-// the step timeout. Abort each request early and retry instead of waiting.
+// the step timeout. Abort each request early. Keep per-race retries small:
+// races run sequentially, so a race that keeps failing would otherwise hold
+// the rest of its venue for ~20 minutes. The */15 sweep is the outer retry.
 const HEATMAP_FETCH_TIMEOUT_MS = 120_000;
 const HEATMAP_WARM_STEP_CONFIG: HeatmapWarmStepConfig = {
-  retries: { backoff: "exponential", delay: "15 seconds", limit: 6 },
+  retries: { backoff: "constant", delay: "10 seconds", limit: 1 },
   timeout: "3 minutes",
 };
 // Instance ids are deterministic per slot so duplicate triggers inside one

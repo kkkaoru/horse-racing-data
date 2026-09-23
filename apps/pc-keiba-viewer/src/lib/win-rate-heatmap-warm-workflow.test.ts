@@ -360,7 +360,7 @@ it("runs one durable step per race in order", async () => {
   ]);
   expect(names).toStrictEqual(["warm-30-01", "warm-30-02"]);
   expect(configs[0]).toStrictEqual({
-    retries: { backoff: "exponential", delay: "15 seconds", limit: 6 },
+    retries: { backoff: "constant", delay: "10 seconds", limit: 1 },
     timeout: "3 minutes",
   });
 });
