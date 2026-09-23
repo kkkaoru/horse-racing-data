@@ -84,6 +84,13 @@ const conditionKeySql = (codeColumn: string, meishoColumn: string): string => {
   return `CASE ${whens} ELSE nullif(split_part(trim(${meishoColumn}), ' ', 1), '') END`;
 };
 
+// R2 SQL parses `a AND b IS NOT DISTINCT FROM c` as `(a AND b) IS NOT
+// DISTINCT FROM c` and rejects it (40004 "Cannot infer common argument type
+// for logical boolean operation Utf8 AND Boolean"), which failed every
+// overall-score matched profile read. Always parenthesize the comparison.
+const notDistinctSql = (left: string, right: string): string =>
+  `(${left} IS NOT DISTINCT FROM ${right})`;
+
 export const buildMatchedRacePredicates = (input: MatchedProfileInput): string[] => {
   const settings: MatchedProfileSettings = input.settings;
   const race: MatchedProfileRace = input.race;
@@ -99,21 +106,22 @@ export const buildMatchedRacePredicates = (input: MatchedProfileInput): string[]
     const currentCode: string = `'${(race.kyosoJokenCode ?? "").replaceAll("'", "''")}'`;
     const currentMeisho: string = `'${(race.kyosoJokenMeisho ?? "").replaceAll("'", "''")}'`;
     predicates.push(
-      `${conditionKeySql("ra.kyoso_joken_code", "ra.kyoso_joken_meisho")} IS NOT DISTINCT FROM ${conditionKeySql(currentCode, currentMeisho)}`,
+      notDistinctSql(
+        conditionKeySql("ra.kyoso_joken_code", "ra.kyoso_joken_meisho"),
+        conditionKeySql(currentCode, currentMeisho),
+      ),
     );
   }
   const track: string | null = quote(race.trackCode);
-  if (settings.includeTrackCode)
-    predicates.push(`ra.track_code IS NOT DISTINCT FROM ${track ?? "NULL"}`);
+  if (settings.includeTrackCode) predicates.push(notDistinctSql("ra.track_code", track ?? "NULL"));
   const grade: string | null = quote(race.gradeCode);
-  if (settings.includeGrade)
-    predicates.push(`ra.grade_code IS NOT DISTINCT FROM ${grade ?? "NULL"}`);
+  if (settings.includeGrade) predicates.push(notDistinctSql("ra.grade_code", grade ?? "NULL"));
   if (settings.includeRaceTitle) {
     const title: string | null = quote(
       race.kyosomeiHondai === null ? null : race.kyosomeiHondai.replace(/^[\s　]+|[\s　]+$/gu, ""),
     );
     predicates.push(
-      `(ra.grade_code IN ('A', 'F') AND nullif(replace(btrim(coalesce(ra.kyosomei_hondai, '')), chr(12288), ''), '') IS NOT DISTINCT FROM ${title ?? "NULL"})`,
+      `(ra.grade_code IN ('A', 'F') AND ${notDistinctSql("nullif(replace(btrim(coalesce(ra.kyosomei_hondai, '')), chr(12288), ''), '')", title ?? "NULL")})`,
     );
   }
   const month: string | null = monthWindowConditionSql(

@@ -38,6 +38,14 @@ const input: MatchedProfileInput = {
   limit: 500,
 };
 
+it("parenthesizes every IS NOT DISTINCT FROM so R2 SQL does not bind it to AND", () => {
+  const sql: string = buildMatchedRacesSql(input);
+  expect(sql).toMatch("AND (ra.track_code IS NOT DISTINCT FROM '11')");
+  expect(sql).toMatch("AND (ra.grade_code IS NOT DISTINCT FROM 'A')");
+  expect(sql).toMatch("ra.grade_code IN ('A', 'F') AND (nullif(");
+  expect(sql.split("IS NOT DISTINCT FROM").length - 1).toBe(4);
+});
+
 it("builds the matched-race query with the window and cell predicates", () => {
   const sql: string = buildMatchedRacesSql(input);
   expect(sql).toMatch("FROM pc_keiba.jvd_ra ra");
