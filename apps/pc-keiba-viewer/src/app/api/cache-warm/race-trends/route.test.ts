@@ -153,3 +153,30 @@ it("POST skips a due trend whose current generation is already warm", async () =
   expect(body.skippedValid).toStrictEqual(1);
   expect(sendMock).not.toHaveBeenCalled();
 });
+
+it("POST does not re-enqueue a trend variant already enqueued for the same generation", async () => {
+  getRacesByDateMock.mockResolvedValue([buildJraRow({ keibajoCode: "05", raceBango: "01" })]);
+  const store = new Map<string, string>();
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    ...buildQueueEnv(),
+    DETAIL_SECTION_CACHE_KV: {
+      get: async (key: string) => store.get(key) ?? null,
+      put: async (key: string, value: string) => {
+        store.set(key, value);
+      },
+    },
+  });
+  const first = await readJsonRecord(
+    await POST(buildAuthedRequest("?date=2026-05-29&now=2026-05-29T02:05:00Z")),
+  );
+  const sentAfterFirst: number = sendMock.mock.calls.length;
+  const second = await readJsonRecord(
+    await POST(buildAuthedRequest("?date=2026-05-29&now=2026-05-29T02:10:00Z")),
+  );
+  expect(sentAfterFirst).toBe(1);
+  expect(first.enqueued).toStrictEqual(1);
+  expect(first.skippedAlreadyEnqueued).toStrictEqual(0);
+  expect(second.enqueued).toStrictEqual(0);
+  expect(second.skippedAlreadyEnqueued).toStrictEqual(1);
+  expect(sendMock).toHaveBeenCalledTimes(1);
+});

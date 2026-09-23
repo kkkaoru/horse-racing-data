@@ -13,6 +13,10 @@ import {
   getRaceStartTimeMs,
   type RaceTrendCacheWarmMessage,
 } from "../../../../lib/race-trend-cache";
+import {
+  filterUnmarkedRaceTrendCandidates,
+  markRaceTrendCandidatesEnqueued,
+} from "../../../../lib/race-trend-enqueue-marker";
 
 export const dynamic = "force-dynamic";
 
@@ -131,19 +135,27 @@ export async function POST(request: Request) {
           };
     }),
   );
-  const messages = candidateMessages.filter((message) => message !== null);
+  const pending = candidateMessages.filter((message) => message !== null);
+  // Skip variants already enqueued for this generation in the last marker
+  // window so a lagging consumer does not accumulate duplicates.
+  const messages = await filterUnmarkedRaceTrendCandidates({
+    candidates: pending,
+    kv: env.DETAIL_SECTION_CACHE_KV,
+  });
   await Promise.all(
     messages.map(({ delaySeconds, message }) =>
       queue.send(message, delaySeconds > 0 ? { delaySeconds } : undefined),
     ),
   );
+  await markRaceTrendCandidatesEnqueued({ candidates: messages, kv: env.DETAIL_SECTION_CACHE_KV });
 
   return NextResponse.json({
     date: `${target.year}-${target.month}-${target.day}`,
     dueRaceCount: dueMessages.length,
     enqueued: messages.length,
     raceCount: races.length,
-    skippedValid: dueMessages.length - messages.length,
+    skippedAlreadyEnqueued: pending.length - messages.length,
+    skippedValid: dueMessages.length - pending.length,
     variantsPerRace: RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   });
 }
