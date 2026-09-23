@@ -35,6 +35,6 @@ it("warms each race through the self reference binding", async () => {
   );
   expect(results).toStrictEqual([{ raceNumber: "01", status: "hit" }]);
   expect(selfFetch.mock.calls[0]?.[0].url).toBe(
-    "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap",
+    "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap?__cacheProbe=1",
   );
 });

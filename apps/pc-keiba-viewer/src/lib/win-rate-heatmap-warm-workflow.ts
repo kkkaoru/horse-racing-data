@@ -92,6 +92,8 @@ interface VenueRaces {
 const INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
 const HEATMAP_SECTION = "win-rate-heatmap";
 const HEATMAP_CACHE_HEADER = "X-Win-Rate-Heatmap-Cache";
+// Body-less cache check served by the heatmap section route.
+const HEATMAP_CACHE_PROBE_PARAM = "__cacheProbe";
 const CACHE_WARM_HEADER = "X-PC-Keiba-Cache-Warm";
 const CACHE_WARM_HEADER_VALUE = "workflow";
 const HEATMAP_STORED_HEADERS: ReadonlyArray<string> = ["HIT", "MISS-STORED"];
@@ -170,8 +172,10 @@ export const warmHeatmapRace = async (
   params: HeatmapWarmWorkflowParams,
   raceNumber: string,
 ): Promise<HeatmapWarmRaceStatus> => {
+  const probeUrl = buildHeatmapUrl(params, raceNumber);
+  probeUrl.searchParams.set(HEATMAP_CACHE_PROBE_PARAM, "1");
+  if (isHeatmapHit(await fetchHeatmap(fetchSelf, probeUrl))) return "hit";
   const url = buildHeatmapUrl(params, raceNumber);
-  if (isHeatmapHit(await fetchHeatmap(fetchSelf, url))) return "hit";
   url.searchParams.set(DETAIL_SECTION_CACHE_WARM_PARAM, "1");
   const warmed = await fetchHeatmap(fetchSelf, url);
   if (isHeatmapStored(warmed)) return "stored";

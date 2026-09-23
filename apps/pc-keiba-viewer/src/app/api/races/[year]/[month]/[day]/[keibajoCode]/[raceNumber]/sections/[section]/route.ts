@@ -81,6 +81,10 @@ const FINISH_PREDICTION_BROWSER_CACHE_CONTROL = "private, no-cache, max-age=0, m
 const HTTP_STATUS_NO_CONTENT = 204;
 const HTTP_STATUS_METHOD_NOT_ALLOWED = 405;
 const HEATMAP_SECTION_UNAVAILABLE = "unavailable";
+// Workflow cache probe: answer only status + X-Win-Rate-Heatmap-Cache with no
+// body, so the caller never has to cancel a multi-MB payload (which Workers
+// logs as a "canceled" outcome).
+const HEATMAP_CACHE_PROBE_PARAM = "__cacheProbe";
 
 const isValidSection = (section: string): section is DetailSection =>
   SECTIONS.some((candidate) => candidate === section);
@@ -310,6 +314,8 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   const isQueueWarm = requestUrl.searchParams.has(DETAIL_SECTION_CACHE_WARM_PARAM);
   const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
   sectionSearchParams.delete(EXPECTED_PREDICTION_GENERATED_AT_PARAM);
+  const isHeatmapCacheProbe = requestUrl.searchParams.has(HEATMAP_CACHE_PROBE_PARAM);
+  sectionSearchParams.delete(HEATMAP_CACHE_PROBE_PARAM);
   const rawExpectedPredictionGeneratedAt = requestUrl.searchParams.get(
     EXPECTED_PREDICTION_GENERATED_AT_PARAM,
   );
@@ -350,6 +356,18 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       raceNumber,
     );
     const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey, currentRunners);
+    if (isHeatmapCacheProbe) {
+      const hit =
+        cachedHeatmap?.presentation !== undefined &&
+        isHeatmapCacheReady(cachedHeatmap, currentRunners);
+      return new Response(null, {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "X-Win-Rate-Heatmap-Cache": hit ? "HIT" : "MISS",
+        },
+        status: hit ? 204 : 503,
+      });
+    }
     if (
       cachedHeatmap?.presentation !== undefined &&
       !isQueueWarm &&
@@ -417,11 +435,13 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     } catch {
       return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
     }
-    return NextResponse.json(heatmapPayload, {
+    // Warm callers need only the status and cache header; skip the payload.
+    return new Response(null, {
       headers: {
         "Cache-Control": "private, max-age=0, no-store",
         "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
       },
+      status: 200,
     });
   }
   const defaultSectionRequest = sectionSearchParams.toString() === "";

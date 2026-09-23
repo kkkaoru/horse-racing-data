@@ -180,7 +180,7 @@ it("skips the warm when the heatmap cache already hits", async () => {
   expect(fetchSelf).toHaveBeenCalledTimes(1);
   const request = fetchSelf.mock.calls[0]?.[0];
   expect(request?.url).toBe(
-    "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap",
+    "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap?__cacheProbe=1",
   );
   expect(request?.headers.get("X-PC-Keiba-Cache-Warm")).toBe("workflow");
   expect(request?.signal.aborted).toBe(false);
