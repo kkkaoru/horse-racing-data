@@ -35,6 +35,13 @@ import { readCatalogRaceDetail } from "../lib/race-detail-catalog";
 import { readCatalogRaceHistory } from "../lib/race-history-catalog";
 import { readCatalogOverseasRaceHistory } from "../lib/race-history-overseas-catalog";
 import { readCatalogRaceMatchedProfile } from "../lib/race-matched-profile-catalog";
+import {
+  computeFinishPositionSimilarity,
+  computeRacePaceSimilarity,
+  parseVectorText,
+  type FinishPositionCandidate,
+  type RacePaceCornerCandidate,
+} from "../lib/race-pace-similarity";
 import { readCatalogRaceRunners } from "../lib/race-runners-catalog";
 import type {
   AbilityTest,
@@ -3033,6 +3040,62 @@ const buildCornerSimilarityVector = (
   return `[${values.map((value) => value.toFixed(6)).join(",")}]`;
 };
 
+const loadRacePaceCornerCandidates = async (
+  race: RaceDetail,
+  distance: number | null,
+): Promise<RacePaceCornerCandidate[]> => {
+  try {
+    const result = await getDb().execute<{
+      corner1_norm: string | null;
+      corner2_norm: string | null;
+      corner3_norm: string | null;
+      corner4_norm: string | null;
+      feature_vector: string | null;
+    }>(sql`
+      select
+        corner1_norm,
+        corner2_norm,
+        corner3_norm,
+        corner4_norm,
+        feature_vector::text feature_vector
+      from race_entry_corner_features
+      where
+        source = ${race.source}
+        and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
+        and (${distance}::integer is null or kyori between ${distance}::integer - 400 and ${distance}::integer + 400)
+        and left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1)
+        and keibajo_code = ${race.keibajoCode}
+        and race_date >= ${`${Number(race.kaisaiNen) - 3}${race.kaisaiTsukihi}`}
+      order by race_date desc
+      limit 2500
+    `);
+    return result.rows.flatMap((row): RacePaceCornerCandidate[] => {
+      const vector = parseVectorText(row.feature_vector);
+      return vector === null
+        ? []
+        : [
+            {
+              corners: [
+                nullableFiniteNumber(row.corner1_norm),
+                nullableFiniteNumber(row.corner2_norm),
+                nullableFiniteNumber(row.corner3_norm),
+                nullableFiniteNumber(row.corner4_norm),
+              ],
+              vector,
+            },
+          ];
+    });
+  } catch {
+    return [];
+  }
+};
+
+const nullableFiniteNumber = (value: string | null): number | null => {
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export const getRacePaceSimilarityFeatures = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<RacePaceSimilarityFeature[]> => {
     return withDbQueryCache(
@@ -3052,91 +3115,19 @@ export const getRacePaceSimilarityFeatures = cache(
         if (runnerCount <= 1) {
           return [];
         }
-        const rows = await Promise.all(
-          runners.map(async (runner): Promise<RacePaceSimilarityFeature | null> => {
+        const distance = parseNumericText(race.kyori, "");
+        // The candidate set depends only on the race, so read it once and rank
+        // each runner in memory (was one pgvector query per runner).
+        const candidates = await loadRacePaceCornerCandidates(race, distance);
+        return runners
+          .map((runner): RacePaceSimilarityFeature | null => {
             const horseNumber = runner.umaban?.replace(/^0+/u, "") || runner.umaban || "";
-            if (!horseNumber) {
-              return null;
-            }
-            const distance = parseNumericText(race.kyori, "");
-            const vector = buildCornerSimilarityVector(race, runner, runnerCount);
-            try {
-              const result = await getDb().execute<{
-                corner1: string | null;
-                corner2: string | null;
-                corner3: string | null;
-                corner4: string | null;
-                neighbor_count: string;
-                similarity_score: string | null;
-              }>(sql`
-              with nearest as (
-                select *
-                from (
-                  select
-                    corner1_norm,
-                    corner2_norm,
-                    corner3_norm,
-                    corner4_norm,
-                    feature_vector
-                  from race_entry_corner_features
-                  where
-                    source = ${race.source}
-                    and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
-                    and (${distance}::integer is null or kyori between ${distance}::integer - 400 and ${distance}::integer + 400)
-                    and left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1)
-                    and keibajo_code = ${race.keibajoCode}
-                    and race_date >= ${`${Number(race.kaisaiNen) - 3}${race.kaisaiTsukihi}`}
-                  order by race_date desc
-                  limit 2500
-                ) candidates
-                order by feature_vector <-> ${vector}::vector
-                limit 40
-              ),
-              weighted_nearest as (
-                select
-                  corner1_norm,
-                  corner2_norm,
-                  corner3_norm,
-                  corner4_norm,
-                  1 / (1 + (feature_vector <-> ${vector}::vector)) weight
-                from nearest
-              )
-              select
-                sum(corner1_norm * weight) / nullif(sum(weight), 0) corner1,
-                sum(corner2_norm * weight) / nullif(sum(weight), 0) corner2,
-                sum(corner3_norm * weight) / nullif(sum(weight), 0) corner3,
-                sum(corner4_norm * weight) / nullif(sum(weight), 0) corner4,
-                count(*)::text neighbor_count,
-                avg(weight)::text similarity_score
-              from weighted_nearest
-            `);
-              const row = result.rows[0];
-              const neighborCount = Number(row?.neighbor_count ?? 0);
-              if (!row || neighborCount === 0) {
-                return null;
-              }
-              const scaleCorner = (value: string | null): number | null => {
-                if (value === null) {
-                  return null;
-                }
-                const parsed = Number(value);
-                return Number.isFinite(parsed) ? parsed * (runnerCount - 1) + 1 : null;
-              };
-              return {
-                corner1: scaleCorner(row.corner1),
-                corner2: scaleCorner(row.corner2),
-                corner3: scaleCorner(row.corner3),
-                corner4: scaleCorner(row.corner4),
-                horseNumber,
-                neighborCount,
-                similarityScore: Number(row.similarity_score ?? 0),
-              };
-            } catch {
-              return null;
-            }
-          }),
-        );
-        return rows.filter((row): row is RacePaceSimilarityFeature => row !== null);
+            const vector = parseVectorText(buildCornerSimilarityVector(race, runner, runnerCount));
+            return !horseNumber || vector === null
+              ? null
+              : computeRacePaceSimilarity({ candidates, horseNumber, runnerCount, vector });
+          })
+          .filter((row): row is RacePaceSimilarityFeature => row !== null);
       },
     );
   },
@@ -3210,6 +3201,49 @@ export const getRacePaceModelPredictionFeatures = cache(
   },
 );
 
+const loadFinishPositionCandidates = async (
+  race: RaceDetail,
+): Promise<FinishPositionCandidate[]> => {
+  const distance = parseNumericText(race.kyori, "");
+  const isBanEi = race.source === "nar" && race.keibajoCode === "83";
+  try {
+    const result = await getDb().execute<{
+      feature_vector: string | null;
+      finish_norm: string | null;
+      finish_position: string | null;
+    }>(sql`
+      select
+        feature_vector::text feature_vector,
+        finish_norm,
+        finish_position
+      from race_entry_corner_features
+      where
+        source = ${race.source}
+        and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
+        and race_date >= ${`${Number(race.kaisaiNen) - 10}${race.kaisaiTsukihi}`}
+        and finish_norm is not null
+        and (${distance}::integer is null or kyori between ${distance}::integer - 500 and ${distance}::integer + 500)
+        and (${isBanEi}::boolean or left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1))
+        and (
+          ${race.source} <> 'nar'
+          or (${isBanEi}::boolean and keibajo_code = '83')
+          or (not ${isBanEi}::boolean and keibajo_code <> '83')
+        )
+      order by race_date desc
+      limit 8000
+    `);
+    return result.rows.flatMap((row): FinishPositionCandidate[] => {
+      const vector = parseVectorText(row.feature_vector);
+      const finishNorm = nullableFiniteNumber(row.finish_norm);
+      return vector === null || finishNorm === null
+        ? []
+        : [{ finishNorm, finishPosition: nullableFiniteNumber(row.finish_position), vector }];
+    });
+  } catch {
+    return [];
+  }
+};
+
 export const getFinishPositionSimilarityFeatures = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionSimilarityFeature[]> => {
     return withDbQueryCache(
@@ -3229,88 +3263,18 @@ export const getFinishPositionSimilarityFeatures = cache(
         if (runnerCount <= 1) {
           return [];
         }
-        const rows = await Promise.all(
-          runners.map(async (runner): Promise<FinishPositionSimilarityFeature | null> => {
+        // Read the race-only candidate set once and rank each runner in memory
+        // (was one pgvector query per runner over the same 8,000 rows).
+        const candidates = await loadFinishPositionCandidates(race);
+        return runners
+          .map((runner): FinishPositionSimilarityFeature | null => {
             const horseNumber = runner.umaban?.replace(/^0+/u, "") || runner.umaban || "";
-            if (!horseNumber) {
-              return null;
-            }
-            const distance = parseNumericText(race.kyori, "");
-            const vector = buildCornerSimilarityVector(race, runner, runnerCount);
-            const isBanEi = race.source === "nar" && race.keibajoCode === "83";
-            try {
-              const result = await getDb().execute<{
-                average_finish_norm: string | null;
-                neighbor_count: string;
-                show_rate: string | null;
-                similarity_score: string | null;
-                win_rate: string | null;
-              }>(sql`
-              with nearest as (
-                select *
-                from (
-                  select
-                    feature_vector,
-                    finish_norm,
-                    finish_position
-                  from race_entry_corner_features
-                  where
-                    source = ${race.source}
-                    and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
-                    and race_date >= ${`${Number(race.kaisaiNen) - 10}${race.kaisaiTsukihi}`}
-                    and finish_norm is not null
-                    and (${distance}::integer is null or kyori between ${distance}::integer - 500 and ${distance}::integer + 500)
-                    and (${isBanEi}::boolean or left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1))
-                    and (
-                      ${race.source} <> 'nar'
-                      or (${isBanEi}::boolean and keibajo_code = '83')
-                      or (not ${isBanEi}::boolean and keibajo_code <> '83')
-                    )
-                  order by race_date desc
-                  limit 8000
-                ) candidates
-                order by feature_vector <-> ${vector}::vector
-                limit 80
-              ),
-              weighted_nearest as (
-                select
-                  finish_norm,
-                  finish_position,
-                  1 / (1 + (feature_vector <-> ${vector}::vector)) weight
-                from nearest
-              )
-              select
-                sum(finish_norm * weight) / nullif(sum(weight), 0) average_finish_norm,
-                count(*)::text neighbor_count,
-                avg(case when finish_position = 1 then 1 else 0 end)::text win_rate,
-                avg(case when finish_position between 1 and 3 then 1 else 0 end)::text show_rate,
-                avg(weight)::text similarity_score
-              from weighted_nearest
-            `);
-              const row = result.rows[0];
-              const neighborCount = Number(row?.neighbor_count ?? 0);
-              if (!row || neighborCount === 0) {
-                return null;
-              }
-              const averageFinishNorm =
-                row.average_finish_norm === null ? null : Number(row.average_finish_norm);
-              return {
-                averageFinishPosition:
-                  averageFinishNorm === null || !Number.isFinite(averageFinishNorm)
-                    ? null
-                    : averageFinishNorm * (runnerCount - 1) + 1,
-                horseNumber,
-                neighborCount,
-                showRate: row.show_rate === null ? null : Number(row.show_rate),
-                similarityScore: Number(row.similarity_score ?? 0),
-                winRate: row.win_rate === null ? null : Number(row.win_rate),
-              };
-            } catch {
-              return null;
-            }
-          }),
-        );
-        return rows.filter((row): row is FinishPositionSimilarityFeature => row !== null);
+            const vector = parseVectorText(buildCornerSimilarityVector(race, runner, runnerCount));
+            return !horseNumber || vector === null
+              ? null
+              : computeFinishPositionSimilarity({ candidates, horseNumber, runnerCount, vector });
+          })
+          .filter((row): row is FinishPositionSimilarityFeature => row !== null);
       },
     );
   },
