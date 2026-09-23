@@ -160,6 +160,33 @@ it("logs non-Error heatmap query failures as strings", async () => {
   consoleError.mockRestore();
 });
 
+it("returns similar rows and flags bloodline when only the bloodline query fails", async () => {
+  const harness = createHeatmapHarness();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const rawBody = init?.body;
+      const text = typeof rawBody === "string" ? rawBody : "";
+      if (text.includes("'sire' AS category")) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(isRecord(body) ? [body.bloodlineUnavailable, body.bloodlineRows] : []).toStrictEqual([
+    true,
+    [],
+  ]);
+  expect(isRecord(body) && Array.isArray(body.similarRows) ? body.similarRows.length : 0).toBe(1);
+  expect(harness.cacheEntries.size).toBe(0);
+  expect(harness.kvEntries.size).toBe(0);
+  consoleError.mockRestore();
+});
+
 it("stores heatmap stats with a 36 hour catalog cache TTL", async () => {
   const harness = createHeatmapHarness();
   await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);

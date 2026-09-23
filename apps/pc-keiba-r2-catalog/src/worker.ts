@@ -133,6 +133,7 @@ const partnershipCohortCache = createPartnershipCohortCache();
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_R2_SQL_TIMEOUT_MS = 60_000;
+const HEATMAP_BLOODLINE_UNAVAILABLE_MARKER = '"bloodlineUnavailable":true';
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
 // the protocol's limit" -- see running-style-feature-ctes.ts's
 // includeOrderBy docstring for why this happens and only for large-enough
@@ -597,19 +598,28 @@ const heatmapStatsBody = async (
   filters: WinRateHeatmapStatsFilters,
 ): Promise<string> => {
   const fetchImpl = withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS);
+  // A bloodline query that never answers (NAR 30/05 on 2026-09-23) must not
+  // take the similar rows down with it. Flag it so the viewer can fill the
+  // bloodline rows from its database; the flagged body is never cached.
   const [bloodlineRows, similarRows] = await Promise.all([
     logHeatmapQueryFailure(
       "bloodline",
       filters,
       executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), fetchImpl),
-    ),
+    ).catch(() => null),
     logHeatmapQueryFailure(
       "similar",
       filters,
       executeR2Sql(env, buildWinRateHeatmapSimilarQuery(env, filters), fetchImpl),
     ),
   ]);
-  return JSON.stringify(normaliseWinRateHeatmapStatsPayload({ bloodlineRows, similarRows }));
+  const payload = normaliseWinRateHeatmapStatsPayload({
+    bloodlineRows: bloodlineRows ?? [],
+    similarRows,
+  });
+  return JSON.stringify(
+    bloodlineRows === null ? { ...payload, bloodlineUnavailable: true } : payload,
+  );
 };
 
 const handleWinRateHeatmapStats = async (
@@ -624,14 +634,16 @@ const handleWinRateHeatmapStats = async (
   const body = await coalesce(heatmapCoalesceKey(filters), () =>
     heatmapStatsBody(env, dependencies, filters),
   );
-  await populateCaches(
-    dependencies.cache,
-    env.CATALOG_KV,
-    descriptor,
-    body,
-    HEATMAP_CACHE_API_TTL_SECONDS,
-    HEATMAP_KV_TTL_SECONDS,
-  );
+  if (!body.includes(HEATMAP_BLOODLINE_UNAVAILABLE_MARKER)) {
+    await populateCaches(
+      dependencies.cache,
+      env.CATALOG_KV,
+      descriptor,
+      body,
+      HEATMAP_CACHE_API_TTL_SECONDS,
+      HEATMAP_KV_TTL_SECONDS,
+    );
+  }
   return jsonRowsResponse(body, "r2-sql");
 };
 
