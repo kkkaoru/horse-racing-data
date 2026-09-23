@@ -2408,6 +2408,29 @@ it("fills heatmap bloodline rows from the database when the catalog flags them u
   expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledOnce();
 });
 
+it("skips the relaxed heatmap catalog query after the catalog flags bloodline unavailable", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
+    bloodlineRows: [],
+    bloodlineUnavailable: true,
+    similarRows: [],
+  });
+  getBloodlineStatsMock.mockResolvedValue([]);
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "23",
+    keibajoCode: "06",
+    month: "09",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+  expect(payload).toMatchObject({ bloodlineRows: [], similarRows: [], type: "win-rate-heatmap" });
+  expect(fetchWinRateHeatmapStatsFromCatalogMock).toHaveBeenCalledOnce();
+  expect(getBloodlineStatsMock).toHaveBeenCalledOnce();
+});
+
 it("captures live weights in the warm payload without altering runner identities", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);

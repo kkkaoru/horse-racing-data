@@ -2411,16 +2411,16 @@ const loadHeatmapCatalogStats = async (
   settings: SimilarRaceStatsSettings,
   race: RaceDetail,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
-  const catalogStats = await fillUnavailableHeatmapBloodline(
-    await fetchWinRateHeatmapStatsFromCatalog({
-      ...buildWinRateHeatmapCatalogQuery(params, settings, race.source, true),
-      includeJockeyFrame: true,
-    }),
-    race,
-    settings,
-  );
+  const initialStats = await fetchWinRateHeatmapStatsFromCatalog({
+    ...buildWinRateHeatmapCatalogQuery(params, settings, race.source, true),
+    includeJockeyFrame: true,
+  });
+  const catalogStats = await fillUnavailableHeatmapBloodline(initialStats, race, settings);
+  // The relaxed query runs the same bloodline R2 SQL that just failed, so it
+  // would only add another abort wait (and push the warm past its timeout).
   if (
     catalogStats === null ||
+    initialStats?.bloodlineUnavailable === true ||
     (hasRateRows(catalogStats.similarRows) && hasRateRows(catalogStats.bloodlineRows))
   ) {
     return catalogStats;
