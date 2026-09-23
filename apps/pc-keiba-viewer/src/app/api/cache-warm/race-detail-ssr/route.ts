@@ -238,9 +238,12 @@ const getTargetDateParts = (searchParams: URLSearchParams): TargetDateParts =>
 
 export async function POST(request: Request) {
   const searchParams = new URL(request.url).searchParams;
+  // The queue consumer sends "queue" for single-race SSR warms. Accepting only
+  // "scheduled" 404'd every one of them since 2026-08-27 (e48b08bb); each
+  // message then burned its retries in the shared warm queue.
+  const warmHeader = request.headers.get("X-PC-Keiba-Cache-Warm");
   const allowed =
-    request.headers.get("X-PC-Keiba-Cache-Warm") === "scheduled" ||
-    searchParams.get("debug") === "1";
+    warmHeader === "scheduled" || warmHeader === "queue" || searchParams.get("debug") === "1";
   if (!allowed) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

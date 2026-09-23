@@ -133,6 +133,32 @@ it("POST returns 404 when neither the cache-warm header nor debug query is prese
   expect(getRacesByDateMock).not.toHaveBeenCalled();
 });
 
+it("POST accepts single-race warms sent by the queue consumer", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue(null);
+  const response = await POST(
+    new Request(`${ENDPOINT_URL}?date=2026-05-29&keibajo=05&race=01`, {
+      headers: { "X-PC-Keiba-Cache-Warm": "queue" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await readJsonRecord(response)).toStrictEqual({
+    date: "2026-05-29",
+    raceCount: 0,
+    warmed: 0,
+  });
+});
+
+it("POST rejects an unknown cache-warm header value", async () => {
+  const response = await POST(
+    new Request(ENDPOINT_URL, {
+      headers: { "X-PC-Keiba-Cache-Warm": "other" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(404);
+});
+
 it("POST queries getRacesByDate with the parsed date parts from the date query", async () => {
   getRacesByDateMock.mockResolvedValue([]);
   const response = await POST(buildAuthedRequest("?date=2026-05-29"));
