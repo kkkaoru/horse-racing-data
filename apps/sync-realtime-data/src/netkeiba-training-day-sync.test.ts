@@ -552,3 +552,20 @@ it("fails closed when Viewer warm returns an empty data section", async () => {
     status: "failed",
   });
 });
+
+it("skips a day without premium links before calling the Catalog or recording state", async () => {
+  const catalogFetch = vi.fn<(request: Request) => Promise<Response>>(async () =>
+    Response.json({ entries: [] }),
+  );
+  env.PC_KEIBA_R2_CATALOG.fetch = catalogFetch;
+  expect(await syncNetkeibaTrainingDay(env, "20260923")).toBe(0);
+  expect(catalogFetch).not.toHaveBeenCalled();
+  expect(queue.messages).toStrictEqual([]);
+  expect(
+    await env.REALTIME_DB.prepare(
+      "select count(*) as n from netkeiba_training_day_sync_state where race_date = ?",
+    )
+      .bind("20260923")
+      .first<{ n: number }>(),
+  ).toStrictEqual({ n: 0 });
+});

@@ -337,14 +337,17 @@ const shouldStart = async (db: D1Database, date: string): Promise<boolean> => {
 
 export const syncNetkeibaTrainingDay = async (env: Env, date: string): Promise<number> => {
   if (!(await shouldStart(env.REALTIME_DB, date))) return 0;
+  // No netkeiba premium (JRA) links means no JRA races to sync, e.g. a
+  // NAR-only weekday. Skip without touching the Catalog or marking the day
+  // failed: on 2026-09-23 the failed state was retried every ~10 minutes and
+  // each retry logged "fresh race entries are empty". A later discovery pass
+  // that finds links re-sends this job and syncs normally.
+  const links = await listPremiumLinks(env.REALTIME_DB, date);
+  if (links.length === 0) return 0;
   await markState(env.REALTIME_DB, date, "processing");
   try {
-    const [links, entries] = await Promise.all([
-      listPremiumLinks(env.REALTIME_DB, date),
-      loadCatalogEntries(env, date),
-    ]);
-    if (links.length === 0 || entries.length === 0)
-      throw new Error("netkeiba day sync source rows are missing");
+    const entries = await loadCatalogEntries(env, date);
+    if (entries.length === 0) throw new Error("netkeiba day sync source rows are missing");
     const records = await buildDayRecords(env, date, links, entries, new Date());
     const catalogRunId = await stageWithDailySync(env, date, records);
     await markState(env.REALTIME_DB, date, "catalog_pending", {
