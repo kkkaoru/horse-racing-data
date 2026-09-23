@@ -10,6 +10,7 @@ import {
   type RaceDetailSsrCacheWarmMessage,
 } from "../lib/race-detail-section-cache";
 import { buildRaceTrendApiPath, type RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
+import { formatTodayJstDate } from "./jst-date";
 
 const INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
 const SCHEDULE_PATH = "/api/cache-warm/race-detail-sections";
@@ -241,6 +242,9 @@ const isHeatmapWarmMessage = (message: CacheWarmMessage): boolean =>
   !isRaceDetailSsrCacheWarmMessage(message) &&
   message.section === "win-rate-heatmap";
 
+const isPastRaceMessage = (message: CacheWarmMessage, todayJstYmd: string): boolean =>
+  `${message.year}-${message.month}-${message.day}` < todayJstYmd;
+
 const ackMessage = (message: QueueWarmItem): void => {
   message.ack();
 };
@@ -339,11 +343,16 @@ export const handleRaceDetailSectionCacheQueue = async (
   env: CloudflareEnv,
   ctx: PcKeibaExecutionContext,
 ): Promise<void> => {
-  // Heatmaps are warmed by HeatmapWarmWorkflow. Ack legacy heatmap messages
-  // so the backlog stops spending consumer concurrency on them.
-  batch.messages.filter((message) => isHeatmapWarmMessage(message.body)).forEach(ackMessage);
+  // Heatmaps are warmed by HeatmapWarmWorkflow, and races before today (JST)
+  // are over: warming them only delays today's races behind a backlog (on
+  // 2026-09-23 about half of the consumer's warms were 9/21-9/22 races). Ack
+  // both without warming; past races still compute on demand.
+  const todayJstYmd = formatTodayJstDate(new Date());
+  const isSkipped = (message: QueueWarmItem): boolean =>
+    isHeatmapWarmMessage(message.body) || isPastRaceMessage(message.body, todayJstYmd);
+  batch.messages.filter(isSkipped).forEach(ackMessage);
   await mapInChunks(
-    batch.messages.filter((message) => !isHeatmapWarmMessage(message.body)),
+    batch.messages.filter((message) => !isSkipped(message)),
     WARM_IN_BATCH_CONCURRENCY,
     (message) => warmQueueMessage(openNextWorker, message, env, ctx),
   );

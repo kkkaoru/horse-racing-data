@@ -1,6 +1,6 @@
 // Run with bun (vitest).
 // @vitest-environment node
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import type { RaceDetailSsrCacheWarmMessage } from "../lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
@@ -40,6 +40,62 @@ const getFirstRequest = (worker: FakeWorker): Request => {
   }
   return calls[0][0];
 };
+
+// Queue messages in these tests are for 2026-08-22..27; pin "today" (JST) to
+// 2026-08-22 so none of them count as a past race.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-08-21T15:00:00.000Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+it("acks past-race messages without warming them", async () => {
+  const worker = {
+    fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),
+  };
+  const pastMessage = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "21",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "results" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  const todayMessage = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    body: {
+      day: "22",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "results" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    { messages: [pastMessage, todayMessage], queue: "pc-keiba-detail-section-cache-warm" },
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(worker.fetch).toHaveBeenCalledTimes(1);
+  const request = worker.fetch.mock.calls[0]?.[0];
+  if (!(request instanceof Request)) throw new Error("Request expected");
+  expect(new URL(request.url).pathname).toBe("/api/races/2026/08/22/07/10/sections/results");
+  expect(pastMessage.ack).toHaveBeenCalledTimes(1);
+  expect(pastMessage.retry).not.toHaveBeenCalled();
+  expect(todayMessage.ack).toHaveBeenCalledTimes(1);
+});
 
 it("schedule-today-posts-correct-url-with-date-query", async () => {
   const response = new Response("ok", { status: 200 });
