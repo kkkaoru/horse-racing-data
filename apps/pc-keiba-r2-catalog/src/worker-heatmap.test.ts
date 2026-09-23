@@ -111,7 +111,9 @@ it("bounds heatmap R2 SQL requests with a 60 second abort signal", async () => {
   };
   const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
   expect(response.status).toBe(200);
-  expect(timeoutSpy.mock.calls).toStrictEqual([[60_000], [60_000], [60_000]]);
+  // executeR2Sql sets its 120s default first; the heatmap wrapper replaces it with 60s.
+  expect(timeoutSpy.mock.calls.filter((call) => call[0] === 60_000).length).toBe(3);
+  expect(timeoutSpy.mock.calls.filter((call) => call[0] === 120_000).length).toBe(3);
   expect(signals.map((signal) => signal instanceof AbortSignal)).toStrictEqual([true, true, true]);
   timeoutSpy.mockRestore();
 });

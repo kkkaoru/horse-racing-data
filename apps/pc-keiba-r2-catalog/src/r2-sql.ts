@@ -17,6 +17,7 @@ const CODE_PATTERN = /^\d{2}$/u;
 const KETTO_TOROKU_BANGO_PATTERN = /^\d{10}$/u;
 const MIN_UMABAN: number = 1;
 const MAX_UMABAN: number = 18;
+const R2_SQL_REQUEST_TIMEOUT_MS: number = 120_000;
 
 const RUNNER_COLUMNS = `
     kaisai_nen,
@@ -587,6 +588,11 @@ export const executeR2Sql = async (
       "Content-Type": "application/json",
     },
     method: "POST",
+    // R2 SQL occasionally never answers (condition-history-stats and
+    // win-rate-heatmap-stats were canceled at ~930s on 2026-09-22/23, and the
+    // same queries later succeeded). Bound every request; a caller-provided
+    // fetch wrapper with a shorter signal (heatmap: 60s) still takes precedence.
+    signal: AbortSignal.timeout(R2_SQL_REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
   if (!response.ok) {

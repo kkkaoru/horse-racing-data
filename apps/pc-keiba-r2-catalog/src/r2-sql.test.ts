@@ -406,7 +406,8 @@ it("posts a query to the R2 SQL REST API and returns object rows", async () => {
   expect(fetchMock.mock.calls[0]?.[0]).toBe(
     "https://api.sql.cloudflarestorage.com/api/v1/accounts/account-id/r2-sql/query/bucket-name",
   );
-  expect(fetchMock.mock.calls[0]?.[1]).toStrictEqual({
+  const { signal, ...init } = fetchMock.mock.calls[0]?.[1] ?? {};
+  expect(init).toStrictEqual({
     body: '{"query":"SELECT source FROM pc_keiba.jvd_ra","warehouse":"account-id_bucket-name"}',
     headers: {
       Authorization: "Bearer secret-token",
@@ -414,6 +415,17 @@ it("posts a query to the R2 SQL REST API and returns object rows", async () => {
     },
     method: "POST",
   });
+  expect(signal instanceof AbortSignal).toBe(true);
+});
+
+it("bounds every R2 SQL request with a 120 second default abort timeout", async () => {
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+  const fetchMock = vi.fn<Fetcher>(async () =>
+    Response.json({ result: { rows: [] }, success: true }),
+  );
+  await executeR2Sql(env(), "SELECT 1", fetchMock);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[120_000]]);
+  timeoutSpy.mockRestore();
 });
 
 it("rejects R2 SQL HTTP and payload failures", async () => {
