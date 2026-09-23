@@ -4273,3 +4273,42 @@ it("overall-score payload throws when Catalog returns HTTP 502", async () => {
   ).rejects.toThrow("R2 Catalog heatmap stats failed: 502");
   expect(getBloodlineStatsMock).not.toHaveBeenCalled();
 });
+
+it("resolves time-score race-time stats without waiting for getTimeScoreRows", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  const releaseRows: { resolve: (rows: unknown[]) => void } = { resolve: () => undefined };
+  getSimilarRaceStatsMock.mockResolvedValue([]);
+  getTimeScoreRowsMock.mockResolvedValue([]);
+  getTimeScoreRowsMock.mockReturnValueOnce(
+    new Promise<unknown[]>((resolve) => {
+      releaseRows.resolve = resolve;
+    }),
+  );
+  getRaceTimeStatsMock.mockImplementationOnce(async () => {
+    releaseRows.resolve([]);
+    return {
+      averageKohan3f: null,
+      averageRaceTime: null,
+      correlationRows: [],
+      fastestDetail: null,
+      fastestKohan3f: null,
+      fastestRaceTime: null,
+      medianKohan3f: null,
+      medianRaceTime: null,
+      raceCount: 0,
+      targetRaces: [],
+    };
+  });
+  const payload = await getDetailSectionPayload("time-score", {
+    day: "23",
+    keibajoCode: "06",
+    month: "09",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+  expect(payload).toMatchObject({ rows: [], type: "time-score" });
+  expect(getRaceTimeStatsMock).toHaveBeenCalledOnce();
+});

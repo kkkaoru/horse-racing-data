@@ -5803,6 +5803,39 @@ export const getTimeScoreRows = cache(
           const env = await safeGetCloudflareEnv();
           const binding = env?.R2_RACE_DETAIL;
           const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+          // The matched profile needs only the race, so start it first and run
+          // history + overseas history + profile together (they used to run in
+          // sequence; getTimeScoreRows took 9-23s per warm on 2026-09-23).
+          const flags: string[] = [];
+          if (settings.includeVenue) flags.push("includeVenue");
+          if (settings.includeDistance) flags.push("includeDistance");
+          if (settings.includeAge) flags.push("includeAge");
+          if (settings.includeClass) flags.push("includeClass");
+          if (settings.includeConditionKey) flags.push("includeConditionKey");
+          if (settings.includeTrackCode) flags.push("includeTrackCode");
+          if (settings.includeGrade) flags.push("includeGrade");
+          if (settings.includeRaceTitle) flags.push("includeRaceTitle");
+          if (settings.includeMonthWindow) flags.push("includeMonthWindow");
+          if (settings.includeRunnerCount) flags.push("includeRunnerCount");
+          const matchedProfile = readCatalogRaceMatchedProfile(binding, {
+            source: race.source,
+            date: raceDate,
+            keibajoCode: race.keibajoCode,
+            raceBango: race.raceBango,
+            kyori: race.kyori ?? "",
+            kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
+            kyosoJokenCode: race.kyosoJokenCode ?? "",
+            kyosoJokenMeisho: race.kyosoJokenMeisho ?? "",
+            trackCode: race.trackCode ?? "",
+            gradeCode: race.gradeCode ?? "",
+            kyosomeiHondai: race.kyosomeiHondai ?? "",
+            years: String(settings.years ?? 3),
+            limit: 5000,
+            flags,
+            runnerCount: settings.runnerCount,
+          });
+          // Observe a rejection now; it is re-thrown by the Promise.all below.
+          matchedProfile.catch(() => undefined);
           const runners = await readCatalogRaceRunners(binding, {
             source: race.source,
             date: raceDate,
@@ -5828,68 +5861,42 @@ export const getTimeScoreRows = cache(
               historyHorseIds.push(historyHorseId);
             }
           }
-          const historyByHorseId: Map<string, TimeScoreHistoryRow[]> =
+          const [history, overseasRows, target] = await Promise.all([
             historyHorseIds.length === 0
-              ? new Map()
-              : groupHistoryByHorseId(
-                  await readCatalogRaceHistory(binding, {
-                    horseIds: historyHorseIds,
-                    beforeDate: raceDate,
-                    minDate: null,
-                    limit: 4000,
-                  }),
-                );
-          if (historyHorseIds.length > 0) {
-            const overseasRows = await readCatalogOverseasRaceHistory(binding, {
-              horseIds: historyHorseIds,
-              beforeDate: raceDate,
-              minDate: null,
-              limit: 4000,
+              ? Promise.resolve([])
+              : readCatalogRaceHistory(binding, {
+                  horseIds: historyHorseIds,
+                  beforeDate: raceDate,
+                  minDate: null,
+                  limit: 4000,
+                }),
+            historyHorseIds.length === 0
+              ? Promise.resolve([])
+              : readCatalogOverseasRaceHistory(binding, {
+                  horseIds: historyHorseIds,
+                  beforeDate: raceDate,
+                  minDate: null,
+                  limit: 4000,
+                }),
+            matchedProfile,
+          ]);
+          const historyByHorseId: Map<string, TimeScoreHistoryRow[]> =
+            groupHistoryByHorseId(history);
+          for (const row of overseasRows) {
+            const bucket: TimeScoreHistoryRow[] = historyByHorseId.get(row.sourceHorseId) ?? [];
+            bucket.push({
+              horseNumber: "",
+              raceDate: row.raceDate.replaceAll("-", ""),
+              keibajoCode: null,
+              distance: row.distanceMetres,
+              raceTime: null,
+              last3f: null,
+              bodyWeight: null,
+              carriedWeight: null,
+              margin: null,
             });
-            for (const row of overseasRows) {
-              const bucket: TimeScoreHistoryRow[] = historyByHorseId.get(row.sourceHorseId) ?? [];
-              bucket.push({
-                horseNumber: "",
-                raceDate: row.raceDate.replaceAll("-", ""),
-                keibajoCode: null,
-                distance: row.distanceMetres,
-                raceTime: null,
-                last3f: null,
-                bodyWeight: null,
-                carriedWeight: null,
-                margin: null,
-              });
-              historyByHorseId.set(row.sourceHorseId, bucket);
-            }
+            historyByHorseId.set(row.sourceHorseId, bucket);
           }
-          const flags: string[] = [];
-          if (settings.includeVenue) flags.push("includeVenue");
-          if (settings.includeDistance) flags.push("includeDistance");
-          if (settings.includeAge) flags.push("includeAge");
-          if (settings.includeClass) flags.push("includeClass");
-          if (settings.includeConditionKey) flags.push("includeConditionKey");
-          if (settings.includeTrackCode) flags.push("includeTrackCode");
-          if (settings.includeGrade) flags.push("includeGrade");
-          if (settings.includeRaceTitle) flags.push("includeRaceTitle");
-          if (settings.includeMonthWindow) flags.push("includeMonthWindow");
-          if (settings.includeRunnerCount) flags.push("includeRunnerCount");
-          const target = await readCatalogRaceMatchedProfile(binding, {
-            source: race.source,
-            date: raceDate,
-            keibajoCode: race.keibajoCode,
-            raceBango: race.raceBango,
-            kyori: race.kyori ?? "",
-            kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
-            kyosoJokenCode: race.kyosoJokenCode ?? "",
-            kyosoJokenMeisho: race.kyosoJokenMeisho ?? "",
-            trackCode: race.trackCode ?? "",
-            gradeCode: race.gradeCode ?? "",
-            kyosomeiHondai: race.kyosomeiHondai ?? "",
-            years: String(settings.years ?? 3),
-            limit: 5000,
-            flags,
-            runnerCount: settings.runnerCount,
-          });
           return toAppTimeScoreRows(
             composeCatalogTimeScoreRows({
               raceDate,

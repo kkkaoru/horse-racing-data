@@ -239,3 +239,64 @@ it("merges overseas history under the mapped registration number", async () => {
   // back to 0.5 while distance and venue still score.
   expect(rows[0]?.details[0]?.score).toBe(0.5);
 });
+
+it("starts the matched profile before runners resolve and reads histories together", async () => {
+  const order: string[] = [];
+  mocks.runners.mockImplementation(async () => {
+    order.push("runners");
+    return [
+      {
+        umaban: "08",
+        kettoTorokuBango: "2021106753",
+        bamei: "テストホース",
+        barei: "4",
+        sourceHorseId: null,
+        jockeyNameFull: "ルメール",
+      },
+    ];
+  });
+  mocks.profile.mockImplementation(async () => {
+    order.push("profile");
+    return {
+      targetRaceTime: 710,
+      targetLast3f: 340,
+      targetBodyWeight: 480,
+      targetCarriedWeight: 550,
+      targetMargin: 5,
+    };
+  });
+  mocks.history.mockImplementation(async () => {
+    order.push("history");
+    return [historyRow];
+  });
+  mocks.overseas.mockImplementation(async () => {
+    order.push("overseas");
+    return [];
+  });
+  await getTimeScoreRows(race, settings);
+  expect(order).toStrictEqual(["profile", "runners", "history", "overseas"]);
+});
+
+it("rejects with the matched profile failure after runners resolve", async () => {
+  mocks.profile.mockRejectedValue(new Error("Catalog matched profile unavailable"));
+  await expect(getTimeScoreRows(race, settings)).rejects.toThrow(
+    "Catalog matched profile unavailable",
+  );
+});
+
+it("skips history reads when no runner has a usable horse id", async () => {
+  mocks.runners.mockResolvedValue([
+    {
+      umaban: "08",
+      kettoTorokuBango: "",
+      bamei: "テストホース",
+      barei: "4",
+      sourceHorseId: null,
+      jockeyNameFull: "ルメール",
+    },
+  ]);
+  const rows = await getTimeScoreRows(race, settings);
+  expect(rows).toStrictEqual([]);
+  expect(mocks.history).not.toHaveBeenCalled();
+  expect(mocks.overseas).not.toHaveBeenCalled();
+});

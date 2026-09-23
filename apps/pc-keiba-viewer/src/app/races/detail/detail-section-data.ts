@@ -1885,7 +1885,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
   }
 
   if (section === "time-score") {
-    const [catalogStats, catalogCondition, rows] = await Promise.all([
+    const [catalogStats, raceTimeStats, rows] = await Promise.all([
       // The time-score section has a complete Neon computation path.  Do not
       // turn a transient Catalog 5xx into a section-level 503; the Catalog
       // result is an optimisation and the local fallback below can still
@@ -1893,14 +1893,18 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       loadCatalogGroupedRateStats(params, context.statsSettings, race.source, true).catch(
         () => null,
       ),
-      loadConditionHistoryCatalogStats(params, context.conditionAnalysisSettings, race.source),
+      // Resolve race-time stats (and its ~7s database fallback) as soon as the
+      // condition stats arrive instead of after getTimeScoreRows finishes.
+      loadConditionHistoryCatalogStats(params, context.conditionAnalysisSettings, race.source).then(
+        (catalogCondition) =>
+          resolveRaceTimeStats(
+            race,
+            context.conditionAnalysisSettings,
+            catalogCondition === null ? null : catalogCondition.raceTimeStats,
+          ),
+      ),
       getTimeScoreRows(race, context.conditionAnalysisSettings),
     ]);
-    const raceTimeStats = await resolveRaceTimeStats(
-      race,
-      context.conditionAnalysisSettings,
-      catalogCondition === null ? null : catalogCondition.raceTimeStats,
-    );
     const jockeyNameByHorse = new Map(
       context.runners.map((runner) => [
         normalizeHorseNumber(runner.umaban),
@@ -2137,17 +2141,16 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         type: section,
       };
     }
-    const catalogCondition = await loadConditionHistoryCatalogStats(
-      params,
-      context.conditionAnalysisSettings,
-      race.source,
-    );
+    // Start getTimeScoreRows alongside the condition stats rather than after.
     const [timeRows, raceTimeStats] = await Promise.all([
       getTimeScoreRows(race, context.conditionAnalysisSettings),
-      resolveRaceTimeStats(
-        race,
-        context.conditionAnalysisSettings,
-        catalogCondition === null ? null : catalogCondition.raceTimeStats,
+      loadConditionHistoryCatalogStats(params, context.conditionAnalysisSettings, race.source).then(
+        (catalogCondition) =>
+          resolveRaceTimeStats(
+            race,
+            context.conditionAnalysisSettings,
+            catalogCondition === null ? null : catalogCondition.raceTimeStats,
+          ),
       ),
     ]);
     return {
