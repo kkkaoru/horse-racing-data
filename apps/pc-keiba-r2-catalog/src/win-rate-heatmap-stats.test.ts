@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
   buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapKnownBloodlineCountQuery,
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
   isBanEiKeibajo,
@@ -650,4 +651,11 @@ it("rejects incomplete or invalid aggregate rows", () => {
       wins: 2n ** 1024n,
     }),
   ).toThrow("R2 SQL row is missing wins");
+});
+
+it("counts the runners' known pedigree names without scanning race history", () => {
+  const sql = buildWinRateHeatmapKnownBloodlineCountQuery(config, jraFilters);
+  expect(sql.trimEnd().endsWith("SELECT count(*) AS known\nFROM current_bloodlines")).toBe(true);
+  expect(/current_bloodlines AS \(/u.test(sql)).toBe(true);
+  expect(/matched_history|current_race AS/u.test(sql)).toBe(false);
 });

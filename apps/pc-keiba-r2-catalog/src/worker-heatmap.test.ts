@@ -57,11 +57,16 @@ const createHeatmapHarness = () => {
       kvEntries.set(key, value);
     },
   };
+  const knownCountQueries: string[] = [];
   const fetchImpl: Fetcher = async (_input, init) => {
     const rawBody = init?.body;
     const text = typeof rawBody === "string" ? rawBody : "";
     const parsed: unknown = JSON.parse(text);
     const query = isRecord(parsed) && typeof parsed.query === "string" ? parsed.query : "";
+    if (query.includes("AS known")) {
+      knownCountQueries.push(query);
+      return Response.json({ result: { rows: [{ known: 1 }] }, success: true });
+    }
     queryBodies.push(query);
     fetchCalls.push(query.includes("'sire' AS category") ? "bloodline" : "similar");
     if (query.includes("'sire' AS category")) {
@@ -79,7 +84,7 @@ const createHeatmapHarness = () => {
     R2_SQL_TOKEN: "r2-secret",
   };
   const dependencies: WorkerDependencies = { cache, fetchImpl };
-  return { cacheEntries, dependencies, env, fetchCalls, kvEntries, queryBodies };
+  return { cacheEntries, dependencies, env, fetchCalls, knownCountQueries, kvEntries, queryBodies };
 };
 
 it("coalesces concurrent heatmap misses into one R2 SQL pair", async () => {
@@ -106,8 +111,8 @@ it("bounds heatmap R2 SQL requests with a 60 second abort signal", async () => {
   };
   const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
   expect(response.status).toBe(200);
-  expect(timeoutSpy.mock.calls).toStrictEqual([[60_000], [60_000]]);
-  expect(signals.map((signal) => signal instanceof AbortSignal)).toStrictEqual([true, true]);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[60_000], [60_000], [60_000]]);
+  expect(signals.map((signal) => signal instanceof AbortSignal)).toStrictEqual([true, true, true]);
   timeoutSpy.mockRestore();
 });
 
@@ -137,7 +142,7 @@ it("re-executes a heatmap query after an aborted R2 SQL request", async () => {
   consoleError.mockRestore();
   const retried = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
   expect(retried.status).toBe(200);
-  expect(attempts).toStrictEqual(["aborted", "aborted"]);
+  expect(attempts).toStrictEqual(["aborted", "aborted", "aborted"]);
   expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
 });
 
@@ -185,6 +190,84 @@ it("returns similar rows and flags bloodline when only the bloodline query fails
   expect(harness.cacheEntries.size).toBe(0);
   expect(harness.kvEntries.size).toBe(0);
   consoleError.mockRestore();
+});
+
+it("returns empty bloodline rows without waiting when no runner has a known pedigree", async () => {
+  const harness = createHeatmapHarness();
+  const bloodlineSignals: Array<AbortSignal | null | undefined> = [];
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const rawBody = init?.body;
+      const text = typeof rawBody === "string" ? rawBody : "";
+      if (text.includes("AS known")) {
+        return Response.json({ result: { rows: [{ known: 0 }] }, success: true });
+      }
+      if (text.includes("matched_history") && text.includes("'sire' AS category")) {
+        bloodlineSignals.push(init?.signal);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(isRecord(body) ? [body.bloodlineUnavailable, body.bloodlineRows] : []).toStrictEqual([
+    undefined,
+    [],
+  ]);
+  expect(bloodlineSignals.map((signal) => signal?.aborted)).toStrictEqual([true]);
+  expect(harness.kvEntries.size).toBe(1);
+});
+
+it("waits for the bloodline query when the known pedigree count fails", async () => {
+  const harness = createHeatmapHarness();
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const rawBody = init?.body;
+      const text = typeof rawBody === "string" ? rawBody : "";
+      if (text.includes("AS known")) {
+        return Response.json(
+          { errors: [{ code: 1, message: "boom" }], success: false },
+          {
+            status: 500,
+          },
+        );
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  const body: unknown = await response.json();
+  expect(isRecord(body) && Array.isArray(body.bloodlineRows) ? body.bloodlineRows.length : 0).toBe(
+    1,
+  );
+});
+
+it("waits for the bloodline query when the known pedigree count is malformed", async () => {
+  const harness = createHeatmapHarness();
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const rawBody = init?.body;
+      const text = typeof rawBody === "string" ? rawBody : "";
+      if (text.includes("AS known")) {
+        return Response.json({ result: { rows: [] }, success: true });
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  const body: unknown = await response.json();
+  expect(isRecord(body) && Array.isArray(body.bloodlineRows) ? body.bloodlineRows.length : 0).toBe(
+    1,
+  );
 });
 
 it("stores heatmap stats with a 36 hour catalog cache TTL", async () => {

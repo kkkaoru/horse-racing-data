@@ -75,6 +75,7 @@ import {
 } from "./condition-history-stats";
 import {
   buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapKnownBloodlineCountQuery,
   buildWinRateHeatmapSimilarQuery,
   normaliseWinRateHeatmapStatsPayload,
 } from "./win-rate-heatmap-stats";
@@ -562,9 +563,52 @@ const conditionHistoryCoalesceKey = (filters: WinRateHeatmapStatsFilters): strin
 // lifetime and every retry joins it. A normal heatmap query finishes in
 // seconds, so abort it and let the caller retry with a fresh query.
 const withRequestTimeout =
-  (fetchImpl: Fetcher, timeoutMs: number): Fetcher =>
+  (fetchImpl: Fetcher, timeoutMs: number, cancel?: AbortSignal): Fetcher =>
   (input, init) =>
-    fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    fetchImpl(input, {
+      ...init,
+      signal:
+        cancel === undefined
+          ? AbortSignal.timeout(timeoutMs)
+          : AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]),
+    });
+
+const parseKnownBloodlineCount = (rows: ReadonlyArray<Record<string, unknown>>): number | null => {
+  const known = Number(rows[0]?.known);
+  return Number.isInteger(known) && known >= 0 ? known : null;
+};
+
+// Race the bloodline query against a cheap count of the runners' known
+// pedigree names. Zero names means the answer is empty, so return [] and
+// cancel the bloodline query R2 SQL would never answer. Any other count (or a
+// failed count) keeps waiting for the bloodline query itself.
+const loadHeatmapBloodlineRows = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: WinRateHeatmapStatsFilters,
+): Promise<Record<string, unknown>[]> => {
+  const cancel = new AbortController();
+  const bloodline = executeR2Sql(
+    env,
+    buildWinRateHeatmapBloodlineQuery(env, filters),
+    withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS, cancel.signal),
+  );
+  const noKnownNames = executeR2Sql(
+    env,
+    buildWinRateHeatmapKnownBloodlineCountQuery(env, filters),
+    withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+  ).then(
+    (rows) => parseKnownBloodlineCount(rows) === 0,
+    () => false,
+  );
+  const shortCircuit = noKnownNames.then((empty) => (empty ? [] : bloodline));
+  try {
+    return await Promise.race([bloodline, shortCircuit]);
+  } finally {
+    cancel.abort();
+    bloodline.catch(() => undefined);
+  }
+};
 
 // Identify which heatmap query fails (bloodline or similar) and how long it
 // ran, so a race whose R2 SQL never answers can be diagnosed from logs.
@@ -605,7 +649,7 @@ const heatmapStatsBody = async (
     logHeatmapQueryFailure(
       "bloodline",
       filters,
-      executeR2Sql(env, buildWinRateHeatmapBloodlineQuery(env, filters), fetchImpl),
+      loadHeatmapBloodlineRows(env, dependencies, filters),
     ).catch(() => null),
     logHeatmapQueryFailure(
       "similar",

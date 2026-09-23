@@ -558,15 +558,12 @@ const aggregateSelectSql = (groupColumns: string): string =>
 export const unionHistorySql = (arms: ReadonlyArray<string>): string =>
   arms.join("\n  UNION ALL\n  ");
 
-export const buildWinRateHeatmapBloodlineQuery = (
+const currentBloodlineCtesSql = (
   env: R2SqlCatalogConfig,
-  filters: WinRateHeatmapStatsFilters,
+  checked: WinRateHeatmapStatsFilters,
 ): string => {
-  const checked = validateFilters(filters);
   const current = currentTables(checked.source);
-  return `
-WITH ${currentRaceCteSql(env, checked)},
-current_entries AS (
+  return `current_entries AS (
   SELECT
     try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) AS umaban,
     se.ketto_toroku_bango,
@@ -579,7 +576,32 @@ current_entries AS (
 ),
 current_bloodlines AS (
   ${currentBloodlineUnpivotSql()}
-),
+)`;
+};
+
+// Counts the runners' known (non-'不明') pedigree names. When it is zero the
+// bloodline query has no target names and its answer is empty, but R2 SQL
+// never answers that query (NAR 30/05 on 2026-09-23: all 8 debut runners
+// had no horse-master pedigree yet), so the caller can skip it.
+export const buildWinRateHeatmapKnownBloodlineCountQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  return `
+WITH ${currentBloodlineCtesSql(env, checked)}
+SELECT count(*) AS known
+FROM current_bloodlines`;
+};
+
+export const buildWinRateHeatmapBloodlineQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  return `
+WITH ${currentRaceCteSql(env, checked)},
+${currentBloodlineCtesSql(env, checked)},
 target_names AS (
   SELECT DISTINCT category, name
   FROM current_bloodlines
