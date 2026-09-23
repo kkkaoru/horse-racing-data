@@ -185,6 +185,57 @@ it("bounds each queue self request with a 120 second abort timeout", async () =>
   consoleLog.mockRestore();
 });
 
+it("warms a past race enqueued today but skips one enqueued before today", async () => {
+  const worker = {
+    fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),
+  };
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const enqueuedToday = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    timestamp: new Date("2026-08-21T16:00:00.000Z"),
+    body: {
+      day: "21",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "10",
+      section: "results" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  const enqueuedYesterday = {
+    ack: vi.fn<() => void>(),
+    retry: vi.fn<() => void>(),
+    timestamp: new Date("2026-08-21T10:00:00.000Z"),
+    body: {
+      day: "21",
+      keibajoCode: "07",
+      month: "08",
+      raceNumber: "11",
+      section: "results" as const,
+      source: "jra" as const,
+      year: "2026",
+    },
+  };
+  await handleRaceDetailSectionCacheQueue(
+    worker,
+    {
+      messages: [enqueuedToday, enqueuedYesterday],
+      queue: "pc-keiba-detail-section-cache-warm",
+    },
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(worker.fetch).toHaveBeenCalledTimes(1);
+  const request = worker.fetch.mock.calls[0]?.[0];
+  if (!(request instanceof Request)) throw new Error("Request expected");
+  expect(new URL(request.url).pathname).toBe("/api/races/2026/08/21/07/10/sections/results");
+  expect(enqueuedToday.ack).toHaveBeenCalledTimes(1);
+  expect(enqueuedYesterday.ack).toHaveBeenCalledTimes(1);
+  consoleLog.mockRestore();
+});
+
 it("acks past-race messages without warming them", async () => {
   const worker = {
     fetch: vi.fn<FetchFn>().mockResolvedValue(new Response("ok", { status: 200 })),

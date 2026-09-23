@@ -10,7 +10,7 @@ import {
   type RaceDetailSsrCacheWarmMessage,
 } from "../lib/race-detail-section-cache";
 import { buildRaceTrendApiPath, type RaceTrendCacheWarmMessage } from "../lib/race-trend-cache";
-import { formatTodayJstDate } from "./jst-date";
+import { formatJstDate, formatTodayJstDate } from "./jst-date";
 
 const INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
 const SCHEDULE_PATH = "/api/cache-warm/race-detail-sections";
@@ -44,6 +44,8 @@ interface QueueWarmItem {
   ack(): void;
   body: CacheWarmMessage;
   retry(): void;
+  // Set by the Queues runtime (when the message was sent).
+  timestamp?: Date;
 }
 
 type OpenNextWorker = {
@@ -264,6 +266,12 @@ const isHeatmapWarmMessage = (message: CacheWarmMessage): boolean =>
 const isPastRaceMessage = (message: CacheWarmMessage, todayJstYmd: string): boolean =>
   `${message.year}-${message.month}-${message.day}` < todayJstYmd;
 
+// Only stale past-race work is dropped: a past race enqueued today (e.g. a
+// result correction from trend-cache-bust) is still warmed.
+const isStalePastRaceItem = (item: QueueWarmItem, todayJstYmd: string): boolean =>
+  isPastRaceMessage(item.body, todayJstYmd) &&
+  (item.timestamp === undefined || formatJstDate(item.timestamp) < todayJstYmd);
+
 const ackMessage = (message: QueueWarmItem): void => {
   message.ack();
 };
@@ -403,8 +411,7 @@ export const handleRaceDetailSectionCacheQueue = async (
   const todayJstYmd = formatTodayJstDate(new Date());
   const heatmaps = batch.messages.filter((message) => isHeatmapWarmMessage(message.body));
   const past = batch.messages.filter(
-    (message) =>
-      !isHeatmapWarmMessage(message.body) && isPastRaceMessage(message.body, todayJstYmd),
+    (message) => !isHeatmapWarmMessage(message.body) && isStalePastRaceItem(message, todayJstYmd),
   );
   [...heatmaps, ...past].forEach(ackMessage);
   const warms = await mapInChunksCollect(
