@@ -419,6 +419,64 @@ test("blocks a category artifact on a later incomplete D1 race mirror", async ()
   ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-1-of-2" });
 });
 
+test("accepts a partial running-style race set when the artifact already holds the current rows", async () => {
+  const env = makeEnv();
+  const fingerprint = await computeRunningStyleContentFingerprint({
+    category: "nar",
+    db: env.REALTIME_DB,
+    runYmd: "20260823",
+  });
+  featureHeadMock.mockResolvedValueOnce(
+    metadataObject({ "rs-content-hash": fingerprint.contentHash }),
+  );
+  runningStyleFirstMock.mockResolvedValueOnce({ ...readyRunningStyleRow(), race_count: 2 });
+  raceSourceAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        keibajo_code: "43",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:30:00+09:00",
+        source: "nar",
+      },
+      {
+        keibajo_code: "43",
+        race_bango: "02",
+        race_start_at_jst: "2026-08-23T11:00:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env, runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: true, reason: "ready" });
+});
+
+test("still rebuilds a partial running-style race set when the artifact holds older rows", async () => {
+  featureHeadMock.mockResolvedValueOnce(metadataObject({ "rs-content-hash": "older-rs-rows" }));
+  runningStyleFirstMock.mockResolvedValueOnce({ ...readyRunningStyleRow(), race_count: 2 });
+  raceSourceAllMock.mockResolvedValueOnce({
+    results: [
+      {
+        keibajo_code: "43",
+        race_bango: "01",
+        race_start_at_jst: "2026-08-23T10:30:00+09:00",
+        source: "nar",
+      },
+      {
+        keibajo_code: "43",
+        race_bango: "02",
+        race_start_at_jst: "2026-08-23T11:00:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: false, reason: "running-style-race-count-1-of-2" });
+});
+
 test("blocks an R2 artifact on a processing D1 mirror state", async () => {
   runningStyleReadinessAllMock.mockResolvedValueOnce({
     results: [

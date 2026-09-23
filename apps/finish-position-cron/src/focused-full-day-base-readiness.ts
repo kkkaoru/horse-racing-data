@@ -213,6 +213,14 @@ const liveWatermark = async (
   return catalog.rowCount === 0 ? null : { ...catalog, ...runningStyle };
 };
 
+const isBuiltFromCurrentRunningStyle = (
+  metadata: DayBaseMetadata,
+  live: LiveDayBaseWatermark,
+): boolean =>
+  metadata.rsContentHash !== null &&
+  metadata.rsContentHash === live.rsContentHash &&
+  metadata.rsRowCount === live.rsRowCount;
+
 const compareWithLiveWatermark = async (
   params: FocusedFullDayBaseReadinessParams,
   metadata: DayBaseMetadata,
@@ -228,7 +236,15 @@ const compareWithLiveWatermark = async (
     return { ready: false, reason: "source-watermark-mismatch" };
   if (live.fingerprintRowCount !== live.rsRowCount)
     return { ready: false, reason: "running-style-fingerprint-row-count-mismatch" };
-  if (live.readyRunningStyleRaceCount !== live.runningStyleRaceCount)
+  // Some races never get running-style rows (e.g. missing corner inputs). If
+  // the artifact was already built from exactly the current RS rows, a rebuild
+  // reproduces the same bytes: on 2026-09-22 NAR sat at 66-of-71 and rebuilt
+  // the 12 GiB day-base every few minutes until midnight. Only an RS change
+  // (new rows -> new content hash) can make a rebuild useful.
+  if (
+    live.readyRunningStyleRaceCount !== live.runningStyleRaceCount &&
+    !isBuiltFromCurrentRunningStyle(metadata, live)
+  )
     return {
       ready: false,
       reason: `running-style-race-count-${String(live.readyRunningStyleRaceCount)}-of-${String(live.runningStyleRaceCount)}`,
