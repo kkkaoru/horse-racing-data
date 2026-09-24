@@ -20,7 +20,7 @@
         "@neondatabase/serverless": "catalog:",
         "hyparquet": "1.30.1",
         "hyparquet-compressors": "1.1.1",
-        "hyparquet-writer": "0.16.8",
+        "hyparquet-writer": "0.16.10",
         "icebird": "0.8.27",
         "iconv-lite": "0.7.2",
       },
@@ -1524,7 +1524,7 @@
 
     "hyparquet-compressors": ["hyparquet-compressors@1.1.1", "", { "dependencies": { "fzstd": "0.1.1", "hysnappy": "1.0.0" } }, "sha512-yx7aA3Rhj0YycbdV71+XznQSLAefa4cT0urpgNXy4aM6eSeCknaVDNne8y45Uz74Fb15yyXUzOStlceOJBan7A=="],
 
-    "hyparquet-writer": ["hyparquet-writer@0.16.8", "", { "dependencies": { "hyparquet": "1.29.2" } }, "sha512-kmZ7cLx2jVEbCNKRkQwRnVYx9VHYSpGqq4qGg5QIe5n6kT6VPi79o+CCEZnbVQjKaPfd82qF+0Fe8QiASseYpw=="],
+    "hyparquet-writer": ["hyparquet-writer@0.16.10", "", { "dependencies": { "hyparquet": "1.31.1" } }, "sha512-53fpiA57kdJ2V7X97/VSAzHr8rb8Z2cr126T1pTL9TapZNOP/wNJqFh+jc7dRwwg9TpVMYeRNDMb+r5oiLqwjg=="],
 
     "hysnappy": ["hysnappy@1.0.0", "", {}, "sha512-MNrC4NfwDGPb889O6gIfEtbvEZCSWUsSEhsz4Oq2FRcpGtXHfeVz3KciSPp5Pnnz1NjFMgDQNfxdJozymJEDDA=="],
 
@@ -2038,9 +2038,11 @@
 
     "happy-dom/ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
 
-    "hyparquet-writer/hyparquet": ["hyparquet@1.29.2", "", {}, "sha512-2LxinZ8X0JqToST+9OXcy9t3t5Q7ZneMTkSqUx/36Hv18pCTk/N71IWZc7APTSNG1Me39l/jjEvzZSZ0R+Knbw=="],
+    "hyparquet-writer/hyparquet": ["hyparquet@1.31.1", "", {}, "sha512-tF9580Xb+41+Eb+mH0av1k7m1PWl+PSKrX66Yd7UOZ760cwEXP9/enwHRMSCeVncaubRI8XPb3v580/ujYKK5w=="],
 
     "icebird/hyparquet": ["hyparquet@1.29.2", "", {}, "sha512-2LxinZ8X0JqToST+9OXcy9t3t5Q7ZneMTkSqUx/36Hv18pCTk/N71IWZc7APTSNG1Me39l/jjEvzZSZ0R+Knbw=="],
+
+    "icebird/hyparquet-writer": ["hyparquet-writer@0.16.8", "", { "dependencies": { "hyparquet": "1.29.2" } }, "sha512-kmZ7cLx2jVEbCNKRkQwRnVYx9VHYSpGqq4qGg5QIe5n6kT6VPi79o+CCEZnbVQjKaPfd82qF+0Fe8QiASseYpw=="],
 
     "jra-van-datalab-worker-only-probe/@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
