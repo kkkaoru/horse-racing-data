@@ -17,7 +17,7 @@
     "verify:local": "bun run core:prepare && bun run format:check && bun run lint && bun run tsc && bun run test:coverage"
   },
   "devDependencies": {
-    "@types/bun": "1.4.0",
+    "@types/bun": "1.4.2",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "oxfmt": "catalog:",
