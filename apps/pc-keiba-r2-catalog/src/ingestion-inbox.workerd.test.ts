@@ -76,7 +76,7 @@ export { IngestionBufferService } from ${JSON.stringify(serviceEntry)};
 import { acceptIngestion } from ${JSON.stringify(serviceEntry)};
 import { retainTrackedDeadLetter } from ${JSON.stringify(attemptEntry)};
 import { monitorIngestionArchives } from ${JSON.stringify(monitorEntry)};
-import gateway from ${JSON.stringify(gatewayEntry)};
+import Gateway from ${JSON.stringify(gatewayEntry)};
 import { handleIngestionDeadLetters } from ${JSON.stringify(deadLetterEntry)};
 import { IngestionArchiveJournal } from ${JSON.stringify(journalEntry)};
 export class TestArchiveJournal extends IngestionArchiveJournal {
@@ -95,8 +95,8 @@ export default { async queue(batch, env) {
     return;
   }
   await handleIngestionDeadLetters(batch, env);
-}, async fetch(request, env) {
-  if (new URL(request.url).pathname === '/v1/internal/ingestion/status') return await gateway.fetch(request, env);
+}, async fetch(request, env, ctx) {
+  if (new URL(request.url).pathname === '/v1/internal/ingestion/status') return await new Gateway(ctx, env).fetch(request);
   try {
     const input = await request.json();
     if (input.operation === 'monitorTick') { await monitorIngestionArchives(env); return Response.json({ complete: true }); }

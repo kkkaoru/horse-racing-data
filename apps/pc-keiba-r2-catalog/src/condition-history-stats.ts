@@ -12,12 +12,17 @@ import type {
   R2SqlCatalogConfig,
   WinRateHeatmapStatsFilters,
 } from "./types";
+import { isCurrentArc } from "./arc-cohort";
 import { encodedRaceTimeTenthsSql } from "./race-time";
 import {
+  overseasGateJoinSql,
+  usesOverseasGate,
   currentRaceCteSql,
   currentRaceIdentitySql,
   currentTables,
   finishPositionSql,
+  rateFinishPositionSql,
+  rateStartPredicateSql,
   historyTables,
   isBanEiKeibajo,
   cellRouterDistanceBandFilterSql,
@@ -176,6 +181,8 @@ export const matchedHistoryArmSql = (input: {
   extraWhere: string;
   filters: WinRateHeatmapStatsFilters;
   selectList: string;
+  rateDenominator?: boolean;
+  forceSameVenue?: boolean;
   tables: CatalogTableSet;
 }): string => `SELECT
     ${input.selectList}
@@ -187,18 +194,27 @@ export const matchedHistoryArmSql = (input: {
     AND ra.race_bango = se.race_bango
   CROSS JOIN current_race cr
   ${input.extraJoin}
-  WHERE ${similarRaceFilterSql(input.filters)}
+  WHERE ${similarRaceFilterSql(input.filters)}${
+    // JRA confirms the 2016/2017 Arc used Chantilly during Longchamp's renovation.
+    isCurrentArc(input.filters) && (input.forceSameVenue || input.filters.includeVenue)
+      ? "\n    AND ra.kaisai_nen NOT IN ('2016', '2017')"
+      : ""
+  }
     ${cellRouterDistanceBandFilterSql(input.filters)}
-    AND ${finishPositionSql("se")} IS NOT NULL
-    AND ${finishPositionSql("se")} > 0
+    AND ${
+      input.rateDenominator
+        ? rateStartPredicateSql(input.filters)
+        : `${finishPositionSql("se")} IS NOT NULL
+    AND ${finishPositionSql("se")} > 0`
+    }
     ${input.extraWhere}`;
 
-const classCountSelectSql = (groupColumn: string): string => `SELECT
+const classCountSelectSql = (groupColumn: string, arc: boolean): string => `SELECT
     ${groupColumn} AS class_key,
     count(*) AS starts,
     sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
-    sum(CASE WHEN finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
-    sum(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
+    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
+    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
   FROM classed
   GROUP BY ${groupColumn}
   ORDER BY ${groupColumn}`;
@@ -209,29 +225,35 @@ export const buildConditionFrameStatsQuery = (
 ): string => {
   const checked = validateFilters(filters);
   const current = currentTables(checked.source);
-  const selectList = `${integerSelect("se.wakuban", "00")} AS frame_number,
+  const arc: boolean = isCurrentArc(checked);
+  const overseas = usesOverseasGate(checked);
+  const frame = overseas ? "gate_mapping.gate_number" : integerSelect("se.wakuban", "00");
+  const selectList = `${frame} AS frame_number,
     ${integerSelect("ra.shusso_tosu", "")} AS runner_count,
-    ${finishPositionSql("se")} AS finish_position,
+    ${rateFinishPositionSql(checked)} AS finish_position,
     ${integerSelect("se.tansho_ninkijun", "00")} AS popularity`;
   return `
 WITH ${currentRaceCteSql(env, checked)},
 current_frames AS (
-  SELECT DISTINCT ${integerSelect("se.wakuban", "00")} AS frame_number
+  SELECT DISTINCT ${frame} AS frame_number
   FROM ${tableName(env, current.runnerTable)} se
-  WHERE ${currentRaceIdentitySql(checked)}
-    AND ${integerSelect("se.wakuban", "00")} IS NOT NULL
-    AND ${integerSelect("se.wakuban", "00")} > 0
+  ${overseas ? overseasGateJoinSql(env, checked.source) : ""}
+  WHERE ${currentRaceIdentitySql(checked, "se")}
+    AND ${frame} IS NOT NULL
+    AND ${frame} > 0
 ),
 matched_history AS (
   ${unionHistorySql(
-    historyTables(checked).map((tables) =>
+    (overseas ? [current] : historyTables(checked)).map((tables) =>
       matchedHistoryArmSql({
         env,
-        extraJoin:
-          "INNER JOIN current_frames cf ON cf.frame_number = try_cast(nullif(btrim(coalesce(se.wakuban, '')), '00') AS INT)",
-        extraWhere: "",
+        extraJoin: `${overseas ? overseasGateJoinSql(env, tables.source) : ""}
+          INNER JOIN current_frames cf ON cf.frame_number = ${frame}`,
+        extraWhere: overseas ? "AND se.keibajo_code = cr.keibajo_code" : "",
         filters: checked,
         selectList,
+        rateDenominator: true,
+        forceSameVenue: true,
         tables,
       }),
     ),
@@ -242,10 +264,10 @@ SELECT
   max(runner_count) AS runner_count,
   count(*) AS count,
   sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
-  sum(CASE WHEN finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
-  sum(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) AS show_count,
-  avg(finish_position) AS average_finish,
-  approx_percentile_cont(finish_position, 0.5) AS median_finish,
+  sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
+  sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 3 THEN 1 ELSE 0 END) AS show_count,
+  avg(${arc ? "CASE WHEN finish_position > 0 THEN finish_position END" : "finish_position"}) AS average_finish,
+  approx_percentile_cont(${arc ? "CASE WHEN finish_position > 0 THEN finish_position END" : "finish_position"}, 0.5) AS median_finish,
   avg(CASE WHEN popularity > 0 THEN popularity END) AS average_popularity,
   approx_percentile_cont(CASE WHEN popularity > 0 THEN popularity END, 0.5) AS median_popularity
 FROM matched_history
@@ -275,8 +297,9 @@ matched_history AS (
         extraWhere: `${parts.venueExclude}
     ${parts.weightFilter}`,
         filters: checked,
-        selectList: `${finishPositionSql("se")} AS finish_position,
+        selectList: `${rateFinishPositionSql(checked)} AS finish_position,
     ${parts.weightExpr}`,
+        rateDenominator: true,
         tables,
       }),
     ),
@@ -288,7 +311,7 @@ classed AS (
     finish_position
   FROM matched_history
 )
-${classCountSelectSql("class_key")}`;
+${classCountSelectSql("class_key", isCurrentArc(checked))}`;
 };
 
 export const buildConditionFinishPositionStatsQuery = (

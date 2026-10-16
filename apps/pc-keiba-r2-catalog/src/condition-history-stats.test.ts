@@ -1,4 +1,10 @@
+// Run with bun via Vitest; local DuckDB fixtures do not access production.
 import { expect, it } from "vitest";
+import { DuckDBInstance } from "@duckdb/node-api";
+import {
+  buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapSimilarQuery,
+} from "./win-rate-heatmap-stats";
 
 import {
   buildConditionFinishPositionStatsQuery,
@@ -225,7 +231,7 @@ it("rejects unsafe namespace and invalid heatmap filters", () => {
   );
   expect(() =>
     buildConditionRaceTimeStatsQuery(config, { ...jraFilters, keibajoCode: "5" }),
-  ).toThrow("keibajoCode must contain two digits");
+  ).toThrow("keibajoCode must contain two uppercase alphanumeric characters");
 });
 
 it("identifies Ban'ei venues for omitted carried-weight stats", () => {
@@ -733,4 +739,250 @@ it("rejects incomplete aggregate rows", () => {
       weightRows: [],
     }),
   ).toThrow("R2 SQL row is missing frame_number");
+});
+
+it("uses mapped gates on both sides and never pools domestic frames for overseas", () => {
+  const sql = buildConditionFrameStatsQuery(config, {
+    ...jraFilters,
+    keibajoCode: "A8",
+    includeVenue: false,
+  });
+  expect(sql).toMatch("SELECT DISTINCT gate_mapping.gate_number AS frame_number");
+  expect(sql).toMatch(
+    /current_frames AS \([\s\S]*?WHERE se\.kaisai_nen = '[0-9]{4}'\s+AND se\.kaisai_tsukihi = '[0-9]{4}'\s+AND se\.keibajo_code = 'A8'\s+AND se\.race_bango = '[0-9]{2}'/u,
+  );
+  expect(sql).toMatch("cf.frame_number = gate_mapping.gate_number");
+  expect(sql).toMatch("AND se.keibajo_code = cr.keibajo_code");
+  expect(sql).toMatch("gate_mapping.source = 'netkeiba'");
+  expect(sql).toMatch("gate_mapping.umaban = se.umaban");
+  expect(sql).toMatch("gate_mapping.gate_number BETWEEN 1 AND 32767");
+  expect(sql).not.toMatch("se.wakuban");
+  expect(sql).not.toMatch("nvd_se");
+});
+
+it("keeps non-rate queries positive-only and domestic rate SQL unchanged", () => {
+  const filters: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+  };
+  expect(buildConditionFinishPositionStatsQuery(config, filters)).not.toMatch("ijo_kubun_code");
+  expect(buildConditionRaceTimeStatsQuery(config, filters)).not.toMatch("ijo_kubun_code");
+  expect(buildConditionTargetRacesQuery(config, filters)).not.toMatch("ijo_kubun_code");
+  expect(buildConditionFrameStatsQuery(config, jraFilters)).not.toMatch("ijo_kubun_code");
+  expect(buildConditionFrameStatsQuery(config, jraFilters)).toMatch("avg(finish_position)");
+  expect(
+    buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters, kind: "body" }),
+  ).toMatch("WHEN finish_position <= 2 THEN");
+});
+
+it("executes Arc native DNF/DSQ denominators without inventing placed horses or zero finishing places", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  const filters: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+    includeVenue: false,
+    includeDistance: false,
+    includeSurface: false,
+    includeTurn: false,
+  };
+  try {
+    await connection.run(`CREATE SCHEMA pc_keiba;
+      CREATE MACRO btrim(v) AS trim(v);
+      CREATE MACRO regexp_match(v,p) AS CASE WHEN regexp_matches(v,p) THEN [v] ELSE NULL END;
+      CREATE MACRO approx_percentile_cont(v,p) AS quantile_cont(v,p);
+      CREATE TABLE pc_keiba.jvd_ra AS SELECT y AS kaisai_nen, '1004' AS kaisai_tsukihi,
+        'A8' AS keibajo_code, '05' AS race_bango, '凱旋門賞' AS kyosomei_hondai,
+        '11' AS track_code, 'A' AS grade_code, '14' AS kyoso_shubetsu_code,
+        '999' AS kyoso_joken_code, '' AS kyoso_joken_meisho, '2400' AS kyori, '8' AS shusso_tosu
+        FROM (VALUES ('2025'), ('2026')) t(y);
+      CREATE TABLE pc_keiba.jvd_se AS SELECT '2025' AS kaisai_nen, '1004' AS kaisai_tsukihi,
+        'A8' AS keibajo_code, '05' AS race_bango, num AS umaban,
+        '2020100001' AS ketto_toroku_bango, rank AS kakutei_chakujun, code AS ijo_kubun_code,
+        'Known jockey' AS kishumei_ryakusho, 'Known trainer' AS chokyoshimei_ryakusho,
+        '500' AS bataiju, '580' AS futan_juryo, '00' AS wakuban, '01' AS tansho_ninkijun,
+        'Horse' AS bamei, '2300' AS soha_time, '100' AS tansho_odds
+        FROM (VALUES ('01','01','0'), ('02','02','0'), ('03','00','4'), ('04','00','5'),
+          ('05','01','1'), ('06','02','2'), ('07','00','0'), ('08',NULL,'9')) t(num,rank,code);
+      INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2026' AS kaisai_nen) FROM pc_keiba.jvd_se WHERE umaban='01';
+      CREATE TABLE pc_keiba.oversea_runner_source_id AS SELECT kaisai_nen,kaisai_tsukihi,keibajo_code,race_bango,umaban,
+        'jra' AS race_source, 'netkeiba' AS source, '000a000001' AS source_horse_id, 16 AS gate_number FROM pc_keiba.jvd_se;
+      CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_sire_name VARCHAR);`);
+    const columns: string = ["01", "02", "03", "05", "07", "09", "11", "13"]
+      .map((n) => `ketto_joho_${n}b VARCHAR`)
+      .join(", ");
+    await connection.run(`CREATE TABLE pc_keiba.jvd_um (ketto_toroku_bango VARCHAR, ${columns});
+      CREATE TABLE pc_keiba.nvd_um AS SELECT * FROM pc_keiba.jvd_um;
+      CREATE TABLE pc_keiba.nvd_nu AS SELECT * FROM pc_keiba.jvd_um;
+      INSERT INTO pc_keiba.jvd_um (ketto_toroku_bango,ketto_joho_01b) VALUES ('2020100001','Native sire');`);
+    const frame = (
+      await connection.runAndReadAll(buildConditionFrameStatsQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(
+      frame.map((r) => [
+        r.frame_number,
+        Number(r.count),
+        Number(r.win_count),
+        Number(r.quinella_count),
+        Number(r.show_count),
+        r.average_finish,
+        r.median_finish,
+      ]),
+    ).toStrictEqual([[16, 4, 1, 2, 2, 1.5, 1.5]]);
+    const body = (
+      await connection.runAndReadAll(
+        buildConditionWeightClassStatsQuery({ env: config, filters, kind: "body" }),
+      )
+    ).getRowObjectsJson();
+    expect(
+      body.map((r) => [
+        r.class_key,
+        Number(r.starts),
+        Number(r.win_count),
+        Number(r.quinella_count),
+        Number(r.show_count),
+      ]),
+    ).toStrictEqual([["500-519", 4, 1, 2, 2]]);
+    const carried = (
+      await connection.runAndReadAll(
+        buildConditionWeightClassStatsQuery({ env: config, filters, kind: "carried" }),
+      )
+    ).getRowObjectsJson();
+    expect(
+      carried.map((r) => [
+        r.class_key,
+        Number(r.starts),
+        Number(r.win_count),
+        Number(r.quinella_count),
+        Number(r.show_count),
+      ]),
+    ).toStrictEqual([["57.5-59", 4, 1, 2, 2]]);
+    const similar = (
+      await connection.runAndReadAll(buildWinRateHeatmapSimilarQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(
+      similar.map((r) => [
+        r.kind,
+        Number(r.starts),
+        Number(r.wins),
+        Number(r.places),
+        Number(r.shows),
+      ]),
+    ).toStrictEqual([
+      ["jockey", 4, 1, 2, 2],
+      ["trainer", 4, 1, 2, 2],
+    ]);
+    // Duplicate DNF rows must survive NULL/DISTINCT handling exactly once in bloodline history.
+    await connection.run(
+      "INSERT INTO pc_keiba.jvd_se SELECT * FROM pc_keiba.jvd_se WHERE umaban='03'",
+    );
+    const bloodline = (
+      await connection.runAndReadAll(buildWinRateHeatmapBloodlineQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(
+      bloodline.map((r) => [
+        r.category,
+        Number(r.starts),
+        Number(r.wins),
+        Number(r.places),
+        Number(r.shows),
+      ]),
+    ).toStrictEqual([["sire", 4, 1, 2, 2]]);
+    const finish = (
+      await connection.runAndReadAll(buildConditionFinishPositionStatsQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(finish.map((r) => Number(r.finish_position))).toStrictEqual([1, 1, 2, 2]);
+    // Even a malformed positive rank on a DNF/DSQ cannot manufacture a rate numerator.
+    await connection.run(
+      "UPDATE pc_keiba.jvd_se SET kakutei_chakujun='01' WHERE ijo_kubun_code IN ('4','5')",
+    );
+    const malformed = (
+      await connection.runAndReadAll(buildWinRateHeatmapBloodlineQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(
+      malformed.map((r) => [Number(r.starts), Number(r.wins), Number(r.places), Number(r.shows)]),
+    ).toStrictEqual([[4, 1, 2, 2]]);
+    await connection.run(
+      "DELETE FROM pc_keiba.jvd_se WHERE kaisai_nen='2025' AND ijo_kubun_code NOT IN ('4','5'); DELETE FROM pc_keiba.jvd_se WHERE umaban='03' AND kakutei_chakujun='01';",
+    );
+    const nonfinishOnly = (
+      await connection.runAndReadAll(buildConditionFrameStatsQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(
+      nonfinishOnly.map((r) => [
+        Number(r.count),
+        Number(r.win_count),
+        Number(r.quinella_count),
+        Number(r.show_count),
+        r.average_finish,
+        r.median_finish,
+      ]),
+    ).toStrictEqual([[1, 0, 0, 0, null, null]]);
+    // Known Chantilly editions share the imported country code with Longchamp.
+    await connection.run(`
+      UPDATE pc_keiba.jvd_se SET kakutei_chakujun='00' WHERE ijo_kubun_code IN ('4','5');
+      INSERT INTO pc_keiba.jvd_ra SELECT * REPLACE ('2016' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.jvd_ra WHERE kaisai_nen='2025';
+      INSERT INTO pc_keiba.jvd_ra SELECT * REPLACE ('2017' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.jvd_ra WHERE kaisai_nen='2025';
+      INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2016' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.jvd_se WHERE kaisai_nen='2026';
+      INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2017' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.jvd_se WHERE kaisai_nen='2026';
+      INSERT INTO pc_keiba.oversea_runner_source_id SELECT * REPLACE ('2016' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.oversea_runner_source_id WHERE kaisai_nen='2026';
+      INSERT INTO pc_keiba.oversea_runner_source_id SELECT * REPLACE ('2017' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.oversea_runner_source_id WHERE kaisai_nen='2026';
+    `);
+    const sameVenue = (
+      await connection.runAndReadAll(
+        buildConditionWeightClassStatsQuery({
+          env: config,
+          filters: { ...filters, includeVenue: true },
+          kind: "carried",
+        }),
+      )
+    ).getRowObjectsJson();
+    expect(sameVenue.map((r) => [Number(r.starts), Number(r.win_count)])).toStrictEqual([[1, 0]]);
+    const allVenues = (
+      await connection.runAndReadAll(
+        buildConditionWeightClassStatsQuery({
+          env: config,
+          filters,
+          kind: "carried",
+        }),
+      )
+    ).getRowObjectsJson();
+    expect(allVenues.map((r) => [Number(r.starts), Number(r.win_count)])).toStrictEqual([[3, 2]]);
+    const forcedVenue = (
+      await connection.runAndReadAll(buildConditionFrameStatsQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(forcedVenue.map((r) => [Number(r.count), Number(r.win_count)])).toStrictEqual([[1, 0]]);
+    const sameVenueResults = (
+      await connection.runAndReadAll(
+        buildConditionFinishPositionStatsQuery(config, { ...filters, includeVenue: true }),
+      )
+    ).getRowObjectsJson();
+    expect(sameVenueResults).toStrictEqual([]);
+    const allVenueResults = (
+      await connection.runAndReadAll(buildConditionFinishPositionStatsQuery(config, filters))
+    ).getRowObjectsJson();
+    expect(allVenueResults.map((r) => r.target_race_date)).toStrictEqual(["20171010", "20161010"]);
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
+});
+
+it("does not apply the Chantilly exception to native or other overseas races", () => {
+  expect(buildConditionFrameStatsQuery(config, jraFilters)).not.toMatch("NOT IN ('2016', '2017')");
+  expect(
+    buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters, kind: "carried" }),
+  ).not.toMatch("NOT IN ('2016', '2017')");
+  expect(
+    buildConditionFrameStatsQuery(config, {
+      ...jraFilters,
+      date: "20261004",
+      keibajoCode: "A8",
+      raceBango: "04",
+    }),
+  ).not.toMatch("NOT IN ('2016', '2017')");
 });

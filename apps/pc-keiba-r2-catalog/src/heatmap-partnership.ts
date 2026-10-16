@@ -15,9 +15,11 @@ export interface PartnershipScope {
   source: CatalogSource;
   revision: string;
   surface?: string;
+  eventScope?: "arc-cohort-policy-v2";
 }
 
 export interface PartnershipHistory {
+  eventScope?: "arc-cohort-policy-v2";
   surface: string;
   date: string;
   finishPosition: number | null;
@@ -50,7 +52,7 @@ interface AggregatePartnershipInput {
 }
 
 const DATE_PATTERN: RegExp = /^\d{8}$/u;
-const VENUE_PATTERN: RegExp = /^\d{2}$/u;
+const VENUE_PATTERN: RegExp = /^[0-9A-Z]{2}$/u;
 const WINDOWS: Record<PartnershipKind, number | null> = {
   horseJockey: null,
   jockeyTrainerVenue: 10,
@@ -82,7 +84,7 @@ const validDate = (date: string): boolean => {
 export const validatePartnershipScope = (scope: PartnershipScope): void => {
   if (!validDate(scope.date)) throw new Error("Partnership date must be a valid YYYYMMDD date");
   if (!VENUE_PATTERN.test(scope.keibajoCode))
-    throw new Error("Partnership venue must contain two digits");
+    throw new Error("Partnership venue must contain two uppercase alphanumeric characters");
   if (scope.revision.trim() === "") throw new Error("Partnership source revision is required");
 };
 
@@ -98,19 +100,22 @@ export const partnershipStartDate = (scope: PartnershipScope): string | null => 
 
 export const partnershipCacheKey = (scope: PartnershipScope): string => {
   validatePartnershipScope(scope);
-  // No race number: races on the same date, venue and surface share this cohort.
+  // Unscoped keys remain byte-identical. Arc keys additionally identify the event cohort.
   const venue: string =
     scope.kind === "horseJockey" || scope.kind === "jockeyTrainerOwner"
       ? "all-venues"
       : scope.keibajoCode;
   return [
-    CACHE_VERSION,
+    scope.eventScope === undefined ? CACHE_VERSION : "heatmap-partnership-v3",
     scope.revision,
     scope.source,
     scope.date,
     venue,
-    scope.kind === "jockeyTrainerOwner" ? "jockeyTrainerOwner-all-sources" : scope.kind,
+    scope.kind === "jockeyTrainerOwner" && scope.eventScope === undefined
+      ? "jockeyTrainerOwner-all-sources"
+      : scope.kind,
     partnershipSurface(scope),
+    ...(scope.eventScope === undefined ? [] : [scope.eventScope]),
   ]
     .map(encodeURIComponent)
     .join(":");
@@ -138,6 +143,8 @@ export const aggregatePartnership = (input: AggregatePartnershipInput): Partners
   const eligible: PartnershipHistory[] = input.history.filter(
     (row) =>
       validDate(row.date) &&
+      (input.scope.eventScope === undefined ||
+        (row.eventScope === input.scope.eventScope && row.source === "jra")) &&
       row.date < input.scope.date &&
       (start === null || row.date >= start) &&
       (input.scope.kind === "jockeyTrainerOwner" || row.source === input.scope.source) &&

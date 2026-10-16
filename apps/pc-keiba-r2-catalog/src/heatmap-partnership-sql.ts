@@ -1,4 +1,5 @@
 // Run with bun (bunx vitest).
+import { arcTitleSql } from "./arc-cohort";
 import {
   partnershipStartDate,
   partnershipSurface,
@@ -61,7 +62,10 @@ export const buildPartnershipEntriesQuery = (input: PartnershipEntriesQueryInput
 
 const horsePredicate = (input: PartnershipQueryInput): string => {
   if (input.scope.kind !== "horseJockey") return "";
-  if (input.horseIds.length === 0 || !input.horseIds.every((id) => HORSE_ID_PATTERN.test(id))) {
+  if (
+    input.horseIds.length === 0 ||
+    !input.horseIds.every((id) => HORSE_ID_PATTERN.test(id) && !/^0+$/u.test(id))
+  ) {
     throw new Error("Horse partnership queries require valid target horse IDs");
   }
   return `AND btrim(se.ketto_toroku_bango) IN (${[...new Set(input.horseIds)]
@@ -88,7 +92,11 @@ const ownerTargetPredicate = (input: PartnershipQueryInput): string => {
 };
 
 const historySources = (input: PartnershipQueryInput): readonly CatalogSource[] =>
-  input.scope.kind === "jockeyTrainerOwner" ? ["jra", "nar"] : [input.scope.source];
+  input.scope.eventScope !== undefined
+    ? ["jra"]
+    : input.scope.kind === "jockeyTrainerOwner"
+      ? ["jra", "nar"]
+      : [input.scope.source];
 
 const historyWhere = (input: PartnershipQueryInput, source: CatalogSource): string => {
   const start: string | null = partnershipStartDate(input.scope);
@@ -108,7 +116,15 @@ const historyWhere = (input: PartnershipQueryInput, source: CatalogSource): stri
       AND ra.keibajo_code = se.keibajo_code AND ra.race_bango = se.race_bango
       AND ${partnershipSurfaceSql("ra.track_code")} = '${surface}'
   )`;
-  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}`;
+  const identityColumns: readonly string[] = [
+    PARTNER_COLUMNS[input.scope.kind],
+    ...(input.scope.kind === "ownerVenue" ? [] : ["kishu_code"]),
+    ...(input.scope.kind === "jockeyTrainerOwner" ? ["banushi_code"] : []),
+  ];
+  const identities: string = [...new Set(identityColumns)]
+    .map((column) => `AND nullif(replace(btrim(se.${column}), '0', ''), '') IS NOT NULL`)
+    .join("\n    ");
+  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}\n    ${input.scope.eventScope === undefined ? "" : `AND EXISTS (SELECT 1 FROM ${tableName(input.config, currentTables(source).raceTable)} arc WHERE arc.kaisai_nen = se.kaisai_nen AND arc.kaisai_tsukihi = se.kaisai_tsukihi AND arc.keibajo_code = se.keibajo_code AND arc.race_bango = se.race_bango AND ${arcTitleSql("arc.kyosomei_hondai")})`}\n    ${identities}`;
 };
 
 // Both queries use the same cohort. Venue cohorts always match the target

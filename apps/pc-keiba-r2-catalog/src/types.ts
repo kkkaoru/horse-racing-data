@@ -1,3 +1,6 @@
+// Run with bun.
+import type { PartnershipStatsRow } from "./heatmap-partnership-stats";
+import type { ForeignOwnerMetadata } from "./foreign-owner-reader";
 export type CatalogSource = "jra" | "nar";
 export type RunningStyleSourceScope = "ban-ei" | "jra" | "nar";
 export type SourceScope = "all" | "ban-ei" | "jra" | "nar";
@@ -372,6 +375,7 @@ export interface WinRateHeatmapStatsFilters {
   includeGrade?: boolean;
   includeJockeyFrame?: boolean;
   includeOwner?: boolean;
+  includeForeignSourceStats?: boolean;
   includeRaceTitle?: boolean;
   includeSurface: boolean;
   includeTrackCode?: boolean;
@@ -395,6 +399,9 @@ export interface WinRateHeatmapBloodlineRow {
 }
 
 export interface WinRateHeatmapSimilarRow {
+  statsSource?: "netkeiba";
+  statsScope?: "stored-results-10y" | "stored-results-race-10y" | "stored-results-venue-30y";
+  sourcePersonId?: string;
   details: [];
   kind: WinRateHeatmapSimilarKind;
   name: string;
@@ -405,7 +412,17 @@ export interface WinRateHeatmapSimilarRow {
   wins: number;
 }
 
+/** Qualified Arc rows use fixed rolling windows per kind (10Y people/horse/frame,
+ * 30Y horse-jockey/triple/owner-venue, 3Y jockey-venue, 10Y jockey-trainer-venue).
+ * Their since/before/scope are authoritative, independent of generic condition filters.
+ * Only rows and partial coverage cross the HTTP boundary; the raw ledger stays private.
+ */
 export interface WinRateHeatmapStatsPayload {
+  arcQualifiedStats?: Pick<
+    import("./arc-qualified-people").ArcQualifiedResult,
+    "rows" | "coverage"
+  >;
+  foreignOwnerVenueRows?: (PartnershipStatsRow & ForeignOwnerMetadata)[];
   bloodlineRows: WinRateHeatmapBloodlineRow[];
   similarRows: WinRateHeatmapSimilarRow[];
 }

@@ -147,3 +147,78 @@ it("rejects unbounded horse scans and invalid IDs before querying", () => {
     }),
   ).toThrow("valid target horse IDs");
 });
+
+it("excludes zero-only person IDs from both history scans without changing the A8 thirty-year cohort", () => {
+  const query: PartnershipQueryInput = {
+    ...input,
+    scope: { ...input.scope, kind: "ownerVenue", date: "20261004", keibajoCode: "A8" },
+  };
+  expect(buildPartnershipCountsQuery(query)).toMatch(
+    "AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL",
+  );
+  expect(buildPartnershipTargetRacesQuery(query)).toMatch(
+    "AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL",
+  );
+  expect(buildPartnershipCountsQuery(query)).toMatch("se.keibajo_code = 'A8'");
+  expect(buildPartnershipCountsQuery(query)).toMatch(">= '19961004'");
+  expect(buildPartnershipCountsQuery(query)).toMatch("< '20261004'");
+  expect(buildPartnershipCountsQuery(query)).toMatch("END = '芝'");
+  const triple: string = buildPartnershipCountsQuery({
+    ...input,
+    scope: { ...input.scope, kind: "jockeyTrainerOwner" },
+  });
+  expect(triple).toMatch("AND nullif(replace(btrim(se.kishu_code), '0', ''), '') IS NOT NULL");
+  expect(triple).toMatch("AND nullif(replace(btrim(se.chokyoshi_code), '0', ''), '') IS NOT NULL");
+  expect(triple).toMatch("AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL");
+});
+
+it.each(["0", "0000000000"])("rejects unknown horse %s before querying", (id) => {
+  expect(() =>
+    buildPartnershipCountsQuery({
+      ...input,
+      horseIds: [id],
+      scope: { ...input.scope, kind: "horseJockey" },
+    }),
+  ).toThrow("valid target horse IDs");
+});
+
+it("preserves the original leading-zero horse identity", () => {
+  expect(
+    buildPartnershipCountsQuery({
+      ...input,
+      horseIds: ["000123"],
+      scope: { ...input.scope, kind: "horseJockey" },
+    }),
+  ).toMatch("IN ('000123')");
+});
+
+it.each([
+  "horseJockey",
+  "jockeyVenue",
+  "jockeyTrainerVenue",
+  "ownerVenue",
+  "jockeyTrainerOwner",
+] satisfies PartnershipQueryInput["scope"]["kind"][])(
+  "uses the Arc predicate for both %s queries without NAR",
+  (kind) => {
+    const scoped: PartnershipQueryInput = {
+      ...input,
+      horseIds: ["2020100001"],
+      scope: {
+        ...input.scope,
+        date: "20261004",
+        keibajoCode: "A8",
+        kind,
+        eventScope: "arc-cohort-policy-v2",
+      },
+    };
+    expect(buildPartnershipCountsQuery(scoped)).toMatch(
+      "btrim(replace(arc.kyosomei_hondai, chr(12288), '')) IN ('凱旋門賞', '凱旋門賞(GI)')",
+    );
+    expect(buildPartnershipTargetRacesQuery(scoped)).toMatch(
+      "btrim(replace(arc.kyosomei_hondai, chr(12288), '')) IN ('凱旋門賞', '凱旋門賞(GI)')",
+    );
+    expect(buildPartnershipCountsQuery(scoped)).not.toMatch(/nvd_/u);
+    expect(buildPartnershipTargetRacesQuery(scoped)).not.toMatch(/nvd_/u);
+  },
+);

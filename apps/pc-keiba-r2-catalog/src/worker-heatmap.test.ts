@@ -1,3 +1,5 @@
+import arcProfiles from "./fixtures/arc-id-bloodline/profiles.json";
+import arcFixture from "./fixtures/arc-id-bloodline/qualified.json";
 import { expect, it, vi } from "vitest";
 
 import { cacheRequestFor, heatmapStatsDescriptor, kvKeyFor } from "./cache";
@@ -51,9 +53,13 @@ const createHeatmapHarness = () => {
       kvEntries.delete(key);
     },
     async get(key) {
+      if (new TextEncoder().encode(key).byteLength > 512)
+        throw new Error("KV key exceeds 512 bytes");
       return kvEntries.get(key) ?? null;
     },
     async put(key, value) {
+      if (new TextEncoder().encode(key).byteLength > 512)
+        throw new Error("KV key exceeds 512 bytes");
       kvEntries.set(key, value);
     },
   };
@@ -63,6 +69,8 @@ const createHeatmapHarness = () => {
     const text = typeof rawBody === "string" ? rawBody : "";
     const parsed: unknown = JSON.parse(text);
     const query = isRecord(parsed) && typeof parsed.query === "string" ? parsed.query : "";
+    if (query.includes("SELECT m.race_source"))
+      return Response.json({ success: true, result: { rows: [] } });
     if (query.includes("AS known")) {
       knownCountQueries.push(query);
       return Response.json({ result: { rows: [{ known: 1 }] }, success: true });
@@ -338,7 +346,18 @@ it("reads heatmap stats from Cache API then KV before R2 SQL", async () => {
     years: 10,
   });
   const cachedBody = JSON.stringify({
-    bloodlineRows: [],
+    bloodlineRows: [
+      {
+        category: "sire",
+        name: "Test sire",
+        starts: 10,
+        umaban: 1,
+        wins: 1,
+        places: 2,
+        shows: 3,
+        details: [],
+      },
+    ],
     similarRows: [],
   });
   await harness.dependencies.cache.put(
@@ -573,4 +592,237 @@ it("rejects heatmap stats requests with missing or invalid filters", async () =>
     harness.dependencies,
   );
   expect(badClass.status).toBe(400);
+});
+
+it("invalidates an overseas aggregate when only historical mapping content changes and fails closed", async () => {
+  const harness = createHeatmapHarness();
+  const published = { gate: 16, failed: false };
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      if (String(init?.body).includes("SELECT race_source, source, kaisai_nen")) {
+        if (published.failed) throw new Error("revision offline");
+        return Response.json({
+          success: true,
+          result: {
+            rows: [
+              {
+                race_source: "jra",
+                source: "netkeiba",
+                kaisai_nen: "2026",
+                kaisai_tsukihi: "0816",
+                keibajo_code: "A8",
+                race_bango: "04",
+                umaban: "01",
+                gate_number: published.gate,
+              },
+            ],
+          },
+        });
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const request = new Request(heatmapUrl.replace("keibajoCode=07", "keibajoCode=A8"));
+  expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
+  expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(2);
+  published.gate = 1;
+  expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(4);
+  published.failed = true;
+  expect((await handleRequest(request, harness.env, dependencies)).status).toBe(502);
+  expect(harness.fetchCalls).toHaveLength(4);
+});
+
+it.each(["https://public.example", "https://pc-keiba-r2-catalog.internal"])(
+  "rejects removed revision HTTP route without SQL for %s",
+  async (origin) => {
+    const harness = createHeatmapHarness();
+    const response = await handleRequest(
+      new Request(
+        `${origin}/v1/gate-mapping-revision?year=2026&month=10&day=04&keibajoCode=A8&raceNumber=05`,
+        { headers: { "x-internal": "true" } },
+      ),
+      harness.env,
+      harness.dependencies,
+    );
+    expect(response.status).toBe(404);
+    expect(harness.queryBodies).toStrictEqual([]);
+  },
+);
+
+it("wires explicit foreign owner stats and separate venue rows", async () => {
+  const harness = createHeatmapHarness();
+  const fetchImpl: Fetcher = async (_input, init) => {
+    const body = String(init?.body);
+    if (body.includes("SELECT m.race_source"))
+      return Response.json({
+        success: true,
+        result: {
+          rows: [
+            {
+              race_source: "jra",
+              source: "netkeiba",
+              kaisai_nen: "2026",
+              kaisai_tsukihi: "1004",
+              keibajo_code: "A8",
+              race_bango: "05",
+              umaban: "01",
+              source_horse_id: "000a029d42",
+              source_jockey_id: "05504",
+              source_trainer_id: "05701",
+              source_owner_id: "a002e7",
+              sire_source_id: "000a0115e2",
+              sire_name: "Sea The Stars",
+              sire_sire_source_id: "",
+              sire_sire_name: "Cape Cross",
+              dam_source_id: "",
+              dam_name: "",
+              dam_sire_source_id: "",
+              dam_sire_name: "Selkirk",
+            },
+          ],
+        },
+      });
+    const rows = body.includes("oversea_person_race_history")
+      ? [
+          {
+            umaban: "01",
+            source_person_id: "a002e7",
+            kind: "owner",
+            starts: 3,
+            wins: 0,
+            places: 1,
+            shows: 2,
+            conflicts: 0,
+          },
+          {
+            umaban: "01",
+            source_person_id: "a002e7",
+            kind: "ownerVenue",
+            starts: 2,
+            wins: 0,
+            places: 1,
+            shows: 1,
+            conflicts: 0,
+          },
+        ]
+      : [];
+    return Response.json({ success: true, result: { rows } });
+  };
+  const url =
+    "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=04&keibajoCode=A8&raceNumber=05&source=jra&includeOwner=1&includeForeignSourceStats=1&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0";
+  const response = await handleRequest(new Request(url), harness.env, {
+    ...harness.dependencies,
+    fetchImpl,
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    similarRows: [
+      {
+        kind: "owner",
+        sourcePersonId: "a002e7",
+        statsSource: "netkeiba",
+        statsScope: "stored-results-10y",
+        wins: 0,
+      },
+    ],
+    foreignOwnerVenueRows: [{ kind: "ownerVenue", statsScope: "stored-results-venue-30y" }],
+    mappingRevision: expect.stringMatching(/^gate-v1-[a-f0-9]{64}$/u),
+  });
+  expect(
+    (
+      await handleRequest(
+        new Request(url.replace("includeForeignSourceStats=1", "includeForeignSourceStats=bad")),
+        harness.env,
+        harness.dependencies,
+      )
+    ).status,
+  ).toBe(400);
+});
+
+it("keeps actual Arc keys within 512 bytes across miss and hit without leaking ledger", async () => {
+  const harness = createHeatmapHarness();
+  const queries: string[] = [];
+  const fetchImpl: Fetcher = async (_url, init) => {
+    const body = String(init?.body);
+    queries.push(body);
+    if (body.includes("LIMIT 5001") && body.includes("m.kaisai_nen = '2026'"))
+      return Response.json({
+        success: true,
+        result: {
+          rows: arcFixture.rows.map((target) => ({
+            source: "netkeiba",
+            race_source: "jra",
+            kaisai_nen: "2026",
+            kaisai_tsukihi: "1004",
+            keibajo_code: "A8",
+            race_bango: "05",
+            umaban: target.umaban,
+            source_horse_id: target.people.horse,
+            source_jockey_id: target.people.jockey,
+            source_trainer_id: target.people.trainer,
+            source_owner_id: target.people.owner,
+            gate_number: 1,
+          })),
+        },
+      });
+    if (body.includes("FROM pc_keiba.oversea_horse_pedigree WHERE"))
+      return Response.json({ success: true, result: { rows: arcProfiles } });
+    const rows = body.includes("'sire' AS category") ? [bloodlineSqlRow] : [];
+    return Response.json({ success: true, result: { rows } });
+  };
+  const url =
+    heatmapUrl
+      .replace(
+        "month=08&day=22&keibajoCode=07&raceNumber=08",
+        "month=10&day=04&keibajoCode=A8&raceNumber=05",
+      )
+      .replace("includeDistance=1", "includeDistance=0")
+      .replace("includeTurn=1", "includeTurn=0") +
+    "&includeOwner=1&includeJockeyFrame=1&includeRaceTitle=1&includeForeignSourceStats=1";
+  const dependencies = { ...harness.dependencies, fetchImpl };
+  const first = await handleRequest(new Request(url), harness.env, dependencies);
+  const body = await first.text();
+  expect(first.status).toBe(200);
+  const payload: import("./types").WinRateHeatmapStatsPayload = JSON.parse(body);
+  expect(payload.arcQualifiedStats?.rows).toHaveLength(160);
+  expect(payload.arcQualifiedStats?.rows[0]).toMatchObject({
+    kind: "jockey",
+    source: "netkeiba",
+    people: { jockey: "05504" },
+    since: "2016-10-04",
+    before: "2026-10-04",
+    scope: "arc-series",
+    status: "unobserved",
+  });
+  expect(payload.arcQualifiedStats).toMatchObject({
+    coverage: { complete: false, rawRows: 0, invalidHorseRows: 0 },
+  });
+  expect(body).not.toMatch(/dependencyTuple|"evidence":/u);
+  expect(queries.filter((q) => q.includes("LIMIT 5001"))).toHaveLength(4);
+  queries.length = 0;
+  const second = await handleRequest(new Request(url), harness.env, dependencies);
+  expect(await second.text()).toBe(body);
+  expect(queries.filter((q) => q.includes("LIMIT 5001"))).toHaveLength(4);
+  expect(queries.some((q) => q.includes("target_names"))).toBe(false);
+  expect(JSON.parse(body).knownBloodlineCount).toBe(112);
+});
+
+it("qualified Arc failure does not serve native or old cached stats", async () => {
+  const harness = createHeatmapHarness();
+  const fetchImpl: Fetcher = async () => {
+    throw new Error("qualified unavailable");
+  };
+  const url = heatmapUrl.replace(
+    "month=08&day=22&keibajoCode=07&raceNumber=08",
+    "month=10&day=04&keibajoCode=A8&raceNumber=05",
+  );
+  const response = await handleRequest(new Request(url), harness.env, {
+    ...harness.dependencies,
+    fetchImpl,
+  });
+  expect(response.status).toBe(502);
+  expect(harness.cacheEntries.size).toBe(0);
 });

@@ -1,7 +1,7 @@
 // Runs with bun via Vitest; no network or storage calls escape these mocks.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mockDeep } from "vitest-mock-extended";
-import gateway from "./vector-gateway";
+import CatalogWorker, { gateway } from "./vector-gateway";
 import { D1AuditInputError } from "./d1-audit";
 
 const mocks = vi.hoisted(() => ({
@@ -810,4 +810,55 @@ test("does not leak provider errors or retry through Neon", async () => {
   );
   expect(response.status).toBe(503);
   expect(await response.json()).toStrictEqual({ error: "Vector operation unavailable or invalid" });
+});
+test("default entrypoint delegates all existing event handlers", async () => {
+  const bindings = mockDeep<ConstructorParameters<typeof CatalogWorker>[1]>();
+  const worker = new CatalogWorker(mockDeep<ExecutionContext>(), bindings);
+  const request = new Request("https://public.example/health");
+  const response = new Response("ok");
+  const fetchSpy = vi.spyOn(gateway, "fetch").mockResolvedValueOnce(response);
+  expect(await worker.fetch(request)).toBe(response);
+  expect(fetchSpy).toHaveBeenCalledWith(request, bindings);
+  const batch = mockDeep<MessageBatch<unknown>>();
+  const queueSpy = vi.spyOn(gateway, "queue").mockResolvedValueOnce();
+  await worker.queue(batch);
+  expect(queueSpy).toHaveBeenCalledWith(batch, bindings);
+  const controller = mockDeep<ScheduledController>();
+  const scheduledSpy = vi.spyOn(gateway, "scheduled").mockResolvedValueOnce();
+  await worker.scheduled(controller);
+  expect(scheduledSpy).toHaveBeenCalledWith(controller, bindings);
+});
+test("default RPC reads cheap revision and preserves domestic no-op", async () => {
+  const worker = new CatalogWorker(
+    mockDeep<ExecutionContext>(),
+    mockDeep<ConstructorParameters<typeof CatalogWorker>[1]>(),
+  );
+  mocks.sql.mockResolvedValue([]);
+  expect(await worker.getGateMappingRevision({ date: "20261004", keibajoCode: "A8" })).toBe(
+    "gate-v1-e47c0fa0e22cdf31706db0c9568edaa6155ca86914e545d1950e88f8d2aa5229",
+  );
+  mocks.sql.mockClear();
+  expect(
+    await worker.getGateMappingRevision({ date: "20261004", keibajoCode: "77" }),
+  ).toBeUndefined();
+  expect(mocks.sql).not.toHaveBeenCalled();
+});
+test.each([
+  null,
+  [],
+  "x",
+  {},
+  { date: "20260230", keibajoCode: "A8" },
+  { date: "20261301", keibajoCode: "A8" },
+  { date: 20261004, keibajoCode: "A8" },
+  { date: "20261004", keibajoCode: "'x" },
+  { date: "20261004", keibajoCode: 77 },
+  { date: "20261004", keibajoCode: "A8", sql: "anything" },
+])("RPC rejects malformed parameters before SQL %j", async (input) => {
+  const worker = new CatalogWorker(
+    mockDeep<ExecutionContext>(),
+    mockDeep<ConstructorParameters<typeof CatalogWorker>[1]>(),
+  );
+  await expect(worker.getGateMappingRevision(input)).rejects.toThrow("Invalid gate revision input");
+  expect(mocks.sql).not.toHaveBeenCalled();
 });

@@ -1,4 +1,5 @@
 // Run with bun (bunx vitest).
+import { isCurrentArc } from "./arc-cohort";
 import {
   partnershipSurface,
   type PartnershipKind,
@@ -54,6 +55,10 @@ const ZERO_COUNTS: Counts = { starts: 0, wins: 0, places: 0, shows: 0 };
 
 const text = (value: unknown): string | null =>
   typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+const identity = (value: unknown): string | null => {
+  const id: string | null = text(value);
+  return id === null || /^0+$/u.test(id) ? null : id;
+};
 const count = (value: unknown): number => {
   if (typeof value !== "number" && typeof value !== "string" && typeof value !== "bigint")
     throw new Error("Partnership count is malformed");
@@ -75,10 +80,10 @@ const counts = (row: Record<string, unknown>): Counts => {
 };
 const target = (row: Record<string, unknown>): Target => ({
   surface: text(row.surface),
-  horseId: text(row.horse_id),
-  jockeyId: text(row.jockey_id),
-  trainerId: text(row.trainer_id),
-  ownerId: text(row.owner_id),
+  horseId: identity(row.horse_id),
+  jockeyId: identity(row.jockey_id),
+  trainerId: identity(row.trainer_id),
+  ownerId: identity(row.owner_id),
   ownerName: text(row.owner_name) ?? "不明",
   horseName: text(row.horse_name) ?? "不明",
   jockeyName: text(row.jockey_name) ?? "不明",
@@ -107,9 +112,9 @@ const mappedRows = (input: {
   const index: Map<string, Counts> = new Map(
     input.values.map((row) => [
       JSON.stringify([
-        text(row.partner_id),
-        text(row.jockey_id),
-        input.kind === "jockeyTrainerOwner" ? text(row.owner_id) : null,
+        identity(row.partner_id),
+        identity(row.jockey_id),
+        input.kind === "jockeyTrainerOwner" ? identity(row.owner_id) : null,
       ]),
       counts(row),
     ]),
@@ -159,7 +164,14 @@ export const loadPartnershipStats = async (
   // Bound R2 SQL concurrency to the two queries inside each shared cohort.
   for (const kind of KINDS) {
     if (kind === "horseJockey" && horseIds.length === 0) continue;
-    const scope: PartnershipScope = { ...input.cohort.query.scope, kind, surface };
+    const scope: PartnershipScope = {
+      ...input.cohort.query.scope,
+      kind,
+      surface,
+      eventScope: isCurrentArc({ ...input.cohort.query.scope, raceBango: input.raceBango })
+        ? "arc-cohort-policy-v2"
+        : undefined,
+    };
     const cohort = await input.cache.load({
       ...input.cohort,
       query: { ...input.cohort.query, scope, horseIds },

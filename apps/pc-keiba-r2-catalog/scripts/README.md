@@ -145,6 +145,24 @@ still flushes the rows it completed. The data snapshot also records the run ID,
 row count, source fingerprint, mode, and partition date or year in snapshot
 properties.
 
+## Insert-only history publication
+
+For requested person-history scopes, `append_history_scopes.py` appends only
+missing local rows to the existing Catalog table, without full-table replacement:
+
+```sh
+# Manifest: {"scopes":[{"key":"owner:415800"}]}
+uv run append_history_scopes.py scopes.json /private/new-receipts --confirm-append
+uv run test_append_history_scopes.py
+```
+
+The output directory must not exist. The command verifies every existing Catalog
+row against local PostgreSQL, freezes the delta and prior data, checks the pinned
+snapshot before append, and reads back the complete result. A pending record
+without a receipt means inspect the actual Catalog state; never blindly replay.
+Unrequested scopes and non-netkeiba additions are excluded. An unchanged table
+causes no Catalog writes. Credentials use the same settings as `sync_r2_catalog.py`.
+
 ## Skipping unchanged slices
 
 Two layered proofs, both stored as Iceberg table properties after a verified

@@ -120,6 +120,7 @@ it("builds a partition-pruned exact JRA fresh entrant query with active horses o
   expect(sql).toMatch("kaisai_nen = '2026'");
   expect(sql).toMatch("kaisai_tsukihi = '0823'");
   expect(sql).toMatch("keibajo_code = '07'");
+  expect(sql).toMatch("try_cast(btrim(keibajo_code) AS INT) BETWEEN 1 AND 10");
   expect(sql).toMatch("race_bango = '09'");
   expect(sql).toMatch("coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')");
   expect(sql).toMatch("AS INT) BETWEEN 1 AND 18");
@@ -158,6 +159,8 @@ it("builds one partition-pruned bulk fresh entrant query for each exact source",
   expect(jraSql).not.toMatch("nvd_se");
   expect(jraSql).toMatch("kaisai_nen = '2026'");
   expect(jraSql).toMatch("kaisai_tsukihi = '0824'");
+  // Overseas JRA sales (such as A8) must not poison domestic bulk normalization.
+  expect(jraSql).toMatch("try_cast(btrim(keibajo_code) AS INT) BETWEEN 1 AND 10");
   expect(jraSql).not.toMatch("race_bango =");
   expect(narSql).toMatch("'nar' AS source");
   expect(narSql).toMatch("FROM pc_keiba.nvd_se");

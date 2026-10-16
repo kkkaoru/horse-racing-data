@@ -1,3 +1,4 @@
+// Run with bun.
 import type {
   CacheStore,
   HorseRaceResultsFilters,
@@ -26,6 +27,7 @@ export type CacheDescriptor =
     }
   | {
       date: string;
+      mappingRevision?: string;
       includeAge?: boolean;
       includeClass?: boolean;
       includeConditionKey?: boolean;
@@ -33,6 +35,7 @@ export type CacheDescriptor =
       includeGrade?: boolean;
       includeJockeyFrame?: boolean;
       includeOwner?: boolean;
+      includeForeignSourceStats?: boolean;
       includeRaceTitle?: boolean;
       includeSurface: boolean;
       includeTrackCode?: boolean;
@@ -65,6 +68,7 @@ export type CacheDescriptor =
     }
   | {
       date: string;
+      mappingRevision?: string;
       includeAge?: boolean;
       includeClass?: boolean;
       includeConditionKey?: boolean;
@@ -99,9 +103,9 @@ const FINISH_DETAILS_CACHE_TOKEN = "1";
 const RACE_ENTITY_CURSOR_CACHE_TOKEN_LENGTH = 64;
 const RACE_ENTITY_HISTORY_CACHE_TOKEN = "object-v2-mssd";
 const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v1";
-// Bumped when condition stats started carrying race-time correlation rows, so
-// cached bodies with an empty correlationRows list are not served.
-const CORRELATION_CACHE_TOKEN = "v1";
+// v2 excludes zero-sentinel odds/popularity from condition aggregates and
+// correlation rows in both Cache API and KV; v1 numerical values are stale.
+const CORRELATION_CACHE_TOKEN: string = "v2";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -136,6 +140,8 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
   if (descriptor.kind === "win-rate-heatmap-stats") {
     // Named-race grade matching and verified pedigree supplements change cached aggregates.
     url.pathname = "/v3/win-rate-heatmap-stats";
+    if (/^[A-Z][0-9A-Z]$/u.test(descriptor.keibajoCode))
+      url.searchParams.set("overseasInputs", "source-mapping-v1");
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
     url.searchParams.set("source", descriptor.source);
@@ -147,6 +153,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("nameTrim", "ideographic");
     url.searchParams.set("emptyTurnBypass", "1");
     appendTrueFlag(url, "includeOwner", descriptor.includeOwner);
+    appendTrueFlag(url, "includeForeignSourceStats", descriptor.includeForeignSourceStats);
     appendTrueFlag(url, "includeJockeyFrame", descriptor.includeJockeyFrame);
     appendCellClassCacheParams(url, descriptor);
   }
@@ -181,6 +188,12 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("correlation", CORRELATION_CACHE_TOKEN);
     appendCellClassCacheParams(url, descriptor);
   }
+  if (
+    (descriptor.kind === "win-rate-heatmap-stats" ||
+      descriptor.kind === "condition-history-stats") &&
+    descriptor.mappingRevision !== undefined
+  )
+    url.searchParams.set("gateMapping", descriptor.mappingRevision);
   return new Request(url);
 };
 
@@ -331,6 +344,7 @@ export const heatmapStatsDescriptor = (filters: WinRateHeatmapStatsFilters): Cac
   includeGrade: filters.includeGrade === true,
   includeJockeyFrame: filters.includeJockeyFrame === true,
   includeOwner: filters.includeOwner === true,
+  ...(filters.includeForeignSourceStats === true ? { includeForeignSourceStats: true } : {}),
   includeRaceTitle: filters.includeRaceTitle === true,
   includeSurface: filters.includeSurface,
   includeTrackCode: filters.includeTrackCode === true,

@@ -331,3 +331,39 @@ it("rejects NAR rows that carry bloodline names and malformed identity rows", as
     }),
   ).rejects.toThrow("Missing or invalid overseas identity field");
 });
+
+it("reads full provider mappings separately with the full race key", async () => {
+  const sqls: string[] = [];
+  const result = await readRaceRunners({
+    input: { ...JRA, date: "20261004", keibajoCode: "A8", raceBango: "05" },
+    query: async (sql) => {
+      sqls.push(sql);
+      if (sql.includes("oversea_runner_source_id"))
+        return [{ umaban: "01", source_horse_id: "000a029d42", gate_number: 12 }];
+      if (sql.includes("oversea_runner_identity"))
+        return [identityRow({ umaban: "01", source: "jra-van" })];
+      return [runnerRow()];
+    },
+  });
+  expect(result.sourceMappings).toStrictEqual([
+    { umaban: "01", sourceHorseId: "000a029d42", gateNumber: 12 },
+  ]);
+  expect(result.identities[0]?.identitySource).toBe("jra-van");
+  expect(sqls[1]).toMatch("race_source = 'jra' AND source = 'netkeiba'");
+  expect(sqls[1]).toMatch("kaisai_nen = '2026'");
+  expect(sqls[1]).toMatch("kaisai_tsukihi = '1004'");
+  expect(sqls[1]).toMatch("keibajo_code = 'A8'");
+  expect(sqls[1]).toMatch("race_bango = '05'");
+});
+
+it("does not turn a mapping provider failure into an empty mapping", async () => {
+  await expect(
+    readRaceRunners({
+      input: { ...JRA, keibajoCode: "A8" },
+      query: async (sql) => {
+        if (sql.includes("oversea_runner_source_id")) throw new Error("provider unavailable");
+        return [runnerRow()];
+      },
+    }),
+  ).rejects.toThrow("provider unavailable");
+});

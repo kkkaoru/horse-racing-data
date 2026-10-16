@@ -273,3 +273,90 @@ it("validates the target race identity used for partnership lookups", () => {
     }),
   ).toThrow("two digits");
 });
+
+it.each(["", "  ", "000000", "0000000000"])(
+  "omits sixteen unknown identities (%j) without transferring cached samples or making zeros",
+  async (unknownId) => {
+    const input: PartnershipStatsRequest = request();
+    vi.mocked(input.cohort.execute).mockResolvedValue([
+      ...Array.from({ length: 16 }, (_, index) => ({
+        umaban: index + 1,
+        surface: "芝",
+        horse_id: unknownId,
+        jockey_id: unknownId,
+        trainer_id: unknownId,
+        owner_id: unknownId,
+        owner_name: "",
+      })),
+      {
+        umaban: 17,
+        surface: "芝",
+        horse_id: "000123",
+        jockey_id: "000123",
+        trainer_id: "000123",
+        owner_id: "000123",
+        owner_name: "Known",
+      },
+    ]);
+    vi.mocked(input.cache.load).mockImplementation(async ({ query }) => ({
+      targetRaces: [],
+      values: [
+        {
+          partner_id: unknownId,
+          jockey_id: query.scope.kind === "ownerVenue" ? "owner" : unknownId,
+          owner_id: unknownId,
+          starts: 968,
+          wins: 155,
+          places: 200,
+          shows: 300,
+        },
+        {
+          partner_id: "000123",
+          jockey_id: query.scope.kind === "ownerVenue" ? "owner" : "000123",
+          owner_id: "000123",
+          starts: 7,
+          wins: 1,
+          places: 2,
+          shows: 3,
+        },
+      ],
+    }));
+    expect(
+      (await loadPartnershipStats(input))?.map((row) => [row.kind, row.umaban, row.starts]),
+    ).toStrictEqual([
+      ["horseJockey", 17, 7],
+      ["jockeyVenue", 17, 7],
+      ["jockeyTrainerVenue", 17, 7],
+      ["ownerVenue", 17, 7],
+      ["jockeyTrainerOwner", 17, 7],
+    ]);
+    expect(input.cache.load).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ horseIds: ["000123"] }),
+      }),
+    );
+  },
+);
+
+it("keeps known jockey statistics when only horse and owner are unknown", async () => {
+  const input: PartnershipStatsRequest = request();
+  vi.mocked(input.cohort.execute).mockResolvedValue([
+    { umaban: 1, surface: "芝", horse_id: "0000000000", owner_id: "000000", jockey_id: "000123" },
+  ]);
+  expect((await loadPartnershipStats(input))?.map((row) => row.kind)).toStrictEqual([
+    "jockeyVenue",
+  ]);
+});
+
+it.each([
+  ["05", true],
+  ["04", false],
+])("scopes only the exact Arc load with race number %s", async (raceBango, scoped) => {
+  const input = request();
+  input.raceBango = String(raceBango);
+  input.cohort.query.scope = { ...input.cohort.query.scope, date: "20261004", keibajoCode: "A8" };
+  await loadPartnershipStats(input);
+  expect(
+    vi.mocked(input.cache.load).mock.calls.map(([r]) => r.query.scope.eventScope !== undefined),
+  ).toStrictEqual([scoped, scoped, scoped, scoped, scoped]);
+});

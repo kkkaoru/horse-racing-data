@@ -1,4 +1,10 @@
 // Runs with bun; read-only Catalog runner projection preserving absence versus provider failure.
+import {
+  buildOverseasRunnerMappingSql,
+  isOverseasRunnerRace,
+  parseOverseasRunnerMappings,
+  type OverseasRunnerMapping,
+} from "./overseas-runner-mapping";
 import { dedupeIdenticalRows } from "./normalise";
 export interface RaceRunnersReadInput {
   namespace: string;
@@ -22,6 +28,7 @@ export interface RaceRunnersIdentityRow {
   ownerNameFull: string | null;
 }
 export interface RaceRunnersResult {
+  sourceMappings?: OverseasRunnerMapping[];
   runners: Record<string, string | null>[];
   identities: RaceRunnersIdentityRow[];
 }
@@ -262,8 +269,16 @@ export const readRaceRunners = async (
     options.input,
   );
   if (options.input.source !== "jra") return { runners, identities: [] };
+  const sourceMappings = isOverseasRunnerRace(options.input)
+    ? {
+        sourceMappings: parseOverseasRunnerMappings(
+          dedupeIdenticalRows(await options.query(buildOverseasRunnerMappingSql(options.input))),
+        ),
+      }
+    : {};
   return {
     runners,
+    ...sourceMappings,
     identities: parseIdentityRows(
       dedupeIdenticalRows(await options.query(buildRaceRunnersIdentitySql(options.input))),
     ),

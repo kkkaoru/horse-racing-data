@@ -1,9 +1,15 @@
+// Run with bun via the package scripts.
 import { afterEach, expect, it, vi } from "vitest";
 
 import { cacheRequestFor, heatmapStatsDescriptor, kvKeyFor } from "./cache";
 import worker from "./index";
 import type { CacheStore, Env, Fetcher, KvStore, WorkerDependencies } from "./types";
 import { handleRequest } from "./worker";
+import {
+  buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapKnownBloodlineCountQuery,
+  buildWinRateHeatmapSimilarQuery,
+} from "./win-rate-heatmap-stats";
 
 const featureRow = (): Record<string, unknown> => ({
   kaisai_nen: "2026",
@@ -1587,6 +1593,38 @@ it("purges one source and its exact race-training cache key", async () => {
   );
 });
 
+it("purges only the training cache for an exact-race ingestion update", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/admin/purge?date=20260715&keibajoCode=05&raceBango=01&kind=race-trainings",
+      { headers: { Authorization: "Bearer ingestion-secret" }, method: "POST" },
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 1 });
+  expect(harness.cacheCalls.deletes).toStrictEqual([
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&schema=complete-horse-workouts-v2&keibajoCode=05&raceBango=01",
+  ]);
+  expect(harness.kvCalls.deletes).toHaveLength(1);
+});
+
+it("rejects training-only purge without an exact race", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request("https://catalog.test/admin/purge?date=20260715&kind=race-trainings", {
+      headers: { Authorization: "Bearer admin-secret" },
+      method: "POST",
+    }),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(400);
+  expect(harness.cacheCalls.deletes).toStrictEqual([]);
+});
+
 it("validates authorized purge parameters", async () => {
   const harness = createHarness();
   const response = await handleRequest(
@@ -1761,6 +1799,66 @@ it("requires heatmap identity query params and rejects invalid flags", async () 
   expect(badDay.status).toBe(400);
   await expect(badDay.json()).resolves.toStrictEqual({
     error: "year, month, and day must be a valid calendar date",
+  });
+  expect(harness.fetchCalls).toHaveLength(0);
+});
+
+it("accepts an overseas venue through the heatmap URL parser and SQL builders", async () => {
+  const harness = createHarness();
+  harness.dependencies.fetchImpl = async (input, init) => {
+    harness.fetchCalls.push({ input: String(input), init });
+    return Response.json({ result: { rows: [] }, success: true });
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=A8&raceNumber=5&source=jra",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    bloodlineRows: [],
+    bloodlineUnavailable: true,
+    similarRows: [],
+    arcQualifiedStats: { rows: [], coverage: { complete: false, rawRows: 0, invalidHorseRows: 0 } },
+    mappingRevision: "gate-v1-e47c0fa0e22cdf31706db0c9568edaa6155ca86914e545d1950e88f8d2aa5229",
+  });
+  expect(harness.fetchCalls).toHaveLength(9);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code = 'A8'");
+  expect(String(harness.fetchCalls[5]?.init?.body)).toMatch("race_bango = '05'");
+  expect(String(harness.fetchCalls[5]?.init?.body)).toMatch("keibajo_code = 'A8'");
+});
+
+it.each(["a8", "A8'", "A8 OR 1=1", "../"])(
+  "rejects unsafe heatmap venue input before R2 SQL: %s",
+  async (keibajoCode) => {
+    const harness = createHarness();
+    const url = new URL(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&raceNumber=5&source=jra",
+    );
+    url.searchParams.set("keibajoCode", keibajoCode);
+    const response = await handleRequest(new Request(url), harness.env, harness.dependencies);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toStrictEqual({
+      error: "keibajoCode must contain two uppercase alphanumeric characters",
+    });
+    expect(harness.fetchCalls).toHaveLength(0);
+  },
+);
+
+it("keeps heatmap race numbers numeric for overseas venues", async () => {
+  const harness = createHarness();
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=A8&raceNumber=A5&source=jra",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "raceNumber must contain one or two digits",
   });
   expect(harness.fetchCalls).toHaveLength(0);
 });
@@ -1952,4 +2050,186 @@ it("queries NAR heatmap stats with optional filters off and ignores rows-shaped 
     "concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '20210715'",
   );
   expect(String(harness.fetchCalls[0]?.init?.body)).not.toMatch("AND ra.keibajo_code = '03'");
+});
+
+it.each(["cache-api", "kv"])(
+  "recomputes an empty %s heatmap hit using the exact query",
+  async (tier) => {
+    const harness = createHarness([
+      {
+        category: "sire",
+        kind: "jockey",
+        name: "Take",
+        places: 2,
+        shows: 3,
+        starts: 8,
+        umaban: 7,
+        wins: 1,
+      },
+    ]);
+    const filters = {
+      date: "20261004",
+      includeDistance: true,
+      includeSurface: true,
+      includeTurn: true,
+      includeVenue: true,
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+      years: 10,
+    } satisfies Parameters<typeof heatmapStatsDescriptor>[0];
+    const descriptor = heatmapStatsDescriptor(filters);
+    if (tier === "cache-api") {
+      harness.cacheEntries.set(
+        cacheRequestFor(descriptor).url,
+        Response.json({ bloodlineRows: [], similarRows: [] }),
+      );
+    } else {
+      harness.kvEntries.set(kvKeyFor(descriptor), '{ "similarRows": [], "bloodlineRows": [] }');
+    }
+    const response = await handleRequest(
+      new Request(
+        "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=08&raceNumber=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1",
+      ),
+      harness.env,
+      harness.dependencies,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Catalog-Cache")).toBe("r2-sql");
+    expect(await response.json()).toMatchObject({
+      similarRows: [{ kind: "jockey", name: "Take", starts: 8, wins: 1 }],
+    });
+    expect(
+      harness.fetchCalls.map((call) => {
+        const body: unknown = JSON.parse(String(call.init?.body));
+        return isRecord(body) ? body.query : null;
+      }),
+    ).toStrictEqual([
+      buildWinRateHeatmapBloodlineQuery(harness.env, filters),
+      buildWinRateHeatmapKnownBloodlineCountQuery(harness.env, filters),
+      buildWinRateHeatmapSimilarQuery(harness.env, filters),
+    ]);
+    expect(harness.cacheCalls.puts).toHaveLength(1);
+    expect(harness.kvCalls.puts).toHaveLength(1);
+  },
+);
+
+it.each(["cache-api", "kv", "miss"])(
+  "does not cache a genuinely empty heatmap after a %s lookup",
+  async (tier) => {
+    const harness = createHarness();
+    const descriptor = heatmapStatsDescriptor({
+      date: "20261004",
+      includeDistance: true,
+      includeSurface: true,
+      includeTurn: true,
+      includeVenue: true,
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+      years: 10,
+    });
+    if (tier === "cache-api") {
+      harness.cacheEntries.set(
+        cacheRequestFor(descriptor).url,
+        Response.json({ bloodlineRows: [], similarRows: [] }),
+      );
+    }
+    if (tier === "kv") {
+      harness.kvEntries.set(kvKeyFor(descriptor), '{"bloodlineRows":[],"similarRows":[]}');
+    }
+    const request = new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=08&raceNumber=01&source=jra&years=10",
+    );
+    const response = await handleRequest(request, harness.env, harness.dependencies);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Catalog-Cache")).toBe("r2-sql");
+    expect(await response.json()).toStrictEqual({ bloodlineRows: [], similarRows: [] });
+    const retry = await handleRequest(request, harness.env, harness.dependencies);
+    expect(retry.status).toBe(200);
+    expect(harness.fetchCalls).toHaveLength(6);
+    expect(harness.cacheCalls.puts).toHaveLength(0);
+    expect(harness.kvCalls.puts).toHaveLength(0);
+  },
+);
+
+it.each(["cache-api", "kv"])(
+  "preserves query errors after rejecting an empty %s heatmap hit",
+  async (tier) => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const harness = createHarness();
+    const descriptor = heatmapStatsDescriptor({
+      date: "20261004",
+      includeDistance: true,
+      includeSurface: true,
+      includeTurn: true,
+      includeVenue: true,
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+      years: 10,
+    });
+    if (tier === "cache-api") {
+      harness.cacheEntries.set(
+        cacheRequestFor(descriptor).url,
+        Response.json({ bloodlineRows: [], similarRows: [] }),
+      );
+    } else {
+      harness.kvEntries.set(kvKeyFor(descriptor), '{"bloodlineRows":[],"similarRows":[]}');
+    }
+    harness.fetchState.response = new Response("unavailable", { status: 503 });
+    const response = await handleRequest(
+      new Request(
+        "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=08&raceNumber=01&source=jra&years=10",
+      ),
+      harness.env,
+      harness.dependencies,
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toHaveProperty("error");
+    expect(harness.fetchCalls).toHaveLength(3);
+    expect(harness.cacheCalls.puts).toHaveLength(0);
+    expect(harness.kvCalls.puts).toHaveLength(0);
+  },
+);
+
+it.each(["cache-api", "kv"])("reuses a %s heatmap hit with only similar rows", async (tier) => {
+  const harness = createHarness();
+  const descriptor = heatmapStatsDescriptor({
+    date: "20261004",
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "08",
+    raceBango: "01",
+    source: "jra",
+    years: 10,
+  });
+  if (tier === "cache-api") {
+    harness.cacheEntries.set(
+      cacheRequestFor(descriptor).url,
+      Response.json({ bloodlineRows: [], similarRows: [{ name: "cached" }] }),
+    );
+  } else {
+    harness.kvEntries.set(
+      kvKeyFor(descriptor),
+      '{"bloodlineRows":[],"similarRows":[{"name":"cached"}]}',
+    );
+  }
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=08&raceNumber=01&source=jra&years=10",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Catalog-Cache")).toMatch(/^(cache-api|kv)$/u);
+  expect(await response.json()).toStrictEqual({
+    bloodlineRows: [],
+    similarRows: [{ name: "cached" }],
+  });
+  expect(harness.fetchCalls).toHaveLength(0);
+  expect(harness.kvCalls.puts).toHaveLength(0);
 });

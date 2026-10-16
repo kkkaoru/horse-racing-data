@@ -1,4 +1,7 @@
+import { buildArcBloodlineLabelsQuery } from "./win-rate-heatmap-stats";
+// Runs with bun via Vitest.
 import { expect, it } from "vitest";
+import { DuckDBInstance } from "@duckdb/node-api";
 
 import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
@@ -6,6 +9,7 @@ import {
   buildWinRateHeatmapKnownBloodlineCountQuery,
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
+  currentRaceIdentitySql,
   isBanEiKeibajo,
   trackSurfaceSql,
   normaliseBloodlineRow,
@@ -31,6 +35,18 @@ const jraFilters: WinRateHeatmapStatsFilters = {
   source: "jra",
   years: 10,
 };
+
+it("qualifies every runner identity field when joins share those fields", () => {
+  expect(currentRaceIdentitySql(jraFilters, "se")).toBe(
+    "se.kaisai_nen = '2026'\n    AND se.kaisai_tsukihi = '0715'\n    AND se.keibajo_code = '05'\n    AND se.race_bango = '01'",
+  );
+});
+
+it("preserves unqualified identity for single-table selectors", () => {
+  expect(currentRaceIdentitySql(jraFilters)).toBe(
+    "kaisai_nen = '2026'\n    AND kaisai_tsukihi = '0715'\n    AND keibajo_code = '05'\n    AND race_bango = '01'",
+  );
+});
 
 it("shares the surface classifier with partnership history queries", () => {
   expect(trackSurfaceSql("ra.track_code")).toMatch("THEN '芝'");
@@ -186,7 +202,7 @@ it("adds jockey-in-frame matching to similar SQL when includeJockeyFrame is enab
   expect(sql).toMatch("wakuban AS frame");
   expect(sql).toMatch("lpad(btrim(coalesce(se.wakuban, '')), 2, '0')");
   expect(sql).toMatch("tn.kind = 'jockeyFrame'");
-  expect(sql).toMatch("WHERE wakuban <> '' AND wakuban <> '00'");
+  expect(sql).toMatch("WHERE jockey <> '不明' AND wakuban <> '' AND wakuban <> '00'");
   expect(sql).toMatch("GROUP BY kind, name, frame");
   expect(sql).toMatch("coalesce(stats.frame, '') = coalesce(cp.frame, '')");
 });
@@ -335,6 +351,35 @@ it("unions JRA and NAR history when venue matching is off", () => {
   expect(similar).not.toMatch("AND ra.keibajo_code = '05'");
 });
 
+it("builds overseas heatmap queries without changing the venue code", () => {
+  const filters: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+  };
+  expect(buildWinRateHeatmapBloodlineQuery(config, filters)).toMatch("keibajo_code = 'A8'");
+  expect(buildWinRateHeatmapSimilarQuery(config, filters)).toMatch("keibajo_code = 'A8'");
+  expect(buildWinRateHeatmapKnownBloodlineCountQuery(config, filters)).toMatch(
+    "keibajo_code = 'A8'",
+  );
+});
+
+it.each(["a8", "A8'", "A8 OR 1=1", "../"])(
+  "rejects malformed overseas venue codes: %s",
+  (keibajoCode) => {
+    expect(() => buildWinRateHeatmapSimilarQuery(config, { ...jraFilters, keibajoCode })).toThrow(
+      "keibajoCode must contain two uppercase alphanumeric characters",
+    );
+  },
+);
+
+it("does not accept an overseas venue code as a race number", () => {
+  expect(() =>
+    buildWinRateHeatmapBloodlineQuery(config, { ...jraFilters, raceBango: "A8" }),
+  ).toThrow("raceBango must contain two digits");
+});
+
 it("rejects unsafe namespace, dates, codes, and year windows", () => {
   expect(() =>
     buildWinRateHeatmapBloodlineQuery({ ...config, R2_SQL_NAMESPACE: "pc_keiba;drop" }, jraFilters),
@@ -347,7 +392,7 @@ it("rejects unsafe namespace, dates, codes, and year windows", () => {
   ).toThrow("date must be a valid calendar date");
   expect(() =>
     buildWinRateHeatmapSimilarQuery(config, { ...jraFilters, keibajoCode: "5" }),
-  ).toThrow("keibajoCode must contain two digits");
+  ).toThrow("keibajoCode must contain two uppercase alphanumeric characters");
   expect(() =>
     buildWinRateHeatmapBloodlineQuery(config, { ...jraFilters, raceBango: "1;" }),
   ).toThrow("raceBango must contain two digits");
@@ -658,4 +703,246 @@ it("counts the runners' known pedigree names without scanning race history", () 
   expect(sql.trimEnd().endsWith("SELECT count(*) AS known\nFROM current_bloodlines")).toBe(true);
   expect(/current_bloodlines AS \(/u.test(sql)).toBe(true);
   expect(/matched_history|current_race AS/u.test(sql)).toBe(false);
+});
+
+it("uses provider-qualified full gates for both current targets and eligible overseas history", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    keibajoCode: "A8",
+    includeJockeyFrame: true,
+  });
+  expect(
+    sql.match(/LEFT JOIN pc_keiba.oversea_runner_source_id gate_mapping/gu)?.length,
+  ).toBeGreaterThanOrEqual(2);
+  expect(sql).toMatch("gate_mapping.race_source = 'jra' AND gate_mapping.source = 'netkeiba'");
+  expect(sql).toMatch("gate_mapping.kaisai_nen = se.kaisai_nen");
+  expect(sql).toMatch("gate_mapping.kaisai_tsukihi = se.kaisai_tsukihi");
+  expect(sql).toMatch("gate_mapping.keibajo_code = se.keibajo_code");
+  expect(sql).toMatch("gate_mapping.race_bango = se.race_bango");
+  expect(sql).toMatch("gate_mapping.umaban = se.umaban");
+  expect(sql).toMatch("cast(gate_mapping.gate_number AS VARCHAR)");
+  expect(sql).toMatch("se.keibajo_code = cr.keibajo_code");
+  expect(sql).not.toMatch("se.wakuban");
+});
+it("does not attach overseas gate mappings when jockeyFrame is unrequested", () => {
+  expect(
+    buildWinRateHeatmapSimilarQuery(config, {
+      ...jraFilters,
+      keibajoCode: "A8",
+      includeJockeyFrame: false,
+    }),
+  ).not.toMatch("oversea_runner_source_id");
+});
+it("preserves zero-start jockeyFrame counts for the viewer unknown-rate conversion", () => {
+  expect(
+    normaliseSimilarRow({
+      kind: "jockeyFrame",
+      umaban: 4,
+      name: "Jockey",
+      starts: 0,
+      wins: 0,
+      places: 0,
+      shows: 0,
+    }),
+  ).toMatchObject({ starts: 0, wins: 0, places: 0, shows: 0 });
+});
+
+it("rejects invalid nonpositive mapped gates without changing exact jockey name matching", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    keibajoCode: "A8",
+    includeJockeyFrame: true,
+  });
+  expect(sql).toMatch("gate_mapping.gate_number BETWEEN 1 AND 32767");
+  expect(sql).toMatch("se.kishumei_ryakusho");
+  expect(sql).toMatch("= tn.name");
+});
+
+it("omits unknown owners before target matching and the left join can manufacture zero counts", () => {
+  const sql: string = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeOwner: true,
+  });
+  expect(sql).toMatch(
+    "coalesce(nullif(btrim(replace(coalesce(se.banushimei, ''), chr(12288), '')), ''), '不明') AS owner",
+  );
+  expect(sql).toMatch(
+    "SELECT umaban, 'owner' AS kind, owner AS name\n  FROM current_entries\n  WHERE owner <> '不明'",
+  );
+});
+
+it("executes the owner target arm with sixteen blank/unknown owners and one genuine owner", async () => {
+  const sql: string = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeOwner: true,
+  });
+  const ownerExpression: string | undefined = sql.match(/([^\n]+) AS owner/u)?.[1];
+  const ownerArm: string | undefined = sql.match(
+    /SELECT umaban, 'owner' AS kind, owner AS name\n  FROM current_entries\n  WHERE owner <> '不明'/u,
+  )?.[0];
+  expect(ownerExpression).toBeDefined();
+  expect(ownerArm).toBeDefined();
+  const db = await DuckDBInstance.create(":memory:");
+  const connection = await db.connect();
+  try {
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    const result = await connection.runAndReadAll(`WITH se AS (
+      SELECT range AS umaban, CASE WHEN range % 4 = 0 THEN '' WHEN range % 4 = 1 THEN '  ' WHEN range % 4 = 2 THEN '　' ELSE '不明' END AS banushimei FROM range(1, 17)
+      UNION ALL SELECT 17, 'Known'
+    ), current_entries AS (SELECT umaban, ${ownerExpression} AS owner FROM se)
+    ${ownerArm}`);
+    expect(result.getRowObjects()).toStrictEqual([{ umaban: 17n, kind: "owner", name: "Known" }]);
+  } finally {
+    connection.closeSync();
+    db.closeSync();
+  }
+});
+
+it("reads only unambiguous current source-qualified pedigree and preserves native priority", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  const filters: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+  };
+  try {
+    await connection.run("CREATE SCHEMA pc_keiba");
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    await connection.run(
+      "CREATE MACRO regexp_match(value, pattern) AS CASE WHEN regexp_matches(value, pattern) THEN [value] ELSE NULL END",
+    );
+    await connection.run(
+      "CREATE TABLE pc_keiba.jvd_se AS SELECT '2026' AS kaisai_nen, '1004' AS kaisai_tsukihi, 'A8' AS keibajo_code, '05' AS race_bango, '01' AS umaban, '0000000000' AS ketto_toroku_bango",
+    );
+    const columns: string = ["01", "02", "03", "05", "07", "09", "11", "13"]
+      .map((n) => `ketto_joho_${n}b VARCHAR`)
+      .join(", ");
+    await connection.run(`CREATE TABLE pc_keiba.jvd_um (ketto_toroku_bango VARCHAR, ${columns})`);
+    await connection.run("CREATE TABLE pc_keiba.nvd_um AS SELECT * FROM pc_keiba.jvd_um");
+    await connection.run("CREATE TABLE pc_keiba.nvd_nu AS SELECT * FROM pc_keiba.jvd_um");
+    await connection.run(
+      "CREATE TABLE pc_keiba.oversea_runner_source_id AS SELECT *, 'jra' AS race_source, 'netkeiba' AS source, '000a029d42' AS source_horse_id FROM pc_keiba.jvd_se",
+    );
+    await connection.run(
+      "CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_sire_name VARCHAR)",
+    );
+    const query: string = buildWinRateHeatmapKnownBloodlineCountQuery(config, filters);
+    // R2 SQL rejects the zero-column UNION projection produced by count(*).
+    expect(query).toMatch(/SELECT count\(name\) AS known\nFROM current_bloodlines/u);
+    expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
+    await connection.run(
+      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('other','000a029d42','Wrong',NULL,NULL)",
+    );
+    expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
+    await connection.run(
+      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('netkeiba','000a029d42','Sea The Stars','Cape Cross','Selkirk')",
+    );
+    expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 3n }]);
+    const namesQuery: string = query.replace(
+      "SELECT count(name) AS known\nFROM current_bloodlines",
+      "SELECT name FROM current_bloodlines ORDER BY name",
+    );
+    await connection.run(
+      "INSERT INTO pc_keiba.jvd_um (ketto_toroku_bango,ketto_joho_01b) VALUES ('0000000000','Native sire')",
+    );
+    expect((await connection.runAndReadAll(namesQuery)).getRowObjects()).toStrictEqual([
+      { name: "Cape Cross" },
+      { name: "Sea The Stars" },
+      { name: "Selkirk" },
+    ]);
+    await connection.run(
+      "INSERT INTO pc_keiba.oversea_runner_source_id SELECT * FROM pc_keiba.oversea_runner_source_id",
+    );
+    expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
+    await connection.run("DELETE FROM pc_keiba.oversea_runner_source_id");
+    await connection.run(
+      "INSERT INTO pc_keiba.oversea_runner_source_id SELECT *, 'jra', 'netkeiba', '0000000000' FROM pc_keiba.jvd_se",
+    );
+    expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
+    expect(buildWinRateHeatmapBloodlineQuery(config, filters)).toMatch(
+      "WHERE NOT cb.foreign_profile OR stats.starts > 0",
+    );
+    expect(buildWinRateHeatmapBloodlineQuery(config, jraFilters)).not.toMatch(
+      "oversea_horse_pedigree",
+    );
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
+});
+
+it("preserves stored foreign owner provenance through normalization", () => {
+  expect(
+    normaliseWinRateHeatmapStatsPayload({
+      bloodlineRows: [],
+      similarRows: [
+        {
+          kind: "owner",
+          umaban: 1,
+          name: "netkeiba:a002e7",
+          starts: 1,
+          wins: 0,
+          places: 0,
+          shows: 0,
+          statsSource: "netkeiba",
+          statsScope: "stored-results-10y",
+          sourcePersonId: "a002e7",
+        },
+      ],
+    }).similarRows[0],
+  ).toMatchObject({
+    statsSource: "netkeiba",
+    statsScope: "stored-results-10y",
+    sourcePersonId: "a002e7",
+  });
+});
+
+it("preserves the distinct stored same-title owner scope", () => {
+  expect(
+    normaliseSimilarRow({
+      kind: "owner",
+      name: "Owner",
+      umaban: 1,
+      starts: 8,
+      wins: 1,
+      places: 2,
+      shows: 3,
+      statsSource: "netkeiba",
+      statsScope: "stored-results-race-10y",
+      sourcePersonId: "a002e7",
+    }).statsScope,
+  ).toBe("stored-results-race-10y");
+});
+
+it("limits native nonfinish rate semantics to the exact current Arc context", () => {
+  const arc: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+  };
+  expect(buildWinRateHeatmapBloodlineQuery(config, arc)).toMatch(
+    "CASE WHEN btrim(coalesce(se.ijo_kubun_code, '')) IN ('4', '5') THEN 0 ELSE",
+  );
+  expect(buildWinRateHeatmapSimilarQuery(config, arc)).toMatch(
+    "btrim(coalesce(se.ijo_kubun_code, '')) NOT IN ('1', '2')",
+  );
+  expect(buildWinRateHeatmapBloodlineQuery(config, jraFilters)).not.toMatch("ijo_kubun_code");
+  expect(buildWinRateHeatmapSimilarQuery(config, { ...arc, raceBango: "04" })).not.toMatch(
+    "ijo_kubun_code",
+  );
+});
+
+it("reads exact Arc display labels without historical name aggregation", () => {
+  expect(
+    buildArcBloodlineLabelsQuery(config, {
+      ...jraFilters,
+      date: "20261004",
+      keibajoCode: "A8",
+      raceBango: "05",
+    }),
+  ).toMatch(/SELECT umaban, category, name FROM current_bloodlines$/u);
+  expect(() => buildArcBloodlineLabelsQuery(config, jraFilters)).toThrow("exact Arc");
 });

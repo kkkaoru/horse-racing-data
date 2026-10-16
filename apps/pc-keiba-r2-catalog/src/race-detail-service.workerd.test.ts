@@ -34,7 +34,7 @@ beforeAll(async () => {
   ).pathname;
   const bundle = await build({
     stdin: {
-      contents: `import gateway from ${JSON.stringify(gateway)};
+      contents: `import { gateway } from ${JSON.stringify(gateway)};
 import { readCatalogRaceDetail } from ${JSON.stringify(consumer)};
 import { readCatalogRaceCalendar } from ${JSON.stringify(calendarConsumer)};
 import { readCatalogRaceYears } from ${JSON.stringify(yearsConsumer)};

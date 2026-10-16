@@ -1,7 +1,11 @@
 // Runs with bun through Vitest.
+import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it } from "vitest";
 import {
   digitsOnlyNumericSql,
+  positiveDecimalSql,
+  weightNumericSql,
+  marginNumericSql,
   monthWindowConditionSql,
   monthWindowMonths,
   raceTimeTenthsSql,
@@ -22,7 +26,7 @@ it("builds the tenths expression without regexp_replace", () => {
 });
 
 it("builds the digits-only numeric expression", () => {
-  expect(digitsOnlyNumericSql("se.kohan_3f")).toBe(
+  expect(digitsOnlyNumericSql("se.kohan_3f")).toMatch(
     "try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE)",
   );
 });
@@ -40,4 +44,56 @@ it("emits the month condition only when enabled", () => {
   expect(monthWindowConditionSql("ra.kaisai_tsukihi", "20260920", true)).toBe(
     "substring(ra.kaisai_tsukihi FROM 1 FOR 2) IN ('08', '09', '10')",
   );
+});
+
+it("executes strict field decoders against raw fixture values without provider I/O", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  try {
+    // DuckDB spells the provider SQL btrim function trim.
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    const result = await connection.runAndReadAll(`SELECT
+      ${weightNumericSql({ column: "raw", venueColumn: "venue", carried: false })} AS body,
+      ${weightNumericSql({ column: "raw", venueColumn: "venue", carried: true })} AS carried,
+      ${positiveDecimalSql("raw")} AS last3f,
+      ${marginNumericSql("raw")} AS margin,
+      ${raceTimeTenthsSql("raw")} AS race_time
+      FROM (VALUES
+        ('83', '3E8'), ('83', '258'), ('83', '24E'), ('83', '26C'),
+        ('05', '600'), ('05', '+006'), ('05', '-014'), ('83', '000'),
+        ('83', ''), ('83', 'FFF'), ('83', '3E8oops'), ('05', '1e2'),
+        ('05', '+ 006'), ('83', '0x258'), ('05', '1 23'), ('05', NULL),
+        ('83', ' 3e8 '), ('05', '1234'), ('05', '--014'), ('05', '0.6'),
+        ('05', 'FFF'), ('83', '0'), ('83', 'fff'), ('05', ' ')
+      ) AS fixture(venue, raw)`);
+    expect(result.getRows()).toStrictEqual([
+      [1000, 10000, null, null, null],
+      [600, 6000, 258, 258, 258],
+      [590, 5900, null, null, null],
+      [620, 6200, null, null, null],
+      [600, 600, 600, 600, null],
+      [null, null, null, 6, null],
+      [null, null, null, 14, null],
+      [null, null, null, 0, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [1000, 10000, null, null, null],
+      [1234, 1234, 1234, 1234, 834],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+      [null, null, null, 0, null],
+      [null, null, null, null, null],
+      [null, null, null, null, null],
+    ]);
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
 });

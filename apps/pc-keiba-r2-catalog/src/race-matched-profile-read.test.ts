@@ -1,4 +1,5 @@
 // Runs with bun through Vitest; no provider I/O.
+import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it } from "vitest";
 import {
   buildMatchedRacesSql,
@@ -87,9 +88,63 @@ it("honours the include flags, the month window and the runner-count condition",
   expect(sql).not.toMatch("ra.keibajo_code =");
   expect(sql).not.toMatch("ra.kyori =");
   expect(sql).not.toMatch("IS NOT DISTINCT FROM");
+  expect(sql).not.toMatch("ra.grade_code");
+  expect(sql).not.toMatch("ra.kyosomei_hondai");
   expect(sql).toMatch("substring(ra.kaisai_tsukihi FROM 1 FOR 2) IN ('08', '09', '10')");
   expect(sql).toMatch("(SELECT count(*) FROM pc_keiba.jvd_se rc");
   expect(sql).toMatch(") = 16");
+});
+
+it.each(["B", "C", "L", "", null])(
+  "matches named G2/G3/listed/open races without an implicit G1 restriction (%s)",
+  (gradeCode) => {
+    const sql: string = buildMatchedRacesSql({
+      ...input,
+      race: { ...input.race, gradeCode },
+      settings: { ...input.settings, includeGrade: false },
+    });
+    expect(sql).toMatch(
+      "(nullif(replace(btrim(coalesce(ra.kyosomei_hondai, '')), chr(12288), ''), '') IS NOT DISTINCT FROM 'テスト記念')",
+    );
+    expect(sql).not.toMatch("ra.grade_code");
+    expect(sql).toMatch("FROM pc_keiba.jvd_ra ra");
+    expect(sql).toMatch("ra.keibajo_code = '06'");
+    expect(sql).toMatch("ra.kyoso_joken_code = '999'");
+  },
+);
+
+it("retains the explicit G2 grade filter alongside race-title matching", () => {
+  const sql: string = buildMatchedRacesSql({
+    ...input,
+    race: { ...input.race, gradeCode: "B" },
+  });
+  expect(sql).toMatch("(ra.grade_code IS NOT DISTINCT FROM 'B')");
+  expect(sql).toMatch("IS NOT DISTINCT FROM 'テスト記念'");
+  expect(sql).not.toMatch("IN ('A', 'F')");
+});
+
+it.each(["A", "F", " A "])(
+  "retains the G1 title group when explicit grade matching is disabled (%s)",
+  (gradeCode) => {
+    const sql: string = buildMatchedRacesSql({
+      ...input,
+      race: { ...input.race, gradeCode },
+      settings: { ...input.settings, includeGrade: false },
+    });
+    expect(sql).toMatch("ra.grade_code IN ('A', 'F')");
+    expect(sql).not.toMatch("ra.grade_code IS NOT DISTINCT FROM");
+    expect(sql).toMatch("IS NOT DISTINCT FROM 'テスト記念'");
+  },
+);
+
+it("retains explicit grade matching when title matching is disabled", () => {
+  const sql: string = buildMatchedRacesSql({
+    ...input,
+    settings: { ...input.settings, includeRaceTitle: false },
+  });
+  expect(sql).toMatch("(ra.grade_code IS NOT DISTINCT FROM 'A')");
+  expect(sql).not.toMatch("IN ('A', 'F')");
+  expect(sql).not.toMatch("ra.kyosomei_hondai");
 });
 
 it("builds the NAR target profile from the tenths and numeric helpers", () => {
@@ -99,7 +154,7 @@ it("builds the NAR target profile from the tenths and numeric helpers", () => {
   expect(sql).toMatch("INNER JOIN matched m");
   expect(sql).toMatch("WHERE se.kakutei_chakujun IN ('01', '02', '03')");
   expect(sql).toMatch("replace(btrim(coalesce(se.soha_time, '')), '0', '') <> ''");
-  expect(sql).toMatch("try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE) AS last3f");
+  expect(sql).toMatch("try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE)");
   expect(sql).toMatch("avg(race_time) AS target_race_time");
 });
 
@@ -138,4 +193,67 @@ it("parses the target profile row and rejects malformed values", async () => {
   await expect(readTargetProfile(input, async () => [{ target_race_time: "abc" }])).rejects.toThrow(
     "Invalid target profile value",
   );
+});
+
+it("averages decoded fixture rows using each historical venue and excludes sentinels", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  try {
+    // DuckDB spells the provider SQL btrim function trim.
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    const profile = await readTargetProfile(
+      {
+        ...input,
+        source: "nar",
+        years: null,
+        settings: {
+          ...input.settings,
+          includeVenue: false,
+          includeDistance: false,
+          includeAge: false,
+          includeClass: false,
+          includeConditionKey: false,
+          includeTrackCode: false,
+          includeGrade: false,
+          includeRaceTitle: false,
+        },
+      },
+      async (sql) => {
+        const result = await connection.runAndReadAll(`WITH
+        race_fixture AS (
+          SELECT '2026' AS kaisai_nen, '0601' AS kaisai_tsukihi, venue AS keibajo_code,
+            '01' AS race_bango FROM (VALUES ('83'), ('05')) AS v(venue)
+        ),
+        runner_fixture AS (
+          SELECT '2026' AS kaisai_nen, '0601' AS kaisai_tsukihi, '01' AS race_bango,
+            '01' AS kakutei_chakujun, '1234' AS soha_time, *
+          FROM (VALUES
+            ('83', '3E8', '258', '600', '+006'),
+            ('83', '3E8', '24E', '600', '-014'),
+            ('83', '3E8', '26C', '600', '000'),
+            ('05', '600', '600', '600', '1000'),
+            ('83', 'FFF', 'FFF', '000', 'FFF'),
+            ('83', '000', '000', '', ''),
+            ('83', '3E8oops', '24Eoops', '6x00', '--014'),
+            ('05', '3E8', '1e2', 'FFF', '+ 006'),
+            ('83', '', '', NULL, NULL)
+          ) AS v(keibajo_code, bataiju, futan_juryo, kohan_3f, time_sa)
+        ), ${sql
+          .replace(/^WITH /u, "")
+          .replaceAll("pc_keiba.nvd_ra", "race_fixture")
+          .replaceAll("pc_keiba.nvd_se", "runner_fixture")}`);
+        return result.getRowObjects();
+      },
+    );
+    expect(profile).toStrictEqual({
+      targetRaceTime: 834,
+      targetLast3f: 600,
+      targetBodyWeight: 900,
+      targetCarriedWeight: 4675,
+      targetMargin: 255,
+    });
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
 });

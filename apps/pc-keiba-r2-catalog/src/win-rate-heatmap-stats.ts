@@ -1,5 +1,6 @@
 // Run with bun (bunx vitest).
 
+import { isCurrentArc, arcTitleSql } from "./arc-cohort";
 import { heatmapPedigreeSupplementSql } from "./heatmap-pedigree-supplements";
 import type {
   CatalogSource,
@@ -36,6 +37,7 @@ interface FinishCounts {
 const IDENTIFIER_PATTERN: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN: RegExp = /^\d{8}$/u;
 const CODE_PATTERN: RegExp = /^\d{2}$/u;
+const VENUE_CODE_PATTERN: RegExp = /^[0-9A-Z]{2}$/u;
 const MIN_STATS_YEARS: number = 1;
 const MAX_STATS_YEARS: number = 50;
 const UNKNOWN_NAME: string = "不明";
@@ -180,7 +182,8 @@ export const validateFilters = (
   filters: WinRateHeatmapStatsFilters,
 ): WinRateHeatmapStatsFilters => {
   requireDate(filters.date);
-  requireCode(filters.keibajoCode, "keibajoCode");
+  if (!VENUE_CODE_PATTERN.test(filters.keibajoCode))
+    throw new Error("keibajoCode must contain two uppercase alphanumeric characters");
   requireCode(filters.raceBango, "raceBango");
   requireYears(filters.years);
   return filters;
@@ -199,6 +202,7 @@ export const currentTables = (source: CatalogSource): CatalogTableSet =>
   source === "jra" ? JRA_TABLES : NAR_TABLES;
 
 export const historyTables = (filters: WinRateHeatmapStatsFilters): CatalogTableSet[] => {
+  if (isCurrentArc(filters)) return [JRA_TABLES];
   if (!filters.includeVenue) return [JRA_TABLES, NAR_TABLES];
   if (filters.source === "jra") return [JRA_TABLES];
   return [NAR_TABLES];
@@ -267,11 +271,16 @@ const coalescedKettoSql = (column: string): string => {
   )`;
 };
 
-export const currentRaceIdentitySql = (filters: WinRateHeatmapStatsFilters): string =>
-  `kaisai_nen = '${filters.date.slice(0, 4)}'
-    AND kaisai_tsukihi = '${filters.date.slice(4)}'
-    AND keibajo_code = '${filters.keibajoCode}'
-    AND race_bango = '${filters.raceBango}'`;
+export const currentRaceIdentitySql = (
+  filters: WinRateHeatmapStatsFilters,
+  alias?: "se",
+): string => {
+  const prefix: string = alias === undefined ? "" : `${alias}.`;
+  return `${prefix}kaisai_nen = '${filters.date.slice(0, 4)}'
+    AND ${prefix}kaisai_tsukihi = '${filters.date.slice(4)}'
+    AND ${prefix}keibajo_code = '${filters.keibajoCode}'
+    AND ${prefix}race_bango = '${filters.raceBango}'`;
+};
 
 const historyDateSql = (filters: WinRateHeatmapStatsFilters, alias: string): string => {
   const start = historyStart(filters.date, filters.years);
@@ -397,7 +406,7 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
     AND ${conditionKeySql("cr")} IS NOT NULL`
       : "";
   const raceTitleSql =
-    filters.includeRaceTitle === true
+    !isCurrentArc(filters) && filters.includeRaceTitle === true
       ? `AND (
       ${codeColumnSql("cr", "grade_code")} NOT IN ${RACE_TITLE_GRADE_CODES}
       OR ${codeColumnSql("ra", "grade_code")} IN ${RACE_TITLE_GRADE_CODES}
@@ -417,19 +426,47 @@ export const similarRaceFilterSql = (filters: WinRateHeatmapStatsFilters): strin
     ${classSql}
     ${conditionKeyFilterSql}
     ${raceTitleSql}
+    ${isCurrentArc(filters) ? `AND ${arcTitleSql("ra.kyosomei_hondai")}` : ""}
     ${ungradedOpenFilterSql()}`;
 };
 
 export const finishPositionSql = (alias: string): string =>
   `try_cast(nullif(btrim(coalesce(${alias}.kakutei_chakujun, '')), '00') AS INT)`;
 
-const masterJoinsSql = (env: R2SqlCatalogConfig, tables: CatalogTableSet): string =>
-  `LEFT JOIN ${tableName(env, tables.masterPrimary)} primary_um
+// Arc code 4 (DNF) and 5 (DSQ) are starts, represented only internally as zero.
+// Zero survives DISTINCT deduplication but must never become a displayed finishing place.
+export const rateFinishPositionSql = (filters: WinRateHeatmapStatsFilters): string =>
+  isCurrentArc(filters)
+    ? `CASE WHEN btrim(coalesce(se.ijo_kubun_code, '')) IN ('4', '5') THEN 0 ELSE ${finishPositionSql("se")} END`
+    : finishPositionSql("se");
+
+export const rateStartPredicateSql = (filters: WinRateHeatmapStatsFilters): string =>
+  isCurrentArc(filters)
+    ? `btrim(coalesce(se.ijo_kubun_code, '')) NOT IN ('1', '2')
+    AND (${finishPositionSql("se")} > 0 OR btrim(coalesce(se.ijo_kubun_code, '')) IN ('4', '5'))`
+    : `${finishPositionSql("se")} IS NOT NULL
+    AND ${finishPositionSql("se")} > 0`;
+
+const uniqueMasterSql = (env: R2SqlCatalogConfig, table: string, strict: boolean): string =>
+  strict
+    ? `(SELECT * FROM ${tableName(env, table)} WHERE ketto_toroku_bango IN
+    (SELECT ketto_toroku_bango FROM ${tableName(env, table)} GROUP BY ketto_toroku_bango HAVING count(*) = 1))`
+    : tableName(env, table);
+
+const masterJoinsSql = (
+  env: R2SqlCatalogConfig,
+  tables: CatalogTableSet,
+  strict: boolean,
+): string =>
+  `LEFT JOIN ${uniqueMasterSql(env, tables.masterPrimary, strict)} primary_um
     ON primary_um.ketto_toroku_bango = se.ketto_toroku_bango
-  LEFT JOIN ${tableName(env, tables.masterSecondary)} secondary_um
+    AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL
+  LEFT JOIN ${uniqueMasterSql(env, tables.masterSecondary, strict)} secondary_um
     ON secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
-  LEFT JOIN ${tableName(env, tables.masterTertiary)} tertiary_um
-    ON tertiary_um.ketto_toroku_bango = se.ketto_toroku_bango`;
+    AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL
+  LEFT JOIN ${uniqueMasterSql(env, tables.masterTertiary, strict)} tertiary_um
+    ON tertiary_um.ketto_toroku_bango = se.ketto_toroku_bango
+    AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL`;
 
 export const currentRaceCteSql = (
   env: R2SqlCatalogConfig,
@@ -452,23 +489,76 @@ export const currentRaceCteSql = (
   WHERE ${currentRaceIdentitySql(filters)}
 )`;
 
-const currentBloodlineSelectSql = (): string =>
-  BLOODLINE_KETTO_COLUMNS.map(
-    (entry) => `${coalescedKettoSql(entry.column)} AS ${entry.category}`,
-  ).join(",\n    ");
+const CURRENT_PROFILE_COLUMNS: ReadonlyMap<string, string> = new Map([
+  ["sire", "sire_name"],
+  ["sireSire", "sire_sire_name"],
+  ["damSire", "dam_sire_name"],
+]);
+const usesCurrentProfile = isCurrentArc;
 
-const currentBloodlineUnpivotSql = (): string =>
+// Exact provider identity only; duplicate mappings/profiles are unavailable.
+const currentProfileJoinSql = (env: R2SqlCatalogConfig): string => `LEFT JOIN (
+  SELECT mapping.umaban, min(p.sire_name) AS sire_name,
+    min(p.sire_sire_name) AS sire_sire_name, min(p.dam_sire_name) AS dam_sire_name
+  FROM ${tableName(env, "oversea_runner_source_id")} mapping
+  LEFT JOIN ${tableName(env, "oversea_horse_pedigree")} p
+    ON p.source = mapping.source AND p.source_horse_id = mapping.source_horse_id
+  WHERE mapping.source = 'netkeiba' AND mapping.race_source = 'jra'
+    AND mapping.kaisai_nen = '2026' AND mapping.kaisai_tsukihi = '1004'
+    AND mapping.keibajo_code = 'A8' AND mapping.race_bango = '05'
+    AND regexp_match(mapping.source_horse_id, '^[0-9a-z]{10}$') IS NOT NULL
+    AND regexp_match(mapping.source_horse_id, '[1-9a-z]') IS NOT NULL
+  GROUP BY mapping.umaban HAVING count(*) = 1
+) pedigree ON pedigree.umaban = se.umaban`;
+
+// Historical profiles are joined by source plus full native event/runner identity.
+const historyProfileJoinSql = (env: R2SqlCatalogConfig): string => `LEFT JOIN (
+  SELECT mapping.kaisai_nen, mapping.kaisai_tsukihi, mapping.keibajo_code,
+    mapping.race_bango, mapping.umaban, min(p.sire_name) AS sire_name,
+    min(p.sire_sire_name) AS sire_sire_name, min(p.dam_sire_name) AS dam_sire_name
+  FROM ${tableName(env, "oversea_runner_source_id")} mapping
+  LEFT JOIN ${tableName(env, "oversea_horse_pedigree")} p
+    ON p.source = mapping.source AND p.source_horse_id = mapping.source_horse_id
+  WHERE mapping.source = 'netkeiba' AND mapping.race_source = 'jra'
+    AND regexp_match(mapping.source_horse_id, '^[0-9a-z]{10}$') IS NOT NULL
+    AND regexp_match(mapping.source_horse_id, '[1-9a-z]') IS NOT NULL
+  GROUP BY mapping.kaisai_nen, mapping.kaisai_tsukihi, mapping.keibajo_code,
+    mapping.race_bango, mapping.umaban HAVING count(*) = 1
+) pedigree ON pedigree.kaisai_nen = se.kaisai_nen
+  AND pedigree.kaisai_tsukihi = se.kaisai_tsukihi
+  AND pedigree.keibajo_code = se.keibajo_code AND pedigree.race_bango = se.race_bango
+  AND pedigree.umaban = se.umaban`;
+
+const resolvedBloodlineSql = (entry: BloodlineKettoColumn, foreign: boolean): string => {
+  const native: string = coalescedKettoSql(entry.column);
+  const profile: string | undefined = CURRENT_PROFILE_COLUMNS.get(entry.category);
+  return foreign && profile !== undefined
+    ? `coalesce(nullif(${native}, '不明'), ${trimmedSql("pedigree." + profile)}, '不明')`
+    : native;
+};
+
+const currentBloodlineSelectSql = (foreign: boolean): string =>
+  BLOODLINE_KETTO_COLUMNS.map((entry) => {
+    const native: string = coalescedKettoSql(entry.column);
+    const profile: string | undefined = CURRENT_PROFILE_COLUMNS.get(entry.category);
+    return foreign && profile !== undefined
+      ? `coalesce(nullif(${native}, '不明'), ${trimmedSql("pedigree." + profile)}, '不明') AS ${entry.category},
+    ${native} AS native_${entry.category}`
+      : `${native} AS ${entry.category}`;
+  }).join(",\n    ");
+
+const currentBloodlineUnpivotSql = (foreign: boolean): string =>
   BLOODLINE_KETTO_COLUMNS.map(
     (entry) =>
-      `SELECT umaban, '${entry.category}' AS category, ${entry.category} AS name
+      `SELECT umaban, '${entry.category}' AS category, ${entry.category} AS name${foreign ? `, ${CURRENT_PROFILE_COLUMNS.has(entry.category) ? `native_${entry.category} = '不明'` : "false"} AS foreign_profile` : ""}
     FROM current_entries
     WHERE ${entry.category} <> '${UNKNOWN_NAME}'`,
   ).join("\n  UNION ALL\n  ");
 
-const bloodlineMatchSql = (): string =>
+const bloodlineMatchSql = (foreign: boolean): string =>
   BLOODLINE_KETTO_COLUMNS.map(
     (entry) =>
-      `(tn.category = '${entry.category}' AND ${coalescedKettoSql(entry.column)} = tn.name)`,
+      `(tn.category = '${entry.category}' AND ${resolvedBloodlineSql(entry, foreign)} = tn.name)`,
   ).join("\n    OR ");
 
 const bloodlineHistoryArmSql = (
@@ -476,9 +566,10 @@ const bloodlineHistoryArmSql = (
   filters: WinRateHeatmapStatsFilters,
   tables: CatalogTableSet,
 ): string => `SELECT
+    ${isCurrentArc(filters) ? "DISTINCT se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango, se.umaban," : ""}
     tn.category,
     tn.name,
-    ${finishPositionSql("se")} AS finish_position
+    ${rateFinishPositionSql(filters)} AS finish_position
   FROM ${tableName(env, tables.runnerTable)} se
   INNER JOIN ${tableName(env, tables.raceTable)} ra
     ON ra.kaisai_nen = se.kaisai_nen
@@ -486,18 +577,35 @@ const bloodlineHistoryArmSql = (
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
   CROSS JOIN current_race cr
-  ${masterJoinsSql(env, tables)}
+  ${masterJoinsSql(env, tables, isCurrentArc(filters))}
+  ${isCurrentArc(filters) ? historyProfileJoinSql(env) : ""}
   INNER JOIN target_names tn
-    ON ${bloodlineMatchSql()}
+    ON ${bloodlineMatchSql(isCurrentArc(filters))}
   WHERE ${similarRaceFilterSql(filters)}
-    AND ${finishPositionSql("se")} IS NOT NULL
-    AND ${finishPositionSql("se")} > 0
+    AND ${rateStartPredicateSql(filters)}
     AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
-    AND NOT EXISTS (
+    ${
+      isCurrentArc(filters)
+        ? ""
+        : `AND NOT EXISTS (
       SELECT 1
       FROM current_entries ce
       WHERE ce.ketto_toroku_bango = se.ketto_toroku_bango
-    )`;
+    )`
+    }`;
+
+export const overseasGateJoinSql = (env: R2SqlCatalogConfig, source: CatalogSource): string =>
+  `LEFT JOIN ${tableName(env, "oversea_runner_source_id")} gate_mapping
+    ON gate_mapping.race_source = '${source}' AND gate_mapping.source = 'netkeiba'
+    AND gate_mapping.kaisai_nen = se.kaisai_nen
+    AND gate_mapping.kaisai_tsukihi = se.kaisai_tsukihi
+    AND gate_mapping.keibajo_code = se.keibajo_code
+    AND gate_mapping.race_bango = se.race_bango
+    AND gate_mapping.umaban = se.umaban
+    AND gate_mapping.gate_number BETWEEN 1 AND 32767`;
+
+export const usesOverseasGate = (filters: WinRateHeatmapStatsFilters): boolean =>
+  /^[A-Z][0-9A-Z]$/u.test(filters.keibajoCode);
 
 const similarHistoryArmSql = (
   env: R2SqlCatalogConfig,
@@ -516,7 +624,8 @@ const similarHistoryArmSql = (
       ? ` OR (
       tn.kind = 'jockeyFrame'
       AND ${namedOrUnknownSql("se.kishumei_ryakusho")} = tn.name
-      AND ${paddedTrackCodeSql("se.wakuban")} = tn.frame
+      AND ${usesOverseasGate(filters) ? "cast(gate_mapping.gate_number AS VARCHAR)" : paddedTrackCodeSql("se.wakuban")} = tn.frame
+      ${usesOverseasGate(filters) ? "AND se.keibajo_code = cr.keibajo_code" : ""}
     )`
       : "";
   const frameSelectSql =
@@ -524,7 +633,7 @@ const similarHistoryArmSql = (
   return `SELECT
     tn.kind,
     tn.name${frameSelectSql},
-    ${finishPositionSql("se")} AS finish_position
+    ${rateFinishPositionSql(filters)} AS finish_position
   FROM ${tableName(env, tables.runnerTable)} se
   INNER JOIN ${tableName(env, tables.raceTable)} ra
     ON ra.kaisai_nen = se.kaisai_nen
@@ -532,6 +641,7 @@ const similarHistoryArmSql = (
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
   CROSS JOIN current_race cr
+  ${includeJockeyFrameEnabled(filters) && usesOverseasGate(filters) ? overseasGateJoinSql(env, tables.source) : ""}
   INNER JOIN target_people tn
     ON (
       tn.kind = 'jockey'
@@ -541,8 +651,7 @@ const similarHistoryArmSql = (
       AND ${namedOrUnknownSql("se.chokyoshimei_ryakusho")} = tn.name
     )${ownerMatchSql}${jockeyFrameMatchSql}
   WHERE ${similarRaceFilterSql(filters)}
-    AND ${finishPositionSql("se")} IS NOT NULL
-    AND ${finishPositionSql("se")} > 0`;
+    AND ${rateStartPredicateSql(filters)}`;
 };
 
 const aggregateSelectSql = (groupColumns: string): string =>
@@ -564,18 +673,19 @@ const currentBloodlineCtesSql = (
 ): string => {
   const current = currentTables(checked.source);
   return `current_entries AS (
-  SELECT
+  SELECT${isCurrentArc(checked) ? " DISTINCT" : ""}
     try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) AS umaban,
     se.ketto_toroku_bango,
-    ${currentBloodlineSelectSql()}
+    ${currentBloodlineSelectSql(usesCurrentProfile(checked))}
   FROM ${tableName(env, current.runnerTable)} se
-  ${masterJoinsSql(env, current)}
-  WHERE ${currentRaceIdentitySql(checked)}
+  ${masterJoinsSql(env, current, isCurrentArc(checked))}
+  ${usesCurrentProfile(checked) ? currentProfileJoinSql(env) : ""}
+  WHERE ${currentRaceIdentitySql(checked, "se")}
     AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
     AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
 ),
 current_bloodlines AS (
-  ${currentBloodlineUnpivotSql()}
+  ${currentBloodlineUnpivotSql(usesCurrentProfile(checked))}
 )`;
 };
 
@@ -590,8 +700,18 @@ export const buildWinRateHeatmapKnownBloodlineCountQuery = (
   const checked = validateFilters(filters);
   return `
 WITH ${currentBloodlineCtesSql(env, checked)}
-SELECT count(*) AS known
+SELECT count(${usesCurrentProfile(checked) ? "name" : "*"}) AS known
 FROM current_bloodlines`;
+};
+
+// Presentation only: Arc identity and counts come from source profiles.
+export const buildArcBloodlineLabelsQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  if (!isCurrentArc(checked)) throw new Error("Expected exact Arc target");
+  return `WITH ${currentBloodlineCtesSql(env, checked)} SELECT umaban, category, name FROM current_bloodlines`;
 };
 
 export const buildWinRateHeatmapBloodlineQuery = (
@@ -606,11 +726,20 @@ target_names AS (
   SELECT DISTINCT category, name
   FROM current_bloodlines
 ),
-matched_history AS (
+${isCurrentArc(checked) ? "raw_history" : "matched_history"} AS (
   ${unionHistorySql(
     historyTables(checked).map((tables) => bloodlineHistoryArmSql(env, checked, tables)),
   )}
 ),
+${
+  isCurrentArc(checked)
+    ? `matched_history AS (
+  SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban, category, min(name) AS name, min(finish_position) AS finish_position
+  FROM raw_history GROUP BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban, category
+  HAVING count(DISTINCT finish_position) = 1 AND count(DISTINCT name) = 1
+),`
+    : ""
+}
 stats AS (
   ${aggregateSelectSql("category, name")}
 )
@@ -626,6 +755,7 @@ FROM current_bloodlines cb
 LEFT JOIN stats
   ON stats.category = cb.category
   AND stats.name = cb.name
+${usesCurrentProfile(checked) ? "WHERE NOT cb.foreign_profile OR stats.starts > 0" : ""}
 ORDER BY cb.umaban, cb.category`;
 };
 
@@ -640,21 +770,24 @@ export const buildWinRateHeatmapSimilarQuery = (
     includeOwnerEnabled(checked) === true
       ? `,\n    ${namedOrUnknownSql("se.banushimei")} AS owner`
       : "";
-  const wakubanSelectSql = withFrame ? `,\n    ${paddedTrackCodeSql("se.wakuban")} AS wakuban` : "";
+  const wakubanSelectSql = withFrame
+    ? `,\n    ${usesOverseasGate(checked) ? "cast(gate_mapping.gate_number AS VARCHAR)" : paddedTrackCodeSql("se.wakuban")} AS wakuban`
+    : "";
   const peopleFrameSql = withFrame ? ", '' AS frame" : "";
   const ownerPeopleSql =
     includeOwnerEnabled(checked) === true
       ? `
   UNION ALL
   SELECT umaban, 'owner' AS kind, owner AS name${peopleFrameSql}
-  FROM current_entries`
+  FROM current_entries
+  WHERE owner <> '不明'`
       : "";
   const jockeyFramePeopleSql = withFrame
     ? `
   UNION ALL
   SELECT umaban, 'jockeyFrame' AS kind, jockey AS name, wakuban AS frame
   FROM current_entries
-  WHERE wakuban <> '' AND wakuban <> '00'`
+  WHERE jockey <> '不明' AND wakuban <> '' AND wakuban <> '00'`
     : "";
   const targetPeopleSql = withFrame
     ? `SELECT DISTINCT kind, name, frame
@@ -676,15 +809,16 @@ current_entries AS (
     ${namedOrUnknownSql("se.kishumei_ryakusho")} AS jockey,
     ${namedOrUnknownSql("se.chokyoshimei_ryakusho")} AS trainer${ownerSelectSql}${wakubanSelectSql}
   FROM ${tableName(env, current.runnerTable)} se
-  WHERE ${currentRaceIdentitySql(checked)}
+  ${withFrame && usesOverseasGate(checked) ? overseasGateJoinSql(env, checked.source) : ""}
+  WHERE ${currentRaceIdentitySql(checked, "se")}
     AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
 ),
 current_people AS (
   SELECT umaban, 'jockey' AS kind, jockey AS name${peopleFrameSql}
-  FROM current_entries
+  FROM current_entries WHERE jockey <> '不明'
   UNION ALL
   SELECT umaban, 'trainer' AS kind, trainer AS name${peopleFrameSql}
-  FROM current_entries${ownerPeopleSql}${jockeyFramePeopleSql}
+  FROM current_entries WHERE trainer <> '不明'${ownerPeopleSql}${jockeyFramePeopleSql}
 ),
 target_people AS (
   ${targetPeopleSql}
@@ -776,6 +910,17 @@ export const normaliseSimilarRow = (raw: Record<string, unknown>): WinRateHeatma
   }
   const counts = finishCounts(raw);
   return {
+    ...(raw.statsSource === "netkeiba" &&
+    (raw.statsScope === "stored-results-10y" ||
+      raw.statsScope === "stored-results-race-10y" ||
+      raw.statsScope === "stored-results-venue-30y") &&
+    typeof raw.sourcePersonId === "string"
+      ? {
+          statsSource: raw.statsSource,
+          statsScope: raw.statsScope,
+          sourcePersonId: raw.sourcePersonId,
+        }
+      : {}),
     details: [],
     kind,
     name: requiredString(raw.name, "name"),

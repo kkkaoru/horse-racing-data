@@ -103,3 +103,29 @@ it("returns parsed raw rows and rejects foreign or malformed rows", async () => 
     readRaceHistory({ input, query: async () => Array.from({ length: 2001 }, () => row()) }),
   ).rejects.toThrow("Too many race history rows");
 });
+
+it("allows provider alphanumeric IDs only on the overseas reader", () => {
+  expect(
+    buildRaceHistoryReadSql({ ...input, source: "overseas", horseIds: ["000a029d42"] }),
+  ).toMatch("source_horse_id IN ('000a029d42')");
+  expect(() => buildRaceHistoryReadSql({ ...input, horseIds: ["000a029d42"] })).toThrow(
+    "Invalid race history input",
+  );
+  expect(() =>
+    buildRaceHistoryReadSql({ ...input, source: "nar", horseIds: ["000a029d42"] }),
+  ).toThrow("Invalid race history input");
+});
+it.each(["000a'29d42", "0000000000", "", "000a029d42 OR 1=1"])(
+  "rejects malformed provider ID %s",
+  (id) => {
+    expect(() => buildRaceHistoryReadSql({ ...input, source: "overseas", horseIds: [id] })).toThrow(
+      "Invalid race history input",
+    );
+  },
+);
+
+it("uses the published provider alphanumeric contract without imposing domestic ID length", () => {
+  expect(buildRaceHistoryReadSql({ ...input, source: "overseas", horseIds: ["horse1"] })).toMatch(
+    "source_horse_id IN ('horse1')",
+  );
+});

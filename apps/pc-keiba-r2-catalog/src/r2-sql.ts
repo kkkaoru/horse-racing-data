@@ -1,3 +1,5 @@
+// Run with bun. R2 SQL query builders and response validation.
+
 import type {
   BulkFreshRaceEntry,
   BulkFreshRaceEntryFilters,
@@ -18,6 +20,11 @@ const KETTO_TOROKU_BANGO_PATTERN = /^\d{10}$/u;
 const MIN_UMABAN: number = 1;
 const MAX_UMABAN: number = 18;
 const R2_SQL_REQUEST_TIMEOUT_MS: number = 120_000;
+const FRESH_VENUE_PREDICATES: Readonly<Record<FreshRaceEntryFilters["source"], string>> = {
+  "ban-ei": "keibajo_code = '83'",
+  jra: "try_cast(btrim(keibajo_code) AS INT) BETWEEN 1 AND 10",
+  nar: "keibajo_code <> '83'",
+};
 
 const RUNNER_COLUMNS = `
     kaisai_nen,
@@ -137,9 +144,6 @@ const sourceConfigs = (source: SourceScope): RawSourceConfig[] => {
 
 const freshSourceConfig = (source: FreshRaceEntryFilters["source"]): RawSourceConfig =>
   source === "jra" ? JRA_CONFIG : NAR_CONFIG;
-
-const freshVenuePredicate = (source: FreshRaceEntryFilters["source"]): string | null =>
-  source === "nar" ? "keibajo_code <> '83'" : source === "ban-ei" ? "keibajo_code = '83'" : null;
 
 const freshActivePredicates = (): string[] => [
   "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
@@ -369,11 +373,10 @@ export const buildFreshRaceEntriesQuery = (
   const keibajoCode = requireCode(filters.keibajoCode, "keibajoCode");
   const raceBango = requireCode(filters.raceBango, "raceBango");
   const config = freshSourceConfig(filters.source);
-  const venuePredicate = freshVenuePredicate(filters.source);
   const predicates = [
     `kaisai_nen = '${kaisaiNen}'`,
     `kaisai_tsukihi = '${kaisaiTsukihi}'`,
-    ...(venuePredicate === null ? [] : [venuePredicate]),
+    FRESH_VENUE_PREDICATES[filters.source],
     `keibajo_code = '${keibajoCode}'`,
     `race_bango = '${raceBango}'`,
     ...freshActivePredicates(),
@@ -392,11 +395,10 @@ export const buildBulkFreshRaceEntriesQuery = (
 ): string => {
   const { kaisaiNen, kaisaiTsukihi } = splitDate(filters.date);
   const config = freshSourceConfig(filters.source);
-  const venuePredicate = freshVenuePredicate(filters.source);
   const predicates = [
     `kaisai_nen = '${kaisaiNen}'`,
     `kaisai_tsukihi = '${kaisaiTsukihi}'`,
-    ...(venuePredicate === null ? [] : [venuePredicate]),
+    FRESH_VENUE_PREDICATES[filters.source],
     ...freshActivePredicates(),
   ];
   return `SELECT

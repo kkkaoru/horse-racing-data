@@ -2,6 +2,8 @@
 export { IngestionInbox } from "./ingestion-inbox";
 export { IngestionArchiveJournal } from "./ingestion-archive-journal";
 export { IngestionBufferService } from "./ingestion-service";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { loadGateMappingRevision, parseGateMappingRevisionInput } from "./gate-mapping-revision";
 import { timingSafeEqual } from "node:crypto";
 import catalogWorker from "./worker";
 import { handleIngestionDeadLetters } from "./ingestion-dead-letter";
@@ -257,7 +259,7 @@ const ingestionStatusResponse = async (request: Request, env: GatewayEnv): Promi
   }
 };
 
-export default {
+export const gateway = {
   queue: handleIngestionDeadLetters,
   async scheduled(
     controller: ScheduledController,
@@ -294,3 +296,29 @@ export default {
     return await vectorResponse(request, env, path);
   },
 };
+
+// The existing gateway handlers retain their routing, authentication and event behavior.
+export default class CatalogWorker extends WorkerEntrypoint<
+  GatewayEnv &
+    Pick<
+      CatalogBindings,
+      "CATALOG_OBJECTS" | "INGESTION_INBOX" | "INGESTION_DLQ_METRICS" | "INGESTION_ALERTS"
+    >
+> {
+  override fetch(request: Request): Promise<Response> {
+    return gateway.fetch(request, this.env);
+  }
+  override queue(batch: MessageBatch<unknown>): Promise<void> {
+    return gateway.queue(batch, this.env);
+  }
+  override scheduled(controller: ScheduledController): Promise<void> {
+    return gateway.scheduled(controller, this.env);
+  }
+  async getGateMappingRevision(input: unknown): Promise<string | undefined> {
+    return await loadGateMappingRevision({
+      env: this.env,
+      filters: parseGateMappingRevisionInput(input),
+      fetchImpl: fetch,
+    });
+  }
+}

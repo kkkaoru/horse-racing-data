@@ -139,9 +139,29 @@ it("rejects invalid dates, venues and missing data revisions", () => {
   expect(() => validatePartnershipScope({ ...scope, date: "20260229" })).toThrow("valid YYYYMMDD");
   expect(() => validatePartnershipScope({ ...scope, date: "not-date" })).toThrow("valid YYYYMMDD");
   expect(() => validatePartnershipScope({ ...scope, date: "20269999" })).toThrow("valid YYYYMMDD");
-  expect(() => validatePartnershipScope({ ...scope, keibajoCode: "6" })).toThrow("two digits");
+  expect(() => validatePartnershipScope({ ...scope, keibajoCode: "6" })).toThrow(
+    "two uppercase alphanumeric characters",
+  );
   expect(() => validatePartnershipScope({ ...scope, revision: " " })).toThrow(
     "revision is required",
+  );
+});
+
+it("preserves overseas venue identity in cohort keys and historical aggregation", () => {
+  expect(partnershipCacheKey({ ...scope, keibajoCode: "A8" })).toBe(
+    "heatmap-partnership-v2:snapshot-1:jra:20260913:A8:jockeyVenue:%E8%8A%9D",
+  );
+  expect(
+    aggregatePartnership({
+      scope: { ...scope, keibajoCode: "A8" },
+      history: [history, { ...history, keibajoCode: "A8", resultId: "foreign", raceId: "foreign" }],
+    }).rows,
+  ).toStrictEqual([{ entityKey: '["jockey-1"]', starts: 1, wins: 1, places: 1, shows: 1 }]);
+});
+
+it.each(["a8", "A8'", "A8 OR 1=1", "../"])("rejects unsafe partnership venue %s", (keibajoCode) => {
+  expect(() => validatePartnershipScope({ ...scope, keibajoCode })).toThrow(
+    "Partnership venue must contain two uppercase alphanumeric characters",
   );
 });
 
@@ -220,4 +240,34 @@ it("uses horse-jockey lifetime history across venues without including the targe
     rows: [{ entityKey: '["horse-1","jockey-1"]', places: 1, shows: 1, starts: 1, wins: 1 }],
   });
   expect(aggregatePartnership({ scope, history: [] })).toStrictEqual({ raceIds: [], rows: [] });
+});
+
+it("versions only explicit Arc partnership keys while preserving domestic bytes", () => {
+  expect(
+    partnershipCacheKey({
+      ...scope,
+      date: "20261004",
+      keibajoCode: "A8",
+      eventScope: "arc-cohort-policy-v2",
+    }),
+  ).toMatch(/^heatmap-partnership-v3:.*:arc-cohort-policy-v2$/u);
+  expect(partnershipCacheKey(scope)).toBe(
+    "heatmap-partnership-v2:snapshot-1:jra:20260913:06:jockeyVenue:%E8%8A%9D",
+  );
+  expect(partnershipCacheKey({ ...scope, date: "20261004", keibajoCode: "A8" })).not.toMatch(
+    /arc-cohort|v3/u,
+  );
+});
+
+it("fails closed for unverified Arc event membership and excludes NAR in the reference aggregator", () => {
+  expect(
+    aggregatePartnership({
+      scope: { ...scope, eventScope: "arc-cohort-policy-v2" },
+      history: [
+        history,
+        { ...history, eventScope: "arc-cohort-policy-v2", source: "nar", resultId: "nar-result" },
+        { ...history, eventScope: "arc-cohort-policy-v2", resultId: "arc-result" },
+      ],
+    }).rows.map((row) => row.starts),
+  ).toStrictEqual([1]);
 });

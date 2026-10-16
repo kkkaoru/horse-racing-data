@@ -98,6 +98,12 @@ const numberOrNull = (value: unknown): number | null => {
 
 const countOf = (value: unknown): number => numberOrNull(value) ?? 0;
 
+// Zero odds/popularity encode unavailable market data, including SQL-decoded sentinels.
+const marketNumberOrNull = (value: unknown): number | null => {
+  const parsed: number | null = numberOrNull(value);
+  return parsed === 0 ? null : parsed;
+};
+
 const textOf = (value: unknown): string => (typeof value === "string" ? value : "");
 
 const rateOf = (count: number, starts: number): number | null =>
@@ -204,8 +210,8 @@ matched_history AS (
     ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
         selectList: `${finishPositionSql("se")} AS finish_position,
-    ${doubleSelect("se.tansho_ninkijun")} AS popularity,
-    ${doubleSelect("se.tansho_odds")} / ${String(ODDS_SCALE)}.0 AS odds`,
+    nullif(${doubleSelect("se.tansho_ninkijun")}, 0) AS popularity,
+    nullif(${doubleSelect("se.tansho_odds")}, 0) / ${String(ODDS_SCALE)}.0 AS odds`,
         tables,
       }),
     ),
@@ -228,8 +234,8 @@ export const buildConditionCorrelationEntriesQuery = (
 SELECT
   btrim(coalesce(se.umaban, '')) AS umaban,
   ${trimmedNameSql("se.bamei")} AS horse_name,
-  ${doubleSelect("se.tansho_ninkijun")} AS popularity,
-  ${doubleSelect("se.tansho_odds")} / ${String(ODDS_SCALE)}.0 AS odds,
+  nullif(${doubleSelect("se.tansho_ninkijun")}, 0) AS popularity,
+  nullif(${doubleSelect("se.tansho_odds")}, 0) / ${String(ODDS_SCALE)}.0 AS odds,
   btrim(coalesce(se.ketto_toroku_bango, '')) AS ketto_toroku_bango,
   ${trimmedNameSql("se.kishumei_ryakusho")} AS jockey_name,
   ${trimmedNameSql("se.chokyoshimei_ryakusho")} AS trainer_name,
@@ -323,8 +329,8 @@ const targetAveragesOf = (row: Record<string, unknown> | undefined): TargetAvera
   return {
     horseShow: top3 === 0 ? null : PERCENT,
     horseWin: rateOf(countOf(row?.win_count), top3),
-    odds: numberOrNull(row?.average_odds),
-    popularity: numberOrNull(row?.average_popularity),
+    odds: marketNumberOrNull(row?.average_odds),
+    popularity: marketNumberOrNull(row?.average_popularity),
   };
 };
 
@@ -346,9 +352,9 @@ const runnerFeaturesOf = (
     horseShow: rateOf(horse.showCount, horse.starts),
     horseWin: rateOf(horse.winCount, horse.starts),
     jockeyShow: rateOf(jockey.showCount, jockey.starts),
-    odds: numberOrNull(entry.odds),
+    odds: marketNumberOrNull(entry.odds),
     ownerShow: rateOf(owner.showCount, owner.starts),
-    popularity: numberOrNull(entry.popularity),
+    popularity: marketNumberOrNull(entry.popularity),
     trainerShow: rateOf(trainer.showCount, trainer.starts),
   };
 };

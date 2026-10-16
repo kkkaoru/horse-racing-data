@@ -1,3 +1,4 @@
+// Run with bun.
 import { expect, it, vi } from "vitest";
 
 import {
@@ -19,6 +20,26 @@ import {
   trainingDescriptor,
 } from "./cache";
 import type { CacheStore, KvStore } from "./types";
+
+it("invalidates zero-sentinel condition aggregates in KV as well as Cache API", () => {
+  expect(
+    kvKeyFor(
+      conditionHistoryStatsDescriptor({
+        date: "20260715",
+        includeDistance: true,
+        includeSurface: false,
+        includeTurn: true,
+        includeVenue: true,
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        years: 10,
+      }),
+    ),
+  ).toBe(
+    "catalog:v2:v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v2&ungradedOp=1&emptyGradeMatch=2",
+  );
+});
 
 const cacheMocks = (): {
   cache: CacheStore;
@@ -208,7 +229,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v2&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -225,7 +246,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=83&raceBango=09&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v1&ungradedOp=1&emptyGradeMatch=2",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=83&raceBango=09&source=nar&years=5&includeVenue=0&includeDistance=0&includeSurface=0&includeTurn=0&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v2&ungradedOp=1&emptyGradeMatch=2",
   );
   expect(
     cacheRequestFor(
@@ -271,7 +292,7 @@ it("builds canonical Cache API and KV keys", () => {
       }),
     ).url,
   ).toBe(
-    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v1&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
+    "https://pc-keiba-r2-catalog-cache.internal/v2/condition-history-stats?date=20260715&keibajoCode=05&raceBango=01&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=0&includeTurn=1&targetRaces=1&finishDetails=1&raceTimeEncoding=mssd-v1&correlation=v2&ungradedOp=1&emptyGradeMatch=2&includeGrade=1&includeTrackCode=1&includeAge=1&includeClass=1&includeConditionKey=1&includeRaceTitle=1",
   );
 });
 
@@ -372,4 +393,60 @@ it("writes a single Cache API response", async () => {
   const request = new Request("https://cache.test/item");
   await populateCacheApi(cacheState.cache, request, "[1]", 15);
   expect(cacheState.putMock).toHaveBeenCalledOnce();
+});
+
+it("versions overseas gate-dependent aggregates without invalidating domestic aggregates", () => {
+  const filters = {
+    date: "20261004",
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "A8",
+    raceBango: "05",
+    source: "jra",
+    years: 3,
+  } satisfies Parameters<typeof heatmapStatsDescriptor>[0];
+  expect(cacheRequestFor(heatmapStatsDescriptor(filters)).url).toMatch(
+    "overseasInputs=source-mapping-v1",
+  );
+  expect(
+    cacheRequestFor(heatmapStatsDescriptor({ ...filters, keibajoCode: "05" })).url,
+  ).not.toMatch("overseasInputs");
+});
+
+it("keys overseas conditions by historical mapping revision", () => {
+  const descriptor = {
+    kind: "condition-history-stats",
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+    source: "jra",
+    years: 10,
+    includeVenue: false,
+    includeDistance: false,
+    includeSurface: false,
+    includeTurn: false,
+  } satisfies import("./cache").CacheDescriptor;
+  expect(cacheRequestFor({ ...descriptor, mappingRevision: "gate-v1-first" }).url).not.toEqual(
+    cacheRequestFor({ ...descriptor, mappingRevision: "gate-v1-second" }).url,
+  );
+});
+
+it("separates explicitly requested foreign owner stats from legacy cache keys", () => {
+  const filters = {
+    date: "20261004",
+    keibajoCode: "A8",
+    raceBango: "05",
+    source: "jra",
+    years: 10,
+    includeVenue: true,
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+  } satisfies Parameters<typeof heatmapStatsDescriptor>[0];
+  expect(kvKeyFor(heatmapStatsDescriptor({ ...filters, includeForeignSourceStats: true }))).toMatch(
+    /includeForeignSourceStats=1/,
+  );
+  expect(kvKeyFor(heatmapStatsDescriptor(filters))).not.toMatch(/includeForeignSourceStats/);
 });

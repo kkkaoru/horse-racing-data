@@ -1,4 +1,14 @@
+import {
+  aggregateArcBloodlines,
+  arcBloodlineProfilesQuery,
+  type ArcBloodlineResult,
+} from "./arc-id-bloodline";
+import { buildArcBloodlineLabelsQuery } from "./win-rate-heatmap-stats";
+import { loadForeignOwnerStats } from "./foreign-owner-reader";
 // Run with bun via the package scripts.
+import { loadGateMappingRevision } from "./gate-mapping-revision";
+import { isCurrentArc } from "./arc-cohort";
+import { loadArcQualifiedPeople, type ArcQualifiedResult } from "./arc-qualified-people";
 import { buildRaceCourseQuery, normaliseRaceCourse } from "./race-course";
 import { createPartnershipCohortCache } from "./heatmap-partnership-cache";
 import { loadPartnershipStats } from "./heatmap-partnership-stats";
@@ -292,18 +302,17 @@ const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   gradeCode: url.searchParams.get("gradeCode"),
 });
 
-const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => {
-  const date: string = requireDate(url);
+const requireVenueCode = (url: URL): string => {
   const venue: string | null = url.searchParams.get("keibajoCode");
   if (venue === null) throw new Error("keibajoCode is required");
-  return {
-    date,
-    keibajoCode: requireTrainingVenueCode(
-      CODE_PATTERN.test(venue) ? venue.padStart(2, "0") : venue,
-    ),
-    raceBango: requireCode(url, "raceBango"),
-  };
+  return requireTrainingVenueCode(CODE_PATTERN.test(venue) ? venue.padStart(2, "0") : venue);
 };
+
+const parseRaceTrainingFilters = (url: URL): RaceTrainingFilters => ({
+  date: requireDate(url),
+  keibajoCode: requireVenueCode(url),
+  raceBango: requireCode(url, "raceBango"),
+});
 
 const parseFreshRaceEntryFilters = (url: URL): FreshRaceEntryFilters => ({
   date: requireDate(url),
@@ -418,12 +427,13 @@ const parseWinRateHeatmapFilters = (url: URL): WinRateHeatmapStatsFilters => ({
   includeGrade: parseOptionalIncludeFlag(url, "includeGrade"),
   includeJockeyFrame: parseOptionalIncludeFlag(url, "includeJockeyFrame"),
   includeOwner: parseOptionalIncludeFlag(url, "includeOwner"),
+  includeForeignSourceStats: parseOptionalIncludeFlag(url, "includeForeignSourceStats"),
   includeRaceTitle: parseOptionalIncludeFlag(url, "includeRaceTitle"),
   includeSurface: parseIncludeFlag(url, "includeSurface"),
   includeTrackCode: parseOptionalIncludeFlag(url, "includeTrackCode"),
   includeTurn: parseIncludeFlag(url, "includeTurn"),
   includeVenue: parseIncludeFlag(url, "includeVenue"),
-  keibajoCode: requireCode(url, "keibajoCode"),
+  keibajoCode: requireVenueCode(url),
   raceBango: requireCode(url, "raceNumber"),
   source: parseHeatmapSource(url),
   years: parseYears(url),
@@ -511,12 +521,22 @@ const cachedCatalogResponse = async (
   const request = cacheRequestFor(descriptor);
   const cached = await dependencies.cache.match(request);
   if (cached) {
+    if (readKv === readKvHeatmapStats) {
+      const payload: ReturnType<typeof normaliseWinRateHeatmapStatsPayload> = await cached
+        .clone()
+        .json();
+      if (payload.bloodlineRows.length === 0 && payload.similarRows.length === 0) return null;
+    }
     const response = new Response(cached.body, cached);
     response.headers.set("X-Catalog-Cache", "cache-api");
     return response;
   }
   const kvBody = await readKv(env.CATALOG_KV, kvKeyFor(descriptor));
   if (kvBody === null) return null;
+  if (readKv === readKvHeatmapStats) {
+    const payload: ReturnType<typeof normaliseWinRateHeatmapStatsPayload> = JSON.parse(kvBody);
+    if (payload.bloodlineRows.length === 0 && payload.similarRows.length === 0) return null;
+  }
   const cacheTtl = parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60);
   await Promise.allSettled([populateCacheApi(dependencies.cache, request, kvBody, cacheTtl)]);
   return jsonRowsResponse(kvBody, "kv");
@@ -535,6 +555,7 @@ const heatmapCoalesceKey = (filters: WinRateHeatmapStatsFilters): string =>
     filters.includeSurface ? "1" : "0",
     filters.includeTurn ? "1" : "0",
     filters.includeOwner === true ? "1" : "0",
+    filters.includeForeignSourceStats === true ? "1" : "0",
     filters.includeJockeyFrame === true ? "1" : "0",
     filters.includeGrade === true ? "1" : "0",
     filters.includeTrackCode === true ? "1" : "0",
@@ -642,10 +663,23 @@ const logHeatmapQueryFailure = async (
   }
 };
 
+const arcBloodlineOrUnavailable = (
+  input: Parameters<typeof aggregateArcBloodlines>[0],
+): ArcBloodlineResult | null => {
+  try {
+    return aggregateArcBloodlines(input);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unsupported Arc bloodline filters")
+      return null;
+    throw error;
+  }
+};
+
 const heatmapStatsBody = async (
   env: Env,
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
+  arcBloodline?: ArcBloodlineResult | null,
 ): Promise<string> => {
   const fetchImpl = withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS);
   // A bloodline query that never answers (NAR 30/05 on 2026-09-23) must not
@@ -655,7 +689,9 @@ const heatmapStatsBody = async (
     logHeatmapQueryFailure(
       "bloodline",
       filters,
-      loadHeatmapBloodlineRows(env, dependencies, filters),
+      arcBloodline === undefined
+        ? loadHeatmapBloodlineRows(env, dependencies, filters)
+        : Promise.resolve((arcBloodline?.rows ?? []).map((row) => ({ ...row }))),
     ).catch(() => null),
     logHeatmapQueryFailure(
       "similar",
@@ -667,8 +703,32 @@ const heatmapStatsBody = async (
     bloodlineRows: bloodlineRows ?? [],
     similarRows,
   });
+  const foreign = await loadForeignOwnerStats({
+    config: env,
+    filters,
+    nativeRows: payload.similarRows,
+    execute: (sql) => executeR2Sql(env, sql, fetchImpl),
+  });
+  const combined = {
+    ...payload,
+    ...(arcBloodline == null
+      ? {}
+      : {
+          knownBloodlineCount: arcBloodline.knownBloodlineCount,
+          arcBloodlineCoverage: arcBloodline.coverage,
+          ...(arcBloodline.knownBloodlineCount < 112 ||
+          arcBloodline.coverage.roles.some((role) => role.unknownAncestry > 0)
+            ? { bloodlineUnavailable: true }
+            : {}),
+        }),
+    ...(arcBloodline === null ? { bloodlineUnavailable: true } : {}),
+    similarRows: [...payload.similarRows, ...foreign.similarRows],
+    ...(filters.includeForeignSourceStats === true
+      ? { foreignOwnerVenueRows: foreign.foreignOwnerVenueRows }
+      : {}),
+  };
   return JSON.stringify(
-    bloodlineRows === null ? { ...payload, bloodlineUnavailable: true } : payload,
+    bloodlineRows === null ? { ...combined, bloodlineUnavailable: true } : combined,
   );
 };
 
@@ -678,13 +738,78 @@ const handleWinRateHeatmapStats = async (
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseWinRateHeatmapFilters(url);
-  const descriptor = heatmapStatsDescriptor(filters);
+  const arcQualified: ArcQualifiedResult | undefined = isCurrentArc(filters)
+    ? await loadArcQualifiedPeople({
+        config: env,
+        filters: { ...filters, event: "arc" },
+        execute: (sql) =>
+          executeR2Sql(
+            env,
+            sql,
+            withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+          ),
+      })
+    : undefined;
+  const mappingRevision = await loadGateMappingRevision({
+    env,
+    filters,
+    fetchImpl: dependencies.fetchImpl,
+    arcQualified,
+  });
+  const arcInputs =
+    arcQualified === undefined
+      ? undefined
+      : await Promise.all([
+          executeR2Sql(
+            env,
+            arcBloodlineProfilesQuery(env.R2_SQL_NAMESPACE),
+            withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+          ),
+          executeR2Sql(
+            env,
+            buildArcBloodlineLabelsQuery(env, filters),
+            withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+          ),
+        ]);
+  const arcBloodline =
+    arcQualified === undefined || arcInputs === undefined
+      ? undefined
+      : arcBloodlineOrUnavailable({
+          filters,
+          qualified: arcQualified,
+          profiles: arcInputs[0] ?? [],
+          labels: arcInputs[1] ?? [],
+        });
+  // Keep the public revision DTO intact; invalidate older name-based payloads privately.
+  const privateRevision =
+    arcInputs === undefined
+      ? mappingRevision
+      : `gate-v1-${Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["arc-id-bloodline-v1", mappingRevision, arcInputs])))), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  const descriptor = { ...heatmapStatsDescriptor(filters), mappingRevision: privateRevision };
   const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvHeatmapStats);
   if (cached) return cached;
-  const body = await coalesce(heatmapCoalesceKey(filters), () =>
-    heatmapStatsBody(env, dependencies, filters),
+  const body = await coalesce(
+    `${heatmapCoalesceKey(filters)}:${privateRevision ?? ""}`,
+    async () => {
+      const raw = await heatmapStatsBody(env, dependencies, filters, arcBloodline);
+      return mappingRevision === undefined
+        ? raw
+        : JSON.stringify({
+            ...JSON.parse(raw),
+            mappingRevision,
+            ...(arcQualified === undefined
+              ? {}
+              : {
+                  arcQualifiedStats: { rows: arcQualified.rows, coverage: arcQualified.coverage },
+                }),
+          });
+    },
   );
-  if (!body.includes(HEATMAP_BLOODLINE_UNAVAILABLE_MARKER)) {
+  const payload: ReturnType<typeof normaliseWinRateHeatmapStatsPayload> = JSON.parse(body);
+  if (
+    !body.includes(HEATMAP_BLOODLINE_UNAVAILABLE_MARKER) &&
+    (payload.bloodlineRows.length > 0 || payload.similarRows.length > 0)
+  ) {
     await populateCaches(
       dependencies.cache,
       env.CATALOG_KV,
@@ -1197,7 +1322,12 @@ const handleConditionHistoryStats = async (
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseWinRateHeatmapFilters(url);
-  const descriptor = conditionHistoryStatsDescriptor(filters);
+  const mappingRevision = await loadGateMappingRevision({
+    env,
+    filters,
+    fetchImpl: dependencies.fetchImpl,
+  });
+  const descriptor = { ...conditionHistoryStatsDescriptor(filters), mappingRevision };
   const cached = await cachedCatalogResponse(
     descriptor,
     env,
@@ -1205,8 +1335,14 @@ const handleConditionHistoryStats = async (
     readKvConditionHistoryStats,
   );
   if (cached) return cached;
-  const body = await coalesce(conditionHistoryCoalesceKey(filters), () =>
-    conditionHistoryStatsBody(env, dependencies, filters),
+  const body = await coalesce(
+    `${conditionHistoryCoalesceKey(filters)}:${mappingRevision ?? ""}`,
+    async () => {
+      const raw = await conditionHistoryStatsBody(env, dependencies, filters);
+      return mappingRevision === undefined
+        ? raw
+        : JSON.stringify({ ...JSON.parse(raw), mappingRevision });
+    },
   );
   await populateCaches(
     dependencies.cache,
@@ -1390,6 +1526,11 @@ const purgeTargets = (url: URL): CacheDescriptor[] => {
   const source = parseSource(url, false);
   const keibajoCode = parseCode(url, "keibajoCode");
   const raceBango = parseCode(url, "raceBango");
+  const kind = url.searchParams.get("kind");
+  if (kind !== null && kind !== "race-trainings")
+    throw new Error("purge kind must be race-trainings");
+  if (kind === "race-trainings" && (keibajoCode === undefined || raceBango === undefined))
+    throw new Error("training purge must target an exact race");
   const featureSources = source === undefined ? FEATURE_SOURCES : [source];
   const features = featureSources.map(
     (featureSource): CacheDescriptor => ({
@@ -1404,6 +1545,7 @@ const purgeTargets = (url: URL): CacheDescriptor[] => {
     keibajoCode === undefined || raceBango === undefined
       ? []
       : [trainingDescriptor({ date, keibajoCode, raceBango })];
+  if (kind === "race-trainings") return trainings;
   return source === undefined && keibajoCode === undefined && raceBango === undefined
     ? [{ date, kind: "race-keys" }, ...features]
     : [...features, ...trainings];
@@ -1441,10 +1583,21 @@ const handlePartnershipStats = async (
   if (env.CATALOG_OBJECTS === undefined)
     return jsonResponse({ error: "partnership_snapshot_unavailable" }, 503);
   const manifest = await readEntityCatalogManifest(env.CATALOG_OBJECTS);
-  const table = filters.source === "jra" ? "jvd_se" : "nvd_se";
-  const revision = manifest.raw[table]?.snapshotId;
-  if (revision === undefined)
+  const jraSnapshot = manifest.raw.jvd_se?.snapshotId;
+  const narSnapshot = manifest.raw.nvd_se?.snapshotId;
+  if (!jraSnapshot?.trim() || !narSnapshot?.trim())
     return jsonResponse({ error: "partnership_snapshot_unavailable" }, 503);
+  const mappingRevision = await loadGateMappingRevision({
+    env,
+    filters,
+    fetchImpl: withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+  });
+  const revision = JSON.stringify([
+    "partnership-unknown-id-v1",
+    jraSnapshot,
+    narSnapshot,
+    mappingRevision,
+  ]);
   const rows = await loadPartnershipStats({
     cache: partnershipCohortCache,
     raceBango: filters.raceBango,

@@ -3,16 +3,26 @@
 // expressions are re-expressed with try_cast/substring and, where date math is
 // needed, computed in TypeScript instead.
 
+interface WeightNumericSqlInput {
+  column: string;
+  venueColumn: string;
+  carried: boolean;
+}
+
 const MONTHS_IN_WINDOW: number = 1;
+
+const onlyCharactersSql = (expression: string, characters: string): string =>
+  `${[...characters].reduce((sql, character) => `replace(${sql}, '${character}', '')`, expression)} = ''`;
 
 // PostgreSQL `raceTimeTenthsSql`: the raw soha_time is a tenths-of-a-second
 // clock value whose fourth digit is the fraction, so "1234" is 83.4s. The SQL
-// mirrors the viewer's guards: 1-4 digits, not all zeros, and minutes < 60.
+// mirrors the viewer's guards: 1-4 digits, not all zeros, and seconds < 60.
 export const raceTimeTenthsSql = (column: string): string => {
   const cleaned: string = `btrim(coalesce(${column}, ''))`;
   const padded: string = `lpad(${cleaned}, 4, '0')`;
   return `CASE
     WHEN length(${cleaned}) BETWEEN 1 AND 4
+      AND ${onlyCharactersSql(cleaned, "0123456789")}
       AND replace(${cleaned}, '0', '') <> ''
       AND try_cast(substring(${padded} FROM 2 FOR 2) AS INT) < 60
     THEN try_cast(substring(${padded} FROM 1 FOR 1) AS INT) * 600
@@ -22,10 +32,35 @@ export const raceTimeTenthsSql = (column: string): string => {
   END`;
 };
 
-// PostgreSQL `nullif(regexp_replace(coalesce(x, ''), '[^0-9]', '', 'g'), '')::numeric`
-// for values that the mirror stores as plain digit strings.
-export const digitsOnlyNumericSql = (column: string): string =>
-  `try_cast(nullif(btrim(coalesce(${column}, '')), '') AS DOUBLE)`;
+// Validate the entire raw field; never accept exponents or strip corruption.
+export const digitsOnlyNumericSql = (column: string): string => {
+  const cleaned: string = `btrim(coalesce(${column}, ''))`;
+  return `CASE WHEN ${onlyCharactersSql(cleaned, "0123456789")}
+    THEN try_cast(nullif(${cleaned}, '') AS DOUBLE) ELSE NULL END`;
+};
+
+export const positiveDecimalSql = (column: string): string => {
+  const value: string = digitsOnlyNumericSql(column);
+  return `CASE WHEN (${value}) > 0 THEN (${value}) ELSE NULL END`;
+};
+
+export const weightNumericSql = (input: WeightNumericSqlInput): string => {
+  const cleaned: string = `upper(btrim(coalesce(${input.column}, '')))`;
+  const hex: string = `try_cast(concat('0x', ${cleaned}) AS INTEGER)`;
+  return `CASE WHEN btrim(${input.venueColumn}) = '83' THEN
+    CASE WHEN ${cleaned} NOT IN ('', '000', 'FFF')
+      AND ${onlyCharactersSql(cleaned, "0123456789ABCDEF")} AND ${hex} > 0
+      THEN ${hex} * ${input.carried ? 10 : 1} ELSE NULL END
+    ELSE ${positiveDecimalSql(input.column)} END`;
+};
+
+export const marginNumericSql = (column: string): string => {
+  const cleaned: string = `btrim(coalesce(${column}, ''))`;
+  const magnitude: string = `CASE WHEN substring(${cleaned} FROM 1 FOR 1) IN ('+', '-')
+    THEN substring(${cleaned} FROM 2) ELSE ${cleaned} END`;
+  return `CASE WHEN ${onlyCharactersSql(`(${magnitude})`, "0123456789")}
+    THEN ${digitsOnlyNumericSql(`(${magnitude})`)} ELSE NULL END`;
+};
 
 // The viewer builds this window with `to_char(to_date(raceDate) ± interval
 // '1 month', 'MM')`; the date maths is done here instead.

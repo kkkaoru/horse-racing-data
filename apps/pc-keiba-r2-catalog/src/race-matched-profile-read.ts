@@ -1,6 +1,12 @@
 // Runs with bun. Matched-race selection and target-profile averages for the
 // time-score reader, expressed for R2 SQL (no `~`, no `regexp_replace`).
-import { digitsOnlyNumericSql, monthWindowConditionSql, raceTimeTenthsSql } from "./time-score-sql";
+import {
+  marginNumericSql,
+  positiveDecimalSql,
+  weightNumericSql,
+  monthWindowConditionSql,
+  raceTimeTenthsSql,
+} from "./time-score-sql";
 
 export type MatchedProfileSource = "jra" | "nar";
 
@@ -117,11 +123,17 @@ export const buildMatchedRacePredicates = (input: MatchedProfileInput): string[]
   const grade: string | null = quote(race.gradeCode);
   if (settings.includeGrade) predicates.push(notDistinctSql("ra.grade_code", grade ?? "NULL"));
   if (settings.includeRaceTitle) {
+    if (race.gradeCode?.trim() === "A" || race.gradeCode?.trim() === "F") {
+      predicates.push("ra.grade_code IN ('A', 'F')");
+    }
     const title: string | null = quote(
       race.kyosomeiHondai === null ? null : race.kyosomeiHondai.replace(/^[\s　]+|[\s　]+$/gu, ""),
     );
     predicates.push(
-      `(ra.grade_code IN ('A', 'F') AND ${notDistinctSql("nullif(replace(btrim(coalesce(ra.kyosomei_hondai, '')), chr(12288), ''), '')", title ?? "NULL")})`,
+      notDistinctSql(
+        "nullif(replace(btrim(coalesce(ra.kyosomei_hondai, '')), chr(12288), ''), '')",
+        title ?? "NULL",
+      ),
     );
   }
   const month: string | null = monthWindowConditionSql(
@@ -178,10 +190,10 @@ export const buildTargetProfileSql = (input: MatchedProfileInput): string => {
   const matched: string = buildMatchedRacesSql({ ...input, limit: MAX_LIMIT });
   return `WITH matched AS (${matched}), runners AS (
   SELECT ${raceTimeTenthsSql("se.soha_time")} AS race_time,
-    ${digitsOnlyNumericSql("se.kohan_3f")} AS last3f,
-    ${digitsOnlyNumericSql("se.bataiju")} AS body_weight,
-    ${digitsOnlyNumericSql("se.futan_juryo")} AS carried_weight,
-    ${digitsOnlyNumericSql("se.time_sa")} AS margin
+    ${positiveDecimalSql("se.kohan_3f")} AS last3f,
+    ${weightNumericSql({ column: "se.bataiju", venueColumn: "se.keibajo_code", carried: false })} AS body_weight,
+    ${weightNumericSql({ column: "se.futan_juryo", venueColumn: "se.keibajo_code", carried: true })} AS carried_weight,
+    ${marginNumericSql("se.time_sa")} AS margin
   FROM ${input.namespace}.${runnerTable(input)} se
   INNER JOIN matched m
     ON m.kaisai_nen = se.kaisai_nen AND m.kaisai_tsukihi = se.kaisai_tsukihi

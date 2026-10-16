@@ -104,7 +104,8 @@ const COLUMNS: readonly string[] = [
 const COLUMN_TABLES: Readonly<Record<string, "ra">> = { kyori: "ra" };
 const IDENTIFIER: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE: RegExp = /^\d{8}$/u;
-const HORSE_ID: RegExp = /^\d{10}$/u;
+const HORSE_ID: RegExp = /^(?!0{10}$)\d{10}$/u;
+const PROVIDER_HORSE_ID: RegExp = /^(?!0+$)[A-Za-z0-9]+$/u;
 const MAX_HORSE_IDS: number = 40;
 const MAX_LIMIT: number = 4000;
 const COLUMN_COUNT: number = COLUMNS.length;
@@ -123,7 +124,9 @@ export const buildRaceHistoryReadSql = (input: RaceHistoryReadInput): string => 
     (input.source !== "jra" && input.source !== "nar" && input.source !== "overseas") ||
     input.horseIds.length === 0 ||
     input.horseIds.length > MAX_HORSE_IDS ||
-    !input.horseIds.every((id) => HORSE_ID.test(id)) ||
+    !input.horseIds.every((id) =>
+      (input.source === "overseas" ? PROVIDER_HORSE_ID : HORSE_ID).test(id),
+    ) ||
     new Set(input.horseIds).size !== input.horseIds.length ||
     !validDate(input.beforeDate) ||
     (input.minDate !== null && !validDate(input.minDate)) ||

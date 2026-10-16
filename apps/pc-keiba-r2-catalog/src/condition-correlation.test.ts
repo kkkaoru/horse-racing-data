@@ -117,3 +117,60 @@ it("uses the popularity and odds floors when the target averages are small", () 
     ["odds", 0],
   ]);
 });
+
+it.each([
+  { venue: "05", odds: 8.5, popularity: 3.1 },
+  { venue: "08", odds: 15.9, popularity: 4.2 },
+])("neutralizes saved $venue-11 market sentinels without changing available values", (sample) => {
+  // Saved all-jra-score-check/05-11.json and 08-11.json market target shapes.
+  const rows = composeConditionCorrelationRows({
+    careerRows: [],
+    entryRows: [
+      { umaban: "01", odds: "0000", popularity: "00" },
+      { umaban: "02", odds: 0, popularity: 0 },
+      { umaban: "03", odds: sample.odds, popularity: sample.popularity },
+    ],
+    targetRows: [{ average_odds: sample.odds, average_popularity: sample.popularity }],
+  });
+  expect(rows.map((row) => [row.horseNumber, row.score])).toStrictEqual([
+    ["3", 0.63],
+    ["1", 0.5],
+    ["2", 0.5],
+  ]);
+  expect(rows[1]?.details.slice(-2).map(({ value, score }) => ({ value, score }))).toStrictEqual([
+    { value: null, score: 0.5 },
+    { value: null, score: 0.5 },
+  ]);
+  expect(rows[0]?.details.slice(-2)).toMatchObject([
+    { value: sample.popularity, target: sample.popularity, score: 1 },
+    { value: sample.odds, target: sample.odds, score: 1 },
+  ]);
+});
+
+it("neutralizes zero market targets while preserving measured zero career rates", () => {
+  const rows = composeConditionCorrelationRows({
+    careerRows: [{ kind: "jockey", entity: "J", starts: 10, win_count: 0, show_count: 0 }],
+    entryRows: [{ umaban: "01", jockey_name: "J", odds: 8.5, popularity: 3 }],
+    targetRows: [{ average_odds: 0, average_popularity: "00" }],
+  });
+  expect(rows[0]?.details.slice(-2)).toMatchObject([
+    { value: 3, target: null, score: 0.5 },
+    { value: 8.5, target: null, score: 0.5 },
+  ]);
+  expect(rows[0]?.details.find((detail) => detail.key === "jockeyShow")).toMatchObject({
+    value: 0,
+    score: 0,
+  });
+});
+
+it.each(["jra", "nar"] satisfies Array<WinRateHeatmapStatsFilters["source"]>)(
+  "excludes zero sentinels before averaging and scaling %s market values",
+  (source) => {
+    const target = buildConditionCorrelationTargetQuery(env, { ...filters, source });
+    const entries = buildConditionCorrelationEntriesQuery(env, { ...filters, source });
+    expect(target).toMatch(/nullif\(try_cast\([^\n]+tansho_ninkijun[^\n]+, 0\) AS popularity/u);
+    expect(target).toMatch(/nullif\(try_cast\([^\n]+tansho_odds[^\n]+, 0\) \/ 10\.0 AS odds/u);
+    expect(entries).toMatch(/nullif\(try_cast\([^\n]+tansho_ninkijun[^\n]+, 0\) AS popularity/u);
+    expect(entries).toMatch(/nullif\(try_cast\([^\n]+tansho_odds[^\n]+, 0\) \/ 10\.0 AS odds/u);
+  },
+);
