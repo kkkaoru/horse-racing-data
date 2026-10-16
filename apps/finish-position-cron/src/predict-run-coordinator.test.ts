@@ -4883,3 +4883,82 @@ test("observation has no writes and identityless slot cannot cover fenced race",
   ).toStrictEqual({ proceed: false, state: "execution-required" });
   expect(storageMap.size).toBe(1);
 });
+
+test("getFocusedFullDiagnostics reports lane owners, leases and commit barriers", async () => {
+  storageMap.clear();
+  storageMap.set("focused-full-lane:race-chain-predict-jra-0", {
+    activeRaceKey: "focused-full:20261017:jra:04:01",
+    startedAt: 5,
+    waiters: ["focused-full:20261017:jra:04:03"],
+  });
+  storageMap.set("focused-full-lane:predict-nar-1", {
+    activeRaceKey: "focused-full:20261017:nar:54:02",
+    startedAt: 7,
+    waiters: [],
+  });
+  storageMap.set("focused-full:20261017:jra:04:01", {
+    executionId: "exec-1",
+    status: "started",
+    timestamp: 1,
+  });
+  storageMap.set("external-commit:focused-full:20261017:jra:04:01", { token: "t" });
+  storageMap.set("container-slots", { leases: [{ executionId: "exec-1" }, { doName: "x" }] });
+  const coordinator = makeCoordinator();
+  const response = await coordinator.fetch(
+    new Request("http://do/__admin/focused-full-diagnostics"),
+  );
+  expect(await response.json()).toStrictEqual({
+    commitMarkers: ["external-commit:focused-full:20261017:jra:04:01"],
+    lanes: [
+      {
+        activeExecutionId: "exec-1",
+        activeHasCommitMarker: true,
+        activeHasLiveLease: true,
+        activeRaceKey: "focused-full:20261017:jra:04:01",
+        activeStatus: "started",
+        laneKey: "focused-full-lane:race-chain-predict-jra-0",
+        startedAt: 5,
+        waiters: 1,
+      },
+      {
+        activeExecutionId: null,
+        activeHasCommitMarker: false,
+        activeHasLiveLease: false,
+        activeRaceKey: "focused-full:20261017:nar:54:02",
+        activeStatus: null,
+        laneKey: "focused-full-lane:predict-nar-1",
+        startedAt: 7,
+        waiters: 0,
+      },
+    ],
+    leaseExecutionIds: ["exec-1"],
+  });
+});
+
+test("getFocusedFullDiagnostics tolerates a missing slot record", async () => {
+  storageMap.clear();
+  const coordinator = makeCoordinator();
+  expect(await coordinator.getFocusedFullDiagnostics()).toStrictEqual({
+    commitMarkers: [],
+    lanes: [],
+    leaseExecutionIds: [],
+  });
+});
+
+test("clearFocusedFullCommits deletes only barriers that exist", async () => {
+  storageMap.clear();
+  storageMap.set("external-commit:focused-full:20261017:jra:04:01", { token: "t" });
+  const coordinator = makeCoordinator();
+  const response = await coordinator.fetch(
+    new Request("http://do/__admin/clear-focused-full-commits", {
+      body: JSON.stringify({
+        workKeys: ["focused-full:20261017:jra:04:01", "focused-full:20261017:jra:04:03"],
+      }),
+      method: "POST",
+    }),
+  );
+  expect(await response.json()).toStrictEqual({
+    cleared: ["external-commit:focused-full:20261017:jra:04:01"],
+  });
+  expect(storageMap.has("external-commit:focused-full:20261017:jra:04:01")).toBe(false);
+});

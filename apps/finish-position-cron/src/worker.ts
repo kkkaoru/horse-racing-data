@@ -78,6 +78,7 @@ import {
   RaceDayWorkflow,
   runDayBasePrewarmWorkflows,
 } from "./race-day-workflow";
+import { routeFocusedFullAdmin } from "./focused-full-admin";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
   ContainerControlMessage,
@@ -1143,6 +1144,8 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   if (isAdminStopContainersRequest(request.method, url.pathname)) {
     return guardedAdminStopContainers(request, env);
   }
+  const focusedFullAdmin = routeFocusedFullAdmin(request, url.pathname, env);
+  if (focusedFullAdmin !== null) return focusedFullAdmin;
   if (isAdminPurgeUnusedPredictDoStateRequest(request.method, url.pathname)) {
     return guardedAdminPurgeUnusedPredictDoState(request, env);
   }

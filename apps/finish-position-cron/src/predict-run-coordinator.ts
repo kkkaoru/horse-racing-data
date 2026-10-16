@@ -52,6 +52,9 @@ const CHECK_CONTAINER_SLOT_STOP_PATH = "/check-container-slot-stop";
 const MARK_CONTAINER_SLOT_STOPPED_PATH = "/mark-container-slot-stopped";
 const CLAIM_DAY_BASE_GENERATION_PATH = "/claim-day-base-generation";
 const CONTAINER_SLOTS_KEY = "container-slots";
+const FOCUSED_FULL_DIAGNOSTICS_PATH = "/__admin/focused-full-diagnostics";
+const CLEAR_FOCUSED_FULL_COMMITS_PATH = "/__admin/clear-focused-full-commits";
+const EXTERNAL_COMMIT_KEY_PREFIX = "external-commit:";
 const CONTAINER_STOP_FENCES_KEY = "container-stop-fences";
 const DAY_BASE_GENERATIONS_KEY = "day-base-generations";
 const DAY_BASE_WORK_KEY_PATTERN: RegExp =
@@ -251,6 +254,27 @@ interface FocusedFullLaneRecord {
   activeRaceKey: string;
   startedAt: number;
   waiters: string[];
+}
+
+export interface FocusedFullLaneDiagnostic {
+  activeExecutionId: string | null;
+  activeHasCommitMarker: boolean;
+  activeHasLiveLease: boolean;
+  activeRaceKey: string;
+  activeStatus: string | null;
+  laneKey: string;
+  startedAt: number;
+  waiters: number;
+}
+
+export interface FocusedFullDiagnostics {
+  commitMarkers: string[];
+  lanes: FocusedFullLaneDiagnostic[];
+  leaseExecutionIds: string[];
+}
+
+interface ClearFocusedFullCommitsParams {
+  workKeys: string[];
 }
 
 interface ClaimContainerSlotParams {
@@ -1822,6 +1846,52 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  // Operator visibility into the focused-full lanes: which race owns each lane,
+  // whether it still holds a container lease, and whether an unresolved
+  // external-commit barrier pins it (those barriers have no TTL by design).
+  async getFocusedFullDiagnostics(): Promise<FocusedFullDiagnostics> {
+    const [lanes, markers, slots] = await Promise.all([
+      this.ctx.storage.list<FocusedFullLaneRecord>({ prefix: `${FOCUSED_FULL_KEY_PREFIX}-lane:` }),
+      this.ctx.storage.list({ prefix: EXTERNAL_COMMIT_KEY_PREFIX }),
+      this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY),
+    ]);
+    const leaseExecutionIds = (slots?.leases ?? []).flatMap((lease) =>
+      lease.executionId === undefined ? [] : [lease.executionId],
+    );
+    const commitMarkers = [...markers.keys()];
+    const diagnostics = await Promise.all(
+      [...lanes].map(async ([laneKey, lane]) => {
+        const active = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
+        return {
+          activeExecutionId: active?.executionId ?? null,
+          activeHasCommitMarker: markers.has(`${EXTERNAL_COMMIT_KEY_PREFIX}${lane.activeRaceKey}`),
+          activeHasLiveLease:
+            active?.executionId !== undefined && leaseExecutionIds.includes(active.executionId),
+          activeRaceKey: lane.activeRaceKey,
+          activeStatus: active?.status ?? null,
+          laneKey,
+          startedAt: lane.startedAt,
+          waiters: lane.waiters.length,
+        } satisfies FocusedFullLaneDiagnostic;
+      }),
+    );
+    return { commitMarkers, lanes: diagnostics, leaseExecutionIds };
+  }
+
+  // Operator-only escape hatch for barriers the operator has verified cannot
+  // still land a write (the race is re-run afterwards). Returns the cleared keys.
+  async clearFocusedFullCommits(params: ClearFocusedFullCommitsParams): Promise<string[]> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const keys = params.workKeys.map((workKey) => `${EXTERNAL_COMMIT_KEY_PREFIX}${workKey}`);
+      const present = await Promise.all(
+        keys.map(async (key) => ((await this.ctx.storage.get(key)) === undefined ? null : key)),
+      );
+      const cleared = present.filter((key): key is string => key !== null);
+      await Promise.all(cleared.map((key) => this.ctx.storage.delete(key)));
+      return cleared;
+    });
+  }
+
   async finishExternalCommit(params: ExternalCommitParams): Promise<boolean> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const key = `external-commit:${params.workKey}`;
@@ -1842,6 +1912,16 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           ? await this.finishExternalCommit(body)
           : await this.beginExternalCommit(body);
       return Response.json({ allowed }, { status: allowed ? 200 : 409 });
+    }
+    if (request.method === "GET" && url.pathname === FOCUSED_FULL_DIAGNOSTICS_PATH) {
+      return Response.json(await this.getFocusedFullDiagnostics(), { status: HTTP_OK });
+    }
+    if (request.method === "POST" && url.pathname === CLEAR_FOCUSED_FULL_COMMITS_PATH) {
+      const body = await request.json<ClearFocusedFullCommitsParams>();
+      return Response.json(
+        { cleared: await this.clearFocusedFullCommits(body) },
+        { status: HTTP_OK },
+      );
     }
     if (request.method === "POST" && url.pathname === "/check-container-execution") {
       const params = await request.json<ClearContainerSlotParams>();
