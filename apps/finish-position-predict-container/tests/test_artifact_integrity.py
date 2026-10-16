@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "821172ac7f8bf8e2f714beba223e12f8dfbaa32717717d253793a9d12ec4a10d"
+EXPECTED_MANIFEST_ROOT = "815147204240742454b62126a941ac8011a5963b33f004a9549efc7e8dc2ea4b"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
