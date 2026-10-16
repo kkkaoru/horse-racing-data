@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations, groupby, pairwise
 from typing import Final
@@ -63,11 +63,42 @@ def _validated_hits(weight: float, values: Sequence[object]) -> tuple[int, ...]:
     return hits
 
 
+def _hits_dominate_baseline(hits: tuple[int, ...], baseline_hits: tuple[int, ...]) -> bool:
+    return all(left >= right for left, right in zip(hits, baseline_hits, strict=True))
+
+
+def _weight_selection_key(
+    item: tuple[float, tuple[int, ...]],
+) -> tuple[int, int, int, int, int, float]:
+    weight, hits = item
+    return (hits[0], hits[1], hits[2], hits[3], hits[4], -weight)
+
+
+def _non_regression_selection_key(
+    baseline_hits: tuple[int, ...],
+) -> Callable[[tuple[float, tuple[int, ...]]], tuple[int, int, int, int, int, int, float]]:
+    def key(
+        item: tuple[float, tuple[int, ...]],
+    ) -> tuple[int, int, int, int, int, int, float]:
+        weight, hits = item
+        extra = (
+            (hits[0] - baseline_hits[0])
+            + (hits[1] - baseline_hits[1])
+            + (hits[2] - baseline_hits[2])
+            + (hits[3] - baseline_hits[3])
+            + (hits[4] - baseline_hits[4])
+        )
+        return (extra, hits[0], hits[1], hits[2], hits[3], hits[4], -weight)
+
+    return key
+
+
 def select_optimal_cell_weight(
     candidate_topk_hits: Mapping[float, Sequence[object]],
     *,
     has_support: bool,
     default_weight: float,
+    require_non_regression: bool = False,
 ) -> OptimizedCellPolicy:
     """Select weight by Top1..Top5 lexicographic hits, then minimum weight."""
     if (
@@ -91,17 +122,34 @@ def select_optimal_cell_weight(
             baseline_hits=baseline_hits,
             selected_hits=baseline_hits,
         )
-    selected_weight, selected_hits = max(
-        candidates.items(),
-        key=lambda item: (*item[1], -item[0]),
+    eligible = candidates
+    if require_non_regression:
+        eligible = {
+            weight: hits
+            for weight, hits in candidates.items()
+            if _hits_dominate_baseline(hits, baseline_hits)
+        }
+    if not eligible:
+        return OptimizedCellPolicy(
+            enabled=False,
+            weight=default_weight,
+            selected_weight=BASELINE_WEIGHT,
+            baseline_hits=baseline_hits,
+            selected_hits=baseline_hits,
+        )
+    selection_key = (
+        _non_regression_selection_key(baseline_hits)
+        if require_non_regression
+        else _weight_selection_key
     )
+    selected_weight, selected_hits = max(eligible.items(), key=selection_key)
     improved = selected_hits > baseline_hits
     return OptimizedCellPolicy(
         enabled=improved,
         weight=selected_weight if improved else default_weight,
         selected_weight=selected_weight,
         baseline_hits=baseline_hits,
-        selected_hits=selected_hits,
+        selected_hits=selected_hits if improved else baseline_hits,
     )
 
 
@@ -257,6 +305,7 @@ def optimize_linear_race_weights(
     races: Sequence[LinearRaceScores],
     *,
     default_weight: float,
+    require_non_regression: bool = False,
 ) -> OptimizedCellPolicy:
     """Optimize by sweeping stable winner-rank crossing intervals.
 
@@ -268,4 +317,5 @@ def optimize_linear_race_weights(
         _stable_interval_candidates(races),
         has_support=bool(races),
         default_weight=default_weight,
+        require_non_regression=require_non_regression,
     )

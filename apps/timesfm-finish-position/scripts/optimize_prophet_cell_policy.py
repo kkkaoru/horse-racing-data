@@ -74,6 +74,7 @@ class OptimizationTask:
     category: str
     cell: str
     races: tuple[LinearRaceScores, ...]
+    require_non_regression: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +109,11 @@ def parse_args() -> argparse.Namespace:
         dest="trends_2026",
         help="<category>=<path> per-runner trend parquet used for 2026 instead of the baked lookup",
     )
+    parser.add_argument(
+        "--require-non-regression",
+        action="store_true",
+        help="Only enable a cell when some weight does not reduce any of Top1..Top5",
+    )
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be at least 1")
@@ -119,7 +125,11 @@ def optimize_task(task: OptimizationTask) -> OptimizationResult:
     return OptimizationResult(
         category=task.category,
         cell=task.cell,
-        policy=optimize_linear_race_weights(task.races, default_weight=DEFAULT_WEIGHT),
+        policy=optimize_linear_race_weights(
+            task.races,
+            default_weight=DEFAULT_WEIGHT,
+            require_non_regression=task.require_non_regression,
+        ),
     )
 
 
@@ -489,6 +499,7 @@ def main() -> None:
             category=category,
             cell=cell,
             races=tuple(stats.get((category, cell), CellEvidence()).races),
+            require_non_regression=args.require_non_regression,
         )
         for category in ("jra", "nar", "ban-ei")
         for cell in sorted(ROUTER.routing_for(category).variants)

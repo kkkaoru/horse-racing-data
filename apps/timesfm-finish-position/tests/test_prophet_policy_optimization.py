@@ -44,6 +44,58 @@ def test_uses_top2_then_smallest_weight_to_break_ties() -> None:
     assert selected.selected_weight == 0.1
 
 
+def test_non_regression_maximizes_total_topk_gain_before_top1() -> None:
+    selected = select_optimal_cell_weight(
+        {
+            0.0: (10, 20, 30, 40, 50),
+            0.1: (11, 20, 30, 40, 50),
+            0.2: (10, 22, 31, 40, 51),
+        },
+        has_support=True,
+        default_weight=0.05,
+        require_non_regression=True,
+    )
+
+    assert selected.enabled is True
+    assert selected.weight == 0.2
+    assert selected.selected_hits == (10, 22, 31, 40, 51)
+
+
+def test_non_regression_picks_milder_weight_instead_of_top1_only_gain() -> None:
+    selected = select_optimal_cell_weight(
+        {
+            0.0: (10, 20, 30, 40, 50),
+            0.1: (11, 19, 29, 39, 49),
+            0.2: (10, 21, 30, 40, 51),
+        },
+        has_support=True,
+        default_weight=0.05,
+        require_non_regression=True,
+    )
+
+    assert selected.enabled is True
+    assert selected.weight == 0.2
+    assert selected.selected_weight == 0.2
+    assert selected.selected_hits == (10, 21, 30, 40, 51)
+
+
+def test_non_regression_disables_cell_when_every_gain_hurts_another_topk() -> None:
+    selected = select_optimal_cell_weight(
+        {
+            0.0: (10, 20, 30, 40, 50),
+            0.1: (11, 19, 29, 39, 49),
+        },
+        has_support=True,
+        default_weight=0.05,
+        require_non_regression=True,
+    )
+
+    assert selected.enabled is False
+    assert selected.weight == 0.05
+    assert selected.selected_weight == 0.0
+    assert selected.selected_hits == (10, 20, 30, 40, 50)
+
+
 def test_disables_observed_cell_when_no_positive_weight_improves() -> None:
     selected = select_optimal_cell_weight(
         {

@@ -1,0 +1,116 @@
+{
+  "joken_010_dirt_intermediate_yeti_gated_top1": {
+    "source": "rank",
+    "races": 99,
+    "weight": 0.02801771943507278,
+    "delta_hits": [1, 0, 0, 1, 1]
+  },
+  "joken_005_turf_intermediate_spring_qsm_gated_top1": {
+    "source": "rank",
+    "races": 101,
+    "weight": 0.20141328804828768,
+    "delta_hits": [2, 3, 3, 2, 0]
+  },
+  "joken_005_dirt_1700_summer_qsm_gated_top1": {
+    "source": "score",
+    "races": 70,
+    "weight": 0.05485942868134047,
+    "delta_hits": [3, 0, 1, 0, 0]
+  },
+  "joken_703_turf_long_spring_qsm_gated_top1": {
+    "source": "rank",
+    "races": 134,
+    "weight": 0.031678725678252306,
+    "delta_hits": [0, 1, 0, 0, 0]
+  },
+  "joken_703_turf_long_summer_yeti_gated_top1": {
+    "source": "score",
+    "races": 90,
+    "weight": 0.04177418893425226,
+    "delta_hits": [1, 0, 0, 0, 0]
+  },
+  "niigata_kinen": {
+    "source": "rank",
+    "races": 2,
+    "weight": 0.3923550523974048,
+    "delta_hits": [0, 1, 0, 0, 0]
+  },
+  "joken_005_turf_long_yeti_gated_top1": {
+    "source": "rank",
+    "races": 153,
+    "weight": 0.20005253399862202,
+    "delta_hits": [1, 1, 1, 0, 2]
+  },
+  "joken_005_dirt_mile_autumn_yeti_gated_top1": {
+    "source": "rank",
+    "races": 102,
+    "weight": 0.04121882387639069,
+    "delta_hits": [0, 2, 2, 0, 0]
+  },
+  "sim": {
+    "source": "rank",
+    "races": 2123,
+    "weight": 0.00014991462232588447,
+    "delta_hits": [0, 1, 0, 0, 0]
+  },
+  "joken_701_turf_mile_qsm_gated_top1": {
+    "source": "rank",
+    "races": 127,
+    "weight": 0.019209920094106776,
+    "delta_hits": [0, 1, 0, 0, 0]
+  },
+  "joken_005": {
+    "source": "rank",
+    "races": 586,
+    "weight": 0.0033977613829860916,
+    "delta_hits": [1, 0, 0, 0, 0]
+  },
+  "jockey_pedigree_703": {
+    "source": "score",
+    "races": 74,
+    "weight": 0.025022400843631477,
+    "delta_hits": [0, 0, 1, 0, 0]
+  },
+  "joken_703_turf_1400_qsm_gated_top1": {
+    "source": "rank",
+    "races": 104,
+    "weight": 0.021393428527240403,
+    "delta_hits": [0, 1, 0, 1, 0]
+  },
+  "joken_703_turf_intermediate_qsm_gated_top1": {
+    "source": "score",
+    "races": 460,
+    "weight": 0.02257010376433395,
+    "delta_hits": [1, 1, 2, 0, 1]
+  },
+  "joken_005_turf_mile_yeti_gated_top1": {
+    "source": "score",
+    "races": 226,
+    "weight": 0.005891111092688774,
+    "delta_hits": [0, 2, 0, 0, 1]
+  },
+  "joken_010": {
+    "source": "rank",
+    "races": 328,
+    "weight": 0.0007127622927939356,
+    "delta_hits": [0, 0, 0, 0, 1]
+  },
+  "joken_701_turf_intermediate_qsm_gated_top1": {
+    "source": "score",
+    "races": 209,
+    "weight": 0.031562255736444646,
+    "delta_hits": [2, 2, 1, 0, 0]
+  },
+  "joken_005_dirt_1800_nonautumn_qsm_gated_top1": {
+    "source": "score",
+    "races": 282,
+    "weight": 0.005512577509337856,
+    "delta_hits": [0, 1, 0, 1, 1]
+  },
+  "prior_corner_dirt_smallfield_005": {
+    "source": "rank",
+    "races": 12,
+    "weight": 0.09939832614973335,
+    "delta_hits": [0, 0, 1, 0, 0]
+  }
+}
