@@ -65,6 +65,7 @@ beforeAll(async () => {
     "0002_catalog_index.sql",
     "0003_acquisition_window.sql",
     "0005_acquisition_data_spec.sql",
+    "0006_catalog_row_index_all_positions.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await db.exec(
@@ -525,6 +526,7 @@ describe("D1 sync state", () => {
       now,
     );
     expect(await findCatalogPositions(db, "nvd_ra", ["key-1", "missing"])).toEqual([
+      { file_path: "file-1", row_key: "key-1", row_position: 0 },
       { file_path: "file-2", row_key: "key-1", row_position: 2 },
     ]);
     expect(await completeIndexChunk(db, firstChunk, now)).toBe(false);

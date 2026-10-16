@@ -778,10 +778,8 @@ export const upsertCatalogIndex = async (
             `insert into catalog_row_index
              (table_name, row_key, partition_value, file_path, row_position,
               catalog_snapshot_id, updated_at) values ${placeholders}
-             on conflict(table_name, row_key) do update set
+             on conflict(table_name, row_key, file_path, row_position) do update set
                partition_value = excluded.partition_value,
-               file_path = excluded.file_path,
-               row_position = excluded.row_position,
                catalog_snapshot_id = excluded.catalog_snapshot_id,
                updated_at = excluded.updated_at`,
           )

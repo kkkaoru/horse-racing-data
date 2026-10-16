@@ -190,8 +190,9 @@ const notifyRealtimeJvRaceDays = async (
     const year = record.kaisai_nen;
     const monthDay = record.kaisai_tsukihi;
     const date = `${typeof year === "string" ? year.trim() : ""}${typeof monthDay === "string" ? monthDay.trim() : ""}`;
-    if (!/^20\d{6}$/.test(date)) throw new Error("JV race date is invalid");
-    dates.add(date);
+    if (!/^\d{8}$/.test(date)) throw new Error("JV race date is invalid");
+    // Provider corrections include historical races; publish only current/upcoming cards.
+    if (date >= run.run_date) dates.add(date);
   }
   for (const date of dates) {
     const response = await env.REALTIME_SYNC.fetch(

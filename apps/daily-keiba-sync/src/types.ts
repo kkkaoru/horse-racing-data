@@ -1,5 +1,13 @@
 // Runs in Workers; verification runs with bun package scripts.
-export type Provider = "jv" | "nv";
+import type { Provider, RecordRow } from "./layouts";
+export type {
+  Provider,
+  CatalogColumnType,
+  RecordColumn,
+  RecordLayout,
+  RecordValue,
+  RecordRow,
+} from "./layouts";
 export type AcquisitionDataSpec = "RACE" | "COMM" | "RACECOMM";
 export type TriggerKind = "daily" | "manual" | "monitor";
 
@@ -87,25 +95,6 @@ export interface RecoveryJob {
 export type R2CatalogJob = CatalogTableJob | IndexFileJob | IndexPlanJob | RecoveryJob;
 export type NeonJob = NeonDispatchJob | NeonTableJob;
 export type SyncJob = NeonJob | R2BucketJob | R2CatalogJob;
-
-export type CatalogColumnType = "int" | "string" | "timestamptz";
-
-export interface RecordColumn {
-  catalogType?: CatalogColumnType;
-  name: string;
-  width: number;
-}
-
-export interface RecordLayout {
-  columns: readonly RecordColumn[];
-  primaryKey: readonly string[];
-  recordBytes: number;
-  recordType: string;
-  tableName: string;
-}
-
-export type RecordValue = null | number | string;
-export type RecordRow = Readonly<Record<string, RecordValue>>;
 
 export interface TableStage {
   formatVersion: 1;

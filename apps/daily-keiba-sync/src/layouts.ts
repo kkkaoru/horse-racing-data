@@ -1,6 +1,22 @@
+// Run with bun or Workers. Record layouts have no platform-specific type dependencies.
 import { decode } from "iconv-lite";
 import recordLayouts from "./generated/record-layouts.json" with { type: "json" };
-import type { Provider, RecordColumn, RecordLayout, RecordRow } from "./types";
+export type Provider = "jv" | "nv";
+export type CatalogColumnType = "int" | "string" | "timestamptz";
+export interface RecordColumn {
+  catalogType?: CatalogColumnType;
+  name: string;
+  width: number;
+}
+export interface RecordLayout {
+  columns: readonly RecordColumn[];
+  primaryKey: readonly string[];
+  recordBytes: number;
+  recordType: string;
+  tableName: string;
+}
+export type RecordValue = null | number | string;
+export type RecordRow = Readonly<Record<string, RecordValue>>;
 
 const RECORD_TERMINATOR_BYTES = 2;
 const TYPE_BYTES = 2;

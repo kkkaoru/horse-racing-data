@@ -123,6 +123,7 @@ beforeAll(async () => {
     "0002_catalog_index.sql",
     "0003_acquisition_window.sql",
     "0005_acquisition_data_spec.sql",
+    "0006_catalog_row_index_all_positions.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await baseEnv.DB.exec(
@@ -1144,7 +1145,7 @@ describe("sync queue jobs", () => {
     expect(queue.messages[0]?.type).toBe("neon-dispatch");
   });
 
-  test("notifies realtime discovery for legacy JV messages after Neon succeeds", async () => {
+  test("publishes current and upcoming JV dates after Neon succeeds without blocking on historical corrections", async () => {
     const run = (
       await createRun(
         baseEnv.DB,
@@ -1165,6 +1166,10 @@ describe("sync queue jobs", () => {
       "table.json",
       JSON.stringify(
         createTableStage("jv", run.run_id, "jvd_ra", [
+          { kaisai_nen: "1987", kaisai_tsukihi: "0419" },
+          { kaisai_nen: "1990", kaisai_tsukihi: "1104" },
+          { kaisai_nen: "2026", kaisai_tsukihi: "0903" },
+          { kaisai_nen: "2026", kaisai_tsukihi: "0904" },
           { kaisai_nen: "2026", kaisai_tsukihi: "0905" },
           { kaisai_nen: "2026", kaisai_tsukihi: "0906" },
         ]),
@@ -1187,7 +1192,8 @@ describe("sync queue jobs", () => {
 
     expect(
       await Promise.all(realtimeRequests.map(async (request) => await request.json())),
-    ).toEqual([
+    ).toStrictEqual([
+      { date: "20260904", type: "discover-urls" },
       { date: "20260905", type: "discover-urls" },
       { date: "20260906", type: "discover-urls" },
     ]);

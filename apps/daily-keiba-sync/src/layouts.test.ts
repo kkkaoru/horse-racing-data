@@ -1,5 +1,6 @@
 import { encode } from "iconv-lite";
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
+import type { RecordLayout, RecordRow } from "./layouts";
 import {
   catalogDeleteRowKeys,
   isProvisionalJraRunner,
@@ -34,6 +35,11 @@ const makeRecord = (
   bytes[bytes.length - 1] = 10;
   return bytes;
 };
+
+test("portable layout types stay compatible with the Worker type exports", () => {
+  expectTypeOf<RecordLayout>().toEqualTypeOf<import("./types").RecordLayout>();
+  expectTypeOf<RecordRow>().toEqualTypeOf<import("./types").RecordRow>();
+});
 
 describe("fixed-record layouts", () => {
   test("loads the generated NV RA schema and decodes CP932 without trimming", () => {
