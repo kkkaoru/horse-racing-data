@@ -1,5 +1,21 @@
 Use bun/bunx, not use npm/npx
 
+## netkeiba access — proxy only
+
+- このMacおよびこのリポジトリのCloudflareアプリからnetkeibaへの直接リクエストは常に禁止。調査・疎通確認・再試行・フォールバックも例外にしない。
+- 必要な通信は `/Users/kkk4oru/ghq/github.com/kkkaoru/reverse-proxy` の本番プロキシ `https://reverse-proxy.api.kkk4oru.com` 経由のみ。プロキシ障害時に直接接続へ切り替えない。
+- 先に既存原本・キャッシュ・`/Users/kkk4oru/ghq/github.com/kkkaoru/keiba` の保存データを検証・再利用し、通信は不足分に限定する。出典・鮮度・網羅性が未確認のデータを完全取得扱いにしない。
+
+## Production inspection (no Playwright)
+
+Use `bun run prod`. Do not use Playwright or an interactive Access login for machine checks.
+
+- Loads repo `.env`, then `apps/pc-keiba-viewer/.env.local`
+- `get [/<path>]` sends `CF-Access-Client-Id` / `CF-Access-Client-Secret` from `PC_KEIBA_ACCESS_CLIENT_ID` / `PC_KEIBA_ACCESS_CLIENT_SECRET`. Falls back to `cloudflared access curl` only when those are unset.
+- `logs [worker]` queries Workers Observability with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_DEBUG_TOKEN`)
+- Required in `.env`: `CLOUDFLARE_ACCOUNT_ID`, `PC_KEIBA_VIEWER_ORIGIN` (see `.env.example`)
+- Procedure: `docs/operations/production-access.md`
+
 ## Per-package rules — coverage thresholds are enforced
 
 All listed packages enforce minimum coverage via their own config + `lefthook.yml` pre-commit. The thresholds CANNOT be lowered without explicit user approval, and the coverage `include` / `source` must not be shrunk to hide regressions.

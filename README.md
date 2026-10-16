@@ -2,12 +2,12 @@
 
 ## ローカルから本番を確認
 
-`bun run prod` で既存のWrangler／cloudflared認証を利用します。1Passwordや独自の資格情報管理は追加しません。
+`bun run prod` で本番を機械的に確認します。ページ GET は Access service token、ログは Workers Observability です。Playwright は使いません。
 
 ```sh
 bun run prod status
-bun run prod login
 bun run prod get /races/2026/09/12/83/01
+bun run prod logs pc-keiba-viewer
 bun run prod kv pred:fp:v1:20260912:83:01
 ```
 
