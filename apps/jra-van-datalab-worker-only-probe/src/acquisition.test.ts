@@ -197,7 +197,9 @@ describe("Worker-native acquisition", () => {
     );
 
     const list = sequenceFetcher([response(BOOTSTRAP_OK), response(fileList(FILENAME, 10, 2))]);
-    await expect(acquireJvData(SOURCES, QUERY, list.fetcher)).rejects.toThrow("file-list request");
+    await expect(acquireJvData(SOURCES, QUERY, list.fetcher)).rejects.toThrow(
+      "JV file-list request was rejected (status=2)",
+    );
   });
 
   it("distinguishes a valid empty file-list from unbounded file entries", async () => {

@@ -116,7 +116,7 @@ export const openJvData = async (
     });
   }
   if (fileList.status !== -1 && fileList.status !== 0 && fileList.status !== 1)
-    throw new Error("JV file-list request was rejected");
+    throw new Error(`JV file-list request was rejected (status=${fileList.status})`);
   for (const entry of fileList.files)
     if (entry.bytes < 1 || entry.bytes > MAX_FILE_BYTES)
       throw new Error("JV file-list size is outside the bounded limit");
