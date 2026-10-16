@@ -1,13 +1,19 @@
 // Run with bun. Reads the shared finish-position day-base before rebuilding
 // the same early-binding running-style inputs from Catalog/PostgreSQL.
 
-import { parquetReadObjects, type AsyncBuffer } from "hyparquet";
+import {
+  parquetMetadataAsync,
+  parquetReadObjects,
+  parquetSchema,
+  type AsyncBuffer,
+} from "hyparquet";
 
 import type { ByteRangeCache } from "./byte-range-cache";
 import { deriveRunningStyleCategory } from "./running-style-cell-router";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
+import type { Env } from "./types";
 
 interface R2AsyncBufferParams {
   bucket: R2Bucket;
@@ -20,6 +26,7 @@ const DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
 const DAY_BASE_FILE = "features.parquet";
 const MAX_CACHED_RACES = 2;
+const MANIFEST_PATH = "/api/internal/day-base-manifest";
 // Running-style inference consumes the early-binding feature columns in the
 // day-base artifact. The rs-* watermarks describe downstream running-style
 // predictions and are necessarily absent before this consumer runs; requiring
@@ -60,6 +67,7 @@ interface ReadRaceRowsParams {
 interface ReadRangesParams {
   columns: string[];
   file: AsyncBuffer;
+  metadata: Awaited<ReturnType<typeof parquetMetadataAsync>>;
   rangeIndex: number;
   ranges: ReadonlyArray<RowRange>;
 }
@@ -192,6 +200,7 @@ const readRanges = async (params: ReadRangesParams): Promise<Record<string, unkn
   const rows = await parquetReadObjects({
     columns: params.columns,
     file: params.file,
+    metadata: params.metadata,
     rowEnd: range.end,
     rowStart: range.start,
     useOffsetIndex: true,
@@ -203,9 +212,13 @@ const readRanges = async (params: ReadRangesParams): Promise<Record<string, unkn
 const readRaceRows = async (
   params: ReadRaceRowsParams,
 ): Promise<ReadonlyArray<RaceHorseFeatureRow>> => {
+  const metadata = await parquetMetadataAsync(params.file);
+  const available = new Set(parquetSchema(metadata).children.map((child) => child.element.name));
+  if (RACE_IDENTITY_COLUMNS.some((column) => !available.has(column))) return [];
   const identities = await parquetReadObjects({
     columns: RACE_IDENTITY_COLUMNS,
     file: params.file,
+    metadata,
   });
   const indices = identities.flatMap((raw, index) =>
     matchesRace(raw, params.race) ? [index] : [],
@@ -215,10 +228,14 @@ const readRaceRows = async (
   const rawFeatureNames = params.featureNames.filter(
     (name) => !isRunningStyleDerivedFieldFeature(name),
   );
-  const columns = [...new Set([...ROW_COLUMNS, ...rawFeatureNames])];
+  if (rawFeatureNames.some((name) => !available.has(name))) return [];
+  const columns = [...new Set([...ROW_COLUMNS, ...rawFeatureNames])].filter((name) =>
+    available.has(name),
+  );
   const decoded = await readRanges({
     columns,
     file: params.file,
+    metadata,
     rangeIndex: 0,
     ranges: contiguousRanges(indices),
   });
@@ -261,23 +278,86 @@ const rememberDayBase = (key: string, value: CachedDayBase): void => {
   if (typeof oldest === "string") dayBaseCache.delete(oldest);
 };
 
+export const resolveFinishPositionDayBasePointer = async (params: {
+  category: string;
+  env: Pick<Env, "DAY_BASE_MANIFEST_REQUIRED" | "FINISH_POSITION_CRON" | "TRIGGER_TOKEN">;
+  runYmd: string;
+}): Promise<{ key: string; etag: string } | "legacy" | null> => {
+  if (params.env.DAY_BASE_MANIFEST_REQUIRED === undefined) return "legacy";
+  const { FINISH_POSITION_CRON: service, TRIGGER_TOKEN: token } = params.env;
+  if (service === undefined || token === undefined || token.length === 0) {
+    return params.env.DAY_BASE_MANIFEST_REQUIRED === "1" ? null : "legacy";
+  }
+  const { category, runYmd } = params;
+  const url = new URL(MANIFEST_PATH, "https://finish-position-cron.internal");
+  url.searchParams.set("category", category);
+  url.searchParams.set("runYmd", runYmd);
+  try {
+    const response = await service.fetch(
+      new Request(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000),
+      }),
+    );
+    if (response.status === 404 && params.env.DAY_BASE_MANIFEST_REQUIRED !== "1") return "legacy";
+    if (!response.ok) return null;
+    const value: unknown = await response.json();
+    if (typeof value !== "object" || value === null || !("state" in value)) return null;
+    if (value.state === "missing") {
+      return params.env.DAY_BASE_MANIFEST_REQUIRED === "1" ? null : "legacy";
+    }
+    if (value.state !== "published" || !("key" in value) || !("etag" in value)) return null;
+    const prefix = `${DAY_BASE_PREFIX}/${category}/${runYmd}/generations/`;
+    if (
+      typeof value.key !== "string" ||
+      !value.key.startsWith(prefix) ||
+      !/^[A-Za-z0-9_-]{1,128}\/features\.parquet$/.test(value.key.slice(prefix.length)) ||
+      typeof value.etag !== "string" ||
+      value.etag.length === 0
+    )
+      return null;
+    return { key: value.key, etag: value.etag };
+  } catch {
+    return null;
+  }
+};
+
 export const loadRunningStyleFeaturesFromFinishPositionDayBase = async (params: {
   // Only share this completed-byte cache within one invocation and one bucket.
   byteRangeCache?: ByteRangeCache;
   bucket: R2Bucket | undefined;
+  env?: Pick<Env, "DAY_BASE_MANIFEST_REQUIRED" | "FINISH_POSITION_CRON" | "TRIGGER_TOKEN">;
   featureNames: ReadonlyArray<string>;
   race: RunningStyleRaceParams;
 }): Promise<ReadonlyArray<RaceHorseFeatureRow> | null> => {
   if (params.bucket === undefined) return null;
   const raceKey = buildRunningStyleRaceKey(params.race);
+  const pointer =
+    params.env === undefined
+      ? "legacy"
+      : await resolveFinishPositionDayBasePointer({
+          category: resolveFinishPositionFeatureCategory(params.race),
+          env: params.env,
+          runYmd: `${params.race.kaisaiNen}${params.race.kaisaiTsukihi}`,
+        });
   const keys = [
     buildRunningStyleFoundationKey(params.race),
-    buildFinishPositionDayBaseKey(params.race),
+    ...(pointer === null
+      ? []
+      : [pointer === "legacy" ? buildFinishPositionDayBaseKey(params.race) : pointer.key]),
   ];
   for (const key of keys) {
     const cacheKey = `${key}\u0000${raceKey}\u0000${params.featureNames.join("\u0000")}`;
     const head = await params.bucket.head(key);
-    if (head === null || !hasFreshnessMetadata(head)) continue;
+    if (
+      head === null ||
+      !hasFreshnessMetadata(head) ||
+      (pointer !== null &&
+        pointer !== "legacy" &&
+        key === pointer.key &&
+        head.etag !== pointer.etag)
+    )
+      continue;
     const cached = dayBaseCache.get(cacheKey);
     if (cached !== undefined && cached.etag === head.etag) {
       if (cached.rows.length > 0) return cached.rows;

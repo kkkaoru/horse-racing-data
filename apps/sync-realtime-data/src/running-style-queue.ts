@@ -262,7 +262,7 @@ const triggerFinishPositionAfterDayBaseHit = async (
     category,
     keibajoCode: job.keibajoCode,
     raceBango: job.raceBango,
-    runYmd: buildFinishPositionRunYmd(job),
+    runDate: buildFinishPositionRunYmd(job),
     skipDedup: true,
   };
   try {

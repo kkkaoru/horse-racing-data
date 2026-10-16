@@ -85,6 +85,21 @@ test("triggerRaceCacheBust posts JSON and bearer auth, returns ok on 200", async
   expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
 });
 
+test("triggerRaceCacheBust forwards the narrow training scope", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+  await triggerRaceCacheBust(buildEnv(), {
+    keibajoCode: "06",
+    mmdd: "0926",
+    raceBango: "03",
+    scope: "training",
+    source: "jra",
+    year: "2026",
+  });
+  expect(fetchSpy.mock.calls[0]?.[1]?.body).toBe(
+    '{"keibajoCode":"06","mmdd":"0926","raceBango":"03","scope":"training","source":"jra","year":"2026"}',
+  );
+});
+
 test("triggerRaceCacheBust prefers the viewer service binding over the Access-protected origin", async () => {
   const globalFetchSpy = vi.spyOn(globalThis, "fetch");
   const serviceFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));

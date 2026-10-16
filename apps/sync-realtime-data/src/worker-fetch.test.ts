@@ -230,9 +230,12 @@ vi.mock("./neon-write-pool-probe", () => ({
   probeNeonWritePool: neonWritePoolProbeMocks.probeNeonWritePool,
 }));
 
-const buildDb = (): D1Database => {
-  const all = vi.fn(async () => ({ results: [] }));
-  const first = vi.fn(async () => null);
+const buildDb = (
+  result: { c: number } | null = null,
+  rows: Record<string, number | string>[] = [],
+): D1Database => {
+  const all = vi.fn(async () => ({ results: rows }));
+  const first = vi.fn(async () => result);
   const run = vi.fn(async () => ({ meta: { changes: 0 } }));
   const bind = vi.fn(() => ({ all, first, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ all, bind, first, run }));
@@ -2369,6 +2372,125 @@ it("fetch GET /api/internal/discovery-status treats equal counts and zero-race d
     date: "20260823",
     neonJraRaceCount: 0,
   });
+});
+
+it("fetch GET /api/internal/expected-race-count rejects missing authorization", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+  expect(await response.json()).toStrictEqual({ error: "forbidden" });
+});
+
+it("fetch GET /api/internal/expected-race-count rejects an unset admin token", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv({ REALTIME_ADMIN_TOKEN: undefined }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+  expect(await response.json()).toStrictEqual({ error: "forbidden" });
+});
+
+it("fetch GET /api/internal/expected-race-count rejects invalid dates", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=20260926", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({ error: "invalid date" });
+});
+
+it("fetch GET /api/internal/expected-race-count reads D1 through its binding", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv({ REALTIME_DB: buildDb({ c: 57 }) });
+  const prepare = vi.spyOn(env.REALTIME_DB, "prepare");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({ count: 57 });
+  expect(prepare).toHaveBeenCalledWith(
+    "SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = ?",
+  );
+});
+
+it("fetch GET /api/internal/expected-race-count accepts a zero-race day", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-27", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ count: 0 });
+});
+
+it("fetch GET /api/internal/expected-race-count reads category counts through D1 binding", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv({ REALTIME_DB: buildDb(null, [{ category: "jra", c: 24 }]) });
+  const prepare = vi.spyOn(env.REALTIME_DB, "prepare");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26&kind=categories", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({ results: [{ category: "jra", c: 24 }] });
+  expect(prepare.mock.calls[0]?.[0]).toMatch(/GROUP BY category/u);
+});
+
+it("fetch GET /api/internal/expected-race-count reads venue sets through D1 binding", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv({
+    REALTIME_DB: buildDb(null, [{ keibajo_code: "06", c: 2, races: "01,02" }]),
+  });
+  const prepare = vi.spyOn(env.REALTIME_DB, "prepare");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26&kind=venues", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    results: [{ keibajo_code: "06", c: 2, races: "01,02" }],
+  });
+  expect(prepare.mock.calls[0]?.[0]).toMatch(/GROUP_CONCAT\(race_bango/u);
+});
+
+it("fetch GET /api/internal/expected-race-count rejects an unknown query kind", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/expected-race-count?date=2026-09-26&kind=write", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({ error: "invalid kind" });
 });
 
 it("fetch GET /api/internal/neon-write-pool-health returns 403 when authorization mismatches", async () => {

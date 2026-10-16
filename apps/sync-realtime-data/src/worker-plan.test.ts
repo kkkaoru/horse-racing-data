@@ -186,7 +186,7 @@ const buildReadyFinishPositionBinding = (raceKeys: readonly string[]): Partial<E
         races: raceKeys.map((raceKey) => {
           const parts = raceKey.split(":");
           return {
-            preWeight: { complete: true },
+            preWeight: { complete: true, neonComplete: true },
             raceKey: `${parts[0]}:${parts[3]}:${parts[4]}`,
           };
         }),
@@ -2487,7 +2487,7 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
   );
 });
 
-it("filterPreweightReadyWeightRaces admits only complete races and batches readiness by day", async () => {
+it("filterPreweightReadyWeightRaces admits Neon-complete races despite expired KV and batches by day", async () => {
   const { filterPreweightReadyWeightRaces } = await import("./worker");
   const fetchBinding = vi.fn(async (request: Request) => {
     const runYmd = new URL(request.url).searchParams.get("runYmd");
@@ -2495,10 +2495,12 @@ it("filterPreweightReadyWeightRaces admits only complete races and batches readi
       races:
         runYmd === "20260607"
           ? [
-              { preWeight: { complete: true }, raceKey: "nar:44:01" },
-              { preWeight: { complete: false }, raceKey: "nar:44:02" },
+              { preWeight: { complete: true, neonComplete: true }, raceKey: "nar:44:01" },
+              { preWeight: { complete: false, neonComplete: false }, raceKey: "nar:44:02" },
+              { preWeight: { complete: false, neonComplete: true }, raceKey: "nar:44:03" },
+              { preWeight: { complete: true, neonComplete: false }, raceKey: "nar:44:04" },
             ]
-          : [{ preWeight: { complete: true }, raceKey: "jra:05:01" }],
+          : [{ preWeight: { complete: true, neonComplete: true }, raceKey: "jra:05:01" }],
     });
   });
   const races = [
@@ -2520,6 +2522,20 @@ it("filterPreweightReadyWeightRaces admits only complete races and batches readi
       lastWeightFetchAt: null,
       lastWeightFetchAttemptAt: null,
       lastWeightFetchSoftMissAt: null,
+      raceKey: "nar:2026:0607:44:03",
+      raceStartAtJst: "2026-06-07T17:45:00+09:00",
+    },
+    {
+      lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
+      raceKey: "nar:2026:0607:44:04",
+      raceStartAtJst: "2026-06-07T17:55:00+09:00",
+    },
+    {
+      lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
+      lastWeightFetchSoftMissAt: null,
       raceKey: "jra:2026:0608:05:01",
       raceStartAtJst: "2026-06-08T10:00:00+09:00",
     },
@@ -2533,6 +2549,7 @@ it("filterPreweightReadyWeightRaces admits only complete races and batches readi
   );
   expect(result.map((race) => race.raceKey)).toStrictEqual([
     "nar:2026:0607:44:01",
+    "nar:2026:0607:44:03",
     "jra:2026:0608:05:01",
   ]);
   expect(fetchBinding).toHaveBeenCalledTimes(2);

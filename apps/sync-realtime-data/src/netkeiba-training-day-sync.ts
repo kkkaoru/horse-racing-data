@@ -414,6 +414,7 @@ const purgeCatalogTrainingCache = async (
   url.searchParams.set("date", date);
   url.searchParams.set("keibajoCode", parts.keibajoCode);
   url.searchParams.set("raceBango", parts.raceBango);
+  url.searchParams.set("kind", "race-trainings");
   const response = await env.PC_KEIBA_R2_CATALOG.fetch(
     new Request(url, {
       headers: { Authorization: `Bearer ${env.R2_CATALOG_INGESTION_TOKEN}` },
@@ -449,6 +450,7 @@ const hasWorkoutData = (value: unknown): boolean => {
   if (!isRecord(value) || !Array.isArray(value.trainings) || value.trainings.length === 0)
     return false;
   const coverage = new Map<string, boolean>();
+  const timedHorses = new Set<string>();
   for (const training of value.trainings) {
     if (!isRecord(training) || typeof training.umaban !== "string" || training.umaban.length === 0)
       return false;
@@ -458,12 +460,17 @@ const hasWorkoutData = (value: unknown): boolean => {
       const fieldValue = training[field];
       return typeof fieldValue === "string" && fieldValue !== "" && fieldValue !== "0000";
     });
-    coverage.set(
-      training.umaban,
-      (coverage.get(training.umaban) ?? false) || (hasDatedWorkout && hasRecordedTime),
-    );
+    const timed = hasDatedWorkout && hasRecordedTime;
+    if (timed) timedHorses.add(training.umaban);
+    const placeholder =
+      training.trainingType === "-" &&
+      training.trainingDataSource === "jra" &&
+      training.chokyoNengappi === "" &&
+      training.chokyoJikoku === "" &&
+      !hasRecordedTime;
+    coverage.set(training.umaban, (coverage.get(training.umaban) ?? false) || timed || placeholder);
   }
-  return coverage.size > 0 && Array.from(coverage.values()).every(Boolean);
+  return timedHorses.size > 0 && Array.from(coverage.values()).every(Boolean);
 };
 
 const hasDataTop = (value: unknown): boolean =>
@@ -502,6 +509,7 @@ const purgeAndWarm = async (env: Env, date: string): Promise<void> => {
         keibajoCode: parts.keibajoCode,
         mmdd: date.slice(4),
         raceBango: parts.raceBango,
+        scope: "training",
         source: "jra",
         year: date.slice(0, 4),
       },

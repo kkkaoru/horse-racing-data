@@ -322,7 +322,7 @@ it("arms finish-position generation through the day-base service binding", async
     category: "jra",
     keibajoCode: "08",
     raceBango: "01",
-    runYmd: "20260512",
+    runDate: "20260512",
     skipDedup: true,
   });
 });
@@ -584,7 +584,7 @@ it("does not replace the by-day export while the current category is incomplete"
     category: "jra",
     keibajoCode: "08",
     raceBango: "01",
-    runYmd: "20260512",
+    runDate: "20260512",
     skipDedup: true,
   });
 });
@@ -658,7 +658,7 @@ it("exports and triggers NAR without waiting for an incomplete ban-ei race", asy
     category: "nar",
     keibajoCode: "45",
     raceBango: "01",
-    runYmd: "20260512",
+    runDate: "20260512",
     skipDedup: true,
   });
 });
@@ -733,7 +733,7 @@ it("keeps the ban-ei barrier and trigger separate from NAR", async () => {
     category: "ban-ei",
     keibajoCode: "65",
     raceBango: "02",
-    runYmd: "20260512",
+    runDate: "20260512",
     skipDedup: true,
   });
 });

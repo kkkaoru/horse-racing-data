@@ -733,8 +733,8 @@ export const fetchJraResultHtmlWithFallback = async (
     if (args.needsParse(html)) {
       return html;
     }
-    return await fallback();
   } catch {
-    return await fallback();
+    return fallback();
   }
+  return fallback();
 };

@@ -289,6 +289,27 @@ it("recognizes only non-empty Viewer workout and data-top payloads", () => {
     }),
   ).toBe(false);
   expect(hasWorkoutData({ trainings: [{ chokyoNengappi: "20260903", umaban: "" }] })).toBe(false);
+  const placeholder = {
+    chokyoJikoku: "",
+    chokyoNengappi: "",
+    trainingDataSource: "jra",
+    trainingType: "-",
+    umaban: "02",
+  };
+  expect(
+    hasWorkoutData({
+      trainings: [{ chokyoNengappi: "20260903", lapTime1f: "123", umaban: "01" }, placeholder],
+    }),
+  ).toBe(true);
+  expect(hasWorkoutData({ trainings: [placeholder] })).toBe(false);
+  expect(
+    hasWorkoutData({
+      trainings: [
+        { chokyoNengappi: "20260903", lapTime1f: "123", umaban: "01" },
+        { ...placeholder, trainingType: "坂路" },
+      ],
+    }),
+  ).toBe(false);
   expect(hasDataTop(null)).toBe(false);
   expect(hasDataTop({ dataTopHorses: null })).toBe(false);
   expect(hasDataTop({ dataTopHorses: [] })).toBe(false);
@@ -542,10 +563,26 @@ it("fails finalization when Viewer cache bust does not succeed", async () => {
 
 it("purges Catalog and Viewer caches and warms only non-empty sections after success", async () => {
   dailyStatus = "succeeded";
+  const catalogFetch = vi.spyOn(env.PC_KEIBA_R2_CATALOG, "fetch");
   expect(
     await finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
   ).toBe("succeeded");
   expect(mocks.bust).toHaveBeenCalledTimes(1);
+  expect(
+    catalogFetch.mock.calls.map(([request]) => new URL(request.url).searchParams.get("kind")),
+  ).toStrictEqual(["race-trainings"]);
+  expect(mocks.bust).toHaveBeenCalledWith(
+    env,
+    {
+      keibajoCode: "01",
+      mmdd: "0905",
+      raceBango: "01",
+      scope: "training",
+      source: "jra",
+      year: "2026",
+    },
+    { waitForCompletion: true },
+  );
   expect(env.PC_KEIBA_VIEWER?.fetch).toHaveBeenCalledTimes(2);
   expect(viewerRequests).toStrictEqual([
     "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/01/sections/training?__cacheWarm=1",

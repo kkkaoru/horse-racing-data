@@ -12,6 +12,7 @@ import {
   buildRunningStyleFoundationKey,
   clearFinishPositionDayBaseCache,
   loadRunningStyleFeaturesFromFinishPositionDayBase,
+  resolveFinishPositionDayBasePointer,
   toRunningStyleParquetNumberOrNull,
 } from "./running-style-finish-feature-hit";
 
@@ -168,6 +169,155 @@ it("loads NAR ban-ei rows from the dedicated category foundation", async () => {
   expect(head.mock.calls[0]?.[0]).toBe(
     "feat-running-style-base/catalog-v1/ban-ei/20260822/features.parquet",
   );
+});
+
+it("reads raw day-base files without optional display columns", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { bucket } = bucketWith(bytes);
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket,
+    featureNames: ["f1"],
+    race: RACE,
+  });
+
+  expect(rows).toHaveLength(1);
+  expect(rows?.[0]?.bamei).toBeNull();
+});
+
+it("uses only an attested published generation when the producer exposes a manifest", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { get } = bucketWith(bytes);
+  const head = vi.fn(async (key: string) =>
+    key === buildRunningStyleFoundationKey(RACE)
+      ? null
+      : { customMetadata: metadata, etag: "etag-1", size: bytes.byteLength },
+  );
+  const fetchManifest = vi.fn(async (_request: Request) =>
+    Response.json({
+      etag: "etag-1",
+      key: "feat-daybase/catalog-v1/jra/20260822/generations/owner-1/features.parquet",
+      state: "published",
+    }),
+  );
+  const rows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
+    bucket: { get, head } as unknown as R2Bucket,
+    env: {
+      DAY_BASE_MANIFEST_REQUIRED: "0",
+      FINISH_POSITION_CRON: { fetch: fetchManifest as unknown as typeof fetch },
+      TRIGGER_TOKEN: "secret",
+    },
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  expect(rows).toHaveLength(1);
+  expect(head).toHaveBeenCalledWith(
+    "feat-daybase/catalog-v1/jra/20260822/generations/owner-1/features.parquet",
+  );
+  expect(head).not.toHaveBeenCalledWith(buildFinishPositionDayBaseKey(RACE));
+  expect(fetchManifest.mock.calls[0]?.[0].headers.get("authorization")).toBe("Bearer secret");
+});
+
+it.each(["pending", "invalid", "failure"])(
+  "never reads the legacy alias if the manifest is %s",
+  async (state) => {
+    const bytes = await parquetBytes([rawRow()]);
+    const { get } = bucketWith(bytes);
+    const head = vi.fn(async () => null);
+    const fetchManifest = vi.fn(async (_request: Request) => {
+      if (state === "failure") throw new Error("unavailable");
+      return Response.json(
+        state === "invalid" ? { state: "published", key: "other", etag: "a" } : { state },
+      );
+    });
+    await expect(
+      loadRunningStyleFeaturesFromFinishPositionDayBase({
+        bucket: { get, head } as unknown as R2Bucket,
+        env: {
+          DAY_BASE_MANIFEST_REQUIRED: "0",
+          FINISH_POSITION_CRON: { fetch: fetchManifest as unknown as typeof fetch },
+          TRIGGER_TOKEN: "secret",
+        },
+        featureNames: ["f1"],
+        race: RACE,
+      }),
+    ).resolves.toBeNull();
+    expect(head).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects an R2 generation whose ETag differs from the published pointer", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { get } = bucketWith(bytes);
+  const head = vi.fn(async (key: string) =>
+    key === buildRunningStyleFoundationKey(RACE)
+      ? null
+      : { customMetadata: metadata, etag: "stale", size: bytes.byteLength },
+  );
+  await expect(
+    loadRunningStyleFeaturesFromFinishPositionDayBase({
+      bucket: { get, head } as unknown as R2Bucket,
+      env: {
+        DAY_BASE_MANIFEST_REQUIRED: "0",
+        FINISH_POSITION_CRON: {
+          fetch: vi.fn(async () =>
+            Response.json({
+              state: "published",
+              key: "feat-daybase/catalog-v1/jra/20260822/generations/owner-1/features.parquet",
+              etag: "current",
+            }),
+          ) as unknown as typeof fetch,
+        },
+        TRIGGER_TOKEN: "secret",
+      },
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toBeNull();
+  expect(get).not.toHaveBeenCalled();
+});
+
+it("uses the legacy pointer only for a missing pre-cutover manifest endpoint", async () => {
+  const service = {
+    fetch: vi.fn(async () => new Response(null, { status: 404 })) as unknown as typeof fetch,
+  };
+  await expect(
+    resolveFinishPositionDayBasePointer({
+      category: "jra",
+      env: {
+        DAY_BASE_MANIFEST_REQUIRED: "0",
+        FINISH_POSITION_CRON: service,
+        TRIGGER_TOKEN: "secret",
+      },
+      runYmd: "20260822",
+    }),
+  ).resolves.toBe("legacy");
+  await expect(
+    resolveFinishPositionDayBasePointer({
+      category: "jra",
+      env: {
+        DAY_BASE_MANIFEST_REQUIRED: "1",
+        FINISH_POSITION_CRON: service,
+        TRIGGER_TOKEN: "secret",
+      },
+      runYmd: "20260822",
+    }),
+  ).resolves.toBeNull();
+});
+
+it("does not fall back to a legacy day-base after required-manifest cutover", async () => {
+  const bytes = await parquetBytes([rawRow()]);
+  const { get } = bucketWith(bytes);
+  const head = vi.fn(async () => null);
+  await expect(
+    loadRunningStyleFeaturesFromFinishPositionDayBase({
+      bucket: { get, head } as unknown as R2Bucket,
+      env: { DAY_BASE_MANIFEST_REQUIRED: "1" },
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).resolves.toBeNull();
+  expect(head).toHaveBeenCalledTimes(1);
 });
 
 it("normalizes every Parquet scalar representation without changing numeric values", () => {

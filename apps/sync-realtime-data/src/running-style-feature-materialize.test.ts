@@ -344,6 +344,7 @@ it("uses the finish-position day-base HIT before Catalog", async () => {
   ).resolves.toStrictEqual({ featuresR2Key: "features.parquet", rebuilt: true, rows: rows() });
   expect(loadRunningStyleFeaturesFromFinishPositionDayBase).toHaveBeenCalledWith({
     bucket: env.FEATURES_ARCHIVE,
+    env,
     featureNames: ["f1"],
     race: RACE,
   });

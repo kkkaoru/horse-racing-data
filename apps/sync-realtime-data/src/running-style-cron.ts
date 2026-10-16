@@ -16,6 +16,7 @@ import {
   type RunningStylePendingRace,
 } from "./running-style-d1";
 import { listRunningStyleExpectedHorseCounts } from "./running-style-expected-horses";
+import { resolveFinishPositionDayBasePointer } from "./running-style-finish-feature-hit";
 import {
   exportRunningStyleParquetForDay,
   type ExportRunningStyleParquetResult,
@@ -58,8 +59,7 @@ const MAX_RUNNING_STYLE_RECOVERY_BATCH = 32;
 // to an enqueue-failed state and remain eligible on the next tick.
 const ACTIVE_STATE_TTL_MS = 15 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(["pending", "processing"]);
-const FINISH_POSITION_DAY_BASE_URL =
-  "https://finish-position-cron.internal/api/admin/prewarm-day-base";
+const FINISH_POSITION_DAY_BASE_URL = "https://finish-position-cron.internal/api/admin/race-day";
 const RUNNING_STYLE_FOUNDATION_PREFIX = "feat-running-style-base/catalog-v1";
 const FINISH_POSITION_DAY_BASE_PREFIX = "feat-daybase/catalog-v1";
 const RUNNING_STYLE_FOUNDATION_FILE = "features.parquet";
@@ -309,10 +309,22 @@ const inspectRunningStyleFoundation = async (
   if (isRunningStyleFoundationReady(object)) return { ready: true };
   // Worker inference HITs feat-daybase. Do not force a Container rebuild of
   // that object just to mint feat-running-style-base watermarks.
+  const pointer = await resolveFinishPositionDayBasePointer({
+    category: params.category,
+    env: params.env,
+    runYmd: params.date,
+  });
+  if (pointer === null) return { ready: false };
   const dayBase = await params.env.FEATURES_ARCHIVE.head(
-    buildFinishPositionDayBaseKeyForCategory(params.category, params.date),
+    pointer === "legacy"
+      ? buildFinishPositionDayBaseKeyForCategory(params.category, params.date)
+      : pointer.key,
   );
-  return { ready: isFinishPositionDayBaseReady(dayBase) };
+  return {
+    ready:
+      isFinishPositionDayBaseReady(dayBase) &&
+      (pointer === "legacy" || dayBase?.etag === pointer.etag),
+  };
 };
 
 const buildRunningStyleFoundationPrewarmMarkerKey = (
@@ -363,13 +375,7 @@ const triggerRunningStyleFoundationPrewarm = async (
   try {
     const response = await params.env.FINISH_POSITION_CRON.fetch(
       new Request(FINISH_POSITION_DAY_BASE_URL, {
-        body: JSON.stringify({
-          category: params.category,
-          // Worker HIT of feat-daybase is enough to generate running-style
-          // features. Never force a Container rebuild of a landed day-base.
-          generatePredictionsAfterHit: true,
-          runYmd: params.date,
-        }),
+        body: JSON.stringify({ category: params.category, runYmd: params.date }),
         headers: {
           Authorization: `Bearer ${params.env.TRIGGER_TOKEN}`,
           "Content-Type": "application/json",

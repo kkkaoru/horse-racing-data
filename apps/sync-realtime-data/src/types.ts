@@ -237,6 +237,7 @@ export interface Env {
   // 5-min coordinator cron poll. Optional so existing callers / tests need
   // not set it (when absent, the trigger is a no-op and weight write succeeds).
   FINISH_POSITION_CRON?: { fetch: typeof fetch };
+  DAY_BASE_MANIFEST_REQUIRED?: string;
   FINISH_POSITION_PREDICT_QUEUE?: Queue<FinishPositionPredictQueueMessage>;
   PREDICT_DAYS_AHEAD?: string;
   // Bearer token forwarded to FINISH_POSITION_CRON for the internal

@@ -283,6 +283,7 @@ const loadAuthoritativeFeatureRows = async (
     const dayBaseRows = await loadRunningStyleFeaturesFromFinishPositionDayBase({
       ...(params.byteRangeCache === undefined ? {} : { byteRangeCache: params.byteRangeCache }),
       bucket: params.env.FEATURES_ARCHIVE,
+      env: params.env,
       featureNames: params.featureNames,
       race: params.race,
     });

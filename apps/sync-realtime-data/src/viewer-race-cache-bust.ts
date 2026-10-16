@@ -33,6 +33,7 @@ export interface RaceCacheBustBody {
   keibajoCode: string;
   mmdd: string;
   raceBango: string;
+  scope?: "training";
   source: RaceCacheBustSource;
   year: string;
 }

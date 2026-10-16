@@ -819,6 +819,25 @@ it("fetchJraResultHtmlWithFallback falls back to Playwright when needsParse retu
   expect(browser.close).toHaveBeenCalledTimes(1);
 });
 
+it("fetchJraResultHtmlWithFallback does not launch a second browser when fallback fails", async () => {
+  vi.mocked(fetchRacePage).mockResolvedValueOnce("<html>unparseable</html>");
+  const browser = makeBrowser({});
+  browser.page.content = vi.fn(async () => {
+    throw new Error("browser failed");
+  });
+  await setMockLaunch(browser);
+  await expect(
+    fetchJraResultHtmlWithFallback({
+      browserBinding: { fetch },
+      needsParse: () => false,
+      url: "https://x.test/jra",
+    }),
+  ).rejects.toThrow("browser failed");
+  const { launch } = await import("@cloudflare/playwright");
+  expect(launch).toHaveBeenCalledTimes(1);
+  expect(browser.close).toHaveBeenCalledTimes(1);
+});
+
 it("fetchJraResultHtmlWithFallback falls back to Playwright when HTTP throws", async () => {
   urlCounter = 0;
   innerHtmlCounter = 0;

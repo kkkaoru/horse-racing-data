@@ -380,13 +380,9 @@ it("gates only the missing category foundation and triggers one forced prewarm",
   expect(
     vi.mocked(upsertRunningStylePendingStates).mock.calls[0]?.[1].map((race) => race.raceKey),
   ).toStrictEqual(["nar:20260824:43:01"]);
-  expect(request.url).toBe("https://finish-position-cron.internal/api/admin/prewarm-day-base");
+  expect(request.url).toBe("https://finish-position-cron.internal/api/admin/race-day");
   expect(request.headers.get("authorization")).toBe("Bearer trigger-token");
-  expect(await request.json()).toStrictEqual({
-    category: "ban-ei",
-    generatePredictionsAfterHit: true,
-    runYmd: "20260824",
-  });
+  expect(await request.json()).toStrictEqual({ category: "ban-ei", runYmd: "20260824" });
   expect(markerGet).toHaveBeenCalledWith(
     "control:running-style-foundation-prewarm:v1:ban-ei:20260824",
   );
@@ -488,6 +484,46 @@ it("enqueues running-style jobs when feat-daybase is already on R2", async () =>
     source: "jra",
     type: "generate-running-style-predictions",
   });
+});
+
+it("enqueues against the published immutable day-base rather than a stale legacy alias", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0922",
+        keibajo_code: "06",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  const generationKey = "feat-daybase/catalog-v1/jra/20260922/generations/owner-1/features.parquet";
+  const head = vi.fn(async (key: string) =>
+    key === generationKey ? { etag: "current", size: 2048 } : null,
+  );
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({ state: "published", key: generationKey, etag: "current" }),
+  );
+  const send = vi.fn(queueSendOk);
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      DAY_BASE_MANIFEST_REQUIRED: "0",
+      FEATURES_ARCHIVE: { head } as unknown as R2Bucket,
+      FINISH_POSITION_CRON: { fetch },
+      TRIGGER_TOKEN: "secret",
+      RUNNING_STYLE_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
+    }),
+    "20260922",
+    new Date("2026-09-21T15:42:00.000Z"),
+  );
+  expect(summary.enqueued).toBe(1);
+  expect(head).toHaveBeenCalledWith(generationKey);
+  expect(head).not.toHaveBeenCalledWith("feat-daybase/catalog-v1/jra/20260922/features.parquet");
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
 it("suppresses another forced prewarm while the category build marker is active", async () => {

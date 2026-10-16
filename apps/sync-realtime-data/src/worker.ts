@@ -1774,7 +1774,7 @@ export interface StaleWeightFetchRace {
 }
 
 interface PredictionReadinessRace {
-  preWeight: { complete: boolean };
+  preWeight: { neonComplete: boolean };
   raceKey: string;
 }
 
@@ -1797,18 +1797,19 @@ const parsePredictionReadinessRaces = (value: unknown): readonly PredictionReadi
       !isObjectRecord(race) ||
       typeof race.raceKey !== "string" ||
       !isObjectRecord(race.preWeight) ||
-      typeof race.preWeight.complete !== "boolean"
+      typeof race.preWeight.neonComplete !== "boolean"
     ) {
       throw new Error("finish-position prediction readiness returned an invalid race");
     }
-    return { preWeight: { complete: race.preWeight.complete }, raceKey: race.raceKey };
+    return { preWeight: { neonComplete: race.preWeight.neonComplete }, raceKey: race.raceKey };
   });
 };
 
 // Horse-weight acquisition is the next stage after the initial prediction,
 // not an independent clock-only lane. Query the finish-position Worker once
 // per race day over the existing Service Binding and admit only races whose
-// complete initial generation is present in both Neon and the display KV.
+// initial Neon prediction is complete. Display KV can expire independently;
+// blocking on it would stop weight ingestion until after the race starts.
 // Missing bindings, auth, malformed responses, and upstream failures throw so
 // the watchdog fails closed and retries on its next cron instead of violating
 // the pipeline order.
@@ -1839,7 +1840,7 @@ export const filterPreweightReadyWeightRaces = async (
       }
       const readiness = parsePredictionReadinessRaces(await response.json());
       for (const race of readiness) {
-        if (race.preWeight.complete) readyKeys.add(race.raceKey);
+        if (race.preWeight.neonComplete) readyKeys.add(race.raceKey);
       }
     }),
   );
@@ -6280,6 +6281,41 @@ export default {
         return json({ error: "invalid body" }, { status: 400 });
       }
       return fetchNetkeibaTrainingWorkouts(env, body);
+    }
+
+    if (url.pathname === "/api/internal/expected-race-count" && request.method === "GET") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const date = url.searchParams.get("date");
+      if (date === null || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
+        return json({ error: "invalid date" }, { status: 400 });
+      }
+      const kind = url.searchParams.get("kind");
+      if (kind === "categories") {
+        const { results } = await env.REALTIME_DB.prepare(
+          "SELECT CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra' WHEN keibajo_code = '83' THEN 'ban-ei' ELSE 'nar' END AS category, COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = ? GROUP BY category",
+        )
+          .bind(date)
+          .all<{ category: string; c: number }>();
+        return json({ results }, { headers: { "cache-control": "private, no-store" } });
+      }
+      if (kind === "venues") {
+        const { results } = await env.REALTIME_DB.prepare(
+          "SELECT keibajo_code, COUNT(*) AS c, GROUP_CONCAT(race_bango, ',') AS races FROM (SELECT DISTINCT printf('%02d', CAST(keibajo_code AS INTEGER)) AS keibajo_code, printf('%02d', CAST(race_bango AS INTEGER)) AS race_bango FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = ? AND keibajo_code GLOB '[0-9]*' ORDER BY keibajo_code, race_bango) GROUP BY keibajo_code",
+        )
+          .bind(date)
+          .all<{ keibajo_code: string; c: number; races: string }>();
+        return json({ results }, { headers: { "cache-control": "private, no-store" } });
+      }
+      if (kind !== null) return json({ error: "invalid kind" }, { status: 400 });
+      const row = await env.REALTIME_DB.prepare(
+        "SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = ?",
+      )
+        .bind(date)
+        .first<{ c: number }>();
+      return json({ count: row?.c ?? 0 }, { headers: { "cache-control": "private, no-store" } });
     }
 
     if (url.pathname === "/api/internal/discovery-status" && request.method === "GET") {
