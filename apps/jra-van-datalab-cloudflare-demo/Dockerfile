@@ -21,6 +21,8 @@ RUN dpkg --add-architecture i386 \
     && apt-get update \
     && apt-get install --yes --no-install-recommends \
       "wine-staging=$WINE_STAGING_VERSION" \
+      "wine-staging-amd64=$WINE_STAGING_VERSION" \
+      "wine-staging-i386:i386=$WINE_STAGING_VERSION" \
     && rm -rf /var/lib/apt/lists/*
 
 FROM wine-runtime AS prefix-builder
