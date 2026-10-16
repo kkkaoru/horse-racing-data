@@ -112,8 +112,14 @@ JRA_JOCKEY_PEDIGREE_CELL_SCRIPT: Final[str] = "add-jra-jockey-pedigree-cell-feat
 
 # Frozen forecasts are baked offline; this day-stable layer only performs joins.
 PROPHET_ENTITY_TREND_SCRIPT: Final[str] = "add-prophet-entity-trend-features.py"
+# The Dockerfile bakes these lookups at /app/lookups. The env override exists so the same
+# day-base chain can be reproduced outside the image (local investigation); production
+# keeps the baked default.
 PROPHET_LOOKUP_PATH: Final[Path] = Path(
-    "/app/lookups/prophet-entity-trends-all-categories-2026.parquet"
+    os.environ.get(
+        "PROPHET_LOOKUP_PATH",
+        "/app/lookups/prophet-entity-trends-all-categories-2026.parquet",
+    )
 )
 
 # DuckDB resource caps for the similar-race layer inside the prediction
@@ -127,8 +133,11 @@ HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Baked course-numerical lookup parquet. Mirrors the
 # COPY apps/pc-keiba-viewer/finish-position/lookups/course-numerical-features.parquet
-# in the Dockerfile so the path is identical inside the image.
-COURSE_LOOKUP_PATH: Final[Path] = Path("/app/lookups/course-numerical-features.parquet")
+# in the Dockerfile so the path is identical inside the image. See PROPHET_LOOKUP_PATH
+# for why the baked default is env-overridable.
+COURSE_LOOKUP_PATH: Final[Path] = Path(
+    os.environ.get("COURSE_LOOKUP_PATH", "/app/lookups/course-numerical-features.parquet")
+)
 
 # Per-category full layer chain (script basename order). Mirrors the per-category
 # Pipeline sections of

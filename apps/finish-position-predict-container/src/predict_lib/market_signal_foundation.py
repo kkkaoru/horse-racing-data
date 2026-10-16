@@ -143,6 +143,7 @@ def build_market_signal_base_evidence(
     source_identity: R2ObjectIdentity,
     foundation_identity: R2ObjectIdentity,
     manifest_identity: R2ObjectIdentity,
+    source_key_override: str | None = None,
 ) -> MarketSignalBaseEvidence | None:
     """Bind a validated base result to independently observed R2 identities."""
     if foundation_result.rows is None or foundation_result.schema is None:
@@ -180,7 +181,7 @@ def build_market_signal_base_evidence(
         manifest_identity=manifest_identity,
         manifest_key=build_foundation_manifest_key(category, target_date),
         source_identity=source_identity,
-        source_key=build_foundation_source_key(category, target_date),
+        source_key=source_key_override or build_foundation_source_key(category, target_date),
     )
 
 

@@ -9,7 +9,7 @@ these tests lock.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import cast, final
 
@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pipeline_runner
 import predict_upcoming
 from predict_lib.model_meta import Category
+from predict_lib.serving_evidence import ServingEvidence
 
 _DAY_BASE_DIR_ATTR = "_day_base_dir"
 _WRITE_WATERMARK_ATTR = "_write_watermark"
@@ -320,13 +321,15 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
         feature_names: Sequence[str] | None = None,
         card_max_race_bango: int | None = None,
         race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
+        serving_evidence_by_race_id: MutableMapping[str, ServingEvidence] | None = None,
     ) -> list[list[list[object]]]:
+        assert serving_evidence_by_race_id is None
         del race_names_by_race_id
         if "ban-ei:2026:0816:83:02" in races:
             return [
                 [
                     [
-                        "banei-cb-v9-sim-2011",
+                        "banei-cb-v9-sim-2011-nowin1",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -352,7 +355,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
                 ],
                 [
                     [
-                        "banei-cb-v9-sim-2011",
+                        "banei-cb-v9-sim-2011-nowin1",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -381,7 +384,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
             return [
                 [
                     [
-                        "banei-cb-v9-sim-2011",
+                        "banei-cb-v9-sim-2011-nowin1",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -428,7 +431,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
     assert written == 1
     assert len(conn.upserts) == 1
     assert conn.upserts[0][1] == [
-        "banei-cb-v9-sim-2011",
+        "banei-cb-v9-sim-2011-nowin1",
         "ban-ei",
         "2026",
         "0816",

@@ -271,6 +271,7 @@ def validate_foundation_objects(
     race_bytes: bytes,
     source_identity: R2ObjectIdentity,
     expected_entries: frozenset[str],
+    source_key_override: str | None = None,
 ) -> FoundationLoadResult:
     """Validate the full Worker contract; never return partially trusted rows."""
     expected_race_id = _expected_race_id(category, target_date, target_race)
@@ -278,7 +279,7 @@ def validate_foundation_objects(
         return FoundationLoadResult("invalid-request-contract", None, None)
     venue, race_number = target_race.split(":")
     expected_key = build_foundation_race_key(category, target_date, venue, race_number)
-    source_key = build_foundation_source_key(category, target_date)
+    source_key = source_key_override or build_foundation_source_key(category, target_date)
     manifest = _json_object(manifest_bytes, FOUNDATION_MANIFEST_MAX_BYTES)
     race = _json_object(race_bytes, FOUNDATION_RACE_MAX_BYTES)
     if manifest is None or race is None:

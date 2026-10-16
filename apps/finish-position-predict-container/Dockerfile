@@ -40,6 +40,7 @@ RUN uv pip install --system --no-cache \
     "duckdb==1.5.5" \
     "lightgbm>=4.5.0" \
     "numpy>=2.0.0" \
+    "onnxruntime>=1.19.0" \
     "pandas>=2.2.0" \
     "psycopg[binary]>=3.2.0" \
     "pyarrow>=17.0.0" \

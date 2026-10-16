@@ -79,6 +79,7 @@ from predict_lib.serve import (
     build_result_line,
     current_allow_post_time_rescore,
     current_allow_race_scoped_day_base,
+    current_day_base_source,
     current_market_signal_foundation_attestation,
     get_prewarm_run_state,
     has_single_race_scope,
@@ -260,6 +261,29 @@ def test_parse_predict_params_force_flag_default_false() -> None:
     assert result.force is False
 
 
+def test_parse_predict_params_requires_a_scoped_immutable_day_base_identity() -> None:
+    query = (
+        "category=nar&runDate=20260910"
+        "&dayBaseKey=feat-daybase/catalog-v1/nar/20260910/generations/owner-1/features.parquet"
+        "&dayBaseEtag=source-etag"
+    )
+    result = parse_predict_params(query)
+    assert isinstance(result, PredictParams)
+    assert result.day_base_source == (
+        "feat-daybase/catalog-v1/nar/20260910/generations/owner-1/features.parquet",
+        "source-etag",
+    )
+    assert parse_predict_params(query.removesuffix("&dayBaseEtag=source-etag")) == (
+        "dayBaseKey and dayBaseEtag must be supplied together"
+    )
+    assert parse_predict_params(query.replace("/nar/", "/jra/")) == (
+        "invalid dayBaseKey: expected the exact category/day immutable generation"
+    )
+    assert parse_predict_params(query.replace("source-etag", "invalid%0Aetag")) == (
+        "invalid dayBaseEtag"
+    )
+
+
 def test_parse_predict_params_accepts_worker_scoped_day_base_attestation() -> None:
     result = parse_predict_params(
         "category=nar&runDate=20260910&mode=full&keibajoCode=50&raceBango=11"
@@ -372,7 +396,9 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
         odds_snapshot_hash="a" * 64,
         version="artifact-version",
     )
-    observed: list[tuple[MarketSignalFoundationAttestation | None, bool, bool]] = []
+    observed: list[
+        tuple[MarketSignalFoundationAttestation | None, bool, bool, tuple[str, str] | None]
+    ] = []
 
     def predict(
         _category: str,
@@ -387,6 +413,7 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
                 current_market_signal_foundation_attestation(),
                 current_allow_race_scoped_day_base(),
                 current_allow_post_time_rescore(),
+                current_day_base_source(),
             )
         )
         return 1
@@ -401,10 +428,25 @@ def test_predict_execution_binds_and_resets_market_signal_attestation() -> None:
         market_signal_foundation_attestation=attestation,
         allow_race_scoped_day_base=True,
         allow_post_time_rescore=True,
+        day_base_source=(
+            "feat-daybase/catalog-v1/jra/20260824/generations/owner-1/features.parquet",
+            "source-etag",
+        ),
     )
     list(iter_predict_chunks(params, predict, sleep_fn=_noop_sleep))
-    assert observed == [(attestation, True, True)]
+    assert observed == [
+        (
+            attestation,
+            True,
+            True,
+            (
+                "feat-daybase/catalog-v1/jra/20260824/generations/owner-1/features.parquet",
+                "source-etag",
+            ),
+        )
+    ]
     assert current_market_signal_foundation_attestation() is None
+    assert current_day_base_source() is None
     assert current_allow_race_scoped_day_base() is False
     assert current_allow_post_time_rescore() is False
 
@@ -1475,6 +1517,10 @@ def test_build_r2_per_race_feat_cache_key_zero_pads_unpadded_codes() -> None:
 
 def test_build_prewarm_cache_key_is_category_and_date() -> None:
     assert build_prewarm_cache_key("ban-ei", "20260816") == "prewarm:ban-ei:20260816"
+    assert (
+        build_prewarm_cache_key("ban-ei", "20260816", "owner-1")
+        == "prewarm:ban-ei:20260816:owner-1"
+    )
 
 
 def test_parse_day_base_cache_identity_reads_category_and_date() -> None:
@@ -1497,6 +1543,11 @@ def test_parse_day_base_cache_identity_rejects_short_key() -> None:
 def test_build_r2_day_base_key_format() -> None:
     key = build_r2_day_base_key("jra", "20260712")
     assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert build_r2_day_base_key("jra", "20260712", "owner-1") == (
+        "feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet"
+    )
+    with pytest.raises(ValueError, match="invalid day-base generation id"):
+        build_r2_day_base_key("jra", "20260712", "../owner")
 
 
 def test_build_r2_running_style_foundation_key_format() -> None:
@@ -3982,6 +4033,15 @@ def test_parse_prewarm_params_sync_invalid() -> None:
     assert result == "invalid sync: 'yes'; must be 0 or 1"
 
 
+def test_parse_prewarm_params_scopes_generation_and_rejects_path_injection() -> None:
+    result = parse_prewarm_params("category=nar&runDate=20260923&generationId=owner-1")
+    assert isinstance(result, PrewarmParams)
+    assert result.generation_id == "owner-1"
+    assert parse_prewarm_params("category=nar&runDate=20260923&generationId=../wrong") == (
+        "invalid generationId"
+    )
+
+
 def test_parse_prewarm_params_rebuild_enabled() -> None:
     result = parse_prewarm_params("category=jra&runDate=20260712&rebuild=1")
     assert isinstance(result, PrewarmParams)
@@ -4363,6 +4423,49 @@ def test_iter_prewarm_chunks_success_yields_progress_then_result() -> None:
     assert last["category"] == "jra"
     assert last["runDate"] == "20260712"
     assert last["parquetKey"] == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_prewarm_result_and_detached_commit_use_only_the_owner_generation_key() -> None:
+    committed: list[str] = []
+
+    def _commit(
+        key: str,
+        _base64: str,
+        _watermark: Mapping[str, str | int] | None,
+        _error: str | None,
+    ) -> None:
+        committed.append(key)
+
+    params = PrewarmParams(
+        category="jra", run_date="20260712", days_ahead=0, generation_id="owner-1"
+    )
+    chunks = list(
+        iter_prewarm_chunks(
+            params,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            commit_fn=_commit,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert json.loads(chunks[-1].decode())["parquetKey"] == (
+        "feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet"
+    )
+    assert committed == [
+        "feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet"
+    ]
+
+
+def test_prewarm_rejects_payload_from_another_day_before_generation_commit() -> None:
+    params = PrewarmParams(
+        category="jra", run_date="20260713", days_ahead=0, generation_id="owner-1"
+    )
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_mock_payload, sleep_fn=_noop_sleep
+        )
+    )
+    assert json.loads(chunks[-1].decode())["error"] == "unexpected generation day-base parquet key"
 
 
 def test_iter_prewarm_chunks_streams_operational_daybase_timing_without_debug() -> None:
@@ -5023,6 +5126,56 @@ def test_background_prewarm_launch_failure_releases_flight() -> None:
     state = get_prewarm_run_state("ban-ei", "20260905")
     assert state is not None
     assert state.status == "error"
+
+
+def test_prewarm_owner_generation_never_reuses_legacy_object_or_parallel_build_slot() -> None:
+    launched: list[Callable[[], None]] = []
+
+    def _background(fn: Callable[[], None]) -> None:
+        launched.append(fn)
+
+    old = PrewarmParams(category="jra", run_date="20990101", days_ahead=0, generation_id="old")
+    new = PrewarmParams(category="jra", run_date="20990101", days_ahead=0, generation_id="new")
+    old_result = list(
+        iter_prewarm_chunks(
+            old,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            existing_object_fn=lambda _category, _date: (
+                "feat-daybase/catalog-v1/jra/20990101/features.parquet"
+            ),
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    new_result = list(
+        iter_prewarm_chunks(
+            new,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert json.loads(old_result[-1].decode())["status"] == "accepted"
+    assert json.loads(new_result[-1].decode())["status"] == "accepted"
+    assert len(launched) == 1
+    assert get_prewarm_run_state("jra", "20990101", "new") is None
+    assert get_prewarm_run_state("jra", "20990101", "old") is not None
+
+    launched[0]()
+    list(
+        iter_prewarm_chunks(
+            new,
+            _mock_build_ok,
+            parquet_payload_fn=_mock_payload,
+            background_fn=_background,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert len(launched) == 2
+    launched[1]()
+    assert get_prewarm_run_state("jra", "20990101", "new") is not None
 
 
 def test_prewarm_status_tracks_generation_without_debug() -> None:

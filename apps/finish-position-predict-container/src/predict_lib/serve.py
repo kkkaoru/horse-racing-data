@@ -559,6 +559,7 @@ class PredictParams:
         "allow_race_scoped_day_base",
         "card_max_race_bango",
         "category",
+        "day_base_source",
         "days_ahead",
         "debug_logs",
         "force",
@@ -589,6 +590,7 @@ class PredictParams:
         market_signal_foundation_attestation: MarketSignalFoundationAttestation | None = None,
         allow_race_scoped_day_base: bool = False,
         allow_post_time_rescore: bool = False,
+        day_base_source: tuple[str, str] | None = None,
     ) -> None:
         self.allow_post_time_rescore: bool = allow_post_time_rescore
         self.allow_race_scoped_day_base: bool = allow_race_scoped_day_base
@@ -599,6 +601,7 @@ class PredictParams:
         self.keibajo_code: str | None = keibajo_code
         self.race_bango: str | None = race_bango
         self.debug_logs: bool = debug_logs
+        self.day_base_source: tuple[str, str] | None = day_base_source
         self.card_max_race_bango: int | None = card_max_race_bango
         self.rescore_cache_attestation = rescore_cache_attestation
         self.weight_snapshot_generation = weight_snapshot_generation
@@ -742,6 +745,26 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     if isinstance(weight_snapshot_generation, str):
         return weight_snapshot_generation
 
+    day_base_key = _first_qs(qs, "dayBaseKey")
+    day_base_etag = _first_qs(qs, "dayBaseEtag")
+    if (day_base_key is None) != (day_base_etag is None):
+        return "dayBaseKey and dayBaseEtag must be supplied together"
+    day_base_source: tuple[str, str] | None = None
+    if day_base_key is not None and day_base_etag is not None:
+        prefix = build_r2_day_base_key(category, run_date).removesuffix("/features.parquet")
+        if (
+            not day_base_key.startswith(f"{prefix}/generations/")
+            or re.fullmatch(
+                r"[A-Za-z0-9_-]{1,128}/features\.parquet",
+                day_base_key.removeprefix(f"{prefix}/generations/"),
+            )
+            is None
+        ):
+            return "invalid dayBaseKey: expected the exact category/day immutable generation"
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", day_base_etag) is None:
+            return "invalid dayBaseEtag"
+        day_base_source = (day_base_key, day_base_etag)
+
     raw_card_max_race_bango = _first_qs(qs, "cardMaxRaceBango")
     if raw_card_max_race_bango is None:
         card_max_race_bango: int | None = None
@@ -769,6 +792,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         market_signal_foundation_attestation=market_signal_attestation,
         allow_race_scoped_day_base=allow_race_scoped_day_base,
         allow_post_time_rescore=allow_post_time_rescore,
+        day_base_source=day_base_source,
     )
 
 
@@ -787,6 +811,7 @@ class PrewarmParams:
         "days_ahead",
         "debug_logs",
         "force",
+        "generation_id",
         "rebuild",
         "run_date",
         "sync",
@@ -801,12 +826,14 @@ class PrewarmParams:
         force: bool = False,
         rebuild: bool = False,
         sync: bool = False,
+        generation_id: str | None = None,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
         self.days_ahead: int = days_ahead
         self.debug_logs: bool = debug_logs
         self.force: bool = force
+        self.generation_id: str | None = generation_id
         self.rebuild: bool = rebuild
         # sync=1 keeps the HTTP response open until the parquet result line is
         # written. The Worker proxy commits R2 before this process can exit.
@@ -861,6 +888,9 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
     raw_sync = _first_qs(qs, "sync")
     if raw_sync is not None and raw_sync not in ("0", "1"):
         return f"invalid sync: {raw_sync!r}; must be 0 or 1"
+    generation_id = _first_qs(qs, "generationId")
+    if generation_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", generation_id):
+        return "invalid generationId"
 
     debug_logs = parse_debug_flag(_first_qs(qs, "debug"))
     return PrewarmParams(
@@ -871,6 +901,7 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
         force=raw_force == "1",
         rebuild=raw_rebuild == "1",
         sync=raw_sync == "1",
+        generation_id=generation_id,
     )
 
 
@@ -1229,9 +1260,10 @@ day-base or rescore paths accept a partially processed parquet.
 """
 
 
-def build_prewarm_cache_key(category: str, run_date: str) -> str:
-    """In-process store key for a completed day-base parquet awaiting Worker PUT."""
-    return f"{PREWARM_CACHE_KEY_PREFIX}:{category}:{run_date}"
+def build_prewarm_cache_key(category: str, run_date: str, generation_id: str | None = None) -> str:
+    """In-process store key for one day-base generation awaiting Worker PUT."""
+    legacy_key = f"{PREWARM_CACHE_KEY_PREFIX}:{category}:{run_date}"
+    return legacy_key if generation_id is None else f"{legacy_key}:{generation_id}"
 
 
 def parse_day_base_cache_identity(parquet_key: str) -> tuple[str, str]:
@@ -1246,7 +1278,7 @@ def parse_day_base_cache_identity(parquet_key: str) -> tuple[str, str]:
     return tokens[R2_DAY_BASE_KEY_CATEGORY_INDEX], tokens[R2_DAY_BASE_KEY_RUN_DATE_INDEX]
 
 
-def build_r2_day_base_key(category: str, run_date: str) -> str:
+def build_r2_day_base_key(category: str, run_date: str, generation_id: str | None = None) -> str:
     """Return the R2 object key for a category+day day-base feature-parquet cache.
 
     Key format: ``feat-daybase/catalog-v1/{category}/{runDate}/features.parquet``
@@ -1261,9 +1293,12 @@ def build_r2_day_base_key(category: str, run_date: str) -> str:
         category: One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
         run_date: YYYYMMDD string (e.g. ``"20260712"``).
     """
-    return (
-        f"{R2_DAY_BASE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/features.parquet"
-    )
+    prefix = f"{R2_DAY_BASE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}"
+    if generation_id is None:
+        return f"{prefix}/features.parquet"
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", generation_id) is None:
+        raise ValueError("invalid day-base generation id")
+    return f"{prefix}/generations/{generation_id}/features.parquet"
 
 
 def build_r2_running_style_foundation_key(category: str, run_date: str) -> str:
@@ -1425,6 +1460,7 @@ for the whole body of :func:`_run_predict_fn`, never held across a
 """
 
 _current_market_signal_attestation: MarketSignalFoundationAttestation | None = None
+_current_day_base_source: tuple[str, str] | None = None
 _current_allow_race_scoped_day_base = False
 _current_allow_post_time_rescore = False
 
@@ -1442,6 +1478,11 @@ def current_allow_race_scoped_day_base() -> bool:
 def current_market_signal_foundation_attestation() -> MarketSignalFoundationAttestation | None:
     """Return the attestation bound to the serialized prediction currently executing."""
     return _current_market_signal_attestation
+
+
+def current_day_base_source() -> tuple[str, str] | None:
+    """Return the immutable day-base identity bound to the serialized prediction."""
+    return _current_day_base_source
 
 
 @contextmanager
@@ -1464,6 +1505,17 @@ def _allow_race_scoped_day_base_scope(allowed: bool) -> Generator[None]:
         yield
     finally:
         _current_allow_race_scoped_day_base = previous
+
+
+@contextmanager
+def _day_base_source_scope(source: tuple[str, str] | None) -> Generator[None]:
+    global _current_day_base_source
+    previous = _current_day_base_source
+    _current_day_base_source = source
+    try:
+        yield
+    finally:
+        _current_day_base_source = previous
 
 
 @contextmanager
@@ -1508,6 +1560,7 @@ def _run_predict_fn(
         debug_logs_scope(params.debug_logs),
         _allow_post_time_rescore_scope(params.allow_post_time_rescore),
         _allow_race_scoped_day_base_scope(params.allow_race_scoped_day_base),
+        _day_base_source_scope(params.day_base_source),
         _market_signal_foundation_attestation_scope(params.market_signal_foundation_attestation),
     ):
         return predict_fn(
@@ -2728,18 +2781,21 @@ _DETACHED_PREWARM_THREADS: Final[list[threading.Thread]] = []
 _PREWARM_STATES: Final[_PrewarmStateRegistry] = _PrewarmStateRegistry()
 
 
-def _prewarm_flight_key(category: str, run_date: str) -> str:
-    return f"{category}:{run_date}"
+def _prewarm_flight_key(category: str, run_date: str, generation_id: str | None = None) -> str:
+    legacy_key = f"{category}:{run_date}"
+    return legacy_key if generation_id is None else f"{legacy_key}:{generation_id}"
 
 
-def get_prewarm_run_state(category: str, run_date: str) -> PrewarmRunState | None:
-    """Return the latest prewarm generation for ``category`` and ``run_date``."""
-    return _PREWARM_STATES.get(_prewarm_flight_key(category, run_date))
+def get_prewarm_run_state(
+    category: str, run_date: str, generation_id: str | None = None
+) -> PrewarmRunState | None:
+    """Return the latest prewarm run for a category, date and owner generation."""
+    return _PREWARM_STATES.get(_prewarm_flight_key(category, run_date, generation_id))
 
 
 def build_prewarm_status_response_body(params: PrewarmParams) -> bytes:
     """Serialize prewarm status independently from optional debug logging."""
-    flight_key = _prewarm_flight_key(params.category, params.run_date)
+    flight_key = _prewarm_flight_key(params.category, params.run_date, params.generation_id)
     state = _PREWARM_STATES.get(flight_key)
     if state is None:
         payload: PrewarmStatusPayload = {
@@ -2859,6 +2915,17 @@ def _build_prewarm_upload_result(
             error=PREWARM_PAYLOAD_MISSING_ERROR,
         )
     parquet_b64, parquet_key_val, daybase_watermark_val, watermark_error = payload_result
+    if params.generation_id is not None:
+        if parquet_key_val != build_r2_day_base_key(params.category, params.run_date):
+            return build_prewarm_result_line(
+                params.category,
+                params.run_date,
+                status="error",
+                error="unexpected generation day-base parquet key",
+            )
+        parquet_key_val = build_r2_day_base_key(
+            params.category, params.run_date, params.generation_id
+        )
     if parquet_b64.strip() == "" or parquet_key_val.strip() == "":
         return build_prewarm_result_line(
             params.category,
@@ -2957,7 +3024,7 @@ def _run_detached_prewarm_build(
         )
         raise
     finally:
-        _release_prewarm_slot(flight_key)
+        _release_prewarm_slot(_prewarm_flight_key(params.category, params.run_date))
 
 
 def iter_prewarm_chunks(
@@ -3027,11 +3094,11 @@ def iter_prewarm_chunks(
 
     existing_key = (
         None
-        if params.force or params.rebuild
+        if params.force or params.rebuild or params.generation_id is not None
         else _lookup_existing_prewarm_key(params, existing_object_fn)
     )
     if existing_key is not None:
-        flight_key = _prewarm_flight_key(params.category, params.run_date)
+        flight_key = _prewarm_flight_key(params.category, params.run_date, params.generation_id)
         current_state = _PREWARM_STATES.get(flight_key)
         if current_state is None or current_state.status != "running":
             current_state = _PREWARM_STATES.start(flight_key, _wall_time_ms())
@@ -3057,9 +3124,9 @@ def iter_prewarm_chunks(
         return
 
     if background_fn is not None:
-        flight_key = _prewarm_flight_key(params.category, params.run_date)
-        expected_key = build_r2_day_base_key(params.category, params.run_date)
-        if not _claim_prewarm_slot(flight_key):
+        flight_key = _prewarm_flight_key(params.category, params.run_date, params.generation_id)
+        expected_key = build_r2_day_base_key(params.category, params.run_date, params.generation_id)
+        if not _claim_prewarm_slot(_prewarm_flight_key(params.category, params.run_date)):
             existing_state = _PREWARM_STATES.get(flight_key)
             yield build_prewarm_result_line(
                 params.category,
@@ -3087,7 +3154,7 @@ def iter_prewarm_chunks(
                 status="error",
                 error=safe_error,
             )
-            _release_prewarm_slot(flight_key)
+            _release_prewarm_slot(_prewarm_flight_key(params.category, params.run_date))
             yield build_prewarm_result_line(
                 params.category,
                 params.run_date,
@@ -3124,7 +3191,7 @@ def iter_prewarm_chunks(
                 status="error",
                 error=safe_error,
             )
-            _release_prewarm_slot(flight_key)
+            _release_prewarm_slot(_prewarm_flight_key(params.category, params.run_date))
             yield build_prewarm_result_line(
                 params.category,
                 params.run_date,

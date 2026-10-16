@@ -57,7 +57,7 @@ def test_tracked_stage1_routing_loads_live_jra_config() -> None:
     routing = load_stage1_routing()
 
     assert routing["jra"] == Stage1CategoryConfig(
-        enabled=True,
+        enabled=False,
         model_version="jra-cb-stage1-marketfree235-iter500-top1swap-2013",
         feature_count=235,
         architecture="catboost",
@@ -80,13 +80,43 @@ def test_tracked_stage1_routing_loads_live_nar_config() -> None:
     routing = load_stage1_routing()
 
     assert routing["nar"] == Stage1CategoryConfig(
-        enabled=True,
+        enabled=False,
         model_version="iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
         feature_count=184,
         architecture="xgboost",
         stddev_threshold=0.3,
         enable_stddev_safety_net=False,
     )
+
+
+def test_load_stage1_routing_parses_optional_force_market_free(tmp_path: Path) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["force_market_free"] = True
+    path = _write(tmp_path, {"jra": config})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].force_market_free is True
+
+
+def test_load_stage1_routing_defaults_force_market_free_to_false(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"jra": _VALID_JRA_CONFIG})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].force_market_free is False
+
+
+def test_load_stage1_routing_rejects_non_boolean_force_market_free(tmp_path: Path) -> None:
+    config = dict(_VALID_JRA_CONFIG)
+    config["force_market_free"] = "yes"
+    path = _write(tmp_path, {"jra": config})
+
+    with pytest.raises(
+        Stage1RoutingValidationError,
+        match=r"stage1_routing\.json\[jra\]\.force_market_free must be a boolean when present",
+    ):
+        load_stage1_routing(path)
 
 
 def test_load_stage1_routing_parses_full_shape(tmp_path: Path) -> None:
@@ -793,7 +823,7 @@ _DEGENERATE_SCORES = [0.501, 0.500, 0.499]
 def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> None:
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2",
+            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
             resolved_variant="niigata_kinen",
             named_race_variants=("niigata_kinen",),
         )
@@ -801,7 +831,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2",
+            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
             resolved_variant="joken_999",
             named_race_variants=("niigata_kinen",),
         )
@@ -809,7 +839,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-joken-999-pooled-yetirank-v2",
+            model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
             resolved_variant="joken_999",
             named_race_variants=("niigata_kinen",),
         )
@@ -817,7 +847,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2",
+            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
             resolved_variant=None,
             named_race_variants=(),
         )
@@ -825,7 +855,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-joken-999-pooled-yetirank-v2",
+            model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
             resolved_variant=None,
             named_race_variants=(),
         )
@@ -842,6 +872,45 @@ def test_resolve_stage1_gate_keeps_named_race_cell_when_odds_missing() -> None:
     )
 
     assert decision == Stage1GateDecision(use_stage1=False, reason="named-race-cell", stddev=None)
+
+
+def test_resolve_stage1_gate_forced_market_free_overrides_fresh_odds_and_named_cell() -> None:
+    forced_config = Stage1CategoryConfig(
+        enabled=True,
+        model_version="iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        feature_count=184,
+        architecture="xgboost",
+        stddev_threshold=0.3,
+        enable_stddev_safety_net=False,
+        force_market_free=True,
+    )
+
+    decision = resolve_stage1_gate(
+        config=forced_config,
+        entries=_FRESH_ENTRIES,
+        stage2_scores=_HEALTHY_SCORES,
+        skip_named_race_cell=True,
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=True, reason="forced-market-free", stddev=None)
+
+
+def test_resolve_stage1_gate_forced_market_free_ignored_when_disabled() -> None:
+    disabled_config = Stage1CategoryConfig(
+        enabled=False,
+        model_version="iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        feature_count=184,
+        architecture="xgboost",
+        stddev_threshold=0.3,
+        enable_stddev_safety_net=False,
+        force_market_free=True,
+    )
+
+    decision = resolve_stage1_gate(
+        config=disabled_config, entries=_FRESH_ENTRIES, stage2_scores=_HEALTHY_SCORES
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
 
 
 def test_resolve_stage1_gate_disabled_when_config_none() -> None:

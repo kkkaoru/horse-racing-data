@@ -507,6 +507,28 @@ def test_course_lookup_path_is_baked_image_location() -> None:
     assert Path("/app/lookups/course-numerical-features.parquet") == COURSE_LOOKUP_PATH
 
 
+def test_lookup_paths_accept_an_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The baked /app/lookups paths stay the default, but the day-base chain must be
+    reproducible outside the image (local containers cannot write /app)."""
+    import importlib
+
+    import predict_lib.pipeline_args as pipeline_args
+
+    monkeypatch.setenv("COURSE_LOOKUP_PATH", "/tmp/lookups/course.parquet")
+    monkeypatch.setenv("PROPHET_LOOKUP_PATH", "/tmp/lookups/prophet.parquet")
+    reloaded = importlib.reload(pipeline_args)
+    try:
+        assert Path("/tmp/lookups/course.parquet") == reloaded.COURSE_LOOKUP_PATH
+        assert Path("/tmp/lookups/prophet.parquet") == reloaded.PROPHET_LOOKUP_PATH
+    finally:
+        monkeypatch.delenv("COURSE_LOOKUP_PATH", raising=False)
+        monkeypatch.delenv("PROPHET_LOOKUP_PATH", raising=False)
+        importlib.reload(pipeline_args)
+    assert Path("/app/lookups/course-numerical-features.parquet") == reloaded.COURSE_LOOKUP_PATH
+
+
 def test_build_layer_argv_relationship_passes_pg_url_from_date_and_category_for_jra() -> None:
     argv = build_layer_argv(
         RELATIONSHIP_SCRIPT,

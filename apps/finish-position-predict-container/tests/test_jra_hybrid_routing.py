@@ -60,7 +60,7 @@ def _score(hybrid: _Hybrid) -> list[list[object]]:
         _entries(),
         ["feat"],
         "catboost",
-        "jra-cb-v10-prior-corner274-2013",
+        "jra-cb-v10-prior-corner274-2013-nowin1",
     )
 
 
@@ -72,12 +72,12 @@ def test_hybrid_success_writes_hybrid_model_version() -> None:
 
 def test_hybrid_missing_contract_falls_back() -> None:
     rows = _score(_Hybrid(missing=True))
-    assert all(row[0] == "jra-cb-v10-prior-corner274-2013" for row in rows)
+    assert all(row[0] == "jra-cb-v10-prior-corner274-2013-nowin1" for row in rows)
 
 
 def test_hybrid_exception_falls_back() -> None:
     rows = _score(_Hybrid(fail=True))
-    assert all(row[0] == "jra-cb-v10-prior-corner274-2013" for row in rows)
+    assert all(row[0] == "jra-cb-v10-prior-corner274-2013-nowin1" for row in rows)
 
 
 def test_load_hybrid_accepts_clean_artifact(tmp_path: Path) -> None:

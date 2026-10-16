@@ -157,6 +157,23 @@ def _snapshot_for_entry(
     return odds, WeightSnapshot(bataiju)
 
 
+def _preserve_numeric_nulls(original: Entry, refreshed: Entry) -> Entry:
+    """Keep pandas numeric NULLs as NaN, not scorer's None-to-zero fallback.
+
+    Full builds load numeric parquet NULLs as NaN. Pure late-binding formulas
+    use None for SQL NULL; restore the original numeric representation before
+    inference without changing absent, object or boolean columns.
+    """
+    return {
+        name: math.nan
+        if value is None
+        and isinstance(original.get(name), (float, int))
+        and not isinstance(original.get(name), bool)
+        else value
+        for name, value in refreshed.items()
+    }
+
+
 def apply_fresh_snapshots(
     races: Races,
     snapshots_by_race_key: Mapping[tuple[str, str], RaceFreshSnapshot],
@@ -172,7 +189,7 @@ def apply_fresh_snapshots(
     """
     updated: dict[str, list[Entry]] = {}
     for race_id, entries in races.items():
-        updated[race_id] = recompute_market_signal_features(
+        refreshed = recompute_market_signal_features(
             [
                 apply_late_binding_to_entry(
                     entry,
@@ -185,6 +202,10 @@ def apply_fresh_snapshots(
                 for entry in entries
             ]
         )
+        updated[race_id] = [
+            _preserve_numeric_nulls(original, current)
+            for original, current in zip(entries, refreshed, strict=True)
+        ]
     return updated
 
 

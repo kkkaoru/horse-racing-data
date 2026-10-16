@@ -1,6 +1,6 @@
 {
   "jra": {
-    "enabled": true,
+    "enabled": false,
     "model_version": "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
     "feature_count": 235,
     "architecture": "catboost",
@@ -10,7 +10,7 @@
     "top1_swap_prior3_temperature_lt": 28.0
   },
   "nar": {
-    "enabled": true,
+    "enabled": false,
     "model_version": "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
     "feature_count": 184,
     "architecture": "xgboost",

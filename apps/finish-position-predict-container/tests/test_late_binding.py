@@ -22,8 +22,107 @@ from predict_lib.late_binding import (
     compute_odds_score,
     compute_popularity_score,
     compute_weight_diff,
+    compute_weight_zscore,
     recompute_market_signal_features,
 )
+
+
+def test_popularity_refresh_uses_alias_without_changing_trained_null_column() -> None:
+    entry: dict[str, object] = {"shusso_tosu": None, "shusso_tosu_1": 12}
+    result = apply_late_binding_to_entry(entry, OddsSnapshot(10.8, 3), WeightSnapshot(488.0), "jra")
+    assert result["popularity_score"] == pytest.approx(2 / 11)
+    assert result["shusso_tosu"] is None
+    assert result["shusso_tosu_1"] == 12
+    assert entry == {"shusso_tosu": None, "shusso_tosu_1": 12}
+
+
+def test_market_refresh_replaces_near_miss_features_by_popularity_not_odds_order() -> None:
+    entries: list[dict[str, object]] = [
+        {
+            "tansho_odds_raw": 8.0,
+            "tansho_ninkijun_raw": 2,
+            "shusso_tosu_1": 3,
+            "horse_popularity_vs_field": 99,
+            "field_dominant_favorite_indicator": 99,
+        },
+        {"tansho_odds_raw": 4.0, "tansho_ninkijun_raw": 1, "shusso_tosu": 3},
+        {"tansho_odds_raw": 2.0, "tansho_ninkijun_raw": 3, "shusso_tosu": 3},
+    ]
+    result = recompute_market_signal_features(entries)
+    assert result[0]["horse_popularity_vs_field"] == pytest.approx(2 / 3)
+    assert result[1]["horse_popularity_vs_field"] == pytest.approx(1 / 3)
+    assert result[2]["horse_popularity_vs_field"] == 1.0
+    assert result[0]["field_dominant_favorite_indicator"] == 0.5
+    assert result[1]["field_dominant_favorite_indicator"] == 0.5
+    assert result[2]["field_dominant_favorite_indicator"] == 0.5
+    assert entries[0]["horse_popularity_vs_field"] == 99
+
+
+def test_market_refresh_clears_stale_missing_favorites_and_population() -> None:
+    result = recompute_market_signal_features(
+        [
+            {
+                "tansho_odds_raw": 2.0,
+                "tansho_ninkijun_raw": 1,
+                "horse_popularity_vs_field": 99,
+                "field_dominant_favorite_indicator": 99,
+            },
+            {"tansho_odds_raw": None, "tansho_ninkijun_raw": 2, "shusso_tosu": 0},
+            {"tansho_odds_raw": 5.0, "tansho_ninkijun_raw": None, "shusso_tosu_1": 3},
+        ]
+    )
+    assert result[0]["field_dominant_favorite_indicator"] is None
+    assert result[0]["horse_popularity_vs_field"] is None
+    assert result[1]["horse_popularity_vs_field"] is None
+    assert result[2]["horse_popularity_vs_field"] is None
+
+
+def test_market_refresh_zero_second_odds_preserves_sql_nullif() -> None:
+    result = recompute_market_signal_features(
+        [
+            {"tansho_odds_raw": 2.0, "tansho_ninkijun_raw": 1},
+            {"tansho_odds_raw": 0.0, "tansho_ninkijun_raw": 2},
+        ]
+    )
+    assert result[0]["field_dominant_favorite_indicator"] is None
+
+
+def test_weight_zscore_matches_builder_denominator_and_clamps() -> None:
+    assert compute_weight_zscore(8.0, 4.0) == 2.0
+    assert compute_weight_zscore(8.0, 0.0) == 5.0
+    assert compute_weight_zscore(-8.0, 0.0) == -5.0
+    assert compute_weight_zscore(0.0, 4.0) == 0.0
+
+
+def test_weight_zscore_preserves_duckdb_null_semantics() -> None:
+    assert compute_weight_zscore(None, 4.0) == -5.0
+    assert compute_weight_zscore(2.0, None) == 2.0
+    assert compute_weight_zscore(None, None) == -5.0
+
+
+def test_weight_update_recomputes_stale_zscore_without_changing_history() -> None:
+    entry: dict[str, object] = {
+        "weight_avg_5": 480.0,
+        "weight_volatility_5": 4.0,
+        "weight_zscore": -5.0,
+    }
+    result = apply_late_binding_to_entry(
+        entry, OddsSnapshot(None, None), WeightSnapshot(488.0), "jra"
+    )
+    assert result["weight_zscore"] == 2.0
+    assert result["weight_diff_from_avg"] == 8.0
+    assert result["weight_volatility_5"] == 4.0
+    assert entry["weight_zscore"] == -5.0
+
+
+def test_weight_update_missing_weight_preserves_builder_zscore_default() -> None:
+    result = apply_late_binding_to_entry(
+        {"weight_avg_5": 480.0, "weight_volatility_5": 4.0, "weight_zscore": 2.0},
+        OddsSnapshot(None, None),
+        WeightSnapshot(None),
+        "nar",
+    )
+    assert result["weight_zscore"] == -5.0
 
 
 def test_recompute_market_signal_features_matches_race_level_formulas() -> None:

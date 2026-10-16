@@ -1,0 +1,101 @@
+{
+  "version": "pytorch-mpx-cell-ensemble-nonregress-max-2024-2026-v3",
+  "default_enabled": false,
+  "default_weight": 0.05,
+  "evaluation": {
+    "years": [2024, 2025, 2026],
+    "metric": "winner-in-Top1 through winner-in-Top5 vs production tree scores",
+    "weight": "per-cell analytic crossing sweep on score-blend and rank-blend; among non-regressing weights maximize total Top1-5 extra hits, then Top1..Top5, then smallest weight; take the better of score vs rank per cell",
+    "decision": "ON when a non-regressing weight improves at least one of Top1..Top5",
+    "odds_banned": true,
+    "replaces_cell_models": false,
+    "reports": [
+      "apps/timesfm-finish-position/results/pytorch-mpx-cell-ensemble-nonregress-sum-2024-2026.json",
+      "apps/timesfm-finish-position/results/pytorch-mpx-cell-ensemble-rank-nonregress-2024-2026.json"
+    ]
+  },
+  "categories": {
+    "jra": {
+      "cells": {
+        "joken_010_dirt_intermediate_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.02801771943507278
+        },
+        "joken_005_turf_intermediate_spring_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.20141328804828768
+        },
+        "joken_005_dirt_1700_summer_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.05485942868134047
+        },
+        "joken_703_turf_long_spring_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.031678725678252306
+        },
+        "joken_703_turf_long_summer_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.04177418893425226
+        },
+        "niigata_kinen": {
+          "enabled": true,
+          "weight": 0.3923550523974048
+        },
+        "joken_005_turf_long_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.20005253399862202
+        },
+        "joken_005_dirt_mile_autumn_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.04121882387639069
+        },
+        "joken_701_turf_mile_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.019209920094106776
+        },
+        "joken_005": {
+          "enabled": true,
+          "weight": 0.0033977613829860916
+        },
+        "jockey_pedigree_703": {
+          "enabled": true,
+          "weight": 0.025022400843631477
+        },
+        "joken_703_turf_1400_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.021393428527240403
+        },
+        "joken_703_turf_intermediate_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.02257010376433395
+        },
+        "joken_005_turf_mile_yeti_gated_top1": {
+          "enabled": true,
+          "weight": 0.005891111092688774
+        },
+        "joken_010": {
+          "enabled": true,
+          "weight": 0.0007127622927939356
+        },
+        "joken_701_turf_intermediate_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.031562255736444646
+        },
+        "joken_005_dirt_1800_nonautumn_qsm_gated_top1": {
+          "enabled": true,
+          "weight": 0.005512577509337856
+        },
+        "prior_corner_dirt_smallfield_005": {
+          "enabled": true,
+          "weight": 0.09939832614973335
+        }
+      }
+    },
+    "nar": {
+      "cells": {}
+    },
+    "ban-ei": {
+      "cells": {}
+    }
+  }
+}

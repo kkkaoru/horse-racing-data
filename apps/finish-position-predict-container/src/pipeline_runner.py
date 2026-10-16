@@ -34,6 +34,7 @@ built by the pure, unit-tested ``predict_lib.pipeline_args`` builders.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -919,9 +920,7 @@ def _shared_rs_connection(r2_config: R2Config) -> duckdb.DuckDBPyConnection:
         return connection
 
 
-def _drop_shared_rs_connection(
-    r2_config: R2Config, connection: duckdb.DuckDBPyConnection
-) -> None:
+def _drop_shared_rs_connection(r2_config: R2Config, connection: duckdb.DuckDBPyConnection) -> None:
     """Drop a poisoned shared RS connection so the next call reconnects."""
     with _SOURCE_CONNECTION_LOCK:
         cached = _RS_CONNECTION_CACHE.get((r2_config.account_id, r2_config.bucket))
@@ -2028,6 +2027,7 @@ def _materialize_r2_day_base(
     category: Category,
     target_date: str,
     final_dir: Path,
+    object_key: str | None = None,
 ) -> str | None:
     """GET the R2 day-base object into the hive layout race-chain scripts read.
 
@@ -2035,7 +2035,7 @@ def _materialize_r2_day_base(
     the restored tree does not contain ``race_year=*/*.parquet``. A True GET
     that left only a flat parquet is a miss, never a silent empty HIT.
     """
-    object_key = build_r2_day_base_key(category, target_date)
+    object_key = object_key or build_r2_day_base_key(category, target_date)
     dest_path = r2_day_base_dest_path(final_dir, target_date)
     if not r2_get_parquet(r2_config, object_key, dest_path):
         return "r2-get-failed"
@@ -2052,6 +2052,8 @@ def ensure_day_base(
     r2_config: R2Config | None,
     *,
     known_watermark: DayBaseWatermark | None = None,
+    day_base_key: str | None = None,
+    day_base_etag: str | None = None,
 ) -> Path | None:
     """Resolve the cached day-base parquet dir for category+day, or ``None``.
 
@@ -2108,6 +2110,11 @@ def ensure_day_base(
        full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
        function itself never blocks on a multi-minute build.
 
+    ``day_base_key`` and ``day_base_etag`` pin a published immutable generation.
+    Their pair is mandatory when either is supplied; both the R2 HEAD identity
+    and freshness watermark must match before a GET. The local cache is
+    isolated by key and ETag so a later owner cannot reuse an old generation.
+
     ``known_watermark`` accepts a live watermark the caller already computed
     for this same category+day in the same call (currently the
     :func:`_foundation_readiness_snapshot` in
@@ -2120,7 +2127,16 @@ def ensure_day_base(
     changed between the two queries. ``None`` (default) keeps the
     recompute for every other caller.
     """
+    if (day_base_key is None) != (day_base_etag is None):
+        raise ValueError("day-base key and ETag must be supplied together")
     day_dir = _day_base_dir(category, target_date)
+    if day_base_key is not None and day_base_etag is not None:
+        generation_id = day_base_key.split("/")[-2]
+        if not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,128}", generation_id
+        ) or day_base_key != build_r2_day_base_key(category, target_date, generation_id):
+            raise ValueError("invalid immutable day-base key")
+        day_dir = day_dir / hashlib.sha256(f"{day_base_key}\0{day_base_etag}".encode()).hexdigest()
     final_dir = day_dir / "final"
     if is_catalog_source_url(database_url):
         watermark = (
@@ -2158,15 +2174,26 @@ def ensure_day_base(
             )
             return final_dir
         if r2_config is not None:
-            object_key = build_r2_day_base_key(category, target_date)
+            object_key = day_base_key or build_r2_day_base_key(category, target_date)
             try:
-                r2_watermark = r2_head_watermark(r2_config, object_key)
+                if day_base_etag is not None:
+                    source_head = r2_head_object(r2_config, object_key)
+                    r2_watermark = (
+                        source_head.watermark
+                        if source_head is not None
+                        and source_head.identity is not None
+                        and source_head.identity.etag == day_base_etag
+                        else None
+                    )
+                else:
+                    r2_watermark = r2_head_watermark(r2_config, object_key)
                 if _watermarks_match(r2_watermark, watermark):
                     hive_miss = _materialize_r2_day_base(
                         r2_config=r2_config,
                         category=category,
                         target_date=target_date,
                         final_dir=final_dir,
+                        object_key=object_key,
                     )
                     if hive_miss is None:
                         _write_watermark(day_dir, watermark)
@@ -2231,11 +2258,20 @@ def ensure_day_base(
         _log_day_base_miss(category=category, target_date=target_date, reason="no-r2-config")
         return None
     try:
+        if day_base_key is not None:
+            source_head = r2_head_object(r2_config, day_base_key)
+            if (
+                source_head is None
+                or source_head.identity is None
+                or source_head.identity.etag != day_base_etag
+            ):
+                return None
         hive_miss = _materialize_r2_day_base(
             r2_config=r2_config,
             category=category,
             target_date=target_date,
             final_dir=final_dir,
+            object_key=day_base_key,
         )
         if hive_miss is None:
             debug_log(
@@ -2765,6 +2801,7 @@ def _foundation_readiness_snapshot(
     database_url: str,
     r2_config: R2Config | None,
     allow_stale_running_style: bool = False,
+    day_base_source: tuple[str, str] | None = None,
 ) -> FoundationReadinessSnapshot | None:
     """Capture Catalog, RS and source-object evidence once, failing closed."""
     if r2_config is None or not is_catalog_source_url(database_url):
@@ -2772,9 +2809,15 @@ def _foundation_readiness_snapshot(
     catalog = _catalog_foundation_readiness(category, target_date, target_race, database_url)
     if catalog is None:
         return None
-    source_key = build_foundation_source_key(category, target_date)
+    source_key = (
+        day_base_source[0]
+        if day_base_source is not None
+        else build_foundation_source_key(category, target_date)
+    )
     source_head = r2_head_object(r2_config, source_key)
     if source_head is None or source_head.watermark is None or source_head.identity is None:
+        return None
+    if day_base_source is not None and source_head.identity.etag != day_base_source[1]:
         return None
     if allow_stale_running_style:
         # The Worker has already compared this race's exact RS feature values
@@ -2842,6 +2885,7 @@ def _materialize_r2_race_foundation(
     database_url: str,
     r2_config: R2Config | None,
     readiness: FoundationReadinessSnapshot | None = None,
+    day_base_source: tuple[str, str] | None = None,
 ) -> Path | None:
     """Restore an exact-race typed foundation, returning ``None`` on any gap."""
     if r2_config is None or not is_catalog_source_url(database_url):
@@ -2860,6 +2904,7 @@ def _materialize_r2_race_foundation(
         target_race=target_race,
         database_url=database_url,
         r2_config=r2_config,
+        day_base_source=day_base_source,
     )
     if snapshot is None:
         _log_operational_cache_event(
@@ -2899,6 +2944,7 @@ def _materialize_r2_race_foundation(
         race_bytes=race_bytes,
         source_identity=snapshot.source_identity,
         expected_entries=snapshot.expected_entries,
+        source_key_override=day_base_source[0] if day_base_source is not None else None,
     )
     if result.rows is None or result.schema is None:
         _log_operational_cache_event(
@@ -2978,6 +3024,7 @@ def _materialize_r2_market_signal_foundation(
     target_race: str,
     r2_config: R2Config | None,
     readiness: FoundationReadinessSnapshot | None,
+    day_base_source: tuple[str, str] | None = None,
 ) -> Path | None:
     """Restore an attested Worker market layer, or fail closed to the subprocess."""
     if (
@@ -3073,6 +3120,7 @@ def _materialize_r2_market_signal_foundation(
         race_bytes=foundation_bytes,
         source_identity=readiness.source_identity,
         expected_entries=readiness.expected_entries,
+        source_key_override=day_base_source[0] if day_base_source is not None else None,
     )
     evidence = build_market_signal_base_evidence(
         category=category,
@@ -3084,6 +3132,7 @@ def _materialize_r2_market_signal_foundation(
         source_identity=readiness.source_identity,
         foundation_identity=foundation_head.identity,
         manifest_identity=manifest_head.identity,
+        source_key_override=day_base_source[0] if day_base_source is not None else None,
     )
     if evidence is None:
         _log_operational_cache_event(
@@ -3204,6 +3253,7 @@ def build_upcoming_feature_rows_split(
     r2_config: R2Config | None = None,
     *,
     allow_stale_running_style: bool = False,
+    day_base_source: tuple[str, str] | None = None,
 ) -> Mapping[str, list[Mapping[str, object]]] | None:
     """Focused per-race build via the day-base + RACE_CHAIN split path.
 
@@ -3237,6 +3287,7 @@ def build_upcoming_feature_rows_split(
             database_url=database_url,
             r2_config=r2_config,
             allow_stale_running_style=allow_stale_running_style,
+            day_base_source=day_base_source,
         )
         day_base_dir = _materialize_r2_race_foundation(
             category=category,
@@ -3245,6 +3296,7 @@ def build_upcoming_feature_rows_split(
             database_url=database_url,
             r2_config=r2_config,
             readiness=foundation_readiness,
+            day_base_source=day_base_source,
         )
         foundation_hit = day_base_dir is not None
         if day_base_dir is None:
@@ -3259,6 +3311,8 @@ def build_upcoming_feature_rows_split(
                     if foundation_readiness is not None
                     else None
                 ),
+                day_base_key=day_base_source[0] if day_base_source is not None else None,
+                day_base_etag=day_base_source[1] if day_base_source is not None else None,
             )
         if day_base_dir is None:
             if role is PredictContainerRole.RACE_CHAIN:
@@ -3307,6 +3361,7 @@ def build_upcoming_feature_rows_split(
                 target_race=target_race,
                 r2_config=r2_config,
                 readiness=foundation_readiness,
+                day_base_source=day_base_source,
             )
             if foundation_hit
             else None

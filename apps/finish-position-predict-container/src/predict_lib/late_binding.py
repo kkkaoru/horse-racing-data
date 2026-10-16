@@ -1,7 +1,7 @@
-"""Recompute the 5 late-binding (target-race-only) feature columns from fresh odds/bataiju.
+"""Recompute target-race late-binding features from fresh odds/bataiju.
 
 Stage 2 of the per-race rebuild reads the early-binding history columns from the
-R2 feature cache as-is and overwrites ONLY these 5 columns from the freshest
+R2 feature cache as-is and overwrites the derived columns from the freshest
 realtime odds/weight snapshot, so a re-score never re-runs the 21y Neon scan.
 
 This is the Python twin of ``apps/finish-position-cron/src/scoring/late-binding.ts``
@@ -14,6 +14,7 @@ bit-for-bit.  Builder source-line provenance:
   - ``odds_score``           clamp(ln(greatest(odds, 1)) / ln(300), 0, 1)             L1481-1486
   - ``popularity_score``     clamp((ninkijun - 1) / (runner_count - 1), 0, 1)         L1475-1480
   - ``weight_diff_from_avg`` current_bataiju - weight_avg_5                           L1589
+  - ``weight_zscore``        clamp(weight_diff / greatest(volatility_5, 1), -5, 5)
 
 ``odds_score`` / ``popularity_score`` fall back to the category training median
 when the odds inputs are absent (UPCOMING races before odds publish).
@@ -82,9 +83,15 @@ TANSHO_NINKIJUN_FIELD: Final[str] = "tansho_ninkijun"
 TANSHO_ODDS_RAW_FIELD: Final[str] = "tansho_odds_raw"
 TANSHO_NINKIJUN_RAW_FIELD: Final[str] = "tansho_ninkijun_raw"
 WEIGHT_DIFF_FROM_AVG_FIELD: Final[str] = "weight_diff_from_avg"
+WEIGHT_ZSCORE_FIELD: Final[str] = "weight_zscore"
+WEIGHT_VOLATILITY_5_FIELD: Final[str] = "weight_volatility_5"
+WEIGHT_ZSCORE_MIN_VOLATILITY: Final[float] = 1.0
+WEIGHT_ZSCORE_CLAMP: Final[float] = 5.0
 
 # Entry columns read (NOT overwritten) by the recompute: cache-derived inputs.
 SHUSSO_TOSU_FIELD: Final[str] = "shusso_tosu"
+NEAR_MISS_RUNNER_COUNT_FIELD: Final[str] = "shusso_tosu_1"
+FAVORITE_PAIR_SIZE: Final[int] = 2
 WEIGHT_AVG_5_FIELD: Final[str] = "weight_avg_5"
 UMABAN_FIELD: Final[str] = "umaban"
 
@@ -203,22 +210,44 @@ def compute_weight_diff(
     return current_bataiju - weight_avg_5
 
 
+def compute_weight_zscore(weight_diff: float | None, volatility: float | None) -> float:
+    """Match the builder's DuckDB LEAST/GREATEST, including NULL handling.
+
+    DuckDB ignores NULL arguments to GREATEST: a missing difference produces
+    -5, while missing volatility uses the denominator floor of 1.
+    """
+    if weight_diff is None:
+        return -WEIGHT_ZSCORE_CLAMP
+    denominator = max(
+        WEIGHT_ZSCORE_MIN_VOLATILITY if volatility is None else volatility,
+        WEIGHT_ZSCORE_MIN_VOLATILITY,
+    )
+    return min(WEIGHT_ZSCORE_CLAMP, max(-WEIGHT_ZSCORE_CLAMP, weight_diff / denominator))
+
+
+def _runner_count(entry: dict[str, object]) -> int | None:
+    # The near-miss layer deliberately preserves a trained all-NULL base column.
+    # Read its populated alias for derived features; never overwrite either input.
+    count = coerce_optional_int(entry.get(SHUSSO_TOSU_FIELD))
+    return coerce_optional_int(entry.get(NEAR_MISS_RUNNER_COUNT_FIELD)) if count is None else count
+
+
 def apply_late_binding_to_entry(
     entry: dict[str, object],
     odds_snapshot: OddsSnapshot,
     weight_snapshot: WeightSnapshot,
     category: Category,
 ) -> dict[str, object]:
-    """Return a copy of ``entry`` with the 5 late-binding columns recomputed.
+    """Return a copy of ``entry`` with late-binding columns recomputed.
 
     The early-binding columns are preserved verbatim from the cache.  The
     runner-count denominator for ``popularity_score`` is the entry's cached
-    ``shusso_tosu`` (the field never changes between morning build and rescore),
+    ``shusso_tosu`` or its populated near-miss alias ``shusso_tosu_1``,
     and the history side of ``weight_diff_from_avg`` is the entry's cached
     ``weight_avg_5``.  Only the latest odds / bataiju drive the recompute, so a
     ``None`` snapshot reproduces the builder's median / NULL fallback exactly.
     """
-    runner_count = coerce_optional_int(entry.get(SHUSSO_TOSU_FIELD))
+    runner_count = _runner_count(entry)
     weight_avg_5 = coerce_optional_float(entry.get(WEIGHT_AVG_5_FIELD))
     updated = dict(entry)
     updated[TANSHO_ODDS_FIELD] = odds_snapshot.tansho_odds
@@ -229,8 +258,10 @@ def apply_late_binding_to_entry(
     updated[POPULARITY_SCORE_FIELD] = compute_popularity_score(
         odds_snapshot.tansho_ninkijun, runner_count, category
     )
-    updated[WEIGHT_DIFF_FROM_AVG_FIELD] = compute_weight_diff(
-        weight_snapshot.current_bataiju, weight_avg_5
+    weight_diff = compute_weight_diff(weight_snapshot.current_bataiju, weight_avg_5)
+    updated[WEIGHT_DIFF_FROM_AVG_FIELD] = weight_diff
+    updated[WEIGHT_ZSCORE_FIELD] = compute_weight_zscore(
+        weight_diff, coerce_optional_float(entry.get(WEIGHT_VOLATILITY_5_FIELD))
     )
     return updated
 
@@ -247,6 +278,31 @@ def _competition_ranks(values: list[float | None], *, descending: bool) -> list[
             prior = value
         ranks[index] = rank
     return ranks
+
+
+def _favorite_popularity(pair: tuple[float, float]) -> float:
+    return pair[0]
+
+
+def _favorite_dominance(odds: list[float | None], popularity: list[float | None]) -> float | None:
+    # Match near-miss SQL: ignore missing odds/ranks and use popularity order,
+    # not minimum odds. Stable ordering preserves input order for tied ranks.
+    ranked = sorted(
+        [
+            (rank, price)
+            for price, rank in zip(odds, popularity, strict=True)
+            if price is not None and rank is not None
+        ],
+        key=_favorite_popularity,
+    )
+    if len(ranked) < FAVORITE_PAIR_SIZE or ranked[1][1] == 0:
+        return None
+    return ranked[0][1] / ranked[1][1]
+
+
+def _popularity_vs_field(popularity: float | None, entry: dict[str, object]) -> float | None:
+    count = _runner_count(entry)
+    return None if popularity is None or count is None or count == 0 else popularity / count
 
 
 def recompute_market_signal_features(entries: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -273,12 +329,15 @@ def recompute_market_signal_features(entries: list[dict[str, object]]) -> list[d
         if any(value is not None for value in popularity_scores)
         else None
     )
+    field_dominance = _favorite_dominance(odds, popularity)
     updated_entries: list[dict[str, object]] = []
     for index, entry in enumerate(entries):
         updated = dict(entry)
         implied_value = implied[index]
         odds_score = odds_scores[index]
         popularity_score = popularity_scores[index]
+        updated["field_dominant_favorite_indicator"] = field_dominance
+        updated["horse_popularity_vs_field"] = _popularity_vs_field(popularity[index], entry)
         updated["inverse_odds_implied_prob"] = implied_value
         updated["inverse_odds_market_share"] = (
             None if implied_value is None or implied_total <= 0 else implied_value / implied_total

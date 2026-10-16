@@ -60,7 +60,7 @@ def test_build_prediction_rows_columns_jra_no_entry() -> None:
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked)
     assert rows == [
         [
-            "jra-cb-v9-sim-2013-clean",
+            "jra-cb-v9-sim-2013-clean-nowin1",
             "jra",
             "2024",
             "0101",
@@ -101,7 +101,7 @@ def test_build_prediction_rows_jra_with_entry_populates_subgroups() -> None:
     rows = build_prediction_rows("jra:2024:0405:05:08", "jra", ranked, None, entries[0])
     assert rows == [
         [
-            "jra-cb-v9-sim-2013-clean",
+            "jra-cb-v9-sim-2013-clean-nowin1",
             "jra",
             "2024",
             "0405",
@@ -140,7 +140,7 @@ def test_build_prediction_rows_nar_with_entry_uses_nar_subclass() -> None:
     ]
     ranked = rank_race_entries(entries, [0.7])
     rows = build_prediction_rows("nar:2026:0723:54:11", "nar", ranked, None, entries[0])
-    assert rows[0][0] == "iter12-nar-xgb-hpo-v8-clean188"
+    assert rows[0][0] == "iter12-nar-xgb-hpo-v8-clean188-nowin1"
     assert rows[0][17] == "sprint"
     assert rows[0][18] == "medium"
     assert rows[0][19] == "summer"
@@ -162,7 +162,7 @@ def test_build_prediction_rows_banei_class_code_none() -> None:
     ]
     ranked = rank_race_entries(entries, [0.1])
     rows = build_prediction_rows("ban-ei:2026:1201:83:07", "ban-ei", ranked, None, entries[0])
-    assert rows[0][0] == "banei-cb-v9-sim-2011"
+    assert rows[0][0] == "banei-cb-v9-sim-2011-nowin1"
     assert rows[0][17] == "sprint"
     assert rows[0][18] == "small"
     assert rows[0][19] == "winter"
@@ -181,7 +181,7 @@ def test_build_prediction_rows_falls_back_to_category_when_none_passed() -> None
     entries = [{"ketto_toroku_bango": "111", "umaban": 1}]
     ranked = rank_race_entries(entries, [0.42])
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked, None)
-    assert rows[0][0] == "jra-cb-v9-sim-2013-clean"
+    assert rows[0][0] == "jra-cb-v9-sim-2013-clean-nowin1"
 
 
 def test_build_prediction_rows_entry_string_kyori_coerced() -> None:

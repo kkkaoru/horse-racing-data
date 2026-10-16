@@ -123,7 +123,7 @@ _REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
-    {"top1_swap_base_model_version", "top1_swap_prior3_temperature_lt"}
+    {"top1_swap_base_model_version", "top1_swap_prior3_temperature_lt", "force_market_free"}
 )
 _ARCHITECTURES: Final[frozenset[str]] = frozenset(get_args(Architecture))
 PRIOR3_TEMPERATURE_FIELD: Final[str] = "venue_temperature_prior3"
@@ -136,6 +136,7 @@ desync this module's row-reading from the real layout."""
 
 Stage1GateReason = Literal[
     "disabled",
+    "forced-market-free",
     "fresh",
     "named-race-cell",
     "odds-missing",
@@ -157,6 +158,7 @@ class Stage1CategoryConfig:
     enable_stddev_safety_net: bool
     top1_swap_base_model_version: str | None = None
     top1_swap_prior3_temperature_lt: float | None = None
+    force_market_free: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,13 @@ def _optional_non_empty_string(payload: Mapping[str, object], key: str, context:
     return value
 
 
+def _optional_bool(payload: Mapping[str, object], key: str, context: str) -> bool:
+    value = payload.get(key, False)
+    if not isinstance(value, bool):
+        raise Stage1RoutingValidationError(f"{context}.{key} must be a boolean when present")
+    return value
+
+
 def _optional_positive_number(
     payload: Mapping[str, object], key: str, context: str
 ) -> float | None:
@@ -251,6 +260,7 @@ def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig
         top1_swap_prior3_temperature_lt=_optional_positive_number(
             payload, "top1_swap_prior3_temperature_lt", context
         ),
+        force_market_free=_optional_bool(payload, "force_market_free", context),
     )
 
 
@@ -471,9 +481,17 @@ def resolve_stage1_gate(
     unused) when the net is disabled, and the reported ``stddev`` is ``None``
     -- there is nothing meaningful to report for a metric that structurally
     cannot signal anything for that category.
+
+    ``config.force_market_free`` routes every race of the category to Stage-1
+    unconditionally (named-race cells included). It is the stop-gap for a
+    category whose Stage-2 models still read win odds after the win-odds ban:
+    the market-free Stage-1 booster serves until the retrained Stage-2 models
+    are released.
     """
     if config is None or not config.enabled:
         return Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
+    if config.force_market_free:
+        return Stage1GateDecision(use_stage1=True, reason="forced-market-free", stddev=None)
     if skip_named_race_cell:
         return Stage1GateDecision(use_stage1=False, reason="named-race-cell", stddev=None)
     if not race_has_fresh_odds(entries):

@@ -415,6 +415,25 @@ def fetch_odds_for_race(
     return extract_rows(keibajo_code, race_bango, response)
 
 
+def fetch_latest_odds_for_race(
+    fetcher: RealtimeOddsFetcher,
+    source: str,
+    target_date: str,
+    keibajo_code: str,
+    race_bango: str,
+) -> dict[str, object] | None:
+    """Return the hot worker's ``latest`` odds map for one race, or None on any error."""
+    race_key = build_race_key(source, target_date, keibajo_code, race_bango)
+    url = f"{HOT_WORKER_BASE_URL}/{encode_race_key(race_key)}"
+    try:
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
+        debug_log(f"[realtime-odds] latest fetch failed race_key={race_key} error={exc}")
+        return None
+    latest = response.get("latest")
+    return latest if isinstance(latest, dict) else None
+
+
 def fetch_odds_and_sanrenpuku_for_race(
     fetcher: RealtimeOddsFetcher,
     source: str,

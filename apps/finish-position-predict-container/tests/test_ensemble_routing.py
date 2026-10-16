@@ -54,14 +54,14 @@ from predict_lib.model_meta import Architecture, Category
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
-JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013-clean"
+JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013-clean-nowin1"
 # iter 25/26 JRA per-class ensembles were active through 2026-06-12; iter 19
 # (2026-06-13) dropped all JRA per-class entries from the registry (base-only).
 # Tests that exercise the JRA ensemble code path inject the registry via
 # monkeypatch so they remain meaningful even after the flip.
 JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
 ITER22_RESIDUAL_703: str = "iter22-jra-cb-residual-703-v8"
-NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8-clean188"
+NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8-clean188-nowin1"
 NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-NEW-v8"
 NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
 # iter 36 NAR class-C: ensemble label + the LightGBM LambdaRank residual member.

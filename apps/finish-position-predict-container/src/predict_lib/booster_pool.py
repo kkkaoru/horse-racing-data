@@ -34,6 +34,7 @@ from pathlib import Path
 
 from .model_meta import (
     Architecture,
+    assert_no_banned_market_features,
     assert_no_within_race_leak_columns,
     member_model_file_name,
 )
@@ -101,6 +102,7 @@ def load_member_feature_names(metadata_json_path: Path) -> tuple[str, ...]:
     assert_no_within_race_leak_columns(
         feature_names, context=f"member metadata {metadata_json_path}"
     )
+    assert_no_banned_market_features(feature_names, context=f"member metadata {metadata_json_path}")
     return tuple(feature_names)
 
 

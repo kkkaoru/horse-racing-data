@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "4a6963f9ad41b7d11f35485fae9a7561d5ef1052ed0cdbe79c659e7508804332"
+EXPECTED_MANIFEST_ROOT = "821172ac7f8bf8e2f714beba223e12f8dfbaa32717717d253793a9d12ec4a10d"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -81,12 +81,20 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
 
     assert manifest.schema_version == "production-artifacts/v1"
     assert len(manifest.artifacts) == 148
-    assert len(selected) == 144
+    assert len(selected) == 138
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
     assert report.findings == ()
     assert report.warnings == (
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-cb-stage1-marketfree235-2013/metadata.json",
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-cb-stage1-marketfree235-2013/model.json",
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-cb-stage1-marketfree235-iter500-top1swap-2013/metadata.json",
+        "unselected manifest artifact: "
+        "finish-position/jra/jra-cb-stage1-marketfree235-iter500-top1swap-2013/model.json",
         "unselected manifest artifact: "
         "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json",
         "unselected manifest artifact: "
@@ -94,31 +102,45 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
         "unselected manifest artifact: "
         "finish-position/jra/jra-named-niigata-kinen-v1/metadata.json",
         "unselected manifest artifact: finish-position/jra/jra-named-niigata-kinen-v1/model.json",
+        "unselected manifest artifact: "
+        "finish-position/nar/iter12-nar-xgb-hpo-v8-stage1-marketfree-184/metadata.json",
+        "unselected manifest artifact: "
+        "finish-position/nar/iter12-nar-xgb-hpo-v8-stage1-marketfree-184/model.json",
     )
     manifested = {artifact.serving_key for artifact in manifest.artifacts}
     assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json" in manifested
     assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json" in manifested
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2/metadata.json" in selected
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2/model.json" in selected
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3/metadata.json" in selected
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3/model.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-nowin1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-nowin1/model.json" in selected
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3/metadata.json" in selected
-    )
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3/model.json" in selected
-    assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/metadata.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-nowin1/metadata.json"
         in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/model.json" in selected
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-nowin1/model.json" in selected
+    )
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-nowin1/metadata.json"
+        in selected
+    )
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-nowin1/model.json"
+        in selected
+    )
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1/metadata.json"
+        in selected
+    )
+    assert (
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1/model.json"
+        in selected
     )
     assert "finish-position/jra/jra-named-niigata-kinen-v1/metadata.json" in manifested
     assert "finish-position/jra/jra-named-niigata-kinen-v1/model.json" in manifested
-    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2/metadata.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2/model.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-going-v2/metadata.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-going-v2/model.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-nowin1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-nowin1/model.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-nowin1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-nowin1/model.json" in selected
 
 
 def test_manifest_records_exact_jra_running_style_pair() -> None:
@@ -130,16 +152,14 @@ def test_manifest_records_exact_jra_running_style_pair() -> None:
     }
 
     assert artifacts[JRA_RS_MODEL_KEY].sha256 == (
-        "278690ed18e7aa1f6847ee4349b1ec98281a5633cc10bd000de55c608ffbfc76"
+        "549028cc1c0bd9ede33abc832aa82256341aff1493d2ba5970ac6ea7ab149e42"
     )
-    assert artifacts[JRA_RS_MODEL_KEY].size_bytes == 50943889
+    assert artifacts[JRA_RS_MODEL_KEY].size_bytes == 40054623
     assert artifacts[JRA_RS_CALIBRATOR_KEY].sha256 == (
-        "0f23a5a40dea956b1de06699432e130beb86dc3448bd3188485e60d1a7067ee7"
+        "8024929b2b2c41cc65274134f73397eeaf1dd8899b91359a479dafc2753efc77"
     )
-    assert artifacts[JRA_RS_CALIBRATOR_KEY].size_bytes == 23212
-    assert artifacts[JRA_RS_MODEL_KEY].release_id == (
-        "jra-running-style-lgbm-prod-v3-fixed-export-rollback-refit-20260711"
-    )
+    assert artifacts[JRA_RS_CALIBRATOR_KEY].size_bytes == 22480
+    assert artifacts[JRA_RS_MODEL_KEY].release_id == "jra-running-style-lgbm-prod-v3-nowin1"
     # Model and calibrator are DIFFERENT bundles (a shared calibrator can serve
     # multiple routed models -- see test_shared_calibrator_* below), not a
     # forced 1:1 bundle pairing.
@@ -175,12 +195,12 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 140
+    assert len(selected) == 134
     assert report.status == "MATCH"
-    assert len(report.warnings) == 8
+    assert len(report.warnings) == 14
     assert (
         "unselected manifest artifact: "
-        "finish-position/nar/iter40-nar-settransformer-blend-v1/norm.json"
+        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/norm.json"
     ) in report.warnings
     assert (
         "unselected manifest artifact: "
@@ -662,7 +682,7 @@ def test_parse_rejects_finish_position_key_for_different_model() -> None:
 def test_parse_rejects_finish_position_container_key_mismatch() -> None:
     payload = _payload()
     _artifact_payload(payload)["container_path"] = (
-        "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y/other.json"
+        "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin1/other.json"
     )
 
     with pytest.raises(ManifestValidationError, match="must mirror"):
@@ -1010,7 +1030,15 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":144,"status":"MATCH","warnings":['
+        '"observed_count":0,"selected_count":138,"status":"MATCH","warnings":['
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-cb-stage1-marketfree235-2013/metadata.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-cb-stage1-marketfree235-2013/model.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-cb-stage1-marketfree235-iter500-top1swap-2013/metadata.json",'
+        '"unselected manifest artifact: '
+        'finish-position/jra/jra-cb-stage1-marketfree235-iter500-top1swap-2013/model.json",'
         '"unselected manifest artifact: '
         'finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json",'
         '"unselected manifest artifact: '
@@ -1018,7 +1046,11 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         '"unselected manifest artifact: '
         'finish-position/jra/jra-named-niigata-kinen-v1/metadata.json",'
         '"unselected manifest artifact: '
-        'finish-position/jra/jra-named-niigata-kinen-v1/model.json"]}'
+        'finish-position/jra/jra-named-niigata-kinen-v1/model.json",'
+        '"unselected manifest artifact: '
+        'finish-position/nar/iter12-nar-xgb-hpo-v8-stage1-marketfree-184/metadata.json",'
+        '"unselected manifest artifact: '
+        'finish-position/nar/iter12-nar-xgb-hpo-v8-stage1-marketfree-184/model.json"]}'
     )
 
 
@@ -1028,7 +1060,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 144
+    assert output["selected_count"] == 138
 
 
 def test_main_missing_local_artifacts_fail(
@@ -1055,7 +1087,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 144
+    assert output["selected_count"] == 138
 
 
 def test_main_stage_requires_artifact_root_and_system(
@@ -1078,7 +1110,8 @@ def test_main_stages_only_after_successful_verification(
     artifact = next(
         item
         for item in manifest.artifacts
-        if item.serving_key == "finish-position/jra/jra-cb-v10-prior-corner274-2013/model.json"
+        if item.serving_key
+        == "finish-position/jra/jra-cb-v10-prior-corner274-2013-nowin1/model.json"
     )
     artifact_root = tmp_path / "models"
     stage_root = tmp_path / "staged"
@@ -1125,7 +1158,7 @@ def test_main_stages_only_after_successful_verification(
         (
             artifact_root,
             stage_root,
-            frozenset({"finish-position/jra/jra-cb-v10-prior-corner274-2013/model.json"}),
+            frozenset({"finish-position/jra/jra-cb-v10-prior-corner274-2013-nowin1/model.json"}),
         )
     ]
 
@@ -1164,7 +1197,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 140
+    assert output["selected_count"] == 134
 
 
 # ---------------------------------------------------------------------------
@@ -1336,7 +1369,7 @@ def test_nar_transformer_default_ignores_ambient_environment_variable(
     selected = derive_selected_artifact_keys()
 
     assert any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
         for key in selected
     )
 
@@ -1347,7 +1380,7 @@ def test_nar_transformer_deploy_flags_path_can_override_tracked_value(tmp_path: 
     selected = derive_selected_artifact_keys(deploy_flags_path=flags_path)
 
     assert not any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
         for key in selected
     )
 
@@ -1360,7 +1393,7 @@ def test_nar_transformer_explicit_override_wins_over_tracked_file(tmp_path: Path
     )
 
     assert any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
         for key in selected
     )
 
@@ -1389,13 +1422,18 @@ def _write_stage1_routing(tmp_path: Path, payload: object) -> Path:
     return path
 
 
-def test_tracked_stage1_routing_is_selected_by_default() -> None:
-    """The live tracked stage1_routing.json enables JRA -- its artifact must
-    always be in the selector closure, matching the live manifest bundle."""
+def test_tracked_stage1_routing_keeps_jra_fallback_unselected() -> None:
+    """The live tracked stage1_routing.json disables the JRA fallback (the
+    win-odds-free per-cell models serve every race), so neither JRA stage1
+    artifact is in the selector closure, and neither is the NAR fallback since
+    NAR's win-odds-free models were released too."""
     selected = derive_selected_artifact_keys()
 
-    assert any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
-    assert any(key.startswith(_STAGE1_JRA_BASE_KEY_PREFIX) for key in selected)
+    assert not any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
+    assert not any(key.startswith(_STAGE1_JRA_BASE_KEY_PREFIX) for key in selected)
+    assert (
+        "finish-position/nar/iter12-nar-xgb-hpo-v8-stage1-marketfree-184/model.json" not in selected
+    )
 
 
 def test_stage1_routing_path_can_disable_selection(tmp_path: Path) -> None:

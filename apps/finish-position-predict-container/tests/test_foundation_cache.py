@@ -32,6 +32,7 @@ def _payloads(
     race_contract_updates: Mapping[str, object] | None = None,
     race_updates: Mapping[str, object] | None = None,
     row_updates: Mapping[str, object] | None = None,
+    source_key_override: str | None = None,
 ) -> tuple[bytes, bytes, frozenset[str]]:
     source = "jra" if category == "jra" else "nar"
     race_id = (
@@ -52,7 +53,7 @@ def _payloads(
     ]
     source_contract: dict[str, object] = {
         "etag": "source-etag",
-        "key": build_foundation_source_key(category, target_date),
+        "key": source_key_override or build_foundation_source_key(category, target_date),
         "version": "source-version",
     }
     manifest_contract: dict[str, object] = {
@@ -154,6 +155,37 @@ def test_validate_foundation_objects_accepts_exact_contract(
         "INT64",
         "DOUBLE",
     ]
+
+
+def test_validate_foundation_objects_accepts_only_the_resolved_generation_key() -> None:
+    manifest, race, entries = _payloads(
+        source_key_override="feat-daybase/catalog-v1/jra/20260823/generations/owner-1/features.parquet"
+    )
+    assert (
+        validate_foundation_objects(
+            category="jra",
+            target_date="20260823",
+            target_race="1:2",
+            manifest_bytes=manifest,
+            race_bytes=race,
+            source_identity=R2ObjectIdentity("source-etag", "source-version"),
+            expected_entries=entries,
+        ).reason
+        == "manifest-source-mismatch"
+    )
+    assert (
+        validate_foundation_objects(
+            category="jra",
+            target_date="20260823",
+            target_race="1:2",
+            manifest_bytes=manifest,
+            race_bytes=race,
+            source_identity=R2ObjectIdentity("source-etag", "source-version"),
+            expected_entries=entries,
+            source_key_override="feat-daybase/catalog-v1/jra/20260823/generations/owner-1/features.parquet",
+        ).reason
+        == "hit"
+    )
 
 
 def test_validate_foundation_objects_accepts_stable_source_attestation() -> None:

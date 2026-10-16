@@ -59,7 +59,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, cast, final, get_args, override
+from typing import TYPE_CHECKING, Final, Literal, cast, final, get_args, override
+
+from duckdb import Error as DuckDbError
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -123,6 +125,13 @@ from predict_lib.jra_joint_alternate_scorer import (
 )
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.lock1_rerank import apply_lock1_rerank_rest
+from predict_lib.market_deviation import (
+    RaceOddsPools,
+    attach_market_deviation,
+    baseline_path,
+    load_baseline,
+    pools_from_latest,
+)
 from predict_lib.model_meta import (
     CATEGORIES,
     JRA_DIRT_HYBRID_ENABLED,
@@ -140,6 +149,7 @@ from predict_lib.model_meta import (
     Architecture,
     Category,
     architecture_for,
+    assert_no_banned_market_features,
     assert_no_within_race_leak_columns,
     assert_production_model_version_allowed,
     build_r2_jra_dirt_hybrid_key,
@@ -159,6 +169,7 @@ from predict_lib.prophet_adjustment import (
     adjust_prediction_rows_with_prophet,
     configured_prophet_weight,
 )
+from predict_lib.pytorch_mpx_blend import adjust_prediction_rows_with_pytorch_mpx
 from predict_lib.r2_client import (
     R2ObjectIdentity,
     r2_get_parquet,
@@ -206,6 +217,7 @@ from predict_lib.serve import (
     build_r2_running_style_foundation_key,
     current_allow_post_time_rescore,
     current_allow_race_scoped_day_base,
+    current_day_base_source,
     is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
@@ -218,6 +230,7 @@ from predict_lib.serve import (
     run_prewarm_in_background,
 )
 from predict_lib.served_branch import ServedBranch
+from predict_lib.serving_evidence import ServingEvidence, freeze_rescore_payloads
 from predict_lib.stage1_routing import (
     STAGE1_ROUTING_PATH,
     Stage1CategoryConfig,
@@ -235,6 +248,9 @@ from predict_lib.transformer_scorer import (
     load_transformer,
 )
 from predict_lib.upcoming import build_prediction_rows, rank_race_entries
+
+if TYPE_CHECKING:
+    from realtime_odds_fetcher import RealtimeOddsFetcher
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
     build_upsert_sql,
@@ -407,6 +423,11 @@ def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
     assert_no_within_race_leak_columns(
         feature_names,
         context=f"category default metadata category={category}",
+    )
+    assert_no_banned_market_features(
+        feature_names,
+        context=f"category default metadata category={category}",
+        category=category,
     )
     assert_feature_count(feature_names, feature_count_for(category))
     return feature_names
@@ -868,6 +889,10 @@ def _load_dynamic_market_shadow_models(
                     expert_features,
                     context=f"dynamic-market shadow expert={model_version}",
                 )
+                assert_no_banned_market_features(
+                    expert_features,
+                    context=f"dynamic-market shadow expert={model_version}",
+                )
                 booster = _load_booster_by_arch(artifact_dir / MODEL_FILE_NAME, "catboost")
                 if not _variant_booster_feature_order_matches(booster, "catboost", expert_features):
                     raise ValueError(
@@ -960,6 +985,11 @@ def _load_model_bundle(
             assert_no_within_race_leak_columns(
                 variant_feature_names,
                 context=f"cell-routing variant={variant_name} category={category}",
+            )
+            assert_no_banned_market_features(
+                variant_feature_names,
+                context=f"cell-routing variant={variant_name} category={category}",
+                category=category,
             )
             assert_feature_count(variant_feature_names, variant_spec.feature_count)
             _validate_variant_feature_contract(
@@ -1110,6 +1140,7 @@ def score_races(
     race_names_by_race_id: Mapping[str, Mapping[str, object]] | None = None,
     evaluation_variants_by_race_id: Mapping[str, str] | None = None,
     served_signatures_by_race_id: MutableMapping[str, str] | None = None,
+    serving_evidence_by_race_id: MutableMapping[str, ServingEvidence] | None = None,
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
 
@@ -1390,6 +1421,27 @@ def score_races(
         )
         if served_signature is not None and served_signatures_by_race_id is not None:
             served_signatures_by_race_id[race_id] = served_signature
+        pytorch_adjustment = adjust_prediction_rows_with_pytorch_mpx(
+            rows,
+            entries,
+            category,
+            cell_variant=prophet_cell,
+            branch_variant=prophet_branch,
+            served_signature=served_signature,
+        )
+        if pytorch_adjustment.applied:
+            if serving_evidence_by_race_id is not None and served_signature is not None:
+                serving_evidence_by_race_id[race_id] = ServingEvidence(
+                    served_signature, prophet_cell, "pytorch-mpx", None
+                )
+            rows = pytorch_adjustment.rows
+            debug_log(
+                f"[pytorch-mpx-blend] race={race_id} category={category} "
+                f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
+                "status=applied"
+            )
+            scored.append(rows)
+            continue
         neural_adjustment = adjust_prediction_rows_with_neural(
             rows,
             entries,
@@ -1399,6 +1451,10 @@ def score_races(
             served_signature=served_signature,
         )
         if neural_adjustment.applied:
+            if serving_evidence_by_race_id is not None and served_signature is not None:
+                serving_evidence_by_race_id[race_id] = ServingEvidence(
+                    served_signature, prophet_cell, "neural", None
+                )
             rows = neural_adjustment.rows
             debug_log(
                 f"[neural-blend] race={race_id} category={category} "
@@ -1415,6 +1471,19 @@ def score_races(
             branch_variant=prophet_branch,
             served_signature=served_signature,
         )
+        prophet_weight = configured_prophet_weight(
+            category,
+            cell_variant=prophet_cell,
+            branch_variant=prophet_branch,
+            served_signature=served_signature,
+        )
+        if serving_evidence_by_race_id is not None and served_signature is not None:
+            serving_evidence_by_race_id[race_id] = ServingEvidence(
+                served_signature,
+                prophet_cell,
+                "prophet" if prophet_adjustment.applied else "none",
+                prophet_weight,
+            )
         if prophet_adjustment.applied:
             rows = prophet_adjustment.rows
             debug_log(
@@ -1422,15 +1491,7 @@ def score_races(
                 f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
                 "status=applied"
             )
-        elif (
-            configured_prophet_weight(
-                category,
-                cell_variant=prophet_cell,
-                branch_variant=prophet_branch,
-                served_signature=served_signature,
-            )
-            is not None
-        ):
+        elif prophet_weight is not None:
             debug_log(
                 f"[prophet-adjustment] race={race_id} category={category} "
                 f"cell={prophet_cell} branch={prophet_branch} signature={served_signature} "
@@ -1778,6 +1839,10 @@ def _load_jra_dirt_hybrid(models_dir: Path, feature_names: Sequence[str]) -> Jra
             scorer.feature_order,
             context=f"JRA hybrid model_version={JRA_DIRT_HYBRID_MODEL_VERSION}",
         )
+        assert_no_banned_market_features(
+            scorer.feature_order,
+            context=f"JRA hybrid model_version={JRA_DIRT_HYBRID_MODEL_VERSION}",
+        )
     except BaseException as load_error:
         debug_log(f"[jra-dirt-hybrid] load failed -> prior-corner-only: {load_error}")
         return None
@@ -1817,6 +1882,11 @@ def _load_nar_transformer(
         assert_no_within_race_leak_columns(
             transformer.feature_order,
             context=f"NAR transformer model_version={NAR_TRANSFORMER_MODEL_VERSION}",
+        )
+        assert_no_banned_market_features(
+            transformer.feature_order,
+            context=f"NAR transformer model_version={NAR_TRANSFORMER_MODEL_VERSION}",
+            category="nar",
         )
     except ValueError as leak_error:
         debug_log(f"[nar-transformer] leak guard failed -> ensemble-only: {leak_error}")
@@ -2288,6 +2358,46 @@ def _load_race_names_by_race_id(
     return names
 
 
+def fetch_market_deviation_pools_with(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+    fetcher: RealtimeOddsFetcher,
+) -> dict[str, RaceOddsPools]:
+    """Fetch the latest umaren / 3renpuku pools for every race (I/O only).
+
+    Races whose odds are not yet published or whose fetch fails are omitted, so
+    :func:`attach_market_deviation` leaves their deviation columns NaN.
+    """
+    from predict_lib.race_id import parse_race_id
+    from realtime_odds_fetcher import fetch_latest_odds_for_race  # bundled in image
+
+    futures: dict[str, Future[dict[str, object] | None]] = {}
+    with ThreadPoolExecutor(max_workers=FRESH_SNAPSHOT_MAX_WORKERS) as executor:
+        for race_id in races:
+            parts = parse_race_id(race_id)
+            futures[race_id] = executor.submit(
+                fetch_latest_odds_for_race,
+                fetcher,
+                parts.source,
+                f"{parts.kaisai_nen}{parts.kaisai_tsukihi}",
+                parts.keibajo_code,
+                parts.race_bango,
+            )
+    return {
+        race_id: pools_from_latest(latest)
+        for race_id, future in futures.items()
+        if (latest := future.result()) is not None
+    }
+
+
+def fetch_market_deviation_pools(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+) -> dict[str, RaceOddsPools]:
+    """Production wrapper: fetch pools through the live hot-worker HTTP fetcher."""
+    from realtime_odds_fetcher import HttpRealtimeOddsFetcher  # bundled in image
+
+    return fetch_market_deviation_pools_with(races, HttpRealtimeOddsFetcher())
+
+
 def _score_and_flush_races(
     database_url: str,
     category: Category,
@@ -2298,6 +2408,7 @@ def _score_and_flush_races(
     source_url: str | None = None,
     *,
     allow_after_race_start: bool = False,
+    serving_evidence_by_race_id: MutableMapping[str, ServingEvidence] | None = None,
 ) -> int:
     """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
 
@@ -2310,6 +2421,12 @@ def _score_and_flush_races(
     if race_start_at_jst is not None and not allow_after_race_start:
         _assert_before_race_start(race_start_at_jst)
     race_names_by_race_id = _load_race_names_by_race_id(races, source_url)
+    # Win odds are banned as model inputs; the only odds-derived inputs are the
+    # umaren / sanrenpuku deviation columns, refreshed from the latest pools here
+    # so full builds and rescores serve the same values.
+    races = attach_market_deviation(
+        races, fetch_market_deviation_pools(races), load_baseline(baseline_path(), category)
+    )
     scored = score_races(
         races,
         category,
@@ -2317,6 +2434,7 @@ def _score_and_flush_races(
         None,
         card_max_race_bango=card_max_race_bango,
         race_names_by_race_id=race_names_by_race_id,
+        serving_evidence_by_race_id=serving_evidence_by_race_id,
     )
     if race_start_at_jst is not None:
         if not allow_after_race_start:
@@ -2443,6 +2561,7 @@ def _load_stage1_variant_artifact(
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     feature_names = [str(name) for name in metadata["feature_names"]]
     assert_no_within_race_leak_columns(feature_names, context=context)
+    assert_no_banned_market_features(feature_names, context=context, category=category)
     assert_feature_count(feature_names, feature_count)
     if not _variant_booster_feature_order_matches(booster, architecture, feature_names):
         raise ValueError(
@@ -2531,8 +2650,8 @@ def _build_feature_rows(
     day-base instead of the full ``LAYER_CHAIN``. When that path returns
     ``None`` (day-base unavailable, entry-list drift, or any error) this falls
     through unchanged to the existing full ``build_upcoming_feature_rows``
-    call below -- the split path is purely an opt-in fast path, never a
-    behavioural change to the fallback.
+    call below -- except when an immutable source was pinned, in which case
+    a miss must fail closed instead of rebuilding from the legacy alias.
 
     A scoped ``mode=rescore`` CacheMiss fallback
     (:func:`predict_lib.serve.is_scoped_rescore_cache_miss_fallback`) skips the
@@ -2559,6 +2678,7 @@ def _build_feature_rows(
         is_day_base_split_enabled(category) and not is_scoped_rescore_cache_miss_fallback()
     )
     if target_race is not None and use_split:
+        day_base_source = current_day_base_source()
         split_rows = build_upcoming_feature_rows_split(
             category,
             window.target_date,
@@ -2567,10 +2687,11 @@ def _build_feature_rows(
             target_race,
             r2_config=r2_config,
             allow_stale_running_style=current_allow_race_scoped_day_base(),
+            **({"day_base_source": day_base_source} if day_base_source is not None else {}),
         )
         if split_rows is not None:
             return split_rows
-        if role is PredictContainerRole.RACE_CHAIN:
+        if role is PredictContainerRole.RACE_CHAIN or day_base_source is not None:
             raise DayBaseRequiredError(
                 f"race-chain returned no rows category={category} "
                 f"target_date={window.target_date} target_race={target_race}"
@@ -3183,6 +3304,16 @@ def _make_prewarm_commit_fn(store: FocusedFullCacheStore) -> PrewarmCommitFn:
         watermark_error: str | None = None,
     ) -> None:
         category, run_date = parse_day_base_cache_identity(parquet_key)
+        generation_id: str | None = None
+        if parquet_key.startswith("feat-daybase/") and parquet_key != build_r2_day_base_key(
+            category, run_date
+        ):
+            parts = parquet_key.split("/")
+            if len(parts) != 7 or parts[4] != "generations":
+                raise ValueError("invalid generated day-base key")
+            generation_id = parts[5]
+            if parquet_key != build_r2_day_base_key(category, run_date, generation_id):
+                raise ValueError("invalid generated day-base key")
         watermark_state = "present" if watermark is not None else "absent"
         reason_state = watermark_error if watermark_error is not None else "-"
         debug_log(
@@ -3190,7 +3321,7 @@ def _make_prewarm_commit_fn(store: FocusedFullCacheStore) -> PrewarmCommitFn:
             f"watermark={watermark_state} reason={reason_state}"
         )
         store.put(
-            build_prewarm_cache_key(category, run_date),
+            build_prewarm_cache_key(category, run_date, generation_id),
             FocusedFullCachePayload(
                 parquet_base64=parquet_b64,
                 parquet_key=parquet_key,
@@ -3622,7 +3753,7 @@ def _make_rescore_fn(
     without that fallback fails closed.
     """
     catalog_source = is_catalog_source_url(source_url)
-    _last: list[tuple[str, str]] = []
+    frozen_payloads: list[list[dict[str, str]]] = []
 
     def _rescore(
         category_str: str,
@@ -3647,6 +3778,7 @@ def _make_rescore_fn(
         from pipeline_runner import WORK_DIR  # bundled in image
         from predict_lib.model_meta import resolve_category
 
+        frozen_payloads.clear()
         category = resolve_category(category_str)
         final_dir = WORK_DIR / f"feat-{category}-v7-final"
         if attestation is not None and not catalog_source:
@@ -3704,10 +3836,8 @@ def _make_rescore_fn(
         refreshed = apply_fresh_snapshots(scoped_races, snapshots, category)
 
         _write_refreshed_to_parquet(final_dir, refreshed)
-        _last.clear()
-        _last.append((category_str, run_date))
-
-        return _score_and_flush_races(
+        evidence: dict[str, ServingEvidence] = {}
+        written = _score_and_flush_races(
             database_url,
             category,
             models_dir,
@@ -3716,20 +3846,25 @@ def _make_rescore_fn(
             race_start_at_jst=race_start_at_jst,
             source_url=source_url,
             allow_after_race_start=current_allow_post_time_rescore(),
+            serving_evidence_by_race_id=evidence,
         )
+        # _run_predict_fn still holds _PIPELINE_EXEC_LOCK here. Freeze the
+        # actual scored bytes before another race overwrites category files.
+        try:
+            frozen_payloads.append(
+                freeze_rescore_payloads(
+                    payloads=_split_parquet_by_race(final_dir, category_str, run_date),
+                    evidence_by_race=evidence,
+                    category=category_str,
+                    run_date=run_date,
+                )
+            )
+        except (OSError, ValueError, RuntimeError, DuckDbError) as err:
+            debug_log(f"[predict-serve] rescore per_race_parquet split failed: {err}")
+        return written
 
     def _per_race_payloads() -> list[dict[str, str]] | None:
-        if not _last:
-            return None
-        from pipeline_runner import WORK_DIR  # bundled in image
-
-        cat_str, rd = _last[-1]
-        final_dir = WORK_DIR / f"feat-{cat_str}-v7-final"
-        try:
-            return _split_parquet_by_race(final_dir, cat_str, rd)
-        except BaseException as err:
-            debug_log(f"[predict-serve] rescore per_race_parquet split failed: {err}")
-            return None
+        return [dict(payload) for payload in frozen_payloads[0]] if frozen_payloads else None
 
     return _rescore, _per_race_payloads
 
@@ -4002,7 +4137,9 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 return
             payload = (
                 self.focused_full_cache_store.peek(
-                    build_prewarm_cache_key(cache_params.category, cache_params.run_date)
+                    build_prewarm_cache_key(
+                        cache_params.category, cache_params.run_date, cache_params.generation_id
+                    )
                 )
                 if self.focused_full_cache_store is not None
                 else None
@@ -4075,9 +4212,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 # Detach only when the Worker cannot hold the socket. sync=1
                 # streams the parquet back so the container can exit with the
                 # response instead of waiting for a later memory pickup.
-                background_fn=(
-                    None if prewarm_result.sync else self.prewarm_background_fn
-                ),
+                background_fn=(None if prewarm_result.sync else self.prewarm_background_fn),
                 invalidate_fn=_invalidate_previous_payload,
             ):
                 size_line = f"{len(chunk):X}\r\n".encode()

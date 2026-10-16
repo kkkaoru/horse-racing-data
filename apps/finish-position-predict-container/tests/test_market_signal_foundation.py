@@ -507,6 +507,22 @@ def test_build_base_evidence_binds_validated_contract_and_identities() -> None:
         manifest_identity=evidence.manifest_identity,
     )
     assert result == evidence
+    scoped = build_market_signal_base_evidence(
+        category="jra",
+        target_date="20260824",
+        target_race="1:3",
+        manifest_bytes=manifest,
+        foundation_bytes=foundation,
+        foundation_result=FoundationLoadResult("hit", evidence.base_rows, evidence.base_schema),
+        source_identity=evidence.source_identity,
+        foundation_identity=evidence.foundation_identity,
+        manifest_identity=evidence.manifest_identity,
+        source_key_override="feat-daybase/catalog-v1/jra/20260824/generations/owner-1/features.parquet",
+    )
+    assert scoped is not None
+    assert scoped.source_key == (
+        "feat-daybase/catalog-v1/jra/20260824/generations/owner-1/features.parquet"
+    )
 
 
 def test_build_base_evidence_rejects_unvalidated_or_drifted_base() -> None:

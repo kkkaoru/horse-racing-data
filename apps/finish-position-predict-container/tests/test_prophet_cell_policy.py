@@ -141,15 +141,15 @@ def test_baked_policy_covers_every_production_variant() -> None:
     assert policy.resolve("ban-ei", "sim").enabled is True
     assert policy.resolve("ban-ei", "sim").weight == pytest.approx(0.0025431311448551354)
     assert policy.resolve("nar", "c42_tc1").enabled is False
-    c42_branch = "nar-cell-top1-42-c-sprint-summer-tc1-v1"
+    c42_branch = "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1"
     assert policy.resolve("nar", "c42_tc1", c42_branch).enabled is True
     assert policy.resolve("nar", "c42_tc1", c42_branch).weight == pytest.approx(0.2025017432564682)
     assert policy.resolve("jra", "sim", "jra-cb-stage1-marketfree235-2013").enabled is False
-    assert policy.resolve("ban-ei", "base", "banei-cb-v9-sim-2011").weight == pytest.approx(
+    assert policy.resolve("ban-ei", "base", "banei-cb-v9-sim-2011-nowin1").weight == pytest.approx(
         0.0662293792416862
     )
     gated_cell = "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
-    gated_branch = "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1"
+    gated_branch = "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1"
     kept_signature = (
         "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;"
         f"stage2-model={gated_branch};stage1=fresh;final={gated_branch}"

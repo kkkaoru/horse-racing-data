@@ -1,7 +1,7 @@
 """Tests for the container-baked model metadata mapping (leak-free deploys:
-JRA=jra-cb-v9-sim-2013-clean (250 feat, 4 within-race leak cols excluded),
-NAR=iter12-nar-xgb-hpo-v8-clean188 (188 feat, same 4 leak cols excluded),
-Ban-ei=banei-cb-v9-sim-2011)."""
+JRA=jra-cb-v9-sim-2013-clean-nowin1 (250 feat, 4 within-race leak cols excluded),
+NAR=iter12-nar-xgb-hpo-v8-clean188-nowin1 (188 feat, same 4 leak cols excluded),
+Ban-ei=banei-cb-v9-sim-2011-nowin1)."""
 
 from __future__ import annotations
 
@@ -60,15 +60,15 @@ NAR_CB_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
 
 
 def test_model_version_jra() -> None:
-    assert model_version_for("jra") == "jra-cb-v9-sim-2013-clean"
+    assert model_version_for("jra") == "jra-cb-v9-sim-2013-clean-nowin1"
 
 
 def test_model_version_nar() -> None:
-    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8-clean188"
+    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8-clean188-nowin1"
 
 
 def test_model_version_banei() -> None:
-    assert model_version_for("ban-ei") == "banei-cb-v9-sim-2011"
+    assert model_version_for("ban-ei") == "banei-cb-v9-sim-2011-nowin1"
 
 
 def test_architecture_jra_catboost() -> None:
@@ -84,83 +84,83 @@ def test_architecture_banei_catboost() -> None:
 
 
 def test_feature_count_jra() -> None:
-    assert feature_count_for("jra") == 250
+    assert feature_count_for("jra") == 236
 
 
 def test_feature_count_nar() -> None:
-    assert feature_count_for("nar") == 188
+    assert feature_count_for("nar") == 186
 
 
 def test_feature_count_banei() -> None:
-    assert feature_count_for("ban-ei") == 130
+    assert feature_count_for("ban-ei") == 127
 
 
 def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base() -> None:
     assert (
         frozenset(
             {
-                "jra-cb-v9-sim-2013-clean",
-                "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-                "jra-cb-v10-prior-corner274-2013",
+                "jra-cb-v9-sim-2013-clean-nowin1",
+                "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+                "jra-cb-v10-prior-corner274-2013-nowin1",
                 "jra-cb-stage1-marketfree235-2013",
                 "jra-cb-stage1-marketfree235-iter500-top1swap-2013",
                 "jra-dirt-small-005-hybrid-v1",
-                "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
-                "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
-                "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
-                "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
-                "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
-                "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
-                "jra-joken-005-pooled-yetirank-v2",
-                "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
-                "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
-                "jra-joken-005-turf-mile-yeti-gated-v1",
-                "jra-joken-010-dirt-intermediate-yeti-gated-v1",
-                "jra-joken-010-pooled-yetirank-v2",
-                "jra-joken-016-pooled-yetirank-v2",
-                "jra-joken-701-pooled-yetirank-v2",
-                "jra-joken-701-turf-intermediate-qsm-gated-v1",
-                "jra-joken-701-turf-long-qsm-gated-v1",
-                "jra-joken-701-turf-mile-qsm-gated-v1",
-                "jra-joken-703-pooled-yetirank-v2",
-                "jra-joken-703-dirt-intermediate-qsm-gated-v1",
-                "jra-joken-703-dirt-sprint-yeti-gated-v1",
-                "jra-joken-703-other-extended-qsm-gated-v1",
-                "jra-joken-703-querysoftmax-maxrange-v1",
-                "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
-                "jra-joken-703-turf-1400-qsm-gated-v1",
-                "jra-joken-703-turf-intermediate-qsm-gated-v1",
-                "jra-joken-703-turf-long-spring-qsm-gated-v1",
-                "jra-joken-703-turf-long-summer-yeti-gated-v1",
-                "jra-joken-999-pooled-yetirank-v2",
+                "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1",
+                "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1",
+                "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1",
+                "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1",
+                "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1",
+                "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1",
+                "jra-joken-005-pooled-yetirank-v2-nowin1",
+                "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1",
+                "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+                "jra-joken-005-turf-mile-yeti-gated-v1-nowin1",
+                "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1",
+                "jra-joken-010-pooled-yetirank-v2-nowin1",
+                "jra-joken-016-pooled-yetirank-v2-nowin1",
+                "jra-joken-701-pooled-yetirank-v2-nowin1",
+                "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1",
+                "jra-joken-701-turf-long-qsm-gated-v1-nowin1",
+                "jra-joken-701-turf-mile-qsm-gated-v1-nowin1",
+                "jra-joken-703-pooled-yetirank-v2-nowin1",
+                "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+                "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1",
+                "jra-joken-703-other-extended-qsm-gated-v1-nowin1",
+                "jra-joken-703-querysoftmax-maxrange-v1-nowin1",
+                "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1",
+                "jra-joken-703-turf-1400-qsm-gated-v1-nowin1",
+                "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1",
+                "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1",
+                "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1",
+                "jra-joken-999-pooled-yetirank-v2-nowin1",
                 "jra-named-chukyo-nisai-stakes-v1",
-                "jra-named-chukyo-nisai-stakes-v2",
-                "jra-named-chukyo-nisai-stakes-focal-v3",
-                "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
-                "jra-named-chukyo-nisai-stakes-largefield-v3",
-                "jra-named-niigata-bsn-v1",
+                "jra-named-chukyo-nisai-stakes-v2-nowin1",
+                "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+                "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+                "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+                "jra-named-niigata-bsn-v1-nowin1",
                 "jra-named-niigata-kinen-v1",
-                "jra-named-niigata-kinen-draw-v2",
-                "jra-named-niigata-kinen-going-v2",
+                "jra-named-niigata-kinen-draw-v2-nowin1",
+                "jra-named-niigata-kinen-going-v2-nowin1",
                 "jra-named-sapporo-suzuran-v1",
-                "jra-named-sapporo-suzuran-v2",
-                "iter12-nar-xgb-hpo-v8-clean188",
-                "iter40-nar-settransformer-blend-v1",
+                "jra-named-sapporo-suzuran-v2-nowin1",
+                "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+                "iter40-nar-settransformer-blend-v1-nowin1",
                 "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
-                "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
-                "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
-                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
-                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
-                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
-                "nar-cell-top1-42-c-sprint-summer-tc1-v1",
-                "nar-cell-top1-30-c-sprint-summer-tc1-v1",
-                "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
-                "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
-                "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
-                "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
-                "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
-                "banei-cb-v9-sim-2011",
-                "banei-cb-v8-window2011-wf-15y",
+                "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
+                "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form-nowin1",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider-nowin1",
+                "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface-nowin1",
+                "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
+                "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
+                "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+                "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
+                "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
+                "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
+                "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+                "banei-cb-v9-sim-2011-nowin1",
+                "banei-cb-v8-window2011-wf-15y-nowin1",
             }
         )
         == PRODUCTION_MODEL_VERSION_ALLOWLIST
@@ -170,97 +170,97 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
 def test_jra_joken_v2_artifacts_record_fixed_training_ranges() -> None:
     artifact_root = Path(__file__).resolve().parent.parent / "models/finish-position/jra"
     metadata_005 = json.loads(
-        (artifact_root / "jra-joken-005-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-005-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_005_turf_long = json.loads(
         (
-            artifact_root / "jra-joken-005-turf-long-hierarchical-qsm-gated-v2/metadata.json"
+            artifact_root / "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1/metadata.json"
         ).read_text(encoding="utf-8")
     )
     metadata_005_turf_mile = json.loads(
-        (artifact_root / "jra-joken-005-turf-mile-yeti-gated-v1/metadata.json").read_text(
+        (artifact_root / "jra-joken-005-turf-mile-yeti-gated-v1-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_010 = json.loads(
-        (artifact_root / "jra-joken-010-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-010-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_016 = json.loads(
-        (artifact_root / "jra-joken-016-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-016-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_701 = json.loads(
-        (artifact_root / "jra-joken-701-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-701-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_701_turf_long = json.loads(
-        (artifact_root / "jra-joken-701-turf-long-qsm-gated-v1/metadata.json").read_text(
+        (artifact_root / "jra-joken-701-turf-long-qsm-gated-v1-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_703 = json.loads(
-        (artifact_root / "jra-joken-703-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-703-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_999 = json.loads(
-        (artifact_root / "jra-joken-999-pooled-yetirank-v2/metadata.json").read_text(
+        (artifact_root / "jra-joken-999-pooled-yetirank-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_703_dirt_intermediate = json.loads(
-        (artifact_root / "jra-joken-703-dirt-intermediate-qsm-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_005_dirt_mile_autumn = json.loads(
-        (artifact_root / "jra-joken-005-dirt-mile-autumn-yeti-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_703_turf_long_spring = json.loads(
-        (artifact_root / "jra-joken-703-turf-long-spring-qsm-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_010_dirt_intermediate = json.loads(
-        (artifact_root / "jra-joken-010-dirt-intermediate-yeti-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_701_turf_mile = json.loads(
-        (artifact_root / "jra-joken-701-turf-mile-qsm-gated-v1/metadata.json").read_text(
+        (artifact_root / "jra-joken-701-turf-mile-qsm-gated-v1-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_703_turf_intermediate = json.loads(
-        (artifact_root / "jra-joken-703-turf-intermediate-qsm-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_701_turf_intermediate = json.loads(
-        (artifact_root / "jra-joken-701-turf-intermediate-qsm-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_703_dirt_sprint = json.loads(
-        (artifact_root / "jra-joken-703-dirt-sprint-yeti-gated-v1/metadata.json").read_text(
+        (artifact_root / "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     metadata_703_other_extended = json.loads(
-        (artifact_root / "jra-joken-703-other-extended-qsm-gated-v1/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-joken-703-other-extended-qsm-gated-v1-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     metadata_703_querysoftmax = json.loads(
-        (artifact_root / "jra-joken-703-querysoftmax-maxrange-v1/metadata.json").read_text(
+        (artifact_root / "jra-joken-703-querysoftmax-maxrange-v1-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
@@ -403,12 +403,12 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
         )
     )
     chukyo_v2 = json.loads(
-        (artifact_root / "jra-named-chukyo-nisai-stakes-v2/metadata.json").read_text(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     chukyo_focal = json.loads(
-        (artifact_root / "jra-named-chukyo-nisai-stakes-focal-v3/metadata.json").read_text(
+        (artifact_root / "jra-named-chukyo-nisai-stakes-focal-v3-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
@@ -416,12 +416,12 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
         (artifact_root / "jra-named-niigata-kinen-v1/metadata.json").read_text(encoding="utf-8")
     )
     kinen_draw = json.loads(
-        (artifact_root / "jra-named-niigata-kinen-draw-v2/metadata.json").read_text(
+        (artifact_root / "jra-named-niigata-kinen-draw-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
     kinen_going = json.loads(
-        (artifact_root / "jra-named-niigata-kinen-going-v2/metadata.json").read_text(
+        (artifact_root / "jra-named-niigata-kinen-going-v2-nowin1/metadata.json").read_text(
             encoding="utf-8"
         )
     )
@@ -431,14 +431,14 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
     assert chukyo_v1["venue"] == "07"
     assert chukyo_v1["feature_count"] == 113
     assert chukyo_v1["loss_function"] == "QuerySoftMax"
-    assert chukyo_v2["model_version"] == "jra-named-chukyo-nisai-stakes-v2"
+    assert chukyo_v2["model_version"] == "jra-named-chukyo-nisai-stakes-v2-nowin1"
     assert chukyo_v2["race_name_token"] == "中京2歳ステークス"
     assert chukyo_v2["variant"] == "chukyo_nisai_stakes"
     assert chukyo_v2["venue"] == "07"
     assert chukyo_v2["feature_count"] == 113
     assert chukyo_v2["loss_function"] == "YetiRank"
     assert chukyo_v2["architecture"] == "catboost"
-    assert chukyo_focal["model_version"] == "jra-named-chukyo-nisai-stakes-focal-v3"
+    assert chukyo_focal["model_version"] == "jra-named-chukyo-nisai-stakes-focal-v3-nowin1"
     assert chukyo_focal["race_name_token"] == "中京2歳ステークス"
     assert chukyo_focal["variant"] == "chukyo_nisai_stakes"
     assert chukyo_focal["venue"] == "07"
@@ -446,23 +446,27 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
     assert chukyo_focal["loss_function"] == "YetiRank"
     assert chukyo_focal["architecture"] == "catboost"
     chukyo_largefield = json.loads(
-        (artifact_root / "jra-named-chukyo-nisai-stakes-largefield-v3/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
     chukyo_jul1600 = json.loads(
-        (artifact_root / "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4/metadata.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            artifact_root / "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1/metadata.json"
+        ).read_text(encoding="utf-8")
     )
-    assert chukyo_largefield["model_version"] == "jra-named-chukyo-nisai-stakes-largefield-v3"
+    assert (
+        chukyo_largefield["model_version"] == "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+    )
     assert chukyo_largefield["race_name_token"] == "中京2歳ステークス"
     assert chukyo_largefield["variant"] == "chukyo_nisai_stakes"
     assert chukyo_largefield["venue"] == "07"
     assert chukyo_largefield["feature_count"] == 113
     assert chukyo_largefield["loss_function"] == "YetiRank"
     assert chukyo_largefield["architecture"] == "catboost"
-    assert chukyo_jul1600["model_version"] == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4"
+    assert (
+        chukyo_jul1600["model_version"] == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1"
+    )
     assert chukyo_jul1600["race_name_token"] == "中京2歳ステークス"
     assert chukyo_jul1600["variant"] == "chukyo_nisai_stakes"
     assert chukyo_jul1600["venue"] == "07"
@@ -475,31 +479,36 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
     assert kinen["venue"] == "04"
     assert kinen["feature_count"] == 113
     assert kinen["loss_function"] == "QuerySoftMax"
-    assert kinen_draw["model_version"] == "jra-named-niigata-kinen-draw-v2"
+    assert kinen_draw["model_version"] == "jra-named-niigata-kinen-draw-v2-nowin1"
     assert kinen_draw["race_name_token"] == "新潟記念"
     assert kinen_draw["variant"] == "niigata_kinen"
     assert kinen_draw["venue"] == "04"
     assert kinen_draw["feature_count"] == 113
     assert kinen_draw["loss_function"] == "QuerySoftMax"
-    assert kinen_going["model_version"] == "jra-named-niigata-kinen-going-v2"
+    assert kinen_going["model_version"] == "jra-named-niigata-kinen-going-v2-nowin1"
     assert kinen_going["race_name_token"] == "新潟記念"
     assert kinen_going["variant"] == "niigata_kinen"
     assert kinen_going["venue"] == "04"
     assert kinen_going["feature_count"] == 114
     assert kinen_going["loss_function"] == "QuerySoftMax"
     assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-v1") is True
-    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-v2") is True
-    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-focal-v3") is True
+    assert is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-v2-nowin1") is True
     assert (
-        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-largefield-v3") is True
+        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-focal-v3-nowin1") is True
     )
     assert (
-        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4")
+        is_production_model_version_allowed("jra-named-chukyo-nisai-stakes-largefield-v3-nowin1")
+        is True
+    )
+    assert (
+        is_production_model_version_allowed(
+            "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1"
+        )
         is True
     )
     assert is_production_model_version_allowed("jra-named-niigata-kinen-v1") is True
-    assert is_production_model_version_allowed("jra-named-niigata-kinen-draw-v2") is True
-    assert is_production_model_version_allowed("jra-named-niigata-kinen-going-v2") is True
+    assert is_production_model_version_allowed("jra-named-niigata-kinen-draw-v2-nowin1") is True
+    assert is_production_model_version_allowed("jra-named-niigata-kinen-going-v2-nowin1") is True
 
 
 def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
@@ -540,13 +549,13 @@ def test_within_race_leak_columns_are_explicitly_denied() -> None:
 
 def test_build_r2_object_key_model() -> None:
     assert build_r2_object_key("jra", "model.json") == (
-        "finish-position/jra/jra-cb-v9-sim-2013-clean/model.json"
+        "finish-position/jra/jra-cb-v9-sim-2013-clean-nowin1/model.json"
     )
 
 
 def test_build_r2_object_key_metadata() -> None:
     assert build_r2_object_key("ban-ei", "metadata.json") == (
-        "finish-position/ban-ei/banei-cb-v9-sim-2011/metadata.json"
+        "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/metadata.json"
     )
 
 
@@ -592,7 +601,7 @@ def test_is_lightgbm_model_version_false_for_catboost_member() -> None:
 
 
 def test_is_lightgbm_model_version_false_for_xgboost_baseline() -> None:
-    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8-clean188") is False
+    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8-clean188-nowin1") is False
 
 
 def test_member_model_file_name_lightgbm_is_model_txt() -> None:
@@ -608,7 +617,7 @@ def test_member_model_file_name_catboost_is_model_json() -> None:
 
 
 def test_member_model_file_name_xgboost_is_model_json() -> None:
-    assert member_model_file_name("iter12-nar-xgb-hpo-v8-clean188") == "model.json"
+    assert member_model_file_name("iter12-nar-xgb-hpo-v8-clean188-nowin1") == "model.json"
 
 
 # --- load_model_meta error cases --------------------------------------------
@@ -745,8 +754,8 @@ def test_load_model_meta_rejects_historical_leaky_model_version(tmp_path: Path) 
     data = {
         "model_versions": {
             "jra": "jra-cb-v9-sim-2013",
-            "nar": "iter12-nar-xgb-hpo-v8-clean188",
-            "ban-ei": "banei-cb-v9-sim-2011",
+            "nar": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+            "ban-ei": "banei-cb-v9-sim-2011-nowin1",
         },
         "feature_counts": {"jra": 250, "nar": 188, "ban-ei": 130},
     }
@@ -830,12 +839,12 @@ def test_build_r2_jra_dirt_hybrid_key() -> None:
 
 def test_build_r2_nar_transformer_key() -> None:
     assert build_r2_nar_transformer_key("norm.json") == (
-        "finish-position/nar/iter40-nar-settransformer-blend-v1/norm.json"
+        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/norm.json"
     )
 
 
 def test_nar_transformer_model_version_constant() -> None:
-    assert NAR_TRANSFORMER_MODEL_VERSION == "iter40-nar-settransformer-blend-v1"
+    assert NAR_TRANSFORMER_MODEL_VERSION == "iter40-nar-settransformer-blend-v1-nowin1"
 
 
 def test_nar_transformer_blend_weight_constant() -> None:
@@ -859,3 +868,80 @@ def test_nar_transformer_blend_disabled_by_env_opt_out(monkeypatch: pytest.Monke
     # does not leak the opt-out value into later tests.
     monkeypatch.delenv("NAR_TRANSFORMER_BLEND_ENABLED", raising=False)
     importlib.reload(model_meta)
+
+
+def test_banned_market_features_in_flags_win_odds_and_raw_exotics() -> None:
+    from predict_lib.model_meta import banned_market_features_in
+
+    assert banned_market_features_in(
+        [
+            "popularity_score",
+            "odds_score",
+            "tansho_ninkijun_raw",
+            "sim_fav_win_rate",
+            "favorite_odds",
+            "market_entropy",
+            "exotic_sanrenpuku_p3",
+            "exotic_umaren_p2_rank_residual",
+            "kohan3f_avg_5",
+        ]
+    ) == frozenset(
+        {
+            "popularity_score",
+            "odds_score",
+            "tansho_ninkijun_raw",
+            "sim_fav_win_rate",
+            "favorite_odds",
+            "market_entropy",
+            "exotic_sanrenpuku_p3",
+        }
+    )
+
+
+def test_assert_no_banned_market_features_allows_deviation_columns() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    assert_no_banned_market_features(
+        ["exotic_umaren_p2_rank_residual", "exotic_sanrenpuku_p3_rank_residual"], context="test"
+    )
+
+
+def test_assert_no_banned_market_features_raises_with_context() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    with pytest.raises(ValueError, match="uses banned win-odds/popularity features: odds_score"):
+        assert_no_banned_market_features(["odds_score", "kohan3f_avg_5"], context="variant=x")
+
+
+def test_assert_no_banned_market_features_skips_pending_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import predict_lib.model_meta as subject
+
+    monkeypatch.setattr(subject, "MARKET_BAN_PENDING_CATEGORIES", frozenset({"nar"}))
+
+    subject.assert_no_banned_market_features(["odds_score"], context="variant=x", category="nar")
+
+
+def test_assert_no_banned_market_features_checks_nar_after_release() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    with pytest.raises(
+        ValueError, match="variant=x uses banned win-odds/popularity features: odds_score"
+    ):
+        assert_no_banned_market_features(["odds_score"], context="variant=x", category="nar")
+
+
+def test_assert_no_banned_market_features_checks_released_category() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    with pytest.raises(
+        ValueError, match="variant=x uses banned win-odds/popularity features: odds_score"
+    ):
+        assert_no_banned_market_features(["odds_score"], context="variant=x", category="jra")
+
+
+def test_market_ban_pending_categories_is_empty_after_every_release() -> None:
+    from predict_lib.model_meta import MARKET_BAN_PENDING_CATEGORIES
+
+    assert frozenset() == MARKET_BAN_PENDING_CATEGORIES

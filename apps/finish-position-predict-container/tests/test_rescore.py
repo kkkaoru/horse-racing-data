@@ -35,6 +35,45 @@ _RACE_ID_NAR_44_02 = "nar:2026:0619:44:02"
 _RACE_ID_NAR_30_01 = "nar:2026:0619:30:01"
 
 
+@pytest.mark.parametrize("previous", [math.nan, 8.0, 8])
+def test_refresh_preserves_numeric_nulls_for_model_input(previous: float) -> None:
+    entry: dict[str, object] = {
+        "keibajo_code": "44",
+        "race_bango": "01",
+        "umaban": 1,
+        "weight_avg_5": math.nan,
+        "weight_diff_from_avg": previous,
+        "tansho_odds": math.nan,
+        "form_market_edge": math.nan,
+        "shusso_tosu": math.nan,
+        "shusso_tosu_1": 2,
+    }
+    result = apply_fresh_snapshots(
+        {_RACE_ID_NAR_44_01: [entry]},
+        {("44", "01"): RaceFreshSnapshot({}, {1: 500.0})},
+        "nar",
+    )[_RACE_ID_NAR_44_01][0]
+    weight = result["weight_diff_from_avg"]
+    odds = result["tansho_odds"]
+    market = result["form_market_edge"]
+    assert isinstance(weight, float) and math.isnan(weight)
+    assert isinstance(odds, float) and math.isnan(odds)
+    assert isinstance(market, float) and math.isnan(market)
+    assert result["shusso_tosu_1"] == 2
+    assert entry["weight_diff_from_avg"] is previous
+
+
+@pytest.mark.parametrize("previous", [None, False, "unknown"])
+def test_refresh_keeps_object_nulls_without_inventing_numeric_schema(previous: object) -> None:
+    result = apply_fresh_snapshots(
+        {_RACE_ID_NAR_44_01: [{"weight_diff_from_avg": previous}]},
+        {},
+        "nar",
+    )[_RACE_ID_NAR_44_01][0]
+    assert result["weight_diff_from_avg"] is None
+    assert result["horse_popularity_vs_field"] is None
+
+
 def test_race_matches_scope_both_none_is_wildcard() -> None:
     assert race_matches_scope(_RACE_ID_NAR_44_01, RaceScope()) is True
 

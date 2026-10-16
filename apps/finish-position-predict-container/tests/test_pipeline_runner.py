@@ -2704,6 +2704,112 @@ def test_ensure_day_base_catalog_source_r2_watermark_match_fetches_and_returns_f
     assert (final_dir / "race_year=2026" / "features.parquet").read_bytes() == b"R2-DAY-BASE"
 
 
+def test_ensure_day_base_immutable_key_validates_scope_and_r2_etag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_lib.r2_client import R2ObjectHead, R2ObjectIdentity
+    from predict_lib.serve import R2Config
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    get_calls: list[str] = []
+    monkeypatch.setattr(
+        pipeline_runner, "r2_get_parquet", lambda _r2, key, _dest: get_calls.append(key) or True
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "r2_head_object",
+        lambda _r2, _key: R2ObjectHead(
+            identity=R2ObjectIdentity(etag="older-etag", version=""),
+            watermark=("20260712", 1200, "none", 0, "none"),
+        ),
+    )
+    with pytest.raises(ValueError, match="must be supplied together"):
+        pipeline_runner.ensure_day_base(
+            "jra", "20260712", 0, "r2-catalog://pc-keiba", r2, day_base_key="key"
+        )
+    with pytest.raises(ValueError, match="invalid immutable day-base key"):
+        pipeline_runner.ensure_day_base(
+            "jra",
+            "20260712",
+            0,
+            "r2-catalog://pc-keiba",
+            r2,
+            day_base_key="feat-daybase/catalog-v1/nar/20260712/generations/owner-1/features.parquet",
+            day_base_etag="current-etag",
+        )
+    assert (
+        pipeline_runner.ensure_day_base(
+            "jra",
+            "20260712",
+            0,
+            "r2-catalog://pc-keiba",
+            r2,
+            day_base_key="feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet",
+            day_base_etag="current-etag",
+            known_watermark=("20260712", 1200, "none", 0, "none"),
+        )
+        is None
+    )
+    assert get_calls == []
+
+
+def test_ensure_day_base_new_generation_does_not_reuse_old_local_parquet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_lib.r2_client import R2ObjectHead, R2ObjectIdentity
+    from predict_lib.serve import R2Config
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    get_calls: list[str] = []
+    monkeypatch.setattr(
+        pipeline_runner,
+        "r2_head_object",
+        lambda _r2, key: R2ObjectHead(
+            identity=R2ObjectIdentity(
+                etag="new-etag" if "owner-2" in key else "old-etag", version=""
+            ),
+            watermark=("20260712", 1200, "none", 0, "none"),
+        ),
+    )
+
+    def get_parquet(_r2: R2Config, key: str, dest: Path) -> bool:
+        get_calls.append(key)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"new-generation" if "owner-2" in key else b"old-generation")
+        return True
+
+    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", get_parquet)
+    old = pipeline_runner.ensure_day_base(
+        "jra",
+        "20260712",
+        0,
+        "r2-catalog://pc-keiba",
+        r2,
+        day_base_key="feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet",
+        day_base_etag="old-etag",
+        known_watermark=("20260712", 1200, "none", 0, "none"),
+    )
+    new = pipeline_runner.ensure_day_base(
+        "jra",
+        "20260712",
+        0,
+        "r2-catalog://pc-keiba",
+        r2,
+        day_base_key="feat-daybase/catalog-v1/jra/20260712/generations/owner-2/features.parquet",
+        day_base_etag="new-etag",
+        known_watermark=("20260712", 1200, "none", 0, "none"),
+    )
+    assert old is not None and new is not None and old != new
+    assert (old / "race_year=2026" / "features.parquet").read_bytes() == b"old-generation"
+    assert (new / "race_year=2026" / "features.parquet").read_bytes() == b"new-generation"
+    assert get_calls == [
+        "feat-daybase/catalog-v1/jra/20260712/generations/owner-1/features.parquet",
+        "feat-daybase/catalog-v1/jra/20260712/generations/owner-2/features.parquet",
+    ]
+
+
 def test_ensure_day_base_r2_hit_logs_when_debug_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4243,6 +4349,30 @@ def test_foundation_readiness_snapshot_uses_one_combined_source_head(
         source_identity=identity,
     )
     assert head_calls == ["feat-daybase/catalog-v1/jra/20260823/features.parquet"]
+    scoped_key = "feat-daybase/catalog-v1/jra/20260823/generations/owner-1/features.parquet"
+    assert (
+        readiness_fn(
+            category="jra",
+            target_date="20260823",
+            target_race="01:02",
+            database_url="r2-catalog://pc-keiba",
+            r2_config=r2,
+            day_base_source=(scoped_key, "wrong-etag"),
+        )
+        is None
+    )
+    assert head_calls[-1] == scoped_key
+    assert (
+        readiness_fn(
+            category="jra",
+            target_date="20260823",
+            target_race="01:02",
+            database_url="r2-catalog://pc-keiba",
+            r2_config=r2,
+            day_base_source=(scoped_key, "etag"),
+        )
+        == result
+    )
 
 
 def test_foundation_readiness_snapshot_allows_only_worker_attested_rs_drift(

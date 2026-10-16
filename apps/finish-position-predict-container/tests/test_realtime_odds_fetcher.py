@@ -28,6 +28,7 @@ from realtime_odds_fetcher import (
     extract_rows,
     extract_sanrenpuku_p3,
     extract_weight_map,
+    fetch_latest_odds_for_race,
     fetch_odds_and_sanrenpuku_for_race,
     fetch_odds_for_race,
     fetch_realtime_odds_parquet,
@@ -209,6 +210,27 @@ def testfetch_odds_for_race_calls_correct_url() -> None:
     stub = _StubFetcher({expected_url: {"latest": {"tansho": []}}})
     fetch_odds_for_race(stub, "nar", "20260610", "44", "01")
     assert stub.calls == [expected_url]
+
+
+def test_fetch_latest_odds_for_race_returns_latest_map() -> None:
+    url = f"{HOT_WORKER_BASE_URL}/jra%3A2026%3A1018%3A05%3A11"
+    stub = _StubFetcher({url: {"latest": {"umaren": [{"combination": "1-2", "odds": 3.1}]}}})
+    latest = fetch_latest_odds_for_race(stub, "jra", "20261018", "05", "11")
+    assert latest == {"umaren": [{"combination": "1-2", "odds": 3.1}]}
+
+
+def test_fetch_latest_odds_for_race_non_mapping_latest_is_none() -> None:
+    url = f"{HOT_WORKER_BASE_URL}/jra%3A2026%3A1018%3A05%3A11"
+    stub = _StubFetcher({url: {"latest": []}})
+    assert fetch_latest_odds_for_race(stub, "jra", "20261018", "05", "11") is None
+
+
+def test_fetch_latest_odds_for_race_error_is_none() -> None:
+    class _ErrorFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise OSError("connection refused")
+
+    assert fetch_latest_odds_for_race(_ErrorFetcher(), "jra", "20261018", "05", "11") is None
 
 
 def testfetch_odds_for_race_returns_rows_on_success() -> None:
