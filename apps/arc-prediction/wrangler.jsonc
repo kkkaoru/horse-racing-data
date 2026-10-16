@@ -1,0 +1,14 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "arc-prediction",
+  "main": "src/worker.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "pc-keiba-viewer.kkk4oru.com/api/arc-prediction/*", "zone_name": "kkk4oru.com" },
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}

@@ -8,6 +8,8 @@ pre-commit:
       exclude:
         # Native ML model JSON is loader-sensitive; formatting can change XGBoost numeric token types.
         - "apps/finish-position-predict-container/models/finish-position/**/model.json"
+        # Arc model/card artifacts are pinned by SHA-256 in card.json; reformatting breaks provenance.
+        - "apps/arc-prediction/src/artifacts/**"
         # Vendor skill docs from ~/.agents/skills-stroage; do not reformat hard-linked copies.
         - ".agents/**"
       run: bunx oxfmt --check {staged_files}

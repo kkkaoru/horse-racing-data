@@ -1,0 +1,278 @@
+{
+  "modelVersion": "arc-xgb-top1-v2-20261004",
+  "modelSha256": "f623eb7bd7c95434d8535d37b1762614c3857a330644a595d7085a1ae12b46f1",
+  "baseModelSha256": "e417a78690052fefcdea1ec2d7ca7794b30ad8eb97bc67261af1197676e9071b",
+  "winModelSha256": "cc462559e0ad6593ee813f36858afc803f107f5d28bf473ebd0586e6be8eb43c",
+  "sourceSha256": "597b85f9161c5a3e79b2013a692f638355245e9cec285b34a1e605865d44dbe9",
+  "policy": "top2-win-rerank",
+  "baseConfig": {
+    "objective": "rank:pairwise",
+    "n_estimators": 240,
+    "max_depth": 2,
+    "min_child_weight": 5,
+    "reg_lambda": 1
+  },
+  "winConfig": {
+    "objective": "reg:squarederror",
+    "n_estimators": 240,
+    "max_depth": 2,
+    "min_child_weight": 1,
+    "reg_lambda": 1
+  },
+  "candidatesSearched": 73,
+  "baseCandidateIndex": 14,
+  "winCandidateIndex": 58,
+  "winHeadSelectedOnYears": [
+    2011,
+    2012,
+    2013,
+    2014,
+    2015,
+    2016,
+    2017,
+    2018,
+    2019,
+    2020,
+    2021,
+    2022
+  ],
+  "baseSelectedUsingEvaluationYears": true,
+  "evaluationWasTuned": true,
+  "preservesBaselinePrecisionPerYear": true,
+  "top2to5SetsUnchangedByWinHead": true,
+  "trainingMinDate": "2004-10-03",
+  "trainingMaxDate": "2025-10-05",
+  "trainingRaces": 17,
+  "trainingRows": 284,
+  "folds": [
+    {
+      "year": 2023,
+      "cutoff": "2023-10-01",
+      "trainingMinDate": "2004-10-03",
+      "trainingMaxDate": "2022-10-02",
+      "trainingRaces": 14,
+      "runners": 15,
+      "predicted": [
+        "000a01f329",
+        "2020190004",
+        "000a01bf4b",
+        "000a01c27a",
+        "2020100002",
+        "000a01c0a5",
+        "000a01f943",
+        "2019190003",
+        "000a01c7ea",
+        "000a01e753",
+        "000a01fa59",
+        "000a01fa4e",
+        "2019190002",
+        "000a01bcb4",
+        "2018105269"
+      ],
+      "actual": [
+        "000a01f329",
+        "000a01c27a",
+        "2019190002",
+        "2018105269",
+        "2020100002",
+        "000a01c0a5",
+        "000a01bcb4",
+        "000a01f943",
+        "000a01bf4b",
+        "2019190003",
+        "2020190004",
+        "000a01e753",
+        "000a01c7ea",
+        "000a01fa4e",
+        "000a01fa59"
+      ],
+      "metrics": [
+        {
+          "k": 1,
+          "hits": 1,
+          "precision": 1.0,
+          "exact_set_hit": true
+        },
+        {
+          "k": 2,
+          "hits": 1,
+          "precision": 0.5,
+          "exact_set_hit": false
+        },
+        {
+          "k": 3,
+          "hits": 1,
+          "precision": 0.3333333333333333,
+          "exact_set_hit": false
+        },
+        {
+          "k": 4,
+          "hits": 2,
+          "precision": 0.5,
+          "exact_set_hit": false
+        },
+        {
+          "k": 5,
+          "hits": 3,
+          "precision": 0.6,
+          "exact_set_hit": false
+        }
+      ]
+    },
+    {
+      "year": 2024,
+      "cutoff": "2024-10-06",
+      "trainingMinDate": "2004-10-03",
+      "trainingMaxDate": "2023-10-01",
+      "trainingRaces": 15,
+      "runners": 16,
+      "predicted": [
+        "000a01ea98",
+        "2020190004",
+        "000a01ff26",
+        "000a0237e7",
+        "000a02053b",
+        "000a02062c",
+        "000a0203e9",
+        "000a02062b",
+        "2021110048",
+        "2020100002",
+        "000a020641",
+        "000a02441a",
+        "000a01fa4e",
+        "000a01e749",
+        "000a020534",
+        "000a02053a"
+      ],
+      "actual": [
+        "000a02053b",
+        "000a0237e7",
+        "000a01ff26",
+        "000a02062c",
+        "000a02053a",
+        "000a0203e9",
+        "000a02441a",
+        "000a020641",
+        "2020190004",
+        "000a020534",
+        "000a01e749",
+        "2021110048",
+        "000a02062b",
+        "000a01ea98",
+        "2020100002",
+        "000a01fa4e"
+      ],
+      "metrics": [
+        {
+          "k": 1,
+          "hits": 0,
+          "precision": 0.0,
+          "exact_set_hit": false
+        },
+        {
+          "k": 2,
+          "hits": 0,
+          "precision": 0.0,
+          "exact_set_hit": false
+        },
+        {
+          "k": 3,
+          "hits": 1,
+          "precision": 0.3333333333333333,
+          "exact_set_hit": false
+        },
+        {
+          "k": 4,
+          "hits": 2,
+          "precision": 0.5,
+          "exact_set_hit": false
+        },
+        {
+          "k": 5,
+          "hits": 3,
+          "precision": 0.6,
+          "exact_set_hit": false
+        }
+      ]
+    },
+    {
+      "year": 2025,
+      "cutoff": "2025-10-05",
+      "trainingMinDate": "2004-10-03",
+      "trainingMaxDate": "2024-10-06",
+      "trainingRaces": 16,
+      "runners": 17,
+      "predicted": [
+        "000a0237e7",
+        "000a029d4f",
+        "000a02062c",
+        "000a02b866",
+        "000a024a0d",
+        "000a02b868",
+        "000a01ff26",
+        "000a024a0b",
+        "000a02b960",
+        "000a029d42",
+        "2021105587",
+        "000a02b961",
+        "2022105102",
+        "000a020804",
+        "000a01e204",
+        "000a02bb45",
+        "2022104682"
+      ],
+      "actual": [
+        "000a029d42",
+        "000a029d4f",
+        "000a02062c",
+        "000a01e204",
+        "2021105587",
+        "000a02bb45",
+        "000a024a0d",
+        "000a02b961",
+        "000a02b868",
+        "000a024a0b",
+        "000a0237e7",
+        "000a020804",
+        "000a02b866",
+        "2022105102",
+        "000a02b960",
+        "2022104682",
+        "000a01ff26"
+      ],
+      "metrics": [
+        {
+          "k": 1,
+          "hits": 0,
+          "precision": 0.0,
+          "exact_set_hit": false
+        },
+        {
+          "k": 2,
+          "hits": 1,
+          "precision": 0.5,
+          "exact_set_hit": false
+        },
+        {
+          "k": 3,
+          "hits": 2,
+          "precision": 0.6666666666666666,
+          "exact_set_hit": false
+        },
+        {
+          "k": 4,
+          "hits": 2,
+          "precision": 0.5,
+          "exact_set_hit": false
+        },
+        {
+          "k": 5,
+          "hits": 2,
+          "precision": 0.4,
+          "exact_set_hit": false
+        }
+      ]
+    }
+  ],
+  "warning": "2023-2025 results were used for base-model non-regression selection; these are retrospectively tuned results, not an unbiased future accuracy estimate. Top1 optimality is bounded to the tested candidates/policy, not a global guarantee."
+}

@@ -1,4 +1,7 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["apps/finish-position-predict-container/models/finish-position/**/model.json"]
+  "ignorePatterns": [
+    "apps/finish-position-predict-container/models/finish-position/**/model.json",
+    "apps/arc-prediction/src/artifacts/**"
+  ]
 }

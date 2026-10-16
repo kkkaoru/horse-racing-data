@@ -1,0 +1,15 @@
+{
+  "name": "arc-prediction",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsc": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "oxlint src --tsconfig tsconfig.json --type-aware --deny-warnings --max-warnings=0",
+    "format": "oxfmt --write src/*.ts package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src/*.ts package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "check": "bun run tsc && bun run lint && bun run test:coverage",
+    "deploy": "bun run check && wrangler deploy"
+  }
+}
