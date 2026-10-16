@@ -119,6 +119,34 @@ URL with `SYNC_REALTIME_DATA_BASE_URL`. `SYNC_REALTIME_DATA_DATE=YYYYMMDD`
 overrides the JST base date; the following date is always derived and processed
 as well.
 
+### Wine JV-Link export → local PostgreSQL
+
+Import JRA race cards/results (`RA` → `jvd_ra`, `SE` → `jvd_se`) for an inclusive
+race-date range. The parser and layouts are shared with production daily ingestion.
+The UTF-8 input is the output of `jra-van-datalab-wine-demo demo:native` (not a compressed `.jvd` file).
+Reuse existing exports first. When acquiring missing data via Wine, `--from-time`
+is a **publication-time** window, so include the preceding card-publication days;
+it is not the race-date filter below. Keep the existing authenticated Wine prefix.
+
+```sh
+# Validate and report candidate records; no database connection or writes.
+bun run --cwd apps/local-postgresql import:jra --input /absolute/path/records.txt \
+  --from-date 2026-10-03 --to-date 2026-10-04
+
+# Apply the same plan atomically to local PG.
+bun run --cwd apps/local-postgresql import:jra --input /absolute/path/records.txt \
+  --from-date 2026-10-03 --to-date 2026-10-04 --apply
+```
+
+`DATABASE_URL_LOCAL` overrides the default `127.0.0.1:15432/horse_racing` connection;
+non-loopback hosts are rejected. Invalid records fail before connecting. Upserts
+keep newer revisions, deduplicate primary keys, and remove provisional horse-number
+`00` records when numbered runners are supplied. Any database failure rolls back
+the whole import. The summary reports candidate counts, not acquisition completeness
+or changed-row counts. Unsupported record types (including `JG`) and records outside
+the requested dates are counted explicitly; this command does not import every JV-Link
+data type or trigger production replication.
+
 ### keiba.go.jp NAR fallback import
 
 Use `scrape:keiba-go` when UmaConn has not delivered a published NAR race day.
