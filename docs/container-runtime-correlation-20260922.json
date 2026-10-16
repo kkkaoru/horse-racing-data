@@ -1,0 +1,97 @@
+{
+  "retrievedAt": "2026-09-23T12:33:14Z",
+  "command": "bun run prod container-usage 2026-09-22T19:00:00Z 2026-09-22T19:22:00Z",
+  "timeRange": {
+    "fromInclusive": "2026-09-22T19:00:00Z",
+    "toInclusive": "2026-09-22T19:22:00Z",
+    "metricsDimensionBucket": "2026-09-22T19:00:00Z"
+  },
+  "applicationRoleMappingSource": "docs/container-cost-attribution-20260912.json",
+  "correlation": {
+    "workflowInstance": "race-day-nar-20260923-mud1i9dh",
+    "workflowVersion": "f9d18aef-c865-44c3-a427-26ccf847cd36",
+    "step": "sync-day-base",
+    "stepStartedAt": "2026-09-22T19:01:21.244Z",
+    "stepEndedAt": "2026-09-22T19:21:18.950Z",
+    "stepDurationSeconds": 1197.706,
+    "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b",
+    "applicationRole": "legacy prediction / standard-4 (12 GiB)",
+    "metricsAllocatedMemoryEquivalent12GiBSeconds": 1200.0,
+    "billableAllocatedMemoryEquivalent12GiBSeconds": 1174.9
+  },
+  "limitations": [
+    "GraphQL results are grouped by applicationId and hour, not by Workflow instance or Container instance; the temporal match is strong correlation, not exclusive causal attribution.",
+    "containersMetricsAdaptiveGroups reported sum.containerUptime=0 for the matching application/hour despite nonzero CPU and allocated-memory metrics; do not interpret that field as proof of no runtime.",
+    "Worker Observability query for 19:00-19:22 UTC returned 37 events but no container-resource-usage event. The deployed Worker has head_sampling_rate=0.1, so missing sampled log events are not evidence that the Container did not run.",
+    "Allocated-memory sums are byte-seconds. Dividing by the configured 12 GiB gives an allocation-equivalent duration, not an isolated per-job wall-clock measurement."
+  ],
+  "response": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "containersMetricsAdaptiveGroups": [
+              {
+                "dimensions": {
+                  "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b",
+                  "datetimeHour": "2026-09-22T19:00:00Z"
+                },
+                "max": {
+                  "diskUsage": 1490071552,
+                  "memory": 2292686848
+                },
+                "sum": {
+                  "allocatedDisk": 24000260971400,
+                  "allocatedMemory": 15462050395144.229,
+                  "containerUptime": 0,
+                  "cpuTimeSec": 195.14668100000105
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8",
+                  "datetimeHour": "2026-09-22T19:00:00Z"
+                },
+                "max": {
+                  "diskUsage": 983359488,
+                  "memory": 954142720
+                },
+                "sum": {
+                  "allocatedDisk": 379995048468,
+                  "allocatedMemory": 306012432339.749,
+                  "containerUptime": 0,
+                  "cpuTimeSec": 4.341157999999987
+                }
+              }
+            ],
+            "containersUsageAdaptiveGroups": [
+              {
+                "dimensions": {
+                  "applicationId": "a0348266-3050-47d4-9bad-b04086c1a02b",
+                  "datetimeHour": "2026-09-22T19:00:00Z"
+                },
+                "sum": {
+                  "allocatedDisk": 23498709682920,
+                  "allocatedMemory": 15138928437950.988,
+                  "cpuTimeSec": 412.8799999999991
+                }
+              },
+              {
+                "dimensions": {
+                  "applicationId": "a03d0f99-9d0d-46da-a9a8-1e04d235dda8",
+                  "datetimeHour": "2026-09-22T19:00:00Z"
+                },
+                "sum": {
+                  "allocatedDisk": 280026517188,
+                  "allocatedMemory": 225507137500.35785,
+                  "cpuTimeSec": 56.48000000000005
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "errors": null
+  }
+}
