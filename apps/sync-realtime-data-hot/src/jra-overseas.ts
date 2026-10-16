@@ -43,6 +43,7 @@ const MONTH_DAY_PAD_WIDTH = 2;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const SHIFT_JIS_DECODER = new TextDecoder("shift_jis");
 const KNOWN_OVERSEAS_ENTRY_URLS: Readonly<Record<string, string>> = {
+  "jra:2026:1004:A8:05": `${JRA_ORIGIN}${JRA_OVERSEAS_ENTRY_PATH}?CNAME=pk01dde0110520260101051/9D`,
   "jra:2026:0816:A8:04": `${JRA_ORIGIN}${JRA_OVERSEAS_ENTRY_PATH}?CNAME=pk01dde0112720260101041/73`,
 };
 

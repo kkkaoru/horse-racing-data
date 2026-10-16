@@ -241,6 +241,12 @@ it("resolveKnownOverseasEntryUrl returns the official accessSD card for A8/04", 
   );
 });
 
+it("resolveKnownOverseasEntryUrl returns the official Arc card for A8/05", () => {
+  expect(resolveKnownOverseasEntryUrl("jra:2026:1004:A8:05")).toStrictEqual(
+    "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0110520260101051/9D",
+  );
+});
+
 it("resolveKnownOverseasEntryUrl returns null for an unknown overseas race key", () => {
   expect(resolveKnownOverseasEntryUrl("jra:2026:0725:A6:05")).toBeNull();
 });
