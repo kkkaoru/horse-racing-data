@@ -58,4 +58,28 @@ assert_contains "$missing_race_output" "keibajo_code=44 actual=11 expected=12 mi
 assert_contains "$missing_race_output" "authoritative race gaps: 44(actual=11,expected=12,missing=11)"
 assert_contains "$missing_race_output" "would POST https://sync-realtime-data.kkk4oru.com/api/jobs body={\"type\":\"discover-urls\",\"date\":\"20300101\"}"
 
+mock_dir="$(mktemp -d)"
+trap 'rm -rf "$mock_dir"' EXIT
+printf '%s\n' '#!/usr/bin/env bash' \
+  '[[ " $* " == *"/api/internal/expected-race-count?date=2030-01-01"* ]] || exit 1' \
+  'case " $* " in' \
+  '  *"&kind=venues"*) printf '\''{"results":[{"keibajo_code":"46","c":9,"races":"01,02,03,04,05,06,07,08,09"}]}\n'\'' ;;' \
+  '  *"&kind=categories"*) printf '\''{"results":[{"category":"jra","c":9}]}\n'\'' ;;' \
+  '  *) printf '\''{"count":9}\n'\'' ;;' \
+  'esac' > "$mock_dir/curl"
+chmod +x "$mock_dir/curl"
+rmdir "$LOCK_DIR" 2>/dev/null || true
+worker_count_output="$(PATH="$mock_dir:$PATH" DRY_RUN=1 FORCE_HOUR=05 FORCE_TARGET_DATE=20300101 \
+  FORCE_D1_VENUE_RACES='46:01-02-03-04-05-06-07-08-09' \
+  FORCE_AUTHORITATIVE_VENUE_RACES='46:01-02-03-04-05-06-07-08-09' \
+  FORCE_NO_CORNER_FEATURES=1 FORCE_RS_ACTUAL=9 FORCE_FP_ACTUAL=9 bash "$GUARD")"
+assert_contains "$worker_count_output" "guard_target done (label=today target=2030-01-01 expected=9"
+assert_not_contains "$worker_count_output" "D1 expected-count query attempt"
+rmdir "$LOCK_DIR" 2>/dev/null || true
+worker_venue_output="$(PATH="$mock_dir:$PATH" DRY_RUN=1 FORCE_HOUR=05 FORCE_TARGET_DATE=20300101 \
+  FORCE_AUTHORITATIVE_VENUE_RACES='46:01-02-03-04-05-06-07-08-09' \
+  FORCE_NO_CORNER_FEATURES=1 FORCE_RS_ACTUAL=9 FORCE_FP_ACTUAL=9 bash "$GUARD")"
+assert_contains "$worker_venue_output" "keibajo_code=46 actual=9 expected=9 missing=none"
+assert_contains "$worker_venue_output" "D1 covers the authoritative race card"
+
 printf 'race-prediction-guard dynamic venue coverage tests passed\n'

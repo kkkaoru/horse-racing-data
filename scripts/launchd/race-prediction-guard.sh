@@ -84,17 +84,14 @@ GUARD_LOCK_DIR="/tmp/race-prediction-guard.lock"
 FINISH_LOCK_DIR="/tmp/finish-position-predict.lock"
 NEON_ENV_FILE="apps/local-postgresql/.env.replica"
 DEV_VARS_FILE="apps/sync-realtime-data/.dev.vars"
-D1_BINDING_NAME="sync-realtime-data"
-WRANGLER_CONFIG="apps/sync-realtime-data/wrangler.jsonc"
 RS_TABLE="race_running_style_model_predictions"
 FP_TABLE="race_finish_position_model_predictions"
 CORNER_FEATURES_TABLE="race_entry_corner_features"
 JOBS_KICK_URL="https://sync-realtime-data.kkk4oru.com/api/jobs"
 RS_KICK_JOB_TYPE="plan-running-style-predictions"
 DISCOVER_JOB_TYPE="discover-urls"
-# D1 expected-count REST query resilience (2026-08-16 incident: one transient
-# wrangler API failure aborted the whole non-race-hours tick and left failed
-# races unattended all night). Retry before declaring D1 unavailable.
+# Retry the Worker-bound D1 expected-count query before declaring D1 unavailable.
+# The direct Wrangler API intermittently returned 7403 under launchd OAuth.
 D1_QUERY_ATTEMPTS=3
 D1_QUERY_RETRY_SLEEP_SEC=5
 FINISH_SCRIPT="$REPO_ROOT/scripts/launchd/finish-position-predict-daily.sh"
@@ -303,10 +300,10 @@ corner_features_check_and_build() {
   return 0
 }
 
-# Read REALTIME_ADMIN_TOKEN once (only needed for worker kicks).
+# Read REALTIME_ADMIN_TOKEN for authenticated worker checks and kicks.
 read_admin_token() {
   if [ ! -f "$DEV_VARS_FILE" ]; then
-    log "ERROR: $DEV_VARS_FILE not found — cannot kick worker"
+    log "ERROR: $DEV_VARS_FILE not found — cannot contact worker"
     return 1
   fi
   local line
@@ -321,6 +318,17 @@ read_admin_token() {
   token="${token%\'}"
   token="${token#\'}"
   printf '%s' "$token"
+}
+
+# Read D1 through the Worker's binding, avoiding the flaky account REST OAuth path.
+query_d1_worker() {
+  local date="$1"
+  local kind="${2:-}"
+  local token
+  token="$(read_admin_token)" || return 1
+  curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+    -H "Authorization: Bearer $token" \
+    "${JOBS_KICK_URL%/api/jobs}/api/internal/expected-race-count?date=$date${kind:+&kind=$kind}"
 }
 
 # Mask token for logs: show only first 4 + last 4 chars.
@@ -450,10 +458,9 @@ d1_expected_by_category() {
     printf '%s' "$FORCE_FP_CATEGORY_EXPECTED" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
     return 0
   fi
-  local d1_query="SELECT CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra' WHEN keibajo_code = '83' THEN 'ban-ei' ELSE 'nar' END AS category, COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' GROUP BY category;"
   local d1_result
-  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
-  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.category) \(.c)"' 2>/dev/null || true
+  d1_result="$(query_d1_worker "$target_date_iso" categories 2>&1 || true)"
+  printf '%s' "$d1_result" | jq -r '.results[]? | "\(.category) \(.c)"' 2>/dev/null || true
 }
 
 # Query Neon for finish-position actual race counts broken down by category,
@@ -602,10 +609,9 @@ query_d1_venue_counts() {
     printf '%s' "$FORCE_D1_VENUE_RACES" | tr ',' '\n' | awk -F: 'NF==2 {r=$2; gsub(/-/, ",", r); n=split(r, a, ","); print $1" "n" "r}'
     return 0
   fi
-  local d1_query="SELECT keibajo_code, COUNT(*) AS c, GROUP_CONCAT(race_bango, ',') AS races FROM (SELECT DISTINCT printf('%02d', CAST(keibajo_code AS INTEGER)) AS keibajo_code, printf('%02d', CAST(race_bango AS INTEGER)) AS race_bango FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' AND keibajo_code GLOB '[0-9]*' ORDER BY keibajo_code, race_bango) GROUP BY keibajo_code;"
   local d1_result
-  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
-  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.keibajo_code) \(.c) \(.races)"' 2>/dev/null || true
+  d1_result="$(query_d1_worker "$target_date_iso" venues 2>&1 || true)"
+  printf '%s' "$d1_result" | jq -r '.results[]? | "\(.keibajo_code) \(.c) \(.races)"' 2>/dev/null || true
 }
 
 # Enumerate the authoritative card from the raw PostgreSQL race tables. The
@@ -786,11 +792,9 @@ guard_target() {
   fi
 
   # Query D1 for the expected race count for target_date_iso.
-  # D1 is queried via bunx wrangler which requires CLOUDFLARE_API_TOKEN in a
-  # non-interactive (launchd) environment. If the query fails (token missing /
-  # refresh error / network) we enter the d1_unavailable path.
+  # Query the Worker's D1 binding with its existing admin token instead of
+  # relying on launchd's intermittently failing Wrangler OAuth REST path.
   log "querying D1 expected race_key count for $target_date_iso ..."
-  local d1_query="SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}';"
   local d1_result
   # DRY_RUN-only hooks:
   #   FORCE_D1_FAIL=1 injects a fake error string so the D1-unavailable path
@@ -804,13 +808,11 @@ guard_target() {
     d1_result=""
     log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (skipping D1 expected-count query)"
   else
-    # Retry the wrangler D1 REST query: transient Cloudflare API failures
-    # (auth blips like 7403, 5xx, network drops) must not degrade the tick.
-    # Success = jq can extract the count (c may legitimately be 0).
+    # Success requires a numeric count; zero is a valid no-race day.
     local d1_attempt
     for d1_attempt in $(seq 1 "$D1_QUERY_ATTEMPTS"); do
-      d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
-      if printf '%s' "$d1_result" | jq -e '.[0].results[0].c' >/dev/null 2>&1; then
+      d1_result="$(query_d1_worker "$target_date_iso" 2>&1 || true)"
+      if printf '%s' "$d1_result" | jq -e '.count | numbers' >/dev/null 2>&1; then
         if [ "$d1_attempt" -gt 1 ]; then
           log "D1 expected-count query succeeded on attempt $d1_attempt/$D1_QUERY_ATTEMPTS for $label"
         fi
@@ -826,7 +828,7 @@ guard_target() {
   if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ] && [ "${FORCE_D1_FAIL:-0}" != "1" ]; then
     expected_count="$FORCE_EXPECTED_COUNT"
   else
-    expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+    expected_count="$(printf '%s' "$d1_result" | jq -r '.count // empty' 2>/dev/null || true)"
   fi
 
   # --- D1 unavailability handling ---
