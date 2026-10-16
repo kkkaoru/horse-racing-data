@@ -43,6 +43,7 @@ interface InsertInput {
   readonly columns: readonly ColumnMapping[];
   readonly rows: readonly HistoryCommon[];
   readonly conflictTarget: string;
+  readonly identityMatch: string;
 }
 
 const COMMON_COLUMNS: readonly ColumnMapping[] = [
@@ -143,13 +144,14 @@ returning history_id`,
 });
 
 const buildReadback = (
-  { table, columns, rows }: InsertInput,
+  { table, columns, rows, identityMatch }: InsertInput,
   projection: "count(*)::integer as mismatches" | "row_to_json(r) as row",
 ): SqlStatement => ({
   text: `select ${projection}
 from jsonb_to_recordset($1::jsonb) as r(${columns.map((c: ColumnMapping): string => `"${c.property}" ${c.sqlType}`).join(", ")})
 where not exists (
   select 1 from ${table} h where h.source = 'netkeiba'
+  and ${identityMatch}
   and ${columns.map((c: ColumnMapping): string => `h.${c.column} is not distinct from r."${c.property}"`).join(" and ")}
 )`,
   values: [JSON.stringify(rows)],
@@ -161,12 +163,16 @@ const buildBatches = (input: HistoryPublicationInput): readonly InsertInput[] =>
   const batches: readonly InsertInput[] = [
     {
       table: "oversea_horse_race_history",
+      identityMatch:
+        'h.source_horse_id = r."sourceHorseId" and h.source_race_id = r."sourceRaceId"',
       columns: HORSE_COLUMNS,
       rows: input.horses,
       conflictTarget: "(source, source_horse_id, source_race_id) where source_race_id is not null",
     },
     {
       table: "oversea_person_race_history",
+      identityMatch:
+        'h.person_kind = r."personKind" and h.source_person_id = r."sourcePersonId" and h.source_race_id = r."sourceRaceId" and h.source_horse_id = r."sourceHorseId"',
       columns: PERSON_COLUMNS,
       rows: input.people.filter(
         (row: SecondaryPersonResult): boolean => row.sourceHorseId !== null,
@@ -176,6 +182,8 @@ const buildBatches = (input: HistoryPublicationInput): readonly InsertInput[] =>
     },
     {
       table: "oversea_person_race_history",
+      identityMatch:
+        'h.person_kind = r."personKind" and h.source_person_id = r."sourcePersonId" and h.source_race_id = r."sourceRaceId" and h.source_horse_id is null and h.horse_name = r."horseName"',
       columns: PERSON_COLUMNS,
       rows: input.people.filter(
         (row: SecondaryPersonResult): boolean => row.sourceHorseId === null,
@@ -199,6 +207,17 @@ export const buildHistoryVerificationStatements = (
 
 // Missing includes conflicting natural keys: publication must still fail its
 // all-column readback rather than overwrite existing source evidence.
+export const buildConflictingHistoryStatements = (
+  input: HistoryPublicationInput,
+): readonly SqlStatement[] =>
+  buildBatches(input).map((batch: InsertInput): SqlStatement => {
+    const missing: SqlStatement = buildReadback(batch, "row_to_json(r) as row");
+    return {
+      ...missing,
+      text: `${missing.text}\nand exists (select 1 from ${batch.table} h where h.source = 'netkeiba' and ${batch.identityMatch})`,
+    };
+  });
+
 export const buildMissingHistoryStatements = (
   input: HistoryPublicationInput,
 ): readonly SqlStatement[] =>

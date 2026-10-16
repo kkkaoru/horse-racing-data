@@ -5,11 +5,14 @@ import { historyPlanDigest, type HistoryArchivePlan } from "./history-archive";
 
 const fs = vi.hoisted(() => ({
   readFile: vi.fn(),
+  access: vi.fn(),
   mkdir: vi.fn(),
   writeFile: vi.fn(),
   rename: vi.fn(),
 }));
 vi.mock("node:fs/promises", () => fs);
+const audit = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock("./history-audit", () => ({ auditHistorySnapshot: audit.run }));
 const plan: HistoryArchivePlan = {
   kind: "owner",
   sourceId: "owner1",
@@ -66,6 +69,7 @@ beforeEach(() => {
   });
   fetchPage.mockResolvedValue("Count 0 No results</html>");
   wait.mockResolvedValue();
+  fs.access.mockRejectedValue({ code: "ENOENT" });
   fs.mkdir.mockResolvedValue(undefined);
   fs.writeFile.mockResolvedValue(undefined);
   fs.rename.mockResolvedValue(undefined);
@@ -90,6 +94,22 @@ it("collects and persists a verified zero-result archive without database claims
   expect(fetchPage).toHaveBeenCalledTimes(1);
   expect(wait).toHaveBeenCalledTimes(1);
   expect(files.get("/private/run/archive.json")).toMatch(/"publishedCount":0/);
+});
+
+it("runs the offline original audit without fetching or publishing", async () => {
+  audit.run.mockResolvedValue({
+    status: "complete",
+    verifiedRawPages: 1,
+    databasePublished: false,
+  });
+  expect(await runHistoryCli({ argv: ["audit", "/private/run"], runtime })).toStrictEqual({
+    status: "complete",
+    verifiedRawPages: 1,
+    databasePublished: false,
+  });
+  expect(audit.run).toHaveBeenCalledWith("/private/run");
+  expect(fetchPage).not.toHaveBeenCalled();
+  expect(writeAtomic).not.toHaveBeenCalled();
 });
 
 it("reports existing archive completion without fetching or writing again", async () => {
@@ -215,9 +235,12 @@ it.each([
   { argv: ["unknown"] },
   { argv: ["collect", "/private/input.json", "/private/run", "-1"] },
   { argv: ["status"] },
+  { argv: ["audit"] },
+  { argv: ["audit", ""] },
+  { argv: ["audit", "/private/run", "extra"] },
 ])("rejects invalid arguments %j", async ({ argv }) => {
   await expect(runHistoryCli({ argv, runtime })).rejects.toThrow(
-    "Use collect PLAN_JSON DIRECTORY PAGE_BUDGET or status DIRECTORY.",
+    "Use collect PLAN_JSON DIRECTORY PAGE_BUDGET, status DIRECTORY, or audit DIRECTORY.",
   );
 });
 
@@ -250,6 +273,26 @@ it("writes a private temporary file before atomically replacing the checkpoint",
   expect(fs.rename).toHaveBeenCalledWith(
     expect.stringMatching(/\.pending$/u),
     "/private/run/archive.json",
+  );
+});
+
+it("routes netkeiba through the production proxy instead of direct source access", async () => {
+  const network = vi
+    .fn()
+    .mockResolvedValue(
+      new Response("published text", { headers: { "content-type": "text/html; charset=utf-8" } }),
+    );
+  vi.stubGlobal("fetch", network);
+  expect(
+    await createHistoryCliRuntime().fetchPage({
+      url: "https://db.netkeiba.com/history",
+      encoding: "euc-jp",
+      rawPath: "/private/proxy.raw",
+    }),
+  ).toBe("published text");
+  expect(network).toHaveBeenCalledWith(
+    "https://reverse-proxy.api.kkk4oru.com/playwright?url=https%3A%2F%2Fdb.netkeiba.com%2Fhistory",
+    { redirect: "manual", signal: expect.any(AbortSignal) },
   );
 });
 

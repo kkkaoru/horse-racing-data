@@ -2,6 +2,7 @@
 import { expect, it, vi } from "vitest";
 import {
   buildHistoryStatements,
+  buildConflictingHistoryStatements,
   buildHistoryVerificationStatements,
   buildMissingHistoryStatements,
   publishHistory,
@@ -61,6 +62,45 @@ it("selects only rows without an exact all-column match for incremental publicat
   expect(statements[1]?.text).toMatch(/h\.horse_name is not distinct from r\."horseName"/u);
   expect(statements[0]?.values).toHaveLength(1);
   expect(statements[0]?.text).not.toMatch(/Published race/u);
+});
+
+it("uses validated natural-key equalities for indexes while retaining every null-safe field check", () => {
+  const missing = buildMissingHistoryStatements({
+    horses: [horse],
+    people: [person, { ...person, sourceHorseId: null, venue: null }],
+  });
+  const checks = buildHistoryVerificationStatements({
+    horses: [horse],
+    people: [person, { ...person, sourceHorseId: null, venue: null }],
+  });
+  expect(missing[0]?.text).toMatch(
+    /h\.source_horse_id = r\."sourceHorseId" and h\.source_race_id = r\."sourceRaceId"/u,
+  );
+  expect(missing[1]?.text).toMatch(
+    /h\.person_kind = r\."personKind" and h\.source_person_id = r\."sourcePersonId" and h\.source_race_id = r\."sourceRaceId" and h\.source_horse_id = r\."sourceHorseId"/u,
+  );
+  expect(missing[2]?.text).toMatch(
+    /h\.source_horse_id is null and h\.horse_name = r\."horseName"/u,
+  );
+  expect(checks[2]?.text).toMatch(/h\.source_horse_id is null and h\.horse_name = r\."horseName"/u);
+  expect(checks[2]?.text).toMatch(/h\.venue is not distinct from r\."venue"/u);
+  expect(checks[2]?.text).toMatch(/h\.distance_metres is not distinct from r\."distanceMetres"/u);
+  expect(checks[0]?.text).toMatch(/h\.source_horse_id is not distinct from r\."sourceHorseId"/u);
+  expect(checks[1]?.text).toMatch(/h\.horse_name is not distinct from r\."horseName"/u);
+});
+
+it("separates natural-key conflicts from genuinely absent or exact existing rows", () => {
+  const statements = buildConflictingHistoryStatements({
+    horses: [],
+    people: [person, { ...person, sourceHorseId: null }],
+  });
+  expect(statements[0]?.text).toMatch(/where not exists/u);
+  expect(statements[0]?.text).toMatch(/h\.horse_name is not distinct from r\."horseName"/u);
+  expect(statements[0]?.text).toMatch(/and exists \(select 1 from oversea_person_race_history/u);
+  expect(statements[1]?.text).toMatch(
+    /h\.source_horse_id is null and h\.horse_name = r\."horseName"\)$/u,
+  );
+  expect(statements[0]?.text).not.toMatch(/update|insert|delete/iu);
 });
 
 it("has no incremental query for an empty batch", () => {

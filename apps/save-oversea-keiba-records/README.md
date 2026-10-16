@@ -77,7 +77,37 @@ From this package directory:
 ```sh
 bun run history collect /private/history-plan.json /private/history-snapshot 50
 bun run history status /private/history-snapshot
+bun run history audit /private/history-snapshot
 ```
+
+The acquisition and audit implementation is in this package (`history-cli.ts`,
+`history-proxy.ts`, and `history-audit.ts`), not temporary scripts. Paths are CLI
+arguments; no user home, temporary directory, session ID, or source identity is
+hardcoded. Keep private plans and evidence in a persistent directory outside
+version control, for example `$HOME/.local/share/horse-racing-data/history/`.
+
+Netkeiba history requests always use the existing production proxy's
+`/playwright` HTTP endpoint. This endpoint owns its cache and browser fallback;
+the CLI itself does not launch a browser or connect directly to netkeiba. Other
+sources retain their explicit original encoding and transport. Proxy bytes are
+UTF-8 even when the source plan specifies EUC-JP. Redirects, non-200 responses,
+non-HTML responses and invalid UTF-8 stop collection without direct fallback.
+The exact response, SHA-256, target/transport URLs, HTTP status and metadata are
+preserved before validation. Exclusive `.raw.pending.json` reservations prevent
+concurrent requests and blind replay after an unknown outcome. Existing raw
+files or metadata are never overwritten. Inspect and retain failed/in-flight
+evidence before an explicitly authorized new attempt; do not clear it to force
+an automatic retry.
+
+`audit` is offline: it checks raw-byte SHA/provenance, reparses every committed
+page, checks the published total and pagination chain, and compares all rows
+(including duplicate occurrences and order) with the checkpoint. It supports
+both genuine archived proxy POST envelopes and proxy GET responses. It refuses
+missing or unsupported provenance, changed originals, and an archive/plan that
+changes during the audit. Run it after collection settles. Exit `2` means the
+verified snapshot is still partial, not that the remaining pages were acquired.
+It never fetches, updates the checkpoint, promotes another snapshot, or publishes
+to databases. Preserve its JSON output as a separate immutable audit receipt.
 
 Run only one collector per snapshot directory. Re-run the same command to resume: completed pages and archived responses are reused rather than cold-refetched. A completed snapshot is immutable evidence, not a claim that the source has no newer results; refreshing a changing source requires a separately reviewed snapshot/baseline workflow.
 
@@ -86,6 +116,58 @@ The private plan requires `kind` (`horse`, `owner`, `jockey`, or `trainer`), the
 The collector archives raw bytes, fetch metadata, decoded HTML, and an atomic parsed-row/checkpoint file under the private directory. HTTP redirects/access failures, parse failures, changing totals, pagination loops, or a terminal count mismatch do not count as success. An explicit source zero is distinct from missing data and from zero real-world starts. A configured browser export is preferred for its initial page; it does not authorize automated access-control bypasses.
 
 Exit codes: `0` = archival completion, `2` = bounded chunk paused, `1` = blocked/failure. Reports deliberately say `databasePublished: false`. `status` describes checkpoint completion, not freshness or the last acquisition error; retain the collection report when diagnosing blocked pages.
+
+### Incremental local mirroring while acquisition continues
+
+```sh
+# From the repository root; credentials are loaded privately, never printed.
+bun --env-file=.env --env-file=apps/local-postgresql/.env run \
+  apps/save-oversea-keiba-records/src/history-main.ts mirror-local \
+  /private/history-snapshot /private/local-receipts/pass-1 --confirm-write
+# After more pages have arrived, use a NEW receipt directory:
+bun --env-file=.env --env-file=apps/local-postgresql/.env run \
+  apps/save-oversea-keiba-records/src/history-main.ts mirror-local \
+  /private/history-snapshot /private/local-receipts/pass-2 --confirm-write
+```
+
+Create the receipt parent directory first. `mirror-local` freezes the current
+atomic archive and plan into an exclusive new directory without stopping or
+modifying the collector. It accepts only a loopback PostgreSQL endpoint, using
+`OVERSEA_HISTORY_LOCAL_DATABASE_URL` or the explicit `POSTGRES_PORT`,
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` values. It never connects
+to production or writes to Catalog. Each bounded 250-row transaction reselects
+only missing rows, inserts without updates, and checks every submitted column.
+A separate post-commit readback precedes the final receipt. Natural-key index
+predicates accelerate the checks without removing any null-safe column comparison.
+
+Existing receipt directories cannot be replayed. On failure, retain the frozen
+input and chunk journals and inspect the database before a new pass; a later
+pass reselects actual missing rows rather than assuming failed work rolled back.
+Conflicting existing records fail closed by default. After inspecting a conflict,
+append `--preserve-existing-variants` to a new `mirror-local` pass to retain those
+existing DB records and record the excluded source variants in chunk journals
+while inserting other non-conflicting rows. `existingConflictingRows` reports
+these exceptions, and canonical completeness stays false. This option never
+updates existing records or treats excluded variants as inserted. Genuine
+source-partial rows stay in the frozen archive. A successful local mirror is not full source completion:
+check `sourceComplete` and `canonicalCoverageComplete`. Newly acquired rows are
+picked up by a subsequent pass, with their own frozen input and receipts.
+
+### Explicit production history mirroring
+
+```sh
+# Load OVERSEA_HISTORY_PRODUCTION_DATABASE_URL privately, with explicit TLS.
+bun run history mirror-production /private/history-snapshot \
+  /private/production-receipts/new-pass --confirm-production
+```
+
+Production uses the same 250-row insert-only transactions and independent
+post-commit all-column readback as local mirroring, but requires its own command,
+confirmation, explicit database URL and target-bound receipts. It never falls
+back to local credentials. After inspecting existing conflicting records,
+`--preserve-existing-variants` retains those records and journals the source
+variants without falsely reporting canonical completeness. This command publishes
+PostgreSQL only; Catalog and raw R2 preservation are separate verified stages.
 
 **Database publication is a separate stage.** `prepareHistoryArchive` validates source scope, preserves genuine missing runner/finish records as `sourcePartialRows`, rejects other invalid canonical rows and conflicting duplicates, and reports archival coverage. `buildMissingHistoryStatements` selects only candidates without an exact all-column database match. `createHistoryDatabase` inserts that delta inside a transaction, verifies both the delta and full canonical input before commit, and reports submitted/inserted/verified counts. Existing conflicting records cause rollback, not overwrite. These APIs do not write JV rows, models, forecasts, or runner mappings. The CLI connects these stages with explicit target selection:
 

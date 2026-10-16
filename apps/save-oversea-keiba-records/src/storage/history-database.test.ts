@@ -54,6 +54,18 @@ it.each([null, {}, { ...row, sourcePersonId: "other" }])(
   },
 );
 
+it("reads validated conflicting natural keys without a transaction or write", async () => {
+  poolQuery.mockResolvedValue({ rowCount: 1, rows: [{ row }] });
+  expect(await createHistoryDatabase(pool).conflicts({ horses: [], people: [row] })).toHaveLength(
+    1,
+  );
+  expect(poolQuery).toHaveBeenCalledWith(
+    expect.stringMatching(/and exists \(select 1/u),
+    expect.any(Array),
+  );
+  expect(connect).not.toHaveBeenCalled();
+});
+
 it("rejects duplicate candidate results", async () => {
   poolQuery.mockResolvedValue({ rowCount: 2, rows: [{ row }, { row }] });
   await expect(createHistoryDatabase(pool).prepare({ horses: [], people: [row] })).rejects.toThrow(

@@ -1,4 +1,4 @@
-// Pure parser for cached secondary-source result tables.
+// This file runs with Bun. Pure parser for cached secondary-source result tables.
 // All source-specific markers, route prefixes, and cell positions are supplied
 // by an operator-owned profile and must not be committed.
 
@@ -126,7 +126,7 @@ const personDistance = (
   html: string,
 ): { surface: string | null; distanceMetres: number | null } => {
   const value = clean(html);
-  if (value === "") throw new Error(`Secondary result row has invalid distance: ${value}`);
+  if (value === "") return { surface: null, distanceMetres: null };
   const match = TRAILING_DISTANCE_PATTERN.exec(value);
   if (match === null) return { surface: value, distanceMetres: null };
   const metres = match[0];

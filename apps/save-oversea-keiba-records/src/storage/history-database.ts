@@ -5,6 +5,7 @@ import type { HistorySourceRow } from "../sources/history-source-page";
 import type { SqlStatement } from "../types";
 import {
   buildHistoryStatements,
+  buildConflictingHistoryStatements,
   buildHistoryVerificationStatements,
   buildMissingHistoryStatements,
   publishHistory,
@@ -19,7 +20,13 @@ export interface HistoryDatabaseReceipt {
 }
 export interface HistoryDatabase {
   readonly prepare: (input: HistoryPublicationInput) => Promise<readonly HistorySourceRow[]>;
+  readonly conflicts: (input: HistoryPublicationInput) => Promise<readonly HistorySourceRow[]>;
   readonly apply: (input: HistoryPublicationInput) => Promise<HistoryDatabaseReceipt>;
+}
+interface ReadCandidatesInput {
+  readonly input: HistoryPublicationInput;
+  readonly target: QueryTarget;
+  readonly statements: readonly SqlStatement[];
 }
 interface QueryTarget {
   readonly query: PostgresPoolClient["query"];
@@ -42,11 +49,11 @@ const mismatchCount = (result: PostgresQueryResult): number => {
   return value;
 };
 
-const readMissing = async (
-  input: HistoryPublicationInput,
-  target: QueryTarget,
-): Promise<readonly HistorySourceRow[]> => {
-  const statements: readonly SqlStatement[] = buildMissingHistoryStatements(input);
+const readCandidates = async ({
+  input,
+  target,
+  statements,
+}: ReadCandidatesInput): Promise<readonly HistorySourceRow[]> => {
   const permitted: ReadonlySet<string> = new Set(
     [...input.horses, ...input.people].map(historyRowFingerprint),
   );
@@ -86,7 +93,11 @@ const apply = async (
   try {
     await client.query("BEGIN");
     progress.began = true;
-    const missing: readonly HistorySourceRow[] = await readMissing(input, client);
+    const missing: readonly HistorySourceRow[] = await readCandidates({
+      input,
+      target: client,
+      statements: buildMissingHistoryStatements(input),
+    });
     await publishHistory(historyRowsToInput(missing), {
       withTransaction: async (run): Promise<void> =>
         run({
@@ -133,6 +144,9 @@ const apply = async (
 };
 
 export const createHistoryDatabase = (pool: PostgresPool): HistoryDatabase => ({
-  prepare: (input): Promise<readonly HistorySourceRow[]> => readMissing(input, pool),
+  prepare: (input): Promise<readonly HistorySourceRow[]> =>
+    readCandidates({ input, target: pool, statements: buildMissingHistoryStatements(input) }),
+  conflicts: (input): Promise<readonly HistorySourceRow[]> =>
+    readCandidates({ input, target: pool, statements: buildConflictingHistoryStatements(input) }),
   apply: (input): Promise<HistoryDatabaseReceipt> => apply(input, pool),
 });

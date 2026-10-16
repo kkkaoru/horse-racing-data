@@ -6,8 +6,14 @@ const ports = vi.hoisted(() => ({
   publish: vi.fn(),
   connect: vi.fn(),
   close: vi.fn(),
+  mirror: vi.fn(),
+  mirrorProduction: vi.fn(),
 }));
 vi.mock("./history-cli", () => ({ runHistoryCli: ports.collect }));
+vi.mock("./history-local-mirror", () => ({
+  runHistoryLocalMirror: ports.mirror,
+  runHistoryProductionMirror: ports.mirrorProduction,
+}));
 vi.mock("./history-publication-operator", () => ({ runHistoryPublicationOperator: ports.publish }));
 vi.mock("./storage/history-connection", () => ({ createHistoryConnection: ports.connect }));
 const input: HistoryCommandInput = {
@@ -25,7 +31,7 @@ beforeEach(() => {
   ports.close.mockResolvedValue(undefined);
   ports.publish.mockResolvedValue({ operation: "prepared" });
 });
-it.each(["collect", "status"])(
+it.each(["collect", "status", "audit"])(
   "routes %s without creating database connections",
   async (action) => {
     await runHistoryCommand({ ...input, argv: [action, "/snapshot"] });
@@ -33,6 +39,23 @@ it.each(["collect", "status"])(
     expect(ports.connect).not.toHaveBeenCalled();
   },
 );
+it("delegates a local-only mirror without opening a production connection", async () => {
+  await runHistoryCommand({
+    ...input,
+    argv: ["mirror-local", "/source", "/new-receipts", "--confirm-write"],
+  });
+  expect(ports.mirror).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
+it("routes explicit production mirroring without using the local entrypoint", async () => {
+  await runHistoryCommand({
+    ...input,
+    argv: ["mirror-production", "/source", "/new", "--confirm-production"],
+  });
+  expect(ports.mirrorProduction).toHaveBeenCalledTimes(1);
+  expect(ports.mirror).not.toHaveBeenCalled();
+  expect(ports.connect).not.toHaveBeenCalled();
+});
 it("routes a local prepare and closes its pool", async () => {
   await runHistoryCommand({ ...input, argv: ["prepare", "/snapshot", "local"] });
   expect(ports.connect).toHaveBeenCalledWith({}, "local");

@@ -4,6 +4,7 @@ import {
   runHistoryPublicationOperator,
   type HistoryPublicationReport,
 } from "./history-publication-operator";
+import { runHistoryLocalMirror, runHistoryProductionMirror } from "./history-local-mirror";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -39,7 +40,10 @@ const publicationArguments = (args: readonly string[]): PublicationArguments => 
 export const runHistoryCommand = async (
   input: HistoryCommandInput,
 ): Promise<HistoryCliReport | HistoryPublicationReport> => {
-  if (input.argv[0] === "collect" || input.argv[0] === "status") return runHistoryCli(input);
+  if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
+    return runHistoryCli(input);
+  if (input.argv[0] === "mirror-local") return runHistoryLocalMirror(input);
+  if (input.argv[0] === "mirror-production") return runHistoryProductionMirror(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

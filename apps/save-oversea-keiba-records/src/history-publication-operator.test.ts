@@ -64,7 +64,7 @@ const apply = vi.fn<HistoryDatabase["apply"]>();
 const input: HistoryPublicationOperatorInput = {
   argv: ["prepare", "/snapshot"],
   targetFingerprint: "a".repeat(64),
-  database: { prepare, apply },
+  database: { prepare, apply, conflicts: vi.fn() },
   files: { read, writeAtomic },
 };
 

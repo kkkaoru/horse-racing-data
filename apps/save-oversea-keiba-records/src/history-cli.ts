@@ -12,6 +12,8 @@ import {
   type HistoryArchiveState,
 } from "./history-archive";
 import { decodeHistoryArchive, decodeHistoryPlan, isHistoryRecord } from "./history-json";
+import { fetchProxyHistoryPage, isHistoryProxySource } from "./history-proxy";
+import { auditHistorySnapshot } from "./history-audit";
 
 export interface HistoryCliRuntime {
   readonly read: (path: string) => Promise<string | null>;
@@ -115,6 +117,7 @@ export const runHistoryCli = async ({
   runtime,
 }: HistoryCliInput): Promise<HistoryCliReport> => {
   const [action, first, second, budget]: readonly (string | undefined)[] = argv;
+  if (action === "audit" && argv.length === 2 && first) return auditHistorySnapshot(first);
   if (
     action === "collect" &&
     argv.length === 4 &&
@@ -142,7 +145,9 @@ export const runHistoryCli = async ({
       error: null,
     };
   }
-  throw new Error("Use collect PLAN_JSON DIRECTORY PAGE_BUDGET or status DIRECTORY.");
+  throw new Error(
+    "Use collect PLAN_JSON DIRECTORY PAGE_BUDGET, status DIRECTORY, or audit DIRECTORY.",
+  );
 };
 
 const readPrivate = async (path: string): Promise<string | null> => {
@@ -162,6 +167,7 @@ const writePrivateAtomic = async (path: string, content: string | Uint8Array): P
 };
 
 const fetchHistoryPage = async ({ url, encoding, rawPath }: HistoryFetchInput): Promise<string> => {
+  if (isHistoryProxySource(url)) return fetchProxyHistoryPage({ url, encoding, rawPath });
   if (!iconv.encodingExists(encoding)) throw new Error("History source encoding is unsupported.");
   const response: Response = await fetch(url, {
     redirect: "manual",

@@ -1,3 +1,4 @@
+// This file runs with Bun.
 import { expect, test } from "vitest";
 import {
   parseSecondaryHorseResults,
@@ -125,9 +126,17 @@ test("preserves a missing person-result surface as null", () => {
       profile,
     )[0],
   ).toMatchObject({ going: null, venue: null });
-  expect(() =>
-    parseSecondaryPersonResults(html(row().replace("Turf1600", "")), "trainer", "T100", profile),
-  ).toThrow("invalid distance");
+  expect(
+    parseSecondaryPersonResults(html(row().replace("Turf1600", "")), "trainer", "T100", profile)[0],
+  ).toMatchObject({ distanceMetres: null, surface: null });
+  expect(
+    parseSecondaryPersonResults(
+      html(row().replace("Turf1600", " &nbsp; ")),
+      "owner",
+      "O100",
+      profile,
+    )[0],
+  ).toMatchObject({ distanceMetres: null, surface: null });
   expect(() =>
     parseSecondaryHorseResults(html(row().replace("Turf1600", "1600")), "H100", profile),
   ).toThrow("invalid distance");
