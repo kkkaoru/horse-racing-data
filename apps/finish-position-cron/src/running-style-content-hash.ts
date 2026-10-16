@@ -21,12 +21,14 @@ interface RunningStyleHashRow {
   p_oikomi: number;
   p_sashi: number;
   p_senkou: number;
+  predicted_at_max: string | null;
   predicted_label: string;
   race_key: string;
 }
 
 export interface RunningStyleContentFingerprint {
   contentHash: string;
+  predictedAtMax: string | null;
   rowCount: number;
 }
 
@@ -98,32 +100,33 @@ const canonicalRow = (row: RunningStyleHashRow): string | null => {
 const patterns = (
   category: PredictCategory,
   runYmd: string,
-): { exclude: string; include: string } => {
+): { exclude: string; lower: string; upper: string } => {
   const source = category === "jra" ? "jra" : "nar";
-  const includeVenue = category === "ban-ei" ? "83:" : "";
-  const excludeVenue = category === "nar" ? "83:" : "__never__:";
   return {
-    exclude: `${source}:${runYmd}:${excludeVenue}%`,
-    include: `${source}:${runYmd}:${includeVenue}%`,
+    exclude: `${source}:${runYmd}:${category === "nar" ? "83:" : "__never__:"}%`,
+    lower: `${source}:${runYmd}:`,
+    upper: `${source}:${runYmd};`,
   };
 };
 
 export const computeRunningStyleContentFingerprint = async (
   params: RunningStyleContentHashParams,
 ): Promise<RunningStyleContentFingerprint> => {
-  if (params.category === "ban-ei") return { contentHash: NONE_HASH, rowCount: 0 };
+  if (params.category === "ban-ei")
+    return { contentHash: NONE_HASH, predictedAtMax: null, rowCount: 0 };
   const scope = patterns(params.category, params.runYmd);
   const result = await params.db
     .prepare(
       `select race_key, horse_number, ketto_toroku_bango,
-              p_nige, p_senkou, p_sashi, p_oikomi, predicted_label
+              p_nige, p_senkou, p_sashi, p_oikomi, predicted_label,
+              max(predicted_at) over () as predicted_at_max
          from race_running_styles
-        where race_key like ?1
-          and race_key not like ?2
+        where race_key >= ?1 and race_key < ?2
+          and race_key not like ?3
         order by race_key, horse_number
         limit 1025`,
     )
-    .bind(scope.include, scope.exclude)
+    .bind(scope.lower, scope.upper, scope.exclude)
     .all<RunningStyleHashRow>();
   if (result.results.length > MAX_RUNNING_STYLE_ROWS) throw new Error("running-style-row-limit");
   const rows = result.results.map(canonicalRow);
@@ -134,5 +137,9 @@ export const computeRunningStyleContentFingerprint = async (
     .join("\n");
   const contentHash = await sha256(canonical);
   if (contentHash.length !== SHA_256_HEX_LENGTH) throw new Error("running-style-hash-invalid");
-  return { contentHash, rowCount: rows.length };
+  return {
+    contentHash,
+    predictedAtMax: result.results[0]?.predicted_at_max ?? null,
+    rowCount: rows.length,
+  };
 };

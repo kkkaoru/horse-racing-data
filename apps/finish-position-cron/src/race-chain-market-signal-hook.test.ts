@@ -22,7 +22,11 @@ const bucket: MarketSignalFoundationBucket = {
 
 const input = (): PrepareMarketSignalFoundationInput => ({
   category: "jra",
-  env: { FEATURES_CACHE: bucket, WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1" },
+  env: {
+    FEATURES_CACHE: bucket,
+    FINISH_POSITION_CRON_DB: {} as D1Database,
+    WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
+  },
   fetchImpl: fetch,
   keibajoCode: "05",
   raceBango: "11",
@@ -63,7 +67,7 @@ test("prepare hook skips disabled and unsupported work without fetching odds", a
 
   await expect(
     prepareMarketSignalFoundationBestEffort(
-      { ...input(), env: { FEATURES_CACHE: bucket } },
+      { ...input(), env: { FEATURES_CACHE: bucket, FINISH_POSITION_CRON_DB: {} as D1Database } },
       { fetchOdds, materialize },
     ),
   ).resolves.toStrictEqual({ reason: "disabled", status: "unavailable" });

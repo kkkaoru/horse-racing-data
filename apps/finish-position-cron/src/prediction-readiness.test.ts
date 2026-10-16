@@ -789,6 +789,9 @@ it("loads and validates KV payloads together with D1 weight provenance", async (
   expect(getMock).toHaveBeenCalledWith("pred:fp:v1:20260815:05:01", "json");
   expect(String(prepareMock.mock.calls[0]?.[0])).toContain("last_weight_fetch_at");
   expect(String(prepareMock.mock.calls[0]?.[0])).toContain("horse_weight_snapshots");
+  expect(String(prepareMock.mock.calls[0]?.[0])).toMatch(
+    /join latest_weights latest[\s\S]*where weights\.race_key in \(select race_key from target_races\)/u,
+  );
   expect(result.races[0]?.postWeight).toMatchObject({
     complete: true,
     kvPredictionCount: 1,
@@ -1370,6 +1373,86 @@ it("uses D1 for NAR and calls Catalog only for a missing ban-ei race", async () 
   );
   expect(result.races[0]).toMatchObject({ expectedCount: 1, expectedSource: "d1" });
   expect(result.races[1]).toMatchObject({ expectedCount: 1, expectedSource: "catalog" });
+});
+
+it("keeps NAR readiness independent of missing JRA runners without weakening the full-day check", async () => {
+  const allMock = vi
+    .fn()
+    .mockResolvedValueOnce({
+      results: [
+        {
+          keibajo_code: "06",
+          race_bango: "01",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "jra",
+        },
+        {
+          keibajo_code: "35",
+          race_bango: "01",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "nar",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      results: [
+        {
+          ketto_toroku_bango: "N1",
+          keibajo_code: "35",
+          race_bango: "01",
+          source: "nar",
+          umaban: "1",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ results: [] })
+    .mockResolvedValueOnce({
+      results: [
+        {
+          keibajo_code: "06",
+          race_bango: "01",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "jra",
+        },
+        {
+          keibajo_code: "35",
+          race_bango: "01",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "nar",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      results: [
+        {
+          ketto_toroku_bango: "N1",
+          keibajo_code: "35",
+          race_bango: "01",
+          source: "nar",
+          umaban: "1",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ results: [] });
+  queryMock.mockResolvedValue([]);
+  const catalogFetchMock = vi.fn(async () => new Response(null, { status: 502 }));
+  const env = {
+    FINISH_POSITION_ATTESTATION_TOKEN: "attestation-secret",
+    NEON_DATABASE_URL: "postgres://example",
+    PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
+    REALTIME_DB: {
+      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ all: allMock })) })),
+    },
+  } as unknown as Env;
+
+  const nar = await getPredictionReadiness({ category: "nar", env, now: NOW, runYmd: "20260815" });
+  expect(nar.races).toHaveLength(1);
+  expect(nar.races[0]).toMatchObject({ expectedCount: 1, expectedSource: "d1", source: "nar" });
+  expect(catalogFetchMock).not.toHaveBeenCalled();
+  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
+    "Catalog bulk readiness entries failed with HTTP 502",
+  );
+  expect(catalogFetchMock).toHaveBeenCalledTimes(1);
 });
 
 it("fails closed on a non-success Catalog bulk response", async () => {

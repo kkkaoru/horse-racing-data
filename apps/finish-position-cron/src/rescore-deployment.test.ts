@@ -44,6 +44,9 @@ test("retains disabled rescore registration without downsizing legacy or race-ch
     tag: "v4",
     new_sqlite_classes: ["FinishPositionRescoreContainer"],
   });
+  // Python's live cell/Prophet serving contract is not yet matched by the
+  // native scorer; a later artifact upload must not silently enable writes.
+  expect(config).toHaveProperty("vars.JRA_WORKER_RESCORE_ENABLED", "0");
   expect(config).toHaveProperty("vars.RESCORE_CONTAINER_ENABLED", "0");
   expect(config).toHaveProperty("vars.RESCORE_CONTAINER_RACES", "");
 });

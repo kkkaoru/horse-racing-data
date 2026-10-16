@@ -13,6 +13,7 @@ const {
   claimContainerSlotMock,
   fanOutPredictionsAfterDayBaseHitMock,
   getFocusedFullDayBaseReadinessMock,
+  getDayBaseDiscoveryReadinessMock,
   headDayBaseObjectMock,
   materializeDayBasePerRaceCacheMock,
   pickUpPrewarmDayBaseWithOutcomeMock,
@@ -28,6 +29,7 @@ const {
   claimContainerSlotMock: vi.fn(async (): Promise<SlotClaimResult> => ({ proceed: true })),
   fanOutPredictionsAfterDayBaseHitMock: vi.fn(async (): Promise<number> => 1),
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  getDayBaseDiscoveryReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
   headDayBaseObjectMock: vi.fn(async (): Promise<{ size: number } | null> => null),
   materializeDayBasePerRaceCacheMock: vi.fn(
     async (): Promise<{ status: "materialized" } | { reason: string; status: "fallback" }> => ({
@@ -61,6 +63,9 @@ vi.mock("./feature-hit-prediction", () => ({
 vi.mock("./focused-full-day-base-readiness", () => ({
   getFocusedFullDayBaseReadiness: getFocusedFullDayBaseReadinessMock,
 }));
+vi.mock("./day-base-discovery-readiness", () => ({
+  getDayBaseDiscoveryReadiness: getDayBaseDiscoveryReadinessMock,
+}));
 vi.mock("./do-state", () => ({
   claimContainerSlot: claimContainerSlotMock,
   releaseContainerSlot: releaseContainerSlotMock,
@@ -71,6 +76,7 @@ vi.mock("./predict-run-coordinator", () => ({
 
 import {
   buildDayBaseWorkKey,
+  buildStaleDayBaseWorkKey,
   completeLandedDayBase,
   consumeDayBasePickup,
   DAY_BASE_PICKUP_DELAY_SECONDS,
@@ -133,6 +139,8 @@ beforeEach(() => {
     ready: false,
     reason: "day-base-missing-or-invalid",
   });
+  getDayBaseDiscoveryReadinessMock.mockReset();
+  getDayBaseDiscoveryReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   headDayBaseObjectMock.mockResolvedValue(null);
   pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValue("missing");
 });
@@ -145,7 +153,43 @@ test("isDayBasePickupMessage accepts a valid delayed pickup body", () => {
   expect(isDayBasePickupMessage(pickupBody)).toBe(true);
 });
 
-test("completeLandedDayBase does not fan out when the per-race Worker cache is missing", async () => {
+test("completeLandedDayBase awaits cleanup handoff before Worker materialization and fanout", async () => {
+  queueSendMock.mockImplementationOnce(async () => {
+    await Promise.resolve();
+    expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+    expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  });
+
+  await expect(
+    completeLandedDayBase({
+      category: "nar",
+      env: makeEnv(),
+      generationId: "generation-a",
+      generatePredictionsAfterHit: true,
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe(1);
+
+  expect(queueSendMock).toHaveBeenCalledOnce();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      acceptableWorkKeys: [
+        "day-base:20260826:nar:generation-a",
+        "day-base-stale:20260826:nar:generation-a",
+      ],
+      attempt: 1,
+      name: "predict-nar",
+      role: "legacy",
+      type: "container-cleanup",
+      workKey: "day-base:20260826:nar:generation-a",
+    },
+    { delaySeconds: 30 },
+  );
+  expect(materializeDayBasePerRaceCacheMock).toHaveBeenCalledOnce();
+  expect(fanOutPredictionsAfterDayBaseHitMock).toHaveBeenCalledOnce();
+});
+
+test("completeLandedDayBase stops the published Container when per-race materialization fails", async () => {
   materializeDayBasePerRaceCacheMock.mockResolvedValueOnce({
     reason: "manifest-missing",
     status: "fallback",
@@ -153,7 +197,7 @@ test("completeLandedDayBase does not fan out when the per-race Worker cache is m
   await expect(
     completeLandedDayBase({
       category: "nar",
-      env: {} as Env,
+      env: makeEnv(),
       generatePredictionsAfterHit: true,
       runYmd: "20260826",
     }),
@@ -161,6 +205,44 @@ test("completeLandedDayBase does not fan out when the per-race Worker cache is m
     "per-race foundation warm failed category=nar runYmd=20260826 reason=manifest-missing",
   );
   expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledOnce();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      acceptableWorkKeys: ["day-base:20260826:nar", "day-base-stale:20260826:nar"],
+      attempt: 1,
+      name: "predict-nar",
+      role: "legacy",
+      type: "container-cleanup",
+      workKey: "day-base:20260826:nar",
+    },
+    { delaySeconds: 30 },
+  );
+});
+
+test("completeLandedDayBase stops the published Container after a transient Catalog error", async () => {
+  materializeDayBasePerRaceCacheMock.mockRejectedValueOnce(new Error("Catalog HTTP 502"));
+  await expect(
+    completeLandedDayBase({
+      category: "nar",
+      env: makeEnv(),
+      generatePredictionsAfterHit: false,
+      runYmd: "20260826",
+    }),
+  ).rejects.toThrow("Catalog HTTP 502");
+  expect(queueSendMock).toHaveBeenCalledOnce();
+});
+
+test("stale day-base stop keys retain the exact generation fence", () => {
+  expect(buildStaleDayBaseWorkKey({ category: "jra", runYmd: "20260825" })).toBe(
+    "day-base-stale:20260825:jra",
+  );
+  expect(
+    buildStaleDayBaseWorkKey({
+      category: "jra",
+      generationId: "generation-a",
+      runYmd: "20260825",
+    }),
+  ).toBe("day-base-stale:20260825:jra:generation-a");
 });
 
 test("buildDayBaseWorkKey scopes new owners while retaining the legacy key", () => {
@@ -263,6 +345,22 @@ test("enqueueDayBasePickup sends a delayed queue message", async () => {
   logSpy.mockRestore();
 });
 
+test("late day-base pickup polls every minute without shortening the 36-minute build budget", async () => {
+  await enqueueDayBasePickup({ attempt: 4, category: "nar", env: makeEnv(), runYmd: "20260817" });
+  await enqueueDayBasePickup({ attempt: 5, category: "nar", env: makeEnv(), runYmd: "20260817" });
+  expect(queueSendMock).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ attempt: 4, type: "day-base-pickup" }),
+    { delaySeconds: 180 },
+  );
+  expect(queueSendMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ attempt: 5, type: "day-base-pickup" }),
+    { delaySeconds: 60 },
+  );
+  expect(DAY_BASE_PICKUP_MAX_ATTEMPTS).toBe(26);
+});
+
 test("enqueueDayBasePickup preserves an explicit historical force flag", async () => {
   await enqueueDayBasePickup({
     attempt: DAY_BASE_PICKUP_FIRST_ATTEMPT,
@@ -280,6 +378,30 @@ test("enqueueDayBasePickup preserves an explicit historical force flag", async (
     }),
     { delaySeconds: DAY_BASE_PICKUP_DELAY_SECONDS },
   );
+});
+
+test("consumeDayBasePickup requeues missing runners without cold-starting the Container", async () => {
+  getDayBaseDiscoveryReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "catalog-race-entries-incomplete",
+  });
+
+  await consumeDayBasePickup({ env: makeEnv(), message: pickupBody });
+
+  expect(pickUpPrewarmDayBaseWithOutcomeMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ attempt: 2, category: "ban-ei", type: "day-base-pickup" }),
+    { delaySeconds: DAY_BASE_PICKUP_DELAY_SECONDS },
+  );
+});
+
+test("consumeDayBasePickup defers on a Catalog failure without waking the Container", async () => {
+  getDayBaseDiscoveryReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
+
+  await consumeDayBasePickup({ env: makeEnv(), message: pickupBody });
+
+  expect(pickUpPrewarmDayBaseWithOutcomeMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledTimes(1);
 });
 
 test("consumeDayBasePickup does not trust an old object without a fresh pickup", async () => {
@@ -472,7 +594,7 @@ test("consumeDayBasePickup exhausts an earlier pickup after preempting its later
     { delaySeconds: 30 },
   );
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=12",
+    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=26",
   );
   warnSpy.mockRestore();
 });
@@ -591,9 +713,8 @@ test("consumeDayBasePickup hands off one stop accepting canonical or stale owner
   );
 });
 
-test("consumeDayBasePickup preserves completion and cleanup failures for Queue retry", async () => {
+test("consumeDayBasePickup retries a failed cleanup handoff before starting Worker-only work", async () => {
   getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({ ready: true, reason: "ready" });
-  fanOutPredictionsAfterDayBaseHitMock.mockRejectedValueOnce(new Error("fanout unavailable"));
   const send = vi.fn(async (): Promise<void> => {
     throw new Error("control queue unavailable");
   });
@@ -609,10 +730,10 @@ test("consumeDayBasePickup preserves completion and cleanup failures for Queue r
       env,
       message: { ...pickupBody, generatePredictionsAfterHit: true },
     }),
-  ).rejects.toThrow(
-    "Day-base completion and Container cleanup failed category=ban-ei runYmd=20260817",
-  );
+  ).rejects.toThrow("cleanup queue unavailable");
 
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
   expect(send).toHaveBeenCalledTimes(1);
   expect(queueSendMock).toHaveBeenCalledTimes(1);
   errorSpy.mockRestore();
@@ -694,6 +815,34 @@ test("consumeDayBasePickup force waits for its Container payload instead of an o
       category: "ban-ei",
       force: true,
       generationId: "generation-force",
+      runYmd: "20260817",
+      type: DAY_BASE_PICKUP_TYPE,
+    },
+    { delaySeconds: 180 },
+  );
+});
+
+test("consumeDayBasePickup never accepts a legacy object for a generation-scoped pickup", async () => {
+  headDayBaseObjectMock.mockResolvedValueOnce({ size: 80 });
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: { ...pickupBody, attempt: 2, force: true, generationId: "generation-current" },
+  });
+
+  expect(headDayBaseObjectMock).not.toHaveBeenCalled();
+  expect(pickUpPrewarmDayBaseWithOutcomeMock).toHaveBeenCalledWith({
+    category: "ban-ei",
+    env: expect.anything(),
+    generationId: "generation-current",
+    runYmd: "20260817",
+  });
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
+  expect(queueSendMock).toHaveBeenCalledWith(
+    {
+      attempt: 3,
+      category: "ban-ei",
+      force: true,
+      generationId: "generation-current",
       runYmd: "20260817",
       type: DAY_BASE_PICKUP_TYPE,
     },
@@ -929,7 +1078,7 @@ test("consumeDayBasePickup stops the Container when foundation pickup is exhaust
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   expect(fanOutPredictionsAfterDayBaseHitMock).not.toHaveBeenCalled();
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-pickup] exhausted category=nar runYmd=20260824 attempt=12",
+    "[day-base-pickup] exhausted category=nar runYmd=20260824 attempt=26",
   );
   warnSpy.mockRestore();
   logSpy.mockRestore();
@@ -1104,7 +1253,7 @@ test("consumeDayBasePickup polls without rebuild while running-style is incomple
       runYmd: "20260824",
       type: "day-base-pickup",
     },
-    { delaySeconds: 180 },
+    { delaySeconds: 60 },
   );
 });
 
@@ -1149,6 +1298,30 @@ test("consumeDayBasePickup rebuilds a stale candidate and resets the pickup wind
   warnSpy.mockRestore();
 });
 
+test("stale pickup rebuild keeps the owner generation in the Container request", async () => {
+  pickUpPrewarmDayBaseWithOutcomeMock.mockResolvedValueOnce("stale");
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await consumeDayBasePickup({
+    env: makeEnv(),
+    message: {
+      attempt: 10,
+      category: "nar",
+      generationId: "owner-1",
+      runYmd: "20260824",
+      type: "day-base-pickup",
+    },
+  });
+  expect(containerFetchMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: "http://do/prewarm-day-base?category=nar&daysAhead=0&runDate=20260824&generationId=owner-1",
+    }),
+  );
+  expect(queueSendMock).toHaveBeenCalledWith(expect.objectContaining({ generationId: "owner-1" }), {
+    delaySeconds: 180,
+  });
+  warnSpy.mockRestore();
+});
+
 test("concurrent stale pickups allow only one Container restart", async () => {
   getFocusedFullDayBaseReadinessMock.mockResolvedValue({
     ready: false,
@@ -1188,7 +1361,7 @@ test("concurrent stale pickups allow only one Container restart", async () => {
       runYmd: "20260824",
       type: "day-base-pickup",
     },
-    { delaySeconds: 180 },
+    { delaySeconds: 60 },
   );
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
@@ -1215,7 +1388,7 @@ test("a busy stale-restart slot does not fetch or reset the pickup attempt", asy
       runYmd: "20260824",
       type: "day-base-pickup",
     },
-    { delaySeconds: 180 },
+    { delaySeconds: 60 },
   );
   expect(releaseContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
@@ -1324,7 +1497,7 @@ test("consumeDayBasePickup stops after the last attempt", async () => {
     { delaySeconds: 30 },
   );
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=12",
+    "[day-base-pickup] exhausted category=ban-ei runYmd=20260817 attempt=26",
   );
   warnSpy.mockRestore();
 });
@@ -1337,7 +1510,7 @@ test("consumeDayBasePickup preserves the Container after a transient pickup fail
       env: makeEnv(),
       message: { ...pickupBody, attempt: DAY_BASE_PICKUP_MAX_ATTEMPTS },
     }),
-  ).rejects.toThrow("Transient day-base pickup failure category=ban-ei runYmd=20260817 attempt=12");
+  ).rejects.toThrow("Transient day-base pickup failure category=ban-ei runYmd=20260817 attempt=26");
   expect(queueSendMock).not.toHaveBeenCalled();
 });
 
@@ -1350,7 +1523,7 @@ test("consumeDayBasePickup preserves the Container after canonical readiness fai
       message: { ...pickupBody, attempt: DAY_BASE_PICKUP_MAX_ATTEMPTS },
     }),
   ).rejects.toThrow(
-    "Transient day-base readiness failure category=ban-ei runYmd=20260817 attempt=12",
+    "Transient day-base readiness failure category=ban-ei runYmd=20260817 attempt=26",
   );
   expect(queueSendMock).not.toHaveBeenCalled();
 });

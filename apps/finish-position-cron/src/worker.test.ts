@@ -23,7 +23,9 @@ const {
   releaseContainerSlotMock,
   enqueueDayBasePrewarmMock,
   runDayBasePrewarmMock,
+  runDayBasePrewarmWorkflowsMock,
   prewarmCategoryWithOutcomeMock,
+  acquireDayBaseRepairMock,
   resolveCardMaxRaceBangoForKochiMock,
   runCoverageSelfHealMock,
   refreshCornerFeaturesMock,
@@ -58,9 +60,21 @@ const {
   const releaseContainerSlot = vi.fn(async () => undefined);
   const enqueueDayBasePrewarm = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => true);
+  const runDayBasePrewarmWorkflows = vi.fn(async () => true);
   const prewarmCategoryWithOutcome = vi.fn(
     async (): Promise<"busy" | "failed" | "landed" | "owned" | "pickup-scheduled" | "superseded"> =>
       "landed",
+  );
+  const acquireDayBaseRepair = vi.fn(
+    async (params: {
+      generationId: string;
+    }): Promise<{
+      generationId: string | null;
+      status: "acquired" | "busy" | "skipped-old-date";
+    }> => ({
+      generationId: params.generationId,
+      status: "acquired",
+    }),
   );
   const refreshCornerFeatures = vi.fn(async () => undefined);
   const runRunningStyleKickMorningGap = vi.fn(async () => undefined);
@@ -137,7 +151,9 @@ const {
     releaseContainerSlotMock: releaseContainerSlot,
     enqueueDayBasePrewarmMock: enqueueDayBasePrewarm,
     runDayBasePrewarmMock: runDayBasePrewarm,
+    runDayBasePrewarmWorkflowsMock: runDayBasePrewarmWorkflows,
     prewarmCategoryWithOutcomeMock: prewarmCategoryWithOutcome,
+    acquireDayBaseRepairMock: acquireDayBaseRepair,
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
     runCoverageSelfHealMock: runCoverageSelfHeal,
     refreshCornerFeaturesMock: refreshCornerFeatures,
@@ -206,6 +222,16 @@ vi.mock("./day-base-prewarm", () => ({
   enqueueDayBasePrewarm: enqueueDayBasePrewarmMock,
   prewarmCategoryWithOutcome: prewarmCategoryWithOutcomeMock,
   runDayBasePrewarm: runDayBasePrewarmMock,
+}));
+
+vi.mock("./race-day-workflow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./race-day-workflow")>();
+  return { ...actual, runDayBasePrewarmWorkflows: runDayBasePrewarmWorkflowsMock };
+});
+
+vi.mock("./day-base-repair", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./day-base-repair")>()),
+  acquireDayBaseRepair: acquireDayBaseRepairMock,
 }));
 
 vi.mock("./day-base-prewarm-pickup", () => ({
@@ -372,8 +398,13 @@ beforeEach(() => {
   releaseContainerSlotMock.mockClear();
   enqueueDayBasePrewarmMock.mockClear();
   runDayBasePrewarmMock.mockClear();
+  runDayBasePrewarmWorkflowsMock.mockClear();
   prewarmCategoryWithOutcomeMock.mockReset();
   prewarmCategoryWithOutcomeMock.mockResolvedValue("landed");
+  acquireDayBaseRepairMock.mockReset().mockImplementation(async (params) => ({
+    generationId: params.generationId,
+    status: "acquired",
+  }));
   pickUpPrewarmDayBaseMock.mockClear();
   headDayBaseObjectMock.mockClear();
   completeLandedDayBaseMock.mockReset();
@@ -820,10 +851,47 @@ test("admin prewarm-day-base directly lands one category without queue starvatio
     queued: false,
     runYmd: "20260817",
   });
+  expect(acquireDayBaseRepairMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "ban-ei", runYmd: "20260817" }),
+  );
   expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "ban-ei", daysAhead: 0, runYmd: "20260817" }),
   );
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm-day-base does not enter a Container owned by another D1 generation", async () => {
+  acquireDayBaseRepairMock.mockResolvedValueOnce({ generationId: "other-owner", status: "busy" });
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260910" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  await expect(response.json()).resolves.toMatchObject({
+    generationId: "other-owner",
+    outcome: "busy",
+    queued: false,
+  });
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+});
+
+test("admin prewarm-day-base rejects an old date before starting a Container", async () => {
+  acquireDayBaseRepairMock.mockResolvedValueOnce({
+    generationId: "old-owner",
+    status: "skipped-old-date",
+  });
+  const response = await handleFetch(
+    adminPrewarmDayBaseRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", runYmd: "20260910" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
 });
 
 test("admin prewarm-day-base skips Container work after category coverage is complete", async () => {
@@ -1183,6 +1251,30 @@ test("monitor endpoints authenticate and return readiness/canary payloads", asyn
   await expect(canaries.json()).resolves.toMatchObject({ canaries: [{ id: "id" }] });
 });
 
+test("prediction readiness scopes a valid category and rejects an invalid one", async () => {
+  const valid = await handleFetch(
+    new Request(
+      "https://cron.example/api/internal/prediction-readiness?runYmd=20260825&category=ban-ei",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  expect(valid.status).toBe(200);
+  expect(getPredictionReadinessMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "ban-ei", runYmd: "20260825" }),
+  );
+  const invalid = await handleFetch(
+    new Request(
+      "https://cron.example/api/internal/prediction-readiness?runYmd=20260825&category=all",
+      { headers: { authorization: "Bearer secret-token" } },
+    ),
+    makeEnv(),
+  );
+  expect(invalid.status).toBe(400);
+  await expect(invalid.json()).resolves.toStrictEqual({ error: "invalid category", ok: false });
+  expect(getPredictionReadinessMock).toHaveBeenCalledTimes(1);
+});
+
 test("prediction readiness defaults an omitted runYmd to the current JST day", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-24T15:30:00.000Z"));
@@ -1327,6 +1419,37 @@ test("handleFetch rejects /run when the body omits runDate and per-race scope", 
   expect(startMock).not.toHaveBeenCalled();
 });
 
+test("handleFetch honors an explicit future runYmd on /run instead of using today's JST date", async () => {
+  const response = await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", keibajoCode: "54", raceBango: "01", runYmd: "20260926" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(await response.json()).toStrictEqual({
+    ok: true,
+    queued: ["jra", "nar", "ban-ei"],
+    runDate: "2026-09-26",
+  });
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "nar", runDate: "2026-09-26", runYmd: "20260926" }),
+  );
+});
+
+test("handleFetch rejects conflicting runDate and runYmd before enqueue", async () => {
+  const response = await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({ ...PER_RACE_SCOPE, runDate: "20260925", runYmd: "20260926" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
 test("handleFetch defaults to today's JST date when the body omits runDate but has per-race scope", async () => {
   const response = await handleFetch(
     triggerRequest("secret-token", JSON.stringify(PER_RACE_SCOPE)),
@@ -1461,26 +1584,29 @@ test("handleScheduled does not run the coverage self-heal scan for the coordinat
   expect(runCoverageSelfHealMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled dispatches the day-base prewarm for the feature-build cron", async () => {
+test("handleScheduled dispatches only prewarm Workflows for the feature-build cron", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
-  expect(runDayBasePrewarmMock).toHaveBeenCalledWith(
+  expect(runDayBasePrewarmWorkflowsMock).toHaveBeenCalledTimes(1);
+  expect(runDayBasePrewarmWorkflowsMock).toHaveBeenCalledWith(
     expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
   );
+  expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled dispatches the day-base prewarm for the early feature-build cron", async () => {
+test("handleScheduled dispatches only prewarm Workflows for the early feature-build cron", async () => {
   await handleScheduled(makeEvent("0 21 * * *"), makeEnv());
-  expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
-  expect(runDayBasePrewarmMock).toHaveBeenCalledWith(
+  expect(runDayBasePrewarmWorkflowsMock).toHaveBeenCalledTimes(1);
+  expect(runDayBasePrewarmWorkflowsMock).toHaveBeenCalledWith(
     expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
   );
+  expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled does not refresh corner features on the feature-build cron", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
-  expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
+  expect(runDayBasePrewarmWorkflowsMock).toHaveBeenCalledTimes(1);
+  expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled dispatches corner-features refresh for the morning cron", async () => {

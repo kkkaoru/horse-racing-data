@@ -168,12 +168,12 @@ test("loads only the selected production model and its metadata from R2", async 
   const { bucket, get } = bucketFor(cbSmall, metadataFor(spec));
   const loaded = await loadSelectedJraShadowModel(bucket, spec);
   const cached = await loadSelectedJraShadowModel(bucket, spec);
-  expect(loaded.featureNames).toHaveLength(269);
+  expect(loaded.featureNames).toHaveLength(255);
   expect(cached).toBe(loaded);
   expect(loaded.spec).toBe(spec);
   expect(get).toHaveBeenCalledTimes(2);
   expect(get).toHaveBeenCalledWith(
-    "finish-position/jra/jra-cb-v9-sim-2013-clean-jockey-pedigree269/model.json",
+    "finish-position/jra/jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1/model.json",
   );
 });
 
@@ -217,7 +217,7 @@ test.each([
     "invalid name",
     {
       ...metadataFor(JRA_SHADOW_MODEL_SPECS.sim),
-      feature_names: Array.from({ length: 250 }, () => ""),
+      feature_names: Array.from({ length: 236 }, () => ""),
     },
     "non-empty strings",
   ],
@@ -231,7 +231,7 @@ test.each([
   ],
   [
     "duplicate names",
-    { ...metadataFor(JRA_SHADOW_MODEL_SPECS.sim), feature_names: Array(250).fill("same") },
+    { ...metadataFor(JRA_SHADOW_MODEL_SPECS.sim), feature_names: Array(236).fill("same") },
     "must be unique",
   ],
   [
@@ -358,6 +358,41 @@ test("reports the Stage-1 safety-net rescore without loading or writing it", () 
       spec: JRA_SHADOW_MODEL_SPECS.stage1_marketfree,
     }).stage1RescoreRequired,
   ).toBe(false);
+});
+
+test("Stage-1 uses the Python weather gate and labels the actually served model", () => {
+  const baseModel = parseCatBoostJsonModel(cbSmall);
+  const loaded = {
+    ...goldenLoadedModel,
+    baseFeatureNames: golden.featureNames,
+    baseModel,
+    model: { ...baseModel, scale: -1 },
+    spec: JRA_SHADOW_MODEL_SPECS.stage1_marketfree,
+  };
+  const base = scoreJraRaceShadow(goldenRaceEntries, loaded);
+  expect(base.modelVersion).toBe("jra-cb-stage1-marketfree235-2013");
+  const openEntries = goldenRaceEntries.map((entry) => ({
+    ...entry,
+    venue_temperature_prior3: 27.9,
+  }));
+  const open = scoreJraRaceShadow(openEntries, loaded);
+  expect(open.modelVersion).toBe("jra-cb-stage1-marketfree235-iter500-top1swap-2013");
+  expect(open.predictions).not.toStrictEqual(base.predictions);
+  expect(
+    scoreJraRaceShadow(
+      openEntries.map((entry, index) => ({
+        ...entry,
+        venue_temperature_prior3: index === 0 ? 27.9 : 27.900000002,
+      })),
+      loaded,
+    ).modelVersion,
+  ).toBe("jra-cb-stage1-marketfree235-2013");
+  expect(
+    scoreJraRaceShadow(
+      openEntries.map((entry) => ({ ...entry, venue_temperature_prior3: 28 })),
+      loaded,
+    ).modelVersion,
+  ).toBe("jra-cb-stage1-marketfree235-2013");
 });
 
 test("applyTop1ScoreSwap changes only the two top selections", () => {

@@ -1,6 +1,16 @@
 // Run with: bun run --filter finish-position-cron test
 import { expect, test } from "vitest";
-import { computeLateBindingColumns } from "./late-binding";
+import { computeLateBindingColumns, computeWeightZscore } from "./late-binding";
+
+test("weight zscore matches DuckDB denominator floor, clamps and NULL behavior", () => {
+  expect(computeWeightZscore(8, 4)).toBe(2);
+  expect(computeWeightZscore(8, 0)).toBe(5);
+  expect(computeWeightZscore(-8, 0)).toBe(-5);
+  expect(computeWeightZscore(0, 4)).toBe(0);
+  expect(computeWeightZscore(null, 4)).toBe(-5);
+  expect(computeWeightZscore(2, null)).toBe(2);
+  expect(computeWeightZscore(null, null)).toBe(-5);
+});
 
 test("computeLateBindingColumns derives odds_score via ln(odds)/ln(300) clamp", () => {
   const result = computeLateBindingColumns({

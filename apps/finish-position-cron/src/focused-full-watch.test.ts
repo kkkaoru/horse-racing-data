@@ -343,3 +343,22 @@ test("throws malformed status variants while preserving an explicit null-error f
   });
   await expect(pollFocusedFullWatchTick(SCHEDULED, thrownValue)).rejects.toBe("network failed");
 });
+
+test("tick conversion carries immutable authority even when its deadline expires", async () => {
+  const payload = { ...WATCH, executionId: "execution-a" };
+  const tick = createFocusedFullWatchTickMessage(payload, 1);
+  const completion = await pollFocusedFullWatchTick(tick, {
+    now: () => 999999999,
+    pollStatus: vi.fn(),
+  });
+  expect(completion?.executionId).toBe("execution-a");
+  expect(completion?.outcome).toBe("timeout");
+  expect(createFocusedFullWatchTickMessage(WATCH, 999999999).executionId).toBeUndefined();
+  expect(() =>
+    parseFocusedFullWatchHeader(
+      new Request("http://do/predict", {
+        headers: { [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH, executionId: "" }) },
+      }),
+    ),
+  ).toThrow("Invalid");
+});

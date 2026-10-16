@@ -3,7 +3,7 @@
 // required on every enqueue (see per-race-scope-guard.ts).
 
 import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
-import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseSource } from "./day-base-manifest";
 import { getDayBaseRaceFoundationReadiness } from "./day-base-race-materializer";
 import { recordDeliveryDetected, recordDeliveryEnqueued } from "./delivery-lifecycle";
 import {
@@ -52,10 +52,12 @@ interface ExistingPredictionFreshParams {
 const currentRunningStyleGeneration = async (
   params: ExistingPredictionFreshParams,
 ): Promise<string | null> => {
-  const canonical = await params.params.env.FEATURES_CACHE.head(
-    buildDayBaseObjectKey({ category: params.category, runYmd: params.params.runYmd }),
-  );
-  const value = canonical?.customMetadata?.["rs-predicted-at-max"];
+  const source = await getDayBaseSource({
+    category: params.category,
+    env: params.params.env,
+    runYmd: params.params.runYmd,
+  });
+  const value = source?.object.customMetadata?.["rs-predicted-at-max"];
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
 };
 

@@ -18,13 +18,17 @@ const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
 const idFromNameMock = vi.fn(() => ({ name: "test-id" }));
 
 const makeEnv = (): Env =>
-  ({
+  Object.assign(Object.create(null), {
+    PREDICT_RUN_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async () => Response.json({ allowed: true }) }),
+    },
     FEATURES_CACHE: {} as unknown as R2Bucket,
     FINISH_POSITION_PREDICT_CONTAINER: {
       get: getMock,
       idFromName: idFromNameMock,
     } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
-  }) as Env;
+  });
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status });
@@ -211,7 +215,7 @@ test("swallows and warns when the response body is malformed JSON", async () => 
   consoleWarn.mockRestore();
 });
 
-test("swallows and warns when proxyResultParquetsToR2 itself rejects", async () => {
+test("keeps an uncertain R2 commit unresolved instead of reporting pickup success", async () => {
   const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   stubFetchMock.mockResolvedValue(
     jsonResponse({ found: true, parquetBase64: "YQ==", parquetKey: "k" }),
@@ -225,7 +229,7 @@ test("swallows and warns when proxyResultParquetsToR2 itself rejects", async () 
       raceBango: "09",
       runYmd: "20260712",
     }),
-  ).resolves.toBeUndefined();
-  expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("r2 put failed"));
+  ).rejects.toThrow("FOCUSED_FULL_COMMIT_UNRESOLVED");
+  expect(consoleWarn).not.toHaveBeenCalled();
   consoleWarn.mockRestore();
 });

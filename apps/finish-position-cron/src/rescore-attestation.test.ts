@@ -3,6 +3,17 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { addRescoreAttestationToUrl, createRescoreAttestation } from "./rescore-attestation";
+import type { Env } from "./types";
+
+const getDayBaseSourceMock = vi.hoisted(() =>
+  vi.fn(async (params: { env: Env }) => {
+    const key = "feat-daybase/catalog-v1/jra/20260823/features.parquet";
+    const object = await params.env.FEATURES_CACHE.head(key);
+    return object === null ? null : { key, object };
+  }),
+);
+
+vi.mock("./day-base-manifest", () => ({ getDayBaseSource: getDayBaseSourceMock }));
 
 const ENTRY_SET_HASH = "254ae2424e5b63c0120bc978da10131edb8ca8c56e59268b7859f091a65a9c27";
 const FEATURE_KEY = "feat-cache/catalog-v1/jra/20260823/01/03/features.parquet";
@@ -84,13 +95,20 @@ const create = (options: TestOptions = {}) => {
     ...fixture,
     result: createRescoreAttestation({
       category: "jra",
-      env: fixture.env,
+      env: fixture.env as unknown as Env,
       keibajoCode: "1",
       raceBango: "3",
       runYmd: "20260823",
     }),
   };
 };
+
+test("does not attest a rescore while the source generation is pending", async () => {
+  getDayBaseSourceMock.mockResolvedValueOnce(null);
+  const { head, result } = create();
+  await expect(result).rejects.toThrow("missing source day-base cache");
+  expect(head).not.toHaveBeenCalledWith(SOURCE_KEY);
+});
 
 test("creates fresh evidence from exact race, foundation, and source identities", async () => {
   const before = Date.now();
@@ -272,7 +290,7 @@ describe("fails closed before Container dispatch", () => {
     await expect(
       createRescoreAttestation({
         category: "jra",
-        env: fixture.env,
+        env: fixture.env as unknown as Env,
         keibajoCode: "venue",
         raceBango: "3",
         runYmd: "20260823",

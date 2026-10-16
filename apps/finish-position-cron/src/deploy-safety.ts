@@ -54,8 +54,16 @@ export const parseContainerApplications = (value: unknown): ContainerApplication
 };
 
 export const parseContainerInstances = (value: unknown): ContainerInstanceSummary[] => {
-  if (!Array.isArray(value)) throw new Error("Wrangler container instances returned invalid JSON");
-  return value.map((entry) => {
+  const instances: unknown = isRecord(value) ? value.instances : value;
+  if (!Array.isArray(instances))
+    throw new Error("Wrangler container instances returned invalid JSON");
+  if (
+    isRecord(value) &&
+    (!isRecord(value.result_info) || value.result_info.next_page_token !== null)
+  ) {
+    throw new Error("Wrangler container instances returned incomplete pagination");
+  }
+  return instances.map((entry) => {
     if (!isRecord(entry) || typeof entry.state !== "string") {
       throw new Error("Wrangler container instances returned an invalid instance");
     }
@@ -150,10 +158,16 @@ export const finishPositionContainerApplications = (
 const LIVE_CONTAINER_STATES: readonly string[] = ["running", "starting"];
 
 // A maintenance config may keep HTTP/cron admission closed through the rollout.
-export const buildDeploymentCommand = (configPath: string | undefined): string[] =>
-  configPath === undefined
-    ? ["bunx", "wrangler", "deploy"]
-    : ["bunx", "wrangler", "deploy", "--config", configPath];
+export const buildDeploymentCommand = (
+  configPath: string | undefined,
+  workerOnly?: boolean,
+): string[] => [
+  "bunx",
+  "wrangler",
+  "deploy",
+  ...(configPath === undefined ? [] : ["--config", configPath]),
+  ...(workerOnly === true ? ["--containers-rollout=none"] : []),
+];
 
 // Deployment must never bypass an execution lease or focused-full watch.
 export const buildDeploymentStopRequest = (

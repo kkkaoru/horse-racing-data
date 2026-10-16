@@ -15,7 +15,11 @@
 
 import { parquetReadObjects } from "hyparquet";
 
-import { computeLateBindingColumns, type LateBindingCategory } from "./late-binding";
+import {
+  computeLateBindingColumns,
+  computeWeightZscore,
+  type LateBindingCategory,
+} from "./late-binding";
 import type { FeatureEntry } from "./feature-projection";
 import type { JraRaceEntry } from "./jra-scorer";
 
@@ -32,6 +36,8 @@ const POPULARITY_SCORE_FIELD = "popularity_score";
 const TANSHO_ODDS_FIELD = "tansho_odds";
 const TANSHO_NINKIJUN_FIELD = "tansho_ninkijun";
 const WEIGHT_DIFF_FIELD = "weight_diff_from_avg";
+const WEIGHT_ZSCORE_FIELD: string = "weight_zscore";
+const WEIGHT_VOLATILITY_FIELD: string = "weight_volatility_5";
 
 // feat-cache/catalog-v1/{category}/{runDate}/features.parquet — mirrors serve.py.
 export const buildFeatCacheKey = (category: string, runDate: string): string =>
@@ -107,7 +113,7 @@ export interface RefreshLateBindingInput {
   runnerCount: number | null;
 }
 
-// Overwrite the 5 late-binding columns on a cached row with values recomputed
+// Overwrite late-binding columns on a cached row with values recomputed
 // from the freshest odds + bataiju, keeping every early-binding column intact.
 // weight_avg_5 is read from the cache (history-derived); runner_count is the
 // caller-supplied live field size (the cached shusso_tosu is NULL). Returns a
@@ -134,6 +140,10 @@ export const refreshLateBindingColumns = (input: RefreshLateBindingInput): Featu
     [TANSHO_NINKIJUN_FIELD]: late.tanshoNinkijun,
     [TANSHO_ODDS_FIELD]: late.tanshoOdds,
     [WEIGHT_DIFF_FIELD]: late.weightDiffFromAvg,
+    [WEIGHT_ZSCORE_FIELD]: computeWeightZscore(
+      late.weightDiffFromAvg,
+      numberOrNull(input.row[WEIGHT_VOLATILITY_FIELD]),
+    ),
   };
 };
 

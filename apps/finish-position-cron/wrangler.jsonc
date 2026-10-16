@@ -202,6 +202,7 @@
     },
   ],
   "vars": {
+    "DAY_BASE_MANIFEST_REQUIRED": "0",
     "PREDICT_DAYS_AHEAD": "2",
     // Immutable end-to-end bound. Expensive feature layers must optimize their
     // target scope instead of extending this ceiling and retaining a standard-4.
@@ -336,9 +337,9 @@
     // only the weight-arrival path is activated. Rollback: flip back to "0"
     // (config-only, one deploy).
     "RESCORE_ENABLED": "1",
-    // Worker-native JRA weight rescore: final R2 cache + live late-binding
-    // columns + current champion model. Failures fall back to Container.
-    "JRA_WORKER_RESCORE_ENABLED": "1",
+    // Keep Python authoritative until live cell/Prophet/final-score parity is proven.
+    // Enabling this with native R2 artifacts could publish a different model.
+    "JRA_WORKER_RESCORE_ENABLED": "0",
     // Shadow-only Ban-ei CatBoost scoring. Container remains authoritative;
     // parity is logged and no Worker shadow row is persisted or served.
     "BANEI_WORKER_RESCORE_SHADOW_ENABLED": "1",

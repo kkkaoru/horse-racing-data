@@ -7,6 +7,7 @@
 import { assembleAttestedRaceCaches } from "./attested-race-cache-assembler";
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
 import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { publishDayBaseManifest, stageDayBaseManifest } from "./day-base-manifest";
 import { getDayBaseCandidateReadiness } from "./focused-full-day-base-readiness";
 import type { DaybaseWatermark, PredictResultLine } from "./ndjson-stream";
 import { listDayBasePickupDoNames } from "./predict-do-shard";
@@ -18,6 +19,7 @@ interface PrewarmCachePickupParams {
   category: PredictCategory;
   debug?: boolean;
   env: Env;
+  generationId?: string;
   runYmd: string;
 }
 
@@ -59,6 +61,7 @@ const PLACEHOLDER_RACES_PREDICTED: number = 0;
 const RUNNING_STYLE_FOUNDATION_PREFIX: string = "feat-running-style-base/catalog-v1";
 const WATERMARK_META_MAX_UPDATED: string = "max-data-sakusei-nengappi";
 const WATERMARK_META_ROW_COUNT: string = "row-count";
+const WATERMARK_META_RS_CONTENT_HASH: string = "rs-content-hash";
 const WATERMARK_META_RS_PREDICTED_AT_MAX: string = "rs-predicted-at-max";
 const WATERMARK_META_RS_ROW_COUNT: string = "rs-row-count";
 
@@ -143,6 +146,7 @@ const buildPrewarmCacheUrl = (params: PrewarmCachePickupParams): string => {
     category: params.category,
     runDate: params.runYmd,
   });
+  if (params.generationId !== undefined) searchParams.set("generationId", params.generationId);
   return `${PREDICT_HOST}${PREWARM_CACHE_PATH}?${searchParams.toString()}`;
 };
 
@@ -163,9 +167,58 @@ const pickUpPrewarmDayBaseFromDo = async (
   doName: string,
 ): Promise<DayBasePickupOutcome> => {
   const { env, category, runYmd, debug } = params;
-  const url = buildPrewarmCacheUrl(params);
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+  const expectedFoundationKey = buildRunningStyleFoundationObjectKey(params);
+  // The Python foundation is committed before the final day-base, under the
+  // legacy in-process cache key even when the final result is generation-scoped.
+  // Pick it up first so running-style inference can start while DAY_CHAIN runs.
+  if (params.generationId !== undefined && category !== "ban-ei") {
+    const legacyResponse = await stub.fetch(
+      new Request(buildPrewarmCacheUrl({ ...params, generationId: undefined })),
+    );
+    if (legacyResponse.ok) {
+      const foundation = parsePrewarmCacheResponse(await legacyResponse.json());
+      if (
+        foundation?.found &&
+        foundation.parquetKey === expectedFoundationKey &&
+        foundation.parquetBase64 &&
+        foundation.daybaseWatermark?.rsRowCount === 0 &&
+        foundation.daybaseWatermark.rsPredictedAtMax === "none"
+      ) {
+        const existing = await env.FEATURES_CACHE.head(expectedFoundationKey);
+        if (
+          existing?.customMetadata?.[WATERMARK_META_MAX_UPDATED] !==
+            foundation.daybaseWatermark.maxDataSakuseiNengappi ||
+          existing?.customMetadata?.[WATERMARK_META_ROW_COUNT] !==
+            String(foundation.daybaseWatermark.rowCount) ||
+          existing?.customMetadata?.[WATERMARK_META_RS_ROW_COUNT] !== "0" ||
+          existing?.customMetadata?.[WATERMARK_META_RS_PREDICTED_AT_MAX] !== "none"
+        ) {
+          const readiness = await getDayBaseCandidateReadiness({
+            category,
+            env,
+            runYmd,
+            watermark: foundation.daybaseWatermark,
+          });
+          if (readiness.ready || readiness.reason.startsWith("running-style-race-count-")) {
+            await proxyResultParquetsToR2(
+              toResultLine({
+                category,
+                daybaseWatermark: foundation.daybaseWatermark,
+                parquetBase64: foundation.parquetBase64,
+                parquetKey: foundation.parquetKey,
+              }),
+              env,
+              debug === true,
+            );
+            return "foundation-landed";
+          }
+        }
+      }
+    }
+  }
+  const url = buildPrewarmCacheUrl(params);
   const response = await stub.fetch(new Request(url));
   if (!response.ok) {
     console.warn(
@@ -178,8 +231,11 @@ const pickUpPrewarmDayBaseFromDo = async (
   if (body.parquetBase64 === undefined || body.parquetBase64 === null) return "missing";
   if (body.parquetKey === undefined || body.parquetKey === null) return "missing";
   if (body.parquetBase64 === "" || body.parquetKey === "") return "missing";
-  const expectedFinalKey = buildDayBaseObjectKey({ category, runYmd });
-  const expectedFoundationKey = buildRunningStyleFoundationObjectKey(params);
+  const expectedFinalKey = buildDayBaseObjectKey({
+    category,
+    runYmd,
+    generationId: params.generationId,
+  });
   if (body.parquetKey !== expectedFinalKey && body.parquetKey !== expectedFoundationKey) {
     console.warn(
       `[day-base-prewarm-pickup] rejected unexpected key category=${category} runYmd=${runYmd} key=${body.parquetKey}`,
@@ -221,6 +277,11 @@ const pickUpPrewarmDayBaseFromDo = async (
       ? "running-style-pending"
       : "stale";
   }
+  if (
+    params.generationId !== undefined &&
+    !(await stageDayBaseManifest({ category, env, generationId: params.generationId, runYmd }))
+  )
+    return "stale";
   await proxyResultParquetsToR2(
     toResultLine({
       category,
@@ -231,6 +292,35 @@ const pickUpPrewarmDayBaseFromDo = async (
     env,
     debug === true,
   );
+  if (params.generationId !== undefined) {
+    const object = await env.FEATURES_CACHE.head(expectedFinalKey);
+    if (
+      object === null ||
+      object.customMetadata?.[WATERMARK_META_MAX_UPDATED] !==
+        body.daybaseWatermark.maxDataSakuseiNengappi ||
+      object.customMetadata?.[WATERMARK_META_ROW_COUNT] !==
+        String(body.daybaseWatermark.rowCount) ||
+      (body.daybaseWatermark.rsContentHash !== undefined &&
+        object.customMetadata?.[WATERMARK_META_RS_CONTENT_HASH] !==
+          body.daybaseWatermark.rsContentHash) ||
+      object.customMetadata?.[WATERMARK_META_RS_PREDICTED_AT_MAX] !==
+        body.daybaseWatermark.rsPredictedAtMax ||
+      object.customMetadata?.[WATERMARK_META_RS_ROW_COUNT] !==
+        String(body.daybaseWatermark.rsRowCount)
+    )
+      return "transient-error";
+    if (
+      !(await publishDayBaseManifest({
+        category,
+        env,
+        etag: object.etag,
+        generationId: params.generationId,
+        runYmd,
+        watermark: body.daybaseWatermark,
+      }))
+    )
+      return "stale";
+  }
   const materialized = await assembleAttestedRaceCaches({ category, env, runYmd });
   if (materialized.status !== "materialized") {
     console.warn(

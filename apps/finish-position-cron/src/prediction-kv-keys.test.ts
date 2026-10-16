@@ -35,9 +35,9 @@ test("isPredictionCacheEligibleYmd is true only inside the 3-day window", () => 
   expect(isPredictionCacheEligibleYmd("20260811", NOON_JST_MS)).toBe(false);
 });
 
-test("getPredictionKvTtlSeconds matches viewer today/adjacent/outside TTLs", () => {
+test("getPredictionKvTtlSeconds keeps early tomorrow forecasts through race day", () => {
   expect(getPredictionKvTtlSeconds("today")).toBe(129600);
-  expect(getPredictionKvTtlSeconds("tomorrow")).toBe(86400);
+  expect(getPredictionKvTtlSeconds("tomorrow")).toBe(259200);
   expect(getPredictionKvTtlSeconds("yesterday")).toBe(86400);
   expect(getPredictionKvTtlSeconds("outside")).toBe(0);
 });

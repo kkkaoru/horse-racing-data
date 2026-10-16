@@ -1,6 +1,7 @@
 // Run with bun. Tests for authoritative Container role environment merging.
 
 import { expect, test, vi } from "vitest";
+import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { Container } from "@cloudflare/containers";
 
 vi.mock("@cloudflare/containers", () => ({
@@ -43,6 +44,7 @@ interface RuntimeContainerHarness {
 interface ContainerHarness {
   container: FinishPositionPredictContainer;
   containerFetchMock: ReturnType<typeof vi.fn>;
+  coordinatorFetchMock: ReturnType<typeof vi.fn>;
   destroyMock: ReturnType<typeof vi.fn>;
   featureCachePutMock: ReturnType<typeof vi.fn>;
   queueSendMock: ReturnType<typeof vi.fn>;
@@ -51,9 +53,9 @@ interface ContainerHarness {
   scheduleMock: ReturnType<typeof vi.fn>;
   startAndWaitForPortsMock: ReturnType<typeof vi.fn>;
   storageDeleteMock: ReturnType<typeof vi.fn>;
-  storageGetMock: ReturnType<typeof vi.fn>;
+  storageGetMock: ReturnType<typeof vi.fn<(key: string) => Promise<unknown>>>;
   storageListMock: ReturnType<typeof vi.fn>;
-  storagePutMock: ReturnType<typeof vi.fn>;
+  storagePutMock: ReturnType<typeof vi.fn<(key: string, value: unknown) => Promise<void>>>;
 }
 
 const WATCH_BODY: FocusedFullWatchBody = {
@@ -181,16 +183,36 @@ const makeContainerHarness = (
   const scheduleMock = vi.fn<() => Promise<{ taskId: string }>>(async () => ({
     taskId: "scheduled-watch",
   }));
-  const startAndWaitForPortsMock = vi.fn<() => Promise<void>>(async () => undefined);
-  const destroyMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const startAndWaitForPortsMock = vi.fn<() => Promise<void>>(async () => {
+    runtimeContainer.running = true;
+  });
+  const destroyMock = vi.fn<() => Promise<void>>(async () => {
+    runtimeContainer.running = false;
+  });
   const featureCachePutMock = vi.fn<() => Promise<void>>(async () => undefined);
   const storageDeleteMock = vi.fn<() => Promise<boolean>>(async () => true);
-  const storageGetMock = vi.fn<() => Promise<undefined>>(async () => undefined);
+  // The default harness represents a known legacy runtime, not an unowned live process.
+  const durable = new Map<string, unknown>([
+    [
+      "prediction-execution",
+      {
+        executionId: "legacy-test",
+        legacy: true,
+        disposition: "active",
+      },
+    ],
+  ]);
+  const storageGetMock = vi.fn(async (key: string): Promise<unknown> => durable.get(key));
   const storageListMock = vi.fn<() => Promise<Map<string, unknown>>>(
     async () => new Map<string, unknown>(),
   );
-  const storagePutMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const storagePutMock = vi.fn(async (key: string, value: unknown): Promise<void> => {
+    durable.set(key, value);
+  });
   const queueSendMock = vi.fn<() => Promise<void>>(async () => undefined);
+  const coordinatorFetchMock = vi.fn<(request: Request) => Promise<Response>>(async () =>
+    Response.json({ ok: true, allowed: true }),
+  );
   const renewActivityTimeoutMock = vi.fn<() => void>();
   const runtimeContainer = {
     getTcpPort: vi.fn<() => { fetch: typeof containerFetchMock }>(() => ({
@@ -206,6 +228,7 @@ const makeContainerHarness = (
     containerFetch: { value: containerFetchMock },
     ctx: {
       value: {
+        blockConcurrencyWhile: async <T>(callback: () => Promise<T>): Promise<T> => callback(),
         container: runtimeContainer,
         storage: {
           delete: storageDeleteMock,
@@ -217,6 +240,7 @@ const makeContainerHarness = (
       },
     },
     destroy: { value: destroyMock },
+    getState: { configurable: true, value: async () => ({ status: "stopped" }) },
     env: {
       value: {
         FEATURES_CACHE: { put: featureCachePutMock },
@@ -227,8 +251,8 @@ const makeContainerHarness = (
         NEON_DATABASE_URL: "postgres://output/db",
         PREDICT_DAYS_AHEAD: "0",
         PREDICT_RUN_COORDINATOR: {
-          get: vi.fn<() => { fetch: () => Promise<Response> }>(() => ({
-            fetch: vi.fn<() => Promise<Response>>(async () => Response.json({ ok: true })),
+          get: vi.fn<() => { fetch: (request: Request) => Promise<Response> }>(() => ({
+            fetch: coordinatorFetchMock,
           })),
           idFromName: vi.fn<() => { name: string }>(() => ({
             name: "predict-run-coordinator",
@@ -244,6 +268,7 @@ const makeContainerHarness = (
   return {
     container,
     containerFetchMock,
+    coordinatorFetchMock,
     destroyMock,
     featureCachePutMock,
     queueSendMock,
@@ -258,7 +283,7 @@ const makeContainerHarness = (
   };
 };
 
-test.each(["/focused-full-status", "/focused-full-cache"])(
+test.each(["/focused-full-status", "/focused-full-cache", "/prewarm-day-base-cache"])(
   "does not start a stopped Container for %s",
   async (path) => {
     const harness = makeContainerHarness("", "0", false);
@@ -273,6 +298,49 @@ test.each(["/focused-full-status", "/focused-full-cache"])(
     expect(harness.destroyMock).not.toHaveBeenCalled();
   },
 );
+
+test("day-base cache pickup reads only the live process without renewing idle time", async () => {
+  const harness = makeContainerHarness(
+    '{"parquetBase64":"payload","generationId":"owner-a"}',
+    "0",
+    false,
+  );
+  const request = new Request(
+    "http://do/prewarm-day-base-cache?category=nar&runDate=20261003&generationId=owner-a",
+  );
+  const response = await harness.container.fetch(request);
+  expect(await response.json()).toStrictEqual({
+    parquetBase64: "payload",
+    generationId: "owner-a",
+  });
+  expect(harness.runtimeContainer.getTcpPort).toHaveBeenCalledWith(8080);
+  expect(harness.containerFetchMock).toHaveBeenCalledWith(expect.any(Request));
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.renewActivityTimeoutMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("late repeated day-base pickups never cold-start an empty cache", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  harness.runtimeContainer.running = false;
+  const request = new Request("http://do/prewarm-day-base-cache?category=jra&runDate=20261003");
+  expect((await harness.container.fetch(request)).status).toBe(404);
+  expect((await harness.container.fetch(request)).status).toBe(404);
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.containerFetchMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("failed day-base cache reads do not destroy or restart active computation", async () => {
+  const harness = makeContainerHarness("", "0", false);
+  harness.containerFetchMock.mockRejectedValueOnce(new Error("temporary port failure"));
+  const response = await harness.container.fetch(
+    new Request("http://do/prewarm-day-base-cache?category=jra&runDate=20261003"),
+  );
+  expect(response.status).toBe(503);
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
 
 test.each(["success", "missing", "error", "running"])(
   "only renews ongoing work when status is %s",
@@ -460,7 +528,7 @@ test("runs the existing rescore proxy with authoritative role and retains admin 
   const { sleepAfter, ...runtimeProperties } = Object.getOwnPropertyDescriptors(harness.container);
   expect(sleepAfter?.value).toBe("45m");
   Object.defineProperties(container, runtimeProperties);
-  expect(container.sleepAfter).toBe("2m");
+  expect(container.sleepAfter).toBe("10s");
   const response = await container.fetch(new Request("http://do/predict?mode=rescore"));
   expect(response.status).toBe(200);
   expect(container.envVars?.PREDICT_CONTAINER_ROLE).toBe("rescore");
@@ -628,7 +696,7 @@ test("returns after the cleanup deadline when destroy also hangs", async () => {
   vi.useRealTimers();
 });
 
-test("hard-stops a container HTTP fetch that never returns headers", async () => {
+test("an ambiguous legacy HTTP delivery timeout preserves the process and refuses redispatch", async () => {
   vi.useFakeTimers();
   const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const harness = makeContainerHarness("", "0", false);
@@ -640,7 +708,9 @@ test("hard-stops a container HTTP fetch that never returns headers", async () =>
 
   expect(response.status).toBe(502);
   expect(harness.startAndWaitForPortsMock).toHaveBeenCalledOnce();
-  expect(harness.destroyMock).toHaveBeenCalledOnce();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  expect((await harness.container.fetch(new Request(FOCUSED_PREDICT_URL))).status).toBe(409);
+  expect(harness.containerFetchMock).toHaveBeenCalledOnce();
   expect(error).toHaveBeenCalledWith(
     expect.stringContaining("fetch failed path=/predict category=jra"),
   );
@@ -688,12 +758,44 @@ test("reuses the source generation watch ID when an accepted response is deliver
   expect(first.headers.get(WATCH_RESPONSE_HEADER)).toBe(WATCH_PAYLOAD.watchId);
   expect(second.headers.get(WATCH_RESPONSE_HEADER)).toBe(WATCH_PAYLOAD.watchId);
   expect(harness.queueSendMock).toHaveBeenCalledTimes(2);
+  // Characterizes the unresolved gap: the stable watch ID does not make the
+  // physical dispatch idempotent. Both deliveries reach the Container process.
+  expect(harness.containerFetchMock).toHaveBeenCalledTimes(2);
   expect(harness.queueSendMock.mock.calls[0]?.[0]).toEqual(
     expect.objectContaining({ watchId: WATCH_PAYLOAD.watchId }),
   );
   expect(harness.queueSendMock.mock.calls[1]?.[0]).toEqual(
     expect.objectContaining({ watchId: WATCH_PAYLOAD.watchId }),
   );
+});
+
+test("legacy dispatch waiting for readiness blocks admin stop until dispatch settles", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  const portGate: { resolve?: () => void } = {};
+  const portReady: Promise<void> = new Promise((resolve) => {
+    portGate.resolve = resolve;
+  });
+  harness.startAndWaitForPortsMock.mockImplementationOnce(() => portReady);
+  const prediction: Promise<Response> = harness.container.fetch(
+    new Request(FOCUSED_PREDICT_URL, {
+      headers: { [WATCH_REQUEST_HEADER]: JSON.stringify(WATCH_PAYLOAD) },
+    }),
+  );
+  await vi.waitFor(() => expect(harness.startAndWaitForPortsMock).toHaveBeenCalledOnce());
+  expect(harness.containerFetchMock).not.toHaveBeenCalled();
+  const stopped: Response = await harness.container.fetch(
+    new Request("http://do/__admin/stop-container", {
+      headers: { authorization: "Bearer secret-token" },
+      method: "POST",
+    }),
+  );
+  expect(stopped.status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  portGate.resolve?.();
+  const response: Response = await prediction;
+  expect(response.status).toBe(200);
+  expect(harness.containerFetchMock).toHaveBeenCalledOnce();
+  expect(harness.queueSendMock).toHaveBeenCalledOnce();
 });
 
 test("does not register a watch for a non-accepted focused response", async () => {
@@ -709,7 +811,7 @@ test("does not register a watch for a non-accepted focused response", async () =
   expect(harness.scheduleMock).not.toHaveBeenCalled();
 });
 
-test("does not return an accepted watch header when the initial durable tick send fails", async () => {
+test("preserves accepted work when the persisted watch awaits Queue recovery", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
   harness.queueSendMock.mockRejectedValueOnce(new Error("completion queue unavailable"));
@@ -720,10 +822,49 @@ test("does not return an accepted watch header when the initial durable tick sen
     }),
   );
 
-  expect(response.status).toBe(502);
-  expect(response.headers.get(WATCH_RESPONSE_HEADER)).toBe(null);
+  expect(response.status).toBe(200);
+  expect(response.headers.get(WATCH_RESPONSE_HEADER)).toBe(
+    "focused-full:20260824:jra:05:09:source-message-1",
+  );
+  expect(harness.coordinatorFetchMock).toHaveBeenCalledOnce();
+  expect(harness.coordinatorFetchMock).toHaveBeenCalledWith(
+    expect.objectContaining({ url: "http://do/register-focused-full-watch-outbox" }),
+  );
+  expect(harness.destroyMock).not.toHaveBeenCalled();
   expect(harness.scheduleMock).not.toHaveBeenCalled();
   error.mockRestore();
+});
+
+test("outbox cleanup failure does not discard accepted computation after Queue delivery", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.coordinatorFetchMock
+    .mockResolvedValueOnce(Response.json({ ok: true }))
+    .mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const response = await harness.container.fetch(
+    new Request(FOCUSED_PREDICT_URL, {
+      headers: { [WATCH_REQUEST_HEADER]: JSON.stringify(WATCH_PAYLOAD) },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get(WATCH_RESPONSE_HEADER)).toBe(
+    "focused-full:20260824:jra:05:09:source-message-1",
+  );
+  expect(harness.queueSendMock).toHaveBeenCalledOnce();
+  expect(harness.coordinatorFetchMock).toHaveBeenCalledTimes(2);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("failed durable registration is not falsely acknowledged as a supervised watch", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.coordinatorFetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const response = await harness.container.fetch(
+    new Request(FOCUSED_PREDICT_URL, {
+      headers: { [WATCH_REQUEST_HEADER]: JSON.stringify(WATCH_PAYLOAD) },
+    }),
+  );
+  expect(response.status).toBe(502);
+  expect(response.headers.get(WATCH_RESPONSE_HEADER)).toBe(null);
+  expect(harness.queueSendMock).not.toHaveBeenCalled();
 });
 
 test("rejects invalid gated metadata but rolls back to legacy polling without the Queue binding", async () => {
@@ -782,8 +923,550 @@ test("logs authorized stop as info while retaining warnings for unauthorized req
   expect(rejected.status).toBe(401);
   expect(authorized.destroyMock).toHaveBeenCalledOnce();
   expect(unauthorized.destroyMock).not.toHaveBeenCalled();
-  expect(log).toHaveBeenCalledTimes(2);
+  expect(log).toHaveBeenCalledTimes(1);
   expect(warn).toHaveBeenCalledOnce();
   log.mockRestore();
   warn.mockRestore();
+});
+
+test("fenced dispatch is consumed once and old admin stop cannot destroy its replacement", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.runtimeContainer.running = false;
+  const first = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+    },
+  });
+  expect((await harness.container.fetch(first.clone())).status).toBe(200);
+  expect((await harness.container.fetch(first.clone())).status).toBe(200);
+  expect(harness.containerFetchMock).toHaveBeenCalledOnce();
+  const unfenced = await harness.container.fetch(
+    new Request("http://do/__admin/stop-container", {
+      headers: { authorization: "Bearer secret-token" },
+      method: "POST",
+    }),
+  );
+  expect(unfenced.status).toBe(409);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  const stop = new Request("http://do/__admin/stop-container", {
+    headers: { authorization: "Bearer secret-token", "x-prediction-execution-id": "execution-a" },
+    method: "POST",
+  });
+  expect((await harness.container.fetch(stop.clone())).status).toBe(200);
+  const second = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-b" }),
+    },
+  });
+  expect((await harness.container.fetch(second)).status).toBe(200);
+  expect((await harness.container.fetch(stop)).status).toBe(409);
+  expect(harness.destroyMock).toHaveBeenCalledOnce();
+  expect(harness.containerFetchMock).toHaveBeenCalledTimes(2);
+});
+
+test("fenced readiness await cannot forward a dispatch whose coordinator ownership was replaced", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.runtimeContainer.running = false;
+  const ready = Promise.withResolvers<void>();
+  harness.startAndWaitForPortsMock.mockReturnValueOnce(ready.promise);
+  harness.coordinatorFetchMock.mockResolvedValueOnce(Response.json({ allowed: true }));
+  harness.coordinatorFetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+  harness.coordinatorFetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+  harness.coordinatorFetchMock.mockResolvedValueOnce(Response.json({ allowed: false }));
+  const request = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+    },
+  });
+  const pending = harness.container.fetch(request);
+  await vi.waitFor(() => expect(harness.startAndWaitForPortsMock).toHaveBeenCalledOnce());
+  const stopped = await harness.container.fetch(
+    new Request("http://do/__admin/stop-container", {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token", "x-prediction-execution-id": "execution-a" },
+    }),
+  );
+  expect(stopped.status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  ready.resolve();
+  expect((await pending).status).toBe(409);
+  expect(harness.containerFetchMock).not.toHaveBeenCalled();
+  expect(harness.queueSendMock).toHaveBeenCalledOnce();
+});
+
+test("fenced dispatch refuses an unknown live legacy process and failed durable admission", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  const request = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+    },
+  });
+  expect((await harness.container.fetch(request.clone())).status).toBe(425);
+  harness.runtimeContainer.running = false;
+  harness.storagePutMock.mockRejectedValueOnce(new Error("storage unavailable"));
+  await expect(harness.container.fetch(request)).rejects.toThrow("storage unavailable");
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("a second stop cannot release admission while the first destroy promise is pending", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.runtimeContainer.running = false;
+  const request = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+    },
+  });
+  await harness.container.fetch(request);
+  const gate = Promise.withResolvers<void>();
+  harness.destroyMock.mockReturnValueOnce(gate.promise);
+  const stop = new Request("http://do/__admin/stop-container", {
+    method: "POST",
+    headers: { authorization: "Bearer secret-token", "x-prediction-execution-id": "execution-a" },
+  });
+  const pending = harness.container.fetch(stop.clone());
+  await vi.waitFor(() => expect(harness.destroyMock).toHaveBeenCalledOnce());
+  expect((await harness.container.fetch(stop)).status).toBe(425);
+  expect(
+    (
+      await harness.container.fetch(
+        new Request(FOCUSED_PREDICT_URL, {
+          headers: {
+            [WATCH_REQUEST_HEADER]: JSON.stringify({
+              ...WATCH_PAYLOAD,
+              executionId: "execution-b",
+            }),
+          },
+        }),
+      )
+    ).status,
+  ).toBe(425);
+  harness.runtimeContainer.running = false;
+  gate.resolve();
+  expect((await pending).status).toBe(200);
+  expect(harness.containerFetchMock).toHaveBeenCalledOnce();
+});
+
+test("SDK stopped status cannot certify a still-running physical execution", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  harness.runtimeContainer.running = false;
+  await harness.container.fetch(
+    new Request(FOCUSED_PREDICT_URL, {
+      headers: {
+        [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+      },
+    }),
+  );
+  harness.runtimeContainer.running = true;
+  harness.destroyMock.mockResolvedValueOnce(undefined);
+  await expect(
+    harness.container.fetch(
+      new Request("http://do/__admin/stop-container", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret-token",
+          "x-prediction-execution-id": "execution-a",
+        },
+      }),
+    ),
+  ).rejects.toThrow("Container runtime has not stopped");
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-a",
+    disposition: "stopping",
+  });
+});
+
+// Recreate only the object instance; storage and the physical runtime survive eviction.
+const reconstructContainer = (harness: ContainerHarness): FinishPositionPredictContainer => {
+  const instance: unknown = Reflect.construct(FinishPositionPredictContainer, []);
+  if (!(instance instanceof FinishPositionPredictContainer)) throw new Error("Invalid Container");
+  const descriptors = Object.getOwnPropertyDescriptors(harness.container);
+  delete descriptors.stoppingExecutionId;
+  delete descriptors.dispatchingExecutionId;
+  delete descriptors.pendingReadinessExecutionId;
+  Object.defineProperties(instance, descriptors);
+  return instance;
+};
+
+const EXACT_STOP_REQUEST: Request = new Request("http://do/__admin/stop-container", {
+  method: "POST",
+  headers: { authorization: "Bearer secret-token", "x-prediction-execution-id": "execution-a" },
+});
+
+const REPLACEMENT_REQUEST: Request = new Request(FOCUSED_PREDICT_URL, {
+  headers: {
+    [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-b" }),
+  },
+});
+
+test.each([false, true])(
+  "destroy rejection recovers only exact E after reconstruction=%s",
+  async (reconstruct) => {
+    const harness = makeContainerHarness("", "1", true);
+    await harness.storagePutMock("prediction-execution", {
+      executionId: "execution-a",
+      disposition: "active",
+    });
+    harness.destroyMock.mockRejectedValueOnce(new Error("destroy rejected"));
+    await expect(harness.container.fetch(EXACT_STOP_REQUEST.clone())).rejects.toThrow(
+      "destroy rejected",
+    );
+    const instance = reconstruct ? reconstructContainer(harness) : harness.container;
+    expect((await instance.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+    expect(
+      (
+        await instance.fetch(
+          new Request(EXACT_STOP_REQUEST, {
+            headers: {
+              authorization: "Bearer secret-token",
+              "x-prediction-execution-id": "execution-b",
+            },
+          }),
+        )
+      ).status,
+    ).toBe(409);
+    expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+    expect(harness.destroyMock).toHaveBeenCalledTimes(2);
+    expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+      executionId: "execution-a",
+      disposition: "stopped",
+    });
+  },
+);
+
+test.each([false, true])(
+  "confirmation timeout stays fenced and can recover after reconstruction=%s",
+  async (reconstruct) => {
+    vi.useFakeTimers();
+    try {
+      const harness = makeContainerHarness("", "1", true);
+      await harness.storagePutMock("prediction-execution", {
+        executionId: "execution-a",
+        disposition: "active",
+      });
+      const state = vi.fn(async () => ({ status: "healthy" }));
+      Object.defineProperty(harness.container, "getState", { configurable: true, value: state });
+      const rejected = expect(harness.container.fetch(EXACT_STOP_REQUEST.clone())).rejects.toThrow(
+        "confirmation timed out",
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      await rejected;
+      const instance = reconstruct ? reconstructContainer(harness) : harness.container;
+      expect((await instance.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+      expect((await instance.fetch(new Request("http://do/prewarm-day-base"))).status).toBe(409);
+      state.mockResolvedValue({ status: "stopped" });
+      expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+      expect(harness.destroyMock).toHaveBeenCalledOnce();
+      expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+        executionId: "execution-a",
+        disposition: "stopped",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+test.each([false, true])(
+  "stopped write failure recovers without repeating destroy after reconstruction=%s",
+  async (reconstruct) => {
+    const harness = makeContainerHarness("", "1", true);
+    await harness.storagePutMock("prediction-execution", {
+      executionId: "execution-a",
+      disposition: "active",
+    });
+    const original = harness.storagePutMock.getMockImplementation();
+    if (original === undefined) throw new Error("Missing storage implementation");
+    harness.storagePutMock
+      .mockImplementationOnce(original)
+      .mockRejectedValueOnce(new Error("stopped write failed"));
+    await expect(harness.container.fetch(EXACT_STOP_REQUEST.clone())).rejects.toThrow(
+      "stopped write failed",
+    );
+    const instance = reconstruct ? reconstructContainer(harness) : harness.container;
+    expect((await instance.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+    expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+    expect(harness.destroyMock).toHaveBeenCalledOnce();
+    expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+      executionId: "execution-a",
+      disposition: "stopped",
+    });
+  },
+);
+
+test("persisted pre-readiness interruption recovers without delivering a model request", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  harness.runtimeContainer.running = false;
+  harness.startAndWaitForPortsMock.mockRejectedValueOnce(new Error("readiness interrupted"));
+  const request = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+    },
+  });
+  expect((await harness.container.fetch(request.clone())).status).toBe(502);
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-a",
+    disposition: "preparing",
+  });
+  const instance = reconstructContainer(harness);
+  expect((await instance.fetch(request)).status).toBe(425);
+  expect((await instance.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+  expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+  expect(harness.containerFetchMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  expect(harness.queueSendMock).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])(
+  "ambiguous post-delivery state requires physical evidence with watch=%s",
+  async (watchExists) => {
+    const harness = makeContainerHarness("", "1", true);
+    if (watchExists) {
+      harness.runtimeContainer.running = false;
+      harness.containerFetchMock.mockRejectedValueOnce(new Error("delivery response lost"));
+      expect(
+        (
+          await harness.container.fetch(
+            new Request(FOCUSED_PREDICT_URL, {
+              headers: {
+                [WATCH_REQUEST_HEADER]: JSON.stringify({
+                  ...WATCH_PAYLOAD,
+                  executionId: "execution-a",
+                }),
+              },
+            }),
+          )
+        ).status,
+      ).toBe(502);
+      expect(harness.queueSendMock).toHaveBeenCalledOnce();
+    } else {
+      await harness.storagePutMock("prediction-execution", {
+        executionId: "execution-a",
+        disposition: "dispatching",
+      });
+    }
+    const instance = reconstructContainer(harness);
+    expect((await instance.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+    const unresolved = await instance.fetch(EXACT_STOP_REQUEST.clone());
+    expect(unresolved.status).toBe(425);
+    expect(await unresolved.json()).toStrictEqual({ ok: false, state: "unresolved" });
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+    harness.runtimeContainer.running = false;
+    expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+    expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+      executionId: "execution-a",
+      disposition: "stopped",
+    });
+    expect(harness.containerFetchMock).toHaveBeenCalledTimes(watchExists ? 1 : 0);
+  },
+);
+
+test("watch timeout is not authority to destroy an active execution", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-a",
+    disposition: "active",
+  });
+  const request = new Request(EXACT_STOP_REQUEST, {
+    headers: {
+      authorization: "Bearer secret-token",
+      "x-prediction-execution-id": "execution-a",
+      "x-prediction-require-stopped": "1",
+    },
+  });
+  expect((await harness.container.fetch(request.clone())).status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  harness.runtimeContainer.running = false;
+  expect((await harness.container.fetch(request)).status).toBe(200);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("physically stopped legacy prewarm permits fenced admission but unknown live legacy does not", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "legacy-prewarm",
+    legacy: true,
+    disposition: "active",
+  });
+  expect((await harness.container.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  harness.runtimeContainer.running = false;
+  expect((await reconstructContainer(harness).fetch(REPLACEMENT_REQUEST.clone())).status).toBe(200);
+  expect(harness.containerFetchMock).toHaveBeenCalledOnce();
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-b",
+    disposition: "active",
+  });
+});
+
+test("confirmed fenced stop permits a later legacy prewarm on the same DO", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"success"}\n', "1", true);
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-a",
+    disposition: "active",
+  });
+  expect((await harness.container.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+  const instance = reconstructContainer(harness);
+  expect(
+    (await instance.fetch(new Request("http://do/prewarm-day-base?category=jra&runDate=20260824")))
+      .status,
+  ).toBe(200);
+  expect((await instance.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(409);
+  expect(harness.destroyMock).toHaveBeenCalledOnce();
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: expect.any(String),
+    legacy: true,
+    disposition: "active",
+  });
+});
+
+test("real coordinator prewarm takeover only dispatches after the physical legacy process exits", async () => {
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  const storage = new Map<string, unknown>();
+  const coordinator: unknown = Reflect.construct(PredictRunCoordinator, [
+    {
+      blockConcurrencyWhile: async <T>(operation: () => Promise<T>): Promise<T> => operation(),
+      storage: {
+        get: async (key: string): Promise<unknown> => structuredClone(storage.get(key)),
+        put: async (key: string, value: unknown): Promise<void> => {
+          storage.set(key, structuredClone(value));
+        },
+        delete: async (key: string): Promise<boolean> => storage.delete(key),
+        setAlarm: async (): Promise<void> => undefined,
+      },
+    },
+    {},
+  ]);
+  if (!(coordinator instanceof PredictRunCoordinator)) throw new Error("Invalid coordinator");
+  harness.coordinatorFetchMock.mockImplementation(coordinator.fetch.bind(coordinator));
+  expect(
+    await coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra-race-1",
+      kind: "day-base",
+      workKey: "day-base:20260824:jra",
+    }),
+  ).toStrictEqual({ proceed: true });
+  expect(
+    (
+      await harness.container.fetch(
+        new Request("http://do/prewarm-day-base?category=jra&runDate=20260824"),
+      )
+    ).status,
+  ).toBe(200);
+  const admission = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-race-1",
+    kind: "focused-full",
+    workKey: WATCH_PAYLOAD.workKey,
+    generationId: "focused-generation",
+  });
+  expect(admission.proceed).toBe(true);
+  const request = new Request(FOCUSED_PREDICT_URL, {
+    headers: {
+      [WATCH_REQUEST_HEADER]: JSON.stringify({
+        ...WATCH_PAYLOAD,
+        executionId: admission.executionId,
+      }),
+    },
+  });
+  expect((await harness.container.fetch(request.clone())).status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  harness.runtimeContainer.running = false;
+  expect((await reconstructContainer(harness).fetch(request)).status).toBe(200);
+  expect(harness.containerFetchMock).toHaveBeenCalledTimes(2);
+  expect(storage.get("container-slots")).toMatchObject({
+    leases: [{ executionId: admission.executionId, kind: "focused-full" }],
+  });
+  expect(await harness.storageGetMock("prediction-execution")).toMatchObject({
+    executionId: admission.executionId,
+    disposition: "active",
+  });
+});
+
+test("a readiness hard timeout cannot certify stop while the underlying start still runs", async () => {
+  vi.useFakeTimers();
+  try {
+    const harness = makeContainerHarness("", "1", true);
+    harness.runtimeContainer.running = false;
+    const readiness = Promise.withResolvers<void>();
+    harness.startAndWaitForPortsMock.mockReturnValueOnce(readiness.promise);
+    const pending = harness.container.fetch(
+      new Request(FOCUSED_PREDICT_URL, {
+        headers: {
+          [WATCH_REQUEST_HEADER]: JSON.stringify({ ...WATCH_PAYLOAD, executionId: "execution-a" }),
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect((await pending).status).toBe(502);
+    expect((await harness.container.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(425);
+    expect((await harness.container.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+    readiness.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await harness.container.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+    expect(harness.containerFetchMock).not.toHaveBeenCalled();
+    expect(harness.destroyMock).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a stopped E record cannot authorize destruction of an unexplained live process", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-a",
+    disposition: "stopped",
+  });
+  expect((await harness.container.fetch(EXACT_STOP_REQUEST.clone())).status).toBe(425);
+  expect((await harness.container.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("failure to register a watchdog leaves preparing E recoverable without starting Python", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  harness.runtimeContainer.running = false;
+  harness.coordinatorFetchMock.mockResolvedValueOnce(Response.json({ allowed: true }));
+  harness.coordinatorFetchMock.mockRejectedValueOnce(new Error("outbox unavailable"));
+  expect(
+    (
+      await harness.container.fetch(
+        new Request(FOCUSED_PREDICT_URL, {
+          headers: {
+            [WATCH_REQUEST_HEADER]: JSON.stringify({
+              ...WATCH_PAYLOAD,
+              executionId: "execution-a",
+            }),
+          },
+        }),
+      )
+    ).status,
+  ).toBe(502);
+  expect(harness.queueSendMock).not.toHaveBeenCalled();
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.containerFetchMock).not.toHaveBeenCalled();
+  expect((await reconstructContainer(harness).fetch(EXACT_STOP_REQUEST.clone())).status).toBe(200);
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+});
+
+test("unknown live legacy runtime cannot be adopted or destroyed by either admission protocol", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  harness.storageGetMock.mockResolvedValue(undefined);
+  expect((await harness.container.fetch(new Request("http://do/prewarm-day-base"))).status).toBe(
+    409,
+  );
+  expect((await harness.container.fetch(REPLACEMENT_REQUEST.clone())).status).toBe(425);
+  expect(
+    (
+      await harness.container.fetch(
+        new Request("http://do/__admin/stop-container", {
+          headers: { authorization: "Bearer secret-token" },
+        }),
+      )
+    ).status,
+  ).toBe(409);
+  expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
+  expect(harness.destroyMock).not.toHaveBeenCalled();
+  expect(harness.storagePutMock).not.toHaveBeenCalled();
 });

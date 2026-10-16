@@ -1,6 +1,6 @@
 // Run with bun. Canonical fail-closed day-base readiness for focused-full work.
 
-import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseSource } from "./day-base-manifest";
 import { enumerateTodaysRaces } from "./cron-decision";
 import type { DaybaseWatermark } from "./ndjson-stream";
 import { getRunningStyleRaceReadiness } from "./running-style-readiness";
@@ -30,7 +30,6 @@ interface CatalogRowsPayload {
 }
 
 interface LiveDayBaseWatermark {
-  fingerprintRowCount: number;
   readyRunningStyleRaceCount: number;
   rowCount: number;
   runningStyleRaceCount: number;
@@ -38,12 +37,6 @@ interface LiveDayBaseWatermark {
   rsPredictedAtMax: string | null;
   rsRowCount: number;
   sourceUpdatedMax: string | null;
-}
-
-interface RunningStyleAggregateRow {
-  race_count: number | null;
-  rs_predicted_at_max: string | null;
-  rs_row_count: number | null;
 }
 
 export interface FocusedFullDayBaseReadiness {
@@ -54,12 +47,6 @@ export interface FocusedFullDayBaseReadiness {
 const CATALOG_ORIGIN: string = "https://pc-keiba-r2-catalog.internal";
 const READY_REASON: string = "ready";
 const NO_RUNNING_STYLE_WATERMARK: string = "none";
-const RUNNING_STYLE_AGGREGATE_SQL: string = `select count(distinct race_key) as race_count,
-       count(*) as rs_row_count,
-       max(predicted_at) as rs_predicted_at_max
-  from race_running_styles
- where race_key like ?1
-   and race_key not like ?2`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -141,19 +128,6 @@ const fetchCatalogWatermark = async (
   };
 };
 
-const runningStylePatterns = (
-  category: PredictCategory,
-  runYmd: string,
-): { include: string; exclude: string } => {
-  const source = category === "jra" ? "jra" : "nar";
-  const includeVenue = category === "ban-ei" ? "83:" : "";
-  const excludeVenue = category === "nar" ? "83:" : "__never__:";
-  return {
-    exclude: `${source}:${runYmd}:${excludeVenue}%`,
-    include: `${source}:${runYmd}:${includeVenue}%`,
-  };
-};
-
 const normalizedTimestamp = (value: string): number | null => {
   const milliseconds = Date.parse(value);
   return Number.isFinite(milliseconds) ? milliseconds : null;
@@ -164,7 +138,6 @@ const fetchRunningStyleWatermark = async (
 ): Promise<Omit<LiveDayBaseWatermark, "rowCount" | "sourceUpdatedMax">> => {
   if (params.category === "ban-ei") {
     return {
-      fingerprintRowCount: 0,
       readyRunningStyleRaceCount: 0,
       runningStyleRaceCount: 0,
       rsContentHash: NO_RUNNING_STYLE_WATERMARK,
@@ -175,31 +148,25 @@ const fetchRunningStyleWatermark = async (
   const races = (await enumerateTodaysRaces(params.env.REALTIME_DB, params.runYmd)).filter(
     (race) => race.category === params.category,
   );
-  const patterns = runningStylePatterns(params.category, params.runYmd);
-  const [readiness, aggregate, fingerprint] = await Promise.all([
+  const [readiness, fingerprint] = await Promise.all([
     getRunningStyleRaceReadiness({
       category: params.category,
       db: params.env.REALTIME_DB,
       races,
       runYmd: params.runYmd,
     }),
-    params.env.REALTIME_DB.prepare(RUNNING_STYLE_AGGREGATE_SQL)
-      .bind(patterns.include, patterns.exclude)
-      .first<RunningStyleAggregateRow>(),
     computeRunningStyleContentFingerprint({
       category: params.category,
       db: params.env.REALTIME_DB,
       runYmd: params.runYmd,
     }),
   ]);
-  const aggregateRowCount = Number(aggregate?.rs_row_count ?? 0);
   return {
-    fingerprintRowCount: fingerprint.rowCount,
     readyRunningStyleRaceCount: readiness.filter((race) => race.reason === null).length,
     runningStyleRaceCount: races.length,
     rsContentHash: fingerprint.contentHash,
-    rsPredictedAtMax: aggregate?.rs_predicted_at_max ?? null,
-    rsRowCount: aggregateRowCount,
+    rsPredictedAtMax: fingerprint.predictedAtMax,
+    rsRowCount: fingerprint.rowCount,
   };
 };
 
@@ -234,8 +201,6 @@ const compareWithLiveWatermark = async (
     };
   if (live.sourceUpdatedMax !== null && metadata.maxSourceUpdated !== live.sourceUpdatedMax)
     return { ready: false, reason: "source-watermark-mismatch" };
-  if (live.fingerprintRowCount !== live.rsRowCount)
-    return { ready: false, reason: "running-style-fingerprint-row-count-mismatch" };
   // Some races never get running-style rows (e.g. missing corner inputs). If
   // the artifact was already built from exactly the current RS rows, a rebuild
   // reproduces the same bytes: on 2026-09-22 NAR sat at 66-of-71 and rebuilt
@@ -291,8 +256,8 @@ export const getDayBaseCandidateReadiness = async (
 export const getFocusedFullDayBaseReadiness = async (
   params: FocusedFullDayBaseReadinessParams,
 ): Promise<FocusedFullDayBaseReadiness> => {
-  const object = await params.env.FEATURES_CACHE.head(buildDayBaseObjectKey(params));
-  const metadata = parseMetadata(object);
+  const source = await getDayBaseSource(params);
+  const metadata = parseMetadata(source?.object ?? null);
   if (metadata === null) return { ready: false, reason: "day-base-missing-or-invalid" };
   return compareWithLiveWatermark(params, metadata);
 };

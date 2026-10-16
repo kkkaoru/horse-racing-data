@@ -187,6 +187,7 @@ const buildPrewarmUrl = (params: PrewarmUrlParams): string => {
     runDate: params.runYmd,
   });
   if (params.force === true) searchParams.set("force", "1");
+  if (params.generationId !== undefined) searchParams.set("generationId", params.generationId);
   if (params.rebuild === true) searchParams.set("rebuild", "1");
   // `debug=1` makes the Container stream per-layer daybase progress as NDJSON, which the
   // Worker logs as `[daybase-pipeline-timing] step=daybase-...`. Opt-in only: a wedged
@@ -394,6 +395,7 @@ export const prewarmCategoryWithOutcome = async (
     ...(params.force === true && readinessProbe !== "verified-miss" ? { force: true } : {}),
     ...(readinessProbe === "verified-miss" ? { rebuild: true } : {}),
     ...(params.debug === true ? { debug: true } : {}),
+    ...dayBaseGenerationFields(params.generationId),
     runYmd,
   });
   const generation = await claimDayBaseGeneration({

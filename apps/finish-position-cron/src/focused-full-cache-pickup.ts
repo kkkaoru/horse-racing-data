@@ -21,6 +21,7 @@
 // proxyResultParquetsToR2) -- so a Stage-2 rescore for this race can hit the
 // cache instead of always falling back to a full pipeline.
 
+import { withFocusedFullCommit } from "./focused-full-commit";
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
 import type { PredictResultLine } from "./ndjson-stream";
 import { resolvePredictDoName } from "./predict-do-shard";
@@ -40,6 +41,7 @@ const RESULT_LINE_TYPE = "result";
 const PLACEHOLDER_RACES_PREDICTED = 0;
 
 interface FocusedFullCachePickupParams {
+  executionId?: string;
   env: Env;
   category: PredictCategory;
   runYmd: string;
@@ -78,10 +80,8 @@ const toResultLine = (
   perRaceParquets: body.perRaceParquets ?? undefined,
 });
 
-// Best-effort: every failure (DO fetch, non-ok status, malformed JSON, R2
-// write) is caught and logged here, never propagated -- a missed pickup
-// degrades to "no R2 cache for this race today", never a failed ack. Callers
-// must not await this for correctness, only for test determinism.
+// Reads are best effort. An uncertain external commit propagates and retains
+// its durable admission barrier; it must never be reported as completed pickup.
 export const pickUpFocusedFullCache = async (
   params: FocusedFullCachePickupParams,
 ): Promise<void> => {
@@ -104,8 +104,15 @@ export const pickUpFocusedFullCache = async (
     }
     const body = (await response.json()) as FocusedFullCacheResponseBody;
     if (!body.found) return;
-    await proxyResultParquetsToR2(toResultLine(body, category), env, debug === true);
+    await withFocusedFullCommit({
+      enforce: true,
+      env,
+      executionId: params.executionId,
+      workKey: `focused-full:${runYmd}:${category}:${keibajoCode}:${raceBango}`,
+      commit: () => proxyResultParquetsToR2(toResultLine(body, category), env, debug === true),
+    });
   } catch (err) {
+    if (err instanceof Error && err.message === "FOCUSED_FULL_COMMIT_UNRESOLVED") throw err;
     console.warn(
       `[focused-full-cache-pickup] failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}: ${String(err)}`,
     );

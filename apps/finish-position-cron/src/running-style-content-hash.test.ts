@@ -11,6 +11,7 @@ const row = (overrides: Record<string, unknown> = {}) => ({
   p_oikomi: 0.4,
   p_sashi: 0.3,
   p_senkou: 0.2,
+  predicted_at_max: "2026-09-10T00:05:00Z",
   predicted_label: "nige",
   race_key: "nar:20260910:50:11",
   ...overrides,
@@ -46,10 +47,15 @@ test("hashes normalized feature content independently of input ordering", async 
 
   expect(left).toStrictEqual({
     contentHash: "e7e716489c0065429f998fabd7ac83d9ce443d8f2763521fc0d6d034b2c34df5",
+    predictedAtMax: "2026-09-10T00:05:00Z",
     rowCount: 2,
   });
   expect(right).toStrictEqual(left);
-  expect(first.bind).toHaveBeenCalledWith("nar:20260910:%", "nar:20260910:83:%");
+  expect(first.prepare).toHaveBeenCalledTimes(1);
+  expect(first.prepare).toHaveBeenCalledWith(
+    expect.stringMatching(/where race_key >= \?1 and race_key < \?2\s+and race_key not like \?3/),
+  );
+  expect(first.bind).toHaveBeenCalledWith("nar:20260910:", "nar:20260910;", "nar:20260910:83:%");
 });
 
 test("isolates JRA and maps every running-style label", async () => {
@@ -66,7 +72,11 @@ test("isolates JRA and maps every running-style label", async () => {
 
   expect(result.rowCount).toBe(2);
   expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
-  expect(fixture.bind).toHaveBeenCalledWith("jra:20260910:%", "jra:20260910:__never__:%");
+  expect(fixture.bind).toHaveBeenCalledWith(
+    "jra:20260910:",
+    "jra:20260910;",
+    "jra:20260910:__never__:%",
+  );
 });
 
 test("returns the stable absent fingerprint for Ban-ei without querying D1", async () => {
@@ -78,7 +88,7 @@ test("returns the stable absent fingerprint for Ban-ei without querying D1", asy
       db: fixture.db,
       runYmd: "20260910",
     }),
-  ).resolves.toStrictEqual({ contentHash: "none", rowCount: 0 });
+  ).resolves.toStrictEqual({ contentHash: "none", predictedAtMax: null, rowCount: 0 });
   expect(fixture.prepare).not.toHaveBeenCalled();
 });
 

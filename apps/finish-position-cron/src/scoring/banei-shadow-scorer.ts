@@ -6,11 +6,16 @@ import { parseCatBoostJsonModel, scoreCatBoostModel, type CatBoostModel } from "
 
 import { buildModelKey } from "./model-loader";
 import { coerceFeature, projectCatBoostCells, type FeatureEntry } from "./feature-projection";
+import prophetPolicy from "../../../finish-position-predict-container/src/predict_lib/prophet_cell_policy.json";
+import { adjustShadowProphetScores } from "./shadow-prophet-adjustment";
 
 const CATEGORY = "ban-ei";
 const MODEL_FILE = "model.json";
 const METADATA_FILE = "metadata.json";
 const FIRST_RANK = 1;
+const PROPHET_SIGNATURE =
+  "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin1;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin1";
+const PROPHET_DECISION = prophetPolicy.categories["ban-ei"].signatures.sim[PROPHET_SIGNATURE];
 // Model-version keys are immutable production artifacts. Cache only the last
 // fully parsed model per R2 binding, after all metadata checks pass. This avoids
 // repeated 4 MB R2 JSON reads and CatBoost tree parsing on warm Queue isolates,
@@ -31,13 +36,13 @@ export const BANEI_SHADOW_MODEL_SPECS: Readonly<Record<BaneiShadowVariant, Banei
     base: {
       architecture: "catboost",
       featureCount: 111,
-      modelVersion: "banei-cb-v8-window2011-wf-15y",
+      modelVersion: "banei-cb-v8-window2011-wf-15y-nowin1",
       variant: "base",
     },
     sim: {
       architecture: "catboost",
-      featureCount: 130,
-      modelVersion: "banei-cb-v9-sim-2011",
+      featureCount: 127,
+      modelVersion: "banei-cb-v9-sim-2011-nowin1",
       variant: "sim",
     },
   };
@@ -65,6 +70,11 @@ export interface BaneiShadowPrediction {
   predictedRank: number;
   predictedScore: number;
   umaban: number;
+}
+
+export interface BaneiProphetConfig {
+  enabled?: string;
+  weight?: string;
 }
 
 export interface BaneiShadowScoreResult {
@@ -120,9 +130,9 @@ export const selectBaneiShadowModel = (
   entries: ReadonlyArray<FeatureEntry>,
 ): BaneiShadowModelSpec => {
   assertRaceRows(entries);
-  return constantCell(entries, "grade_code", true) === "E"
-    ? BANEI_SHADOW_MODEL_SPECS.base
-    : BANEI_SHADOW_MODEL_SPECS.sim;
+  // The Python scorer rejects the current base artifact's trained feature order
+  // and falls back to the category default even for grade E.
+  return BANEI_SHADOW_MODEL_SPECS.sim;
 };
 
 const parseMetadata = (value: unknown, spec: BaneiShadowModelSpec): string[] => {
@@ -204,11 +214,16 @@ const assertModelFeatures = (
 export const scoreBaneiRaceShadow = (
   entries: ReadonlyArray<FeatureEntry>,
   loaded: LoadedBaneiShadowModel,
+  prophetConfig?: BaneiProphetConfig,
 ): BaneiShadowScoreResult => {
   assertRaceRows(entries);
   assertModelFeatures(entries, loaded.featureNames);
-  const predictions = entries
-    .map((entry) => ({
+  const predictions = adjustShadowProphetScores({
+    category: CATEGORY,
+    decision: PROPHET_DECISION,
+    config: prophetConfig,
+    entries,
+    predictions: entries.map((entry) => ({
       kettoTorokuBango: textCell(entry, "ketto_toroku_bango")!,
       predictedRank: 0,
       predictedScore: scoreCatBoostModel({
@@ -216,7 +231,8 @@ export const scoreBaneiRaceShadow = (
         model: loaded.model,
       }),
       umaban: Number(textCell(entry, "umaban")),
-    }))
+    })),
+  })
     .sort((left, right) =>
       right.predictedScore !== left.predictedScore
         ? right.predictedScore - left.predictedScore

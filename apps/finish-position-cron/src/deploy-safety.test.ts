@@ -35,6 +35,23 @@ describe("deployment safety", () => {
     ]);
   });
 
+  it("skips Container image and instance updates for a Worker-only deploy", () => {
+    expect(buildDeploymentCommand(undefined, true)).toStrictEqual([
+      "bunx",
+      "wrangler",
+      "deploy",
+      "--containers-rollout=none",
+    ]);
+    expect(buildDeploymentCommand("/work/maintenance.json", true)).toStrictEqual([
+      "bunx",
+      "wrangler",
+      "deploy",
+      "--config",
+      "/work/maintenance.json",
+      "--containers-rollout=none",
+    ]);
+  });
+
   it("never forces deployment stops past active ownership", () => {
     expect(buildDeploymentStopRequest(["predict-jra", "race-chain-predict-nar-1"])).toStrictEqual({
       names: ["predict-jra", "race-chain-predict-nar-1"],
@@ -129,6 +146,27 @@ describe("deployment safety", () => {
       "chain",
       "rescore",
     ]);
+  });
+
+  it("reads the final page returned by current Wrangler", () => {
+    expect(
+      parseContainerInstances({
+        instances: [{ name: "predict-jra", state: "running" }, { state: "inactive" }],
+        result_info: { next_page_token: null },
+      }),
+    ).toStrictEqual([{ name: "predict-jra", state: "running" }, { state: "inactive" }]);
+    expect(
+      parseContainerInstances({ instances: [], result_info: { next_page_token: null } }),
+    ).toStrictEqual([]);
+  });
+
+  it.each([
+    { instances: [] },
+    { instances: [], result_info: null },
+    { instances: [], result_info: {} },
+    { instances: [], result_info: { next_page_token: "next" } },
+  ])("never treats an incomplete instance page as a drained application %#", (value) => {
+    expect(() => parseContainerInstances(value)).toThrow("incomplete pagination");
   });
 
   it("blocks every state except inactive", () => {

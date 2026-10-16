@@ -2,6 +2,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { AsyncBuffer } from "hyparquet";
+import type { Env } from "./types";
+
+const getDayBaseSourceMock = vi.hoisted(() =>
+  vi.fn(async (params: { category: string; env: { FEATURES_CACHE: R2Bucket }; runYmd: string }) => {
+    const key = `feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet`;
+    const object = await params.env.FEATURES_CACHE.head(key);
+    return object === null ? null : { key, object };
+  }),
+);
+
+vi.mock("./day-base-manifest", () => ({ getDayBaseSource: getDayBaseSourceMock }));
 
 import {
   buildDayBaseRaceFoundationKey,
@@ -21,7 +32,7 @@ interface CapturedPut {
 }
 
 interface BucketFixture {
-  env: { FEATURES_CACHE: R2Bucket };
+  env: Pick<Env, "DAY_BASE_MANIFEST_REQUIRED" | "FEATURES_CACHE" | "FINISH_POSITION_CRON_DB">;
   get: ReturnType<typeof vi.fn>;
   head: ReturnType<typeof vi.fn>;
   puts: CapturedPut[];
@@ -71,7 +82,10 @@ const makeBucket = (
       }),
   );
   return {
-    env: { FEATURES_CACHE: { get, head, put } as unknown as R2Bucket },
+    env: {
+      FEATURES_CACHE: { get, head, put } as unknown as R2Bucket,
+      FINISH_POSITION_CRON_DB: {} as D1Database,
+    },
     get,
     head,
     puts,
@@ -295,6 +309,23 @@ describe("day-base per-race foundation materializer", () => {
     expect(result.status).toBe("materialized");
     expect(decodeDayBase).toHaveBeenCalledTimes(1);
     expect(bucket.puts).toHaveLength(2);
+  });
+
+  test("refuses a pending source manifest without probing the old day-base alias", async () => {
+    const bucket = makeBucket();
+    getDayBaseSourceMock.mockResolvedValueOnce(null);
+    await expect(
+      getDayBaseRaceFoundationReadiness({
+        category: "jra",
+        env: bucket.env,
+        raceNumber: "11",
+        runYmd: "20260823",
+        venueCode: "05",
+      }),
+    ).resolves.toStrictEqual({ ready: false, reason: "day-base-miss" });
+    expect(bucket.head).not.toHaveBeenCalledWith(
+      "feat-daybase/catalog-v1/jra/20260823/features.parquet",
+    );
   });
 
   test("attests the exact race foundation against the canonical source and manifest", async () => {

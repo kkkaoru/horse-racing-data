@@ -32,7 +32,8 @@ const TODAY_DIFF_DAYS = 0;
 const TOMORROW_DIFF_DAYS = 1;
 const YESTERDAY_DIFF_DAYS = -1;
 const TODAY_KV_TTL_SECONDS = 36 * 60 * 60;
-const TOMORROW_KV_TTL_SECONDS = 24 * 60 * 60;
+// A forecast written early the day before must survive race day and its yesterday window.
+const TOMORROW_KV_TTL_SECONDS = 72 * 60 * 60;
 const YESTERDAY_KV_TTL_SECONDS = 24 * 60 * 60;
 
 const padRacePart = (value: string, width: number): string => value.padStart(width, "0");

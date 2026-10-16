@@ -85,6 +85,12 @@ const RESCORE_PROGRESS_RANK: Readonly<Record<string, number>> = {
   success: 5,
 };
 
+interface ExternalCommitParams {
+  workKey: string;
+  executionId?: string;
+  token: string;
+}
+
 interface RunRecord {
   status: string;
   timestamp: number;
@@ -103,6 +109,7 @@ interface RunRecord {
 }
 
 interface ClaimResult {
+  executionId?: string;
   proceed: boolean;
   state?: string;
 }
@@ -160,6 +167,7 @@ interface ClaimRescoreEnqueueParams extends ClaimRaceParams {
 }
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  observeOnly?: boolean;
   doName?: string;
   staleAfterMs: number;
   force?: boolean;
@@ -167,6 +175,7 @@ interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
 }
 
 interface ReserveFocusedFullRaceEnqueueParams extends ClaimRaceParams {
+  executionId?: string;
   doName: string;
   raceStartAtJst?: string;
   reservationId: string;
@@ -193,16 +202,20 @@ interface CompleteRescoreRaceParams extends ClaimRaceParams {
 }
 
 interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
+  checkOnly?: boolean;
+  executionId?: string;
   status: string;
 }
 
 interface ClaimFocusedFullTerminalWatchParams {
+  executionId?: string;
   claimId: string;
   staleAfterMs: number;
   watchId: string;
 }
 
 interface CompleteFocusedFullTerminalWatchParams {
+  executionId?: string;
   claimId: string;
   watchId: string;
 }
@@ -225,6 +238,7 @@ interface ContainerSlotsRecord {
 }
 
 interface ContainerStopFence {
+  executionId?: string;
   claimedAtMs?: number;
   destroyedAtMs?: number;
   requestedAtMs: number;
@@ -240,6 +254,7 @@ interface FocusedFullLaneRecord {
 }
 
 interface ClaimContainerSlotParams {
+  generationId?: string;
   allowSameOwner?: boolean;
   category: string;
   doName: string;
@@ -250,24 +265,28 @@ interface ClaimContainerSlotParams {
 }
 
 interface ReleaseContainerSlotParams {
+  executionId?: string;
   doName: string;
   kind: ContainerSlotKind;
   workKey?: string;
 }
 
 interface TouchContainerSlotParams {
+  executionId?: string;
   doName: string;
   staleAfterMs?: number;
   workKey?: string;
 }
 
 interface ClearContainerSlotParams {
+  executionId?: string;
   acceptableWorkKeys?: string[];
   doName: string;
   workKey?: string;
 }
 
 interface CheckContainerSlotStopParams {
+  executionId?: string;
   acceptableWorkKeys?: string[];
   allowUnowned?: boolean;
   doName: string;
@@ -354,10 +373,12 @@ const TERMINAL_STATUSES = new Set(["success"]);
 export const MAX_FOCUSED_FULL_REPAIRS = 2;
 const focusedFullRepairFields = (
   record: RunRecord | undefined,
-): Pick<RunRecord, "focusedFullRepairCount"> | Record<string, never> =>
-  record?.focusedFullRepairCount === undefined
+): Partial<Pick<RunRecord, "focusedFullRepairCount" | "executionId">> => ({
+  ...(record?.executionId === undefined ? {} : { executionId: record.executionId }),
+  ...(record?.focusedFullRepairCount === undefined
     ? {}
-    : { focusedFullRepairCount: record.focusedFullRepairCount };
+    : { focusedFullRepairCount: record.focusedFullRepairCount }),
+});
 const resolveRacePriorityMs = (raceStartAtJst: string | undefined, fallback: number): number => {
   if (raceStartAtJst === undefined) return fallback;
   const parsed = Date.parse(raceStartAtJst);
@@ -613,6 +634,22 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const raceKey = buildFocusedFullRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(raceKey);
+      if (await this.ctx.storage.get(`external-commit:${raceKey}`))
+        return { proceed: false, state: "commit-unresolved" };
+      // Observation captures this race's committed authority without acquiring a slot.
+      // Outstanding repair dispatch must not be acknowledged as an old completion.
+      if (params.observeOnly === true)
+        return {
+          proceed: existing?.status !== "enqueued",
+          state: existing?.status,
+          executionId: existing?.executionId,
+        };
+      const slots = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      if (
+        existing?.executionId !== undefined &&
+        slots?.leases.some((lease) => lease.executionId === existing.executionId)
+      )
+        return { proceed: true, state: "resumed" };
       const now = Date.now();
       const priorityMs = existing?.priorityMs ?? resolveRacePriorityMs(params.raceStartAtJst, now);
       if (
@@ -630,6 +667,15 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         (existing?.status === "started"
           ? { activeRaceKey: raceKey, startedAt: existing.timestamp, waiters: [] }
           : undefined);
+      if (lane !== undefined && lane.activeRaceKey !== raceKey) {
+        const active = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
+        if (
+          (active?.executionId !== undefined &&
+            slots?.leases.some((lease) => lease.executionId === active.executionId)) ||
+          (await this.ctx.storage.get(`external-commit:${lane.activeRaceKey}`))
+        )
+          return { proceed: false, state: "queued" };
+      }
       // An explicitly forced admin recovery is allowed to take over a lane
       // left behind by an abandoned Queue/Container delivery.  Normal
       // messages must retain FIFO priority, but a forced recovery is the
@@ -650,6 +696,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           doName,
           priorityMs,
           ...focusedFullRepairFields(existing),
+          ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
           status: "started",
           timestamp: now,
         });
@@ -677,6 +724,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
             doName,
             priorityMs,
             ...focusedFullRepairFields(existing),
+            ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
             ...(existing?.reservationId === undefined
               ? {}
               : { reservationId: existing.reservationId }),
@@ -689,6 +737,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           doName,
           priorityMs,
           ...focusedFullRepairFields(existing),
+          ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
           status: "started",
           timestamp: now,
         });
@@ -705,6 +754,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
             doName,
             priorityMs,
             ...focusedFullRepairFields(existing),
+            ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
             status: "started",
             timestamp: lane.startedAt,
           });
@@ -721,6 +771,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
             doName,
             priorityMs,
             ...focusedFullRepairFields(existing),
+            ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
             status: "started",
             timestamp: now,
           });
@@ -744,6 +795,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           doName,
           priorityMs,
           ...focusedFullRepairFields(existing),
+          ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
           status: "queued",
           timestamp: existing?.timestamp ?? now,
         });
@@ -759,6 +811,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           doName,
           priorityMs,
           ...focusedFullRepairFields(existing),
+          ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
           status: "queued",
           timestamp: existing?.timestamp ?? now,
         });
@@ -796,6 +849,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
             doName,
             priorityMs,
             ...focusedFullRepairFields(existing),
+            ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
             status: "started",
             timestamp: now,
           });
@@ -857,6 +911,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         doName: params.doName,
         priorityMs: resolveRacePriorityMs(params.raceStartAtJst, now),
         reservationId: params.reservationId,
+        ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
         status: "enqueued",
         timestamp: now,
         ...(repairCount === 0 ? {} : { focusedFullRepairCount: repairCount }),
@@ -871,6 +926,8 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const raceKey = buildFocusedFullRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(raceKey);
+      if (existing?.executionId !== params.executionId)
+        return { proceed: false, state: "superseded" };
       const now = Date.now();
       const freshReservation =
         existing?.status === "enqueued" && now - existing.timestamp < params.staleAfterMs;
@@ -891,6 +948,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           priorityMs:
             existing?.priorityMs ?? resolveRacePriorityMs(params.raceStartAtJst, startedAt),
           reservationId: params.reservationId,
+          ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
           status: "enqueued",
           timestamp: startedAt,
           focusedFullRepairCount: priorRepairCount + 1,
@@ -919,6 +977,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
             doName: params.doName,
             ...(existing.priorityMs === undefined ? {} : { priorityMs: existing.priorityMs }),
             ...focusedFullRepairFields(existing),
+            ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
             status: "queued",
             timestamp: existing.timestamp,
           }),
@@ -934,6 +993,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         doName: params.doName,
         ...(existing.priorityMs === undefined ? {} : { priorityMs: existing.priorityMs }),
         ...focusedFullRepairFields(existing),
+        ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
         status: "started",
         timestamp: startedAt,
       };
@@ -962,51 +1022,59 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         ...(existing.doName === undefined ? {} : { doName: existing.doName }),
         ...(existing.priorityMs === undefined ? {} : { priorityMs: existing.priorityMs }),
         ...focusedFullRepairFields(existing),
+        ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
         status: "error",
         timestamp: Date.now(),
       });
     });
   }
 
-  async completeFocusedFullRace(params: CompleteFocusedFullRaceParams): Promise<void> {
-    await this.ctx.blockConcurrencyWhile(async () => {
+  async completeFocusedFullRace(params: CompleteFocusedFullRaceParams): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(async () => {
       const raceKey = buildFocusedFullRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(raceKey);
+      if (existing?.executionId !== params.executionId) return false;
+      if (params.checkOnly === true) return true;
+      if (await this.ctx.storage.get(`external-commit:${raceKey}`))
+        throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
       // Completion is monotonic: a late timeout/error from an older Queue
       // delivery must never downgrade a durable success. Cache-repair callers
       // use reserveFocusedFullRaceRepair, which keeps the reopen explicit and
       // bounded instead of abusing this terminal transition.
-      if (existing?.status === "success" && params.status !== "success") return;
+      if (existing?.status === "success" && params.status !== "success") return true;
       const now = Date.now();
       await this.ctx.storage.put<RunRecord>(raceKey, {
         ...(existing?.doName === undefined ? {} : { doName: existing.doName }),
         ...(existing?.priorityMs === undefined ? {} : { priorityMs: existing.priorityMs }),
         ...focusedFullRepairFields(existing),
+        ...(existing?.executionId === undefined ? {} : { executionId: existing.executionId }),
+        ...(params.executionId === undefined ? {} : { executionId: params.executionId }),
         completedAt: now,
         status: params.status,
         timestamp: now,
       });
-      if (existing?.doName === undefined) return;
+      if (existing?.doName === undefined) return true;
       const laneKey = buildFocusedFullLaneKey(existing.doName);
       const lane = await this.ctx.storage.get<FocusedFullLaneRecord>(laneKey);
-      if (lane === undefined) return;
+      if (lane === undefined) return true;
       if (lane.activeRaceKey !== raceKey) {
-        if (!lane.waiters.includes(raceKey)) return;
+        if (!lane.waiters.includes(raceKey)) return true;
         await this.ctx.storage.put<FocusedFullLaneRecord>(laneKey, {
           ...lane,
           waiters: lane.waiters.filter((waiter) => waiter !== raceKey),
         });
-        return;
+        return true;
       }
       const [promotedRaceKey, ...remainingWaiters] = lane.waiters;
       if (promotedRaceKey === undefined) {
         await this.ctx.storage.delete(laneKey);
-        return;
+        return true;
       }
       const promoted = await this.ctx.storage.get<RunRecord>(promotedRaceKey);
       await this.ctx.storage.put<RunRecord>(promotedRaceKey, {
         ...(promoted?.doName === undefined ? {} : { doName: promoted.doName }),
         ...(promoted?.priorityMs === undefined ? {} : { priorityMs: promoted.priorityMs }),
+        ...focusedFullRepairFields(promoted),
         status: "ready",
         timestamp: now,
       });
@@ -1015,6 +1083,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         startedAt: now,
         waiters: remainingWaiters,
       });
+      return true;
     });
   }
 
@@ -1037,6 +1106,9 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         }
         return { proceed: false, state: "terminal" };
       }
+      const sameExecution = existing?.executionId === params.executionId;
+      if (existing?.executionId !== undefined && !sameExecution)
+        return { proceed: false, state: "terminal" };
       const now = Date.now();
       if (
         existing?.status === "processing" &&
@@ -1047,13 +1119,15 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       }
       await this.ctx.storage.put<RunRecord>(key, {
         claimId: params.claimId,
-        ...(existing?.containerStoppedAt === undefined
+        ...(params.executionId === undefined ? {} : { executionId: params.executionId }),
+        ...(!sameExecution || existing?.containerStoppedAt === undefined
           ? {}
           : { containerStoppedAt: existing.containerStoppedAt }),
         status: "processing",
         timestamp: now,
       });
-      if (existing?.containerStoppedAt !== undefined) return { proceed: true, state: "stopped" };
+      if (sameExecution && existing?.containerStoppedAt !== undefined)
+        return { proceed: true, state: "stopped" };
       return existing?.status === "processing" && existing.claimId !== params.claimId
         ? { proceed: true, state: "stale" }
         : { proceed: true };
@@ -1066,7 +1140,12 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     await this.ctx.blockConcurrencyWhile(async () => {
       const key = buildFocusedFullTerminalWatchKey(params.watchId);
       const existing = await this.ctx.storage.get<RunRecord>(key);
-      if (existing?.status !== "processing" || existing.claimId !== params.claimId) return;
+      if (
+        existing?.status !== "processing" ||
+        existing.claimId !== params.claimId ||
+        existing.executionId !== params.executionId
+      )
+        return;
       const now = Date.now();
       await this.ctx.storage.put<RunRecord>(key, {
         claimId: params.claimId,
@@ -1093,7 +1172,11 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     await this.ctx.blockConcurrencyWhile(async () => {
       const key = buildFocusedFullTerminalWatchKey(params.watchId);
       const existing = await this.ctx.storage.get<RunRecord>(key);
-      if (existing?.status !== "processing" || existing.claimId !== params.claimId) {
+      if (
+        existing?.status !== "processing" ||
+        existing.claimId !== params.claimId ||
+        existing.executionId !== params.executionId
+      ) {
         throw new Error(`Focused-full terminal watch ownership lost watchId=${params.watchId}`);
       }
       await this.ctx.storage.put<RunRecord>(key, {
@@ -1245,6 +1328,17 @@ export class PredictRunCoordinator extends DurableObject<Env> {
 
   async claimContainerSlot(params: ClaimContainerSlotParams): Promise<ClaimResult> {
     return this.ctx.blockConcurrencyWhile(async () => {
+      if (
+        params.workKey !== undefined &&
+        (await this.ctx.storage.get(`external-commit:${params.workKey}`))
+      )
+        return { proceed: false, state: "commit-unresolved" };
+      const race =
+        params.workKey === undefined
+          ? undefined
+          : await this.ctx.storage.get<RunRecord>(params.workKey);
+      if (race?.executionId !== undefined && params.generationId === undefined)
+        return { proceed: false, state: "execution-required" };
       const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
       const now = Date.now();
       const stopFences =
@@ -1260,6 +1354,8 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const staleAfterMs =
         params.staleAfterMs === undefined ? CONTAINER_SLOT_STALE_MS : params.staleAfterMs;
       const decision = decideContainerSlotClaim(record?.leases ?? [], {
+        generationId: params.generationId,
+        executionId: params.generationId === undefined ? undefined : crypto.randomUUID(),
         allowSameOwner: params.allowSameOwner,
         category: params.category,
         doName: params.doName,
@@ -1272,7 +1368,23 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, {
         leases: decision.leases,
       });
-      return decision.proceed ? { proceed: true } : { proceed: false, state: decision.state };
+      const executionId = decision.leases.find(
+        (lease) => lease.doName === params.doName,
+      )?.executionId;
+      if (decision.proceed && executionId !== undefined && params.workKey !== undefined) {
+        const race = await this.ctx.storage.get<RunRecord>(params.workKey);
+        await this.ctx.storage.put<RunRecord>(params.workKey, {
+          timestamp: now,
+          ...race,
+          // A replacement must not inherit the completed status of its predecessor.
+          status: race?.executionId === executionId ? race.status : "started",
+          doName: params.doName,
+          executionId,
+        });
+      }
+      return decision.proceed
+        ? { proceed: true, ...(executionId === undefined ? {} : { executionId }) }
+        : { proceed: false, state: decision.state };
     });
   }
 
@@ -1285,6 +1397,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.kind,
         Date.now(),
         params.workKey,
+        params.executionId,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
       const releasedLease = (record?.leases ?? []).find(
@@ -1305,6 +1418,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.doName,
         Date.now(),
         params.workKey,
+        params.executionId,
       );
       await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases });
     });
@@ -1319,6 +1433,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         Date.now(),
         params.workKey,
         params.acceptableWorkKeys,
+        params.executionId,
       );
       const stopFences =
         (await this.ctx.storage.get<Record<string, ContainerStopFence>>(
@@ -1329,6 +1444,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         params.acceptableWorkKeys ?? (params.workKey === undefined ? undefined : [params.workKey]);
       if (
         fence !== undefined &&
+        fence.executionId === params.executionId &&
         (ownerKeys === undefined ||
           (fence.workKey !== undefined && ownerKeys.includes(fence.workKey)))
       ) {
@@ -1385,6 +1501,9 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         )) ?? {};
       const existingFence = stopFences[params.doName];
       const existingLease = (record?.leases ?? []).find((lease) => lease.doName === params.doName);
+      if (existingLease?.executionId !== params.executionId) return false;
+      if (existingFence !== undefined && existingFence.executionId !== params.executionId)
+        return false;
       const ownerKeys =
         params.acceptableWorkKeys ?? (params.workKey === undefined ? undefined : [params.workKey]);
       if (!params.force && ownerKeys === undefined && existingLease !== undefined) return false;
@@ -1401,7 +1520,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       // still point at the day-base owner while the focused watch is waiting
       // for that same DO. Never let the day-base stop destroy the focused run;
       // only a stop carrying one of the focused watch's work keys may proceed.
-      if (!params.force) {
+      if (!params.force && params.executionId === undefined) {
         const focusedWorkKeys = new Set(
           Object.values(activeWatches)
             .filter((entry) => entry.message.doName === params.doName)
@@ -1431,11 +1550,17 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       if (!allowed) return false;
       const requestedAtMs = Date.parse(params.requestedAt);
       if (!params.force && !Number.isFinite(requestedAtMs)) return false;
-      if (!params.force && existingLease !== undefined && existingLease.timestamp > requestedAtMs) {
+      if (
+        params.executionId === undefined &&
+        !params.force &&
+        existingLease !== undefined &&
+        existingLease.timestamp > requestedAtMs
+      ) {
         return false;
       }
       const fenceWorkKey = existingLease?.workKey ?? params.workKey;
       stopFences[params.doName] = {
+        ...(params.executionId === undefined ? {} : { executionId: params.executionId }),
         claimedAtMs: Date.now(),
         requestedAtMs: params.force ? Date.now() : requestedAtMs,
         ...(fenceWorkKey === undefined ? {} : { workKey: fenceWorkKey }),
@@ -1454,7 +1579,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const fence = stopFences[params.doName];
       const ownerKeys =
         params.acceptableWorkKeys ?? (params.workKey === undefined ? undefined : [params.workKey]);
-      if (fence === undefined) {
+      if (fence === undefined || fence.executionId !== params.executionId) {
         // Idempotent: a retried stop after the fence was already cleared must
         // not throw. Throwing redelivers container-stop and can destroy a live
         // day-base DAY_CHAIN (pred:fp then stays 404).
@@ -1482,6 +1607,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       params.acceptableWorkKeys ?? (params.workKey === undefined ? undefined : [params.workKey]);
     if (
       fence === undefined ||
+      fence.executionId !== params.executionId ||
       (ownerKeys !== undefined &&
         (fence.workKey === undefined || !ownerKeys.includes(fence.workKey)))
     )
@@ -1571,8 +1697,8 @@ export class PredictRunCoordinator extends DurableObject<Env> {
 
   private async handleCompleteFocusedFullRace(request: Request): Promise<Response> {
     const body = (await request.json()) as CompleteFocusedFullRaceParams;
-    await this.completeFocusedFullRace(body);
-    return Response.json({ ok: true }, { status: HTTP_OK });
+    const completed = await this.completeFocusedFullRace(body);
+    return Response.json({ ok: completed }, { status: completed ? HTTP_OK : 409 });
   }
 
   private async handleClaimFocusedFullTerminalWatch(request: Request): Promise<Response> {
@@ -1653,8 +1779,78 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return Response.json({ ok: true }, { status: HTTP_OK });
   }
 
+  async checkContainerExecution(params: ClearContainerSlotParams): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const lease = record?.leases.find((candidate) => candidate.doName === params.doName);
+      return (
+        params.executionId !== undefined &&
+        lease?.executionId === params.executionId &&
+        lease.workKey === params.workKey
+      );
+    });
+  }
+
+  async cancelContainerSlotStop(params: ClearContainerSlotParams): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const fences =
+        (await this.ctx.storage.get<Record<string, ContainerStopFence>>(
+          CONTAINER_STOP_FENCES_KEY,
+        )) ?? {};
+      const fence = fences[params.doName];
+      if (
+        fence === undefined ||
+        fence.executionId !== params.executionId ||
+        fence.workKey !== params.workKey
+      )
+        return;
+      delete fences[params.doName];
+      await this.ctx.storage.put(CONTAINER_STOP_FENCES_KEY, fences);
+    });
+  }
+
+  // Persist before external I/O. There is deliberately no timeout or alarm unlock:
+  // a rejected/abandoned external operation has no evidence that its write cannot land.
+  async beginExternalCommit(params: ExternalCommitParams): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const race = await this.ctx.storage.get<RunRecord>(params.workKey);
+      const key = `external-commit:${params.workKey}`;
+      if (race?.executionId !== params.executionId || (await this.ctx.storage.get(key)))
+        return false;
+      await this.ctx.storage.put(key, params);
+      return true;
+    });
+  }
+
+  async finishExternalCommit(params: ExternalCommitParams): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const key = `external-commit:${params.workKey}`;
+      const current = await this.ctx.storage.get<ExternalCommitParams>(key);
+      if (current?.token !== params.token || current.executionId !== params.executionId)
+        return false;
+      await this.ctx.storage.delete(key);
+      return true;
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/external-commit") {
+      const body = await request.json<ExternalCommitParams & { complete?: boolean }>();
+      const allowed =
+        body.complete === true
+          ? await this.finishExternalCommit(body)
+          : await this.beginExternalCommit(body);
+      return Response.json({ allowed }, { status: allowed ? 200 : 409 });
+    }
+    if (request.method === "POST" && url.pathname === "/check-container-execution") {
+      const params = await request.json<ClearContainerSlotParams>();
+      return Response.json({ allowed: await this.checkContainerExecution(params) });
+    }
+    if (request.method === "POST" && url.pathname === "/cancel-container-slot-stop") {
+      await this.cancelContainerSlotStop(await request.json<ClearContainerSlotParams>());
+      return Response.json({ ok: true });
+    }
     const pathMethodKey = `${request.method}:${url.pathname}`;
     const handlers = new Map<string, (req: Request) => Promise<Response>>([
       [`POST:${CLAIM_PATH}`, (req) => this.handleClaim(req)],

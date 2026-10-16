@@ -68,8 +68,8 @@ const emptyModelJson = {
   scale_and_bias: [1, [0]],
 };
 
-test("selects the base model only for grade E and otherwise the sim model", () => {
-  expect(selectBaneiShadowModel([entry({ grade_code: "E" })])).toBe(BANEI_SHADOW_MODEL_SPECS.base);
+test("falls back to the sim model for grade E because Python rejects the base artifact", () => {
+  expect(selectBaneiShadowModel([entry({ grade_code: "E" })])).toBe(BANEI_SHADOW_MODEL_SPECS.sim);
   expect(selectBaneiShadowModel([entry({ grade_code: null })])).toBe(BANEI_SHADOW_MODEL_SPECS.sim);
   expect(selectBaneiShadowModel([entry({ grade_code: 1 })])).toBe(BANEI_SHADOW_MODEL_SPECS.sim);
 });
@@ -86,7 +86,7 @@ test("scores and deterministically ranks a Ban-ei race", () => {
 
   expect(result).toMatchObject({
     gradeCode: "A",
-    modelVersion: "banei-cb-v9-sim-2011",
+    modelVersion: "banei-cb-v9-sim-2011-nowin1",
     raceId: "nar:2026:0907:83:01",
     shadowOnly: true,
     variant: "sim",
@@ -96,6 +96,131 @@ test("scores and deterministically ranks a Ban-ei race", () => {
     { kettoTorokuBango: "HORSE-3", predictedRank: 2, predictedScore: 2, umaban: 3 },
     { kettoTorokuBango: "HORSE-1", predictedRank: 3, predictedScore: -1, umaban: 1 },
   ]);
+});
+
+test("shared Prophet adjustment preserves Ban-ei no-op for blank runner trends", () => {
+  const result = scoreBaneiRaceShadow(
+    [
+      entry({ prophet_entity_coverage: 1, prophet_entity_performance_mean: " " }),
+      entry({
+        ketto_toroku_bango: "HORSE-2",
+        umaban: 2,
+        x: 1,
+        prophet_entity_coverage: 1,
+        prophet_entity_performance_mean: 10,
+      }),
+    ],
+    loadedModel(),
+  );
+  expect(result.predictions).toStrictEqual([
+    { kettoTorokuBango: "HORSE-2", predictedRank: 1, predictedScore: 2, umaban: 2 },
+    { kettoTorokuBango: "HORSE-1", predictedRank: 2, predictedScore: -1, umaban: 1 },
+  ]);
+});
+
+test("applies the Python Ban-ei sim signature Prophet policy after CatBoost scoring", () => {
+  const rows = [
+    entry({
+      ketto_toroku_bango: "HORSE-2",
+      umaban: 2,
+      x: 1,
+      prophet_entity_coverage: 1,
+      prophet_entity_performance_mean: 0,
+    }),
+    entry({
+      ketto_toroku_bango: "HORSE-1",
+      umaban: 1,
+      x: 0,
+      prophet_entity_coverage: 1,
+      prophet_entity_performance_mean: 10,
+    }),
+    entry({
+      ketto_toroku_bango: "HORSE-3",
+      umaban: 3,
+      x: 1,
+      prophet_entity_coverage: 1,
+      prophet_entity_performance_mean: 20,
+    }),
+  ];
+  const result = scoreBaneiRaceShadow(rows, loadedModel(), { enabled: "ban-ei" });
+  expect(result.predictions.map((prediction) => prediction.kettoTorokuBango)).toStrictEqual([
+    "HORSE-3",
+    "HORSE-2",
+    "HORSE-1",
+  ]);
+  expect(result.predictions[0]?.predictedScore).toBeCloseTo(2.013303236086544, 12);
+  expect(result.predictions[1]?.predictedScore).toBeCloseTo(1.986696763913456, 12);
+  expect(
+    scoreBaneiRaceShadow(rows, loadedModel(), { enabled: "0" }).predictions.map(
+      (prediction) => prediction.predictedScore,
+    ),
+  ).toStrictEqual([2, 2, -1]);
+  expect(
+    scoreBaneiRaceShadow(rows, loadedModel(), { enabled: "jra,nar" }).predictions.map(
+      (prediction) => prediction.predictedScore,
+    ),
+  ).toStrictEqual([2, 2, -1]);
+  expect(
+    scoreBaneiRaceShadow(rows, loadedModel(), { enabled: "ban-ei", weight: "0.2" }).predictions[0]
+      ?.predictedScore,
+  ).toBeGreaterThan(2.3);
+  expect(
+    scoreBaneiRaceShadow(rows, loadedModel(), { weight: "invalid" }).predictions.map(
+      (prediction) => prediction.predictedScore,
+    ),
+  ).toStrictEqual([2, 2, -1]);
+});
+
+test("Prophet adjustment fails closed for insufficient coverage or degenerate spreads", () => {
+  const rows = [
+    entry({
+      ketto_toroku_bango: "HORSE-2",
+      umaban: 2,
+      x: 1,
+      prophet_entity_coverage: 1,
+      prophet_entity_performance_mean: 0,
+    }),
+    entry({
+      ketto_toroku_bango: "HORSE-1",
+      umaban: 1,
+      x: 0,
+      prophet_entity_coverage: 0,
+      prophet_entity_performance_mean: 10,
+    }),
+    entry({
+      ketto_toroku_bango: "HORSE-3",
+      umaban: 3,
+      x: 1,
+      prophet_entity_coverage: 0,
+      prophet_entity_performance_mean: 20,
+    }),
+  ];
+  expect(
+    scoreBaneiRaceShadow(rows, loadedModel()).predictions.map(
+      (prediction) => prediction.predictedScore,
+    ),
+  ).toStrictEqual([2, 2, -1]);
+  expect(
+    scoreBaneiRaceShadow(
+      rows.map((row) => ({
+        ...row,
+        prophet_entity_coverage: 1,
+        prophet_entity_performance_mean: 0,
+      })),
+      loadedModel(),
+    ).predictions.map((prediction) => prediction.predictedScore),
+  ).toStrictEqual([2, 2, -1]);
+  expect(
+    scoreBaneiRaceShadow(
+      rows.map((row, index) => ({
+        ...row,
+        x: 1,
+        prophet_entity_coverage: 1,
+        prophet_entity_performance_mean: index,
+      })),
+      loadedModel(),
+    ).predictions.map((prediction) => prediction.predictedScore),
+  ).toStrictEqual([2, 2, 2]);
 });
 
 test("breaks identical score and horse-id ties by ascending horse number", () => {
@@ -140,12 +265,12 @@ test("loads exactly the selected model and attested metadata from R2", async () 
   const result = await loadSelectedBaneiShadowModel(bucket, BANEI_SHADOW_MODEL_SPECS.sim);
   const cached = await loadSelectedBaneiShadowModel(bucket, BANEI_SHADOW_MODEL_SPECS.sim);
 
-  expect(result.featureNames).toHaveLength(130);
+  expect(result.featureNames).toHaveLength(127);
   expect(cached).toBe(result);
   expect(result.model.trees).toStrictEqual([]);
   expect(get.mock.calls.map(([key]) => key)).toStrictEqual([
-    "finish-position/ban-ei/banei-cb-v9-sim-2011/model.json",
-    "finish-position/ban-ei/banei-cb-v9-sim-2011/metadata.json",
+    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/model.json",
+    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/metadata.json",
   ]);
 });
 
@@ -160,8 +285,8 @@ test.each([
   [null, "must be an object"],
   [{}, "feature_names must be an array"],
   [metadata({ feature_names: ["x", ""] }), "must contain non-empty strings"],
-  [metadata({ feature_names: Array(130).fill("x") }), "must be unique"],
-  [metadata({ feature_count: 129 }), "feature count mismatch"],
+  [metadata({ feature_names: Array(127).fill("x") }), "must be unique"],
+  [metadata({ feature_count: 126 }), "feature count mismatch"],
   [metadata({ model_version: "wrong" }), "version mismatch"],
   [metadata({ architecture: "xgboost" }), "architecture mismatch"],
 ])("rejects invalid selected model metadata %#", async (invalidMetadata, reason) => {

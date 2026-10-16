@@ -23,9 +23,12 @@ const makeEnv = (): Env => ({
 });
 
 import {
+  checkContainerExecution,
+  cancelContainerSlotStop,
   cancelFocusedFullRaceRepair,
   claimContainerSlot,
   claimFocusedFullRace,
+  observeFocusedFullAuthority,
   claimFocusedFullTerminalWatch,
   claimRescoreExecution,
   claimRescoreRace,
@@ -893,4 +896,107 @@ test("clearFocusedFullWatchOutbox rejects a failed coordinator request", async (
   await expect(
     clearFocusedFullWatchOutbox({ env: makeEnv(), outboxId: "focused-full-watch:watch-1" }),
   ).rejects.toThrow("DO clear-focused-full-watch-outbox failed: 503");
+});
+
+test("execution check and refused-stop cancellation preserve the supplied identity", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ allowed: true }));
+  await expect(
+    checkContainerExecution({
+      env: makeEnv(),
+      doName: "predict-jra",
+      workKey: "race",
+      executionId: "execution-a",
+    }),
+  ).resolves.toBe(true);
+  await cancelContainerSlotStop({
+    env: makeEnv(),
+    doName: "predict-jra",
+    workKey: "race",
+    executionId: "execution-a",
+  });
+  const request: unknown = fetchMock.mock.calls[1]?.[0];
+  if (!(request instanceof Request)) throw new Error("Missing request");
+  expect(request.url).toBe("http://do/cancel-container-slot-stop");
+  expect(await request.json()).toStrictEqual({
+    doName: "predict-jra",
+    workKey: "race",
+    executionId: "execution-a",
+  });
+});
+
+test("execution helpers fail closed on coordinator failures", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  await expect(
+    checkContainerExecution({ env: makeEnv(), doName: "predict-jra", executionId: "execution-a" }),
+  ).rejects.toThrow("Container execution check failed");
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  await expect(
+    cancelContainerSlotStop({ env: makeEnv(), doName: "predict-jra", executionId: "execution-a" }),
+  ).rejects.toThrow("Container stop cancellation failed");
+});
+
+test("completion transports exact E and distinguishes an ownership rejection from storage failure", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ ok: false }, { status: 409 }));
+  await expect(
+    completeFocusedFullRace({
+      category: "jra",
+      env: makeEnv(),
+      runYmd: "20261004",
+      keibajoCode: "05",
+      raceBango: "09",
+      executionId: "execution-a",
+      status: "success",
+      checkOnly: true,
+    }),
+  ).rejects.toThrow("FOCUSED_FULL_EXECUTION_NOT_OWNED");
+  const request: unknown = fetchMock.mock.calls[0]?.[0];
+  if (!(request instanceof Request)) throw new Error("Missing request");
+  expect(await request.json()).toStrictEqual({
+    category: "jra",
+    runYmd: "20261004",
+    keibajoCode: "05",
+    raceBango: "09",
+    executionId: "execution-a",
+    status: "success",
+    checkOnly: true,
+  });
+});
+
+test("cache repair transports the original E without discovering a later lease", async () => {
+  await reserveFocusedFullRaceRepair({
+    category: "jra",
+    env: makeEnv(),
+    runYmd: "20261004",
+    keibajoCode: "05",
+    raceBango: "09",
+    executionId: "execution-a",
+    reservationId: "repair-a",
+    staleAfterMs: 60_000,
+  });
+  const request: unknown = fetchMock.mock.calls[0]?.[0];
+  if (!(request instanceof Request)) throw new Error("Missing request");
+  expect(await request.json()).toMatchObject({
+    executionId: "execution-a",
+    reservationId: "repair-a",
+  });
+});
+
+test("observation serializes read-only race authority through the existing claim primitive", async () => {
+  fetchMock.mockResolvedValueOnce(
+    Response.json({ proceed: true, state: "success", executionId: "A" }),
+  );
+  expect(
+    await observeFocusedFullAuthority({
+      env: makeEnv(),
+      category: "jra",
+      runYmd: "20261004",
+      keibajoCode: "05",
+      raceBango: "11",
+    }),
+  ).toStrictEqual({ proceed: true, state: "success", executionId: "A" });
+  expect(await fetchMock.mock.calls[0]?.[0].json()).toMatchObject({
+    observeOnly: true,
+    runYmd: "20261004",
+    raceBango: "11",
+  });
 });

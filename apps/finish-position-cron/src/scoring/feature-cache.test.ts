@@ -14,6 +14,34 @@ import {
 const SAMPLE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "sample-cache.parquet");
 const sampleBytes = new Uint8Array(readFileSync(SAMPLE_PARQUET_PATH));
 
+test("fresh weight updates stale zscore while preserving cached history", () => {
+  const row = { weight_avg_5: 480, weight_volatility_5: 4, weight_zscore: -5 };
+  const result = refreshLateBindingColumns({
+    row,
+    category: "jra",
+    currentBataiju: 488,
+    runnerCount: 16,
+    tanshoOdds: null,
+    tanshoNinkijun: null,
+  });
+  expect(result.weight_zscore).toBe(2);
+  expect(result.weight_diff_from_avg).toBe(8);
+  expect(result.weight_volatility_5).toBe(4);
+  expect(row.weight_zscore).toBe(-5);
+});
+
+test("missing weight refreshes zscore with the builder NULL behavior", () => {
+  const result = refreshLateBindingColumns({
+    row: { weight_avg_5: 480, weight_volatility_5: 4, weight_zscore: 2 },
+    category: "nar",
+    currentBataiju: null,
+    runnerCount: 12,
+    tanshoOdds: null,
+    tanshoNinkijun: null,
+  });
+  expect(result.weight_zscore).toBe(-5);
+});
+
 test("buildFeatCacheKey mirrors the container feat-cache key layout", () => {
   expect(buildFeatCacheKey("jra", "20260619")).toBe(
     "feat-cache/catalog-v1/jra/20260619/features.parquet",

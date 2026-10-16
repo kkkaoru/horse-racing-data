@@ -281,6 +281,7 @@ test("continues an exhausted focused-full watch tick through the dedicated Queue
             doName: "predict-jra",
             role: "legacy",
             type: "focused-full-watch-tick",
+            executionId: "execution-1",
             watchId: "watch-tick-dlq-1",
             workKey: "focused-full:20260712:jra:02:01",
           },
@@ -997,6 +998,7 @@ test("cleans repair and legacy container ownership for old non-force day-base DL
           body: {
             attempt: 4,
             category: "nar",
+            generationId: "repair-generation",
             runYmd: "20260823",
             type: "day-base-pickup",
           },
@@ -1012,7 +1014,7 @@ test("cleans repair and legacy container ownership for old non-force day-base DL
       name: "predict-nar",
       role: "legacy",
       type: "container-stop",
-      workKey: "day-base:20260823:nar",
+      workKey: "day-base:20260823:nar:repair-generation",
     }),
   );
   expect(sendMock).not.toHaveBeenCalled();
@@ -1034,6 +1036,7 @@ test("acks expired day-base DLQ work after logging best-effort cleanup failures"
           body: {
             category: "jra",
             daysAhead: 0,
+            generationId: "repair-generation",
             requestedAt: "2026-08-23T00:00:00.000Z",
             runYmd: "20260823",
             type: "day-base-prewarm",

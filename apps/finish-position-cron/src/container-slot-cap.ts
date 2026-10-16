@@ -6,6 +6,8 @@
 export type ContainerSlotKind = "day-base" | "focused-full" | "rescore";
 
 export interface ContainerSlotLease {
+  executionId?: string;
+  generationId?: string;
   category: string;
   doName: string;
   holders: number;
@@ -22,6 +24,8 @@ export interface ContainerSlotLease {
 }
 
 export interface ContainerSlotClaimParams {
+  executionId?: string;
+  generationId?: string;
   allowSameOwner?: boolean;
   category: string;
   doName: string;
@@ -83,7 +87,10 @@ export const pruneStaleContainerSlots = (
   now: number,
   _legacyCallerStaleAfterMs?: number,
 ): ContainerSlotLease[] =>
-  leases.filter((lease) => now - lease.timestamp < staleAfterMsForLease(lease));
+  leases.filter(
+    (lease) =>
+      lease.executionId !== undefined || now - lease.timestamp < staleAfterMsForLease(lease),
+  );
 
 const countReservedLeases = (leases: readonly ContainerSlotLease[]): number =>
   leases.filter((lease) => isReservedContainerLane(lease)).length;
@@ -131,6 +138,9 @@ const decideNewContainerSlotClaim = (
   const defaultStaleAfterMs =
     params.kind === "day-base" ? CONTAINER_DAY_BASE_SLOT_STALE_MS : CONTAINER_SLOT_STALE_MS;
   const createdWithoutOptionalFields: ContainerSlotLease = {
+    ...(params.executionId === undefined
+      ? {}
+      : { executionId: params.executionId, generationId: params.generationId }),
     category: params.category,
     doName: params.doName,
     holders: HOLDER_INCREMENT,
@@ -155,7 +165,14 @@ const transferExistingContainerSlotClaim = (
 ): ContainerSlotClaimDecision => ({
   leases: live.map((lease) =>
     lease.doName === params.doName
-      ? { ...lease, timestamp: params.now, workKey: params.workKey }
+      ? {
+          ...lease,
+          ...(params.executionId === undefined
+            ? {}
+            : { executionId: params.executionId, generationId: params.generationId }),
+          timestamp: params.now,
+          workKey: params.workKey,
+        }
       : lease,
   ),
   proceed: true,
@@ -169,6 +186,9 @@ const transferDayBaseToFocusedFullClaim = (
     lease.doName === params.doName
       ? {
           ...lease,
+          ...(params.executionId === undefined
+            ? {}
+            : { executionId: params.executionId, generationId: params.generationId }),
           kind: params.kind,
           rescoreHolders: EMPTY_HOLDER_COUNT,
           staleAfterMs: params.staleAfterMs,
@@ -188,6 +208,7 @@ export const decideContainerSlotClaim = (
   const existing = live.find((lease) => lease.doName === params.doName);
   if (
     existing !== undefined &&
+    existing.executionId === undefined &&
     existing.kind === "day-base" &&
     params.kind === "focused-full" &&
     params.workKey !== undefined
@@ -199,6 +220,7 @@ export const decideContainerSlotClaim = (
   }
   if (
     existing !== undefined &&
+    existing.executionId === undefined &&
     params.replaceWorkKey !== undefined &&
     params.workKey !== undefined &&
     existing.workKey === params.replaceWorkKey &&
@@ -210,7 +232,8 @@ export const decideContainerSlotClaim = (
     existing !== undefined &&
     params.allowSameOwner === true &&
     params.workKey !== undefined &&
-    existing.workKey === params.workKey
+    existing.workKey === params.workKey &&
+    existing.generationId === params.generationId
   ) {
     return { leases: [...live], proceed: true };
   }
@@ -240,18 +263,20 @@ export const releaseContainerSlotLease = (
   kind: ContainerSlotKind,
   now: number,
   workKeyOrLegacyStaleAfterMs?: string | number,
+  executionId?: string,
 ): ContainerSlotLease[] => {
   const live = pruneStaleContainerSlots(leases, now);
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.flatMap((lease) => {
-    if (lease.doName !== doName) return [lease];
+    if (lease.doName !== doName || lease.executionId !== executionId) return [lease];
     if (workKey !== undefined && lease.workKey !== workKey) {
       return [lease];
     }
     const nextHolders = lease.holders - HOLDER_INCREMENT;
     if (nextHolders <= EMPTY_HOLDER_COUNT) return [];
     const nextWithoutOptionalFields: ContainerSlotLease = {
+      ...lease,
       category: lease.category,
       doName: lease.doName,
       holders: nextHolders,
@@ -279,13 +304,17 @@ export const touchContainerSlotLease = (
   doName: string,
   now: number,
   workKeyOrLegacyStaleAfterMs?: string | number,
+  executionId?: string,
 ): ContainerSlotLease[] => {
   const live = pruneStaleContainerSlots(leases, now);
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
   return live.map((lease) =>
-    lease.doName === doName && (workKey === undefined || lease.workKey === workKey)
+    lease.doName === doName &&
+    lease.executionId === executionId &&
+    (workKey === undefined || lease.workKey === workKey)
       ? {
+          ...lease,
           category: lease.category,
           doName: lease.doName,
           holders: lease.holders,
@@ -305,6 +334,7 @@ export const clearContainerSlotLease = (
   now: number,
   workKeyOrLegacyStaleAfterMs?: string | number,
   acceptableWorkKeys?: readonly string[],
+  executionId?: string,
 ): ContainerSlotLease[] => {
   const workKey =
     typeof workKeyOrLegacyStaleAfterMs === "string" ? workKeyOrLegacyStaleAfterMs : undefined;
@@ -312,6 +342,7 @@ export const clearContainerSlotLease = (
   return pruneStaleContainerSlots(leases, now).filter(
     (lease) =>
       lease.doName !== doName ||
+      lease.executionId !== executionId ||
       (ownerKeys !== undefined &&
         (lease.workKey === undefined || !ownerKeys.includes(lease.workKey))),
   );

@@ -5,6 +5,8 @@ import { isPredictionContainerRole } from "./race-container-routing";
 import type { ContainerCleanupMessage, Env } from "./types";
 
 interface ContainerCleanupParams {
+  requireStopped?: boolean;
+  executionId?: string;
   acceptableWorkKeys?: string[];
   env: Env;
   name: string;
@@ -36,6 +38,12 @@ const isAcceptableWorkKeys = (value: unknown): value is string[] =>
 
 export const isContainerCleanupMessage = (value: unknown): value is ContainerCleanupMessage => {
   if (!isRecord(value) || value.type !== CONTAINER_CLEANUP_TYPE) return false;
+  if (value.requireStopped !== undefined && typeof value.requireStopped !== "boolean") return false;
+  if (
+    value.executionId !== undefined &&
+    (typeof value.executionId !== "string" || value.executionId.length === 0)
+  )
+    return false;
   if (typeof value.name !== "string" || value.name.length === 0) return false;
   if (!isPredictionContainerRole(value.role)) return false;
   if (typeof value.workKey !== "string" || value.workKey.length === 0) return false;
@@ -51,6 +59,8 @@ export const isContainerCleanupQueueMessage = (
 const enqueueContainerCleanup = async (params: EnqueueContainerCleanupParams): Promise<void> => {
   await params.env.PREDICT_QUEUE.send(
     {
+      ...(params.executionId === undefined ? {} : { executionId: params.executionId }),
+      ...(params.requireStopped === undefined ? {} : { requireStopped: params.requireStopped }),
       attempt: params.attempt,
       name: params.name,
       role: params.role,

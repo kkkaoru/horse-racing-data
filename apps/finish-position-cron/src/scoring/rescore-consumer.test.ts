@@ -413,6 +413,21 @@ test("rescoreJraRace reads and attests the per-race cache key directly", async (
   expect(queryMock).toHaveBeenCalledTimes(1);
 });
 
+test("rescoreJraRace uses the same preserved-odds rollout flag as the Python container", async () => {
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  expect(selectShadowModelMock).toHaveBeenCalledWith(expect.any(Array), {
+    preservedOddsGateEnabled: false,
+  });
+
+  env.STAGE1_PRESERVED_ODDS_GATE_ENABLED = "1";
+  selectShadowModelMock.mockClear();
+  await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  expect(selectShadowModelMock).toHaveBeenCalledWith(expect.any(Array), {
+    preservedOddsGateEnabled: true,
+  });
+});
+
 test("rescoreJraRace blocks the Neon upsert when scoring crosses the race deadline", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-24T05:59:59.000Z"));
@@ -506,6 +521,8 @@ test("rescoreJraRace fails closed when the requested weight generation is missin
 
 test("shadowBaneiRace scores an attested race-final cache without writing Neon", async () => {
   const env = makeKeyedEnv(new Map([[BANEI_PER_RACE_CACHE_KEY, baneiCacheObject]]));
+  env.PROPHET_SCORE_ADJUSTMENT_ENABLED = "ban-ei";
+  env.PROPHET_SCORE_ADJUSTMENT_WEIGHT = "0.25";
   const message = makeMessage({ category: "ban-ei", keibajoCode: "83" });
 
   await expect(shadowBaneiRace({ env, fetchImpl: fetch, message })).resolves.toMatchObject({
@@ -535,6 +552,7 @@ test("shadowBaneiRace scores an attested race-final cache without writing Neon",
       expect.objectContaining({ ketto_toroku_bango: "2019100001", weight_diff_from_avg: 10 }),
     ]),
     expect.any(Object),
+    { enabled: "ban-ei", weight: "0.25" },
   );
   expect(queryMock).not.toHaveBeenCalled();
 });

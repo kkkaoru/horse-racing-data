@@ -2,7 +2,13 @@
 // the viewer's pred:fp:v1 KV payload (FinishPositionModelPredictionFeature[])
 // and optionally bust the colo Cache API copy.
 
+import { withFocusedFullCommit } from "./focused-full-commit";
 import { neon } from "@neondatabase/serverless";
+
+import {
+  readPredictionArtifact,
+  type PredictionArtifactReference,
+} from "./prediction-result-artifact";
 
 import {
   predictionCacheSourceForCategory,
@@ -23,7 +29,7 @@ const CONFIDENCE_LOW_MAX_STDDEV = 1.3;
 const CONFIDENCE_MID_MAX_STDDEV = 1.5;
 const CONFIDENCE_MIN_VALID_SCORES = 2;
 const BAN_EI_KEIBAJO_CODE = "83";
-const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1";
+const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin1";
 
 export type FinishPositionConfidenceTier = "high" | "low" | "mid";
 
@@ -62,11 +68,15 @@ export interface PredictionKvPublishResult {
 }
 
 export interface PublishFinishPositionPredictionCacheParams {
+  executionId?: string;
   bustCacheApi: boolean;
   category: PredictCategory;
   env: Env;
   keibajoCode: string;
   nowMs?: number;
+  // Only a coordinator-committed reference with the selected model and active
+  // roster. No R2 latest-object discovery or fallback on validation failure.
+  predictionArtifact?: PredictionArtifactReference;
   raceBango: string;
   runYmd: string;
 }
@@ -301,13 +311,23 @@ const writeFinishPositionPredictionKv = async (
   const keibajoCode = params.keibajoCode.padStart(KEIBAJO_PAD_WIDTH, "0");
   const raceBango = params.raceBango.padStart(RACE_BANGO_PAD_WIDTH, "0");
   const source = predictionCacheSourceForCategory(params.category);
-  const rows = await fetchPredictionRows(params.env, {
-    category: params.category,
-    keibajoCode,
-    raceBango,
-    runYmd: params.runYmd,
-    source,
-  });
+  const rows =
+    params.predictionArtifact === undefined
+      ? await fetchPredictionRows(params.env, {
+          category: params.category,
+          keibajoCode,
+          raceBango,
+          runYmd: params.runYmd,
+          source,
+        })
+      : await readPredictionArtifact({
+          bucket: params.env.FEATURES_CACHE,
+          category: params.category,
+          keibajoCode,
+          raceBango,
+          runYmd: params.runYmd,
+          reference: params.predictionArtifact,
+        });
   const features = mapFinishPositionPredictionFeatures(rows);
   if (features.length === 0) {
     return { busted: false, expectedGeneratedAt: null, status: "skipped-empty" };
@@ -340,8 +360,24 @@ export const publishFinishPositionPredictionCache = async (
   params: PublishFinishPositionPredictionCacheParams,
 ): Promise<PredictionKvPublishResult> => {
   try {
-    return await writeFinishPositionPredictionKv(params);
+    return await withFocusedFullCommit({
+      env: params.env,
+      executionId: params.executionId,
+      workKey: `focused-full:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`,
+      commit: async () => {
+        const result = await writeFinishPositionPredictionKv(params);
+        if (
+          params.executionId !== undefined &&
+          result.status === "written" &&
+          params.bustCacheApi &&
+          !result.busted
+        )
+          throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
+        return result;
+      },
+    });
   } catch (error) {
+    if (params.executionId !== undefined) throw error;
     console.warn(
       `prediction kv fp write failed category=${params.category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango}:`,
       String(error),

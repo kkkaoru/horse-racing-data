@@ -1,5 +1,6 @@
 // Run with bun. Streaming NDJSON response proxy for the Container Durable Object.
 
+import { withFocusedFullCommit, type FocusedFullCommitIdentity } from "./focused-full-commit";
 import type { DaybaseWatermark, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
@@ -19,7 +20,9 @@ const WATERMARK_META_RS_CONTENT_HASH = "rs-content-hash";
 const WATERMARK_META_RS_PREDICTED_AT_MAX = "rs-predicted-at-max";
 const WATERMARK_META_RS_ROW_COUNT = "rs-row-count";
 
-type R2ProxyEnv = Pick<Env, "FEATURES_CACHE">;
+interface R2ProxyEnv extends Pick<Env, "FEATURES_CACHE"> {
+  focusedFullCommit?: FocusedFullCommitIdentity & { env: Pick<Env, "PREDICT_RUN_COORDINATOR"> };
+}
 type WaitUntil = (promise: Promise<void>) => void;
 type RenewActivityTimeout = () => void;
 type ParquetProxyKind = typeof SINGLE_PARQUET_KIND | typeof PER_RACE_PARQUET_KIND;
@@ -148,11 +151,15 @@ export const proxyResultParquetsToR2 = async (
   env: R2ProxyEnv,
   debug: boolean,
 ): Promise<void> => {
-  await Promise.all(
-    buildParquetProxyEntries(result).map((entry) =>
-      putParquetToR2(entry, { debug, env, logCommit: false }),
-    ),
-  );
+  const commit = async (): Promise<void> => {
+    await Promise.all(
+      buildParquetProxyEntries(result).map((entry) =>
+        putParquetToR2(entry, { debug, env, logCommit: false }),
+      ),
+    );
+  };
+  if (env.focusedFullCommit === undefined) return commit();
+  await withFocusedFullCommit({ ...env.focusedFullCommit, commit });
 };
 
 const commitDayBaseResultParquetsToR2 = async (

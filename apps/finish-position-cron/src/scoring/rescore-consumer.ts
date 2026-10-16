@@ -571,7 +571,9 @@ const scoreAndWrite = async (input: ScoreAndWriteInput): Promise<RescoreJraRaceR
     rows: input.rows,
     weightMap: input.weightMap,
   });
-  const selected = selectJraShadowModel(entries, { preservedOddsGateEnabled: true });
+  const selected = selectJraShadowModel(entries, {
+    preservedOddsGateEnabled: input.env.STAGE1_PRESERVED_ODDS_GATE_ENABLED === "1",
+  });
   const loaded = await loadSelectedJraShadowModel(input.env.FEATURES_CACHE, selected);
   const initialScore = scoreJraRaceShadow(entries, loaded);
   const scored = initialScore.stage1RescoreRequired
@@ -672,6 +674,10 @@ export const shadowBaneiRace = async (
     score: scoreBaneiRaceShadow(
       entries,
       await loadSelectedBaneiShadowModel(input.env.FEATURES_CACHE, selected),
+      {
+        enabled: input.env.PROPHET_SCORE_ADJUSTMENT_ENABLED,
+        weight: input.env.PROPHET_SCORE_ADJUSTMENT_WEIGHT,
+      },
     ),
     status: "ok",
   };

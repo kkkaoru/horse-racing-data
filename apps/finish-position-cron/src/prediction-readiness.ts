@@ -124,6 +124,7 @@ export interface PredictionReadinessResponse {
 }
 
 interface ReadinessInput {
+  category?: PredictCategory;
   env: Env;
   now: Date;
   runYmd: string;
@@ -223,6 +224,7 @@ const listRaceSources = async (env: Env, runYmd: string): Promise<RaceSourceRow[
          join latest_weights latest
            on latest.race_key = weights.race_key
           and latest.weight_snapshot_at = weights.fetched_at
+        where weights.race_key in (select race_key from target_races)
         group by weights.race_key
      )
      select races.source, races.keibajo_code, races.race_bango,
@@ -365,7 +367,7 @@ const parseBulkCatalogEntry = (
   };
 };
 
-const fetchBulkCatalogEntries = async (
+export const fetchBulkCatalogEntries = async (
   env: Env,
   runYmd: string,
   source: PredictCategory,
@@ -698,11 +700,15 @@ export const buildPredictionReadiness = (input: {
 export const getPredictionReadiness = async (
   input: ReadinessInput,
 ): Promise<PredictionReadinessResponse> => {
-  const [races, entries, predictions] = await Promise.all([
+  const [allRaces, entries, predictions] = await Promise.all([
     listRaceSources(input.env, input.runYmd),
     listEntries(input.env, input.runYmd),
     listPredictions(input.env, input.runYmd),
   ]);
+  const races =
+    input.category === undefined
+      ? allRaces
+      : allRaces.filter((race) => categoryForRace(race) === input.category);
   const catalogSources = missingEntryCategories(entries, races);
   const [catalogEntries, kvPayloads] = await Promise.all([
     listCatalogEntries(input.env, input.runYmd, catalogSources),

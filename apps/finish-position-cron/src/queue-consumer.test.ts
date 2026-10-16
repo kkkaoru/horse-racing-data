@@ -1,10 +1,16 @@
 // Run with bun. Tests for the queue consumer (DO-backed dedup).
 
 import { beforeEach, expect, test, vi } from "vitest";
+import {
+  buildFocusedFullCompletionCallbackUrl,
+  handleFocusedFullCompletionCallback,
+} from "./focused-full-callback";
+import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { verifyRescoreWeightGeneration } from "./scoring/rescore-preflight";
 
 vi.mock("./scoring/rescore-preflight", () => ({ verifyRescoreWeightGeneration: vi.fn() }));
 import type { RaceEntry } from "./cron-decision";
+import type { DayBaseRepairAcquireResult } from "./day-base-repair";
 import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
 import type { PredictionKvPublishResult } from "./prediction-kv-writer";
 import type {
@@ -12,6 +18,7 @@ import type {
   PrepareMarketSignalFoundationInput,
 } from "./race-chain-market-signal-hook";
 import type {
+  ContainerControlMessage,
   Env,
   FocusedFullCompletionMessage,
   FocusedFullWatchTickMessage,
@@ -20,6 +27,7 @@ import type {
 } from "./types";
 
 interface ClaimResult {
+  executionId?: string;
   proceed: boolean;
   state?: string;
 }
@@ -40,6 +48,7 @@ const {
   cancelFocusedFullRaceRepairMock,
   claimContainerSlotMock,
   claimFocusedFullRaceMock,
+  observeFocusedFullAuthorityMock,
   claimFocusedFullTerminalWatchMock,
   claimRescoreExecutionMock,
   claimRunMock,
@@ -68,22 +77,39 @@ const {
   isPerRaceRescoreReadyMock,
   getRunningStyleRaceReadinessMock,
 } = vi.hoisted(() => {
-  const cancelFocusedFullRaceRepair = vi.fn(async () => undefined);
-  const claimContainerSlot = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-  const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-  const claimFocusedFullTerminalWatch = vi.fn(
-    async (): Promise<ClaimResult> => ({ proceed: true }),
+  const cancelFocusedFullRaceRepair = vi.fn<
+    typeof import("./do-state").cancelFocusedFullRaceRepair
+  >(async () => undefined);
+  const claimContainerSlot = vi.fn<typeof import("./do-state").claimContainerSlot>(async () => ({
+    proceed: true,
+  }));
+  const observeFocusedFullAuthority = vi.fn<
+    typeof import("./do-state").observeFocusedFullAuthority
+  >(async () => ({ proceed: true }));
+  const claimFocusedFullRace = vi.fn<typeof import("./do-state").claimFocusedFullRace>(
+    async () => ({ proceed: true }),
   );
+  const claimFocusedFullTerminalWatch = vi.fn<
+    typeof import("./do-state").claimFocusedFullTerminalWatch
+  >(async () => ({ proceed: true }));
   const claimRescoreExecution = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-  const clearContainerSlot = vi.fn(async () => undefined);
+  const clearContainerSlot = vi.fn<typeof import("./do-state").clearContainerSlot>(
+    async () => undefined,
+  );
   const releaseContainerSlot = vi.fn(async () => undefined);
   const touchContainerSlot = vi.fn(async () => undefined);
-  const completeFocusedFullRace = vi.fn(async () => undefined);
-  const completeFocusedFullTerminalWatch = vi.fn(async () => undefined);
+  const completeFocusedFullRace = vi.fn<typeof import("./do-state").completeFocusedFullRace>(
+    async () => undefined,
+  );
+  const completeFocusedFullTerminalWatch = vi.fn<
+    typeof import("./do-state").completeFocusedFullTerminalWatch
+  >(async () => undefined);
   const completeRescoreRace = vi.fn(async () => undefined);
   const completeRun = vi.fn(async () => undefined);
-  const reserveFocusedFullRaceRepair = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+  const reserveFocusedFullRaceRepair = vi.fn<
+    typeof import("./do-state").reserveFocusedFullRaceRepair
+  >(async (): Promise<ClaimResult> => ({ proceed: true }));
   const isOldDateRunYmd = vi.fn((): boolean => false);
   const parseNdjsonStream = vi.fn(
     async (
@@ -146,6 +172,7 @@ const {
     cancelFocusedFullRaceRepairMock: cancelFocusedFullRaceRepair,
     claimContainerSlotMock: claimContainerSlot,
     claimFocusedFullRaceMock: claimFocusedFullRace,
+    observeFocusedFullAuthorityMock: observeFocusedFullAuthority,
     claimFocusedFullTerminalWatchMock: claimFocusedFullTerminalWatch,
     claimRescoreExecutionMock: claimRescoreExecution,
     claimRunMock: claimRun,
@@ -178,11 +205,18 @@ const {
 });
 
 const {
+  acquireDayBaseRepairMock,
   clearDayBaseRepairReservationMock,
   enqueueDayBaseRepairOnceMock,
   getFocusedFullDayBaseReadinessMock,
   getRaceScopedDayBaseReadinessMock,
 } = vi.hoisted(() => ({
+  acquireDayBaseRepairMock: vi.fn(
+    async (params: { generationId: string }): Promise<DayBaseRepairAcquireResult> => ({
+      generationId: params.generationId,
+      status: "acquired",
+    }),
+  ),
   clearDayBaseRepairReservationMock: vi.fn(async () => undefined),
   enqueueDayBaseRepairOnceMock: vi.fn(async () => "enqueued"),
   getFocusedFullDayBaseReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
@@ -220,10 +254,19 @@ const { addRescoreAttestationToUrlMock, createRescoreAttestationMock } = vi.hois
 }));
 
 const consumeContainerStopMock = vi.hoisted(() =>
-  vi.fn(async (_env: unknown, _message: unknown, afterDestroyed?: () => Promise<void>) => {
-    await afterDestroyed?.();
-    return true;
-  }),
+  vi.fn(
+    async (_env: Env, _message: ContainerControlMessage, afterDestroyed?: () => Promise<void>) => {
+      await afterDestroyed?.();
+      return true;
+    },
+  ),
+);
+
+const claimContainerSlotStopMock = vi.hoisted(() =>
+  vi.fn<typeof import("./do-state").claimContainerSlotStop>(async () => ({
+    allowed: false,
+    state: "blocked",
+  })),
 );
 
 const prepareMarketSignalFoundationBestEffortMock = vi.hoisted(() =>
@@ -253,6 +296,7 @@ vi.mock("./race-chain-market-signal-hook", async (importOriginal) => {
 });
 
 vi.mock("./day-base-repair", () => ({
+  acquireDayBaseRepair: acquireDayBaseRepairMock,
   clearDayBaseRepairReservation: clearDayBaseRepairReservationMock,
   enqueueDayBaseRepairOnce: enqueueDayBaseRepairOnceMock,
 }));
@@ -279,10 +323,13 @@ vi.mock("./rescore-attestation", () => ({
   createRescoreAttestation: createRescoreAttestationMock,
 }));
 
-vi.mock("./do-state", () => ({
+vi.mock("./do-state", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./do-state")>()),
   cancelFocusedFullRaceRepair: cancelFocusedFullRaceRepairMock,
   claimContainerSlot: claimContainerSlotMock,
+  claimContainerSlotStop: claimContainerSlotStopMock,
   claimFocusedFullRace: claimFocusedFullRaceMock,
+  observeFocusedFullAuthority: observeFocusedFullAuthorityMock,
   claimFocusedFullTerminalWatch: claimFocusedFullTerminalWatchMock,
   claimRescoreExecution: claimRescoreExecutionMock,
   claimRun: claimRunMock,
@@ -385,7 +432,7 @@ import {
   PER_RACE_SCOPE_INVALID_ERROR,
   PER_RACE_SCOPE_REQUIRED_ERROR,
 } from "./per-race-scope-guard";
-import { handleQueue, resolveContainerReuseIdleSeconds } from "./queue-consumer";
+import { handleQueue } from "./queue-consumer";
 
 const ackMock = vi.fn();
 const retryMock = vi.fn();
@@ -393,7 +440,8 @@ const sendMock = vi.fn();
 const watchSendMock = vi.fn();
 const controlSendMock = vi.fn();
 const runMock = vi.fn(async () => ({ success: true }));
-const bindMock = vi.fn(() => ({ run: runMock }));
+const firstMock = vi.fn(async (): Promise<unknown> => null);
+const bindMock = vi.fn(() => ({ first: firstMock, run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const idFromNameMock = vi.fn(() => ({ name: "test-id" }));
 const stubFetchMock = vi.fn(
@@ -426,7 +474,10 @@ const makeEnv = (): Env => ({
     send: watchSendMock,
   } as unknown as NonNullable<Env["FOCUSED_FULL_COMPLETION_QUEUE"]>,
   PREDICT_QUEUE: { send: sendMock } as unknown as Env["PREDICT_QUEUE"],
-  PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
+  PREDICT_RUN_COORDINATOR: {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async () => Response.json({ allowed: true }) }),
+  } as unknown as Env["PREDICT_RUN_COORDINATOR"],
   REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
 });
@@ -504,6 +555,7 @@ const makeFocusedFullCompletionMessage = (
       outcome: "success",
       role: "legacy",
       type: "focused-full-completion",
+      executionId: "execution-1",
       watchId: "watch-1",
       workKey: "focused-full:20260603:jra:05:11",
       ...overrides,
@@ -527,6 +579,7 @@ const makeFocusedFullWatchTickMessage = (): Message<FocusedFullWatchTickMessage>
     doName: "predict-jra",
     role: "legacy",
     type: "focused-full-watch-tick",
+    executionId: "execution-1",
     watchId: "watch-tick-1",
     workKey: "focused-full:20260603:jra:05:11",
   },
@@ -549,6 +602,7 @@ beforeEach(() => {
   watchSendMock.mockClear();
   watchSendMock.mockResolvedValue(undefined);
   consumeContainerStopMock.mockClear();
+  claimContainerSlotStopMock.mockClear();
   prepareMarketSignalFoundationBestEffortMock.mockClear();
   prepareMarketSignalFoundationBestEffortMock.mockResolvedValue({
     reason: "disabled",
@@ -559,6 +613,7 @@ beforeEach(() => {
   runMock.mockClear();
   runMock.mockResolvedValue({ success: true });
   bindMock.mockClear();
+  firstMock.mockReset();
   prepareMock.mockClear();
   idFromNameMock.mockClear();
   getMock.mockClear();
@@ -566,6 +621,7 @@ beforeEach(() => {
   getStateMock.mockResolvedValue({ status: "healthy" });
   stubFetchMock.mockReset();
   claimContainerSlotMock.mockClear();
+  observeFocusedFullAuthorityMock.mockReset().mockResolvedValue({ proceed: true });
   claimFocusedFullRaceMock.mockClear();
   claimFocusedFullTerminalWatchMock.mockClear();
   claimFocusedFullTerminalWatchMock.mockResolvedValue({ proceed: true });
@@ -596,6 +652,10 @@ beforeEach(() => {
   isPerRaceFeatureCachePresentMock.mockClear();
   isPerRaceRescoreReadyMock.mockClear();
   getRunningStyleRaceReadinessMock.mockClear();
+  acquireDayBaseRepairMock.mockReset().mockImplementation(async (params) => ({
+    generationId: params.generationId,
+    status: "acquired",
+  }));
   clearDayBaseRepairReservationMock.mockClear();
   enqueueDayBaseRepairOnceMock.mockClear();
   getFocusedFullDayBaseReadinessMock.mockClear();
@@ -669,7 +729,7 @@ beforeEach(() => {
   reserveFocusedFullRaceRepairMock.mockClear();
   reserveFocusedFullRaceRepairMock.mockResolvedValue({ proceed: true });
   claimRescoreExecutionMock.mockResolvedValue({ proceed: true });
-  claimContainerSlotMock.mockResolvedValue({ proceed: true });
+  claimContainerSlotMock.mockResolvedValue({ proceed: true, executionId: "execution-1" });
   releaseContainerSlotMock.mockResolvedValue(undefined);
   touchContainerSlotMock.mockResolvedValue(undefined);
   parseNdjsonStreamMock.mockResolvedValue({
@@ -686,13 +746,6 @@ beforeEach(() => {
       },
     ),
   );
-});
-
-test("container reuse idle grace is bounded and disabled by invalid config", () => {
-  expect(resolveContainerReuseIdleSeconds(undefined)).toBe(0);
-  expect(resolveContainerReuseIdleSeconds("invalid")).toBe(0);
-  expect(resolveContainerReuseIdleSeconds("20")).toBe(20);
-  expect(resolveContainerReuseIdleSeconds("999")).toBe(120);
 });
 
 test("does not use the D1 running-style mirror as a second cache authority", async () => {
@@ -910,18 +963,15 @@ test("fails closed without claims when canonical day-base readiness throws", asy
   errorSpy.mockRestore();
 });
 
-test("continues a ready race when stale repair reservation cleanup fails", async () => {
-  clearDayBaseRepairReservationMock.mockRejectedValueOnce(new Error("D1 unavailable"));
+test("does not clear a repair reservation from a focused race without its owner generation", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
   await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), makeEnv());
 
   expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).toHaveBeenCalled();
-  expect(errorSpy).toHaveBeenCalledWith(
-    "[predict-queue] failed to clear day-base repair reservation category=jra runYmd=20260603:",
-    "Error: D1 unavailable",
-  );
+  expect(clearDayBaseRepairReservationMock).not.toHaveBeenCalled();
+  expect(errorSpy).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
 
@@ -949,7 +999,9 @@ test("attaches the exact Worker artifact identity before focused-full Container 
   expect(prepareMarketSignalFoundationBestEffortMock).toHaveBeenCalledWith({
     category: "jra",
     env: {
+      DAY_BASE_MANIFEST_REQUIRED: env.DAY_BASE_MANIFEST_REQUIRED,
       FEATURES_CACHE: env.FEATURES_CACHE,
+      FINISH_POSITION_CRON_DB: env.FINISH_POSITION_CRON_DB,
       WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
     },
     fetchImpl: expect.any(Function),
@@ -1088,6 +1140,80 @@ test("valid per-race message still claims, fetches the container, and acks", asy
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+});
+
+test("focused full pins the published pointer in compatibility mode and retries pending", async () => {
+  firstMock.mockResolvedValueOnce({
+    generation_id: "owner-1",
+    object_etag: "source-etag",
+    object_key: "feat-daybase/catalog-v1/jra/20260628/generations/owner-1/features.parquet",
+    state: "published",
+    watermark_json: JSON.stringify({
+      maxDataSakuseiNengappi: "20260628",
+      rowCount: 12,
+      rsPredictedAtMax: "none",
+      rsRowCount: 0,
+    }),
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), DAY_BASE_MANIFEST_REQUIRED: "0" },
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  const request = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&allowRaceScopedDayBase=1&dayBaseKey=feat-daybase%2Fcatalog-v1%2Fjra%2F20260628%2Fgenerations%2Fowner-1%2Ffeatures.parquet&dayBaseEtag=source-etag&keibajoCode=02&raceBango=01",
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  firstMock.mockResolvedValueOnce({ state: "pending" });
+  stubFetchMock.mockClear();
+  claimFocusedFullRaceMock.mockClear();
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), DAY_BASE_MANIFEST_REQUIRED: "1" },
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  firstMock.mockResolvedValueOnce(null);
+  retryMock.mockClear();
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), DAY_BASE_MANIFEST_REQUIRED: "0" },
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  const legacyRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(legacyRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&allowRaceScopedDayBase=1&keibajoCode=02&raceBango=01",
+  );
+  expect(retryMock).not.toHaveBeenCalled();
 });
 
 test("skips and acks when claimRun returns proceed:false", async () => {
@@ -2443,7 +2569,7 @@ test("focused full skipDedup message without force passes force:false to the DO 
   expect(claimFocusedFullRaceMock).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
 });
 
-test("continues to container when focused full completion guard fails", async () => {
+test("retries without starting a container when focused full completion guard fails", async () => {
   const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   isFocusedFullPredictionCompleteMock.mockRejectedValue(new Error("neon unavailable"));
   try {
@@ -2460,8 +2586,9 @@ test("continues to container when focused full completion guard fails", async ()
       ]),
       makeEnv(),
     );
-    expect(stubFetchMock).toHaveBeenCalledTimes(2);
-    expect(ackMock).toHaveBeenCalledTimes(1);
+    expect(stubFetchMock).not.toHaveBeenCalled();
+    expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+    expect(ackMock).not.toHaveBeenCalled();
     expect(consoleWarn).toHaveBeenCalledWith(
       "Focused full completion guard failed category=nar runYmd=20260701 keibajo=50 race=12:",
       "Error: neon unavailable",
@@ -4114,6 +4241,9 @@ test("acks an old NAR rescore generation after a newer post-weight generation is
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+  expect(getPredictionReadinessMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "nar", runYmd: "20260619" }),
+  );
   expect(completeRescoreRaceMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
@@ -4848,7 +4978,7 @@ test("acks a watched focused-full accepted response without Queue polling", asyn
     /"workKey":"focused-full:20260628:jra:02:01"/u,
   );
   expect(request?.headers.get("x-focused-full-watch-payload")).toContain(
-    '"watchId":"focused-full:20260628:jra:02:01:predict-msg-1"',
+    '"watchId":"focused-full:20260628:jra:02:01:predict-msg-1:execution-1"',
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
@@ -4867,6 +4997,7 @@ test("chains a running focused-full watch tick without Queue retry", async () =>
   expect(touchContainerSlotMock).toHaveBeenCalledWith({
     doName: "predict-jra",
     env: expect.anything(),
+    executionId: "execution-1",
     staleAfterMs: 1_200_000,
     workKey: "focused-full:20260603:jra:05:11",
   });
@@ -4894,22 +5025,57 @@ test("transitions a terminal watch tick to a completion message without delay op
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("leaves poll and successor-send failures to Cloudflare redelivery without explicit retry", async () => {
+test("leaves status polling failure to Cloudflare redelivery without explicit retry", async () => {
   stubFetchMock.mockRejectedValueOnce(new Error("status unavailable"));
   await expect(
     handleQueue(makeBatch([makeFocusedFullWatchTickMessage()]), makeEnv()),
   ).rejects.toThrow("status unavailable");
   expect(ackMock).not.toHaveBeenCalled();
   expect(retryMock).not.toHaveBeenCalled();
+});
 
+test("acks a tick with a durably saved successor when fast Queue delivery fails", async () => {
   stubFetchMock.mockResolvedValueOnce(
     Response.json({ error: null, raceKey: "jra:20260603:05:11", status: "running" }),
   );
   watchSendMock.mockRejectedValueOnce(new Error("tick send unavailable"));
+  await handleQueue(makeBatch([makeFocusedFullWatchTickMessage()]), makeEnv());
+  expect(registerFocusedFullWatchOutboxMock).toHaveBeenCalledOnce();
+  expect(registerFocusedFullWatchOutboxMock).toHaveBeenCalledWith({
+    delaySeconds: 30,
+    env: expect.anything(),
+    message: expect.objectContaining({ type: "focused-full-watch-tick", watchId: "watch-tick-1" }),
+    outboxId: expect.stringMatching(/^focused-full-watch-tick:watch-tick-1:/u),
+  });
+  expect(clearFocusedFullWatchOutboxMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledOnce();
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("does not ack a tick if its successor cannot be durably registered", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({ error: null, raceKey: "jra:20260603:05:11", status: "running" }),
+  );
+  registerFocusedFullWatchOutboxMock.mockRejectedValueOnce(new Error("outbox unavailable"));
   await expect(
     handleQueue(makeBatch([makeFocusedFullWatchTickMessage()]), makeEnv()),
-  ).rejects.toThrow("tick send unavailable");
+  ).rejects.toThrow("outbox unavailable");
+  expect(watchSendMock).not.toHaveBeenCalled();
+  expect(clearFocusedFullWatchOutboxMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("acks a delivered tick when clearing its durable outbox fails", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({ error: null, raceKey: "jra:20260603:05:11", status: "running" }),
+  );
+  clearFocusedFullWatchOutboxMock.mockRejectedValueOnce(new Error("outbox clear unavailable"));
+  await handleQueue(makeBatch([makeFocusedFullWatchTickMessage()]), makeEnv());
+  expect(registerFocusedFullWatchOutboxMock).toHaveBeenCalledOnce();
+  expect(watchSendMock).toHaveBeenCalledOnce();
+  expect(clearFocusedFullWatchOutboxMock).toHaveBeenCalledOnce();
+  expect(ackMock).toHaveBeenCalledOnce();
   expect(retryMock).not.toHaveBeenCalled();
 });
 
@@ -4951,6 +5117,7 @@ test("finalizes one watched focused-full success and acknowledges its terminal d
   );
   expect(claimFocusedFullTerminalWatchMock).toHaveBeenCalledWith({
     claimId: "completion-msg-1",
+    executionId: "execution-1",
     env: expect.anything(),
     staleAfterMs: 960_000,
     watchId: "watch-1",
@@ -4960,6 +5127,7 @@ test("finalizes one watched focused-full success and acknowledges its terminal d
   );
   expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledWith({
     claimId: "completion-msg-1",
+    executionId: "execution-1",
     env: expect.anything(),
     watchId: "watch-1",
   });
@@ -4967,6 +5135,7 @@ test("finalizes one watched focused-full success and acknowledges its terminal d
   expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
   expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledWith({
     claimId: "completion-msg-1",
+    executionId: "execution-1",
     env: expect.anything(),
     watchId: "watch-1",
   });
@@ -4977,75 +5146,68 @@ test("finalizes one watched focused-full success and acknowledges its terminal d
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("keeps a successful shard warm briefly with a work-key-fenced delayed stop", async () => {
-  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
-
-  await handleQueue(
-    makeFocusedFullCompletionBatch([
-      makeFocusedFullCompletionMessage({
-        doName: "race-chain-predict-jra",
-        role: "race-chain",
-      }),
-    ]),
-    {
-      ...makeEnv(),
-      CONTAINER_REUSE_IDLE_SECONDS: "20",
-    },
-  );
-
-  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
-  expect(controlSendMock).toHaveBeenCalledWith(
-    expect.objectContaining({
-      name: "race-chain-predict-jra",
-      role: "race-chain",
-      type: "container-stop",
-      workKey: "warm-reuse:race-chain-predict-jra",
-    }),
-    { delaySeconds: 20 },
-  );
-  expect(claimContainerSlotMock).toHaveBeenCalledWith({
-    allowSameOwner: true,
-    category: "jra",
-    doName: "race-chain-predict-jra",
-    env: expect.anything(),
-    kind: "focused-full",
-    replaceWorkKey: "focused-full:20260603:jra:05:11",
-    staleAfterMs: 1_200_000,
-    workKey: "warm-reuse:race-chain-predict-jra",
+test("stops a completed shard before Viewer work even when idle reuse is configured", async () => {
+  const trace: string[] = [];
+  const env: Env = makeEnv();
+  stubFetchMock.mockImplementationOnce(async () => {
+    trace.push("cache-pickup");
+    return Response.json({ found: true });
   });
-  expect(claimContainerSlotMock.mock.invocationCallOrder[0]).toBeLessThan(
-    controlSendMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-  );
-  expect(consumeContainerStopMock).not.toHaveBeenCalled();
-  expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledTimes(1);
-  expect(ackMock).toHaveBeenCalledTimes(1);
-  log.mockRestore();
-});
-
-test("falls back to an owner-fenced synchronous stop when warm-idle lease transfer loses", async () => {
-  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
-  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+  isPerRaceFeatureCachePresentMock.mockImplementationOnce(async () => {
+    trace.push("durable-cache-confirmed");
+    return true;
+  });
+  completeFocusedFullRaceMock
+    .mockImplementationOnce(async () => undefined)
+    .mockImplementationOnce(async () => {
+      trace.push("computation-completed");
+    });
+  consumeContainerStopMock.mockImplementationOnce(async (_env, _message, afterDestroyed) => {
+    trace.push("owned-stop");
+    await afterDestroyed?.();
+    return true;
+  });
+  markFocusedFullTerminalWatchStoppedMock.mockImplementationOnce(async () => {
+    trace.push("stop-recorded");
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    trace.push("publication");
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  warmPredictionCacheForRaceMock.mockImplementationOnce(async () => {
+    trace.push("viewer-warm");
+    return true;
+  });
+  completeFocusedFullTerminalWatchMock.mockImplementationOnce(async () => {
+    trace.push("terminal");
+  });
 
   await handleQueue(
     makeFocusedFullCompletionBatch([
-      makeFocusedFullCompletionMessage({
-        doName: "race-chain-predict-jra",
-        role: "race-chain",
-      }),
+      makeFocusedFullCompletionMessage({ doName: "race-chain-predict-jra", role: "race-chain" }),
     ]),
     {
-      ...makeEnv(),
+      ...env,
       CONTAINER_REUSE_IDLE_SECONDS: "20",
+      FINISH_POSITION_RACE_CHAIN_CONTAINER: env.FINISH_POSITION_PREDICT_CONTAINER,
     },
   );
 
+  expect(trace).toStrictEqual([
+    "cache-pickup",
+    "durable-cache-confirmed",
+    "computation-completed",
+    "owned-stop",
+    "stop-recorded",
+    "publication",
+    "viewer-warm",
+    "terminal",
+  ]);
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
   expect(controlSendMock).not.toHaveBeenCalled();
-  expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
-  expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledTimes(1);
-  expect(ackMock).toHaveBeenCalledTimes(1);
-  log.mockRestore();
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).toHaveBeenCalledOnce();
+  expect(ackMock).toHaveBeenCalledOnce();
 });
 
 test("stops a watched success before repairing its missing cache", async () => {
@@ -5104,7 +5266,10 @@ test("resumes after a stopped Container when terminal marking previously failed"
     makeEnv(),
   );
 
-  expect(consumeContainerStopMock).toHaveBeenCalledTimes(2);
+  expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
+  expect(clearContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-1" }),
+  );
   expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledTimes(2);
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
@@ -5122,9 +5287,8 @@ test("acknowledges completion when terminal stop ownership is already lost", asy
   expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
-  expect(warnSpy).toHaveBeenCalledWith(
-    "[predict-queue] focused-full terminal stop was not owned; treating completion as terminal doName=predict-jra workKey=focused-full:20260603:jra:05:11",
-  );
+  expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
 
@@ -5180,7 +5344,10 @@ test("resumes a stopped missing watch through cleanup-only before repair", async
     makeEnv(),
   );
 
-  expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(clearContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-1" }),
+  );
   expect(sendMock).toHaveBeenCalledWith(
     expect.objectContaining({ force: true, keibajoCode: "05", raceBango: "11" }),
     { delaySeconds: 30 },
@@ -5200,7 +5367,10 @@ test.each(["success", "timeout"] as const)(
       makeEnv(),
     );
 
-    expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(clearContainerSlotMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-1" }),
+    );
     expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledTimes(1);
     expect(ackMock).toHaveBeenCalledTimes(1);
   },
@@ -5878,7 +6048,7 @@ test("awaits viewer display warm after a successful rescore KV write", async () 
     handlerDone = true;
   });
   await warmStartedPromise;
-  expect(controlSendMock).not.toHaveBeenCalled();
+  expect(controlSendMock).toHaveBeenCalledTimes(1);
   expect(completeRescoreRaceMock).not.toHaveBeenCalledWith(
     expect.objectContaining({ status: "success" }),
   );
@@ -6578,8 +6748,83 @@ test("cleans up a failed small rescore and dispatches its next Queue attempt to 
   legacyLookup.mockRestore();
 });
 
-test("queues the rescore container stop before acknowledging a successful rescore", async () => {
+test("hands rescore cleanup off while the Ban-ei shadow is still pending", async () => {
+  const shadow = Promise.withResolvers<Awaited<ReturnType<typeof shadowBaneiRaceMock>>>();
+  shadowBaneiRaceMock.mockReturnValueOnce(shadow.promise);
+  controlSendMock.mockImplementationOnce(async () => {
+    expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "neon_complete" }),
+    );
+    expect(compareBaneiShadowWithPersistedMock).not.toHaveBeenCalled();
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+    shadow.resolve({ score: null, status: "cache_miss" });
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "ban-ei",
+        daysAhead: 0,
+        keibajoCode: "83",
+        mode: "rescore",
+        raceBango: "07",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), BANEI_WORKER_RESCORE_SHADOW_ENABLED: "1" },
+  );
+  expect(controlSendMock).toHaveBeenCalledTimes(1);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("publishes durable rescore scores despite early cleanup failure and retries cleanup", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  controlSendMock.mockRejectedValueOnce(new Error("control unavailable"));
+  sendMock.mockRejectedValueOnce(new Error("cleanup unavailable"));
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    expect(controlSendMock).toHaveBeenCalledTimes(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(controlSendMock).toHaveBeenCalledTimes(2);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(releaseContainerSlotMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
+});
+
+test("queues the rescore container stop before Viewer warming and acknowledgement", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    expect(controlSendMock).toHaveBeenCalledTimes(1);
+    expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "neon_complete" }),
+    );
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  warmPredictionCacheForRaceMock.mockImplementationOnce(async () => {
+    expect(controlSendMock).toHaveBeenCalledTimes(1);
+    expect(completeRescoreRaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "neon_complete" }),
+    );
+    return true;
+  });
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -8123,11 +8368,42 @@ test("runs an attested weight rescore after post time", async () => {
   vi.useRealTimers();
 });
 
+test("publishes rescore results when early cleanup fails and retries cleanup afterwards", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  controlSendMock.mockRejectedValueOnce(new Error("control queue unavailable"));
+  sendMock.mockRejectedValueOnce(new Error("predict queue unavailable"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledTimes(1);
+  expect(controlSendMock).toHaveBeenCalledTimes(2);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+  logSpy.mockRestore();
+});
+
 test("recovers terminal rescore cleanup after both stop queues fail without rescoring", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   controlSendMock.mockRejectedValue(new Error("control queue unavailable"));
-  sendMock.mockRejectedValueOnce(new Error("predict queue unavailable"));
+  sendMock
+    .mockRejectedValueOnce(new Error("predict queue unavailable"))
+    .mockRejectedValueOnce(new Error("predict queue unavailable"))
+    .mockRejectedValueOnce(new Error("predict queue unavailable"));
   claimRescoreExecutionMock
     .mockResolvedValueOnce({ proceed: true })
     .mockResolvedValueOnce({ proceed: false, state: "success" });
@@ -8242,6 +8518,66 @@ test("consumes a day-base prewarm message and acknowledges a landed build", asyn
   });
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("retries an old prewarm without starting a Container when a different D1 owner is active", async () => {
+  acquireDayBaseRepairMock.mockResolvedValueOnce({
+    generationId: "current-workflow-owner",
+    status: "busy",
+  });
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      generationId: "legacy-prewarm-owner",
+      requestedAt: "2026-09-10T00:00:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    id: "legacy-queue-id",
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(acquireDayBaseRepairMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: "legacy-prewarm-owner", force: false }),
+  );
+  expect(prewarmCategoryWithOutcomeMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 30 });
+});
+
+test("uses the stable Queue id as the owner for a legacy prewarm with no generation", async () => {
+  const message = {
+    ack: ackMock,
+    body: {
+      category: "nar",
+      daysAhead: 0,
+      requestedAt: "2026-09-10T00:00:00.000Z",
+      runYmd: "20260910",
+      type: "day-base-prewarm",
+    },
+    id: "legacy-queue-id",
+    retry: retryMock,
+  } as unknown as Message<import("./types").DayBasePrewarmMessage>;
+
+  await handleQueue(
+    { messages: [message] } as unknown as MessageBatch<import("./types").PredictQueueBody>,
+    makeEnv(),
+  );
+
+  expect(prewarmCategoryWithOutcomeMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: "legacy-queue-id" }),
+  );
+  expect(clearDayBaseRepairReservationMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: "legacy-queue-id" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("acks a zero-day repair without starting a Container after category coverage is complete", async () => {
@@ -8522,4 +8858,1199 @@ test("consumes cleanup-only messages without running prediction work", async () 
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("retries failed focused-full stop before publication without starting another computation", async () => {
+  const trace: string[] = [];
+  const message: Message<FocusedFullCompletionMessage> = makeFocusedFullCompletionMessage();
+  consumeContainerStopMock.mockImplementationOnce(async () => {
+    trace.push("stop-failed");
+    throw new Error("stop unavailable");
+  });
+  await expect(handleQueue(makeFocusedFullCompletionBatch([message]), makeEnv())).rejects.toThrow(
+    "stop unavailable",
+  );
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+
+  consumeContainerStopMock.mockImplementationOnce(async (_env, _message, afterDestroyed) => {
+    trace.push("stop-retry");
+    await afterDestroyed?.();
+    return true;
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    trace.push("publication");
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  await handleQueue(makeFocusedFullCompletionBatch([message]), makeEnv());
+
+  expect(trace).toStrictEqual(["stop-failed", "stop-retry", "publication"]);
+  expect(consumeContainerStopMock).toHaveBeenNthCalledWith(
+    2,
+    expect.anything(),
+    {
+      executionId: "execution-1",
+      name: "predict-jra",
+      requestedAt: "2026-07-12T01:00:01.000Z",
+      role: "legacy",
+      type: "container-stop",
+      workKey: "focused-full:20260603:jra:05:11",
+    },
+    expect.any(Function),
+  );
+  expect(parseNdjsonStreamMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledOnce();
+});
+
+test("recovers publication failure after stop from durable cache and ignores terminal duplicates", async () => {
+  const trace: string[] = [];
+  const message: Message<FocusedFullCompletionMessage> = makeFocusedFullCompletionMessage();
+  consumeContainerStopMock.mockImplementationOnce(async (_env, _message, afterDestroyed) => {
+    trace.push("owned-stop");
+    await afterDestroyed?.();
+    return true;
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    trace.push("publication-failed");
+    throw new Error("publication unavailable");
+  });
+  sendMock.mockRejectedValueOnce(new Error("repair queue unavailable"));
+
+  await expect(handleQueue(makeFocusedFullCompletionBatch([message]), makeEnv())).rejects.toThrow(
+    "Focused-full terminal finalizer incomplete",
+  );
+  expect(markFocusedFullTerminalWatchStoppedMock).toHaveBeenCalledOnce();
+  expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  const pickupCount: number = stubFetchMock.mock.calls.length;
+
+  claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: true, state: "stopped" });
+  clearContainerSlotMock.mockImplementationOnce(async () => {
+    trace.push("cleanup-only");
+  });
+  isPerRaceFeatureCachePresentMock.mockImplementationOnce(async () => {
+    trace.push("durable-cache-confirmed");
+    return true;
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    trace.push("publication-retry");
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  await handleQueue(makeFocusedFullCompletionBatch([message]), makeEnv());
+  claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: false, state: "terminal" });
+  await handleQueue(makeFocusedFullCompletionBatch([message]), makeEnv());
+
+  expect(trace).toStrictEqual([
+    "owned-stop",
+    "publication-failed",
+    "cleanup-only",
+    "durable-cache-confirmed",
+    "publication-retry",
+  ]);
+  expect(stubFetchMock).toHaveBeenCalledTimes(pickupCount);
+  expect(consumeContainerStopMock).toHaveBeenCalledTimes(1);
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledTimes(2);
+  expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+  expect(parseNdjsonStreamMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(2);
+});
+
+test("does not publish a stopped terminal success whose durable cache disappeared", async () => {
+  claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: true, state: "stopped" });
+  isPerRaceFeatureCachePresentMock.mockResolvedValue(false);
+
+  await handleQueue(
+    makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]),
+    makeEnv(),
+  );
+
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(clearContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-1" }),
+  );
+  expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledOnce();
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ force: true, keibajoCode: "05", raceBango: "11" }),
+    { delaySeconds: 30 },
+  );
+  expect(ackMock).toHaveBeenCalledOnce();
+});
+
+test.each(["direct", "already-complete", "completion-guard", "status-poll"])(
+  "%s focused-full hands cleanup off after durable cache and before publication",
+  async (path) => {
+    const trace: string[] = [];
+    if (path === "completion-guard") isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+    if (path === "already-complete") {
+      parseNdjsonStreamMock.mockResolvedValueOnce({
+        category: "jra",
+        racesPredicted: 1,
+        status: "already-complete",
+        type: "result",
+      });
+    }
+    if (path === "status-poll") {
+      claimFocusedFullRaceMock.mockResolvedValueOnce({ proceed: false, state: "started" });
+      stubFetchMock.mockResolvedValueOnce(
+        Response.json({ error: null, raceKey: "jra:20260603:05:11", status: "success" }),
+      );
+    }
+    isPerRaceFeatureCachePresentMock.mockImplementationOnce(async () => {
+      trace.push("durable-cache-confirmed");
+      return true;
+    });
+    completeFocusedFullRaceMock.mockImplementationOnce(async () => {
+      trace.push("computation-completed");
+    });
+    controlSendMock.mockImplementationOnce(async () => {
+      trace.push("cleanup-handoff");
+    });
+    publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+      trace.push("publication");
+      return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+    });
+    warmPredictionCacheForRaceMock.mockImplementationOnce(async () => {
+      trace.push("viewer-warm");
+      return true;
+    });
+
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), makeEnv());
+
+    expect(trace).toStrictEqual([
+      "durable-cache-confirmed",
+      "computation-completed",
+      "cleanup-handoff",
+      "publication",
+      "viewer-warm",
+    ]);
+    expect(controlSendMock).toHaveBeenCalledWith({
+      name: "predict-jra",
+      requestedAt: expect.any(String),
+      role: "legacy",
+      type: "container-stop",
+      workKey: "focused-full:20260603:jra:05:11",
+    });
+    expect(controlSendMock).toHaveBeenCalledOnce();
+    expect(ackMock).toHaveBeenCalledOnce();
+    expect(retryMock).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["stale", "stopped"])(
+  "a %s terminal delivery respects a rejected owner/lease fence without stopping or clearing new work",
+  async (state) => {
+    const actual =
+      await vi.importActual<typeof import("./container-control")>("./container-control");
+    const trace: string[] = [];
+    claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: true, state });
+    if (state !== "stopped")
+      consumeContainerStopMock.mockImplementationOnce(async (env, message, afterDestroyed) => {
+        trace.push("check-owner-fence");
+        return actual.consumeContainerStop(env, message, afterDestroyed);
+      });
+    if (state === "stopped")
+      publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+        trace.push("publication");
+        return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+      });
+
+    await handleQueue(
+      makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]),
+      makeEnv(),
+    );
+
+    if (state === "stopped") expect(trace).toStrictEqual(["publication"]);
+    else expect(trace).toStrictEqual(["check-owner-fence"]);
+    if (state !== "stopped")
+      expect(claimContainerSlotStopMock).toHaveBeenCalledWith({
+        acceptableWorkKeys: undefined,
+        allowUnowned: undefined,
+        executionId: "execution-1",
+        doName: "predict-jra",
+        env: expect.anything(),
+        force: undefined,
+        requestedAt: "2026-07-12T01:00:01.000Z",
+        workKey: "focused-full:20260603:jra:05:11",
+      });
+    if (state === "stopped") expect(stubFetchMock).not.toHaveBeenCalled();
+    else {
+      expect(stubFetchMock).toHaveBeenCalledOnce();
+      expect(stubFetchMock.mock.calls[0]?.[0]?.url).toBe(
+        "http://do/focused-full-cache?category=jra&runDate=20260603&keibajoCode=05&raceBango=11",
+      );
+    }
+    expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+    if (state === "stopped") {
+      expect(consumeContainerStopMock).not.toHaveBeenCalled();
+      expect(clearContainerSlotMock).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: "execution-1" }),
+      );
+    } else expect(clearContainerSlotMock).not.toHaveBeenCalled();
+    expect(claimContainerSlotMock).not.toHaveBeenCalled();
+    expect(controlSendMock).not.toHaveBeenCalled();
+    expect(parseNdjsonStreamMock).not.toHaveBeenCalled();
+    expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+    expect(ackMock).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["success", "missing", "timeout", "error"])(
+  "legacy %s completion retires its watch without stop, repair, or publication",
+  async (outcome) => {
+    const terminalOutcome =
+      outcome === "success" || outcome === "missing" || outcome === "timeout" ? outcome : "error";
+    await handleQueue(
+      makeFocusedFullCompletionBatch([
+        makeFocusedFullCompletionMessage({ executionId: undefined, outcome: terminalOutcome }),
+      ]),
+      makeEnv(),
+    );
+    expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+    expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+    expect(ackMock).toHaveBeenCalledOnce();
+  },
+);
+
+test("legacy expired tick never polls or adopts the current physical execution", async () => {
+  const tick = makeFocusedFullWatchTickMessage();
+  tick.body.executionId = undefined;
+  tick.body.deadlineAtMs = 0;
+  await handleQueue(makeBatch([tick]), makeEnv());
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(touchContainerSlotMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+});
+
+test("inline success uses admitted physical stop before Viewer publication", async () => {
+  const trace: string[] = [];
+  isPerRaceFeatureCachePresentMock.mockImplementation(async () => {
+    trace.push("durable-cache");
+    return true;
+  });
+  consumeContainerStopMock.mockImplementationOnce(async () => {
+    trace.push("owned-stop");
+    return true;
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+    trace.push("publication");
+    return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+  });
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), {
+    ...makeEnv(),
+    FOCUSED_FULL_WATCH_ENABLED: "1",
+  });
+  expect(trace).toStrictEqual(["durable-cache", "owned-stop", "publication"]);
+  expect(consumeContainerStopMock).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ executionId: "execution-1" }),
+  );
+  expect(controlSendMock).not.toHaveBeenCalled();
+});
+
+interface PersistedCoordinatorHarness {
+  coordinator: PredictRunCoordinator;
+  env: Env;
+  storage: Map<string, unknown>;
+}
+
+const makePersistedCoordinator = (
+  storage = new Map<string, unknown>(),
+): PersistedCoordinatorHarness => {
+  const env = makeEnv();
+  const instance: unknown = Reflect.construct(PredictRunCoordinator, [
+    {
+      blockConcurrencyWhile: async <T>(operation: () => Promise<T>): Promise<T> => operation(),
+      storage: {
+        get: async (key: string): Promise<unknown> => structuredClone(storage.get(key)),
+        put: async (key: string, value: unknown): Promise<void> => {
+          storage.set(key, structuredClone(value));
+        },
+        delete: async (key: string): Promise<boolean> => storage.delete(key),
+        list: async ({ prefix }: { prefix: string }): Promise<Map<string, unknown>> =>
+          new Map([...storage].filter(([key]) => key.startsWith(prefix))),
+        setAlarm: async (): Promise<void> => undefined,
+      },
+    },
+    env,
+  ]);
+  if (!(instance instanceof PredictRunCoordinator)) throw new Error("Invalid coordinator");
+  Object.defineProperty(env, "PREDICT_RUN_COORDINATOR", {
+    value: {
+      idFromName: (name: string): string => name,
+      get: (): { fetch: (request: Request) => Promise<Response> } => ({
+        fetch: instance.fetch.bind(instance),
+      }),
+    },
+  });
+  return { coordinator: instance, env, storage };
+};
+
+test.each(["stopped", "active"])(
+  "stale A %s success cannot mutate actual B race, lane, lease or publish",
+  async (state) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const harness = makePersistedCoordinator();
+    await harness.coordinator.claimFocusedFullRace({
+      category: "jra",
+      runYmd: "20260603",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    });
+    const a = await harness.coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "generation-a",
+    });
+    await harness.coordinator.clearContainerSlot({
+      doName: "predict-jra",
+      workKey: "focused-full:20260603:jra:05:11",
+      executionId: a.executionId,
+    });
+    const b = await harness.coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "generation-b",
+    });
+    const before = JSON.stringify([...harness.storage]);
+    claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: true, state });
+    completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+    await handleQueue(
+      makeFocusedFullCompletionBatch([
+        makeFocusedFullCompletionMessage({ executionId: a.executionId }),
+      ]),
+      harness.env,
+    );
+    expect(JSON.stringify([...harness.storage]) === before).toBe(true);
+    expect(harness.storage.get("focused-full:20260603:jra:05:11")).toMatchObject({
+      status: "started",
+      executionId: b.executionId,
+    });
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+    expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+    expect(prepareMock).not.toHaveBeenCalled();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+    expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+    expect(ackMock).toHaveBeenCalledOnce();
+  },
+);
+
+test("B admitted during A cache read is fenced at the actual race mutation", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const harness = makePersistedCoordinator();
+  await harness.coordinator.claimFocusedFullRace({
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  });
+  const a = await harness.coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "generation-a",
+  });
+  const before: { state?: string } = {};
+  isPerRaceFeatureCachePresentMock.mockImplementationOnce(async () => {
+    await harness.coordinator.clearContainerSlot({
+      doName: "predict-jra",
+      workKey: "focused-full:20260603:jra:05:11",
+      executionId: a.executionId,
+    });
+    await harness.coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "generation-b",
+    });
+    before.state = JSON.stringify([...harness.storage]);
+    return true;
+  });
+  completeFocusedFullRaceMock
+    .mockImplementationOnce(actual.completeFocusedFullRace)
+    .mockImplementationOnce(actual.completeFocusedFullRace);
+  await handleQueue(
+    makeFocusedFullCompletionBatch([
+      makeFocusedFullCompletionMessage({ executionId: a.executionId }),
+    ]),
+    harness.env,
+  );
+  expect(JSON.stringify([...harness.storage]) === before.state).toBe(true);
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledOnce();
+});
+
+test.each(["already-complete", "delivery-error"])(
+  "admitted E survives %s cleanup through real coordinator decisions",
+  async (result) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const control =
+      await vi.importActual<typeof import("./container-control")>("./container-control");
+    const harness = makePersistedCoordinator();
+    harness.env.FOCUSED_FULL_WATCH_ENABLED = "1";
+    await harness.coordinator.claimFocusedFullRace({
+      category: "jra",
+      runYmd: "20260603",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    });
+    claimContainerSlotMock.mockImplementationOnce(actual.claimContainerSlot);
+    completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+    claimContainerSlotStopMock.mockImplementationOnce(actual.claimContainerSlotStop);
+    consumeContainerStopMock.mockImplementationOnce(control.consumeContainerStop);
+    const physical: { stopped: boolean; executionId?: string } = { stopped: false };
+    clearContainerSlotMock.mockImplementationOnce(actual.clearContainerSlot);
+    stubFetchMock.mockImplementation(async (request?: Request) => {
+      if (request === undefined) throw new Error("Missing request");
+      if (new URL(request.url).pathname === "/predict") {
+        if (result === "delivery-error") {
+          physical.stopped = true;
+          throw new Error("delivery response lost");
+        }
+        return new Response("already-complete");
+      }
+      if (new URL(request.url).pathname === "/focused-full-cache")
+        return Response.json({ found: true });
+      expect(request.headers.get("x-prediction-execution-id")).toBeTypeOf("string");
+      if (request.headers.get("x-prediction-require-stopped") === "1" && !physical.stopped)
+        return Response.json({ ok: false, state: "unresolved" }, { status: 425 });
+      physical.executionId = request.headers.get("x-prediction-execution-id") ?? undefined;
+      physical.stopped = true;
+      return Response.json({ ok: true });
+    });
+    getStateMock.mockImplementation(async () => ({
+      status: physical.stopped ? "stopped" : "healthy",
+    }));
+    parseNdjsonStreamMock.mockResolvedValueOnce({
+      type: "result",
+      category: "jra",
+      status: "already-complete",
+      racesPredicted: 1,
+    });
+    if (result === "delivery-error")
+      parseNdjsonStreamMock.mockReset().mockResolvedValue({
+        type: "result",
+        category: "jra",
+        status: "success",
+        racesPredicted: 1,
+      });
+    isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
+    publishFinishPositionPredictionCacheMock.mockImplementationOnce(async () => {
+      expect(physical.stopped).toBe(true);
+      return { busted: true, expectedGeneratedAt: "2026-08-09T01:15:00.000Z", status: "written" };
+    });
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), harness.env);
+    expect(physical.stopped).toBe(true);
+    expect(physical.executionId).toBeTypeOf("string");
+    expect(harness.storage.get("container-stop-fences")).toBeUndefined();
+    expect(harness.storage.get("container-slots")).toStrictEqual({ leases: [] });
+    expect(controlSendMock).not.toHaveBeenCalled();
+    if (result === "already-complete") expect(ackMock).toHaveBeenCalledOnce();
+    else {
+      expect(ackMock).not.toHaveBeenCalled();
+      expect(retryMock).toHaveBeenCalledOnce();
+    }
+  },
+);
+
+test("persisted stopped A watch reentry retires A while real B race/lane remain untouched", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const harness = makePersistedCoordinator();
+  await harness.coordinator.claimFocusedFullRace({
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  });
+  const a = await harness.coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "generation-a",
+  });
+  const message = makeFocusedFullCompletionMessage({ executionId: a.executionId });
+  await harness.coordinator.claimFocusedFullTerminalWatch({
+    executionId: a.executionId,
+    watchId: message.body.watchId,
+    claimId: message.id,
+    staleAfterMs: 60_000,
+  });
+  await harness.coordinator.markFocusedFullTerminalWatchStopped({
+    executionId: a.executionId,
+    watchId: message.body.watchId,
+    claimId: message.id,
+  });
+  // Physical stop and its watch marker persisted, but terminal completion did not.
+  await harness.coordinator.clearContainerSlot({
+    doName: "predict-jra",
+    workKey: message.body.workKey,
+    executionId: a.executionId,
+  });
+  await harness.coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "focused-full",
+    workKey: message.body.workKey,
+    generationId: "generation-b",
+  });
+  const race = JSON.stringify(harness.storage.get(message.body.workKey));
+  const lane = JSON.stringify(harness.storage.get("focused-full-lane:predict-jra"));
+  const slots = JSON.stringify(harness.storage.get("container-slots"));
+  claimFocusedFullTerminalWatchMock.mockImplementationOnce(actual.claimFocusedFullTerminalWatch);
+  completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+  completeFocusedFullTerminalWatchMock.mockImplementationOnce(
+    actual.completeFocusedFullTerminalWatch,
+  );
+  await handleQueue(makeFocusedFullCompletionBatch([message]), harness.env);
+  expect(JSON.stringify(harness.storage.get(message.body.workKey)) === race).toBe(true);
+  expect(JSON.stringify(harness.storage.get("focused-full-lane:predict-jra")) === lane).toBe(true);
+  expect(JSON.stringify(harness.storage.get("container-slots")) === slots).toBe(true);
+  expect(harness.storage.get(`focused-full-terminal-watch:${message.body.watchId}`)).toMatchObject({
+    status: "terminal",
+  });
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(consumeContainerStopMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledOnce();
+});
+
+test("inline already-complete cannot ack or publish on an unconfirmed exact-E stop", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const control =
+    await vi.importActual<typeof import("./container-control")>("./container-control");
+  const harness = makePersistedCoordinator();
+  harness.env.FOCUSED_FULL_WATCH_ENABLED = "1";
+  await harness.coordinator.claimFocusedFullRace({
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  });
+  claimContainerSlotMock.mockImplementationOnce(actual.claimContainerSlot);
+  completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+  claimContainerSlotStopMock.mockImplementationOnce(actual.claimContainerSlotStop);
+  consumeContainerStopMock.mockImplementationOnce(control.consumeContainerStop);
+  stubFetchMock.mockImplementation(async (request?: Request) => {
+    if (request === undefined) throw new Error("Missing request");
+    if (new URL(request.url).pathname === "/focused-full-cache")
+      return Response.json({ found: true });
+    return new URL(request.url).pathname === "/__admin/stop-container"
+      ? Response.json({ ok: false, state: "unresolved" }, { status: 425 })
+      : new Response("already-complete");
+  });
+  parseNdjsonStreamMock.mockResolvedValueOnce({
+    type: "result",
+    category: "jra",
+    status: "already-complete",
+    racesPredicted: 1,
+  });
+  isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), harness.env);
+  expect(harness.storage.get("container-slots")).toMatchObject({
+    leases: [{ executionId: expect.any(String), kind: "focused-full" }],
+  });
+  expect(harness.storage.get("container-stop-fences")).toStrictEqual({});
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(controlSendMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledOnce();
+});
+
+test("callback-created watch for uncertain delivery retains E and cannot release a live lease on timeout", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const control =
+    await vi.importActual<typeof import("./container-control")>("./container-control");
+  const harness = makePersistedCoordinator();
+  await harness.coordinator.claimFocusedFullRace({
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  });
+  const admission = await harness.coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "generation-a",
+  });
+  const body = { ...makeMessage({ skipDedup: true }).body, keibajoCode: "05", raceBango: "11" };
+  const callback = await buildFocusedFullCompletionCallbackUrl(
+    {
+      TRIGGER_TOKEN: harness.env.TRIGGER_TOKEN,
+      FOCUSED_FULL_CALLBACK_URL:
+        "https://worker.test/api/internal/focused-full-completion-callback",
+    },
+    {
+      body,
+      doName: "predict-jra",
+      role: "legacy",
+      executionId: admission.executionId,
+      watchId: "callback-watch",
+      workKey: "focused-full:20260603:jra:05:11",
+    },
+  );
+  if (callback === undefined) throw new Error("Missing callback");
+  expect(
+    (
+      await handleFocusedFullCompletionCallback(new Request(callback), harness.env, {
+        now: () => 1_000,
+        send: async (_env, message) =>
+          harness.coordinator.registerFocusedFullWatchOutbox({
+            message,
+            outboxId: "callback-outbox",
+          }),
+      })
+    ).status,
+  ).toBe(202);
+  expect(harness.storage.get("focused-full-active-watches")).toMatchObject({
+    "callback-watch": { message: { executionId: admission.executionId, deadlineAtMs: 1_861_000 } },
+  });
+  const before = JSON.stringify(harness.storage.get("container-slots"));
+  completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+  claimContainerSlotStopMock.mockImplementationOnce(actual.claimContainerSlotStop);
+  consumeContainerStopMock.mockImplementationOnce(control.consumeContainerStop);
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({ ok: false, state: "unresolved" }, { status: 425 }),
+  );
+  await expect(
+    handleQueue(
+      makeFocusedFullCompletionBatch([
+        makeFocusedFullCompletionMessage({
+          executionId: admission.executionId,
+          watchId: "callback-watch",
+          outcome: "timeout",
+        }),
+      ]),
+      harness.env,
+    ),
+  ).rejects.toThrow("Container stop failed");
+  expect(JSON.stringify(harness.storage.get("container-slots")) === before).toBe(true);
+  expect(stubFetchMock.mock.calls[0]?.[0]?.headers.get("x-prediction-require-stopped")).toBe("1");
+  expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
+  expect(reserveFocusedFullRaceRepairMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("lost response cleanup retains E but cannot force-stop a possibly running accepted job", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const control =
+    await vi.importActual<typeof import("./container-control")>("./container-control");
+  const harness = makePersistedCoordinator();
+  harness.env.FOCUSED_FULL_WATCH_ENABLED = "1";
+  await harness.coordinator.claimFocusedFullRace({
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  });
+  claimContainerSlotMock.mockImplementationOnce(actual.claimContainerSlot);
+  completeFocusedFullRaceMock.mockImplementationOnce(actual.completeFocusedFullRace);
+  claimContainerSlotStopMock.mockImplementationOnce(actual.claimContainerSlotStop);
+  consumeContainerStopMock.mockImplementationOnce(control.consumeContainerStop);
+  stubFetchMock
+    .mockRejectedValueOnce(new Error("response lost after delivery"))
+    .mockResolvedValueOnce(Response.json({ ok: false, state: "unresolved" }, { status: 425 }));
+  await expect(
+    handleQueue(makeBatch([makeMessage({ skipDedup: true })]), harness.env),
+  ).rejects.toThrow("Container stop failed");
+  expect(stubFetchMock.mock.calls[1]?.[0]?.headers.get("x-prediction-require-stopped")).toBe("1");
+  expect(stubFetchMock.mock.calls[1]?.[0]?.headers.get("x-prediction-execution-id")).toBeTypeOf(
+    "string",
+  );
+  expect(harness.storage.get("container-slots")).toMatchObject({
+    leases: [{ executionId: expect.any(String) }],
+  });
+  expect(harness.storage.get("container-stop-fences")).toStrictEqual({});
+  expect(markFocusedFullTerminalWatchStoppedMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("stopped backup retains E after actual repair send cancellation and retries without destroy", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const harness = makePersistedCoordinator();
+  const race = {
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  };
+  await harness.coordinator.claimFocusedFullRace(race);
+  const admission = await harness.coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra",
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "A",
+  });
+  await harness.coordinator.clearContainerSlot({
+    doName: "predict-jra",
+    workKey: "focused-full:20260603:jra:05:11",
+    executionId: admission.executionId,
+  });
+  claimFocusedFullTerminalWatchMock.mockResolvedValue({ proceed: true, state: "stopped" });
+  completeFocusedFullRaceMock.mockImplementation(actual.completeFocusedFullRace);
+  reserveFocusedFullRaceRepairMock.mockImplementation(actual.reserveFocusedFullRaceRepair);
+  cancelFocusedFullRaceRepairMock.mockImplementation(actual.cancelFocusedFullRaceRepair);
+  sendMock.mockRejectedValueOnce(new Error("repair send failed"));
+  const message = makeFocusedFullCompletionMessage({
+    outcome: "missing",
+    executionId: admission.executionId,
+  });
+  try {
+    await expect(
+      handleQueue(makeFocusedFullCompletionBatch([message]), harness.env),
+    ).rejects.toThrow("Focused-full terminal finalizer incomplete");
+    expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
+    expect(ackMock).not.toHaveBeenCalled();
+    const rebuilt = makePersistedCoordinator(harness.storage);
+    expect(
+      await rebuilt.coordinator.claimFocusedFullRace({ ...race, raceBango: "12", force: true }),
+    ).toMatchObject({ proceed: true });
+    const b = await rebuilt.coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra",
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:12",
+      generationId: "B",
+    });
+    await expect(
+      handleQueue(makeFocusedFullCompletionBatch([message]), rebuilt.env),
+    ).rejects.toThrow("Focused-full terminal finalizer incomplete");
+    expect(ackMock).not.toHaveBeenCalled();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(rebuilt.storage.get("focused-full:20260603:jra:05:11")).toMatchObject({
+      executionId: admission.executionId,
+      focusedFullRepairCount: 1,
+    });
+    await rebuilt.coordinator.completeFocusedFullRace({
+      ...race,
+      raceBango: "12",
+      executionId: b.executionId,
+      status: "success",
+    });
+    await rebuilt.coordinator.clearContainerSlot({
+      doName: "predict-jra",
+      workKey: "focused-full:20260603:jra:05:12",
+      executionId: b.executionId,
+    });
+    await handleQueue(makeFocusedFullCompletionBatch([message]), rebuilt.env);
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(completeFocusedFullTerminalWatchMock).toHaveBeenCalledOnce();
+    expect(ackMock).toHaveBeenCalledOnce();
+  } finally {
+    completeFocusedFullRaceMock.mockResolvedValue(undefined);
+    reserveFocusedFullRaceRepairMock.mockResolvedValue({ proceed: true });
+    cancelFocusedFullRaceRepairMock.mockResolvedValue(undefined);
+  }
+});
+
+test("deferred focused publication retains immutable admitted E in its queue body", async () => {
+  claimFocusedFullTerminalWatchMock.mockResolvedValue({ proceed: true, state: "stopped" });
+  publishFinishPositionPredictionCacheMock
+    .mockReset()
+    .mockRejectedValueOnce(new Error("publication unavailable"));
+  await handleQueue(
+    makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage({ executionId: "A" })]),
+    makeEnv(),
+  );
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "prediction-cache-repair", executionId: "A" }),
+    expect.anything(),
+  );
+});
+
+test.each([false, true])(
+  "complete E redelivery with durable cache is read-only even if payload exists=%s",
+  async (found) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const h = makePersistedCoordinator();
+    const body = makeMessage({ skipDedup: true }).body;
+    const race = {
+      ...body,
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    };
+    await h.coordinator.claimFocusedFullRace(race);
+    const a = await h.coordinator.claimContainerSlot({
+      ...race,
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "A",
+    });
+    await h.coordinator.completeFocusedFullRace({
+      ...race,
+      executionId: a.executionId,
+      status: "success",
+    });
+    await h.coordinator.clearContainerSlot({
+      doName: "predict-jra",
+      workKey: "focused-full:20260603:jra:05:11",
+      executionId: a.executionId,
+    });
+    const before = JSON.stringify([...h.storage]);
+    observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+    isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+    isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
+    stubFetchMock.mockImplementation(async () => Response.json({ found }));
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+    expect(ackMock).toHaveBeenCalledTimes(2);
+    expect(retryMock).not.toHaveBeenCalled();
+    expect(stubFetchMock).not.toHaveBeenCalled();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(claimContainerSlotMock).not.toHaveBeenCalled();
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+    expect(JSON.stringify([...h.storage]) === before).toBe(true);
+  },
+);
+
+test.each(["replacement", "repair", "commit"])(
+  "read-only completion rechecks authority after durable reads: %s",
+  async (change) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const h = makePersistedCoordinator();
+    const race = {
+      category: "jra",
+      runYmd: "20260603",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    };
+    await h.coordinator.claimFocusedFullRace(race);
+    const a = await h.coordinator.claimContainerSlot({
+      ...race,
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "A",
+    });
+    await h.coordinator.completeFocusedFullRace({
+      ...race,
+      executionId: a.executionId,
+      status: "success",
+    });
+    await h.coordinator.clearContainerSlot({
+      doName: "predict-jra",
+      workKey: "focused-full:20260603:jra:05:11",
+      executionId: a.executionId,
+    });
+    observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+    isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+    isPerRaceFeatureCachePresentMock.mockImplementationOnce(async () => {
+      if (change === "replacement")
+        await h.coordinator.claimContainerSlot({
+          ...race,
+          kind: "focused-full",
+          workKey: "focused-full:20260603:jra:05:11",
+          generationId: "B",
+        });
+      if (change === "repair")
+        await h.coordinator.reserveFocusedFullRaceRepair({
+          ...race,
+          executionId: a.executionId,
+          reservationId: "R",
+        });
+      if (change === "commit")
+        await h.coordinator.beginExternalCommit({
+          workKey: "focused-full:20260603:jra:05:11",
+          executionId: a.executionId,
+          token: "held",
+        });
+      return true;
+    });
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+    expect(ackMock).not.toHaveBeenCalled();
+    expect(retryMock).toHaveBeenCalledOnce();
+    expect(stubFetchMock).not.toHaveBeenCalled();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["resume", "payload", "missing"])(
+  "routine %s recovery carries exact committed E through actual coordinator helpers",
+  async (path) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const h = makePersistedCoordinator();
+    const race = {
+      category: "jra",
+      runYmd: "20260603",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    };
+    await h.coordinator.claimFocusedFullRace(race);
+    const a = await h.coordinator.claimContainerSlot({
+      ...race,
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "A",
+    });
+    observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+    claimFocusedFullRaceMock.mockImplementation(actual.claimFocusedFullRace);
+    completeFocusedFullRaceMock.mockImplementation(actual.completeFocusedFullRace);
+    reserveFocusedFullRaceRepairMock.mockImplementation(actual.reserveFocusedFullRaceRepair);
+    Object.defineProperty(h.env, "FEATURES_CACHE", {
+      value: { put: vi.fn(async () => undefined) },
+    });
+    isFocusedFullPredictionCompleteMock.mockResolvedValue(path !== "resume");
+    isPerRaceFeatureCachePresentMock.mockResolvedValue(path !== "missing");
+    stubFetchMock.mockImplementation(async (request) =>
+      new URL(request?.url ?? "http://do").pathname === "/focused-full-status"
+        ? Response.json({
+            status: path === "missing" ? "missing" : "success",
+            error: null,
+            raceKey: "jra:20260603:05:11",
+          })
+        : Response.json({
+            found: path !== "missing",
+            parquetKey: "cache",
+            parquetBase64: btoa("payload"),
+          }),
+    );
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+    expect(ackMock).toHaveBeenCalledOnce();
+    expect(retryMock).not.toHaveBeenCalled();
+    expect(claimContainerSlotMock).not.toHaveBeenCalled();
+    if (path === "missing") {
+      expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: a.executionId }),
+      );
+      expect(sendMock).toHaveBeenCalledOnce();
+      expect(h.storage.get("focused-full:20260603:jra:05:11")).toMatchObject({
+        executionId: a.executionId,
+        status: "enqueued",
+      });
+    } else {
+      expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: a.executionId }),
+      );
+      expect(consumeContainerStopMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ executionId: a.executionId }),
+      );
+      expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: a.executionId }),
+      );
+    }
+  },
+);
+
+test.each(["cache-response", "status-response"])(
+  "routine recovery refuses replacement E acquired during %s",
+  async (heldRead) => {
+    const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+    const h = makePersistedCoordinator();
+    const race = {
+      category: "jra",
+      runYmd: "20260603",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    };
+    await h.coordinator.claimFocusedFullRace(race);
+    const a = await h.coordinator.claimContainerSlot({
+      ...race,
+      kind: "focused-full",
+      workKey: "focused-full:20260603:jra:05:11",
+      generationId: "A",
+    });
+    observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+    claimFocusedFullRaceMock.mockImplementation(actual.claimFocusedFullRace);
+    completeFocusedFullRaceMock.mockImplementation(actual.completeFocusedFullRace);
+    const put = vi.fn(async () => undefined);
+    Object.defineProperty(h.env, "FEATURES_CACHE", { value: { put } });
+    isFocusedFullPredictionCompleteMock.mockResolvedValue(heldRead === "cache-response");
+    isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
+    stubFetchMock.mockImplementationOnce(async () => {
+      await h.coordinator.clearContainerSlot({
+        doName: "predict-jra",
+        workKey: "focused-full:20260603:jra:05:11",
+        executionId: a.executionId,
+      });
+      await h.coordinator.claimContainerSlot({
+        ...race,
+        kind: "focused-full",
+        workKey: "focused-full:20260603:jra:05:11",
+        generationId: "B",
+      });
+      return heldRead === "cache-response"
+        ? Response.json({ found: true, parquetKey: "cache", parquetBase64: btoa("stale") })
+        : Response.json({ status: "success", error: null, raceKey: "jra:20260603:05:11" });
+    });
+    stubFetchMock.mockImplementation(async () => Response.json({ found: false }));
+    await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+    expect(ackMock).not.toHaveBeenCalled();
+    expect(retryMock).toHaveBeenCalledOnce();
+    expect(put).not.toHaveBeenCalled();
+    expect(consumeContainerStopMock).not.toHaveBeenCalled();
+    expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
+    expect(h.storage.get("focused-full:20260603:jra:05:11")).toMatchObject({ status: "started" });
+  },
+);
+
+test("reserved replacement delivery progresses from old E to a fresh admission without identityless slot", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const h = makePersistedCoordinator();
+  h.env.FOCUSED_FULL_WATCH_ENABLED = "1";
+  const race = {
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  };
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot({
+    ...race,
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "A",
+  });
+  await h.coordinator.completeFocusedFullRace({
+    ...race,
+    executionId: a.executionId,
+    status: "success",
+  });
+  await h.coordinator.clearContainerSlot({
+    doName: "predict-jra",
+    workKey: "focused-full:20260603:jra:05:11",
+    executionId: a.executionId,
+  });
+  await h.coordinator.reserveFocusedFullRaceRepair({
+    ...race,
+    executionId: a.executionId,
+    reservationId: "R",
+  });
+  observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+  claimFocusedFullRaceMock.mockImplementation(actual.claimFocusedFullRace);
+  claimContainerSlotMock.mockImplementation(actual.claimContainerSlot);
+  completeFocusedFullRaceMock.mockImplementation(actual.completeFocusedFullRace);
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  isPerRaceFeatureCachePresentMock.mockResolvedValue(true);
+  stubFetchMock.mockImplementation(async () => Response.json({ found: false }));
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true, force: true })]), h.env);
+  expect(ackMock).toHaveBeenCalledOnce();
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(claimContainerSlotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: expect.any(String) }),
+  );
+  expect(h.storage.get("focused-full:20260603:jra:05:11")).toMatchObject({
+    status: "success",
+    focusedFullRepairCount: 1,
+  });
+  expect(h.storage.get("focused-full:20260603:jra:05:11")).not.toMatchObject({
+    executionId: a.executionId,
+  });
+  expect(consumeContainerStopMock).toHaveBeenCalledOnce();
+});
+
+test("complete E with missing R2 picks up payload without creating a slot or stopping another owner", async () => {
+  const actual = await vi.importActual<typeof import("./do-state")>("./do-state");
+  const control =
+    await vi.importActual<typeof import("./container-control")>("./container-control");
+  const h = makePersistedCoordinator();
+  const race = {
+    category: "jra",
+    runYmd: "20260603",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  };
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot({
+    ...race,
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:11",
+    generationId: "A",
+  });
+  await h.coordinator.completeFocusedFullRace({
+    ...race,
+    executionId: a.executionId,
+    status: "success",
+  });
+  await h.coordinator.clearContainerSlot({
+    doName: "predict-jra",
+    workKey: "focused-full:20260603:jra:05:11",
+    executionId: a.executionId,
+  });
+  const b = await h.coordinator.claimContainerSlot({
+    ...race,
+    kind: "focused-full",
+    workKey: "focused-full:20260603:jra:05:12",
+    generationId: "B",
+  });
+  observeFocusedFullAuthorityMock.mockImplementation(actual.observeFocusedFullAuthority);
+  completeFocusedFullRaceMock.mockImplementation(actual.completeFocusedFullRace);
+  claimContainerSlotStopMock.mockImplementation(actual.claimContainerSlotStop);
+  consumeContainerStopMock.mockImplementation(control.consumeContainerStop);
+  const put = vi.fn(async () => undefined);
+  Object.defineProperty(h.env, "FEATURES_CACHE", { value: { put } });
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  isPerRaceFeatureCachePresentMock.mockResolvedValueOnce(false).mockResolvedValue(true);
+  stubFetchMock.mockImplementation(async () =>
+    Response.json({ found: true, parquetKey: "cache", parquetBase64: btoa("payload") }),
+  );
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+  await handleQueue(makeBatch([makeMessage({ skipDedup: true })]), h.env);
+  expect(put).toHaveBeenCalledOnce();
+  expect(ackMock).toHaveBeenCalledOnce();
+  expect(retryMock).toHaveBeenCalledOnce();
+  expect(stubFetchMock).toHaveBeenCalledOnce();
+  expect(stubFetchMock.mock.calls[0]?.[0]?.url).toMatch(/focused-full-cache/u);
+  expect(claimContainerSlotMock).not.toHaveBeenCalled();
+  expect(h.storage.get("focused-full:20260603:jra:05:12")).toMatchObject({
+    executionId: b.executionId,
+    status: "started",
+  });
 });

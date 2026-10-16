@@ -11,6 +11,7 @@ const {
   featureHeadMock,
   focusedFullPredictionCompleteMock,
   getDayBaseRaceFoundationReadinessMock,
+  getDayBaseSourceMock,
   reserveFocusedFullRaceEnqueueMock,
   reserveFocusedFullRaceRepairMock,
 } = vi.hoisted(() => ({
@@ -19,6 +20,11 @@ const {
   featureHeadMock: vi.fn(async (): Promise<R2Object | null> => null),
   focusedFullPredictionCompleteMock: vi.fn(async (): Promise<boolean> => true),
   getDayBaseRaceFoundationReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
+  getDayBaseSourceMock: vi.fn(async (params: { category: string; env: Env; runYmd: string }) => {
+    const key = `feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet`;
+    const object = await params.env.FEATURES_CACHE.head(key);
+    return object === null ? null : { key, object };
+  }),
   reserveFocusedFullRaceEnqueueMock: vi.fn(
     async (): Promise<{ proceed: boolean; state?: string }> => ({ proceed: true }),
   ),
@@ -34,6 +40,8 @@ vi.mock("./attested-race-cache-assembler", () => ({
 vi.mock("./day-base-race-materializer", () => ({
   getDayBaseRaceFoundationReadiness: getDayBaseRaceFoundationReadinessMock,
 }));
+
+vi.mock("./day-base-manifest", () => ({ getDayBaseSource: getDayBaseSourceMock }));
 
 vi.mock("./do-state", () => ({
   failFocusedFullRaceEnqueue: failFocusedFullRaceEnqueueMock,
@@ -71,6 +79,7 @@ const basePerRace = {
 } as const;
 
 beforeEach(() => {
+  getDayBaseSourceMock.mockClear();
   sendMock.mockReset();
   sendMock.mockResolvedValue(undefined);
   failFocusedFullRaceEnqueueMock.mockClear();
@@ -710,6 +719,27 @@ test("enqueuePredict reopens a completed NAR race whose FP predates canonical RS
 
   expect(reserveFocusedFullRaceRepairMock).toHaveBeenCalledTimes(1);
   expect(sendMock).toHaveBeenCalledTimes(1);
+});
+
+test("enqueuePredict never treats a pending day-base generation as a fresh completed NAR race", async () => {
+  reserveFocusedFullRaceEnqueueMock.mockResolvedValue({ proceed: false, state: "success" });
+  featureHeadMock.mockResolvedValue({} as R2Object);
+  getDayBaseSourceMock.mockResolvedValueOnce(null);
+  await expect(
+    enqueuePredict({
+      category: "nar",
+      daysAhead: 0,
+      env: makeEnv(),
+      keibajoCode: "48",
+      mode: "full",
+      raceBango: "12",
+      runDate: "2026-08-24",
+      runYmd: "20260824",
+      skipDedup: true,
+    }),
+  ).resolves.toStrictEqual(["nar"]);
+  expect(focusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  expect(featureHeadMock).toHaveBeenCalledTimes(1);
 });
 
 test("enqueuePredict reopens a completed NAR race when canonical metadata is missing", async () => {

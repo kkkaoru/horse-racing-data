@@ -41,6 +41,191 @@ const stateMock = {
 const makeCoordinator = (env: Partial<Env> = {}): PredictRunCoordinator =>
   new PredictRunCoordinator(stateMock as unknown as DurableObjectState, env as Env);
 
+// These characterize unresolved generation-ownership gaps, not acceptance of
+// the unsafe behavior. Replace the positive stop assertions with rejection
+// when an end-to-end immutable execution fence is implemented.
+test("ownership gap: fresh resend can stop a replacement with the same work key before watch registration", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  await coordinator.clearContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  vi.setSystemTime(2_000);
+  await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  vi.setSystemTime(3_000);
+  expect(storageMap.has("focused-full-active-watches")).toBe(false);
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      requestedAt: "1970-01-01T00:00:03.000Z",
+      workKey: "focused-full:20261004:jra:05:09",
+    }),
+  ).resolves.toBe(true);
+  expect(storageMap.get("container-stop-fences")).toStrictEqual({
+    "predict-jra-1": {
+      claimedAtMs: 3_000,
+      requestedAtMs: 3_000,
+      workKey: "focused-full:20261004:jra:05:09",
+    },
+  });
+});
+
+test("ownership gap: different active watches for one work key do not fence an old completion", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(2_000);
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  storageMap.set("focused-full-active-watches", {
+    "watch-a": {
+      message: {
+        doName: "predict-jra-1",
+        watchId: "watch-a",
+        workKey: "focused-full:20261004:jra:05:09",
+      },
+    },
+    "watch-b": {
+      message: {
+        doName: "predict-jra-1",
+        watchId: "watch-b",
+        workKey: "focused-full:20261004:jra:05:09",
+      },
+    },
+  });
+  vi.setSystemTime(3_000);
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "resent-a",
+      staleAfterMs: 960_000,
+      watchId: "watch-a",
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      requestedAt: "1970-01-01T00:00:03.000Z",
+      workKey: "focused-full:20261004:jra:05:09",
+    }),
+  ).resolves.toBe(true);
+});
+
+test("ownership gap: heartbeat makes an original acquisition timestamp reject its own stop", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  vi.setSystemTime(2_000);
+  await coordinator.touchContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      requestedAt: "1970-01-01T00:00:01.000Z",
+      workKey: "focused-full:20261004:jra:05:09",
+    }),
+  ).resolves.toBe(false);
+  expect(storageMap.has("container-stop-fences")).toBe(false);
+});
+
+test("ownership gap: same-owner redelivery is allowed to dispatch again without a new lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  await expect(
+    coordinator.claimContainerSlot({
+      allowSameOwner: true,
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      workKey: "focused-full:20261004:jra:05:09",
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  vi.setSystemTime(2_000);
+  await expect(
+    coordinator.claimContainerSlot({
+      allowSameOwner: true,
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      workKey: "focused-full:20261004:jra:05:09",
+    }),
+  ).resolves.toStrictEqual({ proceed: true });
+  expect(storageMap.get("container-slots")).toStrictEqual({
+    leases: [
+      {
+        category: "jra",
+        doName: "predict-jra-1",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 1_000,
+        workKey: "focused-full:20261004:jra:05:09",
+      },
+    ],
+  });
+});
+
+test("ownership gap: legacy stopped marker resumes while a later same-key lease is stoppable", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(2_000);
+  storageMap.set("focused-full-terminal-watch:watch-a", {
+    claimId: "old-a",
+    containerStoppedAt: 1_000,
+    status: "processing",
+    timestamp: 1_000,
+  });
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  vi.setSystemTime(3_000);
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "resent-a",
+      staleAfterMs: 1_000,
+      watchId: "watch-a",
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "stopped" });
+  const response = await coordinator.fetch(
+    new Request("http://do/check-container-slot-stop", {
+      body: JSON.stringify({
+        doName: "predict-jra-1",
+        requestedAt: "1970-01-01T00:00:03.000Z",
+        workKey: "focused-full:20261004:jra:05:09",
+      }),
+      method: "POST",
+    }),
+  );
+  await expect(response.json()).resolves.toStrictEqual({ allowed: true, state: "claimed" });
+});
+
 beforeEach(() => {
   vi.useRealTimers();
   storageMap.clear();
@@ -4268,4 +4453,433 @@ test("fetch exposes focused full terminal watch claim and completion", async () 
     }),
   );
   expect(completeResponse.status).toBe(200);
+});
+
+test("fenced admission keeps immutable execution authority across heartbeat and same-generation retry", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  const admitted = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    generationId: "queue-a",
+    allowSameOwner: true,
+  });
+  expect(admitted.executionId).toBeTypeOf("string");
+  vi.setSystemTime(2_000);
+  await coordinator.touchContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "race",
+    executionId: admitted.executionId,
+  });
+  const retry = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    generationId: "queue-a",
+    allowSameOwner: true,
+  });
+  expect(retry).toStrictEqual(admitted);
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      workKey: "race",
+      generationId: "queue-b",
+      allowSameOwner: true,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      workKey: "race",
+      executionId: admitted.executionId,
+      requestedAt: "1970-01-01T00:00:01.000Z",
+    }),
+  ).resolves.toBe(true);
+});
+
+test("fenced stop clear and mark reject stale identities and legacy force", async () => {
+  const coordinator = makeCoordinator();
+  const admitted = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    generationId: "queue-a",
+  });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      workKey: "race",
+      force: true,
+      requestedAt: new Date().toISOString(),
+    }),
+  ).resolves.toBe(false);
+  await coordinator.clearContainerSlot({ doName: "predict-jra-1", workKey: "race" });
+  await coordinator.releaseContainerSlot({
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    executionId: "old",
+  });
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      workKey: "race",
+      executionId: admitted.executionId,
+      requestedAt: new Date().toISOString(),
+    }),
+  ).resolves.toBe(true);
+  await coordinator.markContainerSlotStopped({
+    doName: "predict-jra-1",
+    workKey: "race",
+    executionId: "old",
+  });
+  await coordinator.clearContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "race",
+    executionId: "old",
+  });
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      workKey: "race",
+      generationId: "queue-b",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "stopping" });
+  await coordinator.markContainerSlotStopped({
+    doName: "predict-jra-1",
+    workKey: "race",
+    executionId: admitted.executionId,
+  });
+  await coordinator.clearContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "race",
+    executionId: admitted.executionId,
+  });
+  const restarted = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    generationId: "queue-a",
+  });
+  expect(restarted.executionId).not.toBe(admitted.executionId);
+  await expect(
+    coordinator.checkContainerSlotStop({
+      doName: "predict-jra-1",
+      workKey: "race",
+      executionId: admitted.executionId,
+      requestedAt: new Date().toISOString(),
+    }),
+  ).resolves.toBe(false);
+});
+
+test("execution checks and refused-stop cancellation are conditional on the exact lease and fence", async () => {
+  const coordinator = makeCoordinator();
+  const admitted = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    workKey: "race",
+    generationId: "queue-a",
+  });
+  const identity = { doName: "predict-jra-1", workKey: "race", executionId: admitted.executionId };
+  const checked = await coordinator.fetch(
+    new Request("http://do/check-container-execution", {
+      method: "POST",
+      body: JSON.stringify(identity),
+    }),
+  );
+  expect(await checked.json()).toStrictEqual({ allowed: true });
+  await expect(
+    coordinator.checkContainerExecution({ ...identity, executionId: "old" }),
+  ).resolves.toBe(false);
+  await expect(
+    coordinator.checkContainerExecution({ doName: "predict-jra-1", workKey: "race" }),
+  ).resolves.toBe(false);
+  await coordinator.checkContainerSlotStop({ ...identity, requestedAt: new Date().toISOString() });
+  await coordinator.cancelContainerSlotStop({ ...identity, executionId: "old" });
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      generationId: "queue-b",
+      workKey: "race",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "stopping" });
+  const cancelled = await coordinator.fetch(
+    new Request("http://do/cancel-container-slot-stop", {
+      method: "POST",
+      body: JSON.stringify(identity),
+    }),
+  );
+  expect(cancelled.status).toBe(200);
+  await coordinator.cancelContainerSlotStop(identity);
+  await expect(coordinator.checkContainerExecution(identity)).resolves.toBe(true);
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      generationId: "queue-b",
+      workKey: "race",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+});
+
+test("stopped terminal evidence belongs only to the execution that physically stopped", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimFocusedFullTerminalWatch({
+    claimId: "claim-a",
+    watchId: "watch-a",
+    executionId: "execution-a",
+    staleAfterMs: 1000,
+  });
+  await expect(
+    coordinator.markFocusedFullTerminalWatchStopped({
+      claimId: "claim-a",
+      watchId: "watch-a",
+      executionId: "execution-b",
+    }),
+  ).rejects.toThrow("ownership lost");
+  await coordinator.markFocusedFullTerminalWatchStopped({
+    claimId: "claim-a",
+    watchId: "watch-a",
+    executionId: "execution-a",
+  });
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "claim-a",
+      watchId: "watch-a",
+      executionId: "execution-a",
+      staleAfterMs: 1000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "stopped" });
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "claim-a",
+      watchId: "watch-a",
+      executionId: "execution-b",
+      staleAfterMs: 1000,
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "terminal" });
+  storageMap.set("focused-full-terminal-watch:legacy-watch", {
+    status: "processing",
+    claimId: "old",
+    timestamp: 0,
+    containerStoppedAt: 100,
+  });
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "new",
+      watchId: "legacy-watch",
+      executionId: "execution-new",
+      staleAfterMs: 1000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "stale" });
+});
+
+test("atomic completion refuses old E and preserves B race and its active lane after reconstruction", async () => {
+  const coordinator = makeCoordinator();
+  const race = {
+    category: "jra",
+    runYmd: "20261004",
+    keibajoCode: "05",
+    raceBango: "09",
+    doName: "predict-jra-1",
+    staleAfterMs: 60_000,
+  };
+  await coordinator.claimFocusedFullRace(race);
+  const a = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    generationId: "a",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  await coordinator.clearContainerSlot({
+    doName: "predict-jra-1",
+    workKey: "focused-full:20261004:jra:05:09",
+    executionId: a.executionId,
+  });
+  const b = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    generationId: "b",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  const before = JSON.stringify([...storageMap]);
+  const reconstructed = makeCoordinator();
+  expect(
+    await reconstructed.completeFocusedFullRace({
+      ...race,
+      executionId: a.executionId,
+      status: "success",
+    }),
+  ).toBe(false);
+  expect(await reconstructed.completeFocusedFullRace({ ...race, status: "success" })).toBe(false);
+  expect(
+    await reconstructed.reserveFocusedFullRaceRepair({
+      ...race,
+      executionId: a.executionId,
+      reservationId: "stale-repair",
+    }),
+  ).toStrictEqual({ proceed: false, state: "superseded" });
+  expect(JSON.stringify([...storageMap]) === before).toBe(true);
+  expect(storageMap.get("focused-full:20261004:jra:05:09")).toMatchObject({
+    executionId: b.executionId,
+    status: "started",
+  });
+  expect(
+    await reconstructed.completeFocusedFullRace({
+      ...race,
+      executionId: b.executionId,
+      status: "success",
+      checkOnly: true,
+    }),
+  ).toBe(true);
+  expect(JSON.stringify([...storageMap]) === before).toBe(true);
+  expect(
+    await reconstructed.completeFocusedFullRace({
+      ...race,
+      executionId: b.executionId,
+      status: "success",
+    }),
+  ).toBe(true);
+  expect(storageMap.get("focused-full:20261004:jra:05:09")).toMatchObject({
+    executionId: b.executionId,
+    status: "success",
+  });
+  expect(storageMap.has("focused-full-lane:predict-jra-1")).toBe(false);
+});
+
+test("a live fenced slot prevents time-based race claim from erasing its admitted identity", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const coordinator = makeCoordinator();
+  const race = {
+    category: "jra",
+    runYmd: "20261004",
+    keibajoCode: "05",
+    raceBango: "09",
+    doName: "predict-jra-1",
+    staleAfterMs: 60_000,
+  };
+  await coordinator.claimFocusedFullRace(race);
+  const admitted = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    generationId: "a",
+    workKey: "focused-full:20261004:jra:05:09",
+  });
+  const before = JSON.stringify([...storageMap]);
+  vi.setSystemTime(10_000_000);
+  expect(await makeCoordinator().claimFocusedFullRace({ ...race, force: true })).toStrictEqual({
+    proceed: true,
+    state: "resumed",
+  });
+  expect(JSON.stringify([...storageMap]) === before).toBe(true);
+  expect(
+    await coordinator.completeFocusedFullRace({
+      ...race,
+      executionId: admitted.executionId,
+      status: "success",
+    }),
+  ).toBe(true);
+});
+
+test.each(["complete", "active-stale", "waiter-stale"])(
+  "lane promotion preserves stopped repair identity and budget: %s",
+  async (path) => {
+    const c = makeCoordinator();
+    const race = {
+      category: "jra",
+      runYmd: "20261004",
+      keibajoCode: "05",
+      raceBango: "11",
+      doName: "predict-jra",
+      staleAfterMs: 60_000,
+    };
+    storageMap.set("focused-full:20261004:jra:05:11", {
+      status: "started",
+      timestamp: 0,
+      doName: "predict-jra",
+      executionId: "A",
+    });
+    storageMap.set("focused-full:20261004:jra:05:12", {
+      status: "queued",
+      timestamp: 0,
+      doName: "predict-jra",
+      executionId: "B",
+      focusedFullRepairCount: 1,
+    });
+    storageMap.set("focused-full-lane:predict-jra", {
+      activeRaceKey: "focused-full:20261004:jra:05:11",
+      startedAt: 0,
+      waiters: ["focused-full:20261004:jra:05:12"],
+    });
+    if (path === "complete")
+      await c.completeFocusedFullRace({ ...race, executionId: "A", status: "success" });
+    else
+      await c.claimFocusedFullRace({ ...race, raceBango: path === "active-stale" ? "11" : "13" });
+    expect(storageMap.get("focused-full:20261004:jra:05:12")).toMatchObject({
+      executionId: "B",
+      focusedFullRepairCount: 1,
+      status: "ready",
+    });
+    expect(
+      await makeCoordinator().completeFocusedFullRace({
+        ...race,
+        raceBango: "12",
+        executionId: "B",
+        status: "success",
+        checkOnly: true,
+      }),
+    ).toBe(true);
+  },
+);
+
+test("observation has no writes and identityless slot cannot cover fenced race", async () => {
+  const c = makeCoordinator();
+  const race = {
+    category: "jra",
+    runYmd: "20261004",
+    keibajoCode: "05",
+    raceBango: "11",
+    doName: "predict-jra",
+    staleAfterMs: 60_000,
+  };
+  expect(await c.claimFocusedFullRace({ ...race, observeOnly: true })).toMatchObject({
+    proceed: true,
+  });
+  expect(storageMap.size).toBe(0);
+  storageMap.set("focused-full:20261004:jra:05:11", {
+    executionId: "A",
+    status: "success",
+    timestamp: 1,
+  });
+  expect(await c.claimFocusedFullRace({ ...race, observeOnly: true })).toStrictEqual({
+    proceed: true,
+    state: "success",
+    executionId: "A",
+  });
+  expect(
+    await c.claimContainerSlot({
+      ...race,
+      kind: "focused-full",
+      workKey: "focused-full:20261004:jra:05:11",
+    }),
+  ).toStrictEqual({ proceed: false, state: "execution-required" });
+  expect(storageMap.size).toBe(1);
 });

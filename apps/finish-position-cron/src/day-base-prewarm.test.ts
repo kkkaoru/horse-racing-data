@@ -513,11 +513,17 @@ test("a delayed forced prewarm reuses a foundation already landed by a newer gen
   logSpy.mockRestore();
 });
 
-test("prewarmCategory falls back to Container freshness when the Worker probe fails", async () => {
+test("prewarmCategory sends the owner generation when falling back to Container freshness", async () => {
   getDayBasePrewarmHitReadinessMock.mockRejectedValueOnce(new Error("Catalog unavailable"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-  await prewarmCategory({ category: "jra", daysAhead: 0, env: makeEnv(), runYmd: "20260824" });
+  await prewarmCategory({
+    category: "jra",
+    daysAhead: 0,
+    env: makeEnv(),
+    generationId: "owner-1",
+    runYmd: "20260824",
+  });
 
   expect(claimContainerSlotMock).toHaveBeenCalledTimes(1);
   expect(containerDoFetchMock).toHaveBeenCalledTimes(1);
@@ -525,7 +531,9 @@ test("prewarmCategory falls back to Container freshness when the Worker probe fa
   if (firstCall === undefined) throw new Error("expected a fetch");
   const request = firstCall[0];
   if (!isRequest(request)) throw new Error("expected a Request");
-  expect(request.url).toBe("http://do/prewarm-day-base?category=jra&daysAhead=0&runDate=20260824");
+  expect(request.url).toBe(
+    "http://do/prewarm-day-base?category=jra&daysAhead=0&runDate=20260824&generationId=owner-1",
+  );
   expect(warnSpy).toHaveBeenCalledWith(
     "[day-base-prewarm] worker-hit-check failed category=jra runYmd=20260824: Error: Catalog unavailable -- continuing to container freshness check",
   );

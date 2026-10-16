@@ -1,7 +1,7 @@
 // Run with bun.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { PredictionCacheBustOutcome } from "./prediction-cache-bust";
-import type { Env } from "./types";
+import type { Env, PredictCategory } from "./types";
 
 const { queryMock, neonMock, triggerPredictionCacheBustMock } = vi.hoisted(() => {
   const query = vi.fn(async (_sql: string, _params?: unknown[]): Promise<unknown> => []);
@@ -37,6 +37,10 @@ import {
 
 const NOON_JST_MS = Date.parse("2026-08-09T12:00:00+09:00");
 
+const artifactGetMock = vi.fn(
+  async (_key: string): Promise<Pick<R2ObjectBody, "size" | "arrayBuffer"> | null> => null,
+);
+
 const putMock = vi.fn(
   async (_key: string, _value: string, _options?: { expirationTtl: number }): Promise<void> =>
     undefined,
@@ -52,6 +56,7 @@ const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const makeEnv = (overrides: Partial<Env> = {}): Env =>
   ({
     DETAIL_SECTION_CACHE_KV: { put: putMock },
+    FEATURES_CACHE: { get: artifactGetMock },
     NEON_DATABASE_URL: "postgres://example",
     REALTIME_DB: { prepare: prepareMock },
     ...overrides,
@@ -60,6 +65,8 @@ const makeEnv = (overrides: Partial<Env> = {}): Env =>
 beforeEach(() => {
   queryMock.mockReset();
   neonMock.mockClear();
+  artifactGetMock.mockReset();
+  artifactGetMock.mockResolvedValue(null);
   triggerPredictionCacheBustMock.mockReset();
   putMock.mockReset();
   allMock.mockReset();
@@ -75,6 +82,130 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+test.each<PredictCategory>(["jra", "nar", "ban-ei"])(
+  "publishes a committed %s artifact without a Neon read",
+  async (category) => {
+    const venue = category === "jra" ? "05" : category === "nar" ? "35" : "83";
+    const modelVersion =
+      category === "nar" ? "iter40-nar-settransformer-blend-v1-nowin1" : "model-A";
+    const value = {
+      schemaVersion: 1,
+      category,
+      runYmd: "20260809",
+      keibajoCode: venue,
+      raceBango: "01",
+      generationId: "committed-generation",
+      inputFingerprint: "a".repeat(64),
+      modelVersion,
+      predictionGeneratedAt: "2026-08-09T01:00:00.000Z",
+      rows: [
+        {
+          horseNumber: "2",
+          horseId: "H2",
+          predictedRank: 1,
+          predictedScore: 2,
+          predictedTop1Prob: null,
+          predictedTop3Prob: null,
+        },
+        {
+          horseNumber: "1",
+          horseId: "H1",
+          predictedRank: 2,
+          predictedScore: 1,
+          predictedTop1Prob: 0.25,
+          predictedTop3Prob: 0.75,
+        },
+      ],
+    };
+    const bytes = await new Response(JSON.stringify(value)).arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    artifactGetMock.mockResolvedValue({ size: bytes.byteLength, arrayBuffer: async () => bytes });
+    const result = await publishFinishPositionPredictionCache({
+      bustCacheApi: false,
+      category,
+      env: makeEnv(),
+      keibajoCode: venue,
+      raceBango: "1",
+      runYmd: "20260809",
+      nowMs: NOON_JST_MS,
+      predictionArtifact: {
+        key: `prediction-results/v1/${category}/20260809/${venue}/01/committed-generation/${sha256}.json`,
+        sha256,
+        generationId: value.generationId,
+        inputFingerprint: value.inputFingerprint,
+        modelVersion,
+        predictionGeneratedAt: value.predictionGeneratedAt,
+        runners: [
+          { horseId: "H1", horseNumber: "1" },
+          { horseId: "H2", horseNumber: "2" },
+        ],
+      },
+    });
+    expect(result).toStrictEqual({
+      busted: false,
+      expectedGeneratedAt: value.predictionGeneratedAt,
+      status: "written",
+    });
+    expect(neonMock).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(putMock).toHaveBeenCalledWith(
+      expect.any(String),
+      JSON.stringify(
+        mapFinishPositionPredictionFeatures([
+          {
+            umaban: "1",
+            modelVersion,
+            predictionGeneratedAt: value.predictionGeneratedAt,
+            predictedRank: 2,
+            predictedScore: 1,
+            predictedTop1Prob: 0.25,
+            predictedTop3Prob: 0.75,
+          },
+          {
+            umaban: "2",
+            modelVersion,
+            predictionGeneratedAt: value.predictionGeneratedAt,
+            predictedRank: 1,
+            predictedScore: 2,
+            predictedTop1Prob: null,
+            predictedTop3Prob: null,
+          },
+        ]),
+      ),
+      expect.objectContaining({ expirationTtl: expect.any(Number) }),
+    );
+  },
+);
+
+test("does not fall back to Neon or overwrite KV when a committed artifact is missing", async () => {
+  const sha256 = "a".repeat(64);
+  const result = await publishFinishPositionPredictionCache({
+    bustCacheApi: true,
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260809",
+    nowMs: NOON_JST_MS,
+    predictionArtifact: {
+      key: `prediction-results/v1/jra/20260809/05/01/committed-generation/${sha256}.json`,
+      sha256,
+      generationId: "committed-generation",
+      inputFingerprint: sha256,
+      modelVersion: "model-A",
+      predictionGeneratedAt: "2026-08-09T01:00:00.000Z",
+      runners: [{ horseId: "H1", horseNumber: "1" }],
+    },
+  });
+  expect(result.status).toBe("error");
+  expect(neonMock).not.toHaveBeenCalled();
+  expect(putMock).not.toHaveBeenCalled();
+  expect(triggerPredictionCacheBustMock).not.toHaveBeenCalled();
 });
 
 test("mapFinishPositionPredictionFeatures returns empty for no rows", () => {
@@ -516,7 +647,7 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
     "05",
     "11",
     "jra",
-    "iter40-nar-settransformer-blend-v1",
+    "iter40-nar-settransformer-blend-v1-nowin1",
   ]);
   const selectionSql = queryMock.mock.calls[0]?.[0] ?? "";
   expect(selectionSql).toMatch(/when \$6 = 'nar' and model_version = \$7 then 0/u);
@@ -555,14 +686,14 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
 test("publishFinishPositionPredictionCache uses yesterday TTL and busts after overwrite", async () => {
   queryMock.mockResolvedValue([
     {
-      model_version: "iter12-nar-xgb-hpo-v8-clean188",
+      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
       predicted_rank: 1,
       predicted_score: 1.2,
       prediction_generated_at: "2026-08-08T01:15:00.000Z",
       umaban: 1,
     },
     {
-      model_version: "iter12-nar-xgb-hpo-v8-clean188",
+      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
       predicted_rank: 2,
       predicted_score: 0.4,
       prediction_generated_at: "2026-08-08T01:16:00.000Z",
@@ -637,10 +768,10 @@ test("publishFinishPositionPredictionCache uses tomorrow TTL and reports busted 
     "83",
     "12",
     "ban-ei",
-    "iter40-nar-settransformer-blend-v1",
+    "iter40-nar-settransformer-blend-v1-nowin1",
   ]);
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260810:83:12", putMock.mock.calls[0]?.[1], {
-    expirationTtl: 86400,
+    expirationTtl: 259200,
   });
 });
 

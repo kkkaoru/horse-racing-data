@@ -76,3 +76,14 @@ test("disables callbacks when no public callback URL is configured", async () =>
     buildFocusedFullCompletionCallbackUrl({ TRIGGER_TOKEN: "callback-signing-secret" }, WATCH),
   ).resolves.toBeUndefined();
 });
+
+test("late signed callback preserves execution identity instead of minting authority", async () => {
+  const url = await buildFocusedFullCompletionCallbackUrl(ENV, {
+    ...WATCH,
+    executionId: "execution-a",
+  });
+  if (url === undefined) throw new Error("Missing callback");
+  const send = vi.fn(async () => undefined);
+  await handleFocusedFullCompletionCallback(new Request(url), ENV, { now: () => 999999999, send });
+  expect(send).toHaveBeenCalledWith(ENV, expect.objectContaining({ executionId: "execution-a" }));
+});

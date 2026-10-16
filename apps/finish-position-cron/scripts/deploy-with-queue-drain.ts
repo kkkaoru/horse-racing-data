@@ -117,7 +117,12 @@ const waitForContainerDrain = async (): Promise<void> => {
 
 const deployWorkerAndContainers = async (attemptsRemaining: number): Promise<void> => {
   try {
-    await runCommand(buildDeploymentCommand(process.env.PREDICTION_DEPLOY_CONFIG));
+    await runCommand(
+      buildDeploymentCommand(
+        process.env.PREDICTION_DEPLOY_CONFIG,
+        process.env.PREDICTION_WORKER_ONLY === "1",
+      ),
+    );
   } catch (error) {
     if (attemptsRemaining <= 1) throw error;
     console.log(

@@ -3,6 +3,22 @@
 
 import { expect, test, vi } from "vitest";
 
+const getDayBaseSourceMock = vi.hoisted(() =>
+  vi.fn(
+    async (input: {
+      category: string;
+      env: { FEATURES_CACHE: { head(key: string): Promise<unknown> } };
+      runYmd: string;
+    }) => {
+      const key = `feat-daybase/catalog-v1/${input.category}/${input.runYmd}/features.parquet`;
+      const object = await input.env.FEATURES_CACHE.head(key);
+      return object === null ? null : { key, object };
+    },
+  ),
+);
+
+vi.mock("./day-base-manifest", () => ({ getDayBaseSource: getDayBaseSourceMock }));
+
 import {
   buildMarketSignalFoundationKey,
   marketSignalFoundationEnabled,
@@ -225,7 +241,11 @@ const enabledInput = (
   bucket: MarketSignalFoundationBucket,
 ): MaterializeMarketSignalFoundationInput => ({
   category: "jra",
-  env: { FEATURES_CACHE: bucket, WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1" },
+  env: {
+    FEATURES_CACHE: bucket,
+    FINISH_POSITION_CRON_DB: {} as D1Database,
+    WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED: "1",
+  },
   keibajoCode: "5",
   liveOddsByHorseNumber: new Map([
     [1, { tanshoNinkijun: 1, tanshoOdds: 2 }],
@@ -472,6 +492,15 @@ test.each([
     reason,
     status: "fallback",
   });
+});
+
+test("materializeMarketSignalFoundation refuses a pending day-base generation", async () => {
+  const fixture = makeBucket();
+  getDayBaseSourceMock.mockResolvedValueOnce(null);
+  await expect(
+    materializeMarketSignalFoundation(enabledInput(fixture.bucket)),
+  ).resolves.toStrictEqual({ reason: "source-unavailable", status: "fallback" });
+  expect(fixture.head).not.toHaveBeenCalledWith(SOURCE_KEY);
 });
 
 test("materializeMarketSignalFoundation rejects missing foundation objects", async () => {

@@ -24,6 +24,8 @@ const ODDS_LOG_NUMERATOR_FLOOR = 1;
 const CLAMP_MIN = 0;
 const CLAMP_MAX = 1;
 const POPULARITY_RUNNER_FLOOR = 1;
+const WEIGHT_ZSCORE_MIN_VOLATILITY: number = 1;
+const WEIGHT_ZSCORE_CLAMP: number = 5;
 
 // Empirical training medians, per category, mirroring the builder constants
 // (POPULARITY_SCORE_MEDIAN_* / ODDS_SCORE_MEDIAN_*). Ban-ei shares the NAR
@@ -108,6 +110,22 @@ const computeWeightDiff = (weight: WeightSnapshot): number | null => {
   if (weight.currentBataiju === null || weight.weightAvg5 === null) return null;
   return weight.currentBataiju - weight.weightAvg5;
 };
+
+// DuckDB GREATEST ignores NULL: missing difference maps to -5, volatility to 1.
+export const computeWeightZscore = (
+  weightDifference: number | null,
+  volatility: number | null,
+): number =>
+  weightDifference === null
+    ? -WEIGHT_ZSCORE_CLAMP
+    : Math.min(
+        WEIGHT_ZSCORE_CLAMP,
+        Math.max(
+          -WEIGHT_ZSCORE_CLAMP,
+          weightDifference /
+            Math.max(volatility ?? WEIGHT_ZSCORE_MIN_VOLATILITY, WEIGHT_ZSCORE_MIN_VOLATILITY),
+        ),
+      );
 
 export interface LateBindingInput {
   odds: OddsSnapshot;

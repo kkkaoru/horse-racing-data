@@ -4,7 +4,8 @@
 // valid but permanently incomplete. Compare the distinct races already present
 // in D1 with the authoritative Catalog race keys before any Container starts.
 
-import type { RaceEntry } from "./cron-decision";
+import { isOverseasKeibajoCode, type RaceEntry } from "./cron-decision";
+import { fetchBulkCatalogEntries } from "./prediction-readiness";
 import type { Env, PredictCategory } from "./types";
 
 interface DayBaseDiscoveryReadinessParams {
@@ -30,7 +31,7 @@ const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 const BAN_EI_VENUE_CODE = "83";
 const DISCOVERY_CATEGORY_PREDICATES: Readonly<Record<PredictCategory, string>> = {
   "ban-ei": "source = 'nar' and printf('%02d', cast(keibajo_code as integer)) = '83'",
-  jra: "source = 'jra'",
+  jra: "source = 'jra' and keibajo_code not glob '[A-Z]*'",
   nar: "source = 'nar' and printf('%02d', cast(keibajo_code as integer)) <> '83'",
 };
 
@@ -72,7 +73,9 @@ const fetchExpectedRaces = async (
   const catalogPayload: CatalogRaceKeysPayload = { rows: payload.rows };
   const categoryRaces = catalogPayload.rows
     .map(parseCatalogRace)
-    .filter((race) => race.category === params.category);
+    .filter(
+      (race) => race.category === params.category && !isOverseasKeibajoCode(race.keibajoCode),
+    );
   return [
     ...new Map(
       categoryRaces.map((race) => [`${race.keibajoCode}:${race.raceBango}`, race] as const),
@@ -107,18 +110,25 @@ const fetchDiscoveredRaceCount = async (
 export const getDayBaseDiscoveryReadiness = async (
   params: DayBaseDiscoveryReadinessParams,
 ): Promise<DayBaseDiscoveryReadiness> => {
+  const discoveredRaceCount = await fetchDiscoveredRaceCount(params);
+  // No D1 races means no usable day-base, regardless of Catalog availability.
+  if (discoveredRaceCount === 0) return { ready: false, reason: "discovery-races-empty" };
   const expectedRaces = await fetchExpectedRaces(params);
   const expectedRaceCount = expectedRaces.length;
   if (expectedRaceCount === 0) return { ready: false, reason: "catalog-races-empty" };
-  const discoveredRaceCount = await fetchDiscoveredRaceCount(params);
   if (discoveredRaceCount !== expectedRaceCount) {
     return {
       ready: false,
       reason: `discovery-race-count-${String(discoveredRaceCount)}-of-${String(expectedRaceCount)}`,
     };
   }
-  // Do not gate the foundation on running-style completion: the running-style
-  // planner itself requires this foundation before it can enqueue inference.
-  // Catalog/D1 discovery parity is the complete pre-generation barrier.
+  // Race keys may arrive before the runners used to build the foundation.
+  // Do not cold-start a Container for a day with absent or partial entries.
+  const entries = await fetchBulkCatalogEntries(params.env, params.runYmd, params.category);
+  const entryRaces = new Set(entries.map((entry) => `${entry.keibajo_code}:${entry.race_bango}`));
+  if (expectedRaces.some((race) => !entryRaces.has(`${race.keibajoCode}:${race.raceBango}`))) {
+    return { ready: false, reason: "catalog-race-entries-incomplete" };
+  }
+  // Running-style inference still needs the foundation and is not a prerequisite.
   return { ready: true, reason: "ready" };
 };

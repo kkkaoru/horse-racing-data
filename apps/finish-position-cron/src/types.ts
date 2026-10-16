@@ -14,6 +14,16 @@ export interface CatalogServiceBinding {
   fetch(request: Request): Promise<Response>;
 }
 
+export interface RaceDayWorkflowPayload {
+  category: PredictCategory;
+  daysAhead: number;
+  generationId: string;
+  mode: "fanout" | "prewarm-only";
+  repairOwner: boolean;
+  runYmd: string;
+  warmHeatmap?: boolean;
+}
+
 export interface RunningStylePlanJobMessage {
   date: string;
   type: "plan-running-style-predictions";
@@ -27,6 +37,9 @@ export interface Env {
   FINISH_POSITION_RACE_CHAIN_CONTAINER?: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_RESCORE_CONTAINER?: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_CRON_DB: D1Database;
+  // During reader rollout, manifest-absent days may use the legacy alias.
+  // Flip to "1" only after backfilling live category/day pointers.
+  DAY_BASE_MANIFEST_REQUIRED?: string;
   // Read-only D1 binding to the sync-realtime-data DB. The per-race coordinator
   // reads realtime_race_sources.race_start_at_jst (JST ISO post-time) from here
   // to gate which races are within their T-X rescore window. Same source the
@@ -48,11 +61,7 @@ export interface Env {
   // so Cloudflare Access on the public viewer hostname cannot reject them.
   // Optional to preserve the public-origin fallback in local/test runtimes.
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
-  RACE_DAY_WORKFLOW?: Workflow<{
-    category: PredictCategory;
-    runYmd: string;
-    warmHeatmap?: boolean;
-  }>;
+  RACE_DAY_WORKFLOW?: Workflow<RaceDayWorkflowPayload>;
   // Optional viewer origin override for prediction-cache-bust. Unset/blank
   // falls back to https://pc-keiba-viewer.kkk4oru.com.
   PC_KEIBA_VIEWER_ORIGIN?: string;
@@ -280,6 +289,8 @@ export interface DayBasePrewarmMessage {
 }
 
 export interface ContainerControlMessage {
+  requireStopped?: boolean;
+  executionId?: string;
   type: "container-stop";
   // A lifecycle may atomically transfer a Container lease between a small,
   // explicit set of owners before its terminal stop is consumed. The stop
@@ -298,6 +309,8 @@ export interface ContainerControlMessage {
 }
 
 export interface ContainerCleanupMessage {
+  requireStopped?: boolean;
+  executionId?: string;
   type: "container-cleanup";
   acceptableWorkKeys?: string[];
   attempt: number;
@@ -307,6 +320,7 @@ export interface ContainerCleanupMessage {
 }
 
 export interface PredictionCacheRepairMessage {
+  executionId?: string;
   type: "prediction-cache-repair";
   category: PredictCategory;
   keibajoCode: string;
@@ -323,6 +337,8 @@ export interface PredictionCacheRepairMessage {
 export type FocusedFullWatchOutcome = "error" | "missing" | "success" | "timeout";
 
 export interface FocusedFullWatchPayload {
+  // Minted atomically by slot admission; never reconstructed by callbacks.
+  executionId?: string;
   body: PredictQueueMessage;
   doName: string;
   role: "legacy" | "race-chain";

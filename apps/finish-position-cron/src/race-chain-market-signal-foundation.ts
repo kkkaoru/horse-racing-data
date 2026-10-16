@@ -4,7 +4,7 @@
 // must validate every attestation field and retain the legacy Container market
 // layer on any miss or mismatch.
 
-import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseSource } from "./day-base-manifest";
 import {
   buildDayBaseRaceFoundationKey,
   buildDayBaseRaceManifestKey,
@@ -84,7 +84,9 @@ export interface MarketSignalFoundationBucket {
 }
 
 export interface MarketSignalFoundationEnv {
+  DAY_BASE_MANIFEST_REQUIRED?: string;
   FEATURES_CACHE: MarketSignalFoundationBucket;
+  FINISH_POSITION_CRON_DB: D1Database;
   WORKER_MARKET_SIGNAL_FOUNDATION_ENABLED?: string;
 }
 
@@ -351,6 +353,7 @@ const entrySetHashFor = async (
 const validateBaseFoundation = async (
   input: MaterializeMarketSignalFoundationInput,
   source: MarketSignalFoundationObject,
+  sourceKey: string,
   manifest: LoadedJson,
   foundation: LoadedJson,
   raceId: string,
@@ -361,7 +364,7 @@ const validateBaseFoundation = async (
   const manifestContract: unknown = manifest.value.contract;
   const raceContract: unknown = foundation.value.contract;
   if (!isRecord(manifestContract) || !isRecord(raceContract)) return null;
-  const sourceIdentity: ObjectIdentity = objectIdentity(buildDayBaseObjectKey(input), source);
+  const sourceIdentity: ObjectIdentity = objectIdentity(sourceKey, source);
   const manifestSource: ObjectIdentity | null = sourceFrom(manifest.value.source);
   const raceSource: ObjectIdentity | null = sourceFrom(foundation.value.source);
   if (
@@ -601,7 +604,6 @@ export const materializeMarketSignalFoundation = async (
   }
   const totalStart: number = dependencies.now();
   const raceId: string = `jra:${input.runYmd.slice(0, 4)}:${input.runYmd.slice(4)}:${input.keibajoCode.padStart(PAD_WIDTH, "0")}:${input.raceBango.padStart(PAD_WIDTH, "0")}`;
-  const sourceKey: string = buildDayBaseObjectKey(input);
   const foundationKey: string = buildDayBaseRaceFoundationKey(
     input.category,
     input.runYmd,
@@ -609,12 +611,16 @@ export const materializeMarketSignalFoundation = async (
     input.raceBango,
   );
   const manifestKey: string = buildDayBaseRaceManifestKey(input.category, input.runYmd);
-  const [source, manifest, foundation] = await Promise.all([
-    input.env.FEATURES_CACHE.head(sourceKey),
+  const [sourceRef, manifest, foundation] = await Promise.all([
+    getDayBaseSource(input),
     readBoundedJson(input.env.FEATURES_CACHE, manifestKey, MAX_MANIFEST_BYTES),
     readBoundedJson(input.env.FEATURES_CACHE, foundationKey, MAX_FOUNDATION_BYTES),
   ]);
-  if (source === null || source.size <= 0 || source.size > MAX_SOURCE_BYTES) {
+  if (
+    sourceRef === null ||
+    sourceRef.object.size <= 0 ||
+    sourceRef.object.size > MAX_SOURCE_BYTES
+  ) {
     return { reason: "source-unavailable", status: "fallback" };
   }
   if (manifest === null || foundation === null) {
@@ -622,7 +628,8 @@ export const materializeMarketSignalFoundation = async (
   }
   const base: ValidatedBaseFoundation | null = await validateBaseFoundation(
     input,
-    source,
+    sourceRef.object,
+    sourceRef.key,
     manifest,
     foundation,
     raceId,

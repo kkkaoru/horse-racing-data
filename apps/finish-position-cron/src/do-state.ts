@@ -35,6 +35,7 @@ const DO_HOST = "http://do";
 const HTTP_OK = 200;
 
 interface ClaimResult {
+  executionId?: string;
   proceed: boolean;
   state?: string;
 }
@@ -69,6 +70,7 @@ interface ClaimRescoreRaceParams extends ClaimRaceParams {
 }
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  observeOnly?: boolean;
   doName?: string;
   staleAfterMs: number;
   force?: boolean;
@@ -76,10 +78,13 @@ interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
 }
 
 interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
+  checkOnly?: boolean;
+  executionId?: string;
   status: string;
 }
 
 interface ClaimFocusedFullTerminalWatchParams {
+  executionId?: string;
   claimId: string;
   env: Env;
   staleAfterMs: number;
@@ -87,12 +92,14 @@ interface ClaimFocusedFullTerminalWatchParams {
 }
 
 interface CompleteFocusedFullTerminalWatchParams {
+  executionId?: string;
   claimId: string;
   env: Env;
   watchId: string;
 }
 
 interface ReserveFocusedFullRaceEnqueueParams extends ClaimRaceParams {
+  executionId?: string;
   raceStartAtJst?: string;
   reservationId: string;
   staleAfterMs: number;
@@ -114,6 +121,7 @@ interface CompleteRescoreRaceParams extends ClaimRaceParams {
 }
 
 interface ClaimContainerSlotParams {
+  generationId?: string;
   allowSameOwner?: boolean;
   category: string;
   doName: string;
@@ -125,6 +133,7 @@ interface ClaimContainerSlotParams {
 }
 
 interface ReleaseContainerSlotParams {
+  executionId?: string;
   doName: string;
   env: Env;
   kind: ContainerSlotKind;
@@ -132,6 +141,7 @@ interface ReleaseContainerSlotParams {
 }
 
 interface TouchContainerSlotParams {
+  executionId?: string;
   doName: string;
   env: Env;
   staleAfterMs?: number;
@@ -139,6 +149,7 @@ interface TouchContainerSlotParams {
 }
 
 interface ClearContainerSlotParams {
+  executionId?: string;
   acceptableWorkKeys?: string[];
   doName: string;
   env: Env;
@@ -146,6 +157,7 @@ interface ClearContainerSlotParams {
 }
 
 interface CheckContainerSlotStopParams {
+  executionId?: string;
   acceptableWorkKeys?: string[];
   allowUnowned?: boolean;
   doName: string;
@@ -314,6 +326,7 @@ export const claimContainerSlotStop = async (
   const response = await stub.fetch(
     new Request(`${DO_HOST}${CHECK_CONTAINER_SLOT_STOP_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         acceptableWorkKeys: params.acceptableWorkKeys,
         allowUnowned: params.allowUnowned,
         doName: params.doName,
@@ -336,6 +349,7 @@ export const markContainerSlotStopped = async (params: ClearContainerSlotParams)
   const response = await stub.fetch(
     new Request(`${DO_HOST}${MARK_CONTAINER_SLOT_STOPPED_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         acceptableWorkKeys: params.acceptableWorkKeys,
         doName: params.doName,
         workKey: params.workKey,
@@ -365,6 +379,7 @@ export const claimFocusedFullRace = async (
             keibajoCode: params.keibajoCode,
             raceBango: params.raceBango,
           }),
+        ...(params.observeOnly === undefined ? {} : { observeOnly: params.observeOnly }),
         force: params.force === true,
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
@@ -381,6 +396,10 @@ export const claimFocusedFullRace = async (
   }
   return response.json() as Promise<ClaimResult>;
 };
+
+// Observe only the requested race; never derive authority from a Container's lease.
+export const observeFocusedFullAuthority = (params: ClaimRaceParams): Promise<ClaimResult> =>
+  claimFocusedFullRace({ ...params, observeOnly: true, staleAfterMs: 0 });
 
 export const reserveFocusedFullRaceEnqueue = async (
   params: ReserveFocusedFullRaceEnqueueParams,
@@ -426,6 +445,7 @@ export const reserveFocusedFullRaceRepair = async (
   const response = await stub.fetch(
     new Request(`${DO_HOST}${RESERVE_FOCUSED_FULL_RACE_REPAIR_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         category: params.category,
         doName,
         keibajoCode: params.keibajoCode,
@@ -502,6 +522,8 @@ export const completeFocusedFullRace = async (
   const response = await stub.fetch(
     new Request(`${DO_HOST}${COMPLETE_FOCUSED_FULL_RACE_PATH}`, {
       body: JSON.stringify({
+        checkOnly: params.checkOnly,
+        executionId: params.executionId,
         category: params.category,
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
@@ -512,6 +534,7 @@ export const completeFocusedFullRace = async (
       method: "POST",
     }),
   );
+  if (response.status === 409) throw new Error("FOCUSED_FULL_EXECUTION_NOT_OWNED");
   if (response.status !== HTTP_OK) {
     throw new Error(`DO complete-focused-full-race failed: ${response.status}`);
   }
@@ -524,6 +547,7 @@ export const claimFocusedFullTerminalWatch = async (
   const response = await stub.fetch(
     new Request(`${DO_HOST}${CLAIM_FOCUSED_FULL_TERMINAL_WATCH_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         claimId: params.claimId,
         staleAfterMs: params.staleAfterMs,
         watchId: params.watchId,
@@ -544,7 +568,11 @@ export const completeFocusedFullTerminalWatch = async (
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${COMPLETE_FOCUSED_FULL_TERMINAL_WATCH_PATH}`, {
-      body: JSON.stringify({ claimId: params.claimId, watchId: params.watchId }),
+      body: JSON.stringify({
+        executionId: params.executionId,
+        claimId: params.claimId,
+        watchId: params.watchId,
+      }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),
@@ -560,7 +588,11 @@ export const markFocusedFullTerminalWatchStopped = async (
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${MARK_FOCUSED_FULL_TERMINAL_WATCH_STOPPED_PATH}`, {
-      body: JSON.stringify({ claimId: params.claimId, watchId: params.watchId }),
+      body: JSON.stringify({
+        executionId: params.executionId,
+        claimId: params.claimId,
+        watchId: params.watchId,
+      }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),
@@ -616,6 +648,7 @@ export const claimContainerSlot = async (
   const response = await stub.fetch(
     new Request(`${DO_HOST}${CLAIM_CONTAINER_SLOT_PATH}`, {
       body: JSON.stringify({
+        generationId: params.generationId,
         allowSameOwner: params.allowSameOwner,
         category: params.category,
         doName: params.doName,
@@ -638,7 +671,12 @@ export const releaseContainerSlot = async (params: ReleaseContainerSlotParams): 
   const stub = getCoordinatorStub(params.env);
   const response = await stub.fetch(
     new Request(`${DO_HOST}${RELEASE_CONTAINER_SLOT_PATH}`, {
-      body: JSON.stringify({ doName: params.doName, kind: params.kind, workKey: params.workKey }),
+      body: JSON.stringify({
+        executionId: params.executionId,
+        doName: params.doName,
+        kind: params.kind,
+        workKey: params.workKey,
+      }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     }),
@@ -653,6 +691,7 @@ export const touchContainerSlot = async (params: TouchContainerSlotParams): Prom
   const response = await stub.fetch(
     new Request(`${DO_HOST}${TOUCH_CONTAINER_SLOT_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         doName: params.doName,
         staleAfterMs: params.staleAfterMs,
         workKey: params.workKey,
@@ -671,6 +710,7 @@ export const clearContainerSlot = async (params: ClearContainerSlotParams): Prom
   const response = await stub.fetch(
     new Request(`${DO_HOST}${CLEAR_CONTAINER_SLOT_PATH}`, {
       body: JSON.stringify({
+        executionId: params.executionId,
         acceptableWorkKeys: params.acceptableWorkKeys,
         doName: params.doName,
         workKey: params.workKey,
@@ -697,4 +737,37 @@ export const getRunState = async (params: ClaimParams): Promise<unknown> => {
     throw new Error(`DO getState failed: ${response.status}`);
   }
   return response.json();
+};
+
+export const checkContainerExecution = async (
+  params: ClearContainerSlotParams,
+): Promise<boolean> => {
+  const response = await getCoordinatorStub(params.env).fetch(
+    new Request("http://do/check-container-execution", {
+      method: "POST",
+      body: JSON.stringify({
+        doName: params.doName,
+        workKey: params.workKey,
+        executionId: params.executionId,
+      }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  if (!response.ok) throw new Error("Container execution check failed");
+  return (await response.json<{ allowed: boolean }>()).allowed;
+};
+
+export const cancelContainerSlotStop = async (params: ClearContainerSlotParams): Promise<void> => {
+  const response = await getCoordinatorStub(params.env).fetch(
+    new Request("http://do/cancel-container-slot-stop", {
+      method: "POST",
+      body: JSON.stringify({
+        doName: params.doName,
+        workKey: params.workKey,
+        executionId: params.executionId,
+      }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  if (!response.ok) throw new Error("Container stop cancellation failed");
 };

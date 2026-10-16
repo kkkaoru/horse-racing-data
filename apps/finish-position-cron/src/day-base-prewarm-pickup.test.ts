@@ -9,6 +9,8 @@ const {
   getFocusedFullDayBaseReadinessMock,
   materializeDayBasePerRaceCacheMock,
   proxyResultParquetsToRMock,
+  publishDayBaseManifestMock,
+  stageDayBaseManifestMock,
 } = vi.hoisted(() => ({
   fetchCatalogRaceSourceSnapshotsMock: vi.fn(async () => new Map()),
   getDayBaseCandidateReadinessMock: vi.fn(async () => ({ ready: true, reason: "ready" })),
@@ -19,6 +21,13 @@ const {
     }),
   ),
   proxyResultParquetsToRMock: vi.fn(async () => undefined),
+  publishDayBaseManifestMock: vi.fn(async () => true),
+  stageDayBaseManifestMock: vi.fn(async () => true),
+}));
+
+vi.mock("./day-base-manifest", () => ({
+  publishDayBaseManifest: publishDayBaseManifestMock,
+  stageDayBaseManifest: stageDayBaseManifestMock,
 }));
 
 vi.mock("./attested-race-cache-assembler", () => ({
@@ -79,6 +88,8 @@ beforeEach(() => {
   materializeDayBasePerRaceCacheMock.mockClear();
   materializeDayBasePerRaceCacheMock.mockResolvedValue({ status: "materialized" });
   proxyResultParquetsToRMock.mockClear();
+  publishDayBaseManifestMock.mockReset().mockResolvedValue(true);
+  stageDayBaseManifestMock.mockReset().mockResolvedValue(true);
   getDayBaseCandidateReadinessMock.mockReset();
   getDayBaseCandidateReadinessMock.mockResolvedValue({ ready: true, reason: "ready" });
   getFocusedFullDayBaseReadinessMock.mockReset();
@@ -87,10 +98,16 @@ beforeEach(() => {
   fetchCatalogRaceSourceSnapshotsMock.mockResolvedValue(new Map());
 });
 
-test("buildDayBaseObjectKey is the catalog-v1 day-base path", () => {
+test("buildDayBaseObjectKey keeps the legacy alias while isolating each generation", () => {
   expect(buildDayBaseObjectKey({ category: "ban-ei", runYmd: "20260816" })).toBe(
     "feat-daybase/catalog-v1/ban-ei/20260816/features.parquet",
   );
+  expect(
+    buildDayBaseObjectKey({ category: "ban-ei", generationId: "owner-1", runYmd: "20260816" }),
+  ).toBe("feat-daybase/catalog-v1/ban-ei/20260816/generations/owner-1/features.parquet");
+  expect(() =>
+    buildDayBaseObjectKey({ category: "ban-ei", generationId: "../owner", runYmd: "20260816" }),
+  ).toThrow("invalid day-base generation id");
 });
 
 test("headDayBaseObject can accept an object that has no watermark metadata", async () => {
@@ -402,6 +419,301 @@ test("pickUpPrewarmDayBase PUTs a found payload through FEATURES_CACHE proxy", a
     env,
     runYmd: "20260816",
   });
+});
+
+test("owner-scoped pickup accepts only its immutable object key", async () => {
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  headMock.mockResolvedValueOnce({
+    etag: "generation-etag",
+    customMetadata: {
+      "max-data-sakusei-nengappi": "20260826",
+      "row-count": "12",
+      "rs-content-hash": "rs-hash",
+      "rs-predicted-at-max": "2026-08-26T00:00:00Z",
+      "rs-row-count": "12",
+    },
+  });
+  stubFetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        found: true,
+        parquetBase64: "YQ==",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/generations/owner-1/features.parquet",
+        daybaseWatermark: {
+          maxDataSakuseiNengappi: "20260826",
+          rowCount: 12,
+          rsContentHash: "rs-hash",
+          rsPredictedAtMax: "2026-08-26T00:00:00Z",
+          rsRowCount: 12,
+        },
+      }),
+    ),
+  );
+  const env: Env = createPickupEnv({ head: headMock });
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env,
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("landed");
+  expect(stubFetchMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: "http://do/prewarm-day-base-cache?category=nar&runDate=20260826&generationId=owner-1",
+    }),
+  );
+  expect(proxyResultParquetsToRMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      parquetKey: "feat-daybase/catalog-v1/nar/20260826/generations/owner-1/features.parquet",
+    }),
+    env,
+    false,
+  );
+  expect(publishDayBaseManifestMock).toHaveBeenCalledWith(
+    expect.objectContaining({ etag: "generation-etag", generationId: "owner-1" }),
+  );
+
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  stubFetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        found: true,
+        parquetBase64: "YQ==",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/features.parquet",
+        daybaseWatermark: {
+          maxDataSakuseiNengappi: "20260826",
+          rowCount: 12,
+          rsPredictedAtMax: "2026-08-26T00:00:00Z",
+          rsRowCount: 12,
+        },
+      }),
+    ),
+  );
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env,
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("rejected");
+  expect(proxyResultParquetsToRMock).toHaveBeenCalledTimes(1);
+});
+
+test("generation-scoped pickup publishes the legacy in-process foundation before final day-base", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260826/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260826",
+        rowCount: 12,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+  getDayBaseCandidateReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "running-style-race-count-0-of-2",
+  });
+  headMock.mockResolvedValueOnce(null);
+  const env: Env = createPickupEnv({ head: headMock });
+
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env,
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("foundation-landed");
+
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: "http://do/prewarm-day-base-cache?category=nar&runDate=20260826",
+    }),
+  );
+  expect(proxyResultParquetsToRMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260826/features.parquet",
+    }),
+    env,
+    false,
+  );
+  expect(stageDayBaseManifestMock).not.toHaveBeenCalled();
+});
+
+test("generation-scoped pickup rejects a stale legacy foundation before reading its final result", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260826/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260825",
+        rowCount: 12,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  getDayBaseCandidateReadinessMock.mockResolvedValueOnce({
+    ready: false,
+    reason: "source-watermark-mismatch",
+  });
+
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("missing");
+
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+});
+
+test("generation-scoped pickup reads the final result after the same foundation has landed", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260826/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260826",
+        rowCount: 12,
+        rsPredictedAtMax: "none",
+        rsRowCount: 0,
+      },
+    }),
+  );
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  headMock.mockResolvedValueOnce({
+    customMetadata: {
+      "max-data-sakusei-nengappi": "20260826",
+      "row-count": "12",
+      "rs-predicted-at-max": "none",
+      "rs-row-count": "0",
+    },
+  });
+
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("missing");
+
+  expect(stubFetchMock).toHaveBeenCalledTimes(2);
+  expect(getDayBaseCandidateReadinessMock).not.toHaveBeenCalled();
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+});
+
+test("generation-scoped pickup cannot publish an RS-bearing payload as the foundation", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({
+      found: true,
+      parquetBase64: "YQ==",
+      parquetKey: "feat-running-style-base/catalog-v1/nar/20260826/features.parquet",
+      daybaseWatermark: {
+        maxDataSakuseiNengappi: "20260826",
+        rowCount: 12,
+        rsPredictedAtMax: "2026-08-26T00:00:00Z",
+        rsRowCount: 12,
+      },
+    }),
+  );
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      generationId: "owner-1",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("missing");
+
+  expect(getDayBaseCandidateReadinessMock).not.toHaveBeenCalled();
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+});
+
+test("a delayed old owner cannot PUT after ownership moves to a new generation", async () => {
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  stageDayBaseManifestMock.mockResolvedValueOnce(false);
+  stubFetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        found: true,
+        parquetBase64: "YQ==",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/generations/old-owner/features.parquet",
+        daybaseWatermark: {
+          maxDataSakuseiNengappi: "20260826",
+          rowCount: 12,
+          rsPredictedAtMax: "2026-08-26T00:00:00Z",
+          rsRowCount: 12,
+        },
+      }),
+    ),
+  );
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      generationId: "old-owner",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("stale");
+  expect(proxyResultParquetsToRMock).not.toHaveBeenCalled();
+  expect(publishDayBaseManifestMock).not.toHaveBeenCalled();
+});
+
+test("a takeover between immutable PUT and manifest commit leaves only an orphan object", async () => {
+  stubFetchMock.mockResolvedValueOnce(Response.json({ found: false }));
+  publishDayBaseManifestMock.mockResolvedValueOnce(false);
+  headMock.mockResolvedValueOnce({
+    etag: "orphan-etag",
+    customMetadata: {
+      "max-data-sakusei-nengappi": "20260826",
+      "row-count": "12",
+      "rs-predicted-at-max": "2026-08-26T00:00:00Z",
+      "rs-row-count": "12",
+    },
+  });
+  stubFetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        found: true,
+        parquetBase64: "YQ==",
+        parquetKey: "feat-daybase/catalog-v1/nar/20260826/generations/old-owner/features.parquet",
+        daybaseWatermark: {
+          maxDataSakuseiNengappi: "20260826",
+          rowCount: 12,
+          rsPredictedAtMax: "2026-08-26T00:00:00Z",
+          rsRowCount: 12,
+        },
+      }),
+    ),
+  );
+  await expect(
+    pickUpPrewarmDayBaseWithOutcome({
+      category: "nar",
+      env: createPickupEnv({ head: headMock }),
+      generationId: "old-owner",
+      runYmd: "20260826",
+    }),
+  ).resolves.toBe("stale");
+  expect(proxyResultParquetsToRMock).toHaveBeenCalledTimes(1);
+  expect(materializeDayBasePerRaceCacheMock).not.toHaveBeenCalled();
 });
 
 test("pickUpPrewarmDayBase fails closed when the per-race Worker cache cannot materialize", async () => {

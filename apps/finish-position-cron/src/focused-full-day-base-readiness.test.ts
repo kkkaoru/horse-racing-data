@@ -8,12 +8,23 @@ import {
 } from "./focused-full-day-base-readiness";
 import { computeRunningStyleContentFingerprint } from "./running-style-content-hash";
 import {
+  acquireDayBaseRepair,
   clearDayBaseRepairReservation,
   DAY_BASE_REPAIR_LEASE_TTL_MS,
+  heartbeatDayBaseRepair,
   enqueueDayBaseRepairOnce,
 } from "./day-base-repair";
 
 const featureHeadMock = vi.fn<() => Promise<R2Object | null>>();
+const getDayBaseSourceMock = vi.hoisted(() =>
+  vi.fn(async (params: { category: string; env: Env; runYmd: string }) => {
+    const key = `feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet`;
+    const object = await params.env.FEATURES_CACHE.head(key);
+    return object === null ? null : { key, object };
+  }),
+);
+
+vi.mock("./day-base-manifest", () => ({ getDayBaseSource: getDayBaseSourceMock }));
 const catalogFetchMock = vi.fn<(request: Request) => Promise<Response>>();
 const runningStyleFirstMock = vi.fn<() => Promise<Record<string, unknown> | null>>();
 const raceSourceAllMock = vi.fn<() => Promise<{ results: Record<string, unknown>[] }>>();
@@ -21,10 +32,23 @@ const runningStyleReadinessAllMock = vi.fn<() => Promise<{ results: Record<strin
 const runningStyleHashAllMock =
   vi.fn<(include: string) => Promise<{ results: Record<string, unknown>[] }>>();
 const realtimePrepareSqlMock = vi.fn<(sql: string) => void>();
-const repairFirstMock = vi.fn<() => Promise<{ category: string } | null>>();
-const repairInsertBindMock = vi.fn((..._values: unknown[]) => ({ first: repairFirstMock }));
+const repairFirstMock =
+  vi.fn<(generationId: string) => Promise<{ repair_generation_id: string } | null>>();
+const repairOwnerFirstMock = vi.fn<() => Promise<{ repair_generation_id: string } | null>>();
+const repairOwnerBindMock = vi.fn((..._values: unknown[]) => ({ first: repairOwnerFirstMock }));
+const repairInsertBindMock = vi.fn(
+  (
+    _category: string,
+    _runYmd: string,
+    _requestedAt: string,
+    generationId: string,
+    _force: number,
+    _staleBefore: string,
+  ) => ({ first: () => repairFirstMock(generationId) }),
+);
+const repairDeleteBindMock = vi.fn((..._values: unknown[]) => ({ run: repairRunMock }));
 const repairPrepareSqlMock = vi.fn<(sql: string) => void>();
-const repairRunMock = vi.fn(async () => ({ success: true }));
+const repairRunMock = vi.fn(async () => ({ success: true, meta: { changes: 1 } }));
 const queueSendMock = vi.fn(async () => undefined);
 const RACE_ENUMERATION_QUERY_FRAGMENT: string = "SELECT DISTINCT source";
 
@@ -54,7 +78,11 @@ const makeEnv = (): Env =>
         repairPrepareSqlMock(sql);
         return sql.startsWith("insert")
           ? { bind: repairInsertBindMock }
-          : { bind: vi.fn(() => ({ first: runningStyleFirstMock, run: repairRunMock })) };
+          : sql.startsWith("delete")
+            ? { bind: repairDeleteBindMock }
+            : sql.includes("select repair_generation_id")
+              ? { bind: repairOwnerBindMock }
+              : { bind: vi.fn(() => ({ first: runningStyleFirstMock, run: repairRunMock })) };
       }),
     },
     PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
@@ -83,6 +111,11 @@ const readyRunningStyleRow = (): Record<string, unknown> => ({
 beforeEach(() => {
   featureHeadMock.mockReset();
   featureHeadMock.mockResolvedValue(metadataObject());
+  getDayBaseSourceMock.mockReset().mockImplementation(async (params) => {
+    const key = `feat-daybase/catalog-v1/${params.category}/${params.runYmd}/features.parquet`;
+    const object = await params.env.FEATURES_CACHE.head(key);
+    return object === null ? null : { key, object };
+  });
   catalogFetchMock.mockReset();
   catalogFetchMock.mockImplementation(async () =>
     Response.json({ rows: [{ horse: "a" }, { horse: "b" }] }),
@@ -122,6 +155,7 @@ beforeEach(() => {
         p_oikomi: 0.4,
         p_sashi: 0.3,
         p_senkou: 0.2,
+        predicted_at_max: "2026-08-23T00:05:00Z",
         predicted_label: "nige",
         race_key: include.startsWith("jra:") ? "jra:20260823:05:01" : "nar:20260823:43:01",
       },
@@ -132,6 +166,7 @@ beforeEach(() => {
         p_oikomi: 0.3,
         p_sashi: 0.1,
         p_senkou: 0.4,
+        predicted_at_max: "2026-08-23T00:05:00Z",
         predicted_label: "senkou",
         race_key: include.startsWith("jra:") ? "jra:20260823:05:01" : "nar:20260823:43:01",
       },
@@ -160,12 +195,18 @@ beforeEach(() => {
       },
     ],
   });
-  repairFirstMock.mockReset();
+  repairFirstMock
+    .mockReset()
+    .mockImplementation(async (generationId) => ({ repair_generation_id: generationId }));
+  repairOwnerFirstMock
+    .mockReset()
+    .mockResolvedValue({ repair_generation_id: "repair-generation-current" });
+  repairOwnerBindMock.mockClear();
+  repairDeleteBindMock.mockReset();
+  repairRunMock.mockReset().mockResolvedValue({ success: true, meta: { changes: 1 } });
   realtimePrepareSqlMock.mockClear();
-  repairFirstMock.mockResolvedValue({ category: "jra" });
   repairInsertBindMock.mockClear();
   repairPrepareSqlMock.mockClear();
-  repairRunMock.mockClear();
   queueSendMock.mockReset();
   queueSendMock.mockResolvedValue(undefined);
 });
@@ -186,13 +227,21 @@ test("accepts only matching Catalog and current running-style metadata", async (
   );
 });
 
+test("rejects a pending or mismatched manifest without touching the legacy R2 alias", async () => {
+  getDayBaseSourceMock.mockResolvedValueOnce(null);
+  await expect(
+    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
+  ).resolves.toStrictEqual({ ready: false, reason: "day-base-missing-or-invalid" });
+  expect(featureHeadMock).not.toHaveBeenCalled();
+});
+
 test("accepts a NAR artifact only after the D1 running-style barrier is complete", async () => {
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: true, reason: "ready" });
 
   expect(runningStyleReadinessAllMock).toHaveBeenCalledTimes(1);
-  expect(runningStyleFirstMock).toHaveBeenCalledTimes(1);
+  expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
 test("rejects missing and malformed day-base metadata before live probes", async () => {
@@ -335,31 +384,7 @@ test("rejects an artifact while the D1 running-style mirror is empty", async () 
   await expect(
     getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
   ).resolves.toStrictEqual({ ready: false, reason: "rs-row-count-2-of-0" });
-  expect(runningStyleFirstMock).toHaveBeenCalledTimes(1);
-});
-
-test("rejects a changing D1 mirror between aggregate and fingerprint reads", async () => {
-  runningStyleHashAllMock.mockResolvedValueOnce({
-    results: [
-      {
-        horse_number: 1,
-        ketto_toroku_bango: "H1",
-        p_nige: 0.1,
-        p_oikomi: 0.4,
-        p_sashi: 0.3,
-        p_senkou: 0.2,
-        predicted_label: "nige",
-        race_key: "nar:20260823:43:01",
-      },
-    ],
-  });
-
-  await expect(
-    getFocusedFullDayBaseReadiness({ category: "nar", env: makeEnv(), runYmd: "20260823" }),
-  ).resolves.toStrictEqual({
-    ready: false,
-    reason: "running-style-fingerprint-row-count-mismatch",
-  });
+  expect(runningStyleFirstMock).not.toHaveBeenCalled();
 });
 
 test("requires per-race D1 inference completion before artifact freshness", async () => {
@@ -554,6 +579,147 @@ test("fails closed when Catalog readiness cannot be established", async () => {
   ).rejects.toThrow("PC_KEIBA_R2_CATALOG binding is unavailable");
 });
 
+test("acquires and reuses the supplied day-base owner generation", async () => {
+  repairFirstMock.mockResolvedValue({ repair_generation_id: "workflow-generation-1" });
+  const env = makeEnv();
+
+  await expect(
+    acquireDayBaseRepair({
+      category: "jra",
+      env,
+      generationId: "workflow-generation-1",
+      runYmd: "20990101",
+    }),
+  ).resolves.toStrictEqual({
+    generationId: "workflow-generation-1",
+    status: "acquired",
+  });
+  await expect(
+    acquireDayBaseRepair({
+      category: "jra",
+      env,
+      generationId: "workflow-generation-1",
+      runYmd: "20990101",
+    }),
+  ).resolves.toStrictEqual({
+    generationId: "workflow-generation-1",
+    status: "acquired",
+  });
+
+  expect(repairInsertBindMock).toHaveBeenNthCalledWith(
+    1,
+    "jra",
+    "20990101",
+    expect.any(String),
+    "workflow-generation-1",
+    0,
+    expect.any(String),
+  );
+  expect(repairInsertBindMock).toHaveBeenNthCalledWith(
+    2,
+    "jra",
+    "20990101",
+    expect.any(String),
+    "workflow-generation-1",
+    0,
+    expect.any(String),
+  );
+  expect(queueSendMock).not.toHaveBeenCalled();
+});
+
+test("reports the current owner when another generation holds a live day-base lease", async () => {
+  repairFirstMock.mockResolvedValueOnce(null);
+
+  await expect(
+    acquireDayBaseRepair({
+      category: "nar",
+      env: makeEnv(),
+      generationId: "workflow-generation-new",
+      runYmd: "20990101",
+    }),
+  ).resolves.toStrictEqual({
+    generationId: "repair-generation-current",
+    status: "busy",
+  });
+
+  expect(repairOwnerBindMock).toHaveBeenCalledWith("nar", "20990101");
+});
+
+test("reports a busy lease without an owner when it is cleared during acquisition", async () => {
+  repairFirstMock.mockResolvedValueOnce(null);
+  repairOwnerFirstMock.mockResolvedValueOnce(null);
+
+  await expect(
+    acquireDayBaseRepair({
+      category: "nar",
+      env: makeEnv(),
+      generationId: "workflow-generation-new",
+      runYmd: "20990101",
+    }),
+  ).resolves.toStrictEqual({ generationId: null, status: "busy" });
+});
+
+test("heartbeats only the matching live owner generation", async () => {
+  const now = new Date("2026-08-23T10:00:00.000Z");
+  const env = makeEnv();
+
+  await expect(
+    heartbeatDayBaseRepair({
+      category: "nar",
+      env,
+      generationId: "repair-generation-1",
+      now,
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(true);
+
+  expect(repairPrepareSqlMock).toHaveBeenCalledWith(
+    expect.stringContaining("repair_generation_id = ?3 and requested_at > ?5"),
+  );
+  expect(repairRunMock).toHaveBeenCalledOnce();
+});
+
+test("does not renew an expired or superseded owner generation", async () => {
+  repairRunMock.mockResolvedValueOnce({ success: true, meta: { changes: 0 } });
+
+  await expect(
+    heartbeatDayBaseRepair({
+      category: "jra",
+      env: makeEnv(),
+      generationId: "old-generation",
+      now: new Date("2026-08-23T10:00:00.000Z"),
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(false);
+});
+
+test("force acquisition takes over a live day-base owner with the supplied generation", async () => {
+  const env = makeEnv();
+  repairFirstMock.mockResolvedValueOnce({ repair_generation_id: "workflow-generation-forced" });
+
+  await expect(
+    acquireDayBaseRepair({
+      category: "ban-ei",
+      env,
+      force: true,
+      generationId: "workflow-generation-forced",
+      now: new Date("2026-08-23T10:00:00.000Z"),
+      runYmd: "20260823",
+    }),
+  ).resolves.toStrictEqual({
+    generationId: "workflow-generation-forced",
+    status: "acquired",
+  });
+  expect(repairInsertBindMock).toHaveBeenCalledWith(
+    "ban-ei",
+    "20260823",
+    "2026-08-23T10:00:00.000Z",
+    "workflow-generation-forced",
+    1,
+    "2026-08-23T09:15:00.000Z",
+  );
+});
+
 test("atomically enqueues one day-base repair and suppresses duplicates", async () => {
   const env = makeEnv();
 
@@ -574,6 +740,18 @@ test("atomically enqueues one day-base repair and suppresses duplicates", async 
     runYmd: "20990101",
     type: "day-base-prewarm",
   });
+  expect(repairInsertBindMock).toHaveBeenCalledWith(
+    "jra",
+    "20990101",
+    expect.any(String),
+    expect.any(String),
+    0,
+    expect.any(String),
+  );
+  const reservedGenerationId = repairInsertBindMock.mock.calls[0]?.[3];
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ generationId: reservedGenerationId }),
+  );
 });
 
 test("rejects force on an old-date day-base repair message before reserving", async () => {
@@ -591,6 +769,58 @@ test("rejects force on an old-date day-base repair message before reserving", as
   expect(repairPrepareSqlMock).not.toHaveBeenCalled();
 });
 
+test("forced rebuild does not replace a live day-base owner", async () => {
+  repairFirstMock.mockResolvedValueOnce(null);
+  repairOwnerFirstMock.mockResolvedValueOnce({ repair_generation_id: "workflow-generation" });
+
+  await expect(
+    enqueueDayBaseRepairOnce({
+      category: "nar",
+      env: makeEnv(),
+      force: true,
+      now: new Date("2026-08-23T10:00:00.000Z"),
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe("already-enqueued");
+
+  expect(repairInsertBindMock).toHaveBeenCalledWith(
+    "nar",
+    "20260823",
+    "2026-08-23T10:00:00.000Z",
+    expect.any(String),
+    0,
+    "2026-08-23T09:15:00.000Z",
+  );
+  expect(queueSendMock).not.toHaveBeenCalled();
+});
+
+test("forced rebuild is forwarded to the Queue without force-acquiring its reservation", async () => {
+  repairFirstMock.mockResolvedValueOnce({ repair_generation_id: "repair-generation-1" });
+  const now = new Date("2026-08-23T10:00:00.000Z");
+
+  await expect(
+    enqueueDayBaseRepairOnce({
+      category: "nar",
+      env: makeEnv(),
+      force: true,
+      now,
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe("enqueued");
+
+  expect(repairInsertBindMock).toHaveBeenCalledWith(
+    "nar",
+    "20260823",
+    "2026-08-23T10:00:00.000Z",
+    expect.any(String),
+    0,
+    "2026-08-23T09:15:00.000Z",
+  );
+  expect(queueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ force: true, generationId: expect.any(String) }),
+  );
+});
+
 test("atomically reclaims and enqueues a repair after the 45-minute lease expires", async () => {
   const now = new Date("2026-08-23T10:00:00.000Z");
   const env = makeEnv();
@@ -604,10 +834,12 @@ test("atomically reclaims and enqueues a repair after the 45-minute lease expire
     "jra",
     "20260823",
     "2026-08-23T10:00:00.000Z",
+    expect.any(String),
+    0,
     "2026-08-23T09:15:00.000Z",
   );
   expect(repairPrepareSqlMock).toHaveBeenCalledWith(
-    expect.stringContaining("where finish_position_day_base_repair_requests.requested_at <= ?4"),
+    expect.stringContaining("finish_position_day_base_repair_requests.requested_at <= ?6"),
   );
   expect(queueSendMock).toHaveBeenCalledTimes(1);
 });
@@ -619,14 +851,37 @@ test("releases the repair reservation when Queue send fails", async () => {
     enqueueDayBaseRepairOnce({ category: "nar", env: makeEnv(), runYmd: "20990101" }),
   ).rejects.toThrow("Queue unavailable");
   expect(repairRunMock).toHaveBeenCalledTimes(1);
+  expect(repairDeleteBindMock).toHaveBeenCalledWith("nar", "20990101", expect.any(String));
 });
 
-test("clears a completed repair reservation", async () => {
-  await clearDayBaseRepairReservation({
-    category: "jra",
-    env: makeEnv(),
-    runYmd: "20260823",
-  });
+test("clears only the reservation owned by the matching generation", async () => {
+  const env = makeEnv();
 
+  await expect(
+    clearDayBaseRepairReservation({
+      category: "jra",
+      env,
+      generationId: "repair-generation-1",
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(true);
+
+  expect(repairPrepareSqlMock).toHaveBeenCalledWith(
+    expect.stringContaining("and repair_generation_id = ?3"),
+  );
+  expect(repairDeleteBindMock).toHaveBeenCalledWith("jra", "20260823", "repair-generation-1");
   expect(repairRunMock).toHaveBeenCalledTimes(1);
+});
+
+test("does not clear a legacy reservation without an owner generation", async () => {
+  await expect(
+    clearDayBaseRepairReservation({
+      category: "jra",
+      env: makeEnv(),
+      runYmd: "20260823",
+    }),
+  ).resolves.toBe(false);
+
+  expect(repairDeleteBindMock).not.toHaveBeenCalled();
+  expect(repairRunMock).not.toHaveBeenCalled();
 });

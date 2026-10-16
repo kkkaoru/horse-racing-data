@@ -12,6 +12,7 @@ import { handOffContainerStopOrCleanup } from "./container-cleanup";
 import { claimContainerSlot, releaseContainerSlot } from "./do-state";
 import { fanOutPredictionsAfterDayBaseHit } from "./feature-hit-prediction";
 import { getFocusedFullDayBaseReadiness } from "./focused-full-day-base-readiness";
+import { getDayBaseDiscoveryReadiness } from "./day-base-discovery-readiness";
 import { kickRunningStylePlan } from "./running-style-kick";
 import { isOldDateRunYmd } from "./old-date-guard";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
@@ -70,17 +71,17 @@ type StaleRestartOutcome = "accepted" | "busy" | "completed" | "failed";
 
 export const DAY_BASE_PICKUP_TYPE = "day-base-pickup";
 export const DAY_BASE_PICKUP_DELAY_SECONDS = 180;
+// Production NAR finished at 13:31:20 but the next 3-minute pickup published
+// at 13:34:07. Poll closer only after the usual 15-minute build window.
+const DAY_BASE_PICKUP_LATE_DELAY_SECONDS = 60;
+const DAY_BASE_PICKUP_LATE_ATTEMPT = 5;
 // After the parquet is in R2, remaining work is Worker D1/R2 readiness (running-style
 // rows), not another 3-minute wait for the Container. Poll that on the Worker.
 export const DAY_BASE_READINESS_RETRY_SECONDS = 30;
-// The Python day-base pipeline has a 30-minute deadline. Twelve 3-minute
-// pickup polls cover 36 minutes, leaving a bounded margin for the final
-// upload/readiness check and owner-safe stop handoff. Eight polls (24 minutes)
-// could stop a still-running detached build before its 30-minute deadline,
-// which discarded the only complete day-base and forced every race into the
-// expensive full fallback. The budget remains finite so stale Queue messages
-// cannot resurrect a container indefinitely.
-export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 12;
+// The Python pipeline has a 30-minute deadline. Four 3-minute polls then
+// minute polls through attempt 26 cover 36 minutes, preserving the existing
+// bounded margin before owner-safe stop. Do not stop a live 30-minute build.
+export const DAY_BASE_PICKUP_MAX_ATTEMPTS = 26;
 export const DAY_BASE_PICKUP_FIRST_ATTEMPT = 1;
 const PREWARM_DAY_BASE_PATH: string = "/prewarm-day-base";
 const PREDICT_HOST: string = "http://do";
@@ -135,7 +136,11 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
     ...(params.generatePredictionsAfterHit ? { generatePredictionsAfterHit: true } : {}),
     ...(params.force === true ? { force: true } : {}),
   };
-  const delaySeconds = params.delaySeconds ?? DAY_BASE_PICKUP_DELAY_SECONDS;
+  const delaySeconds =
+    params.delaySeconds ??
+    (params.attempt >= DAY_BASE_PICKUP_LATE_ATTEMPT
+      ? DAY_BASE_PICKUP_LATE_DELAY_SECONDS
+      : DAY_BASE_PICKUP_DELAY_SECONDS);
   await params.env.PREDICT_QUEUE.send(message, { delaySeconds });
   console.log(
     `[day-base-pickup] scheduled category=${params.category} runYmd=${params.runYmd} attempt=${params.attempt} delaySeconds=${String(delaySeconds)}`,
@@ -145,7 +150,7 @@ export const enqueueDayBasePickup = async (params: EnqueueDayBasePickupParams): 
 const isKnownStaleReadinessReason = (reason: string): boolean =>
   STALE_ROW_COUNT_REASON_PATTERN.test(reason) || STALE_EXACT_REASONS.has(reason);
 
-const buildStaleDayBaseWorkKey = (params: DayBaseWorkKeyParams): string =>
+export const buildStaleDayBaseWorkKey = (params: DayBaseWorkKeyParams): string =>
   `day-base-stale:${params.runYmd}:${params.category}${params.generationId === undefined ? "" : `:${params.generationId}`}`;
 
 export const cleanupDayBaseWork = (params: CleanupDayBaseWorkParams): Promise<void> => {
@@ -180,6 +185,8 @@ const exhaustDayBasePickup = async (params: ExhaustDayBasePickupParams): Promise
 export const completeLandedDayBase = async (
   params: CompleteLandedDayBaseParams,
 ): Promise<number> => {
+  // Callers verified durable readiness; hand off the fenced stop before Worker-only I/O.
+  await cleanupDayBaseWork(params);
   const materialized = await assembleAttestedRaceCaches({
     category: params.category,
     env: params.env,
@@ -190,30 +197,13 @@ export const completeLandedDayBase = async (
       `per-race foundation warm failed category=${params.category} runYmd=${params.runYmd} reason=${materialized.reason}`,
     );
   }
-  const racesEnqueued = await (
-    params.generatePredictionsAfterHit
-      ? fanOutPredictionsAfterDayBaseHit({
-          category: params.category,
-          env: params.env,
-          runYmd: params.runYmd,
-        })
-      : Promise.resolve(0)
-  ).catch(async (completionError: unknown): Promise<never> => {
-    try {
-      await cleanupDayBaseWork(params);
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [completionError, cleanupError],
-        `Day-base completion and Container cleanup failed category=${params.category} runYmd=${params.runYmd}`,
-      );
-    }
-    throw completionError;
-  });
-  // Keep the coordinator lease until the stop consumer destroys the exact
-  // owner and clears its slot. Releasing first creates a race where a newer
-  // same-day claim can appear before the delayed stop is checked.
-  await cleanupDayBaseWork(params);
-  return racesEnqueued;
+  return params.generatePredictionsAfterHit
+    ? fanOutPredictionsAfterDayBaseHit({
+        category: params.category,
+        env: params.env,
+        runYmd: params.runYmd,
+      })
+    : 0;
 };
 
 const fetchStaleDayBaseRestart = async (
@@ -227,6 +217,7 @@ const fetchStaleDayBaseRestart = async (
     daysAhead: String(STALE_REBUILD_DAYS_AHEAD),
     runDate: params.runYmd,
   });
+  if (params.generationId !== undefined) searchParams.set("generationId", params.generationId);
   const response = await stub.fetch(
     new Request(`${PREDICT_HOST}${PREWARM_DAY_BASE_PATH}?${searchParams.toString()}`),
   );
@@ -444,13 +435,50 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     });
     return;
   }
-  // After the first force attempt, FEATURES_CACHE is the source of truth.
-  // Hitting /prewarm-day-base-cache on every retry keeps a standard-4 warm
-  // for hours while running-style rows catch up.
+  // Race keys can precede the runners needed for a usable foundation. A
+  // delayed pickup must not cold-start a stopped Container just to discover
+  // that its input is still absent (or Catalog is temporarily unavailable).
+  const discovery = await getDayBaseDiscoveryReadiness({ category, env, runYmd }).catch((error) => {
+    console.warn(
+      `[day-base-pickup] discovery check failed category=${category} runYmd=${runYmd}: ${String(error)}`,
+    );
+    return { ready: false, reason: "discovery-check-failed" };
+  });
+  if (!discovery.ready) {
+    console.warn(
+      `[day-base-pickup] discovery deferred category=${category} runYmd=${runYmd} reason=${discovery.reason}`,
+    );
+    if (attempt >= DAY_BASE_PICKUP_MAX_ATTEMPTS) {
+      await exhaustDayBasePickup({
+        attempt,
+        category,
+        env,
+        ...dayBaseGenerationFields(generationId),
+        runYmd,
+      });
+      return;
+    }
+    await enqueueDayBasePickup({
+      attempt: attempt + 1,
+      category,
+      env,
+      ...dayBaseGenerationFields(generationId),
+      ...(message.generatePredictionsAfterHit === true
+        ? { generatePredictionsAfterHit: true }
+        : {}),
+      ...(message.force === true ? { force: true } : {}),
+      runYmd,
+    });
+    return;
+  }
+  // Legacy pickups can use the canonical cache after the first attempt.
+  // Generation-scoped pickups must reach the matching object and manifest;
+  // an older canonical object cannot publish the active generation.
   const skipWorkerObjectHead = attempt === DAY_BASE_PICKUP_FIRST_ATTEMPT;
-  const cachedObject = skipWorkerObjectHead
-    ? null
-    : await headDayBaseObject({ category, env, requireWatermark: false, runYmd });
+  const cachedObject =
+    skipWorkerObjectHead || generationId !== undefined
+      ? null
+      : await headDayBaseObject({ category, env, requireWatermark: false, runYmd });
   if (cachedObject !== null) {
     await finishFoundationPickup({
       attempt,
@@ -463,10 +491,13 @@ export const consumeDayBasePickup = async (params: ConsumeDayBasePickupParams): 
     return;
   }
   // An old R2 object can still be present while the detached build is
-  // producing a new watermark. Only a successful container pickup may prove
-  // this generation landed; presence alone must not acknowledge the message
-  // on the first forced rebuild.
-  const pickupOutcome = await pickUpPrewarmDayBaseWithOutcome({ category, env, runYmd });
+  // producing a new watermark. Only a scoped pickup may publish this generation.
+  const pickupOutcome = await pickUpPrewarmDayBaseWithOutcome({
+    category,
+    env,
+    ...dayBaseGenerationFields(generationId),
+    runYmd,
+  });
   if (pickupOutcome === "transient-error") {
     throw new Error(
       `Transient day-base pickup failure category=${category} runYmd=${runYmd} attempt=${attempt}`,

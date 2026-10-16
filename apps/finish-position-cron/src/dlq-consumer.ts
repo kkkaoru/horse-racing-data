@@ -280,14 +280,17 @@ const cleanupExpiredDayBaseMessage = async (
 ): Promise<void> => {
   if (!isOldDateRunYmd(body.runYmd, new Date())) return;
   await Promise.all([
-    clearDayBaseRepairReservation({ category: body.category, env, runYmd: body.runYmd }).catch(
-      (error) => {
-        console.error(
-          `[predict-dlq] old day-base repair cleanup failed category=${body.category} runYmd=${body.runYmd}:`,
-          String(error),
-        );
-      },
-    ),
+    clearDayBaseRepairReservation({
+      category: body.category,
+      env,
+      generationId: body.generationId,
+      runYmd: body.runYmd,
+    }).catch((error) => {
+      console.error(
+        `[predict-dlq] old day-base repair cleanup failed category=${body.category} runYmd=${body.runYmd}:`,
+        String(error),
+      );
+    }),
     cleanupDayBaseWork({
       category: body.category,
       env,

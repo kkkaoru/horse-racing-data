@@ -189,3 +189,70 @@ test("consumeContainerCleanup fails safe at the bounded retry limit", async () =
   );
   expect(predictSendMock).not.toHaveBeenCalled();
 });
+
+test("cleanup fallback and retry retain the originally admitted execution", async () => {
+  const env = makeEnv();
+  await handOffContainerStopOrCleanup({
+    env,
+    name: "predict-jra-2",
+    role: "legacy",
+    workKey: "focused-full:20261004:jra:05:09",
+    executionId: "execution-a",
+  });
+  expect(predictSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-a", attempt: 1 }),
+    { delaySeconds: 30 },
+  );
+  await consumeContainerCleanup({
+    env,
+    message: { ...cleanupMessage, executionId: "execution-a" },
+  });
+  expect(predictSendMock).toHaveBeenLastCalledWith(
+    expect.objectContaining({ executionId: "execution-a", attempt: 2 }),
+    { delaySeconds: 30 },
+  );
+  expect(isContainerCleanupMessage({ ...cleanupMessage, executionId: "execution-a" })).toBe(true);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, executionId: "" })).toBe(false);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, executionId: 1 })).toBe(false);
+});
+
+test("cleanup to control handoff retains exact E", async () => {
+  const send = vi.fn(async (): Promise<void> => undefined);
+  const env = makeEnv();
+  Object.defineProperty(env, "CONTAINER_CONTROL_QUEUE", { value: { send } });
+  await consumeContainerCleanup({
+    env,
+    message: { ...cleanupMessage, executionId: "execution-a" },
+  });
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "container-stop", executionId: "execution-a" }),
+  );
+  expect(predictSendMock).not.toHaveBeenCalled();
+});
+
+test("uncertain cleanup remains physical-only through both durable queues", async () => {
+  const env = makeEnv();
+  await handOffContainerStopOrCleanup({
+    env,
+    name: "predict-jra-2",
+    role: "legacy",
+    workKey: cleanupMessage.workKey,
+    executionId: "execution-a",
+    requireStopped: true,
+  });
+  expect(predictSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-a", requireStopped: true }),
+    { delaySeconds: 30 },
+  );
+  const send = vi.fn(async (): Promise<void> => undefined);
+  Object.defineProperty(env, "CONTAINER_CONTROL_QUEUE", { value: { send } });
+  await consumeContainerCleanup({
+    env,
+    message: { ...cleanupMessage, executionId: "execution-a", requireStopped: true },
+  });
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({ executionId: "execution-a", requireStopped: true }),
+  );
+  expect(isContainerCleanupMessage({ ...cleanupMessage, requireStopped: "yes" })).toBe(false);
+  expect(isContainerCleanupMessage({ ...cleanupMessage, requireStopped: true })).toBe(true);
+});

@@ -10,7 +10,7 @@ import {
   type FileMetaData,
 } from "hyparquet";
 
-import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseSource } from "./day-base-manifest";
 import type { CatalogRaceSourceSnapshot } from "./race-source-snapshot";
 import type { Env, PredictCategory } from "./types";
 
@@ -48,7 +48,7 @@ type FoundationRow = Record<string, JsonScalar>;
 
 interface MaterializeParams {
   category: PredictCategory;
-  env: Pick<Env, "FEATURES_CACHE">;
+  env: Pick<Env, "DAY_BASE_MANIFEST_REQUIRED" | "FEATURES_CACHE" | "FINISH_POSITION_CRON_DB">;
   force?: boolean;
   runYmd: string;
   sourceSnapshots?: ReadonlyMap<string, CatalogRaceSourceSnapshot>;
@@ -425,8 +425,8 @@ export const getDayBaseRaceFoundationReadiness = async (
   if (!/^\d{1,2}$/.test(params.venueCode) || !/^\d{1,2}$/.test(params.raceNumber)) {
     return { ready: false, reason: "invalid-race-scope" };
   }
-  const [source, manifest, foundation] = await Promise.all([
-    params.env.FEATURES_CACHE.head(buildDayBaseObjectKey(params)),
+  const [sourceRef, manifest, foundation] = await Promise.all([
+    getDayBaseSource(params),
     params.env.FEATURES_CACHE.head(buildDayBaseRaceManifestKey(params.category, params.runYmd)),
     params.env.FEATURES_CACHE.head(
       buildDayBaseRaceFoundationKey(
@@ -437,6 +437,7 @@ export const getDayBaseRaceFoundationReadiness = async (
       ),
     ),
   ]);
+  const source = sourceRef?.object ?? null;
   if (source === null) return { ready: false, reason: "day-base-miss" };
   if (manifest === null) return { ready: false, reason: "manifest-miss" };
   if (foundation === null) return { ready: false, reason: "foundation-miss" };
@@ -473,9 +474,9 @@ export const materializeDayBasePerRaceCache = async (
 ): Promise<DayBaseRaceMaterializeResult> => {
   try {
     if (!/^\d{8}$/.test(params.runYmd)) throw new Error("invalid-run-ymd");
-    const sourceKey = buildDayBaseObjectKey(params);
-    const source = await params.env.FEATURES_CACHE.head(sourceKey);
-    if (source === null) throw new Error("day-base-miss");
+    const sourceRef = await getDayBaseSource(params);
+    if (sourceRef === null) throw new Error("day-base-miss");
+    const { key: sourceKey, object: source } = sourceRef;
     if (source.size <= 0 || source.size > MAX_DAY_BASE_BYTES) throw new Error("source-size-limit");
     const sourceVersion = source.version ?? "";
     const manifestKey = buildDayBaseRaceManifestKey(params.category, params.runYmd);

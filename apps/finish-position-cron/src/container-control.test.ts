@@ -3,19 +3,25 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import type { ContainerControlMessage, Env } from "./types";
 
-const { claimContainerSlotStopMock, clearContainerSlotMock, markContainerSlotStoppedMock } =
-  vi.hoisted(() => ({
-    claimContainerSlotStopMock: vi.fn<
-      () => Promise<{
-        allowed: boolean;
-        state: "blocked" | "claimed" | "destroyed" | "pending" | "resumed";
-      }>
-    >(async () => ({ allowed: true, state: "claimed" })),
-    clearContainerSlotMock: vi.fn(async () => undefined),
-    markContainerSlotStoppedMock: vi.fn(async () => undefined),
-  }));
+const {
+  cancelContainerSlotStopMock,
+  claimContainerSlotStopMock,
+  clearContainerSlotMock,
+  markContainerSlotStoppedMock,
+} = vi.hoisted(() => ({
+  cancelContainerSlotStopMock: vi.fn(async () => undefined),
+  claimContainerSlotStopMock: vi.fn<
+    () => Promise<{
+      allowed: boolean;
+      state: "blocked" | "claimed" | "destroyed" | "pending" | "resumed";
+    }>
+  >(async () => ({ allowed: true, state: "claimed" })),
+  clearContainerSlotMock: vi.fn(async () => undefined),
+  markContainerSlotStoppedMock: vi.fn(async () => undefined),
+}));
 
 vi.mock("./do-state", () => ({
+  cancelContainerSlotStop: cancelContainerSlotStopMock,
   claimContainerSlotStop: claimContainerSlotStopMock,
   clearContainerSlot: clearContainerSlotMock,
   markContainerSlotStopped: markContainerSlotStoppedMock,
@@ -61,6 +67,7 @@ const message: ContainerControlMessage = {
 };
 
 beforeEach(() => {
+  cancelContainerSlotStopMock.mockClear();
   claimContainerSlotStopMock.mockClear();
   claimContainerSlotStopMock.mockResolvedValue({ allowed: true, state: "claimed" });
   clearContainerSlotMock.mockClear();
@@ -484,4 +491,79 @@ test("enqueueContainerStopForRole records an unambiguous binding role", async ()
     }),
     { delaySeconds: 20 },
   );
+});
+
+test.each(["claimed", "pending", "destroyed", "resumed"])(
+  "fenced %s stop verifies physical identity before marking or clearing",
+  async (state) => {
+    const stage =
+      state === "pending" || state === "destroyed" || state === "resumed" ? state : "claimed";
+    claimContainerSlotStopMock.mockResolvedValueOnce({
+      allowed: stage === "claimed" || stage === "resumed",
+      state: stage,
+    });
+    stubFetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+    const afterDestroyed = vi.fn(async () => undefined);
+    await expect(
+      consumeContainerStop(makeEnv(), { ...message, executionId: "execution-a" }, afterDestroyed),
+    ).resolves.toBe(true);
+    expect(stubFetchMock.mock.calls[0]?.[0].headers.get("x-prediction-execution-id")).toBe(
+      "execution-a",
+    );
+    expect(markContainerSlotStoppedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-a" }),
+    );
+    expect(clearContainerSlotMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-a" }),
+    );
+    expect(afterDestroyed).toHaveBeenCalledOnce();
+  },
+);
+
+test.each([409, 425])(
+  "physical refusal %s cancels only its stop fence without releasing the lease",
+  async (status) => {
+    stubFetchMock.mockResolvedValueOnce(Response.json({ ok: false }, { status }));
+    const stopped = vi.fn(async () => undefined);
+    const pending = consumeContainerStop(
+      makeEnv(),
+      { ...message, executionId: "execution-a" },
+      stopped,
+    );
+    if (status === 409) await expect(pending).resolves.toBe(false);
+    else await expect(pending).rejects.toThrow("Container stop failed");
+    expect(cancelContainerSlotStopMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-a" }),
+    );
+    expect(clearContainerSlotMock).not.toHaveBeenCalled();
+    expect(markContainerSlotStoppedMock).not.toHaveBeenCalled();
+    expect(stopped).not.toHaveBeenCalled();
+  },
+);
+
+test("control message rejects empty or non-string execution identity", () => {
+  expect(isContainerControlMessage({ ...message, executionId: "" })).toBe(false);
+  expect(isContainerControlMessage({ ...message, executionId: 12 })).toBe(false);
+  expect(isContainerControlMessage({ ...message, executionId: "execution-a" })).toBe(true);
+});
+
+test("physical-only timeout cleanup carries exact E and never marks a refusal as stopped", async () => {
+  stubFetchMock.mockResolvedValueOnce(
+    Response.json({ ok: false, state: "unresolved" }, { status: 425 }),
+  );
+  await expect(
+    consumeContainerStop(makeEnv(), {
+      ...message,
+      executionId: "execution-a",
+      requireStopped: true,
+    }),
+  ).rejects.toThrow("Container stop failed");
+  expect(stubFetchMock.mock.calls[0]?.[0].headers.get("x-prediction-require-stopped")).toBe("1");
+  expect(stubFetchMock.mock.calls[0]?.[0].headers.get("x-prediction-execution-id")).toBe(
+    "execution-a",
+  );
+  expect(markContainerSlotStoppedMock).not.toHaveBeenCalled();
+  expect(clearContainerSlotMock).not.toHaveBeenCalled();
+  expect(isContainerControlMessage({ ...message, requireStopped: true })).toBe(true);
+  expect(isContainerControlMessage({ ...message, requireStopped: "yes" })).toBe(false);
 });

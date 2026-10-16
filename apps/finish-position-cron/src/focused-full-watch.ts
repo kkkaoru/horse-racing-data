@@ -87,6 +87,7 @@ const isFocusedFullBody = (value: unknown): value is FocusedFullWatchBody => {
 const isFocusedFullWatchPayload = (value: unknown): value is ValidatedFocusedFullWatchPayload => {
   if (!isRecord(value)) return false;
   return (
+    (value.executionId === undefined || isNonEmptyString(value.executionId)) &&
     isFocusedFullBody(value.body) &&
     isNonEmptyString(value.doName) &&
     (value.role === "legacy" || value.role === "race-chain") &&
@@ -204,6 +205,7 @@ const completionMessage = (
   result: TerminalWatchResult,
 ): FocusedFullCompletionMessage => {
   const message: FocusedFullCompletionMessage = {
+    ...(payload.executionId === undefined ? {} : { executionId: payload.executionId }),
     body: payload.body,
     doName: payload.doName,
     outcome: result.outcome,
@@ -265,9 +267,18 @@ export const sendFocusedFullWatchMessageDurably = async (
     message.type === "focused-full-watch-tick" ? message.deadlineAtMs : message.outcome
   }`;
   await registerFocusedFullWatchOutbox({ delaySeconds, env, message, outboxId });
-  if (delaySeconds === undefined) await queue.send(message);
-  else await queue.send(message, { delaySeconds });
-  await clearFocusedFullWatchOutbox({ env, outboxId });
+  try {
+    if (delaySeconds === undefined) await queue.send(message);
+    else await queue.send(message, { delaySeconds });
+    await clearFocusedFullWatchOutbox({ env, outboxId });
+  } catch (error) {
+    // Registration persisted both the message and its recovery alarm. A failed
+    // fast-path send/clear must not destroy accepted work and trigger a rebuild.
+    // The coordinator alarm retries delivery; duplicate watches are fenced.
+    console.error(
+      `[focused-full-watch] durable outbox recovery pending watchId=${message.watchId} outboxId=${outboxId}: ${String(error)}`,
+    );
+  }
 };
 
 export const buildFocusedFullStatusUrl = (body: FocusedFullWatchBody): string => {

@@ -2,10 +2,10 @@
 // call. The Queue body deliberately does not carry this evidence: every retry
 // must re-read the live entry set and the exact R2 objects it is about to use.
 
-import { buildDayBaseObjectKey } from "./day-base-object-key";
+import { getDayBaseSource } from "./day-base-manifest";
 import { buildDayBaseRaceFoundationKey } from "./day-base-race-materializer";
 import { buildPerRaceFeatCacheKey } from "./scoring/feature-cache";
-import type { CatalogServiceBinding, PredictCategory } from "./types";
+import type { Env, PredictCategory } from "./types";
 
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog";
 const FRESH_ENTRIES_PATH = "/v1/internal/fresh-race-entries";
@@ -29,19 +29,14 @@ interface RescoreAttestationParams {
   runYmd: string;
 }
 
-interface AttestationHeadObject {
-  customMetadata?: Record<string, string>;
-  etag: string;
-  version?: string;
-}
-
-interface RescoreAttestationEnv {
-  FEATURES_CACHE: {
-    head(key: string): Promise<AttestationHeadObject | null>;
-  };
-  FINISH_POSITION_ATTESTATION_TOKEN?: string;
-  PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
-}
+type RescoreAttestationEnv = Pick<
+  Env,
+  | "DAY_BASE_MANIFEST_REQUIRED"
+  | "FEATURES_CACHE"
+  | "FINISH_POSITION_ATTESTATION_TOKEN"
+  | "FINISH_POSITION_CRON_DB"
+  | "PC_KEIBA_R2_CATALOG"
+>;
 
 interface FreshEntry {
   kettoTorokuBango: string;
@@ -177,13 +172,13 @@ export const createRescoreAttestation = async (
     keibajoCode,
     raceBango,
   );
-  const sourceKey = buildDayBaseObjectKey(params);
-  const [fresh, featureCache, foundation, sourceDayBase] = await Promise.all([
+  const [fresh, featureCache, foundation, sourceRef] = await Promise.all([
     fetchFreshEntries(params, keibajoCode, raceBango),
     params.env.FEATURES_CACHE.head(featureKey),
     params.env.FEATURES_CACHE.head(foundationKey),
-    params.env.FEATURES_CACHE.head(sourceKey),
+    getDayBaseSource(params),
   ]);
+  const sourceDayBase = sourceRef?.object ?? null;
   if (featureCache === null) throw new Error("missing per-race feature cache");
   if (foundation === null) throw new Error("missing per-race foundation");
   if (sourceDayBase === null) throw new Error("missing source day-base cache");

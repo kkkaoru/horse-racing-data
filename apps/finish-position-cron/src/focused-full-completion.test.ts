@@ -96,7 +96,7 @@ test("focused completion uses a fresh single-generation KV payload without readi
   kvGetMock.mockResolvedValue(
     Array.from({ length: 12 }, (_, index) => ({
       horseNumber: String(index + 1),
-      modelVersion: "jra-cb-v9-sim-2013-clean",
+      modelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
       predictionGeneratedAt: "2026-08-29T20:00:00.000Z",
     })),
   );
@@ -120,7 +120,7 @@ test("focused completion falls back to Neon when the KV generation is stale", as
   kvGetMock.mockResolvedValue(
     Array.from({ length: 12 }, (_, index) => ({
       horseNumber: String(index + 1),
-      modelVersion: "jra-cb-v9-sim-2013-clean",
+      modelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
       predictionGeneratedAt: "2026-08-29T18:00:00.000Z",
     })),
   );
@@ -143,7 +143,7 @@ test("focused completion fails closed without Neon fallback when KV is required"
   kvGetMock.mockResolvedValue(
     Array.from({ length: 12 }, (_, index) => ({
       horseNumber: String(index + 1),
-      modelVersion: "jra-cb-v9-sim-2013-clean",
+      modelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
       predictionGeneratedAt: "2026-08-29T18:00:00.000Z",
     })),
   );
@@ -221,7 +221,7 @@ test("rescore accepts an exact pre-weight prediction generated on the previous e
     "0824",
     "35",
     "01",
-    "iter40-nar-settransformer-blend-v1",
+    "iter40-nar-settransformer-blend-v1-nowin1",
     buildCatalogRows().map((row) => row.ketto_toroku_bango),
     "2026-08-22T15:00:00",
   ]);
@@ -339,7 +339,7 @@ test("uses raw Catalog entries and only queries Neon prediction output", async (
       "0701",
       "50",
       "12",
-      "iter40-nar-settransformer-blend-v1",
+      "iter40-nar-settransformer-blend-v1-nowin1",
       buildCatalogRows().map((row) => row.ketto_toroku_bango),
       "2026-06-30T15:00:00",
     ],
@@ -391,7 +391,7 @@ test("uses the NAR base model when transformer blending is disabled", async () =
     raceBango: "03",
     runYmd: "20260710",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-clean188");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-clean188-nowin1");
 });
 
 test("routes JRA 703 and prior-corner races from raw Catalog fields", async () => {
@@ -410,7 +410,9 @@ test("routes JRA 703 and prior-corner races from raw Catalog fields", async () =
     raceBango: "02",
     runYmd: "20260621",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+  );
 
   setCatalogRows([
     {
@@ -428,7 +430,7 @@ test("routes JRA 703 and prior-corner races from raw Catalog fields", async () =
     raceBango: "06",
     runYmd: "20260705",
   });
-  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013");
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013-nowin1");
 });
 
 test("routes JRA venue 02 (Hakodate) to jockey-pedigree269 with no other special conditions", async () => {
@@ -441,7 +443,9 @@ test("routes JRA venue 02 (Hakodate) to jockey-pedigree269 with no other special
     raceBango: "01",
     runYmd: "20260613",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+  );
 });
 
 test("routes an un-padded venue 2 the same as venue 02", async () => {
@@ -454,7 +458,9 @@ test("routes an un-padded venue 2 the same as venue 02", async () => {
     raceBango: "01",
     runYmd: "20260613",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+  );
 });
 
 test("prior-corner-005 outranks the venue 02 fallback when a race matches both", async () => {
@@ -475,7 +481,7 @@ test("prior-corner-005 outranks the venue 02 fallback when a race matches both",
     raceBango: "03",
     runYmd: "20260613",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013-nowin1");
 });
 
 test("a non-venue-02 JRA race with no special conditions keeps the category default", async () => {
@@ -488,7 +494,7 @@ test("a non-venue-02 JRA race with no special conditions keeps the category defa
     raceBango: "07",
     runYmd: "20260613",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-nowin1");
 });
 
 test("routes ban-ei grade E through the ban-ei Catalog filter", async () => {
@@ -502,7 +508,7 @@ test("routes ban-ei grade E through the ban-ei Catalog filter", async () => {
     runYmd: "20260701",
   });
   expect(catalogFetchMock.mock.calls[0]?.[0]?.url).toContain("source=ban-ei");
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("banei-cb-v8-window2011-wf-15y");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("banei-cb-v8-window2011-wf-15y-nowin1");
 });
 
 test("returns false without querying Neon when raw Catalog has no entries", async () => {
@@ -570,6 +576,42 @@ test("rejects an invalid explicit completion lower bound without querying", asyn
 
   expect(catalogFetchMock).not.toHaveBeenCalled();
   expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("accepts a completed next-day race once, but requires a fresh generation after JST rollover or force", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date("2026-08-29T09:20:00Z"));
+    kvGetMock.mockResolvedValue(
+      Array.from({ length: 12 }, (_, index) => ({
+        horseNumber: String(index + 1),
+        modelVersion: "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        predictionGeneratedAt: "2026-08-29T09:11:56.310Z",
+      })),
+    );
+    queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+    const params = {
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "55",
+      raceBango: "09",
+      runYmd: "20260830",
+    } satisfies Parameters<typeof isFocusedFullPredictionComplete>[0];
+
+    await expect(isFocusedFullPredictionComplete(params)).resolves.toBe(true);
+    expect(neonMock).not.toHaveBeenCalled();
+    await expect(
+      isFocusedFullPredictionComplete({ ...params, notBefore: "2026-08-29T09:15:00Z" }),
+    ).resolves.toBe(false);
+    expect(queryMock.mock.calls[0]?.[1]?.[7]).toBe("2026-08-29T09:15:00");
+
+    queryMock.mockClear();
+    vi.setSystemTime(new Date("2026-08-29T15:01:00Z"));
+    await expect(isFocusedFullPredictionComplete(params)).resolves.toBe(false);
+    expect(queryMock.mock.calls[0]?.[1]?.[7]).toBe("2026-08-29T15:00:00");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("returns false when prediction rows are stale (generated on a prior day)", async () => {
@@ -666,7 +708,7 @@ test("recognizes a NAR race the stage1 market-free fallback gate routed away fro
   ).resolves.toBe(true);
 
   expect(queryMock).toHaveBeenCalledTimes(2);
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter40-nar-settransformer-blend-v1");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter40-nar-settransformer-blend-v1-nowin1");
   expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-stage1-marketfree-184");
 });
 
@@ -685,7 +727,7 @@ test("recognizes a JRA race the stage1 market-free fallback gate routed away fro
   ).resolves.toBe(true);
 
   expect(queryMock).toHaveBeenCalledTimes(2);
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-nowin1");
   expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-stage1-marketfree235-2013");
 });
 
@@ -740,7 +782,9 @@ test("accepts a complete promoted NAR cell model after primary and stage1 misses
   ).resolves.toBe(true);
 
   expect(queryMock).toHaveBeenCalledTimes(10);
-  expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1");
+  expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe(
+    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
+  );
 });
 
 test("fails closed when Catalog returns an HTTP or schema error", async () => {
@@ -825,37 +869,37 @@ test("expectedModelVersion covers every JRA rule in the real cell_routing.json (
     (rule) => containerConfig.jra.variants[rule.variant]?.model_version,
   );
   expect(ruleModelVersions).toStrictEqual([
-    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
-    "jra-joken-005-turf-mile-yeti-gated-v1",
-    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
-    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
-    "jra-joken-701-turf-long-qsm-gated-v1",
-    "jra-joken-701-turf-mile-qsm-gated-v1",
-    "jra-joken-701-turf-intermediate-qsm-gated-v1",
-    "jra-joken-703-turf-long-spring-qsm-gated-v1",
-    "jra-joken-703-turf-intermediate-qsm-gated-v1",
-    "jra-joken-703-other-extended-qsm-gated-v1",
-    "jra-joken-703-dirt-sprint-yeti-gated-v1",
-    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
-    "jra-joken-703-querysoftmax-maxrange-v1",
-    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
-    "jra-joken-703-turf-long-summer-yeti-gated-v1",
-    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
-    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
-    "jra-joken-703-turf-1400-qsm-gated-v1",
-    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
-    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
-    "jra-joken-005-pooled-yetirank-v2",
-    "jra-joken-010-pooled-yetirank-v2",
-    "jra-joken-016-pooled-yetirank-v2",
-    "jra-joken-701-pooled-yetirank-v2",
-    "jra-joken-703-pooled-yetirank-v2",
-    "jra-joken-999-pooled-yetirank-v2",
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-    "jra-cb-v10-prior-corner274-2013",
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-mile-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1",
+    "jra-joken-701-turf-long-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-mile-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-other-extended-qsm-gated-v1-nowin1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-querysoftmax-maxrange-v1-nowin1",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1400-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1",
+    "jra-joken-005-pooled-yetirank-v2-nowin1",
+    "jra-joken-010-pooled-yetirank-v2-nowin1",
+    "jra-joken-016-pooled-yetirank-v2-nowin1",
+    "jra-joken-701-pooled-yetirank-v2-nowin1",
+    "jra-joken-703-pooled-yetirank-v2-nowin1",
+    "jra-joken-999-pooled-yetirank-v2-nowin1",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+    "jra-cb-v10-prior-corner274-2013-nowin1",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
   ]);
 });
 
@@ -1536,7 +1580,7 @@ test("STAGE1_MARKET_FREE_MODEL_VERSIONS covers every enabled category in the rea
   const enabledCategories = Object.entries(containerConfig).filter(
     ([, config]) => config?.enabled === true,
   );
-  expect(enabledCategories.map(([category]) => category).toSorted()).toStrictEqual(["jra", "nar"]);
+  expect(enabledCategories.map(([category]) => category).toSorted()).toStrictEqual([]);
 
   for (const [category, config] of enabledCategories) {
     queryMock

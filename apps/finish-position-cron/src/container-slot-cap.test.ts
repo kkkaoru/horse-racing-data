@@ -1240,3 +1240,68 @@ test("touchContainerSlotLease drops stale leases while refreshing a live one", (
     },
   ]);
 });
+
+test("fenced leases never expire into transferable authority and ignore unowned heartbeat", () => {
+  const admitted = decideContainerSlotClaim([], {
+    category: "jra",
+    doName: "predict-jra-1",
+    kind: "focused-full",
+    now: 1000,
+    staleAfterMs: 100,
+    generationId: "queue-a",
+    executionId: "execution-a",
+    workKey: "race",
+  });
+  expect(pruneStaleContainerSlots(admitted.leases, 999999999)).toStrictEqual(admitted.leases);
+  expect(touchContainerSlotLease(admitted.leases, "predict-jra-1", 2000, "race")).toStrictEqual(
+    admitted.leases,
+  );
+  expect(clearContainerSlotLease(admitted.leases, "predict-jra-1", 2000, "race")).toStrictEqual(
+    admitted.leases,
+  );
+  expect(
+    releaseContainerSlotLease(admitted.leases, "predict-jra-1", "focused-full", 2000, "race"),
+  ).toStrictEqual(admitted.leases);
+  expect(
+    decideContainerSlotClaim(admitted.leases, {
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      now: 2000,
+      staleAfterMs: 100,
+      generationId: "queue-b",
+      executionId: "execution-b",
+      workKey: "new-race",
+      replaceWorkKey: "race",
+    }).proceed,
+  ).toBe(false);
+});
+
+test.each(["day-base", "focused-full"])(
+  "legacy %s transfer binds new immutable admission identity",
+  (kind) => {
+    const previous: ContainerSlotLease = {
+      category: "jra",
+      doName: "predict-jra-1",
+      holders: 1,
+      kind: kind === "day-base" ? "day-base" : "focused-full",
+      rescoreHolders: 0,
+      timestamp: 1000,
+      workKey: "old",
+    };
+    const decision = decideContainerSlotClaim([previous], {
+      category: "jra",
+      doName: "predict-jra-1",
+      kind: "focused-full",
+      now: 2000,
+      staleAfterMs: 1000,
+      generationId: "queue-b",
+      executionId: "execution-b",
+      replaceWorkKey: "old",
+      workKey: "new",
+    });
+    expect(decision.proceed).toBe(true);
+    expect(decision.leases[0]?.executionId).toBe("execution-b");
+    expect(decision.leases[0]?.generationId).toBe("queue-b");
+  },
+);

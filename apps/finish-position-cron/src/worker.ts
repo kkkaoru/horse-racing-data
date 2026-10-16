@@ -25,6 +25,8 @@ import {
   runDayBasePrewarm,
 } from "./day-base-prewarm";
 import { pickUpPrewarmDayBase } from "./day-base-prewarm-pickup";
+import { acquireDayBaseRepair } from "./day-base-repair";
+import { DAY_BASE_MANIFEST_PATH, handleDayBaseManifest } from "./day-base-manifest-endpoint";
 import { completeLandedDayBase } from "./day-base-pickup";
 import {
   enqueueDeliveryCanary,
@@ -70,7 +72,12 @@ import {
   shouldRunRunningStyleKickTomorrowPrewarmCron,
 } from "./running-style-kick";
 import { getRunDateJst, getRunYmdJst } from "./time";
-import { handleAdminRaceDay, isAdminRaceDayRequest, RaceDayWorkflow } from "./race-day-workflow";
+import {
+  handleAdminRaceDay,
+  isAdminRaceDayRequest,
+  RaceDayWorkflow,
+  runDayBasePrewarmWorkflows,
+} from "./race-day-workflow";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
   ContainerControlMessage,
@@ -227,10 +234,13 @@ const resolveDebugFlag = (body: Record<string, unknown>): boolean => {
 };
 
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
-  const requested = body[RUN_DATE_FIELD];
-  if (typeof requested === "string") {
-    return parseRunDates(requested);
+  const runDate = body[RUN_DATE_FIELD];
+  const runYmd = body[RUN_YMD_FIELD];
+  if (typeof runDate === "string" && typeof runYmd === "string" && runDate !== runYmd) {
+    throw new Error("runDate and runYmd must match");
   }
+  const requested = typeof runDate === "string" ? runDate : runYmd;
+  if (typeof requested === "string") return parseRunDates(requested);
   const now = new Date();
   return { runDate: getRunDateJst(now), runYmd: getRunYmdJst(now) };
 };
@@ -841,12 +851,36 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
         runYmd: parsed.runYmd,
       });
     }
+    const owner = await acquireDayBaseRepair({
+      category: parsed.category,
+      env,
+      ...(parsed.force === true ? { force: true } : {}),
+      generationId,
+      runYmd: parsed.runYmd,
+    });
+    if (owner.status === "skipped-old-date") {
+      return Response.json({ error: "old date", ok: false }, { status: HTTP_BAD_REQUEST });
+    }
+    if (owner.status === "busy") {
+      return Response.json(
+        {
+          accepted: true,
+          category: parsed.category,
+          generationId: owner.generationId,
+          ok: true,
+          outcome: "busy",
+          queued: false,
+          runYmd: parsed.runYmd,
+        },
+        { status: HTTP_ACCEPTED },
+      );
+    }
     const outcome = await prewarmCategoryWithOutcome({
       category: parsed.category,
       daysAhead,
       ...(parsed.debug === true ? { debug: true } : {}),
       env,
-      generationId,
+      generationId: owner.generationId,
       ...(parsed.force === true ? { force: true } : {}),
       ...(parsed.generatePredictionsAfterHit === true ? { generatePredictionsAfterHit: true } : {}),
       runYmd: parsed.runYmd,
@@ -857,7 +891,7 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
         category: parsed.category,
         daysAhead,
         env,
-        generationId,
+        generationId: owner.generationId,
         generatePredictionsAfterHit: true,
         ...(parsed.force === true ? { force: true } : {}),
         requestedAt: new Date(),
@@ -871,7 +905,7 @@ const handleAdminPrewarmDayBase = async (request: Request, env: Env): Promise<Re
       {
         accepted,
         category: parsed.category,
-        generationId,
+        generationId: owner.generationId,
         ok: accepted,
         outcome,
         queued: queueBusyIntent,
@@ -1066,12 +1100,22 @@ const handlePredictionReadiness = async (request: Request, env: Env): Promise<Re
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const now = new Date();
-  const requestedRunYmd = new URL(request.url).searchParams.get(RUN_YMD_FIELD);
+  const params = new URL(request.url).searchParams;
+  const requestedRunYmd = params.get(RUN_YMD_FIELD);
   const runYmd = requestedRunYmd === null ? getRunYmdJst(now) : requestedRunYmd;
   if (!isValidRunYmd(runYmd)) {
     return Response.json({ error: "invalid runYmd", ok: false }, { status: HTTP_BAD_REQUEST });
   }
-  const readiness = await getPredictionReadiness({ env, now, runYmd });
+  const category = params.get("category");
+  if (category !== null && !isValidRescoreCategory(category)) {
+    return Response.json({ error: "invalid category", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const readiness = await getPredictionReadiness({
+    ...(category === null ? {} : { category }),
+    env,
+    now,
+    runYmd,
+  });
   return Response.json(readiness);
 };
 
@@ -1087,6 +1131,9 @@ const handleDeliveryCanaries = async (request: Request, env: Env): Promise<Respo
 
 export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === DAY_BASE_MANIFEST_PATH) {
+    return handleDayBaseManifest(request, env);
+  }
   if (request.method === "POST" && url.pathname === FOCUSED_FULL_CALLBACK_PATH) {
     return handleFocusedFullCompletionCallback(request, env);
   }
@@ -1212,7 +1259,7 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     // runs are still triggered by sync-realtime-data after running-style
     // completes via POST /run with skipDedup=true; this cron only pre-builds
     // the cache those runs then reuse.
-    await runDayBasePrewarm({ daysAhead, env, runYmd });
+    await runDayBasePrewarmWorkflows({ daysAhead, env, runYmd });
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {

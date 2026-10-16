@@ -11,6 +11,8 @@ const CATEGORY = "jra";
 const MODEL_FILE = "model.json";
 const METADATA_FILE = "metadata.json";
 const STAGE1_SCORE_STDDEV_THRESHOLD = 0.4;
+const STAGE1_TOP1_SWAP_PRIOR3_TEMPERATURE_LT = 28;
+const RACE_TEMPERATURE_TOLERANCE = 1e-9;
 const FIRST_RANK = 1;
 // Model-version keys are immutable production artifacts. Retain only the last
 // fully attested parsed route per R2 binding, so warm Queue isolates avoid
@@ -60,20 +62,20 @@ export interface JraShadowModelSpec {
 export const JRA_SHADOW_MODEL_SPECS: Readonly<Record<JraShadowVariant, JraShadowModelSpec>> = {
   sim: {
     architecture: "catboost",
-    featureCount: 250,
-    modelVersion: "jra-cb-v9-sim-2013-clean",
+    featureCount: 236,
+    modelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
     variant: "sim",
   },
   jockey_pedigree_703: {
     architecture: "catboost",
-    featureCount: 269,
-    modelVersion: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+    featureCount: 255,
+    modelVersion: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
     variant: "jockey_pedigree_703",
   },
   prior_corner_dirt_smallfield_005: {
     architecture: "catboost",
-    featureCount: 274,
-    modelVersion: "jra-cb-v10-prior-corner274-2013",
+    featureCount: 260,
+    modelVersion: "jra-cb-v10-prior-corner274-2013-nowin1",
     variant: "prior_corner_dirt_smallfield_005",
   },
   stage1_marketfree: {
@@ -367,6 +369,19 @@ export interface JraShadowScoreResult {
   variant: JraShadowVariant;
 }
 
+const stage1WeatherGateOpen = (entries: ReadonlyArray<FeatureEntry>): boolean => {
+  const temperatures = entries.map((entry) => optionalNumber(entry.venue_temperature_prior3));
+  const first = temperatures[0];
+  return (
+    first !== null &&
+    first !== undefined &&
+    first < STAGE1_TOP1_SWAP_PRIOR3_TEMPERATURE_LT &&
+    temperatures.every(
+      (value) => value !== null && Math.abs(value - first) <= RACE_TEMPERATURE_TOLERANCE,
+    )
+  );
+};
+
 const populationStddev = (scores: ReadonlyArray<number>): number => {
   if (scores.length < 2) return 0;
   const mean = scores.reduce((sum, score) => sum + score, 0) / scores.length;
@@ -408,6 +423,8 @@ export const scoreJraRaceShadow = (
 ): JraShadowScoreResult => {
   if (entries.length === 0) throw new Error("final feature contract: race has no entries");
   assertFinalFeatureContract(entries, loaded);
+  const useStage1Base =
+    loaded.spec.variant === "stage1_marketfree" && !stage1WeatherGateOpen(entries);
   const companionScores = entries.map((entry) =>
     scoreCatBoostModel({
       features: projectCatBoostCells(entry, loaded.featureNames),
@@ -426,11 +443,13 @@ export const scoreJraRaceShadow = (
         model: baseModel,
       }),
     );
-    scores = applyTop1ScoreSwap(
-      entries.map((entry) => textCell(entry, "ketto_toroku_bango")!),
-      baseScores,
-      companionScores,
-    );
+    scores = useStage1Base
+      ? baseScores
+      : applyTop1ScoreSwap(
+          entries.map((entry) => textCell(entry, "ketto_toroku_bango")!),
+          baseScores,
+          companionScores,
+        );
   }
   const scoreStddev = populationStddev(scores);
   const predictions = entries
@@ -452,7 +471,9 @@ export const scoreJraRaceShadow = (
     .map((prediction, index) => ({ ...prediction, predictedRank: index + FIRST_RANK }));
   return {
     gradeCode: consistentGradeCode(entries),
-    modelVersion: loaded.spec.modelVersion,
+    modelVersion: useStage1Base
+      ? STAGE1_MARKETFREE_BASE_SPEC.modelVersion
+      : loaded.spec.modelVersion,
     predictions,
     raceId: consistentRaceValue(entries, "race_id"),
     scoreStddev,

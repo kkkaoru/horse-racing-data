@@ -3,6 +3,7 @@
 import { neon } from "@neondatabase/serverless";
 import { buildFinishPositionPredictionKvKey } from "./prediction-kv-keys";
 import { buildPerRaceFeatCacheKey } from "./scoring/feature-cache";
+import { getRunYmdJst } from "./time";
 import type { Env, PredictCategory } from "./types";
 
 interface CompletionParams {
@@ -31,35 +32,42 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 const NAR_SOURCE = "nar";
 const JRA_SOURCE = "jra";
-const JRA_DEFAULT_MODEL_VERSION = "jra-cb-v9-sim-2013-clean";
-const JRA_703_MODEL_VERSION = "jra-cb-v9-sim-2013-clean-jockey-pedigree269";
-const JRA_PRIOR_CORNER_005_MODEL_VERSION = "jra-cb-v10-prior-corner274-2013";
-const JRA_703_DIRT_MILE_SUMMER_MODEL_VERSION = "jra-joken-703-querysoftmax-maxrange-v1";
-const JRA_005_TURF_LONG_MODEL_VERSION = "jra-joken-005-turf-long-hierarchical-qsm-gated-v2";
+const JRA_DEFAULT_MODEL_VERSION = "jra-cb-v9-sim-2013-clean-nowin1";
+const JRA_703_MODEL_VERSION = "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1";
+const JRA_PRIOR_CORNER_005_MODEL_VERSION = "jra-cb-v10-prior-corner274-2013-nowin1";
+const JRA_703_DIRT_MILE_SUMMER_MODEL_VERSION = "jra-joken-703-querysoftmax-maxrange-v1-nowin1";
+const JRA_005_TURF_LONG_MODEL_VERSION = "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1";
 const JRA_005_DIRT_1200_WINTER_SUMMER_MODEL_VERSION =
-  "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1";
-const JRA_005_DIRT_1700_SUMMER_MODEL_VERSION = "jra-joken-005-dirt-1700-summer-qsm-gated-v1";
-const JRA_005_DIRT_1800_NONAUTUMN_MODEL_VERSION = "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1";
+  "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1";
+const JRA_005_DIRT_1700_SUMMER_MODEL_VERSION = "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1";
+const JRA_005_DIRT_1800_NONAUTUMN_MODEL_VERSION =
+  "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1";
 const JRA_005_DIRT_INTERMEDIATE_AUTUMN_MODEL_VERSION =
-  "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1";
-const JRA_005_DIRT_MILE_AUTUMN_MODEL_VERSION = "jra-joken-005-dirt-mile-autumn-yeti-gated-v1";
-const JRA_005_DIRT_MILE_SPRING_MODEL_VERSION = "jra-joken-005-dirt-mile-spring-qsm-gated-v1";
+  "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1";
+const JRA_005_DIRT_MILE_AUTUMN_MODEL_VERSION =
+  "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1";
+const JRA_005_DIRT_MILE_SPRING_MODEL_VERSION = "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1";
 const JRA_005_TURF_INTERMEDIATE_SPRING_MODEL_VERSION =
-  "jra-joken-005-turf-intermediate-spring-qsm-gated-v1";
-const JRA_005_TURF_MILE_MODEL_VERSION = "jra-joken-005-turf-mile-yeti-gated-v1";
-const JRA_010_DIRT_INTERMEDIATE_MODEL_VERSION = "jra-joken-010-dirt-intermediate-yeti-gated-v1";
-const JRA_701_TURF_INTERMEDIATE_MODEL_VERSION = "jra-joken-701-turf-intermediate-qsm-gated-v1";
-const JRA_701_TURF_LONG_MODEL_VERSION = "jra-joken-701-turf-long-qsm-gated-v1";
-const JRA_701_TURF_MILE_MODEL_VERSION = "jra-joken-701-turf-mile-qsm-gated-v1";
-const JRA_703_DIRT_INTERMEDIATE_MODEL_VERSION = "jra-joken-703-dirt-intermediate-qsm-gated-v1";
-const JRA_703_DIRT_SPRINT_MODEL_VERSION = "jra-joken-703-dirt-sprint-yeti-gated-v1";
-const JRA_703_OTHER_EXTENDED_MODEL_VERSION = "jra-joken-703-other-extended-qsm-gated-v1";
+  "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1";
+const JRA_005_TURF_MILE_MODEL_VERSION = "jra-joken-005-turf-mile-yeti-gated-v1-nowin1";
+const JRA_010_DIRT_INTERMEDIATE_MODEL_VERSION =
+  "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1";
+const JRA_701_TURF_INTERMEDIATE_MODEL_VERSION =
+  "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1";
+const JRA_701_TURF_LONG_MODEL_VERSION = "jra-joken-701-turf-long-qsm-gated-v1-nowin1";
+const JRA_701_TURF_MILE_MODEL_VERSION = "jra-joken-701-turf-mile-qsm-gated-v1-nowin1";
+const JRA_703_DIRT_INTERMEDIATE_MODEL_VERSION =
+  "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1";
+const JRA_703_DIRT_SPRINT_MODEL_VERSION = "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1";
+const JRA_703_OTHER_EXTENDED_MODEL_VERSION = "jra-joken-703-other-extended-qsm-gated-v1-nowin1";
 const JRA_703_TURF_1200_LARGEFIELD_MODEL_VERSION =
-  "jra-joken-703-turf-1200-largefield-yeti-gated-v1";
-const JRA_703_TURF_1400_MODEL_VERSION = "jra-joken-703-turf-1400-qsm-gated-v1";
-const JRA_703_TURF_INTERMEDIATE_MODEL_VERSION = "jra-joken-703-turf-intermediate-qsm-gated-v1";
-const JRA_703_TURF_LONG_SPRING_MODEL_VERSION = "jra-joken-703-turf-long-spring-qsm-gated-v1";
-const JRA_703_TURF_LONG_SUMMER_MODEL_VERSION = "jra-joken-703-turf-long-summer-yeti-gated-v1";
+  "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1";
+const JRA_703_TURF_1400_MODEL_VERSION = "jra-joken-703-turf-1400-qsm-gated-v1-nowin1";
+const JRA_703_TURF_INTERMEDIATE_MODEL_VERSION =
+  "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1";
+const JRA_703_TURF_LONG_SPRING_MODEL_VERSION = "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1";
+const JRA_703_TURF_LONG_SUMMER_MODEL_VERSION =
+  "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1";
 const JRA_TURF_TRACK_CODES: ReadonlySet<string> = new Set([
   "10",
   "11",
@@ -89,27 +97,27 @@ const JRA_SPRING_MONTHS: ReadonlySet<string> = new Set(["03", "04", "05"]);
 const JRA_WINTER_MONTHS: ReadonlySet<string> = new Set(["12", "01", "02"]);
 const JRA_SUMMER_MONTHS: ReadonlySet<string> = new Set(["06", "07", "08"]);
 const JRA_JOKEN_MODEL_VERSIONS: ReadonlyMap<string, string> = new Map([
-  ["005", "jra-joken-005-pooled-yetirank-v2"],
-  ["010", "jra-joken-010-pooled-yetirank-v2"],
-  ["016", "jra-joken-016-pooled-yetirank-v2"],
-  ["701", "jra-joken-701-pooled-yetirank-v2"],
-  ["703", "jra-joken-703-pooled-yetirank-v2"],
-  ["999", "jra-joken-999-pooled-yetirank-v2"],
+  ["005", "jra-joken-005-pooled-yetirank-v2-nowin1"],
+  ["010", "jra-joken-010-pooled-yetirank-v2-nowin1"],
+  ["016", "jra-joken-016-pooled-yetirank-v2-nowin1"],
+  ["701", "jra-joken-701-pooled-yetirank-v2-nowin1"],
+  ["703", "jra-joken-703-pooled-yetirank-v2-nowin1"],
+  ["999", "jra-joken-999-pooled-yetirank-v2-nowin1"],
 ]);
-const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188";
-const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1";
+const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188-nowin1";
+const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin1";
 const NAR_CELL_TOP1_MODEL_VERSIONS: readonly string[] = [
-  "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
-  "nar-cell-top1-42-c-sprint-summer-tc1-v1",
-  "nar-cell-top1-30-c-sprint-summer-tc1-v1",
-  "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
-  "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
-  "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
-  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
-  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+  "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
+  "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
+  "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
+  "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+  "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
+  "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
+  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
+  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
 ];
-const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011";
-const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y";
+const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011-nowin1";
+const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y-nowin1";
 
 // Mirrors predict_lib/stage1_routing.json's per-category fallback
 // model_version (both entries `enabled: true` there today). resolve_stage1_gate
@@ -511,7 +519,11 @@ const buildPreviousDateStartUtc = (runYmd: string): string | null => {
 };
 
 const resolveCompletionNotBefore = (runYmd: string, notBefore?: string): string | null => {
-  if (notBefore === undefined) return buildRunDateStartUtc(runYmd);
+  if (notBefore === undefined) {
+    return runYmd > getRunYmdJst(new Date())
+      ? (buildPreviousDateStartUtc(runYmd)?.slice(0, 19) ?? null)
+      : buildRunDateStartUtc(runYmd);
+  }
   const parsed = new Date(notBefore);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 19);
 };

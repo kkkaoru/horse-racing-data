@@ -1,6 +1,11 @@
 // Run with bun. Queue-owned lifecycle controls for prediction Container DOs.
 
-import { claimContainerSlotStop, clearContainerSlot, markContainerSlotStopped } from "./do-state";
+import {
+  cancelContainerSlotStop,
+  claimContainerSlotStop,
+  clearContainerSlot,
+  markContainerSlotStopped,
+} from "./do-state";
 import {
   isPredictionContainerRole,
   qualifyPredictionContainerDoName,
@@ -14,6 +19,8 @@ const DO_HOST = "http://do";
 const ADMIN_STOP_CONTAINER_PATH = "/__admin/stop-container";
 
 interface EnqueueContainerStopForRoleParams {
+  requireStopped?: boolean;
+  executionId?: string;
   acceptableWorkKeys?: string[];
   allowUnowned?: boolean;
   delaySeconds?: number;
@@ -73,6 +80,7 @@ export const waitForContainerStopped = async (
 
 const finalizeContainerStop = async (params: FinalizeContainerStopParams): Promise<void> => {
   await markContainerSlotStopped({
+    executionId: params.message.executionId,
     acceptableWorkKeys: params.message.acceptableWorkKeys,
     doName: params.message.name,
     env: params.env,
@@ -80,6 +88,7 @@ const finalizeContainerStop = async (params: FinalizeContainerStopParams): Promi
   });
   await params.afterDestroyed?.();
   await clearContainerSlot({
+    executionId: params.message.executionId,
     acceptableWorkKeys: params.message.acceptableWorkKeys,
     doName: params.message.name,
     env: params.env,
@@ -112,6 +121,9 @@ export const isContainerControlMessage = (value: unknown): value is ContainerCon
         (workKey) => typeof workKey === "string" && workKey.length > 0,
       ))) &&
   (!("allowUnowned" in value) || typeof value.allowUnowned === "boolean") &&
+  (!("requireStopped" in value) || typeof value.requireStopped === "boolean") &&
+  (!("executionId" in value) ||
+    (typeof value.executionId === "string" && value.executionId.length > 0)) &&
   (!("workKey" in value) || (typeof value.workKey === "string" && value.workKey.length > 0)) &&
   (!("role" in value) || isPredictionContainerRole(value.role)) &&
   (!("force" in value) || typeof value.force === "boolean");
@@ -140,6 +152,8 @@ export const enqueueContainerStopForRole = async (
 ): Promise<boolean> => {
   if (params.env.CONTAINER_CONTROL_QUEUE === undefined) return false;
   const message: ContainerControlMessage = {
+    ...(params.requireStopped === undefined ? {} : { requireStopped: params.requireStopped }),
+    ...(params.executionId === undefined ? {} : { executionId: params.executionId }),
     name: params.name,
     requestedAt: new Date().toISOString(),
     role: params.role,
@@ -168,6 +182,7 @@ export const consumeContainerStop = async (
     return false;
   }
   const claim = await claimContainerSlotStop({
+    executionId: message.executionId,
     allowUnowned: message.allowUnowned,
     doName: message.name,
     env,
@@ -177,9 +192,10 @@ export const consumeContainerStop = async (
     workKey: message.workKey,
   });
   if (!claim.allowed) {
-    if (claim.state === "destroyed") {
+    if (claim.state === "destroyed" && message.executionId === undefined) {
       await afterDestroyed?.();
       await clearContainerSlot({
+        executionId: message.executionId,
         acceptableWorkKeys: message.acceptableWorkKeys,
         doName: message.name,
         env,
@@ -195,16 +211,16 @@ export const consumeContainerStop = async (
     }
     const namespace = resolveContainerNamespaceForRole(env, message.role);
     const stub = namespace.get(namespace.idFromName(message.name));
-    if (claim.state === "pending") {
+    if (claim.state === "pending" && message.executionId === undefined) {
       await waitForContainerStopped(message.name, stub);
       await finalizeContainerStop({ afterDestroyed, env, message });
       return true;
     }
-    return false;
+    if (message.executionId === undefined) return false;
   }
   const namespace = resolveContainerNamespaceForRole(env, message.role);
   const stub = namespace.get(namespace.idFromName(message.name));
-  if (claim.state === "resumed") {
+  if (claim.state === "resumed" && message.executionId === undefined) {
     const state = await stub.getState();
     if (isStoppedStatus(state.status)) {
       await finalizeContainerStop({ afterDestroyed, env, message });
@@ -213,10 +229,25 @@ export const consumeContainerStop = async (
   }
   const response = await stub.fetch(
     new Request(`${DO_HOST}${ADMIN_STOP_CONTAINER_PATH}`, {
-      headers: { authorization: `Bearer ${env.TRIGGER_TOKEN}` },
+      headers: {
+        authorization: `Bearer ${env.TRIGGER_TOKEN}`,
+        ...(message.requireStopped === true ? { "x-prediction-require-stopped": "1" } : {}),
+        ...(message.executionId === undefined
+          ? {}
+          : { "x-prediction-execution-id": message.executionId }),
+      },
       method: "POST",
     }),
   );
+  if (response.status === 409 || response.status === 425) {
+    await cancelContainerSlotStop({
+      env,
+      doName: message.name,
+      workKey: message.workKey,
+      executionId: message.executionId,
+    });
+    if (response.status === 409) return false;
+  }
   if (!response.ok) {
     throw new Error(
       `Container stop failed name=${message.name} requestedAt=${message.requestedAt} status=${response.status}`,
