@@ -105,7 +105,8 @@ const parseTree = (raw: unknown): XgboostTree => {
     default_left: requireNumberArray(raw.default_left, "default_left"),
     left_children: requireNumberArray(raw.left_children, "left_children"),
     right_children: requireNumberArray(raw.right_children, "right_children"),
-    split_conditions: requireNumberArray(raw.split_conditions, "split_conditions"),
+    // Native XGBoost compares float32 thresholds, not JSON's rounded decimal text.
+    split_conditions: requireNumberArray(raw.split_conditions, "split_conditions").map(Math.fround),
     split_indices: requireNumberArray(raw.split_indices, "split_indices"),
   };
 };
@@ -114,6 +115,31 @@ const resolveFeatureNames = (raw: unknown): string[] => {
   if (raw === undefined) return [];
   if (!isStringArray(raw)) throw new Error("XGBoost feature_names must be a string array");
   return raw;
+};
+
+const selectedTreeCount = (
+  attributes: unknown,
+  model: Record<string, unknown>,
+  totalTrees: number,
+): number => {
+  const best = isObject(attributes) ? attributes.best_iteration : undefined;
+  if (best === undefined) return totalTrees;
+  if (typeof best !== "string" && typeof best !== "number") {
+    throw new Error("XGBoost best_iteration must be a nonnegative integer");
+  }
+  const rounds = Number(best) + 1;
+  if (!Number.isSafeInteger(rounds) || rounds < 1) {
+    throw new Error("XGBoost best_iteration must be a nonnegative integer");
+  }
+  const offsets = model.iteration_indptr;
+  if (offsets !== undefined && !isNumberArray(offsets)) {
+    throw new Error("XGBoost iteration_indptr must be a number array");
+  }
+  const count = offsets === undefined ? rounds : offsets[rounds];
+  if (count === undefined || !Number.isSafeInteger(count) || count < 1 || count > totalTrees) {
+    throw new Error("XGBoost best_iteration exceeds available trees");
+  }
+  return count;
 };
 
 export const parseXgboostJsonModel = (json: unknown): XgboostModel => {
@@ -133,7 +159,11 @@ export const parseXgboostJsonModel = (json: unknown): XgboostModel => {
     base_score: parseBaseScore(param.base_score),
     feature_names: resolveFeatureNames(learner.feature_names),
     num_feature: parseNumFeature(param.num_feature),
-    trees: trees.map(parseTree),
+    // The Python adapter predicts through best_iteration (inclusive), not all
+    // early-stopping trees saved in model.json.
+    trees: trees
+      .slice(0, selectedTreeCount(learner.attributes, boosterModel, trees.length))
+      .map(parseTree),
   };
 };
 
@@ -149,7 +179,8 @@ const chooseNextNode = (context: WalkContext, nodeIndex: number): number => {
     return goesLeftByDefault
       ? numberAt(tree.left_children, nodeIndex)
       : numberAt(tree.right_children, nodeIndex);
-  return featureValue < numberAt(tree.split_conditions, nodeIndex)
+  // Native DMatrix converts incoming numeric features to float32 before splitting.
+  return Math.fround(featureValue) < numberAt(tree.split_conditions, nodeIndex)
     ? numberAt(tree.left_children, nodeIndex)
     : numberAt(tree.right_children, nodeIndex);
 };
@@ -161,11 +192,12 @@ const walkTree = (context: WalkContext, nodeIndex: number): number => {
 
 export const scoreXgboostModel = (input: ScoreModelInput): number => {
   const features = input.features;
-  const leafSum = input.model.trees.reduce<number>(
-    (acc, tree) => acc + walkTree({ features, tree }, ROOT_NODE_INDEX),
-    0,
+  // Native CPU prediction starts with the float32 base margin and rounds
+  // after every float32 leaf addition; a double sum exceeds parity tolerance.
+  return input.model.trees.reduce<number>(
+    (acc, tree) => Math.fround(acc + Math.fround(walkTree({ features, tree }, ROOT_NODE_INDEX))),
+    Math.fround(input.model.base_score),
   );
-  return leafSum + input.model.base_score;
 };
 
 const compareScoredRows = (left: ScoredRow, right: ScoredRow): number => {

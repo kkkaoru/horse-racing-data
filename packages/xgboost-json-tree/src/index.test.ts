@@ -83,6 +83,152 @@ it("defaults feature_names to an empty array when absent", () => {
   expect(parsed.feature_names).toStrictEqual([]);
 });
 
+it("scores with float32 split thresholds like the native XGBoost runtime", () => {
+  const model = parseXgboostJsonModel({
+    learner: {
+      learner_model_param: { base_score: "[0]", num_feature: "1" },
+      gradient_booster: {
+        model: {
+          trees: [
+            {
+              base_weights: [0, 1.5, -2],
+              default_left: [1, 0, 0],
+              left_children: [1, -1, -1],
+              right_children: [2, -1, -1],
+              split_conditions: [0.6666667, 1.5, -2],
+              split_indices: [0, 0, 0],
+            },
+          ],
+        },
+      },
+    },
+  });
+  expect(scoreXgboostModel({ features: [Math.fround(2 / 3)], model })).toBe(-2);
+  expect(scoreXgboostModel({ features: [2 / 3], model })).toBe(-2);
+  expect(scoreXgboostModel({ features: [0.6], model })).toBe(1.5);
+});
+
+it("uses XGBoost best_iteration with iteration offsets instead of late stopping trees", () => {
+  const tree = {
+    base_weights: [2],
+    default_left: [0],
+    left_children: [-1],
+    right_children: [-1],
+    split_conditions: [2],
+    split_indices: [0],
+  };
+  const model = parseXgboostJsonModel({
+    learner: {
+      attributes: { best_iteration: "0" },
+      learner_model_param: { base_score: "[0]", num_feature: "1" },
+      gradient_booster: { model: { iteration_indptr: [0, 2, 3], trees: [tree, tree, tree] } },
+    },
+  });
+  expect(model.trees).toHaveLength(2);
+  expect(scoreXgboostModel({ features: [0], model })).toBe(4);
+});
+
+it("selects best_iteration without iteration offsets for one tree per round", () => {
+  const model = parseXgboostJsonModel({
+    learner: {
+      attributes: { best_iteration: "0" },
+      learner_model_param: { base_score: "[0]", num_feature: "1" },
+      gradient_booster: {
+        model: {
+          trees: [
+            {
+              base_weights: [2],
+              default_left: [0],
+              left_children: [-1],
+              right_children: [-1],
+              split_conditions: [2],
+              split_indices: [0],
+            },
+            {
+              base_weights: [3],
+              default_left: [0],
+              left_children: [-1],
+              right_children: [-1],
+              split_conditions: [3],
+              split_indices: [0],
+            },
+          ],
+        },
+      },
+    },
+  });
+  expect(model.trees).toHaveLength(1);
+  expect(scoreXgboostModel({ features: [0], model })).toBe(2);
+});
+
+it("rejects malformed iteration offsets instead of scoring an ambiguous tree count", () => {
+  expect(() =>
+    parseXgboostJsonModel({
+      learner: {
+        attributes: { best_iteration: "0" },
+        learner_model_param: { base_score: "[0]", num_feature: "1" },
+        gradient_booster: {
+          model: {
+            iteration_indptr: ["0", 1],
+            trees: [
+              {
+                base_weights: [2],
+                default_left: [0],
+                left_children: [-1],
+                right_children: [-1],
+                split_conditions: [2],
+                split_indices: [0],
+              },
+            ],
+          },
+        },
+      },
+    }),
+  ).toThrow("XGBoost iteration_indptr must be a number array");
+});
+
+it.each([
+  ["bad", "nonnegative integer"],
+  ["-1", "nonnegative integer"],
+  ["3", "exceeds available trees"],
+])("rejects invalid best_iteration %s", (bestIteration, message) => {
+  expect(() =>
+    parseXgboostJsonModel({
+      learner: {
+        attributes: { best_iteration: bestIteration },
+        learner_model_param: { base_score: "[0]", num_feature: "1" },
+        gradient_booster: {
+          model: {
+            iteration_indptr: [0, 1],
+            trees: [
+              {
+                base_weights: [2],
+                default_left: [0],
+                left_children: [-1],
+                right_children: [-1],
+                split_conditions: [2],
+                split_indices: [0],
+              },
+            ],
+          },
+        },
+      },
+    }),
+  ).toThrow(message);
+});
+
+it("rejects a boolean best_iteration instead of coercing it to a round count", () => {
+  expect(() =>
+    parseXgboostJsonModel({
+      learner: {
+        attributes: { best_iteration: false },
+        learner_model_param: { base_score: "0", num_feature: "1" },
+        gradient_booster: { model: { trees: [] } },
+      },
+    }),
+  ).toThrow("XGBoost best_iteration must be a nonnegative integer");
+});
+
 it("throws when the top-level JSON is not an object", () => {
   expect(() => parseXgboostJsonModel(42)).toThrowError("XGBoost model JSON must be an object");
 });
@@ -294,6 +440,52 @@ it("follows the right child by default when the feature is missing and default_l
     ],
   };
   expect(scoreXgboostModel({ features: [0.9], model })).toBe(0.25);
+});
+
+it("rounds native float32 base margin and leaf values before addition", () => {
+  const model: XgboostModel = {
+    base_score: 0.1,
+    num_feature: 1,
+    feature_names: [],
+    trees: [
+      {
+        base_weights: [0.2],
+        default_left: [0],
+        left_children: [-1],
+        right_children: [-1],
+        split_conditions: [0.2],
+        split_indices: [0],
+      },
+    ],
+  };
+  expect(scoreXgboostModel({ features: [0], model })).toBe(0.30000001192092896);
+});
+
+it("starts float32 accumulation with base margin instead of adding it after leaves", () => {
+  const model: XgboostModel = {
+    base_score: 1,
+    num_feature: 1,
+    feature_names: [],
+    trees: [
+      {
+        base_weights: [16777216],
+        default_left: [0],
+        left_children: [-1],
+        right_children: [-1],
+        split_conditions: [16777216],
+        split_indices: [0],
+      },
+      {
+        base_weights: [-16777216],
+        default_left: [0],
+        left_children: [-1],
+        right_children: [-1],
+        split_conditions: [-16777216],
+        split_indices: [0],
+      },
+    ],
+  };
+  expect(scoreXgboostModel({ features: [0], model })).toBe(0);
 });
 
 it("sums leaf outputs across multiple trees and adds base_score", () => {
