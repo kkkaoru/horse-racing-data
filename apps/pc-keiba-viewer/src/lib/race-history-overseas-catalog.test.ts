@@ -1,6 +1,7 @@
 // Run with bun. All service I/O is mocked.
 import { expect, it, vi } from "vitest";
 
+import published from "../fixtures/overseas-published.json";
 import { readCatalogOverseasRaceHistory } from "./race-history-overseas-catalog";
 import type { CatalogOverseasRaceHistoryBinding } from "./race-history-overseas-catalog";
 
@@ -21,6 +22,21 @@ const bindingFor = (
     );
   return { binding: { fetch }, fetch };
 };
+
+it("accepts the supported 4000-row overseas history above 64 KiB", async () => {
+  const body = {
+    rows: Array.from({ length: 4000 }, () => ({
+      sourceHorseId: "2021106753",
+      raceDate: "2026-04-26",
+      distanceMetres: "1600",
+    })),
+  };
+  expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeGreaterThan(65536);
+  const { binding } = bindingFor(body);
+  const rows = await readCatalogOverseasRaceHistory(binding, { ...query, limit: 4000 });
+  expect(rows).toHaveLength(4000);
+  expect(rows[3999]?.distanceMetres).toBe(1600);
+});
 
 it("reads overseas rows and requests the overseas mode", async () => {
   const { binding, fetch } = bindingFor({
@@ -66,6 +82,15 @@ it.each([
   { body: { rows: [] }, init: { status: 503 } },
   { body: { rows: [] }, init: { status: 200, headers: {} } },
   { body: { rows: "nope" } },
+  {
+    body: {
+      rows: Array.from({ length: 4001 }, () => ({
+        sourceHorseId: "2021106753",
+        raceDate: "2026-04-26",
+        distanceMetres: "1600",
+      })),
+    },
+  },
   { body: { rows: [{ sourceHorseId: "0", raceDate: "2026-04-26", distanceMetres: null }] } },
   {
     body: { rows: [{ sourceHorseId: "2021999999", raceDate: "2026-04-26", distanceMetres: null }] },
@@ -83,4 +108,42 @@ it.each([
   await expect(
     readCatalogOverseasRaceHistory(bindingFor(body, init ?? {}).binding, query),
   ).rejects.toThrow("Catalog race history unavailable");
+});
+
+it("reads all 173 saved provider histories under their sixteen IDs", async () => {
+  const { binding } = bindingFor({ rows: published.histories });
+  const rows = await readCatalogOverseasRaceHistory(binding, {
+    horseIds: published.mappings.map((row) => row.source_horse_id),
+    beforeDate: "20261004",
+    minDate: null,
+    limit: 4000,
+  });
+  expect(rows).toHaveLength(173);
+  expect(
+    published.mappings.map(
+      (mapping) => rows.filter((row) => row.sourceHorseId === mapping.source_horse_id).length,
+    ),
+  ).toStrictEqual([11, 10, 10, 15, 17, 16, 14, 13, 18, 9, 5, 8, 6, 7, 7, 7]);
+});
+it.each(["2026-09-20", "2027-01-01", "2020-01-01"])(
+  "rejects history outside the requested date bounds: %s",
+  async (raceDate) => {
+    const { binding } = bindingFor({
+      rows: [{ sourceHorseId: "2021106753", raceDate, distanceMetres: null }],
+    });
+    await expect(readCatalogOverseasRaceHistory(binding, query)).rejects.toThrow(
+      "Catalog race history unavailable",
+    );
+  },
+);
+
+it("uses the published provider alphanumeric contract without a domestic ten-digit constraint", async () => {
+  const { binding } = bindingFor({
+    rows: [{ sourceHorseId: "horse1", raceDate: "2026-04-26", distanceMetres: null }],
+  });
+  await expect(
+    readCatalogOverseasRaceHistory(binding, { ...query, horseIds: ["horse1"] }),
+  ).resolves.toStrictEqual([
+    { sourceHorseId: "horse1", raceDate: "2026-04-26", distanceMetres: null },
+  ]);
 });

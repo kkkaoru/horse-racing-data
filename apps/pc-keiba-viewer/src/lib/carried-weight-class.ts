@@ -49,8 +49,8 @@ const CARRIED_WEIGHT_CLASS_55_5_57: CarriedWeightClass = {
 };
 const CARRIED_WEIGHT_CLASS_57_5_59: CarriedWeightClass = {
   key: "57.5-59",
-  label: "57.5kg以上59kg以下",
-  maxKg: 59,
+  label: "57.5kg以上",
+  maxKg: null,
   minKg: 57.5,
 };
 

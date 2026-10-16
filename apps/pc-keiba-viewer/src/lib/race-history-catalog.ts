@@ -19,6 +19,7 @@ export interface RaceHistoryRow {
 }
 
 export interface CatalogRaceHistoryQuery {
+  source: "jra" | "nar";
   horseIds: readonly string[];
   beforeDate: string;
   minDate: string | null;
@@ -92,6 +93,7 @@ export const readCatalogRaceHistory = async (
     throw new Error(FAILURE);
   const url: URL = new URL(ENDPOINT);
   const params: Record<string, string> = {
+    source: query.source,
     horseIds: query.horseIds.join(","),
     beforeDate: query.beforeDate,
     limit: String(query.limit),
@@ -111,7 +113,7 @@ export const readCatalogRaceHistory = async (
       await response.body?.cancel();
       throw new Error(FAILURE);
     }
-    const value: unknown = await readBoundedCatalogBody(response);
+    const value: unknown = await readBoundedCatalogBody(response, "race-history");
     if (!isRecord(value) || !Array.isArray(value.rows)) throw new Error(FAILURE);
     if (value.rows.length > MAX_ROWS) throw new Error(FAILURE);
     const requested: ReadonlySet<string> = new Set(query.horseIds);

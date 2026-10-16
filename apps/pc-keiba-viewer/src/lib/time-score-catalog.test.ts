@@ -204,3 +204,82 @@ it("adds the jockey name required by the app row type", () => {
   // matching toTimeScoreRows' toStringValue of a missing field.
   expect(toAppTimeScoreRows(composed, new Map())[0]?.jockeyName).toBe("");
 });
+
+it("decodes mixed history venues into kg and tenths of kg before weighting", () => {
+  const grouped = groupHistoryByHorseId([
+    history({
+      keibajoCode: "83",
+      bataiju: "3E8",
+      futanJuryo: "258",
+      kohan3f: "600",
+      timeSa: "+006",
+    }),
+    history({ keibajoCode: "83", bataiju: "3e8", futanJuryo: "24E", timeSa: "-014" }),
+    history({ keibajoCode: " 83 ", bataiju: " 3E8 ", futanJuryo: "26C", timeSa: "000" }),
+    history({ keibajoCode: "05", bataiju: "600", futanJuryo: "600", timeSa: "1000" }),
+  ]);
+  expect(
+    grouped.get("2021106753")?.map(({ bodyWeight, carriedWeight, margin, last3f }) => ({
+      bodyWeight,
+      carriedWeight,
+      margin,
+      last3f,
+    })),
+  ).toStrictEqual([
+    { bodyWeight: 1000, carriedWeight: 6000, margin: 6, last3f: 600 },
+    { bodyWeight: 1000, carriedWeight: 5900, margin: 14, last3f: 340 },
+    { bodyWeight: 1000, carriedWeight: 6200, margin: 0, last3f: 340 },
+    { bodyWeight: 600, carriedWeight: 600, margin: 1000, last3f: 340 },
+  ]);
+});
+
+it.each([null, "", " ", "000", "FFF", "3E8oops", "60kg", "-600", "60.0", "+600"])(
+  "rejects unavailable or malformed decimal weights and last3f %j",
+  (raw) => {
+    const row = groupHistoryByHorseId([
+      history({ bataiju: raw, futanJuryo: raw, kohan3f: raw }),
+    ]).get("2021106753")?.[0];
+    expect([row?.bodyWeight, row?.carriedWeight, row?.last3f]).toStrictEqual([null, null, null]);
+  },
+);
+
+it.each([null, "", " ", "0", "000", "FFF", "fff", "3E8oops", "0x258", "-258", "24 E", "258.0"])(
+  "rejects unavailable or malformed hexadecimal weights %j",
+  (raw) => {
+    const row = groupHistoryByHorseId([
+      history({ keibajoCode: "83", bataiju: raw, futanJuryo: raw }),
+    ]).get("2021106753")?.[0];
+    expect([row?.bodyWeight, row?.carriedWeight]).toStrictEqual([null, null]);
+  },
+);
+
+it.each(["", " ", "FFF", "6x", "1e2", "--014", "+-006", "+ 006", "0.6", "+"])(
+  "rejects malformed margin %j without extracting digits",
+  (raw) => {
+    expect(
+      groupHistoryByHorseId([history({ timeSa: raw })]).get("2021106753")?.[0]?.margin,
+    ).toBeNull();
+  },
+);
+
+it("interprets minutes only in sohaTime", () => {
+  const row = groupHistoryByHorseId([
+    history({ sohaTime: "1000", kohan3f: "1000", futanJuryo: "1000", timeSa: "1000" }),
+  ]).get("2021106753")?.[0];
+  expect([row?.raceTime, row?.last3f, row?.carriedWeight, row?.margin]).toStrictEqual([
+    600, 1000, 1000, 1000,
+  ]);
+});
+
+it("rejects numeric overflow without imposing weight ranges", () => {
+  const grouped = groupHistoryByHorseId([
+    history({ bataiju: "9".repeat(400), futanJuryo: "9".repeat(400) }),
+    history({ keibajoCode: "83", bataiju: "F".repeat(400), futanJuryo: "F".repeat(400) }),
+  ]);
+  expect(
+    grouped.get("2021106753")?.map(({ bodyWeight, carriedWeight }) => [bodyWeight, carriedWeight]),
+  ).toStrictEqual([
+    [null, null],
+    [null, null],
+  ]);
+});

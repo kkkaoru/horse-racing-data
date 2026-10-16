@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { getRacesByDate } from "../../../../db/queries";
 import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
+import { isHeatmapInternalRequest } from "../../../../lib/heatmap-internal-auth";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import { startHeatmapWarmWorkflows } from "../../../../lib/win-rate-heatmap-warm-workflow";
 
@@ -14,7 +15,7 @@ const HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 
 export async function POST(request: Request) {
   const searchParams = new URL(request.url).searchParams;
-  if (request.headers.get("X-PC-Keiba-Cache-Warm") !== "scheduled") {
+  if (!isHeatmapInternalRequest(request, process.env.PC_KEIBA_INTERNAL_TOKEN)) {
     return NextResponse.json({ error: "not_found" }, { status: HTTP_STATUS_NOT_FOUND });
   }
   const now = new Date();

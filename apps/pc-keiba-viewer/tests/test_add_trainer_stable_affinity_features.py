@@ -179,6 +179,22 @@ def test_target_race_entry_filter_scopes_source_and_escapes_literals() -> None:
     )
 
 
+def test_target_race_entry_filter_uses_date_range_for_bulk_inputs() -> None:
+    rows = [("jra", "2025", f"{1 + day // 28:02d}{1 + day % 28:02d}", "05", "01", f"H{day}") for day in range(201)]
+
+    class FakeConn:
+        def execute(self, _query: str) -> FakeConn:
+            return self
+
+        def fetchall(self) -> list[tuple[str, str, str, str, str, str]]:
+            return rows
+
+    assert subject.target_race_entry_filter_sql(FakeConn(), "jra") == (
+        "(se.kaisai_nen between '2025' and '2025' "
+        "and se.kaisai_nen || se.kaisai_tsukihi between '20250101' and '20250805')"
+    )
+
+
 def test_target_race_entry_filter_returns_false_without_category_rows() -> None:
     class FakeConn:
         def execute(self, _query: str) -> FakeConn:

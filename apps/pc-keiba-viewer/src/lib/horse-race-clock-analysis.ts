@@ -28,7 +28,7 @@ export interface ClockAnalysisRow {
   fill: string;
   finishRank: number | null;
   horseName: string;
-  kohan3fTenths: number;
+  kohan3fTenths: number | null;
   scaledTimeTenths: number;
   stroke: string;
   umaban: string;
@@ -112,11 +112,14 @@ export interface ClockScatterView {
 }
 
 interface ClockFrameRunner {
+  sourceHorseId?: string | null;
+  bamei?: string | null;
   kettoTorokuBango: string | null;
   wakuban: string | null;
 }
 
 interface CollectAnalysisRowsParams {
+  includeMissingKohan?: boolean;
   currentDistance: string | null | undefined;
   results: HorseRaceResult[];
   runners: ClockFrameRunner[];
@@ -252,7 +255,7 @@ const targetRaceKyori = (race: RaceTimeTargetRace): string | null => {
 const buildRunnerWakubanMap = (runners: ClockFrameRunner[]): Map<string, string> => {
   const map = new Map<string, string>();
   runners.forEach((runner) => {
-    const ketto = cleanText(runner.kettoTorokuBango, "");
+    const ketto = cleanText(runner.sourceHorseId ?? runner.kettoTorokuBango, "");
     const wakuban = cleanText(runner.wakuban, "");
     if (ketto !== "" && wakuban !== "") {
       map.set(ketto, wakuban);
@@ -270,6 +273,7 @@ const paintForResult = (
 };
 
 export const buildClockAnalysisRows = ({
+  includeMissingKohan,
   currentDistance,
   results,
   runners,
@@ -279,7 +283,7 @@ export const buildClockAnalysisRows = ({
   return results.flatMap((result) => {
     const soha = parseSohaTimeTenths(result.sohaTime);
     const kohan = parseKohan3fTenths(result.kohan3f);
-    if (soha === null || kohan === null) {
+    if (soha === null || (kohan === null && !includeMissingKohan)) {
       return [];
     }
     const distance = parseRaceDistanceMeters(result.kyori);
@@ -303,7 +307,13 @@ export const buildClockAnalysisRows = ({
         distanceMeters: distance,
         fill: paint.fill,
         finishRank: parseRaceFinishRank(result.kakuteiChakujun),
-        horseName: cleanText(result.bamei),
+        horseName: cleanText(
+          result.bamei ??
+            runners.find(
+              (runner) =>
+                (runner.sourceHorseId ?? runner.kettoTorokuBango) === result.kettoTorokuBango,
+            )?.bamei,
+        ),
         kohan3fTenths: kohan,
         scaledTimeTenths: scaled,
         stroke: paint.outline,
@@ -434,7 +444,12 @@ export const buildScatterView = (
   if (rows.length === 0) {
     return null;
   }
-  const plotted = rows.toSorted(compareClockRows);
+  const plotted = rows
+    .filter(
+      (row): row is ClockAnalysisRow & { kohan3fTenths: number } => row.kohan3fTenths !== null,
+    )
+    .toSorted(compareClockRows);
+  if (plotted.length < rows.length) return buildDateTimeView(rows);
   const xValues = [
     ...plotted.map((row) => row.kohan3fTenths),
     ...optionalParValues(par.averageKohan3f, par.fastestKohan3f, par.medianKohan3f),
@@ -534,6 +549,42 @@ export const buildScatterView = (
     width: VIEW_WIDTH,
     xAxisTitle: "上がり3F（右が速い）",
     xTicks: axisTicks(xScale, [xDomain[1], xDomain[0]], formatKohan3fTenthsLabel, false),
+    yAxisTitle: "換算レースタイム（上が速い）",
+    yTicks: axisTicks(yScale, [yDomain[1], yDomain[0]], formatRaceTimeTenthsLabel, true),
+  };
+};
+
+const buildDateTimeView = (rows: ClockAnalysisRow[]): ClockScatterView => {
+  const plotted = rows.toSorted(compareClockRows);
+  const xDomain = paddedDomain(plotted.map((row) => row.dateValue));
+  const yDomain = paddedDomain(plotted.map((row) => row.scaledTimeTenths));
+  const xScale = scaleLinear().domain(xDomain).range([PLOT.left, PLOT.right]);
+  const yScale = scaleLinear().domain([yDomain[1], yDomain[0]]).range([PLOT.bottom, PLOT.top]);
+  return {
+    height: VIEW_HEIGHT,
+    width: VIEW_WIDTH,
+    plotBottom: PLOT.bottom,
+    plotLeft: PLOT.left,
+    plotRight: PLOT.right,
+    plotTop: PLOT.top,
+    points: plotted.map((row) =>
+      toScatterPoint(
+        row,
+        xScale(row.dateValue),
+        yScale(row.scaledTimeTenths),
+        row.kohan3fTenths === null ? "未取得" : formatKohan3fTenthsLabel(row.kohan3fTenths),
+        formatRaceTimeTenthsLabel(row.scaledTimeTenths),
+      ),
+    ),
+    references: [],
+    title: "走破タイムの推移",
+    xAxisTitle: "レース日",
+    xTicks: axisTicks(
+      xScale,
+      xDomain,
+      (value) => new Date(value).toISOString().slice(0, 10),
+      false,
+    ),
     yAxisTitle: "換算レースタイム（上が速い）",
     yTicks: axisTicks(yScale, [yDomain[1], yDomain[0]], formatRaceTimeTenthsLabel, true),
   };

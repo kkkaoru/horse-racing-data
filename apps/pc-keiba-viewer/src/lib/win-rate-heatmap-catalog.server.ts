@@ -1,8 +1,17 @@
+import { requireArcQualifiedStats, type ArcQualifiedStats } from "./arc-qualified-stats";
+// Run with bun.
 import "server-only";
+
 import { safeGetCloudflareEnv } from "./cloudflare-context.server";
+import { foreignOwnerMetadata, type ForeignOwnerMetadata } from "./foreign-owner-stats";
+import { parseGateMappingRevision } from "./gate-mapping-revision.server";
 import type { BloodlineStatsRow, SimilarRaceStatsRow } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
+import type { WinRateHeatmapPartnershipRow } from "./win-rate-heatmap";
+import { parsePartnershipRow } from "./win-rate-heatmap-partnership.server";
 
 export interface WinRateHeatmapCatalogQuery {
+  includeForeignSourceStats?: boolean;
   day: string;
   includeAge?: boolean;
   includeClass?: boolean;
@@ -33,6 +42,9 @@ interface CatalogGroupableRateRow {
 }
 
 export interface WinRateHeatmapCatalogStats {
+  arcQualifiedStats?: ArcQualifiedStats;
+  foreignOwnerVenueRows?: WinRateHeatmapPartnershipRow[];
+  mappingRevision?: string;
   bloodlineRows: BloodlineStatsRow[];
   // Set when the catalog's bloodline query failed; bloodlineRows is empty and
   // the caller must source bloodline stats elsewhere.
@@ -50,7 +62,7 @@ interface CatalogBloodlineRow {
   wins: number;
 }
 
-interface CatalogSimilarRow {
+interface CatalogSimilarRow extends ForeignOwnerMetadata {
   kind: "jockey" | "jockeyFrame" | "owner" | "trainer";
   name: string;
   places: number;
@@ -160,7 +172,21 @@ const parseCatalogSimilarRow = (value: unknown): CatalogSimilarRow | null => {
   ) {
     return null;
   }
-  return { kind, name, places, shows, starts, umaban, wins };
+  const metadata = foreignOwnerMetadata(value);
+  if (
+    metadata.sourcePersonId !== undefined &&
+    (kind !== "owner" ||
+      (metadata.statsScope !== "stored-results-10y" &&
+        metadata.statsScope !== "stored-results-race-10y") ||
+      name !== `netkeiba:${metadata.sourcePersonId}` ||
+      starts <= 0 ||
+      wins < 0 ||
+      wins > places ||
+      places > shows ||
+      shows > starts)
+  )
+    throw new Error("Foreign owner row is malformed");
+  return { ...metadata, kind, name, places, shows, starts, umaban, wins };
 };
 
 const toBloodlineStatsRow = (row: CatalogBloodlineRow): BloodlineStatsRow => ({
@@ -179,6 +205,7 @@ const toBloodlineStatsRow = (row: CatalogBloodlineRow): BloodlineStatsRow => ({
 });
 
 const toSimilarStatsRow = (row: CatalogSimilarRow): SimilarRaceStatsRow => ({
+  ...foreignOwnerMetadata(row),
   category: row.kind,
   currentHorseNumbers: String(row.umaban),
   details: [],
@@ -281,6 +308,27 @@ export const buildWinRateHeatmapCatalogUrl = (query: WinRateHeatmapCatalogQuery)
   if (query.includeRaceTitle === true) {
     url.searchParams.set("includeRaceTitle", "1");
   }
+  if (
+    query.includeForeignSourceStats === true &&
+    query.source === "jra" &&
+    query.year === "2026" &&
+    query.month === "10" &&
+    query.day.padStart(2, "0") === "04" &&
+    query.keibajoCode === "A8" &&
+    query.raceNumber.padStart(2, "0") === "05" &&
+    query.years === 10 &&
+    query.includeVenue === Boolean(query.includeRaceTitle) &&
+    ![
+      query.includeDistance,
+      query.includeTurn,
+      query.includeAge,
+      query.includeClass,
+      query.includeConditionKey,
+      query.includeGrade,
+      query.includeTrackCode,
+    ].some(Boolean)
+  )
+    url.searchParams.set("includeForeignSourceStats", "1");
   return url;
 };
 
@@ -323,14 +371,47 @@ export const fetchWinRateHeatmapStatsFromCatalog = async (
   ) {
     throw new Error("R2 Catalog heatmap stats payload is malformed");
   }
+  const exactArc: boolean =
+    query.source === "jra" &&
+    query.year === "2026" &&
+    query.month.padStart(2, "0") === "10" &&
+    query.day.padStart(2, "0") === "04" &&
+    query.keibajoCode === "A8" &&
+    query.raceNumber.padStart(2, "0") === "05";
+  const arcQualifiedStats: ArcQualifiedStats | undefined = exactArc
+    ? requireArcQualifiedStats(payload.arcQualifiedStats)
+    : undefined;
+  const foreignRows = payload.foreignOwnerVenueRows;
+  if (foreignRows !== undefined && !Array.isArray(foreignRows))
+    throw new Error("Foreign venue rows are malformed");
+  const foreignOwnerVenueRows = foreignRows?.map((value: unknown) => {
+    const row = parsePartnershipRow(value);
+    if (
+      row.category !== "ownerVenue" ||
+      row.statsScope !== "stored-results-venue-30y" ||
+      row.starts <= 0 ||
+      row.name !== `netkeiba:${row.sourcePersonId}`
+    )
+      throw new Error("Foreign venue row is malformed");
+    return row;
+  });
   const bloodlineRows = payload.bloodlineRows.map(parseCatalogBloodlineRow);
   const similarRows = payload.similarRows.map(parseCatalogSimilarRow);
   if (bloodlineRows.some((row) => row === null) || similarRows.some((row) => row === null)) {
     throw new Error("R2 Catalog heatmap stats rows are malformed");
   }
   return {
+    ...(isOverseasKeibajoCode(query.keibajoCode)
+      ? { mappingRevision: parseGateMappingRevision(payload.mappingRevision) }
+      : {}),
+    ...(foreignOwnerVenueRows === undefined ? {} : { foreignOwnerVenueRows }),
+    ...(arcQualifiedStats === undefined ? {} : { arcQualifiedStats }),
     bloodlineRows: bloodlineRows.filter((row) => row !== null).map(toBloodlineStatsRow),
     ...(payload.bloodlineUnavailable === true ? { bloodlineUnavailable: true } : {}),
-    similarRows: similarRows.filter((row) => row !== null).map(toSimilarStatsRow),
+    // An unobserved frame has no rate. Omit it so the heatmap keeps its unknown cell.
+    similarRows: similarRows
+      .filter((row) => row !== null)
+      .filter((row) => row.kind !== "jockeyFrame" || row.starts > 0)
+      .map(toSimilarStatsRow),
   };
 };

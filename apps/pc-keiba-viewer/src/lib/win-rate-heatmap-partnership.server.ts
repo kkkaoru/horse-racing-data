@@ -1,6 +1,7 @@
 // Run with bun (bunx vitest).
 import "server-only";
 import { safeGetCloudflareEnv } from "./cloudflare-context.server";
+import { foreignOwnerMetadata } from "./foreign-owner-stats";
 import type { WinRateHeatmapPartnershipRow } from "./win-rate-heatmap";
 import {
   buildWinRateHeatmapCatalogUrl,
@@ -28,7 +29,7 @@ const count = (value: unknown): number => {
 };
 const rate = (value: number, starts: number): number =>
   starts === 0 ? 0 : Math.round((value * RATE_SCALE) / starts) / RATE_PRECISION;
-const parseRow = (value: unknown): WinRateHeatmapPartnershipRow => {
+export const parsePartnershipRow = (value: unknown): WinRateHeatmapPartnershipRow => {
   if (!isRecord(value) || !isKind(value.kind) || typeof value.name !== "string")
     throw new Error("Partnership row is malformed");
   const starts: number = count(value.starts);
@@ -45,6 +46,7 @@ const parseRow = (value: unknown): WinRateHeatmapPartnershipRow => {
   )
     throw new Error("Partnership counts are inconsistent");
   return {
+    ...foreignOwnerMetadata(value),
     category: value.kind,
     currentHorseNumbers: String(horseNumber),
     name: value.name,
@@ -68,6 +70,7 @@ export const fetchHeatmapPartnershipRows = async (
   const env = await safeGetCloudflareEnv();
   if (!env?.R2_CATALOG) return null;
   const url: URL = buildWinRateHeatmapCatalogUrl(query);
+  url.searchParams.delete("includeForeignSourceStats");
   url.pathname = "/v1/heatmap-partnership-stats";
   url.searchParams.set("warm", "1");
   const response: Response = await env.R2_CATALOG.fetch(url.href);
@@ -75,5 +78,5 @@ export const fetchHeatmapPartnershipRows = async (
   const payload: unknown = await response.json();
   if (!isRecord(payload) || !Array.isArray(payload.partnershipRows))
     throw new Error("Partnership payload is malformed");
-  return payload.partnershipRows.map(parseRow);
+  return payload.partnershipRows.map(parsePartnershipRow);
 };

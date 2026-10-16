@@ -685,3 +685,24 @@ it("acks an already valid trend generation without recomputing it", async () => 
   expect(message.retry).not.toHaveBeenCalled();
   expect(worker.fetch).not.toHaveBeenCalled();
 });
+
+it("authenticates all heatmap-producing scheduler paths using the existing secret", async () => {
+  const worker = buildOpenNextWorker(new Response(null));
+  const env: CloudflareEnv = { PC_KEIBA_INTERNAL_TOKEN: "secret" };
+  await scheduleTomorrowRaceDetailSectionCache(worker, env, buildCtx());
+  await scheduleTodayRaceDetailSectionCache({
+    env,
+    ctx: buildCtx(),
+    openNextWorker: worker,
+    todayJstYmd: "2026-10-04",
+  });
+  await scheduleTodayWinRateHeatmapWarm({
+    env,
+    ctx: buildCtx(),
+    openNextWorker: worker,
+    todayJstYmd: "2026-10-04",
+  });
+  expect(
+    worker.fetch.mock.calls.map(([request]) => request.headers.get("x-pc-keiba-internal-token")),
+  ).toStrictEqual(["secret", "secret", "secret"]);
+});

@@ -2,7 +2,11 @@
 import { expect, it, vi } from "vitest";
 
 import { readCatalogRaceHistory } from "./race-history-catalog";
-import type { CatalogRaceHistoryBinding, RaceHistoryRow } from "./race-history-catalog";
+import type {
+  CatalogRaceHistoryBinding,
+  CatalogRaceHistoryQuery,
+  RaceHistoryRow,
+} from "./race-history-catalog";
 
 const row: RaceHistoryRow = {
   kettoTorokuBango: "2021106753",
@@ -36,7 +40,8 @@ const payload = (overrides: Record<string, unknown> = {}): Record<string, unknow
   kakutei_chakujun: "02",
   ...overrides,
 });
-const query = {
+const query: CatalogRaceHistoryQuery = {
+  source: "jra",
   horseIds: ["2021106753"],
   beforeDate: "20260920",
   minDate: "20230920",
@@ -54,23 +59,47 @@ const bindingFor = (
   return { binding: { fetch }, fetch };
 };
 
+it.each<CatalogRaceHistoryQuery["source"]>(["jra", "nar"])(
+  "accepts 4000 %s history rows above the small-response byte budget",
+  async (source) => {
+    const body = { rows: Array.from({ length: 4000 }, () => payload()) };
+    expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeGreaterThan(65536);
+    const { binding } = bindingFor(body);
+    const rows = await readCatalogRaceHistory(binding, { ...query, source, limit: 4000 });
+    expect(rows).toHaveLength(4000);
+    expect(rows[3999]?.kettoTorokuBango).toBe("2021106753");
+  },
+);
+
+it.each<CatalogRaceHistoryQuery["source"]>(["jra", "nar"])(
+  "rejects %s row overflow",
+  async (source) => {
+    const { binding } = bindingFor({ rows: Array.from({ length: 4001 }, () => payload()) });
+    await expect(
+      readCatalogRaceHistory(binding, { ...query, source, limit: 4000 }),
+    ).rejects.toThrow("Catalog race history unavailable");
+  },
+);
+
 it("reads validated history rows and sends the window parameters", async () => {
   const { binding, fetch } = bindingFor({ rows: [payload()] });
   await expect(readCatalogRaceHistory(binding, query)).resolves.toStrictEqual([row]);
   const request: Request | undefined = fetch.mock.calls[0]?.[0];
   expect(request?.url).toBe(
-    "https://pc-keiba-r2-catalog.internal/v1/race-history?horseIds=2021106753&beforeDate=20260920&limit=2000&minDate=20230920",
+    "https://pc-keiba-r2-catalog.internal/v1/race-history?source=jra&horseIds=2021106753&beforeDate=20260920&limit=2000&minDate=20230920",
   );
   expect(request?.redirect).toBe("manual");
 });
 
-it("omits minDate when no lower bound is requested", async () => {
+it("serializes NAR and omits minDate when no lower bound is requested", async () => {
   const { binding, fetch } = bindingFor({ rows: [] });
-  await expect(readCatalogRaceHistory(binding, { ...query, minDate: null })).resolves.toStrictEqual(
-    [],
-  );
+  await expect(
+    readCatalogRaceHistory(binding, { ...query, source: "nar", minDate: null }),
+  ).resolves.toStrictEqual([]);
   const request: Request | undefined = fetch.mock.calls[0]?.[0];
-  expect(request?.url).not.toContain("minDate");
+  expect(request?.url).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/race-history?source=nar&horseIds=2021106753&beforeDate=20260920&limit=2000",
+  );
 });
 
 it("fails closed on an unusable binding or query", async () => {

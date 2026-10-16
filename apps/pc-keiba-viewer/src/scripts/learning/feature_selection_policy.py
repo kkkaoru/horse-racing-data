@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Final, Literal, Sequence
 
@@ -90,6 +91,26 @@ TARGET_EXCLUDED_COLUMNS: Final[dict[PredictionTarget, frozenset[str]]] = {
 }
 
 
+MARKET_DEVIATION_FEATURES: Final[frozenset[str]] = frozenset(
+    {"exotic_umaren_p2_rank_residual", "exotic_sanrenpuku_p3_rank_residual"}
+)
+"""The only odds-derived finish-position inputs allowed: 馬連 / 3連複 deviation
+from the market's own ordering (see ``add_exotic_market_deviation_features``)."""
+
+BANNED_MARKET_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"tansho|ninki|popular|fav(_|ou?rite)|fukusho|wide|umatan|sanrentan|wakuren"
+    r"|odds|market|^exotic_|form_market_edge"
+)
+"""Any other odds / popularity derived column. Win (単勝) odds and popularity are
+banned outright so the ranking cannot follow the win market; raw exotic implied
+probabilities are banned because they re-encode the same popularity order."""
+
+
+def is_banned_market_feature(column: str) -> bool:
+    """True when ``column`` is an odds/popularity input finish models must not use."""
+    return column not in MARKET_DEVIATION_FEATURES and bool(BANNED_MARKET_PATTERN.search(column))
+
+
 @dataclass(frozen=True)
 class FeatureSelectionSpec:
     prediction_target: PredictionTarget
@@ -113,7 +134,13 @@ def resolve_feature_columns_for_target(
 ) -> list[str]:
     """Resolve model input columns using the same exclusion policy per target."""
     excluded = TARGET_EXCLUDED_COLUMNS[prediction_target]
-    return [column for column in df_columns if column not in excluded]
+    # Win odds / popularity are banned for every target: running-style
+    # probabilities (rs_p_*) feed every finish-position model.
+    return [
+        column
+        for column in df_columns
+        if column not in excluded and not is_banned_market_feature(column)
+    ]
 
 
 def build_feature_selection_spec(

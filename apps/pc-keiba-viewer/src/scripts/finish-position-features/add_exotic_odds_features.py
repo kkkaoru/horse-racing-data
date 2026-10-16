@@ -67,9 +67,9 @@ NAR_KEIBAJO_CODES: tuple[str, ...] = tuple(
 BANEI_KEIBAJO_CODE: str = "83"
 
 # Packed-string field widths (chars per combination).
-O2_STRIDE: int = 13   # umaren: h1(2)+h2(2)+odds(5)+votes(4)
+O2_STRIDE: int = 13   # umaren: h1(2)+h2(2)+odds(6)+popularity(3)
 O3_STRIDE: int = 17   # wide:   h1(2)+h2(2)+lo(5)+hi(5)+votes(3)
-O5_STRIDE: int = 15   # sanrenpuku: h1(2)+h2(2)+h3(2)+odds(5)+votes(4)
+O5_STRIDE: int = 15   # sanrenpuku: h1(2)+h2(2)+h3(2)+odds(6)+popularity(3)
 
 # Maximum combo counts for 18-horse fields (the safe upper bound).
 O2_MAX_COMBOS: int = 153   # C(18,2)
@@ -177,10 +177,10 @@ def o5_decode_sql() -> str:
             cast(substring(entry, 1, 2) as integer) as h1,
             cast(substring(entry, 3, 2) as integer) as h2,
             cast(substring(entry, 5, 2) as integer) as h3,
-            substring(entry, 7, 5) as odds_raw
+            substring(entry, 7, 6) as odds_raw
         from o5_slots
-        where length(trim(substring(entry, 7, 5))) > 0
-          and trim(substring(entry, 7, 5)) != '00000'
+        where length(trim(substring(entry, 7, 6))) > 0
+          and trim(substring(entry, 7, 6)) != '000000'
           and trim(substring(entry, 1, 2)) != '00'
     ),
     o5_inv as (
@@ -362,10 +362,10 @@ def o2_decode_sql() -> str:
             race_bango,
             cast(substring(entry, 1, 2) as integer) as h1,
             cast(substring(entry, 3, 2) as integer) as h2,
-            substring(entry, 5, 5) as odds_raw
+            substring(entry, 5, 6) as odds_raw
         from o2_slots
-        where length(trim(substring(entry, 5, 5))) > 0
-          and trim(substring(entry, 5, 5)) != '00000'
+        where length(trim(substring(entry, 5, 6))) > 0
+          and trim(substring(entry, 5, 6)) != '000000'
           and trim(substring(entry, 1, 2)) != '00'
     ),
     o2_inv as (
@@ -547,8 +547,8 @@ def decode_sanrenpuku_to_horse_inv_probs(
         h1_s = entry[0:2].strip()
         h2_s = entry[2:4].strip()
         h3_s = entry[4:6].strip()
-        odds_s = entry[6:11].strip()
-        if not h1_s or not h2_s or not h3_s or not odds_s or odds_s == "00000":
+        odds_s = entry[6:12].strip()
+        if not h1_s or not h2_s or not h3_s or not odds_s or odds_s == "000000":
             continue
         try:
             h1 = int(h1_s)
@@ -607,8 +607,8 @@ def decode_umaren_to_horse_inv_probs(packed: str) -> dict[int, float]:
         entry = packed[start : start + O2_STRIDE]
         h1_s = entry[0:2].strip()
         h2_s = entry[2:4].strip()
-        odds_s = entry[4:9].strip()
-        if not h1_s or not h2_s or not odds_s or odds_s == "00000":
+        odds_s = entry[4:10].strip()
+        if not h1_s or not h2_s or not odds_s or odds_s == "000000":
             continue
         try:
             h1 = int(h1_s)

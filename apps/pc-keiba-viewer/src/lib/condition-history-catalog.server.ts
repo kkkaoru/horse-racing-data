@@ -1,6 +1,7 @@
 // Run with bun.
 import "server-only";
 import { safeGetCloudflareEnv } from "./cloudflare-context.server";
+import { parseGateMappingRevision } from "./gate-mapping-revision.server";
 import type {
   ConditionCorrelationDetail,
   ConditionCorrelationRow,
@@ -11,6 +12,7 @@ import type {
   StatsDetail,
   WeightClassStatsRow,
 } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
 
 export interface ConditionHistoryCatalogQuery {
   day: string;
@@ -33,6 +35,7 @@ export interface ConditionHistoryCatalogQuery {
 }
 
 export interface ConditionHistoryCatalogStats {
+  mappingRevision?: string;
   carriedWeightClassStats: WeightClassStatsRow[];
   finishPositionStats: FinishPositionStatsRow[];
   frameStats: FrameStatsRow[];
@@ -459,6 +462,9 @@ export const fetchConditionHistoryStatsFromCatalog = async (
     throw new Error("R2 Catalog condition history stats rows are malformed");
   }
   return {
+    ...(isOverseasKeibajoCode(query.keibajoCode)
+      ? { mappingRevision: parseGateMappingRevision(payload.mappingRevision) }
+      : {}),
     carriedWeightClassStats,
     finishPositionStats,
     frameStats,

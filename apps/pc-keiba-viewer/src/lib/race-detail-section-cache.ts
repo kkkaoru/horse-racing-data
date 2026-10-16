@@ -1,3 +1,5 @@
+// Run with bun.
+import { isArcPredictionRace } from "./arc-prediction";
 import type { RaceSource } from "./codes";
 import { isOverseasKeibajoCode } from "./runner-format";
 
@@ -38,8 +40,10 @@ const TRAINING_DETAIL_SECTION_CACHE_VERSION = "v6";
 // 1700m card) must not survive.
 // Bumped v16->v17 because JRA listed/OP/G3+ condition history now matches
 // venue and race name only. Cached mixed-class listed payloads must not survive.
-const CONDITION_DETAIL_SECTION_CACHE_VERSION = "v17";
-const CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION = "v16";
+// Bumped v17->v18 to exclude zero-sentinel market values from statistics.
+// Older numerical scores are incompatible, including the former v16 fallback.
+// v19 invalidates the old Arc same-venue cohort, including shared heatmap condition fragments.
+const CONDITION_DETAIL_SECTION_CACHE_VERSION: string = "v19";
 // Bumped v7->v9 on 2026-08-23 because similar/bloodline/time-score now prefer
 // R2 Catalog rows with empty details. Cached Neon jsonb payloads must not
 // survive. v8 remains the overseas history version.
@@ -47,6 +51,12 @@ const CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION = "v16";
 // bounded Neon relaxation fallback for every section that consumes it.
 const DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION = "v10";
 const OVERSEAS_HISTORY_DETAIL_SECTION_CACHE_VERSION = "v8";
+// Invalidate only time-score payloads after domestic history routing and
+// numeric decoding fixes; query-cache versions cannot refresh section caches.
+const TIME_SCORE_DETAIL_SECTION_CACHE_VERSION: string = "v11";
+// Independent generation for neutral missing bloodline counts and corrected
+// profile name matching; invalidates domestic v10 and overseas v8 scores only.
+const OVERALL_SCORE_DETAIL_SECTION_CACHE_VERSION: string = "v11";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
@@ -85,16 +95,20 @@ export type DetailSectionQueueWarmSection =
   | typeof DETAIL_SECTION_QUEUE_HEATMAP_SECTION;
 
 const usesOverseasHistory = (section: DetailSectionCacheableSection): boolean =>
-  section === "bloodline" ||
-  section === "overall-score" ||
-  section === "results" ||
-  section === "similar" ||
-  section === "time-score";
+  section === "bloodline" || section === "results" || section === "similar";
 
 const getDetailSectionCacheVersion = (
   section: DetailSectionCacheableSection,
   keibajoCode: string,
 ): string => {
+  if (isOverseasKeibajoCode(keibajoCode) && (section === "time-score" || section === "similar"))
+    return "v12-overseas-readers";
+  if (section === "time-score") {
+    return TIME_SCORE_DETAIL_SECTION_CACHE_VERSION;
+  }
+  if (section === "overall-score") {
+    return OVERALL_SCORE_DETAIL_SECTION_CACHE_VERSION;
+  }
   if (section === "premium-data-top") {
     return PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION;
   }
@@ -104,13 +118,7 @@ const getDetailSectionCacheVersion = (
   if (section === "training") {
     return TRAINING_DETAIL_SECTION_CACHE_VERSION;
   }
-  if (
-    (section === "bloodline" ||
-      section === "overall-score" ||
-      section === "similar" ||
-      section === "time-score") &&
-    !isOverseasKeibajoCode(keibajoCode)
-  ) {
+  if ((section === "bloodline" || section === "similar") && !isOverseasKeibajoCode(keibajoCode)) {
     return DOMESTIC_RATE_STATS_DETAIL_SECTION_CACHE_VERSION;
   }
   if (isOverseasKeibajoCode(keibajoCode) && usesOverseasHistory(section)) {
@@ -170,21 +178,19 @@ const joinDetailSectionCacheKey = (input: DetailSectionCacheKeyInput, version: s
   ].join(":");
 
 export const buildDetailSectionCacheKey = (input: DetailSectionCacheKeyInput): string =>
-  joinDetailSectionCacheKey(input, getDetailSectionCacheVersion(input.section, input.keibajoCode));
+  joinDetailSectionCacheKey(
+    input,
+    input.section === "results" && isArcPredictionRace({ ...input, source: "jra" })
+      ? "v9-arc-complete-results"
+      : getDetailSectionCacheVersion(input.section, input.keibajoCode),
+  );
 
-export const buildDetailSectionCacheFallbackKeys = (input: DetailSectionCacheKeyInput): string[] =>
-  input.section === "condition"
-    ? [joinDetailSectionCacheKey(input, CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION)]
-    : [];
+// Preserve the public helpers while preventing reads of incompatible scores.
+export const buildDetailSectionCacheFallbackKeys = (
+  _input: DetailSectionCacheKeyInput,
+): string[] => [];
 
-export const expandDetailSectionCacheReadKeys = (cacheKey: string): string[] => {
-  const currentPrefix = `${DETAIL_SECTION_CACHE_KEY_PREFIX}:${CONDITION_DETAIL_SECTION_CACHE_VERSION}:`;
-  const fallbackPrefix = `${DETAIL_SECTION_CACHE_KEY_PREFIX}:${CONDITION_DETAIL_SECTION_CACHE_FALLBACK_VERSION}:`;
-  const isConditionCurrent = cacheKey.startsWith(currentPrefix) && cacheKey.includes(":condition:");
-  return isConditionCurrent
-    ? [cacheKey, cacheKey.replace(currentPrefix, fallbackPrefix)]
-    : [cacheKey];
-};
+export const expandDetailSectionCacheReadKeys = (cacheKey: string): string[] => [cacheKey];
 
 export const buildDetailSectionApiPath = ({
   day,

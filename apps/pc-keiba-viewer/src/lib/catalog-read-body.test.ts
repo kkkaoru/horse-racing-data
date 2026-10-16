@@ -40,6 +40,25 @@ it("cancels an enriched day list exceeding 1 MiB across chunks", async () => {
   ).rejects.toThrow("Invalid Catalog response body");
   expect(cancel).toHaveBeenCalledTimes(1);
 });
+it("accepts exactly 2 MiB for a history response", async () => {
+  await expect(
+    readBoundedCatalogBody(new Response("{}".padEnd(2097152, " ")), "race-history"),
+  ).resolves.toStrictEqual({});
+});
+it("cancels history above 2 MiB instead of accepting an unbounded response", async () => {
+  const cancel = vi.fn<() => void>();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(1048576));
+      controller.enqueue(new Uint8Array(1048577));
+    },
+    cancel,
+  });
+  await expect(readBoundedCatalogBody(new Response(stream), "race-history")).rejects.toThrow(
+    "Invalid Catalog response body",
+  );
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
 it("rejects an absent response body", async () => {
   await expect(readBoundedCatalogBody(new Response(null))).rejects.toThrow(
     "Invalid Catalog response body",

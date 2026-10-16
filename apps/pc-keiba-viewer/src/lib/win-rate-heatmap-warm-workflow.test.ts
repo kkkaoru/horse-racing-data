@@ -517,3 +517,62 @@ it("does not call createBatch when there are no races", async () => {
   expect(result).toStrictEqual({ instanceIds: [], raceCount: 0 });
   expect(createBatch).not.toHaveBeenCalled();
 });
+
+it("passes exact query and token to owned warm without leaking queued ownership on a probe hit", async () => {
+  const fetchSelf = vi.fn<(request: Request) => Promise<Response>>(
+    async (_request: Request) =>
+      new Response(null, { status: 503, headers: { "X-Win-Rate-Heatmap-Cache": "PENDING" } }),
+  );
+  const status = await warmHeatmapRace(
+    fetchSelf,
+    {
+      year: "2026",
+      month: "10",
+      day: "04",
+      keibajoCode: "08",
+      raceNumbers: ["01"],
+      source: "jra",
+      query: "statsVenue=1",
+      ownerToken: "00000000-0000-0000-0000-000000000001",
+    },
+    "01",
+  );
+  expect(status).toBe("pending");
+  expect(fetchSelf).toHaveBeenCalledTimes(1);
+  expect(fetchSelf.mock.calls[0]?.[0].url).toBe(
+    "https://pc-keiba-viewer.local/api/races/2026/10/04/08/01/sections/win-rate-heatmap?statsVenue=1&__cacheWarm=1&__heatmapOwner=00000000-0000-0000-0000-000000000001",
+  );
+});
+
+it("validates the owned Workflow envelope", () => {
+  expect(
+    isHeatmapWarmWorkflowParams({
+      year: "2026",
+      month: "10",
+      day: "04",
+      keibajoCode: "08",
+      raceNumbers: ["01"],
+      source: "jra",
+      query: "statsVenue=1",
+      ownerToken: "00000000-0000-0000-0000-000000000001",
+    }),
+  ).toBe(true);
+});
+it.each([
+  { query: 1 },
+  { ownerToken: 1 },
+  { ownerToken: "invalid" },
+  { ownerToken: "00000000-0000-0000-0000-000000000001", raceNumbers: ["01", "02"] },
+])("rejects invalid owned Workflow envelope %j", (extra) => {
+  expect(
+    isHeatmapWarmWorkflowParams({
+      year: "2026",
+      month: "10",
+      day: "04",
+      keibajoCode: "08",
+      raceNumbers: ["01"],
+      source: "jra",
+      ...extra,
+    }),
+  ).toBe(false);
+});

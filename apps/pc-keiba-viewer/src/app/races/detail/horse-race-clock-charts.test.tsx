@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 
+import productionFixture from "../../../lib/horse-race-clock-production.fixture.json";
 import type { HorseRaceResult, RaceTimeStats } from "../../../lib/race-types";
 import { HorseRaceClockGallery } from "./horse-race-clock-charts";
 
@@ -312,4 +313,18 @@ it("dims the other horse while hovering a clock point", () => {
   expect(otherPoint.getAttribute("fill-opacity")).toBe("0.08");
   expect(document.querySelector('[data-umaban-label="1"]')?.getAttribute("opacity")).toBe("1");
   expect(document.querySelector('[data-umaban-label="2"]')?.getAttribute("opacity")).toBe("0.22");
+});
+
+it("renders real overseas payload points with honest missing-dimension explanation", () => {
+  const { container } = render(<HorseRaceClockGallery {...productionFixture} stats={null} />);
+  expect(container.querySelectorAll("[data-clock-point]")).toHaveLength(80);
+  expect(
+    new Set(
+      Array.from(container.querySelectorAll("[data-clock-point]"), (point) =>
+        point.getAttribute("data-umaban"),
+      ),
+    ).size,
+  ).toBe(16);
+  expect(container.querySelector('[data-umaban="1"]')?.getAttribute("data-horse")).toBe("ダリズ");
+  expect(screen.getByText(/上がり3Fが未取得の履歴を含むため/)).toBeDefined();
 });

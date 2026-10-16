@@ -129,8 +129,8 @@ def test_install_and_attach_pg_executes_three_statements() -> None:
 
 
 def _make_o5_entry(h1: int, h2: int, h3: int, odds_raw: int) -> str:
-    """Build a single 15-char sanrenpuku entry."""
-    return f"{h1:02d}{h2:02d}{h3:02d}{odds_raw:05d}0000"
+    """Build a single 15-char JV-Data O5 entry: odds(6, x10) + popularity(3)."""
+    return f"{h1:02d}{h2:02d}{h3:02d}{odds_raw:06d}001"
 
 
 def test_decode_sanrenpuku_empty_string() -> None:
@@ -225,8 +225,8 @@ def test_decode_wide_two_pairs_share_horse() -> None:
 
 
 def _make_o2_entry(h1: int, h2: int, odds_raw: int) -> str:
-    """Build a single 13-char umaren entry."""
-    return f"{h1:02d}{h2:02d}{odds_raw:05d}0000"
+    """Build a single 13-char JV-Data O2 entry: odds(6, x10) + popularity(3)."""
+    return f"{h1:02d}{h2:02d}{odds_raw:06d}001"
 
 
 def test_decode_umaren_empty_string() -> None:
@@ -254,6 +254,18 @@ def test_decode_umaren_skips_zero_horse() -> None:
     entry = _make_o2_entry(0, 2, 150)
     result = subject.decode_umaren_to_horse_inv_probs(entry)
     assert 0 not in result
+
+
+def test_decode_umaren_reads_six_digit_odds_from_real_layout() -> None:
+    # Stored JV-Data string: horses 01-02, odds 005345 (534.5x), popularity 047.
+    result = subject.decode_umaren_to_horse_inv_probs("0102005345047")
+    assert math.isclose(result[1], 1.0 / 534.5, rel_tol=1e-9)
+
+
+def test_decode_sanrenpuku_reads_six_digit_odds_from_real_layout() -> None:
+    # Stored JV-Data string: horses 01-02-03, odds 003201 (320.1x), popularity 214.
+    result = subject.decode_sanrenpuku_to_horse_inv_probs("010203003201214")
+    assert math.isclose(result[3], 1.0 / 320.1, rel_tol=1e-9)
 
 
 def test_decode_umaren_two_pairs_share_horse() -> None:

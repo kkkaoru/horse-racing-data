@@ -1,3 +1,4 @@
+import { isArcQualifiedStats, type ArcQualifiedStats } from "./arc-qualified-stats";
 import type { LiveHorseWeight } from "./horse-weight-class";
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 import type {
@@ -7,6 +8,8 @@ import type {
   SimilarRaceStatsRow,
   WeightClassStatsRow,
 } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
+import { ARC_HEATMAP_COHORT, type ArcHeatmapCohort } from "./win-rate-heatmap";
 import type {
   WinRateHeatmapHorseRateRow,
   WinRateHeatmapHorseResult,
@@ -14,10 +17,13 @@ import type {
 } from "./win-rate-heatmap";
 import { isHeatmapPresentation, type HeatmapPresentation } from "./win-rate-heatmap-presentation";
 
-export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 36 * 60 * 60;
+// An early tomorrow warm must remain valid through the end of that race day in JST.
+export const WIN_RATE_HEATMAP_CACHE_TTL_SECONDS = 60 * 60 * 60;
+// v24 invalidates presentations with a falsely bounded upper carried-weight class.
+// v23 invalidates pre-ID bloodlines and pre-corrected same-venue conditions, even at unchanged profile snapshots.
 // v22 also invalidates owner-triple presentations limited to one data source.
 // It retains the compact manifest and independently addressable column fragments.
-export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v22";
+export const WIN_RATE_HEATMAP_CACHE_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v24";
 export const WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE = "pc-keiba-viewer:win-rate-heatmap:v19";
 export const WIN_RATE_HEATMAP_CACHE_URL_BASE =
   "https://pc-keiba-viewer.local/win-rate-heatmap-cache/";
@@ -59,6 +65,10 @@ export interface WinRateHeatmapCacheKeyInput {
 }
 
 export interface WinRateHeatmapSectionPayload {
+  arcQualifiedStats?: ArcQualifiedStats;
+  arcCohort?: ArcHeatmapCohort;
+  mappingRevision?: string;
+  producerDataRevision?: 1;
   liveHorseWeights?: LiveHorseWeight[];
   presentation?: HeatmapPresentation;
   partnershipRows?: WinRateHeatmapPartnershipRow[];
@@ -83,12 +93,21 @@ export interface WinRateHeatmapRunnerIdentity {
   kishumeiRyakusho?: unknown;
   sireName?: unknown;
   sireSireName?: unknown;
+  identitySource?: unknown;
+  sourceHorseProvider?: unknown;
+  ownerNameFull?: unknown;
+  banushimei?: unknown;
+  sourceOwnerId?: unknown;
   sourceHorseId?: unknown;
   umaban?: unknown;
   wakuban?: unknown;
 }
 
 export interface WinRateHeatmapCacheManifest {
+  arcQualifiedStats?: ArcQualifiedStats;
+  arcCohort?: ArcHeatmapCohort;
+  mappingRevision?: string;
+  producerDataRevision?: 1;
   hasPresentation?: boolean;
   fragmentKinds: readonly WinRateHeatmapCacheFragmentKind[];
   generation: string;
@@ -136,7 +155,9 @@ const joinWinRateHeatmapCacheKey = (
   namespace: string,
 ): string =>
   [
-    namespace,
+    isOverseasKeibajoCode(input.keibajoCode)
+      ? `${namespace}:overseas-readers-v3-arc-qualified-v2`
+      : namespace,
     input.year,
     padCacheKeyPart(input.month),
     padCacheKeyPart(input.day),
@@ -150,7 +171,10 @@ export const buildWinRateHeatmapCacheKey = (input: WinRateHeatmapCacheKeyInput):
 
 export const buildWinRateHeatmapCacheFallbackKeys = (
   input: WinRateHeatmapCacheKeyInput,
-): string[] => [joinWinRateHeatmapCacheKey(input, WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE)];
+): string[] =>
+  isOverseasKeibajoCode(input.keibajoCode)
+    ? []
+    : [joinWinRateHeatmapCacheKey(input, WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE)];
 
 export const expandWinRateHeatmapCacheReadKeys = (cacheKey: string): [string] => [cacheKey];
 
@@ -178,15 +202,24 @@ const normalizeRunnerIdentityPart = (value: unknown): string | null => {
   return normalized.length === 0 ? null : normalized;
 };
 
+const normalizeNonzeroIdentity = (value: unknown): string | null => {
+  const normalized = normalizeRunnerIdentityPart(value);
+  return normalized === null || /^0+$/u.test(normalized) ? null : normalized;
+};
+
 export const buildWinRateHeatmapRunnerSignature = (
   runners: readonly WinRateHeatmapRunnerIdentity[],
 ): string | null => {
   const identities = runners.map((runner) => {
     const horseNumber = normalizeRunnerIdentityPart(runner.umaban);
-    const horseIdentity =
-      normalizeRunnerIdentityPart(runner.kettoTorokuBango) ??
-      normalizeRunnerIdentityPart(runner.sourceHorseId) ??
-      normalizeRunnerIdentityPart(runner.bamei);
+    const registration = normalizeNonzeroIdentity(runner.kettoTorokuBango);
+    const source = normalizeRunnerIdentityPart(runner.sourceHorseProvider ?? runner.identitySource);
+    const sourceHorseId = normalizeNonzeroIdentity(runner.sourceHorseId);
+    const hasSource = source !== null || runner.sourceHorseId != null;
+    if (hasSource && (source === null || sourceHorseId === null)) return null;
+    const horseIdentity = hasSource
+      ? JSON.stringify(["source", source, sourceHorseId, "registration", registration])
+      : (registration ?? normalizeRunnerIdentityPart(runner.bamei));
     return horseNumber === null || horseIdentity === null
       ? null
       : JSON.stringify([
@@ -200,6 +233,14 @@ export const buildWinRateHeatmapRunnerSignature = (
           normalizeRunnerIdentityPart(runner.sireName) ?? "",
           normalizeRunnerIdentityPart(runner.sireSireName) ?? "",
           normalizeRunnerIdentityPart(runner.damSireName) ?? "",
+          ...(hasSource
+            ? [
+                "arc-qualified-v2",
+                normalizeRunnerIdentityPart(runner.ownerNameFull) ?? "",
+                normalizeRunnerIdentityPart(runner.banushimei) ?? "",
+                normalizeNonzeroIdentity(runner.sourceOwnerId) ?? "",
+              ]
+            : []),
         ]);
   });
   if (!identities.every((identity): identity is string => identity !== null)) return null;
@@ -214,6 +255,9 @@ export const isWinRateHeatmapCacheManifest = (
   if (
     !isRecord(value) ||
     value.type !== "win-rate-heatmap-manifest" ||
+    (value.arcCohort !== undefined &&
+      (value.arcCohort !== ARC_HEATMAP_COHORT || !isArcQualifiedStats(value.arcQualifiedStats))) ||
+    (value.producerDataRevision !== undefined && value.producerDataRevision !== 1) ||
     (value.hasPresentation !== undefined && typeof value.hasPresentation !== "boolean") ||
     !isGeneration(value.generation) ||
     typeof value.runnerSignature !== "string" ||
@@ -243,6 +287,9 @@ export const isWinRateHeatmapSectionPayload = (
 ): value is WinRateHeatmapSectionPayload => {
   if (!isRecord(value) || value.type !== "win-rate-heatmap") return false;
   return (
+    (value.arcCohort === undefined ||
+      (value.arcCohort === ARC_HEATMAP_COHORT && isArcQualifiedStats(value.arcQualifiedStats))) &&
+    (value.producerDataRevision === undefined || value.producerDataRevision === 1) &&
     (value.presentation === undefined || isHeatmapPresentation(value.presentation)) &&
     (value.partnershipRows === undefined || Array.isArray(value.partnershipRows)) &&
     Array.isArray(value.bloodlineRows) &&

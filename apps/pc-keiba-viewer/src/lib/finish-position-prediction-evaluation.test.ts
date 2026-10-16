@@ -1,9 +1,14 @@
+// Run with bun.
 import { describe, expect, it } from "vitest";
 
 import {
   FINISH_POSITION_PREDICTION_EVALUATIONS,
   getFinishPredictionEvaluation,
 } from "./finish-position-prediction-evaluation";
+
+it("does not apply domestic validation metrics to overseas JRA sales", () => {
+  expect(getFinishPredictionEvaluation({ keibajoCode: "A8", source: "jra" })).toBeNull();
+});
 
 describe("finish position prediction evaluation data", () => {
   it("returns JRA evaluation for central races", () => {

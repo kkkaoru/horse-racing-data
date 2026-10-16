@@ -1,3 +1,4 @@
+// Run with bun via Vitest.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -411,7 +412,7 @@ describe("horse race results table", () => {
     expect(screen.getByText("未確定レース")).toBeTruthy();
   });
 
-  it("orders same-distance clocks first, then other trips by pace", () => {
+  it("orders displayed clocks rather than preferring distance or pace", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -465,10 +466,17 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["同距離1800", "速い1900", "短い1700"]);
+    expect(raceNameCells).toStrictEqual(["短い1700", "速い1900", "同距離1800"]);
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["1:00.0", "1:10.0", "1:20.0"]);
+    fireEvent.click(screen.getByRole("button", { name: "レースタイムを降順で並び替え" }));
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["1:20.0", "1:10.0", "1:00.0"]);
   });
 
-  it("prefers the longer trip when two races are equally far from the current distance", () => {
+  it("sorts by displayed time even for equally distant trips", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -512,10 +520,10 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["長い1900", "ペースの良い1700"]);
+    expect(raceNameCells).toStrictEqual(["ペースの良い1700", "長い1900"]);
   });
 
-  it("prefers the current surface over a faster clock on a different surface", () => {
+  it("sorts faster displayed clocks ahead of the current surface", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -561,7 +569,7 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["遅いダート1800", "速い芝1800"]);
+    expect(raceNameCells).toStrictEqual(["速い芝1800", "遅いダート1800"]);
   });
 
   it("keeps a turf clock visible on a dirt card unless the user changes filters", () => {
@@ -608,10 +616,10 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["ダートの成績", "芝の成績"]);
+    expect(raceNameCells).toStrictEqual(["芝の成績", "ダートの成績"]);
   });
 
-  it("prefers the current venue over a faster clock at another course", () => {
+  it("sorts displayed clocks across venues while preserving the explicit venue filter", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -657,7 +665,7 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["遅い東京", "速い大井"]);
+    expect(raceNameCells).toStrictEqual(["速い大井", "遅い東京"]);
     expect(screen.getByLabelText("出走予定と同じ競馬場")).toHaveProperty("checked", false);
 
     fireEvent.click(screen.getByLabelText("出走予定と同じ競馬場"));
@@ -669,7 +677,7 @@ describe("horse race results table", () => {
     expect(filteredRaceNameCells).toStrictEqual(["遅い東京"]);
   });
 
-  it("keeps a JRA Tokyo clock visible on a NAR card and only prefers the current venue", () => {
+  it("sorts JRA and NAR clocks together without preferring the current venue", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -715,10 +723,10 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["大井地方", "東京中央"]);
+    expect(raceNameCells).toStrictEqual(["東京中央", "大井地方"]);
   });
 
-  it("prefers the exact current track code among same-surface same-venue races", () => {
+  it("sorts displayed clocks ahead of exact track-code matches", () => {
     const { container } = renderResultsTable(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -764,7 +772,7 @@ describe("horse race results table", () => {
       (cell) => cell.textContent,
     );
 
-    expect(raceNameCells).toStrictEqual(["遅い右ダート", "速い左ダート"]);
+    expect(raceNameCells).toStrictEqual(["速い左ダート", "遅い右ダート"]);
   });
 
   it("keeps a valid race date ahead of an invalid date when clocks match", () => {
@@ -877,8 +885,124 @@ describe("horse race results table", () => {
       ...container.querySelectorAll("tbody tr td.race-results-name-cell"),
     ].map((cell) => cell.textContent);
 
-    expect(initialRaceNameCells).toStrictEqual(["同距離1800", "速い1900", "短い1700"]);
-    expect(restoredRaceNameCells).toStrictEqual(["同距離1800", "速い1900", "短い1700"]);
+    expect(initialRaceNameCells).toStrictEqual(["短い1700", "速い1900", "同距離1800"]);
+    expect(restoredRaceNameCells).toStrictEqual(["短い1700", "速い1900", "同距離1800"]);
+  });
+
+  it("keeps representative selection independent of the displayed sort direction", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="08"
+        currentRaceDate="20261004"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+        results={[
+          result({
+            currentUmaban: "01",
+            kaisaiTsukihi: "0901",
+            keibajoCode: "05",
+            kyori: "1700",
+            sohaTime: "1400",
+            raceBango: "01",
+            kyosomeiHondai: "選択対象外の速いレース",
+          }),
+          result({
+            currentUmaban: "01",
+            kaisaiTsukihi: "0902",
+            keibajoCode: "08",
+            sohaTime: "1599",
+            raceBango: "02",
+            kyosomeiHondai: "同条件の代表レース",
+          }),
+          result({
+            currentUmaban: "02",
+            kaisaiTsukihi: "0903",
+            keibajoCode: "05",
+            kyori: "1900",
+            trackCode: "17",
+            sohaTime: "1550",
+            raceBango: "03",
+            kyosomeiHondai: "別条件の代表レース",
+          }),
+        ]}
+      />,
+    );
+    expect(
+      [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+        (cell) => cell.textContent,
+      ),
+    ).toStrictEqual(["別条件の代表レース", "同条件の代表レース"]);
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["1:55.0", "1:59.9"]);
+    fireEvent.click(screen.getByRole("button", { name: "レースタイムを降順で並び替え" }));
+    expect(
+      [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+        (cell) => cell.textContent,
+      ),
+    ).toStrictEqual(["同条件の代表レース", "別条件の代表レース"]);
+    expect(screen.queryByText("選択対象外の速いレース")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "レースタイムを昇順で並び替え" }));
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["1:55.0", "1:59.9"]);
+  });
+
+  it("keeps missing and invalid displayed clocks last in both directions", () => {
+    const { container } = renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="08"
+        currentRaceDate="20261004"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+        results={[
+          result({
+            currentUmaban: "01",
+            kaisaiTsukihi: "0901",
+            keibajoCode: "08",
+            sohaTime: "0000",
+          }),
+          result({
+            currentUmaban: "02",
+            kaisaiTsukihi: "0901",
+            keibajoCode: "08",
+            sohaTime: "2000",
+          }),
+          result({
+            currentUmaban: "03",
+            kaisaiTsukihi: "0901",
+            keibajoCode: "05",
+            kyori: "1900",
+            sohaTime: "1599",
+          }),
+          result({
+            currentUmaban: "04",
+            kaisaiTsukihi: "0901",
+            keibajoCode: "08",
+            sohaTime: "1690",
+          }),
+        ]}
+      />,
+    );
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["1:59.9", "2:00.0", "-", "-"]);
+    fireEvent.click(screen.getByRole("button", { name: "レースタイムを降順で並び替え" }));
+    expect(
+      [...container.querySelectorAll("tbody tr td:nth-child(10)")].map((cell) => cell.textContent),
+    ).toStrictEqual(["2:00.0", "1:59.9", "-", "-"]);
   });
 
   it("sorts encoded race clocks by decoded minutes", () => {
@@ -1044,4 +1168,56 @@ describe("horse race results table", () => {
     expect(screen.getByText("テキスト馬")).toBeDefined();
     expect(vi.mocked(persistResultsChartForCurrentUser).mock.calls).toStrictEqual([[false]]);
   });
+});
+
+it("renders all sixteen Arc names and current numbers with shared zero native IDs", async () => {
+  const { default: evidence } = await import("../../../lib/__fixtures__/arc-official-card.json");
+  const view = renderResultsTable(
+    <HorseRaceResultsTable
+      classConditionName="G1"
+      currentDistance="2400"
+      currentKeibajoCode="A8"
+      currentRaceDate="20261004"
+      currentTrackCode="17"
+      defaultIncludeClass={false}
+      raceTimeStats={null}
+      results={evidence.results}
+      runners={evidence.runners}
+      source="jra"
+      sourceScope="all"
+    />,
+  );
+  const rows = Array.from(view.container.querySelectorAll("tr")).filter((row) =>
+    row.querySelector(".race-results-horse-cell"),
+  );
+  expect(rows).toHaveLength(16);
+  expect(
+    rows
+      .map((row) => row.querySelector("td")?.textContent)
+      .toSorted((a, b) => Number(a) - Number(b)),
+  ).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+  ]);
+  expect(
+    rows
+      .map((row) => row.querySelector(".race-results-horse-cell span")?.textContent)
+      .toSorted((a, b) => String(a).localeCompare(String(b))),
+  ).toStrictEqual(
+    evidence.runners.map((row) => row.bamei.trim()).toSorted((a, b) => a.localeCompare(b)),
+  );
 });

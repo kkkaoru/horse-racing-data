@@ -1,3 +1,4 @@
+// Run with bun.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -138,6 +139,36 @@ describe("buildFinishPredictionRowsFromResults", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.predictedRank).toBe(1);
+  });
+
+  it("does not rank a cancelled runner absent from generated model predictions", () => {
+    const inputs: FinishPredictionBuildInputs = {
+      currentDistance: "200",
+      currentKeibajoCode: "83",
+      currentRaceDate: "20260927",
+      currentSource: "nar",
+      currentTrackCode: null,
+      results: [],
+      runners: [runner({ umaban: "01" }), runner({ umaban: "04" })],
+      modelPredictionFeatures: [
+        {
+          horseNumber: "1",
+          modelVersion: "ban-ei",
+          predictedFinishNorm: 0.2,
+          showProbability: 0.6,
+          winProbability: 0.8,
+        },
+      ],
+    };
+
+    const rows = buildFinishPredictionRowsFromResults(inputs);
+    expect(rows.map((row) => row.horseNumber)).toStrictEqual(["1"]);
+    expect(rows[0]?.predictedRank).toBe(1);
+    expect(
+      buildFinishPredictionRowsFromResults({ ...inputs, modelPredictionFeatures: [] }).map(
+        (row) => row.horseNumber,
+      ),
+    ).toStrictEqual(["1", "4"]);
   });
 
   it("boosts jockeys who already won at the same venue on the same day", () => {

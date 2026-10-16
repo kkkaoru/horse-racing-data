@@ -19,6 +19,47 @@ def test_resolve_finish_position_features_excludes_meta_and_labels() -> None:
     ) == ["speed_index", "rs_p_nige"]
 
 
+def test_resolve_finish_position_features_bans_market_columns_but_keeps_deviation() -> None:
+    columns = [
+        "tansho_odds",
+        "tansho_ninkijun_raw",
+        "popularity_score",
+        "odds_score",
+        "inverse_odds_implied_prob",
+        "horse_odds_avg",
+        "horse_popularity_norm_avg",
+        "field_dominant_favorite_indicator",
+        "form_market_edge",
+        "sim_odds_rank_correlation",
+        "market_entropy",
+        "exotic_sanrenpuku_p3",
+        "exotic_umaren_p2",
+        "exotic_wide_p3",
+        "exotic_umaren_sanrenpuku_place_shape",
+        "exotic_umaren_p2_rank_residual",
+        "exotic_sanrenpuku_p3_rank_residual",
+        "speed_index",
+    ]
+    assert subject.resolve_feature_columns_for_target(columns, "finish_position") == [
+        "exotic_umaren_p2_rank_residual",
+        "exotic_sanrenpuku_p3_rank_residual",
+        "speed_index",
+    ]
+
+
+def test_is_banned_market_feature_flags_exotic_order_pools() -> None:
+    assert subject.is_banned_market_feature("exotic_umatan_p1") is True
+    assert subject.is_banned_market_feature("sim_fav_win_rate") is True
+    assert subject.is_banned_market_feature("exotic_umaren_p2_rank_residual") is False
+    assert subject.is_banned_market_feature("kohan3f_avg_5") is False
+
+
+def test_resolve_running_style_features_bans_market_columns() -> None:
+    assert subject.resolve_feature_columns_for_target(
+        ["tansho_odds", "popularity_score", "odds_score", "speed_index"], "running_style"
+    ) == ["speed_index"]
+
+
 def test_resolve_running_style_features_excludes_leakage_and_cell_columns() -> None:
     columns = [
         "race_id",

@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { afterEach, expect, it, vi } from "vitest";
 
+import qualifiedFixture from "../../../lib/__fixtures__/arc-qualified-stats.json";
+import { requireArcQualifiedStats } from "../../../lib/arc-qualified-stats";
 import type {
   HorseWeightSnapshot,
   UseHorseWeightStreamParams,
@@ -1734,3 +1736,149 @@ it("renders a percent suffix span that mobile CSS can hide independently", () =>
   );
   expect(document.querySelector(".win-rate-heatmap-swatch-value-suffix")?.textContent).toBe("%");
 });
+
+it("labels explicitly marked Arc partial history without implying full 30-edition coverage", () => {
+  render(
+    <WinRateHeatmapSection
+      arcCohort="arc-20261004-jra-A8-05-v2"
+      arcQualifiedStats={requireArcQualifiedStats(qualifiedFixture)}
+      bloodlineRows={[]}
+      frameStats={[]}
+      horseResults={[]}
+      keibajoCode="A8"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[]}
+    />,
+  );
+  expect(screen.getByText(/30回分の網羅を意味しません/u)).toBeTruthy();
+  expect(document.body.textContent).toMatch(/パリロンシャン芝/u);
+  expect(document.body.innerHTML).toMatch(/netkeiba:jockey:05504/u);
+  expect(document.body.innerHTML).toMatch(/固定rolling3年/u);
+});
+
+// Run with bun. Actual incident runners; proposed unpublished 859-profile Catalog output.
+import currentArcRunners from "../../../lib/__fixtures__/arc-current-runners.json";
+import arcBloodlineOracle from "../../../lib/__fixtures__/arc-id-bloodline-oracle.json";
+import arcBloodlineRows from "../../../lib/__fixtures__/arc-id-bloodline-rows.json";
+import { safeGetCloudflareEnv } from "../../../lib/cloudflare-context.server";
+import { buildWinRateHeatmapRows, ARC_HEATMAP_COHORT } from "../../../lib/win-rate-heatmap";
+import { fetchWinRateHeatmapStatsFromCatalog } from "../../../lib/win-rate-heatmap-catalog.server";
+vi.mock("server-only", () => ({}));
+vi.mock("../../../lib/cloudflare-context.server", () => ({
+  safeGetCloudflareEnv: vi.fn<() => Promise<CloudflareEnv | null>>(),
+}));
+
+it.each([
+  { homonyms: false, metric: "勝率" },
+  { homonyms: true, metric: "勝率" },
+  { homonyms: false, metric: "連対率" },
+  { homonyms: true, metric: "連対率" },
+  { homonyms: false, metric: "複勝率" },
+  { homonyms: true, metric: "複勝率" },
+])(
+  "renders all 112 actual Arc role cells against the independent ledger oracle ($metric, homonyms=$homonyms)",
+  async ({ homonyms, metric }) => {
+    vi.mocked(safeGetCloudflareEnv).mockResolvedValue({
+      R2_CATALOG: {
+        fetch: vi.fn<() => Promise<Response>>().mockResolvedValue(
+          Response.json({
+            bloodlineRows: homonyms
+              ? arcBloodlineRows.map((row) => ({ ...row, name: "Same ancestor label" }))
+              : arcBloodlineRows,
+            similarRows: [],
+            mappingRevision:
+              "gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            arcQualifiedStats: qualifiedFixture,
+          }),
+        ),
+      },
+    });
+    const stats = await fetchWinRateHeatmapStatsFromCatalog({
+      year: "2026",
+      month: "10",
+      day: "04",
+      keibajoCode: "A8",
+      raceNumber: "05",
+      source: "jra",
+      years: 10,
+      includeVenue: true,
+      includeSurface: true,
+      includeDistance: false,
+      includeTurn: false,
+    });
+    if (!stats) throw new Error("Missing fixture DTO");
+    const input = {
+      runners: currentArcRunners,
+      bloodlineRows: stats.bloodlineRows,
+      similarRows: [],
+      frameStats: [],
+      horseResults: [],
+      keibajoCode: "A8",
+      liveWeightKgByHorse: new Map<string, number>(),
+      arcCohort: ARC_HEATMAP_COHORT,
+      arcQualifiedStats: stats.arcQualifiedStats,
+    };
+    const rows = buildWinRateHeatmapRows(input);
+    expect(rows).toHaveLength(16);
+    expect(stats.bloodlineRows).toHaveLength(112);
+    expect(stats.bloodlineRows.filter((row) => row.starts > 0 && row.winCount === 0)).toHaveLength(
+      39,
+    );
+    arcBloodlineOracle.cells.forEach((expected) => {
+      const row = rows.find(
+        (candidate) => Number(candidate.horseNumber) === Number(expected.umaban),
+      );
+      const cell = Object.entries(row?.cells ?? {}).find(([key]) => key === expected.role)?.[1];
+      expect(cell).toMatchObject(
+        expected.starts > 0
+          ? {
+              starts: expected.starts,
+              winCount: expected.wins,
+              quinellaCount: expected.top2,
+              showCount: expected.top3,
+            }
+          : { starts: null, winCount: null, quinellaCount: null, showCount: null },
+      );
+    });
+    render(<WinRateHeatmapSection {...input} realtimeRequest={heatmapRealtimeRequest} />);
+    fireEvent.click(screen.getByRole("radio", { name: metric }));
+    expect(screen.getByText(/30回分の網羅を意味しません/u)).toBeTruthy();
+    currentArcRunners.forEach((currentRunner) =>
+      expect(screen.getByTitle(currentRunner.bamei.trim())).toBeTruthy(),
+    );
+    arcBloodlineOracle.cells.forEach((expected) => {
+      const runnerIndex = Number(expected.umaban) - 1;
+      const currentRunner = currentArcRunners[runnerIndex];
+      if (!currentRunner) throw new Error("Missing actual runner");
+      const renderedRow = screen.getByTitle(currentRunner.bamei.trim()).closest("tr");
+      const labels = new Map([
+        ["sire", "父"],
+        ["sireSire", "父父"],
+        ["damSire", "母父"],
+        ["sireSireSire", "父父父"],
+        ["sireDamSire", "父母父"],
+        ["damSireSire", "母父父"],
+        ["damDamSire", "母母父"],
+      ]);
+      const button = Array.from(renderedRow?.querySelectorAll("button") ?? []).find((element) =>
+        element.getAttribute("aria-label")?.startsWith(labels.get(expected.role) + " "),
+      );
+      expect(button).toBeTruthy();
+      const count = new Map([
+        ["勝率", expected.wins],
+        ["連対率", expected.top2],
+        ["複勝率", expected.top3],
+      ]).get(metric);
+      if (count === undefined) throw new Error("Missing metric");
+      expect({ value: button?.querySelector("span")?.firstChild?.textContent }).toMatchObject({
+        value: expected.starts === 0 ? "-" : ((100 * count) / expected.starts).toFixed(1),
+      });
+      expect(button?.getAttribute("aria-label")).toMatch(
+        expected.starts === 0 ? /[^)]$/u : new RegExp("\\(" + expected.starts + "\\)$", "u"),
+      );
+    });
+    expect(document.body.textContent).toMatch(/父父父/u);
+    expect(document.body.textContent).toMatch(/母母父/u);
+  },
+);

@@ -35,6 +35,7 @@ from finish_position_transformer.training import (
     default_training_config,
     evaluate_ndcg,
     multitask_loss,
+    predict_all_logits,
     predict_rank_scores,
     train_transformer,
 )
@@ -313,6 +314,41 @@ def test_predict_rank_scores_returns_correct_shape():
     mx.eval(model.parameters())
     scores = predict_rank_scores(model, arrays, batch_size=2)
     assert scores.shape == (len(arrays["race_ids"]), MAX_RUNNERS)
+
+
+def test_predict_rank_scores_is_deterministic_and_restores_training_mode():
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    arrays = build_race_batches(df, stats)
+    vocab_sizes = [categorical_vocab_size(stats, column) for column in cols.categorical]
+    config = default_model_config(
+        num_numeric_features=len(cols.numeric), categorical_vocab_sizes=vocab_sizes, dropout=0.5
+    )
+    model = RaceSetTransformer(config)
+    mx.eval(model.parameters())
+    first = predict_rank_scores(model, arrays, batch_size=2)
+    second = predict_rank_scores(model, arrays, batch_size=2)
+    assert np.array_equal(first, second)
+    assert model.training is True
+
+
+def test_predict_all_logits_keeps_eval_mode_when_called_in_eval():
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    arrays = build_race_batches(df, stats)
+    vocab_sizes = [categorical_vocab_size(stats, column) for column in cols.categorical]
+    config = default_model_config(
+        num_numeric_features=len(cols.numeric), categorical_vocab_sizes=vocab_sizes, dropout=0.5
+    )
+    model = RaceSetTransformer(config)
+    mx.eval(model.parameters())
+    model.eval()
+    first = predict_all_logits(model, arrays, batch_size=2)
+    second = predict_all_logits(model, arrays, batch_size=2)
+    assert np.array_equal(first["conditional_place3_logit"], second["conditional_place3_logit"])
+    assert model.training is False
 
 
 def test_predictions_from_scores_orders_by_rank_score_desc():

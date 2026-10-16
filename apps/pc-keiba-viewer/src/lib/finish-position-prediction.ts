@@ -1,3 +1,4 @@
+// Run with bun.
 import type { RaceSource } from "./codes";
 import { cleanText, formatIsoTimestampAsJstDateTime } from "./format";
 import { isSameJockeyName } from "./jockey-name";
@@ -672,7 +673,6 @@ export const buildFinishPredictionRowsFromResults = ({
     currentKyosoJokenCode,
     currentKyosoJokenMeisho,
   });
-  const runnerCount = Math.max(2, runners.length);
   const resultsByHorse = new Map<string, HorseRaceResult[]>();
   for (const result of results) {
     const horseNumber = cleanText(result.currentUmaban, "").replace(/^0+/u, "");
@@ -696,7 +696,15 @@ export const buildFinishPredictionRowsFromResults = ({
     modelsByHorse.set(horseNumber, [...(modelsByHorse.get(horseNumber) ?? []), feature]);
   }
 
-  const provisionalRows = runners.map((runner) => {
+  const predictedRunners = runners.filter((runner) =>
+    modelsByHorse.has(cleanText(runner.umaban, "").replace(/^0+/u, "")),
+  );
+  const eligibleRunners =
+    hasFinishPredictionModelOutput(modelPredictionFeatures) && predictedRunners.length > 0
+      ? predictedRunners
+      : runners;
+  const runnerCount = Math.max(2, eligibleRunners.length);
+  const provisionalRows = eligibleRunners.map((runner) => {
     const horseNumber = cleanText(runner.umaban, "").replace(/^0+/u, "");
     const horseResults = (resultsByHorse.get(horseNumber) ?? []).toSorted(
       (left, right) =>

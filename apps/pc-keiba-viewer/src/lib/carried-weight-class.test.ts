@@ -7,14 +7,14 @@ import {
   parseCarriedWeightKg,
 } from "./carried-weight-class";
 
-it("defines six carried-weight classes from 49kg and below through 57.5-59kg", () => {
+it("defines six carried-weight classes from 49kg and below through 57.5kg and above", () => {
   expect(CARRIED_WEIGHT_CLASSES).toStrictEqual([
     { key: "le49", label: "49kg以下", maxKg: 49, minKg: null },
     { key: "49.5-51", label: "49.5以上51kg以下", maxKg: 51, minKg: 49.5 },
     { key: "51.5-53", label: "51.5kg以上53kg以下", maxKg: 53, minKg: 51.5 },
     { key: "53.5-55", label: "53.5kg以上55kg以下", maxKg: 55, minKg: 53.5 },
     { key: "55.5-57", label: "55.5kg以上57kg以下", maxKg: 57, minKg: 55.5 },
-    { key: "57.5-59", label: "57.5kg以上59kg以下", maxKg: 59, minKg: 57.5 },
+    { key: "57.5-59", label: "57.5kg以上", maxKg: null, minKg: 57.5 },
   ]);
 });
 
@@ -23,7 +23,35 @@ it("parses JV-Link 0.1kg futan strings into kilograms", () => {
   expect(parseCarriedWeightKg("495")).toBe(49.5);
   expect(parseCarriedWeightKg("570")).toBe(57);
   expect(parseCarriedWeightKg("575")).toBe(57.5);
+  expect(parseCarriedWeightKg("590")).toBe(59);
+  expect(parseCarriedWeightKg("595")).toBe(59.5);
+  expect(parseCarriedWeightKg("600")).toBe(60);
 });
+
+it.each([57.5, 59, 59.5, 60, 100.5])(
+  "keeps %skg in the unbounded top class with its existing wire key",
+  (kg: number) => {
+    expect(getCarriedWeightClass(kg)).toStrictEqual({
+      key: "57.5-59",
+      label: "57.5kg以上",
+      maxKg: null,
+      minKg: 57.5,
+    });
+  },
+);
+
+it.each(Array.from({ length: 201 }, (_, index: number): number => (index + 1) / 2))(
+  "covers the valid half-kilo input %s with exactly one class range",
+  (kg: number) => {
+    expect(
+      CARRIED_WEIGHT_CLASSES.filter(
+        (weightClass) =>
+          (weightClass.minKg === null || kg >= weightClass.minKg) &&
+          (weightClass.maxKg === null || kg <= weightClass.maxKg),
+      ),
+    ).toHaveLength(1);
+  },
+);
 
 it("treats blank, 000, FFF, and non-positive carried weights as missing", () => {
   expect(parseCarriedWeightKg(null)).toBe(null);
@@ -98,26 +126,26 @@ it("classifies carried weights on the six inclusive kilogram bands", () => {
   });
   expect(getCarriedWeightClass(57.5)).toStrictEqual({
     key: "57.5-59",
-    label: "57.5kg以上59kg以下",
-    maxKg: 59,
+    label: "57.5kg以上",
+    maxKg: null,
     minKg: 57.5,
   });
   expect(getCarriedWeightClass(59)).toStrictEqual({
     key: "57.5-59",
-    label: "57.5kg以上59kg以下",
-    maxKg: 59,
+    label: "57.5kg以上",
+    maxKg: null,
     minKg: 57.5,
   });
   expect(getCarriedWeightClass(60)).toStrictEqual({
     key: "57.5-59",
-    label: "57.5kg以上59kg以下",
-    maxKg: 59,
+    label: "57.5kg以上",
+    maxKg: null,
     minKg: 57.5,
   });
   expect(getCarriedWeightClass(Number.NaN)).toStrictEqual({
     key: "57.5-59",
-    label: "57.5kg以上59kg以下",
-    maxKg: 59,
+    label: "57.5kg以上",
+    maxKg: null,
     minKg: 57.5,
   });
 });

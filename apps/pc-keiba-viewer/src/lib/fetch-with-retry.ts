@@ -1,3 +1,4 @@
+// Checks run with bun.
 import { retry, type RetryOptions } from "./retry";
 
 // Allow Cloudflare Workers fetch extensions (cf.cacheTtl, cf.cacheEverything, etc.)
@@ -45,6 +46,8 @@ const fetchSameOriginGetViaXhr = (url: string, init: FetchInit | undefined): Pro
       const headers = new Headers();
       const contentType = xhr.getResponseHeader("content-type");
       if (contentType !== null) headers.set("content-type", contentType);
+      const retryAfter: string | null = xhr.getResponseHeader("Retry-After");
+      if (retryAfter !== null) headers.set("Retry-After", retryAfter);
       resolve(
         new Response(xhr.responseText, {
           headers,

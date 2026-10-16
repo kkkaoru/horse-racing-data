@@ -1,5 +1,6 @@
+// Run with bun. Evaluation metrics apply only to their validated race domain.
 import type { RaceSource } from "./codes";
-import { isBanEiKeibajoCode } from "./runner-format";
+import { isBanEiKeibajoCode, isOverseasKeibajoCode } from "./runner-format";
 
 export type FinishPredictionEvaluationCategory = "ban-ei" | "jra" | "nar";
 
@@ -103,5 +104,7 @@ export const getFinishPredictionEvaluationCategory = ({
 export const getFinishPredictionEvaluation = (params: {
   keibajoCode: string | null | undefined;
   source: RaceSource;
-}): FinishPredictionEvaluationMetrics =>
-  FINISH_POSITION_PREDICTION_EVALUATIONS[getFinishPredictionEvaluationCategory(params)];
+}): FinishPredictionEvaluationMetrics | null =>
+  isOverseasKeibajoCode(params.keibajoCode)
+    ? null
+    : FINISH_POSITION_PREDICTION_EVALUATIONS[getFinishPredictionEvaluationCategory(params)];

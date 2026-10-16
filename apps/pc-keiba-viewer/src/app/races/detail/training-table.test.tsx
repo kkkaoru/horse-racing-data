@@ -229,6 +229,28 @@ it("hides the chart and persists graph-off when テキスト is selected", () =>
   expect(vi.mocked(persistTrainingChartForCurrentUser).mock.calls).toStrictEqual([[false]]);
 });
 
+it("keeps the premium workout comment table inside a labeled scroll region", () => {
+  render(
+    <TrainingTable
+      sourceLabel="JRA"
+      trainings={[
+        training({
+          bamei: "コメントのある馬",
+          premiumEvaluationGrade: "A",
+          premiumEvaluationText: "スマホでも読める調教コメント",
+        }),
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: "テキスト" }));
+  const region = screen.getByRole("region", { name: "調教データの横スクロール" });
+  expect(region.tagName).toBe("SECTION");
+  expect(region.className).toBe("training-table-wrap");
+  expect(screen.getByText("スマホでも読める調教コメント").closest(".training-table-wrap")).toBe(
+    region,
+  );
+});
+
 it("keeps the training chart on when preference load fails", async () => {
   vi.mocked(loadTrainingChartForCurrentUser).mockRejectedValue(new Error("idb unavailable"));
   render(

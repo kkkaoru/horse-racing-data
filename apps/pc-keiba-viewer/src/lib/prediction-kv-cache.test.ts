@@ -64,9 +64,9 @@ it("isPredictionCacheEligibleYmd is true only inside the 3-day window", () => {
   expect(isPredictionCacheEligibleYmd("20260811", NOON_JST_MS)).toBe(false);
 });
 
-it("getPredictionKvTtlSeconds uses a long today TTL so race-day writes survive the yesterday window", () => {
+it("getPredictionKvTtlSeconds keeps day-before forecasts through race day and yesterday", () => {
   expect(getPredictionKvTtlSeconds("today")).toBe(129600);
-  expect(getPredictionKvTtlSeconds("tomorrow")).toBe(86400);
+  expect(getPredictionKvTtlSeconds("tomorrow")).toBe(259200);
   expect(getPredictionKvTtlSeconds("yesterday")).toBe(86400);
   expect(getPredictionKvTtlSeconds("outside")).toBe(0);
 });

@@ -1,3 +1,4 @@
+// Run with bun via next dev/build.
 import type { NextConfig } from "next";
 
 import { getCloudflareDevContextOptions, resolveAllowedDevOrigins } from "./src/lib/next-config";
@@ -17,12 +18,10 @@ const initCloudflareDevContext = async (): Promise<void> => {
   );
 };
 
-// Initialize Cloudflare vars for `next dev` via wrangler.dev.jsonc.
-// Production Durable Objects are accessed through the production API proxy in local dev.
-if (process.env.NODE_ENV === "development") {
-  void initCloudflareDevContext().catch((error: unknown) => {
-    console.warn("[pc-keiba-viewer] Cloudflare dev context unavailable.", error);
-  });
+// Await remote bindings before requests can initialize a context from wrangler.jsonc.
+export default async function configureNext(): Promise<NextConfig> {
+  if (process.env.NODE_ENV === "development") {
+    await initCloudflareDevContext();
+  }
+  return nextConfig;
 }
-
-export default nextConfig;

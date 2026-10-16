@@ -1,3 +1,4 @@
+// Tests run with bun.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { fetchWithRetry } from "./fetch-with-retry";
@@ -181,4 +182,40 @@ it("delegates retry decisions to a custom shouldRetry callback", async () => {
 
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(shouldRetry).toHaveBeenCalledTimes(1);
+});
+
+it("preserves Retry-After and content-type from a pending XHR fallback response", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<FetchSignature>().mockRejectedValue(new TypeError("Failed to fetch")),
+  );
+  const xhr: XMLHttpRequest = new XMLHttpRequest();
+  vi.spyOn(xhr, "open").mockImplementation(() => undefined);
+  vi.spyOn(xhr, "getResponseHeader").mockImplementation((name) =>
+    name === "content-type" ? "application/json" : "45",
+  );
+  vi.spyOn(xhr, "send").mockImplementation(() => {
+    Object.defineProperties(xhr, {
+      responseText: { configurable: true, value: '{"error":"heatmap_not_warmed"}' },
+      status: { configurable: true, value: 503 },
+      statusText: { configurable: true, value: "Unavailable" },
+    });
+    xhr.dispatchEvent(new Event("load"));
+  });
+  vi.stubGlobal(
+    "XMLHttpRequest",
+    vi.fn(function () {
+      return xhr;
+    }),
+  );
+
+  const response: Response = await fetchWithRetry("/api/heatmap", undefined, {
+    attempts: 1,
+    retryStatuses: new Set<number>(),
+  });
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("45");
+  expect(response.headers.get("content-type")).toBe("application/json");
+  expect(await response.json()).toStrictEqual({ error: "heatmap_not_warmed" });
 });

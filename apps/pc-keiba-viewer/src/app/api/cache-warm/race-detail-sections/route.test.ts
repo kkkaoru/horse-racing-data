@@ -66,7 +66,7 @@ const ENDPOINT_URL = "https://example.com/api/cache-warm/race-detail-sections";
 
 const buildAuthedRequest = (search: string): Request =>
   new Request(`${ENDPOINT_URL}${search}`, {
-    headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+    headers: { "X-PC-Keiba-Cache-Warm": "scheduled", "x-pc-keiba-internal-token": "secret" },
     method: "POST",
   });
 
@@ -122,6 +122,7 @@ const expectFirstMessage = (payload: SendBatchPayload[]): DetailSectionMessage =
 };
 
 beforeEach(() => {
+  vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", "secret");
   getRacesByDateMock.mockReset();
   safeGetCloudflareEnvMock.mockReset();
   sendBatchMock.mockReset();
@@ -224,4 +225,20 @@ it("POST starts one heatmap workflow per venue when the workflow binding exists"
     },
   ]);
   vi.useRealTimers();
+});
+
+it("preserves the deployed RaceDayWorkflow scheduling request without an internal token", async () => {
+  getRacesByDateMock.mockResolvedValue([]);
+  safeGetCloudflareEnvMock.mockResolvedValue(buildQueueEnv());
+  const response = await POST(
+    new Request(
+      "https://pc-keiba-viewer.local/api/cache-warm/race-detail-sections?date=2026-10-04",
+      {
+        method: "POST",
+        headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+      },
+    ),
+  );
+  expect(response.status).toBe(200);
+  expect(getRacesByDateMock).toHaveBeenCalledWith("2026", "10", "04");
 });

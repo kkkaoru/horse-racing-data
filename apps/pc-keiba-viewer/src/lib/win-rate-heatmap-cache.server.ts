@@ -1,5 +1,10 @@
-import "server-only";
+import { requireArcQualifiedStats } from "./arc-qualified-stats";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
+// Run with bun.
+import { foreignOwnerMetadata, type ForeignOwnerMetadata } from "./foreign-owner-stats";
+import { hasCurrentGateMappingRevision } from "./gate-mapping-revision.server";
+import "server-only";
+
 import { indexLiveHorseWeightKg } from "./horse-weight-class";
 import type {
   BloodlineStatsRow,
@@ -9,6 +14,12 @@ import type {
   WeightClassStatsRow,
 } from "./race-types";
 import { formatRunnerNumber } from "./runner-format";
+import { settleOwnedWork } from "./settle-owned-work";
+import {
+  ARC_HEATMAP_COHORT,
+  selectArcHorseResults,
+  type WinRateHeatmapHorseResult,
+} from "./win-rate-heatmap";
 import type { WinRateHeatmapHorseRateRow, WinRateHeatmapPartnershipRow } from "./win-rate-heatmap";
 import {
   WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
@@ -28,7 +39,7 @@ import { buildHeatmapPresentation, isHeatmapPresentation } from "./win-rate-heat
 
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
-interface CompactRateRow {
+interface CompactRateRow extends ForeignOwnerMetadata {
   category: string;
   currentHorseNumbers: string;
   name: string;
@@ -212,6 +223,7 @@ const parseFragment = (
   value: unknown,
   generation: string,
   kind: WinRateHeatmapCacheFragmentKind,
+  arcCohort: WinRateHeatmapSectionPayload["arcCohort"],
 ): WinRateHeatmapCacheFragment | null => {
   if (
     !isWinRateHeatmapCacheFragment(value) ||
@@ -226,7 +238,8 @@ const parseFragment = (
       : kind === "weight" || kind === "carriedWeight"
         ? isCompactWeightRow
         : kind === "horse"
-          ? isCompactHorseRateRow
+          ? (row: unknown) =>
+              arcCohort === undefined ? isCompactHorseRateRow(row) : isArcHorseFragmentRow(row)
           : (row: unknown): row is CompactRateRow => isCompactRateRow(row) && row.category === kind;
   return value.rows.every(rowIsValid) ? value : null;
 };
@@ -264,62 +277,83 @@ const restoreBloodlineRows = (
   fragment: WinRateHeatmapCacheFragment,
   category: BloodlineStatsRow["category"],
 ): BloodlineStatsRow[] =>
-  compactRateRows(fragment).map((row) => ({
-    category,
-    currentHorseNumbers: row.currentHorseNumbers,
-    details: [],
-    horseCount: 0,
-    name: row.name,
-    quinellaCount: row.quinellaCount,
-    quinellaRate: row.quinellaRate,
-    showCount: row.showCount,
-    showRate: row.showRate,
-    starts: row.starts,
-    winCount: row.winCount,
-    winRate: row.winRate,
-  }));
+  compactRateRows(fragment).map((row) =>
+    Object.assign(foreignOwnerMetadata(row), {
+      category,
+      currentHorseNumbers: row.currentHorseNumbers,
+      details: [],
+      horseCount: 0,
+      name: row.name,
+      quinellaCount: row.quinellaCount,
+      quinellaRate: row.quinellaRate,
+      showCount: row.showCount,
+      showRate: row.showRate,
+      starts: row.starts,
+      winCount: row.winCount,
+      winRate: row.winRate,
+    }),
+  );
 
 const restoreSimilarRows = (
   fragment: WinRateHeatmapCacheFragment,
   category: SimilarRaceStatsRow["category"],
 ): SimilarRaceStatsRow[] =>
-  compactRateRows(fragment).map((row) => ({
-    category,
-    currentHorseNumbers: row.currentHorseNumbers,
-    details: [],
-    horseCount: 0,
-    name: row.name,
-    quinellaCount: row.quinellaCount,
-    quinellaRate: row.quinellaRate,
-    showCount: row.showCount,
-    showRate: row.showRate,
-    starts: row.starts,
-    winCount: row.winCount,
-    winRate: row.winRate,
-  }));
+  compactRateRows(fragment).map((row) =>
+    Object.assign(foreignOwnerMetadata(row), {
+      category,
+      currentHorseNumbers: row.currentHorseNumbers,
+      details: [],
+      horseCount: 0,
+      name: row.name,
+      quinellaCount: row.quinellaCount,
+      quinellaRate: row.quinellaRate,
+      showCount: row.showCount,
+      showRate: row.showRate,
+      starts: row.starts,
+      winCount: row.winCount,
+      winRate: row.winRate,
+    }),
+  );
 
 const restorePartnershipRows = (
   fragment: WinRateHeatmapCacheFragment,
   category: WinRateHeatmapPartnershipRow["category"],
 ): WinRateHeatmapPartnershipRow[] =>
-  compactRateRows(fragment).map((row) => ({
-    category,
-    currentHorseNumbers: row.currentHorseNumbers,
-    name: row.name,
-    starts: row.starts,
-    winCount: row.winCount,
-    winRate: row.winRate,
-    quinellaCount: row.quinellaCount,
-    quinellaRate: row.quinellaRate,
-    showCount: row.showCount,
-    showRate: row.showRate,
-    details: [],
-    horseCount: 0,
-  }));
+  compactRateRows(fragment).map((row) =>
+    Object.assign(foreignOwnerMetadata(row), {
+      category,
+      currentHorseNumbers: row.currentHorseNumbers,
+      name: row.name,
+      starts: row.starts,
+      winCount: row.winCount,
+      winRate: row.winRate,
+      quinellaCount: row.quinellaCount,
+      quinellaRate: row.quinellaRate,
+      showCount: row.showCount,
+      showRate: row.showRate,
+      details: [],
+      horseCount: 0,
+    }),
+  );
+
+const isArcHorseFragmentRow = (value: unknown): value is WinRateHeatmapHorseResult =>
+  isRecord(value) &&
+  [
+    "currentUmaban",
+    "kakuteiChakujun",
+    "keibajoCode",
+    "source",
+    "kaisaiNen",
+    "kaisaiTsukihi",
+    "kyosomeiHondai",
+    "raceBango",
+    "kettoTorokuBango",
+  ].every((key) => typeof value[key] === "string");
 
 const assemblePayload = (
   fragments: ReadonlyMap<WinRateHeatmapCacheFragmentKind, WinRateHeatmapCacheFragment>,
   runners: Runner[],
+  arcCohort: WinRateHeatmapSectionPayload["arcCohort"],
 ): WinRateHeatmapSectionPayload => {
   const similarKinds = [
     "jockeyFrame",
@@ -342,8 +376,11 @@ const assemblePayload = (
     ),
     carriedWeightClassStats: restoreWeightRows(fragments.get("carriedWeight")!),
     frameStats: restoreFrameRows(fragments.get("frame")!),
-    horseRateStats: restoreHorseRateRows(fragments.get("horse")!),
-    horseResults: [],
+    ...(arcCohort === undefined
+      ? { horseRateStats: restoreHorseRateRows(fragments.get("horse")!) }
+      : { arcCohort }),
+    horseResults:
+      arcCohort === undefined ? [] : fragments.get("horse")!.rows.filter(isArcHorseFragmentRow),
     partnershipRows: [
       ...restorePartnershipRows(fragments.get("horseJockey")!, "horseJockey"),
       ...restorePartnershipRows(fragments.get("jockeyVenue")!, "jockeyVenue"),
@@ -369,8 +406,17 @@ export const getCachedWinRateHeatmapPayload = async (
     defaultCache: getDefaultCache(),
     runtime: await safeGetCloudflareRuntime(),
   };
-  const manifest = await readCachedJson(currentKey, parseManifest, storage);
-  if (manifest === null || manifest.runnerSignature !== runnerSignature) return null;
+  // Cache API is local to one data center; a different edge can retain a
+  // manifest after a race bust deletes it from KV. KV is the source of truth.
+  const manifestBody = await storage.runtime.env?.DETAIL_SECTION_CACHE_KV?.get(currentKey);
+  const manifest = parseManifest(tryParseJson(manifestBody ?? ""));
+  if (
+    manifest === null ||
+    manifest.runnerSignature !== runnerSignature ||
+    (cacheKey.includes(":2026:10:04:A8:05:") && manifest.arcCohort !== ARC_HEATMAP_COHORT) ||
+    !(await hasCurrentGateMappingRevision(cacheKey, manifest.mappingRevision))
+  )
+    return null;
   const fragments = await Promise.all(
     manifest.fragmentKinds.map(async (kind) => {
       const fragmentKey = buildWinRateHeatmapFragmentCacheKey(
@@ -382,7 +428,7 @@ export const getCachedWinRateHeatmapPayload = async (
         kind,
         await readCachedJson(
           fragmentKey,
-          (value) => parseFragment(value, manifest.generation, kind),
+          (value) => parseFragment(value, manifest.generation, kind, manifest.arcCohort),
           storage,
         ),
       ] as const;
@@ -397,11 +443,27 @@ export const getCachedWinRateHeatmapPayload = async (
           storage,
         )
       : null;
+  const payload = assemblePayload(
+    new Map(fragments.map(([kind, fragment]) => [kind, fragment!] as const)),
+    currentRunners,
+    manifest.arcCohort,
+  );
+  if (
+    manifest.producerDataRevision !== 1 &&
+    (payload.horseRateStats?.length === 0 ||
+      payload.similarRows.length === 0 ||
+      payload.partnershipRows?.length === 0)
+  )
+    return null;
   return {
-    ...assemblePayload(
-      new Map(fragments.map(([kind, fragment]) => [kind, fragment!] as const)),
-      currentRunners,
-    ),
+    ...payload,
+    ...(manifest.arcQualifiedStats === undefined
+      ? {}
+      : { arcQualifiedStats: manifest.arcQualifiedStats }),
+    ...(manifest.mappingRevision === undefined
+      ? {}
+      : { mappingRevision: manifest.mappingRevision }),
+    ...(manifest.producerDataRevision === 1 ? { producerDataRevision: 1 satisfies 1 } : {}),
     ...(presentation === null ? {} : { presentation }),
   };
 };
@@ -409,6 +471,7 @@ export const getCachedWinRateHeatmapPayload = async (
 const compactRateRow = (
   row: BloodlineStatsRow | SimilarRaceStatsRow | WinRateHeatmapPartnershipRow,
 ): CompactRateRow => ({
+  ...foreignOwnerMetadata(row),
   category: row.category,
   currentHorseNumbers: row.currentHorseNumbers,
   name: row.name,
@@ -502,7 +565,12 @@ const buildFragments = (
     ["frame", payload.frameStats.map(compactFrameRow)],
     ["weight", payload.weightClassStats.map(compactWeightRow)],
     ["carriedWeight", payload.carriedWeightClassStats.map(compactWeightRow)],
-    ["horse", buildHorseRateRows(payload)],
+    [
+      "horse",
+      payload.arcCohort === undefined
+        ? buildHorseRateRows(payload)
+        : selectArcHorseResults(payload.horseResults),
+    ],
     [
       "horseJockey",
       (payload.partnershipRows ?? [])
@@ -558,6 +626,15 @@ export const putWinRateHeatmapCache = async ({
   const generation = crypto.randomUUID();
   const fragments = buildFragments(payload, generation);
   const manifest: WinRateHeatmapCacheManifest = {
+    ...(payload.arcCohort === undefined
+      ? {}
+      : {
+          arcCohort: payload.arcCohort,
+          arcQualifiedStats: requireArcQualifiedStats(payload.arcQualifiedStats),
+        }),
+    ...(payload.mappingRevision === undefined ? {} : { mappingRevision: payload.mappingRevision }),
+    // Only the producer can attest that every required source succeeded.
+    ...(payload.producerDataRevision === 1 ? { producerDataRevision: 1 satisfies 1 } : {}),
     ...(keibajoCode === undefined ? {} : { hasPresentation: true }),
     fragmentKinds: WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
     generation,
@@ -569,7 +646,7 @@ export const putWinRateHeatmapCache = async ({
   const kv = env?.DETAIL_SECTION_CACHE_KV;
   if (!kv) throw new Error("DETAIL_SECTION_CACHE_KV is unavailable");
 
-  await Promise.all(
+  await settleOwnedWork(
     fragments.map(async (fragment) => {
       const fragmentKey = buildWinRateHeatmapFragmentCacheKey(cacheKey, generation, fragment.kind);
       const body = JSON.stringify(fragment);
@@ -598,9 +675,7 @@ export const putWinRateHeatmapCache = async ({
     ).catch(() => undefined);
   }
 
-  const manifestBody = JSON.stringify(manifest);
-  await kv.put(cacheKey, manifestBody, { expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS });
-  await writeCacheApi(defaultCache, createWinRateHeatmapCacheRequest(cacheKey), manifestBody).catch(
-    () => undefined,
-  );
+  await kv.put(cacheKey, JSON.stringify(manifest), {
+    expirationTtl: WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
+  });
 };

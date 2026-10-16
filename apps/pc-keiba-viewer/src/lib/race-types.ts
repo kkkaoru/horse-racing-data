@@ -56,6 +56,7 @@ export interface Runner {
   kettoTorokuBango: string | null;
   bamei: string | null;
   identitySource?: string | null;
+  sourceHorseProvider?: string | null;
   sourceHorseId?: string | null;
   sourceUrl?: string | null;
   horseNameFull?: string | null;
@@ -381,7 +382,13 @@ export interface SimilarRaceStatsRow extends Record<string, unknown> {
   quinellaRate: number;
   showRate: number;
   statsSource?: "jv" | "netkeiba";
-  statsScope?: "all-published-results" | "japan-all-venues-10y";
+  sourcePersonId?: string;
+  statsScope?:
+    | "all-published-results"
+    | "japan-all-venues-10y"
+    | "stored-results-race-10y"
+    | "stored-results-10y"
+    | "stored-results-venue-30y";
 }
 
 export interface BloodlineStatsRow extends Record<string, unknown> {

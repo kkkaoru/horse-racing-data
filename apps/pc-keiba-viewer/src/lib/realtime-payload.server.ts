@@ -1,3 +1,6 @@
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
+
+import { loadOfficialCard } from "./arc-official-card.server";
 // Run with bun. Shared server-only loader that builds the realtime payload
 // for a single race. Used by both the `/api/.../realtime` route handler and
 // the SSR seed inside `race-detail-page.tsx` so the viewer can paint odds /
@@ -8,8 +11,8 @@
 // back into this Worker. A whole-pipeline `Promise.race` timeout guards SSR
 // latency.
 import "server-only";
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 
+import { isArcPredictionRace } from "./arc-prediction";
 import type { RaceSource } from "./codes";
 import { fetchHorseWeightsFromD1 } from "./horse-weight-d1-fallback.server";
 import {
@@ -58,6 +61,14 @@ interface ResolveHorseWeightsParams {
   raceKey: string;
 }
 
+interface RaceEntrySnapshotRow {
+  fetched_at: string;
+  horse_number: string;
+  horse_name?: string | null;
+  jockey_name?: string | null;
+  status?: string | null;
+}
+
 export interface BuildRealtimePayloadForRequestParams {
   env: CloudflareEnv | null | undefined;
   request: RealtimePayloadRequest;
@@ -71,6 +82,15 @@ export interface LoadInitialRealtimePayloadServerParams extends BuildRealtimePay
 const REALTIME_DATA_ORIGIN = "https://realtime";
 const HORSE_WEIGHTS_LATEST_OK_STATUS = 200;
 const DEFAULT_SSR_TIMEOUT_MS = 3_000;
+const LATEST_RACE_ENTRIES_SQL = `
+  select fetched_at, horse_number, horse_name, jockey_name, status
+  from race_entry_snapshots
+  where race_key = ?
+    and fetched_at = (
+      select max(fetched_at) from race_entry_snapshots where race_key = ?
+    )
+  order by cast(horse_number as integer) asc
+`;
 
 const padRaceNumber = (raceNumber: string): string => raceNumber.padStart(2, "0");
 
@@ -156,18 +176,74 @@ const fetchHorseWeightsForRequest = (
       })
     : Promise.resolve(null);
 
+export const fetchRaceEntriesFromD1 = async (
+  db: PcKeibaD1Database | undefined,
+  raceKey: string,
+): Promise<RealtimeRacePayload["raceEntries"]> => {
+  if (db === undefined) return null;
+  try {
+    const result = await db
+      .prepare(LATEST_RACE_ENTRIES_SQL)
+      .bind(raceKey, raceKey)
+      .all<RaceEntrySnapshotRow>();
+    const fetchedAt = result.results[0]?.fetched_at;
+    if (!result.success || !fetchedAt) return null;
+    return {
+      fetchedAt,
+      horses: result.results.map((row) => ({
+        fetchedAt: row.fetched_at,
+        horseNumber: row.horse_number,
+        horseName: row.horse_name ?? null,
+        jockeyName: row.jockey_name ?? null,
+        status: row.status ?? null,
+      })),
+    };
+  } catch {
+    return null;
+  }
+};
+
 export const buildRealtimePayloadForRequest = async (
   params: BuildRealtimePayloadForRequestParams,
 ): Promise<RealtimeRacePayload> => {
   const raceKey = buildRaceKey(params.request);
+  const useOfficial = isArcPredictionRace(params.request);
   const env = params.env ?? null;
-  const [odds, fromDO] = await Promise.all([
+  const [odds, fromDO, raceEntries] = await Promise.all([
     fetchOddsFromHot(env?.REALTIME_HOT, raceKey),
     fetchHorseWeightsForRequest(env?.REALTIME_DATA, params.request),
+    fetchRaceEntriesFromD1(env?.REALTIME_DB, raceKey),
   ]);
   const horseWeights = await resolveHorseWeights({ db: env?.REALTIME_DB, fromDO, raceKey });
+  if (useOfficial && odds === null) {
+    const card = await loadOfficialCard(params.request);
+    return Object.assign(
+      buildRealtimePayloadFromHot(
+        raceKey,
+        card
+          ? {
+              fetchedAt: card.retrievedAt,
+              history: [],
+              historyByType: {},
+              latest: {
+                tansho: card.horses.map((h) => ({
+                  combination: String(h.number),
+                  odds: h.odds,
+                  rank: h.popularity,
+                })),
+              },
+            }
+          : null,
+      ),
+      {
+        horseWeights,
+        raceEntries,
+        officialCardProvenance: card ? { url: card.url, retrievedAt: card.retrievedAt } : null,
+      },
+    );
+  }
   const payload = buildRealtimePayloadFromHot(raceKey, odds);
-  return horseWeights === null ? payload : { ...payload, horseWeights };
+  return { ...payload, horseWeights, raceEntries };
 };
 
 const sleepThenNull = (timeoutMs: number): Promise<null> =>

@@ -22,6 +22,7 @@ const { createBatchMock, getRacesByDateMock, safeGetCloudflareEnvMock } = mocks;
 import { POST } from "./route";
 
 beforeEach(() => {
+  vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", "secret");
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-22T23:00:00.000Z"));
   createBatchMock.mockReset();
@@ -42,7 +43,7 @@ it("returns 503 when the workflow binding is missing", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue({});
   const response = await POST(
     new Request("https://example.com/api/cache-warm/win-rate-heatmaps?date=2026-09-23", {
-      headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+      headers: { "X-PC-Keiba-Cache-Warm": "scheduled", "x-pc-keiba-internal-token": "secret" },
       method: "POST",
     }),
   );
@@ -57,7 +58,7 @@ it("returns 503 when the cloudflare env is unavailable", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue(null);
   const response = await POST(
     new Request("https://example.com/api/cache-warm/win-rate-heatmaps?date=2026-09-23", {
-      headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+      headers: { "X-PC-Keiba-Cache-Warm": "scheduled", "x-pc-keiba-internal-token": "secret" },
       method: "POST",
     }),
   );
@@ -74,7 +75,7 @@ it("starts one workflow per venue for the requested date", async () => {
   ]);
   const response = await POST(
     new Request("https://example.com/api/cache-warm/win-rate-heatmaps?date=2026-09-23", {
-      headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+      headers: { "X-PC-Keiba-Cache-Warm": "scheduled", "x-pc-keiba-internal-token": "secret" },
       method: "POST",
     }),
   );
@@ -95,7 +96,7 @@ it("defaults to today in JST", async () => {
   getRacesByDateMock.mockResolvedValue([]);
   const response = await POST(
     new Request("https://example.com/api/cache-warm/win-rate-heatmaps", {
-      headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+      headers: { "X-PC-Keiba-Cache-Warm": "scheduled", "x-pc-keiba-internal-token": "secret" },
       method: "POST",
     }),
   );
@@ -105,4 +106,15 @@ it("defaults to today in JST", async () => {
     raceCount: 0,
   });
   expect(getRacesByDateMock).toHaveBeenCalledWith("2026", "09", "23");
+});
+
+it("rejects forged scheduler headers without the existing secret", async () => {
+  const response = await POST(
+    new Request("https://example.com/api/cache-warm/win-rate-heatmaps", {
+      method: "POST",
+      headers: { "X-PC-Keiba-Cache-Warm": "scheduled" },
+    }),
+  );
+  expect(response.status).toBe(404);
+  expect(createBatchMock).not.toHaveBeenCalled();
 });

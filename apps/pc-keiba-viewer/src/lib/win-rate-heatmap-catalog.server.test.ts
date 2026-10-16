@@ -715,3 +715,139 @@ it("propagates Catalog fetch failures", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
   await expect(fetchWinRateHeatmapStatsFromCatalog(query)).rejects.toThrow("catalog timeout");
 });
+
+it("keeps jockeyFrame rates unknown at zero starts despite available generic jockey rates", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      mappingRevision: "gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      bloodlineRows: [],
+      similarRows: [
+        { kind: "jockey", name: "Jockey", umaban: 4, starts: 10, wins: 2, places: 3, shows: 4 },
+        { kind: "jockeyFrame", name: "Jockey", umaban: 4, starts: 0, wins: 0, places: 0, shows: 0 },
+      ],
+    }),
+  );
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+  const result = await fetchWinRateHeatmapStatsFromCatalog({
+    ...query,
+    keibajoCode: "A8",
+    includeJockeyFrame: true,
+  });
+  expect(result?.similarRows.find((row) => row.category === "jockeyFrame")).toBeUndefined();
+  expect(result?.similarRows.find((row) => row.category === "jockey")).toMatchObject({
+    starts: 10,
+    winRate: 20,
+  });
+});
+
+it("enables foreign owner stats only for the exact unfiltered Arc request", () => {
+  expect(
+    buildWinRateHeatmapCatalogUrl({
+      ...query,
+      day: "04",
+      month: "10",
+      keibajoCode: "A8",
+      raceNumber: "05",
+      includeVenue: false,
+      includeDistance: false,
+      includeSurface: false,
+      includeForeignSourceStats: true,
+    }).searchParams.get("includeForeignSourceStats"),
+  ).toBe("1");
+  expect(
+    buildWinRateHeatmapCatalogUrl({ ...query, includeForeignSourceStats: true }).searchParams.get(
+      "includeForeignSourceStats",
+    ),
+  ).toBeNull();
+});
+
+it("enables the exact Arc default venue, surface and title contract", () => {
+  expect(
+    buildWinRateHeatmapCatalogUrl({
+      ...query,
+      year: "2026",
+      month: "10",
+      day: "04",
+      keibajoCode: "A8",
+      raceNumber: "05",
+      years: 10,
+      includeVenue: true,
+      includeRaceTitle: true,
+      includeDistance: false,
+      includeSurface: true,
+      includeTurn: false,
+      includeForeignSourceStats: true,
+    }).searchParams.get("includeForeignSourceStats"),
+  ).toBe("1");
+});
+
+it.each(["stored-results-10y", "stored-results-race-10y"])(
+  "reads actual alpha owner IDs for %s",
+  async (statsScope) => {
+    safeGetCloudflareEnvMock.mockResolvedValue({
+      R2_CATALOG: {
+        fetch: vi.fn<() => Promise<Response>>().mockResolvedValue(
+          Response.json({
+            bloodlineRows: [],
+            similarRows: [
+              {
+                kind: "owner",
+                name: "netkeiba:a00762",
+                umaban: 1,
+                starts: 5,
+                wins: 0,
+                places: 1,
+                shows: 2,
+                statsSource: "netkeiba",
+                sourcePersonId: "a00762",
+                statsScope,
+              },
+            ],
+          }),
+        ),
+      },
+    });
+    const result = await fetchWinRateHeatmapStatsFromCatalog(query);
+    expect(result?.similarRows[0]).toMatchObject({
+      category: "owner",
+      sourcePersonId: "a00762",
+      statsScope,
+      starts: 5,
+      winCount: 0,
+    });
+  },
+);
+
+it("requires qualified data only for the exact Arc, preserves its DTO and rejects old live responses", async () => {
+  const exact = {
+    ...query,
+    year: "2026",
+    month: "10",
+    day: "04",
+    keibajoCode: "A8",
+    raceNumber: "05",
+  };
+  const qualified = { rows: [], coverage: { complete: false, rawRows: 0, invalidHorseRows: 0 } };
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ ...catalogPayload, mappingRevision: "gate-v1-test" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        ...catalogPayload,
+        mappingRevision: "gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        arcQualifiedStats: qualified,
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({ ...catalogPayload, arcQualifiedStats: { rows: "invalid" } }),
+    );
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+  await expect(fetchWinRateHeatmapStatsFromCatalog(exact)).rejects.toThrow(
+    "Arc qualified statistics are missing or malformed",
+  );
+  expect((await fetchWinRateHeatmapStatsFromCatalog(exact))?.arcQualifiedStats).toStrictEqual({
+    rows: [],
+    coverage: { complete: false, rawRows: 0, invalidHorseRows: 0 },
+  });
+  expect((await fetchWinRateHeatmapStatsFromCatalog(query))?.arcQualifiedStats).toBeUndefined();
+});

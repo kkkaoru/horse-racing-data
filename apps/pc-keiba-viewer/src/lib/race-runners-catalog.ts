@@ -3,6 +3,7 @@ import "server-only";
 import { readBoundedCatalogBody } from "./catalog-read-body";
 import type { RaceSource } from "./codes";
 import type { Runner } from "./race-types";
+import { isOverseasKeibajoCode } from "./runner-format";
 
 export interface CatalogRaceRunnersQuery {
   source: RaceSource;
@@ -170,7 +171,41 @@ export const readCatalogRaceRunners = async (
       throw new Error(FAILURE);
     const runners: Runner[] = parseRunners(value.runners);
     const identities: CatalogRunnerIdentity[] = parseIdentities(value.identities);
-    return mergeIdentities(runners, identities);
+    const merged = mergeIdentities(runners, identities);
+    if (!isOverseasKeibajoCode(query.keibajoCode)) return merged;
+    if (!Array.isArray(value.sourceMappings)) throw new Error(FAILURE);
+    const mappings: Map<string, { sourceHorseId: string; gateNumber: number | null }> = new Map();
+    for (const mapping of value.sourceMappings) {
+      if (
+        !isRecord(mapping) ||
+        typeof mapping.umaban !== "string" ||
+        !UMABAN.test(mapping.umaban) ||
+        mappings.has(mapping.umaban) ||
+        typeof mapping.sourceHorseId !== "string" ||
+        !/^(?!0+$)[A-Za-z0-9]+$/u.test(mapping.sourceHorseId) ||
+        (mapping.gateNumber !== null &&
+          (typeof mapping.gateNumber !== "number" ||
+            !Number.isSafeInteger(mapping.gateNumber) ||
+            mapping.gateNumber < 1 ||
+            mapping.gateNumber > 32767))
+      )
+        throw new Error(FAILURE);
+      mappings.set(mapping.umaban, {
+        sourceHorseId: mapping.sourceHorseId,
+        gateNumber: mapping.gateNumber,
+      });
+    }
+    return merged.map((runner) => {
+      const mapping = mappings.get(runner.umaban ?? "");
+      return Object.assign({}, runner, {
+        sourceHorseId: mapping?.sourceHorseId ?? null,
+        sourceHorseProvider: mapping === undefined ? null : "netkeiba",
+        wakuban:
+          mapping?.gateNumber === undefined || mapping.gateNumber === null
+            ? null
+            : String(mapping.gateNumber),
+      });
+    });
   } catch {
     throw new Error(FAILURE);
   }

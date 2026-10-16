@@ -36,6 +36,7 @@ describe("production-api-proxy.server", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     clearAccessEnv();
   });
 
@@ -183,6 +184,139 @@ describe("production-api-proxy.server", () => {
     expect(captured.message).toBe("plain-string");
   });
 
+  it("keeps an established stream alive past ten seconds and cancels with the client", async () => {
+    setAccessEnv();
+    vi.useFakeTimers();
+    const client = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("event: ping\n\n"));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: client.signal,
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(await response.text()).toBe("event: ping\n\n");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    client.abort();
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("rotates an idle stream cleanly before the upstream five-minute timeout", async () => {
+    setAccessEnv();
+    vi.useFakeTimers();
+    const cancel = vi.fn<() => void>();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("event: ping\n\n"));
+      },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(body)));
+    const response = await proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: new AbortController().signal,
+    });
+    await Promise.all([
+      expect(response.text()).resolves.toBe("event: ping\n\n"),
+      vi.advanceTimersByTimeAsync(240_000),
+    ]);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the upstream body and clears the lease when the client closes", async () => {
+    setAccessEnv();
+    vi.useFakeTimers();
+    const cancel = vi.fn<() => void>();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ cancel }))),
+    );
+    const client = new AbortController();
+    const response = await proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: client.signal,
+    });
+    client.abort();
+    await response.body?.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("logs an upstream body failure and closes normally for EventSource reconnection", async () => {
+    setAccessEnv();
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("upstream disconnected"));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(body)));
+    const response = await proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: new AbortController().signal,
+    });
+    expect(await response.text()).toBe("");
+    expect(log).toHaveBeenCalledWith("Production event stream disconnected", expect.any(Error));
+  });
+
+  it("wraps a rejected stream connection without leaking a timer or retrying", async () => {
+    setAccessEnv();
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(makeGetterOnlyMessageError("connection aborted", "AbortError"));
+    vi.stubGlobal("fetch", fetchMock);
+    const failure: unknown = await proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: new AbortController().signal,
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) throw new Error("expected Error");
+    expect(failure.name).toBe("AbortError");
+    expect(failure.message).toBe("connection aborted");
+    failure.message = "writable";
+    expect(failure.message).toBe("writable");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("aborts a stalled stream connection and clears its timer", async () => {
+    setAccessEnv();
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("connection aborted")), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = proxyToProductionStream({
+      path: "/stream",
+      searchParams: new URLSearchParams(),
+      signal: new AbortController().signal,
+    });
+    await Promise.all([
+      expect(response).rejects.toThrow("connection aborted"),
+      vi.advanceTimersByTimeAsync(10_000),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("proxyToProductionStream forwards upstream body and preserves event-stream Content-Type", async () => {
     setAccessEnv();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
@@ -192,14 +326,16 @@ describe("production-api-proxy.server", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const response = await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=jra"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=jra"),
+      signal: new AbortController().signal,
+    });
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
     expect(response.headers.get("Cache-Control")).toBe("no-cache");
     expect(response.headers.get("X-Horse-Weights-Stream-Source")).toBe("PROXIED-PRODUCTION");
+    expect(await response.text()).toBe("event: weight\ndata: {}\n\n");
   });
 
   it("proxyToProductionStream attaches the search params as a query string on the upstream URL", async () => {
@@ -211,10 +347,12 @@ describe("production-api-proxy.server", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=nar&debug=1"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=nar&debug=1"),
+      signal: new AbortController().signal,
+    });
+    expect(await response.text()).toBe("ok");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://example.test/api/races/2026/05/29/05/07/horse-weights-stream?source=nar&debug=1",
     );
@@ -229,10 +367,12 @@ describe("production-api-proxy.server", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams(),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams(),
+      signal: new AbortController().signal,
+    });
+    expect(await response.text()).toBe("ok");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://example.test/api/races/2026/05/29/05/07/horse-weights-stream",
     );
@@ -247,11 +387,13 @@ describe("production-api-proxy.server", () => {
     upstream.headers.delete("Cache-Control");
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(upstream);
     vi.stubGlobal("fetch", fetchMock);
-    const response = await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=jra"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=jra"),
+      signal: new AbortController().signal,
+    });
     expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+    expect(await response.text()).toBe("ok");
   });
 
   it("proxyToProductionStream falls back to default Content-Type when upstream lacks one", async () => {
@@ -260,11 +402,13 @@ describe("production-api-proxy.server", () => {
     upstream.headers.delete("Content-Type");
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(upstream);
     vi.stubGlobal("fetch", fetchMock);
-    const response = await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=jra"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=jra"),
+      signal: new AbortController().signal,
+    });
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(await response.text()).toBe("ok");
   });
 
   it("proxyToProductionStream returns a null-body Response when upstream body is null", async () => {
@@ -276,10 +420,11 @@ describe("production-api-proxy.server", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const response = await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=jra"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=jra"),
+      signal: new AbortController().signal,
+    });
     expect(response.status).toBe(204);
     expect(response.body).toBeNull();
     expect(response.headers.get("X-Horse-Weights-Stream-Source")).toBe("PROXIED-PRODUCTION");
@@ -294,17 +439,12 @@ describe("production-api-proxy.server", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    // Re-mock with a 502 → 502 sequence so the retry path returns the final 502.
-    fetchMock.mockResolvedValue(
-      new Response("upstream-error", {
-        headers: { "Content-Type": "text/event-stream" },
-        status: 502,
-      }),
-    );
-    const response = await proxyToProductionStream(
-      "/api/races/2026/05/29/05/07/horse-weights-stream",
-      new URLSearchParams("source=jra"),
-    );
+    const response = await proxyToProductionStream({
+      path: "/api/races/2026/05/29/05/07/horse-weights-stream",
+      searchParams: new URLSearchParams("source=jra"),
+      signal: new AbortController().signal,
+    });
     expect(response.status).toBe(502);
+    expect(await response.text()).toBe("upstream-error");
   });
 });

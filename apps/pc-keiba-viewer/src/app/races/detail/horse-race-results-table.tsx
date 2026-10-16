@@ -1,5 +1,7 @@
 "use client";
 
+// Run with bun via Next.js and Vitest.
+
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -367,7 +369,8 @@ const compareEqualDistanceTimes = (
   return compareRunnerNumbers(left, right);
 };
 
-// Comparison-oriented race-time order for 競走成績:
+// Comparison-oriented order for selecting each horse's representative results.
+// The table's selected sort column takes priority when ordering those results:
 // 1. Same surface as the current race (turf / dirt / sand / jumps clocks).
 //    Surface is a sort key only unless the user turns on a filter.
 // 2. Same distance as the current race first (apples-to-apples clocks).
@@ -645,25 +648,14 @@ export function HorseRaceResultsTable({
       currentTrackCode,
       direction: "asc",
     });
-    const compareBySelectedSort =
-      sort.key === "sohaTime"
-        ? createComparableRaceTimeComparator({
-            baseDistance,
-            currentKeibajoCode,
-            currentTrackCode,
-            direction: sort.direction,
-          })
-        : (left: HorseRaceResult, right: HorseRaceResult): number => {
-            const primary = compareNullable(
-              getSortValue(left, sort.key),
-              getSortValue(right, sort.key),
-              sort.direction,
-            );
-            if (primary !== 0) {
-              return primary;
-            }
-            return compareByComparableRaceTimeAsc(left, right);
-          };
+    const compareBySelectedSort = (left: HorseRaceResult, right: HorseRaceResult): number => {
+      const primary = compareNullable(
+        getSortValue(left, sort.key),
+        getSortValue(right, sort.key),
+        sort.direction,
+      );
+      return primary !== 0 ? primary : compareByComparableRaceTimeAsc(left, right);
+    };
 
     const getVisibleResults = ({
       activeClassFilter,
@@ -1381,6 +1373,14 @@ export function HorseRaceResultsTable({
             <tbody>
               {visibleResults.map((result) => {
                 const runnerNumber = cleanText(result.currentUmaban, "");
+                const currentRunner = runners.find(
+                  (runner) =>
+                    cleanText(runner.umaban, "") === runnerNumber &&
+                    (runner.sourceHorseId ?? runner.kettoTorokuBango) === result.kettoTorokuBango,
+                );
+                const horseName = currentRunner
+                  ? getRunnerDisplayNames(currentRunner).horse
+                  : cleanText(result.bamei);
                 const expanded = expandedRunnerNumber === runnerNumber;
                 const detailResults = raceResultsByRunnerNumber.get(runnerNumber) ?? [];
 
@@ -1408,7 +1408,7 @@ export function HorseRaceResultsTable({
                     >
                       <td>{formatRunnerNumber(result.currentUmaban)}</td>
                       <td className="race-results-horse-cell">
-                        <span>{cleanText(result.bamei)}</span>
+                        <span>{cleanText(result.bamei, horseName)}</span>
                         <button
                           className="race-results-detail-button"
                           type="button"

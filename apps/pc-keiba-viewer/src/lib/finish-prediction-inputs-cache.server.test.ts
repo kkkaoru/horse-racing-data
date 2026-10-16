@@ -117,7 +117,7 @@ it("buildFinishPredictionInputsCacheKey isolates overseas history inputs", () =>
       raceNumber: "04",
       year: "2026",
     }),
-  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v5:2026:08:16:A8:04:inputs");
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v6:2026:08:16:A8:04:inputs");
 });
 
 it("buildFinishPredictionInputsCacheKeyFromRaceParts matches the section key", () => {
@@ -241,6 +241,23 @@ it("keeps normal finish prediction input writes deferred through waitUntil", asy
   expect(waitUntil).toHaveBeenCalledTimes(1);
   cachePut.resolve();
   await waitUntil.mock.calls[0]?.[0];
+});
+
+it("retains an explicitly unavailable evaluation in the overseas input cache", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime("2026-08-16T12:00:00+09:00");
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({
+      evaluation: null,
+      inputs: { modelPredictionFeatures: [{ horseNumber: "1" }], currentKeibajoCode: "A8" },
+    }),
+  );
+  getCloudflareContextMock.mockResolvedValue({ ctx: null, env: { DETAIL_SECTION_CACHE_KV: kv } });
+  const payload = await getCachedFinishPredictionInputs(
+    "pc-keiba-viewer:finish-prediction-inputs:v6:2026:08:16:A8:04:inputs",
+  );
+  expect(payload?.evaluation).toBeNull();
 });
 
 it("reads the global KV input snapshot before a stale colo Cache API copy", async () => {

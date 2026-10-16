@@ -1,5 +1,3 @@
-// Runs with Bun for development and verification; deployed through the Cloudflare adapter.
-import "server-only";
 import { getDatabaseTarget } from "../../../db/client";
 import {
   getBloodlineStats,
@@ -23,6 +21,13 @@ import {
   getCarriedWeightClassStats,
   getWeightClassStats,
 } from "../../../db/queries";
+import { enrichOfficialRunners, enrichOfficialHistory } from "../../../lib/arc-official-card";
+import { loadOfficialCard } from "../../../lib/arc-official-card.server";
+import { isArcPredictionRace } from "../../../lib/arc-prediction";
+import { requireArcQualifiedStats } from "../../../lib/arc-qualified-stats";
+// Runs with Bun for development and verification; deployed through the Cloudflare adapter.
+import "server-only";
+
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import {
   fetchConditionHistoryStatsFromCatalog,
@@ -44,6 +49,11 @@ import {
   getFinishPredictionDimensionFlags,
   resolveFinishPositionBucketModelVersion,
 } from "../../../lib/finish-prediction-dimensions";
+// Run with bun.
+import {
+  isUnfilteredForeignOwnerSettings,
+  mergeForeignOwnerVenueRows,
+} from "../../../lib/foreign-owner-stats";
 import {
   cleanText,
   formatDistance,
@@ -111,6 +121,8 @@ import {
   type RunningStyleBucketScope,
   type RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
+import { settleOwnedWork } from "../../../lib/settle-owned-work";
+import { ARC_HEATMAP_COHORT } from "../../../lib/win-rate-heatmap";
 import {
   fetchWinRateHeatmapStatsFromCatalog,
   groupCatalogBloodlineRows,
@@ -538,7 +550,10 @@ const getBloodlineScoreByHorse = (rows: BloodlineStatsRow[]): Map<string, number
   for (const row of rows) {
     const categoryWeight = categoryWeights[row.category];
     const startsScore = clampScore(row.starts / 30);
-    const horseCountScore = clampScore(row.horseCount / 5);
+    // Positive-start aggregates use zero as an unknown distinct-horse count.
+    const horseCount: number | null =
+      row.starts > 0 && row.horseCount === 0 ? null : row.horseCount;
+    const horseCountScore = horseCount === null ? 0.5 : clampScore(horseCount / 5);
     const score =
       clampScore(row.showRate / 100) * 0.35 +
       clampScore(row.quinellaRate / 100) * 0.25 +
@@ -1123,7 +1138,7 @@ export const getDetailStatsContext = async ({
   raceSource,
   year,
 }: DetailSectionParams) => {
-  const [race, runners] = await Promise.all([
+  const [race, storedRunners] = await Promise.all([
     getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber),
     getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
   ]);
@@ -1132,6 +1147,15 @@ export const getDetailStatsContext = async ({
     return null;
   }
 
+  const officialCard = await loadOfficialCard({
+    source: raceSource,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceNumber,
+  });
+  const runners = enrichOfficialRunners(storedRunners, officialCard);
   const banEiRace = race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode);
   const statsClassConditionLabel = getStatsClassConditionLabel(race);
   const raceNameFilterLabels = getRaceNameFilterLabels(race);
@@ -1510,7 +1534,7 @@ export const getFinishPositionBucketSectionData = async (
 ): Promise<FinishPositionBucketSectionData> => {
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
   const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
-  if (!race) {
+  if (!race || isOverseasKeibajoCode(race.keibajoCode)) {
     return buildEmptyFinishPositionBucketSectionData();
   }
   const isBanEi = race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode);
@@ -1599,7 +1623,10 @@ const buildWinRateHeatmapCatalogQuery = (
     includeDistance: settings.includeDistance,
     includeGrade: settings.includeGrade,
     includeRaceTitle: settings.includeRaceTitle,
-    includeSurface: settings.includeSurface,
+    includeSurface:
+      isArcPredictionRace({ ...params, source }) && !hasExplicitStatsState(params.query, "analysis")
+        ? true
+        : settings.includeSurface,
     includeTrackCode: settings.includeTrackCode,
     includeTurn: settings.includeTurn,
     includeVenue: settings.includeVenue,
@@ -1624,6 +1651,9 @@ const loadCatalogGroupedRateStats = async (
   );
   if (catalogStats === null) return null;
   return {
+    ...(catalogStats.mappingRevision === undefined
+      ? {}
+      : { mappingRevision: catalogStats.mappingRevision }),
     bloodlineRows: groupCatalogBloodlineRows(catalogStats.bloodlineRows),
     similarRows: groupCatalogSimilarRows(catalogStats.similarRows),
   };
@@ -1654,7 +1684,8 @@ const loadConditionHistoryCatalogStats = async (
       year: params.year,
       years: heatmapStatsYears(settings.years),
     });
-  } catch {
+  } catch (error) {
+    if (isOverseasKeibajoCode(params.keibajoCode)) throw error;
     return null;
   }
 };
@@ -1699,7 +1730,11 @@ const resolveRaceTimeStats = async (
     ? catalogRaceTimeStats
     : getOrComputeRaceTimeStats({ race, settings });
 
-const loadDetailSectionPayload = async (section: DetailSection, params: DetailSectionParams) => {
+const loadDetailSectionPayload = async (
+  section: DetailSection,
+  params: DetailSectionParams,
+  heatmapOwned = false,
+) => {
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
 
   if (section === "premium-data-top") {
@@ -1760,16 +1795,20 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
 
   if (section === "results") {
     const resultsSourceScope = getResultsSourceScope(query);
-    const catalogResults = await fetchHorseRaceResultsFromCatalog({
-      day,
-      keibajoCode,
-      month,
-      raceBango: raceNumber,
-      source: race.source,
-      sourceScope: resultsSourceScope,
-      year,
-    });
-    const results =
+    const scope = { source: race.source, year, month, day, keibajoCode, raceNumber };
+    const qualifiedArc = isArcPredictionRace(scope);
+    const catalogResults = qualifiedArc
+      ? null
+      : await fetchHorseRaceResultsFromCatalog({
+          day,
+          keibajoCode,
+          month,
+          raceBango: raceNumber,
+          source: race.source,
+          sourceScope: resultsSourceScope,
+          year,
+        });
+    const storedResults =
       catalogResults === null
         ? await getHorseRaceResults(
             raceSource,
@@ -1781,6 +1820,14 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
             resultsSourceScope,
           )
         : catalogResults;
+    const results = qualifiedArc
+      ? enrichOfficialHistory({
+          scope,
+          runners,
+          results: storedResults,
+          card: await loadOfficialCard(scope),
+        })
+      : storedResults;
     return {
       classConditionName: context.statsClassConditionLabel,
       currentDistance: race.kyori,
@@ -1813,8 +1860,16 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       context.conditionAnalysisSettings,
       race.source,
     );
-    if (catalogCondition !== null && catalogHasCompleteConditionHistory(catalogCondition)) {
-      const [raceTimeStats, payoutStats] = await Promise.all([
+    if (isOverseasKeibajoCode(race.keibajoCode) && catalogCondition === null)
+      throw new Error("Overseas condition catalog is unavailable");
+    if (
+      catalogCondition !== null &&
+      (isOverseasKeibajoCode(race.keibajoCode) ||
+        catalogHasCompleteConditionHistory(catalogCondition))
+    ) {
+      const [raceTimeStats, payoutStats] = await (
+        heatmapOwned ? settleOwnedWork : Promise.all.bind(Promise)
+      )([
         catalogCondition.raceTimeStats.targetRaces.length > 0
           ? Promise.resolve(catalogCondition.raceTimeStats)
           : getOrComputeRaceTimeStats({
@@ -1830,6 +1885,9 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         conditionLabels: context.conditionAnalysisLabels,
         finishPositionStats: catalogCondition.finishPositionStats,
         frameStats: catalogCondition.frameStats,
+        ...(catalogCondition.mappingRevision === undefined
+          ? {}
+          : { mappingRevision: catalogCondition.mappingRevision }),
         payoutStats,
         raceTimeStats,
         runners,
@@ -1844,7 +1902,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
     }
     let resolvedSettings = context.conditionAnalysisSettings;
     const getConditionAnalysisStats = async (settings: typeof resolvedSettings) =>
-      Promise.all([
+      (heatmapOwned ? settleOwnedWork : Promise.all.bind(Promise))([
         getOrComputeRaceTimeStats({ race, settings }),
         getPayoutStats(race, settings),
         getFinishPositionStats(race, settings),
@@ -1863,7 +1921,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
     const [weightClassStats, carriedWeightClassStats]: [
       WeightClassStatsRow[],
       WeightClassStatsRow[],
-    ] = await Promise.all([
+    ] = await (heatmapOwned ? settleOwnedWork : Promise.all.bind(Promise))([
       getWeightClassStats(race, resolvedSettings),
       isBanEiKeibajoCode(race.keibajoCode)
         ? Promise.resolve([])
@@ -2024,7 +2082,9 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       getFinishPositionSimilarityFeatures(race, runners),
       getActiveFinishPositionPredictions(race, runners, params.expectedPredictionGeneratedAt),
       fetchSameDayVenueJockeyWins(race),
-      getActiveFinishPredictionEvaluation(evaluationCategory),
+      isOverseasKeibajoCode(race.keibajoCode)
+        ? Promise.resolve(null)
+        : getActiveFinishPredictionEvaluation(evaluationCategory),
       getFinishPositionBucketSectionData(params),
     ]);
     const staticEvaluation: FinishPredictionEvaluationMetrics =
@@ -2180,7 +2240,7 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
         type: section,
       };
     }
-    const results = await getHorseRaceResults(
+    const storedResults = await getHorseRaceResults(
       race.source,
       year,
       month,
@@ -2189,6 +2249,13 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
       raceNumber,
       getResultsSourceScope(params.query),
     );
+    const scope = { source: raceSource, year, month, day, keibajoCode, raceNumber };
+    const results = enrichOfficialHistory({
+      scope,
+      runners,
+      results: storedResults,
+      card: await loadOfficialCard(scope),
+    });
     const [similarityFeatures, modelPredictionFeatures, runningStyleRows] = await Promise.all([
       getRacePaceSimilarityFeatures(race, runners),
       getRacePaceModelPredictionFeatures(race, runners),
@@ -2344,11 +2411,13 @@ const loadDetailSectionPayload = async (section: DetailSection, params: DetailSe
 };
 
 interface HeatmapResultsSource {
+  sourceScope?: string;
   results: HorseRaceResult[];
   type: "results";
 }
 
 interface HeatmapConditionSource {
+  mappingRevision?: string;
   carriedWeightClassStats?: unknown;
   frameStats: FrameStatsRow[];
   type: "condition";
@@ -2367,6 +2436,11 @@ const isWeightClassStatsList = (value: unknown): value is WeightClassStatsRow[] 
 const isHeatmapConditionSource = (value: unknown): value is HeatmapConditionSource =>
   isRecordPayload(value) && value.type === "condition" && Array.isArray(value.frameStats);
 
+const isHeatmapBloodlineSource = (
+  value: unknown,
+): value is { rows: BloodlineStatsRow[]; type: "bloodline" } =>
+  isRecordPayload(value) && value.type === "bloodline" && Array.isArray(value.rows);
+
 const readWeightClassStats = (value: unknown): WeightClassStatsRow[] =>
   isWeightClassStatsList(value) ? value : [];
 
@@ -2382,48 +2456,177 @@ const loadHeatmapSectionSource = async (
     section,
     year: params.year,
   });
+  const cached = hasHeatmapSourceFilters(params)
+    ? null
+    : await getCachedDetailSectionResponse(cacheKey);
+  if (cached === null) {
+    return await loadDetailSectionPayload(section, params, true);
+  }
   try {
-    const cached = await getCachedDetailSectionResponse(cacheKey);
-    if (cached === null) {
-      return await loadDetailSectionPayload(section, params);
-    }
-    try {
-      return await cached.json();
-    } catch {
-      return await loadDetailSectionPayload(section, params);
-    }
+    return await cached.json();
+  } catch {
+    return await loadDetailSectionPayload(section, params, true);
+  }
+};
+
+const hasHeatmapSourceFilters = (params: DetailSectionParams): boolean =>
+  Object.entries(params.query).some(([name, value]) => name !== "source" && value !== undefined);
+
+// Use a previously warmed bloodline section before retrying its expensive SQL.
+const loadCachedHeatmapBloodlineRows = async (
+  params: DetailSectionParams,
+): Promise<BloodlineStatsRow[] | null> => {
+  if (hasHeatmapSourceFilters(params)) return null;
+  try {
+    const cached = await getCachedDetailSectionResponse(
+      buildDetailSectionCacheKey({
+        day: params.day,
+        keibajoCode: params.keibajoCode,
+        month: params.month,
+        raceNumber: params.raceNumber,
+        section: "bloodline",
+        year: params.year,
+      }),
+    );
+    if (cached === null) return null;
+    const payload: unknown = await cached.json();
+    return isHeatmapBloodlineSource(payload) ? payload.rows : null;
   } catch {
     return null;
   }
 };
 
-// The catalog flags bloodlineUnavailable when its bloodline R2 SQL query
-// failed (NAR 30/05 on 2026-09-23 never answered). Fill those rows from the
-// database, the same source other sections use when the catalog is absent.
 const fillUnavailableHeatmapBloodline = async (
   stats: WinRateHeatmapCatalogStats | null,
+  params: DetailSectionParams,
   race: RaceDetail,
+  runners: readonly Runner[],
   settings: SimilarRaceStatsSettings,
-): Promise<WinRateHeatmapCatalogStats | null> =>
-  stats?.bloodlineUnavailable === true
-    ? { bloodlineRows: await getBloodlineStats(race, settings), similarRows: stats.similarRows }
+  bloodlineSettings: SimilarRaceStatsSettings,
+): Promise<WinRateHeatmapCatalogStats | null> => {
+  if (stats === null) return null;
+  const allSiresWinless =
+    stats?.bloodlineRows.some((row) => row.category === "sire" && row.starts > 0) &&
+    !stats.bloodlineRows.some((row) => row.category === "sire" && row.winCount > 0);
+  if (stats.bloodlineRows.length === 0 || allSiresWinless) {
+    const cached = await loadCachedHeatmapBloodlineRows(params);
+    if (
+      cached?.some((row) => row.starts > 0) &&
+      (stats.bloodlineRows.length === 0 ||
+        cached.some((row) => row.category === "sire" && row.winCount > 0))
+    ) {
+      return { ...stats, bloodlineRows: cached };
+    }
+  }
+  if (
+    stats.bloodlineRows.length === 0 &&
+    runners.some((runner) => runner.sireName?.trim() || runner.damSireName?.trim())
+  ) {
+    const fallback = await loadCatalogGroupedRateStats(
+      params,
+      bloodlineSettings,
+      race.source,
+      false,
+    ).catch(() => null);
+    return { ...stats, bloodlineRows: fallback?.bloodlineRows ?? [] };
+  }
+  return stats.bloodlineUnavailable === true
+    ? { ...stats, bloodlineRows: await getBloodlineStats(race, settings) }
     : stats;
+};
 
 const loadHeatmapCatalogStats = async (
   params: DetailSectionParams,
   settings: SimilarRaceStatsSettings,
   race: RaceDetail,
+  runners: readonly Runner[],
+  bloodlineSettings: SimilarRaceStatsSettings,
 ): Promise<WinRateHeatmapCatalogStats | null> => {
   const initialStats = await fetchWinRateHeatmapStatsFromCatalog({
     ...buildWinRateHeatmapCatalogQuery(params, settings, race.source, true),
+    ...(isUnfilteredForeignOwnerSettings(settings) &&
+    params.year === "2026" &&
+    params.month === "10" &&
+    params.day === "04" &&
+    params.keibajoCode === "A8" &&
+    params.raceNumber === "05"
+      ? { includeForeignSourceStats: true }
+      : {}),
     includeJockeyFrame: true,
   });
-  const catalogStats = await fillUnavailableHeatmapBloodline(initialStats, race, settings);
-  // The relaxed query runs the same bloodline R2 SQL that just failed, so it
-  // would only add another abort wait (and push the warm past its timeout).
+  if (initialStats === null) throw new Error("Heatmap catalog is unavailable");
+  if (
+    race.source === "jra" &&
+    params.year === "2026" &&
+    params.month === "10" &&
+    params.day === "04" &&
+    params.keibajoCode === "A8" &&
+    params.raceNumber === "05"
+  ) {
+    if (initialStats.bloodlineUnavailable === true)
+      throw new Error("Arc heatmap bloodline stats are unavailable");
+    return initialStats;
+  }
+  const catalogStats = await fillUnavailableHeatmapBloodline(
+    initialStats,
+    params,
+    race,
+    runners,
+    settings,
+    bloodlineSettings,
+  );
+  // A named race can have starts but no wins for any current sire because the
+  // current horses' history is excluded. Use same-venue history without the
+  // race-title filter only when it supplies observed wins.
+  if (
+    race.source === "jra" &&
+    settings.includeRaceTitle &&
+    catalogStats?.bloodlineRows.some((row) => row.category === "sire" && row.starts > 0) &&
+    !catalogStats.bloodlineRows.some((row) => row.category === "sire" && row.winCount > 0)
+  ) {
+    const broader = await loadCatalogGroupedRateStats(
+      params,
+      { ...settings, includeRaceTitle: false },
+      race.source,
+      false,
+    ).catch(() => null);
+    if (broader?.bloodlineRows.some((row) => row.category === "sire" && row.winCount > 0)) {
+      return { ...catalogStats, bloodlineRows: broader.bloodlineRows };
+    }
+  }
+  // A missing 10-year Catalog result need not mean unknown pedigree: a shorter
+  // window supplies the actual rates for 2026-09-27 JRA 06/09 and 09/01.
+  if (
+    race.source === "jra" &&
+    bloodlineSettings.years === 10 &&
+    !catalogStats?.bloodlineRows.length &&
+    runners.some((runner) => runner.sireName?.trim() || runner.damSireName?.trim())
+  ) {
+    const shorter = await loadCatalogGroupedRateStats(
+      params,
+      {
+        ...relaxAllConditionAnalysisSettings(bloodlineSettings),
+        includeDistance: false,
+        includeVenue: bloodlineSettings.includeVenue,
+        years: 9,
+      },
+      race.source,
+      false,
+    ).catch(() => null);
+    if (shorter?.bloodlineRows.length) {
+      return {
+        ...(catalogStats ?? { bloodlineRows: [], similarRows: [] }),
+        bloodlineRows: shorter.bloodlineRows,
+      };
+    }
+  }
+  // Do not repeat the failed R2 SQL or the known-pedigree fallback query;
+  // either could push this warm past its timeout.
   if (
     catalogStats === null ||
-    initialStats?.bloodlineUnavailable === true ||
+    initialStats.bloodlineUnavailable === true ||
+    (initialStats.bloodlineRows.length === 0 &&
+      runners.some((runner) => runner.sireName?.trim() || runner.damSireName?.trim())) ||
     (hasRateRows(catalogStats.similarRows) && hasRateRows(catalogStats.bloodlineRows))
   ) {
     return catalogStats;
@@ -2434,8 +2637,11 @@ const loadHeatmapCatalogStats = async (
       ...buildWinRateHeatmapCatalogQuery(params, relaxedSettings, race.source, true),
       includeJockeyFrame: true,
     }),
+    params,
     race,
+    runners,
     relaxedSettings,
+    bloodlineSettings,
   );
 };
 
@@ -2450,11 +2656,33 @@ export const getDetailSectionPayload = async (
   if (context === null) {
     return null;
   }
+  const arcCohort = isArcPredictionRace({ ...params, source: context.race.source })
+    ? ARC_HEATMAP_COHORT
+    : undefined;
   const [catalogStats, resultsPayload, conditionPayload, partnershipRows, liveHorseWeights] =
-    await Promise.all([
-      loadHeatmapCatalogStats(params, context.conditionAnalysisSettings, context.race),
-      loadHeatmapSectionSource("results", params),
-      loadHeatmapSectionSource("condition", params),
+    await settleOwnedWork([
+      loadHeatmapCatalogStats(
+        params,
+        context.conditionAnalysisSettings,
+        context.race,
+        context.runners,
+        context.bloodlineStatsSettings,
+      ),
+      loadHeatmapSectionSource(
+        "results",
+        arcCohort === undefined
+          ? params
+          : { ...params, query: { ...params.query, resultsSourceScope: "jra" } },
+      ),
+      // Heatmaps need only Catalog condition counts, not payout/time computations
+      // or a section cache produced before the current pedigree revision.
+      arcCohort === undefined
+        ? loadHeatmapSectionSource("condition", params)
+        : loadConditionHistoryCatalogStats(
+            params,
+            context.conditionAnalysisSettings,
+            context.race.source,
+          ).then((stats) => (stats === null ? null : { ...stats, type: "condition" })),
       fetchHeatmapPartnershipRows(
         buildWinRateHeatmapCatalogQuery(
           params,
@@ -2473,19 +2701,42 @@ export const getDetailSectionPayload = async (
       }),
     ]);
   if (partnershipRows === null) throw new Error("Partnership catalog binding is unavailable");
-  const conditionSource = isHeatmapConditionSource(conditionPayload) ? conditionPayload : null;
+  if (catalogStats === null) throw new Error("Heatmap catalog is unavailable");
+  if (!isHeatmapResultsSource(resultsPayload)) throw new Error("Heatmap results are unavailable");
+  if (!isHeatmapConditionSource(conditionPayload))
+    throw new Error("Heatmap condition is unavailable");
+  const conditionSource = conditionPayload;
+  if (
+    isOverseasKeibajoCode(params.keibajoCode) &&
+    (!conditionSource.mappingRevision ||
+      conditionSource.mappingRevision !== catalogStats.mappingRevision)
+  )
+    throw new Error("Overseas heatmap mapping provenance differs");
   return {
-    bloodlineRows: catalogStats === null ? [] : catalogStats.bloodlineRows,
-    carriedWeightClassStats:
-      conditionSource === null ? [] : readWeightClassStats(conditionSource.carriedWeightClassStats),
-    frameStats: conditionSource === null ? [] : conditionSource.frameStats,
-    horseResults: isHeatmapResultsSource(resultsPayload) ? resultsPayload.results : [],
+    bloodlineRows: catalogStats.bloodlineRows,
+    carriedWeightClassStats: readWeightClassStats(conditionSource.carriedWeightClassStats),
+    frameStats: conditionSource.frameStats,
+    ...(conditionSource.mappingRevision === undefined
+      ? {}
+      : { mappingRevision: conditionSource.mappingRevision }),
+    ...(arcCohort === undefined
+      ? {}
+      : { arcCohort, arcQualifiedStats: requireArcQualifiedStats(catalogStats.arcQualifiedStats) }),
+    horseResults:
+      arcCohort === undefined
+        ? resultsPayload.results
+        : resultsPayload.results.map((row) =>
+            Object.assign({}, row, { source: resultsPayload.sourceScope }),
+          ),
     runners: context.runners,
-    similarRows: catalogStats === null ? [] : catalogStats.similarRows,
+    similarRows: catalogStats.similarRows,
     type: "win-rate-heatmap",
-    partnershipRows,
+    producerDataRevision: 1 satisfies 1,
+    partnershipRows: mergeForeignOwnerVenueRows(
+      partnershipRows,
+      catalogStats.foreignOwnerVenueRows ?? [],
+    ),
     liveHorseWeights,
-    weightClassStats:
-      conditionSource === null ? [] : readWeightClassStats(conditionSource.weightClassStats),
+    weightClassStats: readWeightClassStats(conditionSource.weightClassStats),
   };
 };

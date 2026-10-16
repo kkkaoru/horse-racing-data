@@ -8,6 +8,8 @@ Early stopping is driven by validation NDCG@3.
 """
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from time import perf_counter
 from typing import TypedDict, cast
 
@@ -198,7 +200,33 @@ def _make_learning_rate_schedule(
     return opt.schedulers.join_schedules([warmup, cosine], [warmup_steps])
 
 
+@contextmanager
+def _inference_mode(model: RaceSetTransformer) -> Generator[None, None, None]:
+    """Disable dropout while scoring, then restore the caller's training flag.
+
+    MLX modules start in training mode, so scoring without this applied dropout
+    at inference: predictions were non-deterministic and diverged from the
+    served numpy forward pass (which has no dropout).
+    """
+    was_training = model.training
+    model.eval()
+    try:
+        yield
+    finally:
+        if was_training:
+            model.train()
+
+
 def predict_rank_scores(
+    model: RaceSetTransformer,
+    arrays: RaceBatchArrays,
+    batch_size: int,
+) -> np.ndarray:
+    with _inference_mode(model):
+        return _predict_rank_scores(model, arrays, batch_size)
+
+
+def _predict_rank_scores(
     model: RaceSetTransformer,
     arrays: RaceBatchArrays,
     batch_size: int,
@@ -226,6 +254,15 @@ def predict_all_logits(
     batch_size: int,
 ) -> dict[str, np.ndarray]:
     """rank_score / conditional_place2_logit / conditional_place3_logit を per-horse 返す。"""
+    with _inference_mode(model):
+        return _predict_all_logits(model, arrays, batch_size)
+
+
+def _predict_all_logits(
+    model: RaceSetTransformer,
+    arrays: RaceBatchArrays,
+    batch_size: int,
+) -> dict[str, np.ndarray]:
     n_races = len(arrays["race_ids"])
     result = {
         "rank_score": np.zeros((n_races, MAX_RUNNERS), dtype=np.float32),

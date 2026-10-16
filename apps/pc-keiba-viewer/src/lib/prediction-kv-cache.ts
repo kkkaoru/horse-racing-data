@@ -66,7 +66,8 @@ const TOMORROW_DIFF_DAYS = 1;
 const YESTERDAY_DIFF_DAYS = -1;
 
 const TODAY_KV_TTL_SECONDS = 36 * 60 * 60;
-const TOMORROW_KV_TTL_SECONDS = 24 * 60 * 60;
+// Match the producer: early day-before forecasts must survive race day and yesterday.
+const TOMORROW_KV_TTL_SECONDS = 72 * 60 * 60;
 const YESTERDAY_KV_TTL_SECONDS = 24 * 60 * 60;
 const TODAY_CACHE_API_TTL_SECONDS = 30;
 const TOMORROW_CACHE_API_TTL_SECONDS = 5 * 60;

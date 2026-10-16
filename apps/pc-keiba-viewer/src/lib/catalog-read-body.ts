@@ -5,15 +5,20 @@ interface ReadState {
   bytes: number;
 }
 
+type CatalogBodyPolicy = "race-day-list-with-jockeys" | "race-history";
+
 const MAX_BYTES: number = 64 * 1024;
-// Enriched day lists exceed 64 KiB in verified historical fixtures (89 races).
-// Keep a finite 1 MiB budget, opt-in only; all other readers retain 64 KiB.
-const MAX_JOCKEY_DAY_BYTES: number = 1024 * 1024;
+// Large responses opt in explicitly. History readers also enforce 4000 rows;
+// their valid 13-column payload can exceed 1 MiB. Other readers retain 64 KiB.
+const MAX_BYTES_BY_POLICY: Readonly<Record<CatalogBodyPolicy, number>> = {
+  "race-day-list-with-jockeys": 1024 * 1024,
+  "race-history": 2 * 1024 * 1024,
+};
 const FAILURE: string = "Invalid Catalog response body";
 
 export const readBoundedCatalogBody = async (
   response: Response,
-  policy?: "race-day-list-with-jockeys",
+  policy?: CatalogBodyPolicy,
 ): Promise<unknown> => {
   if (response.body === null) throw new Error(FAILURE);
   const decoder: TextDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -23,9 +28,7 @@ export const readBoundedCatalogBody = async (
     new WritableStream<Uint8Array>({
       write(chunk) {
         state.bytes += chunk.byteLength;
-        if (
-          state.bytes > (policy === "race-day-list-with-jockeys" ? MAX_JOCKEY_DAY_BYTES : MAX_BYTES)
-        )
+        if (state.bytes > (policy === undefined ? MAX_BYTES : MAX_BYTES_BY_POLICY[policy]))
           throw new Error(FAILURE);
         chunks.push(decoder.decode(chunk, { stream: true }));
       },

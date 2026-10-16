@@ -68,6 +68,8 @@ export async function POST(request: Request) {
   const allowed =
     request.headers.get("X-PC-Keiba-Cache-Warm") === "scheduled" ||
     searchParams.get("debug") === "1";
+  // Preserve the deployed RaceDayWorkflow scheduling contract. The producing
+  // heatmap section route separately requires the internal secret and owner token.
   if (!allowed) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

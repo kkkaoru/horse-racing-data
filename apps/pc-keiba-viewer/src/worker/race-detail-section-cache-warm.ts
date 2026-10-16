@@ -77,6 +77,7 @@ export const scheduleTomorrowRaceDetailSectionCache = async (
     new Request(`${INTERNAL_ORIGIN}${SCHEDULE_PATH}`, {
       headers: {
         "X-PC-Keiba-Cache-Warm": "scheduled",
+        "x-pc-keiba-internal-token": env.PC_KEIBA_INTERNAL_TOKEN ?? "",
       },
       method: "POST",
     }),
@@ -98,6 +99,7 @@ export const scheduleTodayRaceDetailSectionCache = async (
     new Request(url, {
       headers: {
         "X-PC-Keiba-Cache-Warm": "scheduled",
+        "x-pc-keiba-internal-token": params.env.PC_KEIBA_INTERNAL_TOKEN ?? "",
       },
       method: "POST",
     }),
@@ -166,6 +168,7 @@ export const scheduleTodayWinRateHeatmapWarm = async (
     new Request(url, {
       headers: {
         "X-PC-Keiba-Cache-Warm": "scheduled",
+        "x-pc-keiba-internal-token": params.env.PC_KEIBA_INTERNAL_TOKEN ?? "",
       },
       method: "POST",
     }),

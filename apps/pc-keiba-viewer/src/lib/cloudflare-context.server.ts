@@ -30,10 +30,49 @@ const getRuntimeContext = async () => {
   }
 };
 
+// Next and Wrangler can use different Request constructors in Node development.
+// Pass URL + init across the platform-proxy boundary rather than a foreign Request.
+const devCatalogBinding = (binding: CloudflareEnv["R2_CATALOG"]): CloudflareEnv["R2_CATALOG"] =>
+  binding === undefined
+    ? undefined
+    : {
+        ...(typeof binding.getGateMappingRevision === "function"
+          ? {
+              getGateMappingRevision: (
+                input: Parameters<
+                  NonNullable<NonNullable<CloudflareEnv["R2_CATALOG"]>["getGateMappingRevision"]>
+                >[0],
+              ) => binding.getGateMappingRevision!(input),
+            }
+          : {}),
+        fetch: async (input, init) =>
+          input instanceof Request
+            ? binding.fetch(input.url, {
+                method: input.method,
+                headers: input.headers,
+                body: input.body === null ? null : await input.arrayBuffer(),
+                redirect: input.redirect,
+                signal: input.signal,
+                ...init,
+              })
+            : binding.fetch(input, init),
+      };
+
 export const safeGetCloudflareRuntime = async (): Promise<SafeCloudflareRuntime> => {
   try {
     const context = await getRuntimeContext();
-    return { ctx: context.ctx ?? null, env: context.env ?? null };
+    const env = context.env;
+    return {
+      ctx: context.ctx ?? null,
+      env:
+        process.env.NODE_ENV === "development" && env
+          ? {
+              ...env,
+              R2_CATALOG: devCatalogBinding(env.R2_CATALOG),
+              R2_RACE_DETAIL: devCatalogBinding(env.R2_RACE_DETAIL),
+            }
+          : (env ?? null),
+    };
   } catch {
     return EMPTY_RUNTIME;
   }

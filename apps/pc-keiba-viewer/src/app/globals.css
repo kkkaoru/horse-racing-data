@@ -1069,6 +1069,11 @@ h3 {
   padding-top: var(--space-18px-31);
 }
 
+.training-section {
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
+  min-width: var(--number-0-2);
+}
+
 .running-style-section .runner-table {
   min-width: var(--number-0-2);
   table-layout: auto;
@@ -8408,8 +8413,13 @@ fieldset.stats-section-toggle-wrap {
   background: var(--surface);
   border: var(--space-1px-7) solid var(--line);
   border-radius: var(--space-8px-28);
+  max-width: var(--space-100pct-12);
   min-height: var(--space-96px-66);
+  min-width: var(--number-0-2);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: var(--space-100pct-12);
+  -webkit-overflow-scrolling: touch;
 }
 
 .training-filter-panel {
@@ -8859,11 +8869,6 @@ fieldset.stats-section-toggle-wrap {
 
   .race-side-nav {
     display: none;
-  }
-
-  .training-table-wrap {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
   }
 
   .premium-data-top-table-wrap {
@@ -10372,6 +10377,7 @@ fieldset.race-results-chart-view-toggle {
 .training-chart {
   display: grid;
   gap: var(--space-8px-28);
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
   margin: var(--number-0-2);
   min-width: var(--number-0-2);
   width: var(--space-100pct-12);

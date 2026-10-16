@@ -1,5 +1,9 @@
-import "server-only";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
+import { hasCurrentGateMappingBody } from "./gate-mapping-revision.server";
+import "server-only";
+
+// Runs with bun.
+import { hasOverseasTimeScoreEvidence } from "./overseas-time-score-evidence";
 import {
   DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
   buildDetailSectionCacheKey,
@@ -109,14 +113,21 @@ const readCachedDetailSectionForKey = async (
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
     const cachedBody = await cachedResponse.text();
-    if (!isEmptyDataSectionBody(cachedBody)) {
+    if (
+      !isEmptyDataSectionBody(cachedBody, cacheKey) &&
+      (await hasCurrentGateMappingBody(cacheKey, cachedBody))
+    ) {
       return buildCachedResponse(cachedBody, "cache-api");
     }
   }
 
   const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
-  if (!kvBody || isEmptyDataSectionBody(kvBody)) {
+  if (
+    !kvBody ||
+    isEmptyDataSectionBody(kvBody, cacheKey) ||
+    !(await hasCurrentGateMappingBody(cacheKey, kvBody))
+  ) {
     return null;
   }
 
@@ -184,7 +195,10 @@ const readStaleDetailSectionBodyForKey = async (
   if (!isEnvelopeStillFresh(envelope.writtenAt, nowMs)) {
     return null;
   }
-  return isEmptyDataSectionBody(envelope.payload) ? null : envelope.payload;
+  return isEmptyDataSectionBody(envelope.payload, cacheKey) ||
+    !(await hasCurrentGateMappingBody(cacheKey, envelope.payload))
+    ? null
+    : envelope.payload;
 };
 
 export const getStaleDetailSectionBody = async (
@@ -272,8 +286,11 @@ const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
   }
 };
 
-const isEmptyDataSectionBody = (body: string): boolean =>
-  isEmptyPremiumTrainingSectionBody(body) || isEmptyPremiumDataTopSectionBody(body);
+const isEmptyDataSectionBody = (body: string, cacheKey: string): boolean =>
+  isEmptyPremiumTrainingSectionBody(body) ||
+  isEmptyPremiumDataTopSectionBody(body) ||
+  (/:\d{4}:\d{1,2}:\d{1,2}:[A-Z][0-9A-Z]:\d{2}:time-score:/u.test(cacheKey) &&
+    !hasOverseasTimeScoreEvidence(body));
 
 export const putDetailSectionCache = async ({
   body,
@@ -285,7 +302,7 @@ export const putDetailSectionCache = async ({
   race: RaceDetail;
 }): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
-  if (isEmptyDataSectionBody(body)) return;
+  if (isEmptyDataSectionBody(body, cacheKey)) return;
   const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   // The 30-day stale snapshot is written even when fresh TTL is already

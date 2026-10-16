@@ -573,3 +573,20 @@ it("propagates Catalog fetch failures", async () => {
   safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
   await expect(fetchConditionHistoryStatsFromCatalog(query)).rejects.toThrow("catalog timeout");
 });
+
+it("preserves valid empty overseas frames and mapping provenance", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      ...catalogPayload,
+      frameStats: [],
+      mappingRevision: "gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    }),
+  );
+  safeGetCloudflareEnvMock.mockResolvedValue({ R2_CATALOG: { fetch: fetchMock } });
+  expect(
+    await fetchConditionHistoryStatsFromCatalog({ ...query, keibajoCode: "A8" }),
+  ).toMatchObject({
+    frameStats: [],
+    mappingRevision: "gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  });
+});

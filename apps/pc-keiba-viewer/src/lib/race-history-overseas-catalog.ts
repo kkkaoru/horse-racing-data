@@ -24,7 +24,7 @@ const FIELD_COUNT: number = 3;
 const TIMEOUT_MS: number = 35_000;
 const ENDPOINT: string = "https://pc-keiba-r2-catalog.internal/v1/race-history";
 const FAILURE: string = "Catalog race history unavailable";
-const HORSE_ID: RegExp = /^\d{10}$/u;
+const HORSE_ID: RegExp = /^(?!0+$)[A-Za-z0-9]+$/u;
 const DASHED_DATE: RegExp = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const MAX_HORSE_IDS: number = 40;
 const MAX_ROWS: number = 4000;
@@ -95,11 +95,20 @@ export const readCatalogOverseasRaceHistory = async (
       await response.body?.cancel();
       throw new Error(FAILURE);
     }
-    const value: unknown = await readBoundedCatalogBody(response);
+    const value: unknown = await readBoundedCatalogBody(response, "race-history");
     if (!isRecord(value) || !Array.isArray(value.rows)) throw new Error(FAILURE);
     if (value.rows.length > MAX_ROWS) throw new Error(FAILURE);
     const requested: ReadonlySet<string> = new Set(query.horseIds);
-    return value.rows.map((row) => parseRow(row, requested));
+    const rows = value.rows.map((row) => parseRow(row, requested));
+    if (
+      rows.some(
+        (row) =>
+          row.raceDate.replaceAll("-", "") >= query.beforeDate ||
+          (query.minDate !== null && row.raceDate.replaceAll("-", "") < query.minDate),
+      )
+    )
+      throw new Error(FAILURE);
+    return rows;
   } catch {
     throw new Error(FAILURE);
   }

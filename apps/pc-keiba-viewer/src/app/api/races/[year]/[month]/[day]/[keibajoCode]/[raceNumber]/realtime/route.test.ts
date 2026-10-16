@@ -1126,13 +1126,20 @@ const emptyBatch = <T = unknown>(): Promise<PcKeibaD1Result<T>[]> => Promise.res
 const noopExec = (): Promise<PcKeibaD1RunResult> => Promise.resolve({ success: true });
 
 const buildD1WithRows = (rows: HorseWeightSnapshotRow[]): PcKeibaD1Database => {
-  const all = vi.fn<AnyMockFn>().mockResolvedValue({ results: rows, success: true });
-  const bind = vi.fn<AnyMockFn>();
-  const first = vi.fn<AnyMockFn>().mockResolvedValue(null);
-  const run = vi.fn<AnyMockFn>().mockResolvedValue({ success: true });
-  const prepared: PreparedStub = { all, bind, first, run };
-  bind.mockReturnValue(prepared);
-  const raw: D1Stub = { prepare: vi.fn<AnyMockFn>().mockReturnValue(prepared) };
+  const raw: D1Stub = {
+    prepare: vi.fn<AnyMockFn>((query: unknown) => {
+      const all = vi.fn<AnyMockFn>().mockResolvedValue({
+        results: typeof query === "string" && query.includes("horse_weight_snapshots") ? rows : [],
+        success: true,
+      });
+      const bind = vi.fn<AnyMockFn>();
+      const first = vi.fn<AnyMockFn>().mockResolvedValue(null);
+      const run = vi.fn<AnyMockFn>().mockResolvedValue({ success: true });
+      const prepared: PreparedStub = { all, bind, first, run };
+      bind.mockReturnValue(prepared);
+      return prepared;
+    }),
+  };
   const typedPrepare = (query: string): PcKeibaD1PreparedStatement => {
     const result = Reflect.apply(raw.prepare, raw, [query]);
     if (!isPreparedStatement(result)) {
@@ -1353,7 +1360,7 @@ it("GET production branch returns null horseWeights when both DO returns non-200
   });
 });
 
-it("GET production branch uses DO snapshot directly without consulting REALTIME_DB when DO returns 200", async () => {
+it("GET production branch reads entries but not D1 weights when DO returns 200", async () => {
   isDevScraperEnabledMock.mockReturnValue(false);
   const hotFetch = vi.fn<HotFetch>(async () =>
     Promise.resolve(
@@ -1390,7 +1397,7 @@ it("GET production branch uses DO snapshot directly without consulting REALTIME_
     exec: noopExec,
     prepare: (query: string): PcKeibaD1PreparedStatement => {
       d1PrepareSpy(query);
-      throw new Error("D1 should not be consulted when DO returns a snapshot");
+      throw new Error("Entry snapshots are unavailable");
     },
   };
   getCloudflareContextMock.mockResolvedValue({
@@ -1440,7 +1447,8 @@ it("GET production branch uses DO snapshot directly without consulting REALTIME_
     source: null,
     trackCondition: null,
   });
-  expect(d1PrepareSpy).not.toHaveBeenCalled();
+  expect(d1PrepareSpy).toHaveBeenCalledTimes(1);
+  expect(d1PrepareSpy).toHaveBeenCalledWith(expect.stringMatching(/from race_entry_snapshots/u));
 });
 
 it("GET production branch does not invoke global fetch (legacy upstream is gone)", async () => {

@@ -1,3 +1,4 @@
+// Runs with Bun for tests and the Workers runtime in production.
 import { NextResponse } from "next/server";
 
 import {
@@ -5,6 +6,9 @@ import {
   getRaceRunners,
   getRaceSourceByRoute,
 } from "../../../../../../../../../../db/queries";
+import { enrichOfficialRunners } from "../../../../../../../../../../lib/arc-official-card";
+import { loadOfficialCard } from "../../../../../../../../../../lib/arc-official-card.server";
+import { isArcPredictionRace } from "../../../../../../../../../../lib/arc-prediction";
 import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
@@ -13,6 +17,12 @@ import {
   getCachedFinishPredictionInputs,
   putFinishPredictionInputsCache,
 } from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
+import { canonicalHeatmapQuery } from "../../../../../../../../../../lib/heatmap-execution";
+import {
+  getHeatmapExecutionOwner,
+  runOwnedHeatmap,
+  heatmapPendingResponse,
+} from "../../../../../../../../../../lib/heatmap-execution.server";
 import { secretsEqual } from "../../../../../../../../../../lib/mcp-auth";
 import { normalizeExpectedPredictionGeneratedAt } from "../../../../../../../../../../lib/prediction-generation-freshness";
 import {
@@ -33,6 +43,7 @@ import {
   buildWinRateHeatmapRunnerSignature,
   isWinRateHeatmapSectionPayload,
   serializeWinRateHeatmapCacheQuery,
+  type WinRateHeatmapSectionPayload,
 } from "../../../../../../../../../../lib/win-rate-heatmap-cache";
 import {
   getCachedWinRateHeatmapPayload,
@@ -282,13 +293,21 @@ const hasCurrentHeatmapRunners = (
   return cachedSignature !== null && cachedSignature === currentSignature;
 };
 
-// A successful query with starts=0 and rates=0 is valid data. Availability is
-// represented by the generated fragment itself; only an absent fragment or a
-// runner-generation mismatch is a cache miss.
+// An old presentation with no bloodline names is not ready when runners have
+// known pedigrees. Fresh names-only cells are valid without fabricated rates.
 const isHeatmapCacheReady = (
-  payload: { runners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0] },
+  payload: Pick<WinRateHeatmapSectionPayload, "bloodlineRows" | "presentation" | "runners">,
   currentRunners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0],
-): boolean => hasCurrentHeatmapRunners(payload.runners, currentRunners);
+): boolean =>
+  hasCurrentHeatmapRunners(payload.runners, currentRunners) &&
+  (payload.bloodlineRows.length > 0 ||
+    !currentRunners.some(
+      (runner) =>
+        (typeof runner.sireName === "string" && runner.sireName.trim() !== "") ||
+        (typeof runner.damSireName === "string" && runner.damSireName.trim() !== ""),
+    ) ||
+    payload.presentation === undefined ||
+    payload.presentation.rows.some((row) => row.cells.sire.name || row.cells.damSire.name));
 
 const loadHeatmapSectionPayload = async (
   params: Parameters<typeof getDetailSectionPayload>[1],
@@ -316,6 +335,8 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   sectionSearchParams.delete(EXPECTED_PREDICTION_GENERATED_AT_PARAM);
   const isHeatmapCacheProbe = requestUrl.searchParams.has(HEATMAP_CACHE_PROBE_PARAM);
   sectionSearchParams.delete(HEATMAP_CACHE_PROBE_PARAM);
+  const ownerToken = requestUrl.searchParams.get("__heatmapOwner");
+  sectionSearchParams.delete("__heatmapOwner");
   const rawExpectedPredictionGeneratedAt = requestUrl.searchParams.get(
     EXPECTED_PREDICTION_GENERATED_AT_PARAM,
   );
@@ -335,6 +356,13 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   if (section === "win-rate-heatmap") {
+    if (isQueueWarm && !isInternalPredictionRefresh(request))
+      return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    try {
+      canonicalHeatmapQuery(sectionSearchParams);
+    } catch {
+      return NextResponse.json({ error: "invalid_heatmap_query" }, { status: 400 });
+    }
     const heatmapCacheKey = buildWinRateHeatmapCacheKey({
       day,
       keibajoCode,
@@ -347,13 +375,17 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     if (!raceSource) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    const currentRunners = await getRaceRunners(
+    const storedRunners = await getRaceRunners(
       raceSource,
       year,
       month,
       day,
       keibajoCode,
       raceNumber,
+    );
+    const currentRunners = enrichOfficialRunners(
+      storedRunners,
+      await loadOfficialCard({ source: raceSource, year, month, day, keibajoCode, raceNumber }),
     );
     const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey, currentRunners);
     if (isHeatmapCacheProbe) {
@@ -380,73 +412,105 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
         },
       });
     }
-    if (!isQueueWarm) {
-      return NextResponse.json(
-        { error: "heatmap_not_warmed" },
-        {
-          status: 503,
-          headers: {
-            "Cache-Control": "private, max-age=0, no-store",
-            "Retry-After": "30",
-            "X-Win-Rate-Heatmap-Cache": "MISS",
-          },
-        },
-      );
-    }
-    const heatmapPayload = await loadHeatmapSectionPayload({
-      day,
-      keibajoCode,
-      month,
-      query: searchParamsToRecord(sectionSearchParams),
-      raceNumber,
-      raceSource,
-      year,
-    });
-    if (heatmapPayload === HEATMAP_SECTION_UNAVAILABLE) {
-      return NextResponse.json(
-        { error: "section_unavailable", section: "win-rate-heatmap" },
-        {
-          headers: {
-            "Cache-Control": "private, max-age=0, no-store",
-            "Retry-After": "30",
-          },
-          status: 503,
-        },
-      );
-    }
-    if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
-      return NextResponse.json({ error: "not_found" }, { status: 404 });
-    }
-    if (!isHeatmapCacheReady(heatmapPayload, currentRunners)) {
-      return NextResponse.json(
-        { error: "heatmap_catalog_unavailable" },
-        {
-          status: 503,
-          headers: { "Cache-Control": "private, max-age=0, no-store", "Retry-After": "30" },
-        },
-      );
-    }
     try {
-      await putWinRateHeatmapCache({
-        cacheKey: heatmapCacheKey,
+      const owner = await getHeatmapExecutionOwner({
+        day,
         keibajoCode,
-        payload: heatmapPayload,
+        month,
+        raceNumber,
+        year,
+        source: raceSource,
+        query: canonicalHeatmapQuery(sectionSearchParams),
+      });
+      if (!isQueueWarm || ownerToken === null) {
+        return heatmapPendingResponse(
+          await owner.ensure({
+            day,
+            keibajoCode,
+            month,
+            raceNumber,
+            year,
+            source: raceSource,
+            query: canonicalHeatmapQuery(sectionSearchParams),
+          }),
+        );
+      }
+      return await runOwnedHeatmap({
+        owner,
+        token: ownerToken,
+        compute: async () => {
+          const heatmapPayload = await loadHeatmapSectionPayload({
+            day,
+            keibajoCode,
+            month,
+            query: searchParamsToRecord(sectionSearchParams),
+            raceNumber,
+            raceSource,
+            year,
+          });
+          if (heatmapPayload === HEATMAP_SECTION_UNAVAILABLE) {
+            return NextResponse.json(
+              { error: "section_unavailable", section: "win-rate-heatmap" },
+              {
+                headers: {
+                  "Cache-Control": "private, max-age=0, no-store",
+                  "Retry-After": "30",
+                },
+                status: 503,
+              },
+            );
+          }
+          if (!isWinRateHeatmapSectionPayload(heatmapPayload)) {
+            return NextResponse.json({ error: "not_found" }, { status: 404 });
+          }
+          if (!isHeatmapCacheReady(heatmapPayload, currentRunners)) {
+            return NextResponse.json(
+              { error: "heatmap_catalog_unavailable" },
+              {
+                status: 503,
+                headers: { "Cache-Control": "private, max-age=0, no-store", "Retry-After": "30" },
+              },
+            );
+          }
+          try {
+            await putWinRateHeatmapCache({
+              cacheKey: heatmapCacheKey,
+              keibajoCode,
+              payload: heatmapPayload,
+            });
+          } catch {
+            return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
+          }
+          // Warm callers need only the status and cache header; skip the payload.
+          return new Response(null, {
+            headers: {
+              "Cache-Control": "private, max-age=0, no-store",
+              "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
+            },
+            status: 200,
+          });
+        },
       });
     } catch {
-      return NextResponse.json({ error: "heatmap_cache_store_failed" }, { status: 503 });
+      return heatmapPendingResponse("unknown");
     }
-    // Warm callers need only the status and cache header; skip the payload.
-    return new Response(null, {
-      headers: {
-        "Cache-Control": "private, max-age=0, no-store",
-        "X-Win-Rate-Heatmap-Cache": "MISS-STORED",
-      },
-      status: 200,
-    });
   }
   const defaultSectionRequest = sectionSearchParams.toString() === "";
+  // This card's official history is refreshed independently of the legacy section cache.
+  const liveOfficialPace =
+    section === "pace-prediction" &&
+    isArcPredictionRace({
+      source: "jra",
+      year,
+      month,
+      day,
+      keibajoCode,
+      raceNumber,
+    });
   const cacheableDefaultRequest =
-    isDefaultDetailSectionCacheRequest(section, sectionSearchParams) && defaultSectionRequest;
+    isDefaultDetailSectionCacheRequest(section, sectionSearchParams) &&
+    defaultSectionRequest &&
+    !liveOfficialPace;
   const finishPredictionInputsCacheKey =
     section === "finish-prediction" && defaultSectionRequest
       ? buildFinishPredictionInputsCacheKey({ day, keibajoCode, month, raceNumber, year })
@@ -567,6 +631,8 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   if (!result) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
+  // The Queue needs only the warm status; large section bodies exceed its 1 MiB drain limit.
+  if (isQueueWarm) return new Response(null, { status: 204 });
 
   return withFinishPredictionCacheControl(
     new NextResponse(result.body, {

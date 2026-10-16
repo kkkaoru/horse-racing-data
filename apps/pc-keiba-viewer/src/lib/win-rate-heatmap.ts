@@ -1,3 +1,4 @@
+import { arcQualifiedCells, type ArcQualifiedStats } from "./arc-qualified-stats";
 import { getCarriedWeightClass, parseCarriedWeightKg } from "./carried-weight-class";
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 import { cleanText } from "./format";
@@ -42,6 +43,7 @@ export type WinRateHeatmapMetricKey =
 export type WinRateHeatmapRateKey = "quinellaRate" | "showRate" | "winRate";
 
 export interface WinRateHeatmapCell {
+  provenance?: string;
   name: string | null;
   quinellaCount: number | null;
   quinellaRate: number | null;
@@ -72,7 +74,18 @@ export interface WinRateHeatmapRow {
   horseNumber: string;
 }
 
+export type ArcHeatmapCohort = "arc-20261004-jra-A8-05-v2";
+export const ARC_HEATMAP_COHORT: ArcHeatmapCohort = "arc-20261004-jra-A8-05-v2";
+export const ARC_HEATMAP_SCOPE_NOTE: string =
+  "過去の凱旋門賞・対象日より前の保存済み成績のみ（部分データ）。血統は各役割別。馬は確認できた過去の凱旋門賞のみ。条件集計は選択期間、騎手同場3年・騎手×調教師同場10年・馬主同場と三者30年は別々の期間です。30回分の網羅を意味しません。人物・馬の10列はnetkeiba出典IDで固定rolling10年・3年・30年（各セルに開始日）。同場列は実開催地パリロンシャン芝のみ、他の人物・馬列は凱旋門賞シリーズ全開催地。騎手枠別は過去の枠未検証行を除外。身元・履歴不明は未取得。海外の馬体重・斤量列は非表示。";
+
 export interface WinRateHeatmapHorseResult {
+  source?: string;
+  kaisaiNen?: string;
+  kaisaiTsukihi?: string;
+  kyosomeiHondai?: string | null;
+  raceBango?: string;
+  kettoTorokuBango?: string | null;
   bataiju: string | null;
   currentUmaban: string | null;
   futanJuryo: string | null;
@@ -90,6 +103,9 @@ export interface WinRateHeatmapHorseRateRow {
 
 export interface WinRateHeatmapPartnershipRow extends Pick<
   SimilarRaceStatsRow,
+  | "statsSource"
+  | "statsScope"
+  | "sourcePersonId"
   | "currentHorseNumbers"
   | "name"
   | "details"
@@ -111,6 +127,8 @@ export interface WinRateHeatmapPartnershipRow extends Pick<
 }
 
 export interface BuildWinRateHeatmapRowsInput {
+  arcQualifiedStats?: ArcQualifiedStats;
+  arcCohort?: ArcHeatmapCohort;
   partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
   frameStats: FrameStatsRow[];
@@ -300,7 +318,7 @@ export const DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE: WinRateHeatmapViewMode = "winRa
 export const DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS: boolean = false;
 export const DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES: boolean = true;
 export const WIN_RATE_HEATMAP_BLOODLINE_NOTE =
-  "血統の勝率・連対率・複勝率は、父系（父・父父・父父父・父母父）と母父系（母父・母父父・母母父）それぞれで同名の種牡馬の成績を合算しています。チェックを外すと父系と母父系も合算します。";
+  "血統の勝率・連対率・複勝率は、父系（父・父父・父父父・父母父）と母父系（母父・母父父・母母父）それぞれで同名の種牡馬の成績を合算しています。チェックを外すと父系と母父系も合算します。同条件で父の勝ち例がない場合は、勝ち例を確認できる同会場の広い条件の過去成績で血統欄を補います。";
 
 const WIN_RATE_HEATMAP_VIEW_MODE_METRICS: Record<
   WinRateHeatmapViewMode,
@@ -532,6 +550,14 @@ const toHeatmapCell = (
     return EMPTY_WIN_RATE_HEATMAP_CELL;
   }
   return {
+    ...("statsScope" in row &&
+    (row.statsScope === "stored-results-10y" ||
+      row.statsScope === "stored-results-race-10y" ||
+      row.statsScope === "stored-results-venue-30y")
+      ? {
+          provenance: `${{ "stored-results-10y": "netkeiba収録済み成績・10年", "stored-results-race-10y": "同場・同名レース10年", "stored-results-venue-30y": "同場芝30年・収録済み成績" }[row.statsScope]}（netkeiba:${String(row.sourcePersonId)}）`,
+        }
+      : {}),
     name:
       "statsSource" in row &&
       row.statsSource === "netkeiba" &&
@@ -553,10 +579,15 @@ const toPooledBloodlineHeatmapCell = (
   row: BloodlineStatsRow | undefined,
   uniqueRows: ReadonlyMap<string, BloodlineStatsRow>,
   splitBloodlineLines: boolean,
+  fallbackName?: string | null,
+  arcCohort?: ArcHeatmapCohort,
 ): WinRateHeatmapCell => {
   if (row === undefined) {
-    return EMPTY_WIN_RATE_HEATMAP_CELL;
+    const name = fallbackName?.trim();
+    return name ? { ...EMPTY_WIN_RATE_HEATMAP_CELL, name } : EMPTY_WIN_RATE_HEATMAP_CELL;
   }
+  if (arcCohort !== undefined)
+    return row.starts > 0 ? toHeatmapCell(row) : { ...EMPTY_WIN_RATE_HEATMAP_CELL, name: row.name };
   const lineage: WinRateHeatmapBloodlineLineage = splitBloodlineLines
     ? bloodlineLineageForCategory(row.category)
     : "combined";
@@ -827,6 +858,53 @@ const compareHeatmapRows = (left: WinRateHeatmapRow, right: WinRateHeatmapRow): 
   return left.horseNumber.localeCompare(right.horseNumber);
 };
 
+const officialOwnerRow = <T extends SimilarRaceStatsRow | WinRateHeatmapPartnershipRow>(
+  row: T | undefined,
+  runner: Runner,
+): T | undefined =>
+  row?.statsSource === "netkeiba" ? { ...row, name: getRunnerDisplayNames(runner).owner } : row;
+
+// Native result rows have a verified registration identity; foreign source history
+// is not supplied by the existing results reader and remains unavailable.
+export const selectArcHorseResults = (
+  results: WinRateHeatmapHorseResult[],
+): WinRateHeatmapHorseResult[] => [
+  ...new Map(
+    results
+      .filter((row) => {
+        const date = `${row.kaisaiNen ?? ""}${row.kaisaiTsukihi ?? ""}`;
+        const identity = row.kettoTorokuBango?.trim();
+        return (
+          row.source === "jra" &&
+          row.keibajoCode === "A8" &&
+          (row.kyosomeiHondai?.trim() === "凱旋門賞" ||
+            row.kyosomeiHondai?.trim() === "凱旋門賞(GI)") &&
+          /^\d{8}$/u.test(date) &&
+          date < "20261004" &&
+          new Date(`${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T00:00:00Z`)
+            .toJSON()
+            ?.slice(0, 10)
+            .replaceAll("-", "") === date &&
+          typeof row.raceBango === "string" &&
+          /^\d{2}$/u.test(row.raceBango) &&
+          identity !== undefined &&
+          identity !== "" &&
+          !/^0+$/u.test(identity)
+        );
+      })
+      .map((row) => [
+        JSON.stringify([
+          row.currentUmaban,
+          row.kaisaiNen,
+          row.kaisaiTsukihi,
+          row.raceBango,
+          row.kettoTorokuBango,
+        ]),
+        row,
+      ]),
+  ).values(),
+];
+
 export const buildWinRateHeatmapRows = (
   input: BuildWinRateHeatmapRowsInput,
 ): WinRateHeatmapRow[] => {
@@ -838,14 +916,22 @@ export const buildWinRateHeatmapRows = (
     input.splitBloodlineLines === undefined
       ? DEFAULT_WIN_RATE_HEATMAP_SPLIT_BLOODLINE_LINES
       : input.splitBloodlineLines;
-  const horseResultsByNumber = indexHorseResultsByNumber(input.horseResults);
+  const horseResultsByNumber = indexHorseResultsByNumber(
+    input.arcCohort === undefined ? input.horseResults : selectArcHorseResults(input.horseResults),
+  );
   const horseRatesByNumber = new Map(
-    (input.horseRateStats ?? []).map((row) => [formatRunnerNumber(row.horseNumber), row]),
+    (input.arcCohort === undefined ? (input.horseRateStats ?? []) : []).map((row) => [
+      formatRunnerNumber(row.horseNumber),
+      row,
+    ]),
   );
   const frameStatsByNumber = indexFrameStatsByNumber(input.frameStats);
-  const weightClassRates = resolveWeightClassRates(input.horseResults, input.weightClassStats);
+  const weightClassRates = resolveWeightClassRates(
+    input.arcCohort === undefined ? input.horseResults : [],
+    input.weightClassStats,
+  );
   const carriedWeightClassRates = resolveCarriedWeightClassRates(
-    input.horseResults,
+    input.arcCohort === undefined ? input.horseResults : [],
     input.carriedWeightClassStats,
   );
   return input.runners
@@ -873,21 +959,30 @@ export const buildWinRateHeatmapRows = (
             bloodline?.get("damDamSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            undefined,
+            input.arcCohort,
           ),
           damSire: toPooledBloodlineHeatmapCell(
             bloodline?.get("damSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            runner.damSireName,
+            input.arcCohort,
           ),
           damSireSire: toPooledBloodlineHeatmapCell(
             bloodline?.get("damSireSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            undefined,
+            input.arcCohort,
           ),
           frame: toFrameHeatmapCell(frameStatsByNumber.get(frameNumber), frameNumber),
           horse: buildHorseRateCell(
             horseName,
-            horseResultsByNumber.get(horseNumber) ?? [],
+            (horseResultsByNumber.get(horseNumber) ?? []).filter(
+              (row) =>
+                input.arcCohort === undefined || row.kettoTorokuBango === runner.kettoTorokuBango,
+            ),
             horseRatesByNumber.get(horseNumber),
           ),
           horseJockey: toHeatmapCell(partnership?.get("horseJockey")),
@@ -899,27 +994,38 @@ export const buildWinRateHeatmapRows = (
             bloodline?.get("sire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            runner.sireName,
+            input.arcCohort,
           ),
           sireDamSire: toPooledBloodlineHeatmapCell(
             bloodline?.get("sireDamSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            undefined,
+            input.arcCohort,
           ),
           sireSire: toPooledBloodlineHeatmapCell(
             bloodline?.get("sireSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            runner.sireSireName,
+            input.arcCohort,
           ),
           sireSireSire: toPooledBloodlineHeatmapCell(
             bloodline?.get("sireSireSire"),
             uniqueBloodlineRows,
             splitBloodlineLines,
+            undefined,
+            input.arcCohort,
           ),
           trainer: toHeatmapCell(similar?.get("trainer")),
-          ownerVenue: toHeatmapCell(partnership?.get("ownerVenue")),
+          ownerVenue: toHeatmapCell(officialOwnerRow(partnership?.get("ownerVenue"), runner)),
           jockeyTrainerOwner: toHeatmapCell(partnership?.get("jockeyTrainerOwner")),
-          owner: toHeatmapCell(similar?.get("owner")),
+          owner: toHeatmapCell(officialOwnerRow(similar?.get("owner"), runner)),
           weight: toWeightHeatmapCell(currentWeightKg, weightClassRates, input.keibajoCode),
+          ...(input.arcCohort === ARC_HEATMAP_COHORT
+            ? arcQualifiedCells(input.arcQualifiedStats, horseNumber)
+            : {}),
         },
         frameNumber,
         horseName,
@@ -1268,7 +1374,7 @@ export const getWinRateHeatmapColorScaleTracks = (
 };
 
 export const getWinRateHeatmapTooltipName = (cell: WinRateHeatmapCell): string =>
-  cell.name === null ? "-" : cell.name;
+  cell.provenance ? `${cell.name}（${cell.provenance}）` : cell.name === null ? "-" : cell.name;
 
 export const winRateHeatmapEntityColSpan = (visibleRateCount: number): number =>
   visibleRateCount === 0 ? EMPTY_RATE_COLUMN_SPAN : visibleRateCount;

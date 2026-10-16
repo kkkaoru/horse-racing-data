@@ -13,6 +13,7 @@ interface SelfReferenceBinding {
 }
 
 interface HeatmapWarmWorkflowEnv {
+  PC_KEIBA_INTERNAL_TOKEN?: string;
   WORKER_SELF_REFERENCE?: SelfReferenceBinding;
 }
 
@@ -21,7 +22,14 @@ export const createSelfFetch =
   (request) =>
     env.WORKER_SELF_REFERENCE === undefined
       ? Promise.reject(new Error("WORKER_SELF_REFERENCE binding is unavailable"))
-      : env.WORKER_SELF_REFERENCE.fetch(request);
+      : env.WORKER_SELF_REFERENCE.fetch(withInternalToken(request, env.PC_KEIBA_INTERNAL_TOKEN));
+
+const withInternalToken = (request: Request, token: string | undefined): Request => {
+  if (!token) throw new Error("PC_KEIBA_INTERNAL_TOKEN is unavailable");
+  const headers = new Headers(request.headers);
+  headers.set("x-pc-keiba-internal-token", token);
+  return new Request(request, { headers });
+};
 
 export class HeatmapWarmWorkflow extends WorkflowEntrypoint<HeatmapWarmWorkflowEnv> {
   run(event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<HeatmapWarmRaceResult[]> {

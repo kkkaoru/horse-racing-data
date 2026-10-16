@@ -11,6 +11,8 @@ import {
   getSameVenueRacesByDate,
 } from "../../../db/queries";
 import { getRaceFinishPositionsFromD1 } from "../../../db/race-finish-d1.server";
+import { enrichOfficialRunners } from "../../../lib/arc-official-card";
+import { loadOfficialCard } from "../../../lib/arc-official-card.server";
 import { type BlinkerPattern, classifyBlinkerPattern } from "../../../lib/blinker-pattern";
 import {
   safeGetCloudflareEnv,
@@ -329,7 +331,11 @@ export async function RaceDetailView({
       }),
     );
   }
-  const { courseInfo, race, runners, sameVenueRaces } = snapshot;
+  const { courseInfo, race, runners: storedRunners, sameVenueRaces } = snapshot;
+  const runners = enrichOfficialRunners(
+    storedRunners,
+    await loadOfficialCard({ source: raceSource, year, month, day, keibajoCode, raceNumber }),
+  );
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
   const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);

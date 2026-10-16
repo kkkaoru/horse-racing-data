@@ -1,6 +1,10 @@
 // bun で実行する (bunx vitest)
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+import qualifiedFixture from "./__fixtures__/arc-qualified-stats.json";
+import { requireArcQualifiedStats } from "./arc-qualified-stats";
+import { buildWinRateHeatmapRows } from "./win-rate-heatmap";
+
 vi.mock("server-only", () => ({}));
 
 const { getCloudflareContextMock } = vi.hoisted(() => ({
@@ -162,6 +166,7 @@ const HEATMAP_PAYLOAD: WinRateHeatmapSectionPayload = {
     },
   ],
   runners: [RUNNER],
+  partnershipRows: [{ ...rateRow("jockey"), category: "horseJockey" }],
   similarRows: [rateRow("jockeyFrame"), rateRow("jockey"), rateRow("trainer")],
   type: "win-rate-heatmap",
   weightClassStats: [
@@ -372,8 +377,8 @@ it("writes compact column fragments first and publishes the manifest last", asyn
 
   expect(kv.put).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length + 1);
   expect(kv.put.mock.calls.at(-1)?.[0]).toBe("heatmap-key");
-  expect(cache.put).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length + 1);
-  expect(kv.put.mock.calls.every((call) => call[2]?.expirationTtl === 129600)).toBe(true);
+  expect(cache.put).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length);
+  expect(kv.put.mock.calls.every((call) => call[2]?.expirationTtl === 216000)).toBe(true);
 
   const jockeyKey = buildWinRateHeatmapFragmentCacheKey("heatmap-key", generation, "jockey");
   const jockeyBody = kv.values.get(jockeyKey) ?? "";
@@ -412,14 +417,31 @@ it("assembles all column fragments and preserves real zero values", async () => 
   expect(hit?.frameStats[0]).toMatchObject({ count: 0, details: [], winRate: 0 });
 });
 
-it("serves all fragments from Cache API without reading KV", async () => {
+it("reads the authoritative KV manifest and cached fragments", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();
   await storePayload(cache, kv);
   kv.get.mockClear();
 
   await expect(getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER])).resolves.not.toBe(null);
-  expect(kv.get).not.toHaveBeenCalled();
+  expect(kv.get).toHaveBeenCalledExactlyOnceWith("heatmap-key");
+});
+
+it("does not report an edge cache HIT after the KV manifest was busted", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  await storePayload(cache, kv);
+  cache.values.set(
+    "https://pc-keiba-viewer.local/win-rate-heatmap-cache/heatmap-key",
+    kv.values.get("heatmap-key") ?? "",
+  );
+  kv.values.delete("heatmap-key");
+  kv.get.mockClear();
+  cache.match.mockClear();
+
+  await expect(getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER])).resolves.toBe(null);
+  expect(kv.get).toHaveBeenCalledExactlyOnceWith("heatmap-key");
+  expect(cache.match).not.toHaveBeenCalled();
 });
 
 it("returns a miss when the runner generation changes before reading fragments", async () => {
@@ -432,8 +454,8 @@ it("returns a miss when the runner generation changes before reading fragments",
   await expect(
     getCachedWinRateHeatmapPayload("heatmap-key", [{ ...RUNNER, kettoTorokuBango: "2023109999" }]),
   ).resolves.toBe(null);
-  expect(cache.match).toHaveBeenCalledTimes(1);
-  expect(kv.get).not.toHaveBeenCalled();
+  expect(cache.match).not.toHaveBeenCalled();
+  expect(kv.get).toHaveBeenCalledExactlyOnceWith("heatmap-key");
 });
 
 it("returns a miss when one required column fragment is absent", async () => {
@@ -456,6 +478,7 @@ it("distinguishes an explicitly empty available fragment from a missing fragment
     ...HEATMAP_PAYLOAD,
     horseRateStats: [{ horseNumber: "1", quinellaCount: 0, showCount: 0, starts: 0, winCount: 0 }],
     similarRows: [],
+    producerDataRevision: 1,
   };
   setDefaultCache(cache);
   setRuntime(kv);
@@ -486,11 +509,15 @@ it("rejects malformed numeric rows instead of confusing missing data with zero",
   await expect(getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER])).resolves.toBe(null);
 });
 
-it("deletes malformed Cache API JSON and repopulates it from KV", async () => {
+it("deletes malformed fragment Cache API JSON and repopulates it from KV", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();
-  await storePayload(cache, kv);
-  cache.values.set("https://pc-keiba-viewer.local/win-rate-heatmap-cache/heatmap-key", "not-json");
+  const generation = await storePayload(cache, kv);
+  const fragmentKey = buildWinRateHeatmapFragmentCacheKey("heatmap-key", generation, "trainer");
+  cache.values.set(
+    `https://pc-keiba-viewer.local/win-rate-heatmap-cache/${encodeURIComponent(fragmentKey)}`,
+    "not-json",
+  );
   cache.delete.mockClear();
   cache.put.mockClear();
 
@@ -514,7 +541,7 @@ it("uses waitUntil when promoting KV fragments into Cache API", async () => {
   setRuntime(kv, waitUntil);
 
   await expect(getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER])).resolves.not.toBe(null);
-  expect(waitUntil).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length + 1);
+  expect(waitUntil).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length);
 });
 
 it("returns a miss for invalid KV JSON or an absent manifest", async () => {
@@ -569,4 +596,316 @@ it("keeps every KV fragment when Cache API writes fail", async () => {
 
   await putWinRateHeatmapCache({ cacheKey: "heatmap-key", payload: HEATMAP_PAYLOAD });
   expect(kv.put).toHaveBeenCalledTimes(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length + 1);
+});
+
+it("settles all fragment publications before reporting a failed write", async () => {
+  const kv = buildKvStub();
+  const pending = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  kv.put.mockRejectedValueOnce(new Error("first fragment failed"));
+  kv.put.mockImplementationOnce(() => {
+    started.resolve();
+    return pending.promise;
+  });
+  setRuntime(kv);
+  const rejected = vi.fn<(value: unknown) => void>();
+  const work = putWinRateHeatmapCache({ cacheKey: "owned-key", payload: HEATMAP_PAYLOAD }).catch(
+    rejected,
+  );
+  await started.promise;
+  expect(rejected).not.toHaveBeenCalled();
+  pending.resolve();
+  await work;
+  expect(rejected).toHaveBeenCalledWith(new Error("first fragment failed"));
+  expect(kv.values.has("owned-key")).toBe(false);
+});
+
+it("misses legacy all-ten-empty groups even when bloodline and frame fragments exist", async () => {
+  const kv = buildKvStub();
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "kyoto-08-01",
+    payload: { ...HEATMAP_PAYLOAD, horseResults: [], similarRows: [], partnershipRows: [] },
+  });
+  expect(parseRecord(kv.values.get("kyoto-08-01") ?? "null").producerDataRevision).toBeUndefined();
+  expect(await getCachedWinRateHeatmapPayload("kyoto-08-01", [RUNNER])).toBeNull();
+});
+
+it.each(["horse", "similar", "partnership"])(
+  "misses legacy with only %s populated",
+  async (group) => {
+    const kv = buildKvStub();
+    setRuntime(kv);
+    await putWinRateHeatmapCache({
+      cacheKey: "healthy",
+      payload: {
+        ...HEATMAP_PAYLOAD,
+        horseResults: group === "horse" ? HEATMAP_PAYLOAD.horseResults : [],
+        similarRows: group === "similar" ? HEATMAP_PAYLOAD.similarRows : [],
+        partnershipRows:
+          group === "partnership" ? [{ ...rateRow("jockey"), category: "horseJockey" }] : [],
+      },
+    });
+    expect(await getCachedWinRateHeatmapPayload("healthy", [RUNNER])).toBeNull();
+  },
+);
+
+it.each(["horse", "similar", "partnership"])("misses legacy with only %s empty", async (group) => {
+  const kv = buildKvStub();
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "partial-legacy",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      horseResults: group === "horse" ? [] : HEATMAP_PAYLOAD.horseResults,
+      similarRows: group === "similar" ? [] : HEATMAP_PAYLOAD.similarRows,
+      partnershipRows: group === "partnership" ? [] : HEATMAP_PAYLOAD.partnershipRows,
+    },
+  });
+  expect(await getCachedWinRateHeatmapPayload("partial-legacy", [RUNNER])).toBeNull();
+});
+
+it("retains complete legacy with all three required source groups populated", async () => {
+  const kv = buildKvStub();
+  setRuntime(kv);
+  await putWinRateHeatmapCache({ cacheKey: "complete-legacy", payload: HEATMAP_PAYLOAD });
+  expect(
+    parseRecord(kv.values.get("complete-legacy") ?? "null").producerDataRevision,
+  ).toBeUndefined();
+  const hit = await getCachedWinRateHeatmapPayload("complete-legacy", [RUNNER]);
+  expect(hit?.horseRateStats).toHaveLength(1);
+  expect(hit?.similarRows).toHaveLength(3);
+  expect(hit?.partnershipRows).toHaveLength(1);
+});
+
+it("retains producer-checked genuine zero-history groups across repeated cache reads", async () => {
+  const kv = buildKvStub();
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "checked-empty",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      bloodlineRows: [],
+      frameStats: [],
+      weightClassStats: [],
+      carriedWeightClassStats: [],
+      horseResults: [],
+      similarRows: [],
+      partnershipRows: [],
+      producerDataRevision: 1,
+    },
+  });
+  expect(parseRecord(kv.values.get("checked-empty") ?? "null").producerDataRevision).toBe(1);
+  expect(await getCachedWinRateHeatmapPayload("checked-empty", [RUNNER])).toMatchObject({
+    horseRateStats: [],
+    similarRows: [],
+    partnershipRows: [],
+    producerDataRevision: 1,
+  });
+  expect(await getCachedWinRateHeatmapPayload("checked-empty", [RUNNER])).not.toBeNull();
+});
+
+it("preserves gate 16 and provenance through compact restore, invalidating historical revisions", async () => {
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  setDefaultCache(cache);
+  const fetchRevision = vi
+    .fn<() => Promise<string>>()
+    .mockImplementation(() =>
+      Promise.resolve("gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"),
+    );
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { DETAIL_SECTION_CACHE_KV: kv, R2_CATALOG: { getGateMappingRevision: fetchRevision } },
+  });
+  const cacheKey =
+    "pc-keiba-viewer:win-rate-heatmap:v24:overseas-readers-v3-arc-qualified-v2:2026:10:04:A8:05:default";
+  const payload: WinRateHeatmapSectionPayload = {
+    ...HEATMAP_PAYLOAD,
+    producerDataRevision: 1,
+    mappingRevision: "gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    arcQualifiedStats: requireArcQualifiedStats(qualifiedFixture),
+    arcCohort: "arc-20261004-jra-A8-05-v2",
+    runners: [{ ...RUNNER, wakuban: "16" }],
+    frameStats: HEATMAP_PAYLOAD.frameStats.map((row) =>
+      Object.assign({}, row, { frameNumber: "16" }),
+    ),
+  };
+  await putWinRateHeatmapCache({ cacheKey, payload });
+  expect(await getCachedWinRateHeatmapPayload(cacheKey, payload.runners)).toMatchObject({
+    mappingRevision: "gate-v1-4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    frameStats: [{ frameNumber: "16" }],
+  });
+  fetchRevision.mockResolvedValue(
+    "gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  );
+  expect(await getCachedWinRateHeatmapPayload(cacheKey, payload.runners)).toBeNull();
+});
+
+it.each([
+  "stored-results-10y",
+  "stored-results-race-10y",
+] satisfies import("./race-types").SimilarRaceStatsRow["statsScope"][])(
+  "round trips real foreign owner metadata through compact fragments %s",
+  async (statsScope) => {
+    const cache = buildCacheStub();
+    const kv = buildKvStub();
+    setDefaultCache(cache);
+    setRuntime(kv);
+    await putWinRateHeatmapCache({
+      cacheKey: "foreign",
+      payload: {
+        ...HEATMAP_PAYLOAD,
+        similarRows: [
+          {
+            ...rateRow("jockey"),
+            category: "owner",
+            name: "netkeiba:a00762",
+            statsSource: "netkeiba",
+            sourcePersonId: "a00762",
+            statsScope,
+          },
+        ],
+        partnershipRows: [
+          {
+            ...rateRow("jockey"),
+            category: "ownerVenue",
+            name: "netkeiba:a0006f",
+            statsSource: "netkeiba",
+            sourcePersonId: "a0006f",
+            statsScope: "stored-results-venue-30y",
+          },
+        ],
+      },
+    });
+    const restored = await getCachedWinRateHeatmapPayload("foreign", [RUNNER]);
+    expect(restored?.similarRows[0]).toMatchObject({ sourcePersonId: "a00762", statsScope });
+    expect(restored?.partnershipRows?.[0]).toMatchObject({
+      sourcePersonId: "a0006f",
+      statsScope: "stored-results-venue-30y",
+    });
+  },
+);
+
+it("preserves domestic legacy provenance through compact cache", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "legacy",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      similarRows: [
+        {
+          ...rateRow("jockey"),
+          category: "owner",
+          statsSource: "jv",
+          statsScope: "japan-all-venues-10y",
+        },
+      ],
+    },
+  });
+  expect((await getCachedWinRateHeatmapPayload("legacy", [RUNNER]))?.similarRows[0]).toMatchObject({
+    statsSource: "jv",
+    statsScope: "japan-all-venues-10y",
+  });
+});
+
+it("round trips the explicit Arc cohort and result rows through cold fragments and presentation", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "arc:2026:10:04:A8:05:default",
+    keibajoCode: "A8",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      producerDataRevision: 1,
+      arcQualifiedStats: requireArcQualifiedStats(qualifiedFixture),
+      arcCohort: "arc-20261004-jra-A8-05-v2",
+      horseResults: [
+        {
+          source: "jra",
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "1005",
+          keibajoCode: "A8",
+          kyosomeiHondai: "凱旋門賞(GI)",
+          raceBango: "05",
+          kettoTorokuBango: "2023100001",
+          currentUmaban: "01",
+          kakuteiChakujun: "04",
+          bataiju: null,
+          futanJuryo: "560",
+        },
+      ],
+      horseRateStats: [
+        { horseNumber: "1", starts: 99, winCount: 99, quinellaCount: 99, showCount: 99 },
+      ],
+    },
+  });
+  cache.values.clear();
+  const hit = await getCachedWinRateHeatmapPayload("arc:2026:10:04:A8:05:default", [RUNNER]);
+  expect(hit?.arcCohort).toBe("arc-20261004-jra-A8-05-v2");
+  expect(hit?.horseResults).toHaveLength(1);
+  if (hit === null) throw new Error("Missing Arc cache payload");
+  expect(
+    buildWinRateHeatmapRows({ ...hit, keibajoCode: "A8", liveWeightKgByHorse: new Map() })[0]?.cells
+      .horse,
+  ).toMatchObject({ starts: 1, winCount: 1, winRate: 100 });
+  expect(hit?.horseRateStats).toBeUndefined();
+  expect(hit?.presentation?.rows[0]?.cells.horse).toMatchObject({
+    starts: 1,
+    winCount: 1,
+    winRate: 100,
+  });
+});
+
+it("rejects an old mixed manifest for the exact current Arc even after a cold read", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "arc:2026:10:04:A8:05:default",
+    payload: HEATMAP_PAYLOAD,
+  });
+  cache.values.clear();
+  expect(await getCachedWinRateHeatmapPayload("arc:2026:10:04:A8:05:default", [RUNNER])).toBeNull();
+});
+
+it("preserves all qualified rows through warm and cold caches and rejects missing DTO writes and manifests", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  const payload: WinRateHeatmapSectionPayload = {
+    ...HEATMAP_PAYLOAD,
+    producerDataRevision: 1,
+    arcCohort: "arc-20261004-jra-A8-05-v2",
+    arcQualifiedStats: requireArcQualifiedStats(qualifiedFixture),
+  };
+  await putWinRateHeatmapCache({ cacheKey: "qualified", payload, keibajoCode: "A8" });
+  const warm = await getCachedWinRateHeatmapPayload("qualified", [RUNNER]);
+  expect(warm?.arcQualifiedStats).toStrictEqual(qualifiedFixture);
+  expect(warm?.presentation?.rows[0]?.cells.jockey).toMatchObject({
+    starts: 8,
+    winCount: 1,
+    winRate: 12.5,
+  });
+  cache.values.clear();
+  expect(
+    (await getCachedWinRateHeatmapPayload("qualified", [RUNNER]))?.arcQualifiedStats,
+  ).toStrictEqual(qualifiedFixture);
+  await expect(
+    putWinRateHeatmapCache({
+      cacheKey: "missing",
+      payload: { ...payload, arcQualifiedStats: undefined },
+    }),
+  ).rejects.toThrow("Arc qualified statistics are missing or malformed");
+  const manifest: unknown = JSON.parse((await kv.get("qualified")) ?? "null");
+  if (typeof manifest !== "object" || manifest === null) throw new Error("Missing manifest");
+  await kv.put("qualified", JSON.stringify({ ...manifest, arcQualifiedStats: undefined }));
+  expect(await getCachedWinRateHeatmapPayload("qualified", [RUNNER])).toBeNull();
 });

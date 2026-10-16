@@ -40,11 +40,16 @@ import {
   WIN_RATE_HEATMAP_COLUMNS,
   WIN_RATE_HEATMAP_COMBINED_HUE,
   WIN_RATE_HEATMAP_RATE_METRICS,
+  WIN_RATE_HEATMAP_BLOODLINE_NOTE,
   WIN_RATE_HEATMAP_VIEW_MODES,
   winRateHeatmapBackground,
   winRateHeatmapEntityColSpan,
   winRateHeatmapForeground,
 } from "./win-rate-heatmap";
+
+it("explains the observed-win bloodline fallback", () => {
+  expect(WIN_RATE_HEATMAP_BLOODLINE_NOTE).toMatch(/勝ち例を確認できる同会場の広い条件の過去成績/u);
+});
 
 const runnerOne: Runner = {
   banushimei: "Owner A",
@@ -414,6 +419,36 @@ const horseSecond: HorseRaceResult = {
   zogenFugo: null,
   zogenSa: null,
 };
+
+it("shows known runner pedigree names without fabricating missing bloodline rates", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "06",
+    liveWeightKgByHorse: new Map(),
+    runners: [{ ...runnerOne, sireName: " 父 ", sireSireName: " 父父 ", damSireName: " 母父 " }],
+    similarRows: [],
+  });
+  expect(rows[0]?.cells.sire).toMatchObject({ name: "父", starts: null, winRate: null });
+  expect(rows[0]?.cells.sireSire).toMatchObject({ name: "父父", starts: null, winRate: null });
+  expect(rows[0]?.cells.damSire).toMatchObject({ name: "母父", starts: null, winRate: null });
+  expect(rows[0]?.cells.sireDamSire.name).toBeNull();
+});
+
+it("keeps measured bloodline rates ahead of runner name fallback", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [bloodlineSire],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "06",
+    liveWeightKgByHorse: new Map(),
+    runners: [{ ...runnerTwo, sireName: "別の父" }],
+    similarRows: [],
+  });
+  expect(rows[0]?.cells.sire.name).toBe(bloodlineSire.name);
+  expect(rows[0]?.cells.sire.starts).toBe(bloodlineSire.starts);
+});
 
 it("discloses published-population provenance without filling unavailable heatmap cells", () => {
   const rows = buildWinRateHeatmapRows({
@@ -3909,6 +3944,46 @@ it("uses a live kilogram weight when stored bataiju is still empty", () => {
   ]);
 });
 
+it.each(["590", "595", "600"])(
+  "labels top-class %s weights without changing catalog counts",
+  (futanJuryo: string) => {
+    expect(
+      buildWinRateHeatmapRows({
+        keibajoCode: "05",
+        liveWeightKgByHorse: new Map(),
+        bloodlineRows: [],
+        carriedWeightClassStats: [
+          {
+            key: "57.5-59",
+            starts: 43,
+            winCount: 0,
+            quinellaCount: 0,
+            showCount: 0,
+            winRate: 0,
+            quinellaRate: 0,
+            showRate: 0,
+          },
+        ],
+        frameStats: [],
+        horseResults: [],
+        runners: [{ ...runnerOne, futanJuryo }],
+        similarRows: [],
+      }).map((row) => row.cells.carriedWeight),
+    ).toStrictEqual([
+      {
+        name: "57.5kg以上",
+        starts: 43,
+        winCount: 0,
+        quinellaCount: 0,
+        showCount: 0,
+        winRate: 0,
+        quinellaRate: 0,
+        showRate: 0,
+      },
+    ]);
+  },
+);
+
 it("maps a horse onto similar-race carried-weight class rates", () => {
   expect(
     buildWinRateHeatmapRows({
@@ -4515,4 +4590,207 @@ it("does not double-count the same category and stallion copied onto two horses"
     winCount: 2,
     winRate: 20,
   });
+});
+
+it("uses the official owner name and stored history tooltip for assigned horses", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "A8",
+    liveWeightKgByHorse: new Map(),
+    runners: [{ ...runnerOne, ownerNameFull: "Official Owner" }],
+    similarRows: [
+      {
+        ...similarJockey,
+        category: "owner",
+        name: "netkeiba:a00762",
+        statsSource: "netkeiba",
+        sourcePersonId: "a00762",
+        statsScope: "stored-results-race-10y",
+        starts: 20,
+        winCount: 0,
+        winRate: 0,
+      },
+    ],
+  });
+  expect(rows[0]?.cells.owner.name).toBe("Official Owner");
+  expect(rows[0]?.cells.owner.provenance).toBe("同場・同名レース10年（netkeiba:a00762）");
+  expect(rows[0]?.cells.owner.winRate).toBe(0);
+});
+
+it.each([true, false])(
+  "keeps Arc roles independent of overlapping lineages and other entrants, split=%s",
+  (splitBloodlineLines) => {
+    const input = {
+      arcCohort: "arc-20261004-jra-A8-05-v2",
+      bloodlineRows: [
+        {
+          ...bloodlineSire,
+          currentHorseNumbers: "1",
+          name: "Shared",
+          starts: 1,
+          winCount: 0,
+          winRate: 0,
+        },
+        {
+          ...bloodlineDamSire,
+          currentHorseNumbers: "1",
+          name: "Shared",
+          starts: 1,
+          winCount: 1,
+          winRate: 100,
+        },
+      ],
+      frameStats: [],
+      horseResults: [],
+      keibajoCode: "A8",
+      liveWeightKgByHorse: new Map<string, number>(),
+      runners: [runnerOne],
+      similarRows: [],
+      splitBloodlineLines,
+    } satisfies Parameters<typeof buildWinRateHeatmapRows>[0];
+    const first = buildWinRateHeatmapRows(input)[0]!;
+    const expanded = buildWinRateHeatmapRows({
+      ...input,
+      runners: [runnerOne, runnerTwo],
+      bloodlineRows: [
+        ...input.bloodlineRows,
+        { ...bloodlineSire, category: "sireSire", currentHorseNumbers: "2", name: "Shared" },
+      ],
+    })[0]!;
+    expect(first.cells.sire).toMatchObject({ starts: 1, winCount: 0, winRate: 0 });
+    expect(first.cells.damSire).toMatchObject({ starts: 1, winCount: 1, winRate: 100 });
+    expect(expanded).toStrictEqual(first);
+  },
+);
+
+it("uses only identified pretarget Arc rows, ignores career aggregates, and does not borrow career weights", () => {
+  const past = {
+    ...horseWin,
+    source: "jra",
+    keibajoCode: "A8",
+    kyosomeiHondai: "凱旋門賞",
+    kaisaiTsukihi: "1005",
+    kakuteiChakujun: "04",
+    bataiju: "480",
+  };
+  const rows = buildWinRateHeatmapRows({
+    arcCohort: "arc-20261004-jra-A8-05-v2",
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [
+      past,
+      past,
+      { ...past, kyosomeiHondai: "Other" },
+      { ...past, kaisaiNen: "2026", kaisaiTsukihi: "1004" },
+      { ...past, kaisaiNen: "2027" },
+      { ...past, source: "nar" },
+      { ...past, source: undefined },
+      { ...past, keibajoCode: "05" },
+      { ...past, kaisaiTsukihi: "0230" },
+      { ...past, kaisaiNen: undefined },
+      { ...past, kaisaiTsukihi: undefined },
+      { ...past, kyosomeiHondai: undefined },
+      { ...past, raceBango: undefined },
+      { ...past, raceBango: "x" },
+      { ...past, kettoTorokuBango: null },
+      { ...past, kettoTorokuBango: "" },
+      { ...past, kettoTorokuBango: "0000000000" },
+      { ...past, kettoTorokuBango: "other", currentUmaban: "02" },
+    ],
+    horseRateStats: [
+      { horseNumber: "1", starts: 100, winCount: 100, quinellaCount: 100, showCount: 100 },
+    ],
+    keibajoCode: "A8",
+    liveWeightKgByHorse: new Map<string, number>(),
+    runners: [{ ...runnerOne, bataiju: "480" }, runnerTwo],
+    similarRows: [],
+    weightClassStats: [],
+    carriedWeightClassStats: [],
+  });
+  expect(rows[0]?.cells.horse).toMatchObject({ starts: null, winCount: null, winRate: null });
+  expect(rows[1]?.cells.horse).toMatchObject({ starts: null, winRate: null });
+  expect(rows[0]?.cells.weight).toMatchObject({ starts: null, winRate: null });
+  expect(rows[0]?.cells.carriedWeight).toMatchObject({ starts: null, winRate: null });
+});
+
+it.each<BloodlineStatsRow["category"]>([
+  "sire",
+  "damSire",
+  "sireSire",
+  "sireDamSire",
+  "sireSireSire",
+  "damSireSire",
+  "damDamSire",
+])(
+  "keeps exact Arc %s zero-start history unavailable and retains condition weight classes",
+  (category) => {
+    const rows = buildWinRateHeatmapRows({
+      arcCohort: "arc-20261004-jra-A8-05-v2",
+      bloodlineRows: [
+        {
+          ...bloodlineSire,
+          category,
+          currentHorseNumbers: "1",
+          starts: 0,
+          winCount: 0,
+          winRate: 0,
+        },
+      ],
+      frameStats: [],
+      horseResults: [],
+      horseRateStats: [
+        { horseNumber: "1", starts: 0, winCount: 0, quinellaCount: 0, showCount: 0 },
+      ],
+      keibajoCode: "A8",
+      liveWeightKgByHorse: new Map<string, number>(),
+      runners: [{ ...runnerOne, bataiju: "480" }],
+      similarRows: [],
+      weightClassStats: [
+        {
+          key: "480-499",
+          starts: 2,
+          winCount: 1,
+          quinellaCount: 1,
+          showCount: 1,
+          winRate: 50,
+          quinellaRate: 50,
+          showRate: 50,
+        },
+      ],
+      carriedWeightClassStats: [
+        {
+          key: "55.5-57",
+          starts: 2,
+          winCount: 1,
+          quinellaCount: 1,
+          showCount: 1,
+          winRate: 50,
+          quinellaRate: 50,
+          showRate: 50,
+        },
+      ],
+    });
+    expect(rows[0]?.cells[category]).toMatchObject({ starts: null, winCount: null, winRate: null });
+    expect(rows[0]?.cells.horse).toMatchObject({ starts: null, winRate: null });
+    expect(rows[0]?.cells.weight).toMatchObject({ starts: 2, winRate: 50 });
+    expect(rows[0]?.cells.carriedWeight).toMatchObject({ starts: 2, winRate: 50 });
+  },
+);
+
+it("does not infer Arc from A8 and preserves career horse aggregates and weight fallback", () => {
+  const rows = buildWinRateHeatmapRows({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [{ ...horseWin, bataiju: "480" }],
+    horseRateStats: [{ horseNumber: "1", starts: 10, winCount: 2, quinellaCount: 3, showCount: 4 }],
+    keibajoCode: "A8",
+    liveWeightKgByHorse: new Map<string, number>(),
+    runners: [{ ...runnerOne, bataiju: "480" }],
+    similarRows: [],
+  });
+  expect(rows[0]?.cells.horse).toMatchObject({ starts: 10, winRate: 20 });
+  expect(rows[0]?.cells.weight).toMatchObject({ starts: 1, winRate: 100 });
+  expect(rows[0]?.cells.carriedWeight).toMatchObject({ starts: 1, winRate: 100 });
 });

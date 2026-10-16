@@ -14,11 +14,6 @@ import {
   buildDetailSectionCacheKey,
   type DetailSectionCacheableSection,
 } from "./race-detail-section-cache";
-import {
-  buildWinRateHeatmapCacheFallbackKeys,
-  buildWinRateHeatmapCacheKey,
-  type WinRateHeatmapCacheKeyInput,
-} from "./win-rate-heatmap-cache";
 
 // Generation counter key shape. Lives in `DETAIL_SECTION_CACHE_KV` next to
 // the actual cache entries so cache-warm / read paths can fold it into the
@@ -37,6 +32,7 @@ export interface RaceCacheBustRequest {
   keibajoCode: string;
   mmdd: string;
   raceBango: string;
+  scope?: "training";
   source: RaceSource;
   year: string;
 }
@@ -72,6 +68,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const parseRaceCacheBustRequest = (value: unknown): RaceCacheBustRequest | null => {
   if (!isRecord(value)) return null;
   if (!isRaceSource(value.source)) return null;
+  if (value.scope !== undefined && value.scope !== "training") return null;
   if (typeof value.year !== "string" || !YYYY_PATTERN.test(value.year)) return null;
   if (typeof value.mmdd !== "string" || !MMDD_PATTERN.test(value.mmdd)) return null;
   if (typeof value.keibajoCode !== "string" || !KEIBAJO_PATTERN.test(value.keibajoCode)) {
@@ -84,6 +81,7 @@ export const parseRaceCacheBustRequest = (value: unknown): RaceCacheBustRequest 
     keibajoCode: value.keibajoCode,
     mmdd: value.mmdd,
     raceBango: value.raceBango,
+    ...(value.scope === "training" ? { scope: value.scope } : {}),
     source: value.source,
     year: value.year,
   };
@@ -130,19 +128,12 @@ export const buildRaceCacheWarmMarkerKey = (
 ): string => `${CACHE_WARM_MARKER_PREFIX}:${kind}:${buildRaceCacheGenerationKey(request)}`;
 
 export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCacheBustKeySet => {
-  const sectionMainKeys = DETAIL_SECTION_CACHEABLE_SECTIONS.map((section) =>
-    buildSectionMainKey(request, section),
-  );
-  const heatmapInput: WinRateHeatmapCacheKeyInput = {
-    day: request.mmdd.slice(2, 4),
-    keibajoCode: request.keibajoCode,
-    month: request.mmdd.slice(0, 2),
-    query: "",
-    raceNumber: request.raceBango,
-    year: request.year,
-  };
-  const heatmapKey = buildWinRateHeatmapCacheKey(heatmapInput);
-  const previousSectionKeys = DETAIL_SECTION_CACHEABLE_SECTIONS.flatMap((section) =>
+  const sections: readonly DetailSectionCacheableSection[] =
+    request.scope === "training"
+      ? ["training", "premium-data-top"]
+      : DETAIL_SECTION_CACHEABLE_SECTIONS;
+  const sectionMainKeys = sections.map((section) => buildSectionMainKey(request, section));
+  const previousSectionKeys = sections.flatMap((section) =>
     buildDetailSectionCacheFallbackKeys({
       day: request.mmdd.slice(2, 4),
       keibajoCode: request.keibajoCode,
@@ -152,7 +143,6 @@ export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCache
       year: request.year,
     }),
   );
-  const previousHeatmapKeys = buildWinRateHeatmapCacheFallbackKeys(heatmapInput);
   const sectionKeys = [...sectionMainKeys, ...previousSectionKeys];
   const staleKeys = sectionKeys.map((key) => `${STALE_KEY_PREFIX}:${key}`);
   const ssrKey = buildRaceDetailSsrCacheKey({
@@ -165,17 +155,20 @@ export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCache
   });
   return {
     generationKey: buildRaceCacheGenerationKey(request),
-    mainKeys: [
-      ...sectionMainKeys,
-      heatmapKey,
-      ssrKey,
-      ...previousSectionKeys,
-      ...previousHeatmapKeys,
-    ],
-    markerKeys: [
-      buildRaceCacheWarmMarkerKey("race-detail-ssr", request),
-      buildRaceCacheWarmMarkerKey("race-trend", request),
-    ],
+    // Heatmap history excludes the current race date. Results and training
+    // busts must not remove its manifest; runner changes invalidate it via
+    // the runner signature and the scheduled heatmap sweep.
+    mainKeys:
+      request.scope === "training"
+        ? sectionKeys
+        : [...sectionMainKeys, ssrKey, ...previousSectionKeys],
+    markerKeys:
+      request.scope === "training"
+        ? []
+        : [
+            buildRaceCacheWarmMarkerKey("race-detail-ssr", request),
+            buildRaceCacheWarmMarkerKey("race-trend", request),
+          ],
     staleKeys,
   };
 };

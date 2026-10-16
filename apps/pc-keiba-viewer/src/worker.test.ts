@@ -163,19 +163,26 @@ it("cron-every-5-min-utc-warms-due-race-trend", () => {
   expect(scheduleTodayRaceDetailSectionCacheMock).toHaveBeenCalledTimes(0);
 });
 
-it("cron-every-15-min-utc-warms-ssr-cache-without-date-and-sweeps-today-heatmaps", () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-09-22T23:00:00.000Z"));
+it("cron-every-15-min-utc-warms-ssr-cache-without-date", () => {
   const env = buildEnv();
   const ctx = buildCtx();
   worker.scheduled({ cron: "*/15 0-14 * * *" }, env, ctx);
-  expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
+  expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
   expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(1);
   const ssrOptions = scheduleRaceDetailSsrCacheWarmMock.mock.calls[0]?.[3];
   expect(ssrOptions).toBeUndefined();
+  expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(0);
+});
+
+it("cron-every-15-min-all-day-resweeps-today-heatmaps-after-jst-midnight", () => {
+  vi.setSystemTime(new Date("2026-09-25T15:15:00.000Z"));
+  const env = buildEnv();
+  const ctx = buildCtx();
+  worker.scheduled({ cron: "*/15 * * * *" }, env, ctx);
+  expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
   expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(1);
-  expect(scheduleTodayWinRateHeatmapWarmMock.mock.calls[0]?.[0].todayJstYmd).toBe("2026-09-23");
-  vi.useRealTimers();
+  expect(scheduleTodayWinRateHeatmapWarmMock.mock.calls[0]?.[0].todayJstYmd).toBe("2026-09-26");
+  expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(0);
 });
 
 it("cron-unknown-schedule-does-not-warm-anything", () => {

@@ -53,10 +53,11 @@ export const GET = async (request: Request, context: RouteContext): Promise<Resp
   // same live stream the live site does. Production code path is unaffected
   // because `useProductionApiProxy()` is false there.
   if (useProductionApiProxy()) {
-    return proxyToProductionStream(
-      `/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/horse-weights-stream`,
+    return proxyToProductionStream({
+      path: `/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/horse-weights-stream`,
       searchParams,
-    );
+      signal: request.signal,
+    });
   }
   const env = await safeGetCloudflareEnv();
   const realtimeData = env?.REALTIME_DATA;

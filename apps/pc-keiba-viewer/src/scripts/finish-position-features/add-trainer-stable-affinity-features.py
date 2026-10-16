@@ -36,6 +36,8 @@ from _resource_defaults import add_resource_args, apply_to_connection
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
+MAX_EXPLICIT_TARGET_RACES = 200
+"""Above this many target races the per-race OR predicate is replaced by a date range."""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -76,6 +78,22 @@ def sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def target_date_range_filter_sql(race_keys: list[tuple[str, str, str, str]]) -> str:
+    """Date-range superset predicate for bulk (multi-day) inputs.
+
+    One OR branch per target race exhausts DuckDB memory for a year of races.
+    The predicate only narrows which trainers get staged, so a superset of
+    target trainers yields identical features.
+    """
+    first_year, first_date = race_keys[0][0], race_keys[0][1]
+    last_year, last_date = race_keys[-1][0], race_keys[-1][1]
+    return (
+        f"(se.kaisai_nen between {sql_literal(first_year)} and {sql_literal(last_year)} "
+        f"and se.kaisai_nen || se.kaisai_tsukihi between "
+        f"{sql_literal(first_year + first_date)} and {sql_literal(last_year + last_date)})"
+    )
+
+
 def target_race_entry_filter_sql(
     con: duckdb.DuckDBPyConnection, category: str
 ) -> str:
@@ -98,6 +116,8 @@ def target_race_entry_filter_sql(
         horses_by_race.setdefault(race_key, set()).add(str(raw_horse))
     if not horses_by_race:
         return "false"
+    if len(horses_by_race) > MAX_EXPLICIT_TARGET_RACES:
+        return target_date_range_filter_sql(sorted(horses_by_race))
 
     race_predicates: list[str] = []
     for race_key in sorted(horses_by_race):

@@ -61,9 +61,38 @@ export const composeCatalogTimeScoreRows = (input: CatalogTimeScoreInput): TimeS
   return orderTimeScoreRows(rows, sorts);
 };
 
-// Converts Catalog history rows into the pipeline's row shape. `sohaTime`,
-// `kohan3f`, `futanJuryo` and `timeSa` are tenths-scaled text; `kyori` and
-// `bataiju` are plain integers.
+const parseDecimal = (value: string | null): number | null => {
+  const cleaned: string = (value ?? "").trim();
+  const parsed: number = /^\d+$/u.test(cleaned) ? Number(cleaned) : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parsePositiveDecimal = (value: string | null): number | null => {
+  const parsed: number | null = parseDecimal(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+};
+
+const parseWeight = (value: string | null, venue: string): number | null => {
+  if (venue.trim() !== "83") return parsePositiveDecimal(value);
+  const cleaned: string = (value ?? "").trim().toUpperCase();
+  if (cleaned === "FFF" || !/^[0-9A-F]+$/u.test(cleaned)) return null;
+  const parsed: number = Number.parseInt(cleaned, 16);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseMargin = (value: string | null): number | null => {
+  const cleaned: string = (value ?? "").trim();
+  if (!/^[+-]?\d+$/u.test(cleaned)) return null;
+  return parseDecimal(cleaned.replace(/^[+-]/u, ""));
+};
+
+const parseCarriedWeight = (value: string | null, venue: string): number | null => {
+  const weight: number | null = parseWeight(value, venue);
+  return weight === null ? null : weight * (venue.trim() === "83" ? 10 : 1);
+};
+
+// Only sohaTime is a clock. Weights use each history row's venue; carried
+// weight stays in tenths of kg, including hexadecimal Ban-ei kg inputs.
 export const groupHistoryByHorseId = (
   rows: readonly RaceHistoryRow[],
 ): Map<string, TimeScoreHistoryRow[]> => {
@@ -78,10 +107,10 @@ export const groupHistoryByHorseId = (
       keibajoCode: row.keibajoCode.trim() === "" ? null : row.keibajoCode,
       distance: parseDigitsOnly(row.kyori),
       raceTime: parseRaceTimeTenths(row.sohaTime),
-      last3f: parseRaceTimeTenths(row.kohan3f),
-      bodyWeight: parseDigitsOnly(row.bataiju),
-      carriedWeight: parseRaceTimeTenths(row.futanJuryo),
-      margin: parseRaceTimeTenths(row.timeSa),
+      last3f: parsePositiveDecimal(row.kohan3f),
+      bodyWeight: parseWeight(row.bataiju, row.keibajoCode),
+      carriedWeight: parseCarriedWeight(row.futanJuryo, row.keibajoCode),
+      margin: parseMargin(row.timeSa),
     });
     grouped.set(horseId, bucket);
   }

@@ -12,6 +12,7 @@ import {
   formatClockReferenceTooltip,
   withScaledWinnerClockStats,
 } from "./horse-race-clock-analysis";
+import productionFixture from "./horse-race-clock-production.fixture.json";
 import type { HorseRaceResult, RaceTimeStats, RaceTimeTargetRace } from "./race-types";
 
 const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
@@ -468,4 +469,17 @@ it("keeps the result wakuban when the runner map has no usable ketto or frame", 
   });
   expect(rows[0]?.fill).toBe("#ffffff");
   expect(rows[0]?.stroke).toBe("#111111");
+});
+
+it("plots real production clocks without fabricating missing 3F and preserves all 16 identities", () => {
+  const rows = buildClockAnalysisRows({ ...productionFixture, includeMissingKohan: true });
+  const view = buildScatterView(rows, clockParFromRaceTimeStats(null));
+  expect(rows).toHaveLength(80);
+  expect(new Set(rows.map((row) => row.umaban)).size).toBe(16);
+  expect(rows.every((row) => row.horseName !== "-")).toBe(true);
+  expect(view?.xAxisTitle).toBe("レース日");
+  expect(view?.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(
+    true,
+  );
+  expect(view?.references).toStrictEqual([]);
 });

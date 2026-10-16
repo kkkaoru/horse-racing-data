@@ -416,7 +416,7 @@ it("getRaceRunners admits named overseas unknown-JV starters only without a conf
   executeMock.mockResolvedValue({ rows: [] });
   await getRaceRunners("jra", "2026", "09", "19", "A4", "05");
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
-    "getRaceRunners-overseas-v2",
+    "getRaceRunners-overseas-v4-source-mapping",
     "jra",
     "2026",
     "09",
@@ -1380,7 +1380,7 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getTimeScoreRows",
-    "v4-mssd",
+    "v5-catalog-history-fields",
   ]);
   expect(collectTableNames(queryArg)).toStrictEqual([
     "jvd_se",
@@ -1487,6 +1487,74 @@ it("getTimeScoreRows matches past races with cell classification predicates", as
     /else nullif\(split_part\(trim\(ra\.kyoso_joken_meisho\), ' ', 1\), ''\)/u,
   );
   expect(queryText).not.toMatch(/substring\(ra\.kaisai_tsukihi from 1 for 2\)/u);
+});
+
+it.each([
+  { gradeCode: "B", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "C", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "L", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: null, includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "B", includeGrade: true, includeRaceTitle: true },
+  { gradeCode: "A", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "F", includeGrade: true, includeRaceTitle: true },
+  { gradeCode: " A ", includeGrade: false, includeRaceTitle: true },
+  { gradeCode: "A", includeGrade: true, includeRaceTitle: false },
+  { gradeCode: "B", includeGrade: false, includeRaceTitle: false },
+])("getTimeScoreRows gates the G1 title restriction on the current grade: %j", async (flags) => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getTimeScoreRows(
+    {
+      ...PERCLASS_703_RACE,
+      gradeCode: flags.gradeCode,
+      kyosoJokenCode: "999",
+      kyosomeiHondai: "　テスト記念　",
+    },
+    {
+      cellMatching: true,
+      classConditionName: null,
+      includeAge: false,
+      includeBloodlineAncestors: false,
+      includeClass: true,
+      includeConditionKey: false,
+      includeDistance: false,
+      includeFrame: false,
+      includeGrade: flags.includeGrade,
+      includeMonthWindow: false,
+      includeNarOnly: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: flags.includeRaceTitle,
+      includeRunnerCount: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTrackCode: false,
+      includeTurn: false,
+      includeVenue: true,
+      includeWeight: false,
+      runnerCount: null,
+      sourceScope: "jra",
+      years: 10,
+    },
+  );
+  const queryText: string = stringifyQuery(executeMock.mock.calls[0]?.[0]);
+  const titleClause: RegExp =
+    /\(\s*(true|false) = false\s+or \(\s*\(\s*'([^']*)' not in \('A', 'F'\)\s+or ra\.grade_code in \('A', 'F'\)\s*\)\s*and nullif\(\s*regexp_replace\(ra\.kyosomei_hondai,[\s\S]*?\) is not distinct from 'テスト記念'/u;
+  const titleMatch: RegExpMatchArray | null = queryText.match(titleClause);
+  expect(titleMatch).not.toBeNull();
+  expect(titleMatch?.[1] === String(flags.includeRaceTitle)).toBe(true);
+  expect(titleMatch?.[2] === (flags.gradeCode?.trim() ?? "")).toBe(true);
+  expect(queryText).toMatch(
+    flags.includeGrade
+      ? /\(true = false or ra\.grade_code is not distinct from/u
+      : /\(false = false or ra\.grade_code is not distinct from/u,
+  );
+  expect(queryText).toMatch(/\(true = false or ra\.keibajo_code =/u);
+  expect(queryText).toMatch(/\(true = false or ra\.kyoso_joken_code = '999'\)/u);
+  expect(queryText).toMatch(/nullif\(btrim\(coalesce\(ra\.grade_code, ''\)\), ''\) is null/u);
+  expect(collectTableNames(executeMock.mock.calls[0]?.[0])).toStrictEqual(
+    expect.arrayContaining(["jvd_ra", "jvd_se"]),
+  );
 });
 
 it("getRaceTimeStats uses NAR canonical distance bands including extended_sprint", async () => {
@@ -2150,8 +2218,10 @@ it("getFinishPositionLambdarankPredictions always attempts the NAR transformer b
   await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
-  expect(queryText).toMatch(/where p0\.model_version = 'iter40-nar-settransformer-blend-v1'/u);
-  expect(queryText).toMatch(/'iter40-nar-settransformer-blend-v1'/u);
+  expect(queryText).toMatch(
+    /where p0\.model_version = 'iter40-nar-settransformer-blend-v1-nowin1'/u,
+  );
+  expect(queryText).toMatch(/'iter40-nar-settransformer-blend-v1-nowin1'/u);
 });
 
 it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch for a routed JRA race", async () => {
@@ -2160,24 +2230,24 @@ it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch 
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(
-    /where p0\.model_version = 'jra-joken-703-turf-intermediate-qsm-gated-v1'/u,
+    /where p0\.model_version = 'jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1'/u,
   );
-  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u);
-  expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013'/u);
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1'/u);
+  expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013-nowin1'/u);
 });
 
 it("getFinishPositionLambdarankPredictions returns rows selected via the priority 0 cell-routing branch", async () => {
   executeMock.mockResolvedValue({
     rows: [
       {
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
         predicted_rank: 1,
         predicted_score: "0.93",
         shusso_tosu: 2,
         umaban: 1,
       },
       {
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
         predicted_rank: 2,
         predicted_score: "0.51",
         shusso_tosu: 2,
@@ -2190,7 +2260,7 @@ it("getFinishPositionLambdarankPredictions returns rows selected via the priorit
     PERCLASS_703_RUNNERS,
   );
   expect(result.length).toBe(2);
-  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1");
   expect(result[0]?.predictedFinishNorm).toBe(0);
   expect(result[1]?.predictedFinishNorm).toBe(1);
 });
@@ -2220,10 +2290,10 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/from finish_position_active_models stale/u);
   expect(queryText).toMatch(/stale\.subclass is not null/u);
   expect(queryText).toMatch(/stale\.model_version = p3\.model_version/u);
-  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean'/u);
-  expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188'/u);
-  expect(queryText).toMatch(/'banei-cb-v9-sim-2011'/u);
-  expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'/u);
+  expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188-nowin1'/u);
+  expect(queryText).toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
+  expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
   expect(queryText).toMatch(/'jra-cb-stage1-marketfree235-2013'/u);
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-stage1-marketfree-184'/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
@@ -2250,11 +2320,11 @@ it("getFinishPositionLambdarankPredictions excludes off-label cell-routing varia
     queryText.match(
       /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
     )?.[1] ?? "";
-  expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u);
-  expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013'/u);
-  expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
-  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean'\)/u);
-  expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011'/u);
+  expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1'/u);
+  expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013-nowin1'/u);
+  expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'\)/u);
+  expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
   expect(result.length).toBe(0);
 });
 
@@ -2267,14 +2337,14 @@ it("getFinishPositionLambdarankPredictions still lets priority 3 select the plai
   executeMock.mockResolvedValue({
     rows: [
       {
-        model_version: "jra-cb-v9-sim-2013-clean",
+        model_version: "jra-cb-v9-sim-2013-clean-nowin1",
         predicted_rank: 1,
         predicted_score: "0.8",
         shusso_tosu: 2,
         umaban: 1,
       },
       {
-        model_version: "jra-cb-v9-sim-2013-clean",
+        model_version: "jra-cb-v9-sim-2013-clean-nowin1",
         predicted_rank: 2,
         predicted_score: "0.3",
         shusso_tosu: 2,
@@ -2292,10 +2362,10 @@ it("getFinishPositionLambdarankPredictions still lets priority 3 select the plai
     queryText.match(
       /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
     )?.[1] ?? "";
-  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean'\)/u);
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'\)/u);
   expect(result.length).toBe(2);
-  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean");
-  expect(result[1]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean");
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-nowin1");
+  expect(result[1]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-nowin1");
 });
 
 it("getFinishPositionLambdarankPredictions applies leak-free guard to final selected rows", async () => {
@@ -2559,7 +2629,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
     JSON.stringify([
       ...Array.from({ length: 9 }, (_, index) => ({
         horseNumber: String(index + 1),
-        modelVersion: "banei-cb-v9-sim-2011",
+        modelVersion: "banei-cb-v9-sim-2011-nowin1",
         predictedFinishNorm: index / 8,
         predictionGeneratedAt: "2026-08-24T08:18:05.649Z",
         showProbability: null,
@@ -2567,7 +2637,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
       })),
       {
         horseNumber: "10",
-        modelVersion: "banei-cb-v9-sim-2011",
+        modelVersion: "banei-cb-v9-sim-2011-nowin1",
         predictedFinishNorm: 0.5,
         predictionGeneratedAt: "2026-08-24T00:34:29.223Z",
         showProbability: null,
@@ -2577,7 +2647,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
   );
   executeMock.mockResolvedValue({
     rows: Array.from({ length: 9 }, (_, index) => ({
-      model_version: "banei-cb-v9-sim-2011",
+      model_version: "banei-cb-v9-sim-2011-nowin1",
       predicted_rank: index + 1,
       predicted_score: String(index + 1),
       prediction_generated_at: "2026-08-24T08:18:05.649Z",

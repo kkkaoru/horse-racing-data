@@ -1,5 +1,4 @@
 "use client";
-
 import {
   memo,
   useEffect,
@@ -10,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 
+import type { ArcQualifiedStats } from "../../../lib/arc-qualified-stats";
 import { indexLiveHorseWeightKg } from "../../../lib/horse-weight-class";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type {
@@ -25,6 +25,7 @@ import {
   persistHeatmapShowStartsForCurrentUser,
   persistHeatmapSplitBloodlineLinesForCurrentUser,
 } from "../../../lib/user-preferences-indexeddb";
+import { ARC_HEATMAP_SCOPE_NOTE, type ArcHeatmapCohort } from "../../../lib/win-rate-heatmap";
 import {
   buildWinRateHeatmapColorScaleGradient,
   buildWinRateHeatmapDisplay,
@@ -52,6 +53,8 @@ import { FrameNumberBadge } from "./frame-number-badge";
 import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-client";
 
 interface WinRateHeatmapSectionProps {
+  arcQualifiedStats?: ArcQualifiedStats;
+  arcCohort?: ArcHeatmapCohort;
   presentation?: HeatmapPresentation;
   partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
@@ -314,6 +317,8 @@ const WinRateHeatmapSwatch = ({
 };
 
 export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
+  arcQualifiedStats,
+  arcCohort,
   bloodlineRows,
   carriedWeightClassStats,
   frameStats,
@@ -409,6 +414,8 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   const display =
     presentation === undefined
       ? buildWinRateHeatmapDisplay({
+          arcQualifiedStats,
+          arcCohort,
           bloodlineRows,
           carriedWeightClassStats,
           frameStats,
@@ -435,6 +442,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     display.visibleColumns[display.visibleColumns.length - 1]?.key ?? null;
   return (
     <div className="win-rate-heatmap-wrap">
+      {arcCohort !== undefined && <p className="stats-note">{ARC_HEATMAP_SCOPE_NOTE}</p>}
       <fieldset aria-label="表示指標" className="win-rate-heatmap-view-toggle">
         {WIN_RATE_HEATMAP_VIEW_MODES.map((mode) => (
           <label className="running-style-bucket-toggle-label" key={mode.key}>

@@ -1,11 +1,12 @@
 // Run with bun. `bun run --filter pc-keiba-viewer test`
 import { beforeEach, expect, it, vi } from "vitest";
 
+import type { proxyToProductionStream } from "../../../../../../../../../lib/production-api-proxy.server";
+
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
-  proxyToProductionStreamMock:
-    vi.fn<(path: string, searchParams: URLSearchParams) => Promise<Response>>(),
+  proxyToProductionStreamMock: vi.fn<typeof proxyToProductionStream>(),
   realtimeDataFetchMock:
     vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(),
   safeGetCloudflareEnvMock: vi.fn<() => Promise<unknown>>(),
@@ -104,7 +105,7 @@ it("GET proxy fallback passes the upstream production stream path with year/mont
   useProductionApiProxyMock.mockReturnValue(true);
   proxyToProductionStreamMock.mockResolvedValue(new Response(null, { status: 200 }));
   await GET(buildRequest("?source=jra"), buildContext());
-  expect(proxyToProductionStreamMock.mock.calls[0]?.[0]).toBe(
+  expect(proxyToProductionStreamMock.mock.calls[0]?.[0].path).toBe(
     "/api/races/2026/05/29/05/07/horse-weights-stream",
   );
 });
@@ -113,10 +114,24 @@ it("GET proxy fallback forwards the search params (including source) to the prod
   useProductionApiProxyMock.mockReturnValue(true);
   proxyToProductionStreamMock.mockResolvedValue(new Response(null, { status: 200 }));
   await GET(buildRequest("?source=nar&debug=1"), buildContext());
-  const forwarded = proxyToProductionStreamMock.mock.calls[0]?.[1];
+  const forwarded = proxyToProductionStreamMock.mock.calls[0]?.[0].searchParams;
   if (!(forwarded instanceof URLSearchParams)) throw new Error("expected URLSearchParams");
   expect(forwarded.get("source")).toBe("nar");
   expect(forwarded.get("debug")).toBe("1");
+});
+
+it("GET forwards browser cancellation to the production stream", async () => {
+  useProductionApiProxyMock.mockReturnValue(true);
+  proxyToProductionStreamMock.mockResolvedValue(new Response(null));
+  const controller = new AbortController();
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/horse-weights-stream?source=jra",
+    { signal: controller.signal },
+  );
+  await GET(request, buildContext());
+  expect(proxyToProductionStreamMock.mock.calls[0]?.[0].signal.aborted).toBe(false);
+  controller.abort();
+  expect(proxyToProductionStreamMock.mock.calls[0]?.[0].signal.aborted).toBe(true);
 });
 
 it("GET proxy fallback skips the REALTIME_DATA binding lookup entirely", async () => {

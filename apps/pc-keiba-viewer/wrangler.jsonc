@@ -82,11 +82,11 @@
     // SSR snapshot. Every 5 minutes (only JST 09:00-23:xx race hours) warms race
     // trends from 20 minutes before post time. Every 15 minutes (only JST
     // 09:00-23:xx race hours) refreshes today's SSR snapshot in KV so cache misses
-    // never need a full Hyperdrive fan-out. The */5 and */15 crons are restricted
-    // to UTC hours 0-14 (JST 09:00-23:xx) because they do nothing useful outside
-    // JRA/NAR race hours.
+    // never need a full Hyperdrive fan-out. The trend and SSR crons stay within
+    // UTC 0-14; the heatmap sweep runs all day because runner updates after
+    // JST midnight invalidate tomorrow's heatmaps before 09:00 JST.
     // 06:00 JST warms today's detail sections + SSR snapshot for late-registered venues.
-    "crons": ["0 12 * * *", "0 21 * * *", "*/5 0-14 * * *", "*/15 0-14 * * *"],
+    "crons": ["0 12 * * *", "0 21 * * *", "*/5 0-14 * * *", "*/15 0-14 * * *", "*/15 * * * *"],
   },
   "workflows": [
     {
@@ -97,6 +97,7 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "HEATMAP_EXECUTION_OWNER", "class_name": "HeatmapExecutionOwner" },
       {
         "name": "PADDOCK_ROOM",
         "class_name": "PaddockRoom",
@@ -116,6 +117,7 @@
       "tag": "race-trend-room-v1",
       "new_sqlite_classes": ["RaceTrendRoom"],
     },
+    { "tag": "heatmap-execution-owner-v1", "new_sqlite_classes": ["HeatmapExecutionOwner"] },
   ],
   "observability": {
     "enabled": true,

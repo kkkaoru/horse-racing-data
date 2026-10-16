@@ -18,12 +18,12 @@ import { isOverseasKeibajoCode } from "./runner-format";
 // scheme) and independent of query-cache.ts's own namespace (separate cache
 // layer entirely) -- any future change to this shape needs its own bump here.
 const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v4";
-const OVERSEAS_HISTORY_CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v5";
+const OVERSEAS_HISTORY_CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v6";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/finish-prediction-inputs-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
 export interface FinishPredictionStaticPayload {
-  evaluation: FinishPredictionEvaluationMetrics;
+  evaluation: FinishPredictionEvaluationMetrics | null;
   inputs: FinishPredictionBuildInputs;
 }
 
@@ -150,7 +150,7 @@ const isFinishPredictionStaticPayload = (
 ): value is FinishPredictionStaticPayload => {
   if (!isRecord(value)) return false;
   return (
-    isRecord(value.evaluation) &&
+    (value.evaluation === null || isRecord(value.evaluation)) &&
     isRecord(value.inputs) &&
     hasNonEmptyModelPredictionFeatures(value.inputs)
   );

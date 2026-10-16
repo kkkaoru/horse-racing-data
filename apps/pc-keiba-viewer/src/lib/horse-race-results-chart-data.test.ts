@@ -1,6 +1,7 @@
 // Run with bun (exercised via `bunx vitest run`).
 import { describe, expect, it } from "vitest";
 
+import productionFixture from "./horse-race-clock-production.fixture.json";
 import {
   buildHorseRaceChartSeriesList,
   buildHorseRaceRelativeDeltaSeriesList,
@@ -2314,4 +2315,14 @@ describe("horse race results chart data", () => {
     });
     expect(series[0]?.points).toStrictEqual([]);
   });
+});
+
+it("matches all production overseas series by source identity, name and current number", () => {
+  const series = buildHorseRaceChartSeriesList({ ...productionFixture, metric: "finish" });
+  expect(series).toHaveLength(16);
+  expect(new Set(series.map((horse) => horse.kettoTorokuBango)).size).toBe(16);
+  expect(series[0]?.bamei).toBe("ダリズ");
+  expect(series[0]?.umaban).toBe(1);
+  expect(series[0]?.frame).toBe("5");
+  expect(series.every((horse) => horse.points.length > 0)).toBe(true);
 });

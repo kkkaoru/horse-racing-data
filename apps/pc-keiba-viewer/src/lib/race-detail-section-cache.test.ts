@@ -1,3 +1,4 @@
+// Run with bun.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -55,7 +56,7 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "A8",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v8:2026:5:23:A8:12:time-score:default");
+    ).toBe("race-detail-section:v12-overseas-readers:2026:5:23:A8:12:time-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
@@ -69,7 +70,7 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "A8",
         section: "similar",
       }),
-    ).toBe("race-detail-section:v8:2026:5:23:A8:12:similar:default");
+    ).toBe("race-detail-section:v12-overseas-readers:2026:5:23:A8:12:similar:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
@@ -83,7 +84,7 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "44",
         section: "overall-score",
       }),
-    ).toBe("race-detail-section:v10:2026:5:23:44:12:overall-score:default");
+    ).toBe("race-detail-section:v11:2026:5:23:44:12:overall-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
@@ -97,14 +98,14 @@ describe("race detail section cache helpers", () => {
         keibajoCode: "44",
         section: "time-score",
       }),
-    ).toBe("race-detail-section:v10:2026:5:23:44:12:time-score:default");
+    ).toBe("race-detail-section:v11:2026:5:23:44:12:time-score:default");
     expect(
       buildDetailSectionCacheKey({
         ...warmMessage,
         keibajoCode: "A8",
         section: "condition",
       }),
-    ).toBe("race-detail-section:v17:2026:5:23:A8:12:condition:default");
+    ).toBe("race-detail-section:v19:2026:5:23:A8:12:condition:default");
     expect(
       buildDetailSectionCacheFallbackKeys({
         day: "29",
@@ -114,7 +115,7 @@ describe("race detail section cache helpers", () => {
         section: "condition",
         year: "2026",
       }),
-    ).toStrictEqual(["race-detail-section:v16:2026:08:29:04:08:condition:default"]);
+    ).toStrictEqual([]);
     expect(
       buildDetailSectionCacheFallbackKeys({
         day: "29",
@@ -127,15 +128,58 @@ describe("race detail section cache helpers", () => {
     ).toStrictEqual([]);
     expect(
       expandDetailSectionCacheReadKeys(
-        "race-detail-section:v17:2026:08:29:04:08:condition:default",
+        "race-detail-section:v19:2026:08:29:04:08:condition:default",
       ),
-    ).toStrictEqual([
-      "race-detail-section:v17:2026:08:29:04:08:condition:default",
-      "race-detail-section:v16:2026:08:29:04:08:condition:default",
-    ]);
+    ).toStrictEqual(["race-detail-section:v19:2026:08:29:04:08:condition:default"]);
     expect(
       expandDetailSectionCacheReadKeys("race-detail-section:v6:2026:08:29:04:08:training:default"),
     ).toStrictEqual(["race-detail-section:v6:2026:08:29:04:08:training:default"]);
+  });
+
+  it("isolates domestic and overseas overall scores without stale fallback", () => {
+    expect(
+      buildDetailSectionCacheKey({ ...warmMessage, keibajoCode: "05", section: "overall-score" }),
+    ).toBe("race-detail-section:v11:2026:5:23:05:12:overall-score:default");
+    expect(
+      buildDetailSectionCacheKey({ ...warmMessage, keibajoCode: "A8", section: "overall-score" }),
+    ).toBe("race-detail-section:v11:2026:5:23:A8:12:overall-score:default");
+    expect(
+      buildDetailSectionCacheFallbackKeys({ ...warmMessage, section: "overall-score" }),
+    ).toStrictEqual([]);
+    expect(
+      expandDetailSectionCacheReadKeys(
+        "race-detail-section:v11:2026:5:23:A8:12:overall-score:default",
+      ),
+    ).toStrictEqual(["race-detail-section:v11:2026:5:23:A8:12:overall-score:default"]);
+  });
+
+  it("does not read old numerical generations on a condition cache miss", () => {
+    expect(
+      buildDetailSectionCacheKey({ ...warmMessage, keibajoCode: "05", section: "condition" }),
+    ).toBe("race-detail-section:v19:2026:5:23:05:12:condition:default");
+    expect(
+      expandDetailSectionCacheReadKeys("race-detail-section:v19:2026:5:23:05:12:condition:default"),
+    ).toStrictEqual(["race-detail-section:v19:2026:5:23:05:12:condition:default"]);
+    expect(
+      expandDetailSectionCacheReadKeys("race-detail-section:v17:2026:5:23:05:12:condition:default"),
+    ).toStrictEqual(["race-detail-section:v17:2026:5:23:05:12:condition:default"]);
+  });
+
+  it("isolates JRA and Ban-ei time-score caches without stale fallback", () => {
+    expect(
+      buildDetailSectionCacheKey({ ...warmMessage, keibajoCode: "05", section: "time-score" }),
+    ).toBe("race-detail-section:v11:2026:5:23:05:12:time-score:default");
+    expect(
+      buildDetailSectionCacheKey({ ...warmMessage, keibajoCode: "83", section: "time-score" }),
+    ).toBe("race-detail-section:v11:2026:5:23:83:12:time-score:default");
+    expect(
+      buildDetailSectionCacheFallbackKeys({ ...warmMessage, section: "time-score" }),
+    ).toStrictEqual([]);
+    expect(
+      expandDetailSectionCacheReadKeys(
+        "race-detail-section:v11:2026:5:23:83:12:time-score:default",
+      ),
+    ).toStrictEqual(["race-detail-section:v11:2026:5:23:83:12:time-score:default"]);
   });
 
   it("validates cacheable sections and default warm targets", () => {
@@ -201,4 +245,25 @@ it("strips __predictionRefresh from search params alongside __cacheWarm", () => 
 it("keeps unrelated params while stripping __predictionRefresh", () => {
   const params = new URLSearchParams("foo=bar&__predictionRefresh=1");
   expect(stripDetailSectionCacheWarmParams(params).toString()).toBe("foo=bar");
+});
+
+it("invalidates only the exact Arc results cache without reading partial fallback", () => {
+  const input = {
+    year: "2026",
+    month: "10",
+    day: "04",
+    keibajoCode: "A8",
+    raceNumber: "05",
+    section: "results",
+  } satisfies Parameters<typeof buildDetailSectionCacheKey>[0];
+  expect(buildDetailSectionCacheKey(input)).toBe(
+    "race-detail-section:v9-arc-complete-results:2026:10:04:A8:05:results:default",
+  );
+  expect(buildDetailSectionCacheFallbackKeys(input)).toStrictEqual([]);
+  expect(buildDetailSectionCacheKey({ ...input, raceNumber: "06" })).toBe(
+    "race-detail-section:v8:2026:10:04:A8:06:results:default",
+  );
+  expect(buildDetailSectionCacheKey({ ...input, section: "pace-prediction" })).toBe(
+    "race-detail-section:v4:2026:10:04:A8:05:pace-prediction:default",
+  );
 });

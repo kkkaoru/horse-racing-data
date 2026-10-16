@@ -24,6 +24,7 @@ export default defineConfig({
         "src/app/races/calendar.tsx",
         "src/app/races/detail/runners-table.tsx",
         "src/app/races/detail/finish-position-bucket-section.tsx",
+        "src/app/races/detail/arc-prediction-table.tsx",
       ],
       exclude: [
         "src/lib/paddock-server.ts",
@@ -41,6 +42,6 @@ export default defineConfig({
       },
     },
     environment: "happy-dom",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "next.config.test.ts"],
   },
 });

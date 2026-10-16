@@ -197,6 +197,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("WrappedFinishPredictionEvaluation discloses unavailable validation without domestic accuracy", () => {
+  render(<WrappedFinishPredictionEvaluation evaluation={null} />);
+  expect(screen.getByRole("status").textContent).toBe(
+    "このレースに適用できる検証結果はありません。",
+  );
+  expect(screen.queryByLabelText("着順予測の検証結果")).toBeNull();
+});
+
 test("WrappedFinishPredictionEvaluation collapses panel by default on mobile viewport", () => {
   installMatchMediaMock(true);
   render(

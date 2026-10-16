@@ -38,7 +38,7 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-bsn-v1",
+    model_version: "jra-named-niigata-bsn-v1-nowin1",
     race_name_token: "BSN賞",
     variant: "niigata_bsn",
     venue: "04",
@@ -49,7 +49,7 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-sapporo-suzuran-v2",
+    model_version: "jra-named-sapporo-suzuran-v2-nowin1",
     race_name_token: "すずらん賞",
     variant: "sapporo_suzuran",
     venue: "01",
@@ -60,11 +60,11 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+    model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
     prerace_router: {
       routes: [
         {
-          model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+          model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
           variant: "chukyo_nisai_stakes_jul1600_ninki2",
           when: {
             kyori: ["1600"],
@@ -72,7 +72,7 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
           },
         },
         {
-          model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+          model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
           variant: "chukyo_nisai_stakes_largefield",
           when: {
             kyori: ["1200"],
@@ -89,7 +89,7 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
     },
     race_name_token: "中京2歳ステークス",
     rerank_feature_count: 113,
-    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
     variant: "chukyo_nisai_stakes",
     venue: "07",
@@ -100,10 +100,10 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-kinen-draw-v2",
+    model_version: "jra-named-niigata-kinen-draw-v2-nowin1",
     race_name_token: "新潟記念",
     rerank_feature_count: 114,
-    rerank_model_version: "jra-named-niigata-kinen-going-v2",
+    rerank_model_version: "jra-named-niigata-kinen-going-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
     variant: "niigata_kinen",
     venue: "04",
@@ -130,13 +130,13 @@ it("inheritNamedRaceVariant copies the base spec when the cell has no overrides"
     inheritNamedRaceVariant(cell, {
       architecture: "catboost",
       feature_count: 113,
-      model_version: "jra-joken-999-pooled-yetirank-v2",
+      model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
     }),
   ).toStrictEqual({
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-joken-999-pooled-yetirank-v2",
+    model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
   });
 });
 
@@ -145,10 +145,10 @@ it("inheritNamedRaceVariant copies lock1 rerank catalog fields", () => {
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-kinen-draw-v2",
+    model_version: "jra-named-niigata-kinen-draw-v2-nowin1",
     race_name_token: "新潟記念",
     rerank_feature_count: 114,
-    rerank_model_version: "jra-named-niigata-kinen-going-v2",
+    rerank_model_version: "jra-named-niigata-kinen-going-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
     variant: "niigata_kinen",
     venue: "04",
@@ -157,14 +157,14 @@ it("inheritNamedRaceVariant copies lock1 rerank catalog fields", () => {
     inheritNamedRaceVariant(cell, {
       architecture: "catboost",
       feature_count: 113,
-      model_version: "jra-joken-999-pooled-yetirank-v2",
+      model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
     }),
   ).toStrictEqual({
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-kinen-draw-v2",
-    rerank_model_version: "jra-named-niigata-kinen-going-v2",
+    model_version: "jra-named-niigata-kinen-draw-v2-nowin1",
+    rerank_model_version: "jra-named-niigata-kinen-going-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
   });
 });
@@ -174,7 +174,7 @@ it("inheritNamedRaceVariant uses dedicated model fields when present", () => {
     architecture: "lightgbm",
     base_variant: "joken_999",
     feature_count: 200,
-    model_version: "jra-named-niigata-bsn-v1",
+    model_version: "jra-named-niigata-bsn-v1-nowin1",
     race_name_token: "BSN賞",
     variant: "niigata_bsn",
     venue: "04",
@@ -183,13 +183,13 @@ it("inheritNamedRaceVariant uses dedicated model fields when present", () => {
     inheritNamedRaceVariant(cell, {
       architecture: "catboost",
       feature_count: 113,
-      model_version: "jra-joken-999-pooled-yetirank-v2",
+      model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
     }),
   ).toStrictEqual({
     architecture: "lightgbm",
     base_variant: "joken_999",
     feature_count: 200,
-    model_version: "jra-named-niigata-bsn-v1",
+    model_version: "jra-named-niigata-bsn-v1-nowin1",
   });
 });
 
@@ -201,11 +201,11 @@ it("namedRaceVariantsForCategory injects prerace lock variants", () => {
           architecture: "catboost",
           base_variant: "joken_999",
           feature_count: 113,
-          model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+          model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+                model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
                 variant: "chukyo_nisai_stakes_jul1600_ninki2",
                 when: {
                   kyori: ["1600"],
@@ -213,7 +213,7 @@ it("namedRaceVariantsForCategory injects prerace lock variants", () => {
                 },
               },
               {
-                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
                 variant: "chukyo_nisai_stakes_largefield",
                 when: {
                   kyori: ["1200"],
@@ -223,7 +223,7 @@ it("namedRaceVariantsForCategory injects prerace lock variants", () => {
             ],
           },
           race_name_token: "中京2歳ステークス",
-          rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+          rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
           routing_mode: "jra_lock1_rerank_rest",
           variant: "chukyo_nisai_stakes",
           venue: "07",
@@ -233,7 +233,7 @@ it("namedRaceVariantsForCategory injects prerace lock variants", () => {
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -242,24 +242,24 @@ it("namedRaceVariantsForCategory injects prerace lock variants", () => {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
-      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+      model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
       routing_mode: "jra_lock1_rerank_rest",
     },
     chukyo_nisai_stakes_jul1600_ninki2: {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
-      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+      model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
       routing_mode: "jra_lock1_rerank_rest",
     },
     chukyo_nisai_stakes_largefield: {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
-      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
       routing_mode: "jra_lock1_rerank_rest",
     },
   });
@@ -275,7 +275,7 @@ it("isNamedRacePreraceLockRoute requires both variant and model_version", () => 
   ).toBe(false);
   expect(
     isNamedRacePreraceLockRoute({
-      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
       variant: "",
       when: {
         kyori: ["1200"],
@@ -293,7 +293,7 @@ it("isNamedRacePreraceLockRoute requires both variant and model_version", () => 
   ).toBe(false);
   expect(
     isNamedRacePreraceLockRoute({
-      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+      model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
       variant: "chukyo_nisai_stakes_largefield",
       when: {
         kyori: ["1200"],
@@ -310,11 +310,11 @@ it("namedRaceVariantsForCategory skips a prerace route that repeats the cell var
           architecture: "catboost",
           base_variant: "joken_999",
           feature_count: 113,
-          model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+          model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+                model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
                 variant: "chukyo_nisai_stakes",
                 when: {
                   kyori: ["1400"],
@@ -332,7 +332,7 @@ it("namedRaceVariantsForCategory skips a prerace route that repeats the cell var
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -341,7 +341,7 @@ it("namedRaceVariantsForCategory skips a prerace route that repeats the cell var
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
+      model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
     },
   });
 });
@@ -354,11 +354,11 @@ it("namedRaceVariantsForCategory copies prerace lock variants without rerank fie
           architecture: "catboost",
           base_variant: "joken_999",
           feature_count: 113,
-          model_version: "jra-named-niigata-bsn-v1",
+          model_version: "jra-named-niigata-bsn-v1-nowin1",
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-niigata-bsn-v1",
+                model_version: "jra-named-niigata-bsn-v1-nowin1",
                 variant: "niigata_bsn_alt",
                 when: {
                   kyori: ["1800"],
@@ -375,7 +375,7 @@ it("namedRaceVariantsForCategory copies prerace lock variants without rerank fie
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -384,13 +384,13 @@ it("namedRaceVariantsForCategory copies prerace lock variants without rerank fie
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-niigata-bsn-v1",
+      model_version: "jra-named-niigata-bsn-v1-nowin1",
     },
     niigata_bsn_alt: {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-niigata-bsn-v1",
+      model_version: "jra-named-niigata-bsn-v1-nowin1",
     },
   });
 });
@@ -404,7 +404,7 @@ it("namedRaceVariantsForCategory throws when two cells share a prerace lock vari
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
                 variant: "shared_lock",
                 when: {
                   kyori: ["1200"],
@@ -421,7 +421,7 @@ it("namedRaceVariantsForCategory throws when two cells share a prerace lock vari
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-niigata-bsn-v1",
+                model_version: "jra-named-niigata-bsn-v1-nowin1",
                 variant: "shared_lock",
                 when: {
                   kyori: ["1800"],
@@ -438,7 +438,7 @@ it("namedRaceVariantsForCategory throws when two cells share a prerace lock vari
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -454,7 +454,7 @@ it("namedRaceVariantsForCategory throws when a prerace lock variant already exis
           prerace_router: {
             routes: [
               {
-                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
+                model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
                 variant: "joken_999",
                 when: {
                   kyori: ["1200"],
@@ -472,7 +472,7 @@ it("namedRaceVariantsForCategory throws when a prerace lock variant already exis
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -494,7 +494,7 @@ it("namedRaceVariantsForCategory inherits the open-class base variant", () => {
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -503,7 +503,7 @@ it("namedRaceVariantsForCategory inherits the open-class base variant", () => {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-joken-999-pooled-yetirank-v2",
+      model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
     },
   });
 });
@@ -523,7 +523,7 @@ it("namedRaceVariantsForCategory throws when the variant name already exists", (
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),
@@ -545,7 +545,7 @@ it("namedRaceVariantsForCategory throws when the base variant is missing", () =>
         joken_999: {
           architecture: "catboost",
           feature_count: 113,
-          model_version: "jra-joken-999-pooled-yetirank-v2",
+          model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
         },
       },
     }),

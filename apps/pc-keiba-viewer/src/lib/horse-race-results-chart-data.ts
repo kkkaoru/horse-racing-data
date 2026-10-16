@@ -34,6 +34,8 @@ export interface HorseRaceChartPoint {
 // `blinkerShiyoKubun` is the target-race blinker flag ("1" = wearing) so the
 // synthetic upcoming point can render the blinker ring just like a past race.
 export interface HorseRaceChartRunner {
+  sourceHorseId?: string | null;
+  bamei?: string | null;
   bataiju: string | null;
   blinkerShiyoKubun?: string | null;
   futanJuryo?: string | null;
@@ -718,7 +720,7 @@ const resolveSeriesColor = (input: SeriesColorInput): string =>
 const buildRunnerMap = (runners: HorseRaceChartRunner[]): Map<string, HorseRaceChartRunner> => {
   const map = new Map<string, HorseRaceChartRunner>();
   runners.forEach((runner) => {
-    const ketto = cleanText(runner.kettoTorokuBango, "");
+    const ketto = cleanText(runner.sourceHorseId ?? runner.kettoTorokuBango, "");
     if (ketto) {
       map.set(ketto, runner);
     }
@@ -791,7 +793,7 @@ export const buildHorseRaceChartSeriesList = (
     weightMap: buildUpcomingWeightMap(options.upcomingWeights ?? []),
   };
   return drafts.map((draft, index) => ({
-    bamei: draft.bamei,
+    bamei: cleanText(runnerMap.get(draft.kettoTorokuBango)?.bamei, draft.bamei),
     color: resolveSeriesColor({
       seriesIndex: index,
       umaban: draft.umaban,
@@ -885,7 +887,7 @@ export const buildHorseRaceRelativeDeltaSeriesList = (
     weightMap: buildUpcomingWeightMap(options.upcomingWeights ?? []),
   };
   return drafts.map((draft, index) => ({
-    bamei: draft.bamei,
+    bamei: cleanText(runnerMap.get(draft.kettoTorokuBango)?.bamei, draft.bamei),
     color: resolveSeriesColor({
       seriesIndex: index,
       umaban: draft.umaban,

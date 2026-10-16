@@ -16,6 +16,7 @@ it("warms each race through the self reference binding", async () => {
     async () => new Response("{}", { headers: { "X-Win-Rate-Heatmap-Cache": "HIT" } }),
   );
   const workflow = new HeatmapWarmWorkflow(executionContext, {
+    PC_KEIBA_INTERNAL_TOKEN: "secret",
     WORKER_SELF_REFERENCE: { fetch: selfFetch },
   });
   const results = await workflow.run(
@@ -37,4 +38,21 @@ it("warms each race through the self reference binding", async () => {
   expect(selfFetch.mock.calls[0]?.[0].url).toBe(
     "https://pc-keiba-viewer.local/api/races/2026/09/23/30/01/sections/win-rate-heatmap?__cacheProbe=1",
   );
+});
+
+it("attaches the existing internal secret to owned warm requests", async () => {
+  const fetch = vi.fn<(request: Request) => Promise<Response>>(async () => new Response(null));
+  await createSelfFetch({ PC_KEIBA_INTERNAL_TOKEN: "secret", WORKER_SELF_REFERENCE: { fetch } })(
+    new Request("https://pc-keiba-viewer.local/"),
+  );
+  expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ headers: expect.any(Headers) }));
+  const request = fetch.mock.calls[0]?.[0];
+  expect(request?.headers.get("x-pc-keiba-internal-token")).toBe("secret");
+});
+it("fails closed when the warm secret is absent", () => {
+  expect(() =>
+    createSelfFetch({
+      WORKER_SELF_REFERENCE: { fetch: vi.fn<(request: Request) => Promise<Response>>() },
+    })(new Request("https://pc-keiba-viewer.local/")),
+  ).toThrow("PC_KEIBA_INTERNAL_TOKEN is unavailable");
 });

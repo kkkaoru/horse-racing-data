@@ -330,3 +330,63 @@ it("does not write an empty training body to stale cache", async () => {
   });
   expect(kv.put).not.toHaveBeenCalled();
 });
+
+it("rejects populated legacy overseas time-score entries at edge, KV, stale and write boundaries", async () => {
+  const key = "race-detail-section:v12-overseas-readers:2026:10:04:A8:05:time-score:default";
+  const body = JSON.stringify({
+    type: "time-score",
+    runners: [
+      { umaban: "04", kettoTorokuBango: "2021105369" },
+      { umaban: "05", kettoTorokuBango: "2021103272" },
+    ],
+    rows: [{ horseNumber: "4" }, { horseNumber: "5" }],
+  });
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  cache.match.mockResolvedValue(new Response(body));
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+  expect(await getCachedDetailSectionResponse(key)).toBeNull();
+  kv.get.mockResolvedValue(JSON.stringify({ payload: body, writtenAt: FIXED_NOW_MS }));
+  expect(await getStaleDetailSectionBody(key, FIXED_NOW_MS)).toBeNull();
+  await putDetailSectionCache({ cacheKey: key, body, race: { ...FUTURE_RACE, keibajoCode: "A8" } });
+  expect(kv.put).not.toHaveBeenCalled();
+  expect(cache.put).not.toHaveBeenCalled();
+});
+it("accepts overseas time-score caches with explicit unknown history evidence", async () => {
+  const key = "race-detail-section:v12-overseas-readers:2026:10:04:A8:05:time-score:default";
+  const body = JSON.stringify({
+    type: "time-score",
+    runners: [{ umaban: "01", sourceHorseId: "000a029d42", kettoTorokuBango: "0000000000" }],
+    rows: [
+      {
+        horseNumber: "1",
+        historyEvidence: {
+          generation: "overseas-readers-v1",
+          historyHorseId: "000a029d42",
+          selectedHistoryCount: 0,
+          overseasHistoryCount: 0,
+          selection: "overseas",
+        },
+      },
+    ],
+  });
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  expect(await getCachedDetailSectionResponse(key)).not.toBeNull();
+});
+
+it("rejects a legacy overseas condition cache without gate provenance", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({ type: "condition", frameStats: [{ frameNumber: "1", count: 123 }] }),
+  );
+  mockEnvWithKv(kv);
+  expect(
+    await getCachedDetailSectionResponse(
+      "race-detail-section:v19:2026:10:04:A8:05:condition:default",
+    ),
+  ).toBeNull();
+});

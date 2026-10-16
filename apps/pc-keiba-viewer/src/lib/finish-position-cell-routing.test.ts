@@ -531,7 +531,7 @@ it("resolveFinishPositionCellRoutingModelVersion routes ungraded JRA class-703 r
     trackCode: "23",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1");
+  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion routes ungraded class-005 races to the matching gated model", () => {
@@ -543,7 +543,7 @@ it("resolveFinishPositionCellRoutingModelVersion routes ungraded class-005 races
     trackCode: "23",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1");
+  expect(value).toBe("jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion prioritizes the gated class model over Hakodate venue", () => {
@@ -554,7 +554,7 @@ it("resolveFinishPositionCellRoutingModelVersion prioritizes the gated class mod
     trackCode: "23",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-joken-010-dirt-intermediate-yeti-gated-v1");
+  expect(value).toBe("jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1");
 });
 
 it("routes Niigata BSN to the named open-class cell", () => {
@@ -569,7 +569,7 @@ it("routes Niigata BSN to the named open-class cell", () => {
     trackCode: "17",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-named-niigata-bsn-v1");
+  expect(value).toBe("jra-named-niigata-bsn-v1-nowin1");
   expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe("BSN賞");
 });
 
@@ -586,7 +586,7 @@ it("routes Sapporo Suzuran to the named open-class cell", () => {
     trackCode: "10",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-named-sapporo-suzuran-v2");
+  expect(value).toBe("jra-named-sapporo-suzuran-v2-nowin1");
   expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
     "すずらん賞",
   );
@@ -605,7 +605,7 @@ it("routes Chukyo 2yo Stakes to the named open-class cell", () => {
     trackCode: "11",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-named-chukyo-nisai-stakes-focal-v3");
+  expect(value).toBe("jra-named-chukyo-nisai-stakes-focal-v3-nowin1");
   expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
     "中京2歳ステークス",
   );
@@ -625,7 +625,7 @@ it("routes Chukyo 2yo Stakes July 1600 to the ninki2 lock cell", () => {
     trackCode: "11",
   };
   expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(
-    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
   );
 });
 
@@ -642,7 +642,7 @@ it("routes Chukyo 2yo Stakes December 1200 to the large-field lock cell", () => 
     trackCode: "11",
   };
   expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(
-    "jra-named-chukyo-nisai-stakes-largefield-v3",
+    "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
   );
 });
 
@@ -660,7 +660,7 @@ it("routes Niigata Kinen from the last 記念 token in the official title", () =
     trackCode: "17",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "jra", race });
-  expect(value).toBe("jra-named-niigata-kinen-draw-v2");
+  expect(value).toBe("jra-named-niigata-kinen-draw-v2-nowin1");
   expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe(
     "新潟記念",
   );
@@ -680,7 +680,7 @@ it("routes NAR Funabashi 43 1700 C summer to the mile cell", () => {
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-mile-summer-tc1-rolling-v1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1");
 });
 
 it("does not route NAR Funabashi 43 1500 C summer to the mile cell", () => {
@@ -697,7 +697,7 @@ it("does not route NAR Funabashi 43 1500 C summer to the mile cell", () => {
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1");
 });
 
 it("does not route NAR Funabashi 43 1400 C winter to the sprint-winter cell", () => {
@@ -715,7 +715,7 @@ it("does not route NAR Funabashi 43 1400 C winter to the sprint-winter cell", ()
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race matching no rule", () => {
@@ -727,7 +727,7 @@ it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race mat
 it("resolveFinishPositionCellRoutingModelVersion routes Ban-ei grade E races to the base variant", () => {
   const race: RaceDetail = { ...BASE_RACE, gradeCode: "E", keibajoCode: "83", source: "nar" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "ban-ei", race });
-  expect(value).toBe("banei-cb-v8-window2011-wf-15y");
+  expect(value).toBe("banei-cb-v8-window2011-wf-15y-nowin1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a non-E Ban-ei race", () => {
@@ -750,7 +750,7 @@ it("resolveFinishPositionCellRoutingModelVersion routes promoted NAR canonical c
     trackCode: "23",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1");
+  expect(value).toBe("nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion enforces effective date and medium field", () => {
@@ -779,7 +779,7 @@ it("resolveFinishPositionCellRoutingModelVersion enforces effective date and med
   });
   expect([before, after, small]).toStrictEqual([
     null,
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
     null,
   ]);
 });
@@ -798,11 +798,11 @@ it("resolveFinishPositionDisplayPriorityModelVersion prefers NAR cell then trans
   };
   const unmatched: RaceDetail = { ...matched, shussoTosu: "8" };
   expect(resolveFinishPositionDisplayPriorityModelVersion({ category: "nar", race: matched })).toBe(
-    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
   );
   expect(
     resolveFinishPositionDisplayPriorityModelVersion({ category: "nar", race: unmatched }),
-  ).toBe("iter40-nar-settransformer-blend-v1");
+  ).toBe("iter40-nar-settransformer-blend-v1-nowin1");
 });
 
 // --- resolveCellRoutingModelVersionForConfig: malformed-config guard -------
@@ -822,7 +822,7 @@ it("resolveCellRoutingModelVersionForConfig returns null when a matched rule ref
         sim: {
           architecture: "catboost",
           feature_count: 1,
-          model_version: "jra-cb-v9-sim-2013-clean",
+          model_version: "jra-cb-v9-sim-2013-clean-nowin1",
         },
       },
     },
@@ -862,7 +862,7 @@ const KOCHI_FINAL_SHAPED_CONFIG: CellRoutingConfig = {
       sim: {
         architecture: "xgboost",
         feature_count: 188,
-        model_version: "iter12-nar-xgb-hpo-v8-clean188",
+        model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
       },
     },
   },
@@ -912,7 +912,7 @@ it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango throug
     category: "jra",
     race,
   });
-  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1");
+  expect(value).toBe("jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1");
 });
 
 // --- getAllFinishPositionCellRoutingModelVersions --------------------------
@@ -920,58 +920,58 @@ it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango throug
 it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant model_version", () => {
   const versions = getAllFinishPositionCellRoutingModelVersions();
   expect(versions).toStrictEqual([
-    "jra-cb-v9-sim-2013-clean",
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-    "jra-cb-v10-prior-corner274-2013",
-    "jra-joken-005-pooled-yetirank-v2",
-    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
-    "jra-joken-005-turf-mile-yeti-gated-v1",
-    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
-    "jra-joken-010-pooled-yetirank-v2",
-    "jra-joken-016-pooled-yetirank-v2",
-    "jra-joken-701-pooled-yetirank-v2",
-    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
-    "jra-joken-701-turf-mile-qsm-gated-v1",
-    "jra-joken-701-turf-intermediate-qsm-gated-v1",
-    "jra-joken-701-turf-long-qsm-gated-v1",
-    "jra-joken-703-pooled-yetirank-v2",
-    "jra-joken-703-turf-long-spring-qsm-gated-v1",
-    "jra-joken-703-turf-intermediate-qsm-gated-v1",
-    "jra-joken-703-other-extended-qsm-gated-v1",
-    "jra-joken-703-dirt-sprint-yeti-gated-v1",
-    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
-    "jra-joken-703-querysoftmax-maxrange-v1",
-    "jra-joken-999-pooled-yetirank-v2",
-    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
-    "jra-joken-703-turf-long-summer-yeti-gated-v1",
-    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
-    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
-    "jra-joken-703-turf-1400-qsm-gated-v1",
-    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
-    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
-    "jra-named-niigata-bsn-v1",
-    "jra-named-sapporo-suzuran-v2",
-    "jra-named-chukyo-nisai-stakes-focal-v3",
-    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
-    "jra-named-chukyo-nisai-stakes-largefield-v3",
-    "jra-named-niigata-kinen-draw-v2",
-    "banei-cb-v9-sim-2011",
-    "banei-cb-v8-window2011-wf-15y",
-    "iter12-nar-xgb-hpo-v8-clean188",
-    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
-    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
-    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
-    "nar-cell-top1-30-c-sprint-summer-tc1-v1",
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
-    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
-    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
-    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
-    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+    "jra-cb-v9-sim-2013-clean-nowin1",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+    "jra-cb-v10-prior-corner274-2013-nowin1",
+    "jra-joken-005-pooled-yetirank-v2-nowin1",
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-mile-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+    "jra-joken-010-pooled-yetirank-v2-nowin1",
+    "jra-joken-016-pooled-yetirank-v2-nowin1",
+    "jra-joken-701-pooled-yetirank-v2-nowin1",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1",
+    "jra-joken-701-turf-mile-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-long-qsm-gated-v1-nowin1",
+    "jra-joken-703-pooled-yetirank-v2-nowin1",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-other-extended-qsm-gated-v1-nowin1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-querysoftmax-maxrange-v1-nowin1",
+    "jra-joken-999-pooled-yetirank-v2-nowin1",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1400-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1",
+    "jra-named-niigata-bsn-v1-nowin1",
+    "jra-named-sapporo-suzuran-v2-nowin1",
+    "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+    "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+    "jra-named-niigata-kinen-draw-v2-nowin1",
+    "banei-cb-v9-sim-2011-nowin1",
+    "banei-cb-v8-window2011-wf-15y-nowin1",
+    "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form-nowin1",
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
   ]);
 });
 
@@ -980,55 +980,55 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
 it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each category's default variant", () => {
   const versions = getAllFinishPositionCellRoutingOffLabelVariantModelVersions();
   expect(versions).toStrictEqual([
-    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-    "jra-cb-v10-prior-corner274-2013",
-    "jra-joken-005-pooled-yetirank-v2",
-    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
-    "jra-joken-005-turf-mile-yeti-gated-v1",
-    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
-    "jra-joken-010-pooled-yetirank-v2",
-    "jra-joken-016-pooled-yetirank-v2",
-    "jra-joken-701-pooled-yetirank-v2",
-    "jra-joken-010-dirt-intermediate-yeti-gated-v1",
-    "jra-joken-701-turf-mile-qsm-gated-v1",
-    "jra-joken-701-turf-intermediate-qsm-gated-v1",
-    "jra-joken-701-turf-long-qsm-gated-v1",
-    "jra-joken-703-pooled-yetirank-v2",
-    "jra-joken-703-turf-long-spring-qsm-gated-v1",
-    "jra-joken-703-turf-intermediate-qsm-gated-v1",
-    "jra-joken-703-other-extended-qsm-gated-v1",
-    "jra-joken-703-dirt-sprint-yeti-gated-v1",
-    "jra-joken-703-dirt-intermediate-qsm-gated-v1",
-    "jra-joken-703-querysoftmax-maxrange-v1",
-    "jra-joken-999-pooled-yetirank-v2",
-    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
-    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
-    "jra-joken-703-turf-long-summer-yeti-gated-v1",
-    "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
-    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
-    "jra-joken-703-turf-1400-qsm-gated-v1",
-    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
-    "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
-    "jra-named-niigata-bsn-v1",
-    "jra-named-sapporo-suzuran-v2",
-    "jra-named-chukyo-nisai-stakes-focal-v3",
-    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
-    "jra-named-chukyo-nisai-stakes-largefield-v3",
-    "jra-named-niigata-kinen-draw-v2",
-    "banei-cb-v8-window2011-wf-15y",
-    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
-    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
-    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
-    "nar-cell-top1-42-c-sprint-summer-tc1-v1",
-    "nar-cell-top1-30-c-sprint-summer-tc1-v1",
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
-    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
-    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
-    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
-    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+    "jra-cb-v10-prior-corner274-2013-nowin1",
+    "jra-joken-005-pooled-yetirank-v2-nowin1",
+    "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-mile-yeti-gated-v1-nowin1",
+    "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+    "jra-joken-010-pooled-yetirank-v2-nowin1",
+    "jra-joken-016-pooled-yetirank-v2-nowin1",
+    "jra-joken-701-pooled-yetirank-v2-nowin1",
+    "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1",
+    "jra-joken-701-turf-mile-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-701-turf-long-qsm-gated-v1-nowin1",
+    "jra-joken-703-pooled-yetirank-v2-nowin1",
+    "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-other-extended-qsm-gated-v1-nowin1",
+    "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1",
+    "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+    "jra-joken-703-querysoftmax-maxrange-v1-nowin1",
+    "jra-joken-999-pooled-yetirank-v2-nowin1",
+    "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1",
+    "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1",
+    "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1400-qsm-gated-v1-nowin1",
+    "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1",
+    "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1",
+    "jra-named-niigata-bsn-v1-nowin1",
+    "jra-named-sapporo-suzuran-v2-nowin1",
+    "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+    "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+    "jra-named-niigata-kinen-draw-v2-nowin1",
+    "banei-cb-v8-window2011-wf-15y-nowin1",
+    "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface-nowin1",
+    "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form-nowin1",
+    "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
   ]);
 });
 
@@ -1053,14 +1053,14 @@ it("named-race variants inherit the open-class model without joining the linear 
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-bsn-v1",
+    model_version: "jra-named-niigata-bsn-v1-nowin1",
   });
   expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.sapporo_suzuran).toStrictEqual(
     {
       architecture: "catboost",
       base_variant: "joken_999",
       feature_count: 113,
-      model_version: "jra-named-sapporo-suzuran-v2",
+      model_version: "jra-named-sapporo-suzuran-v2-nowin1",
     },
   );
   expect(
@@ -1069,8 +1069,8 @@ it("named-race variants inherit the open-class model without joining the linear 
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-chukyo-nisai-stakes-focal-v3",
-    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
   });
   expect(
@@ -1079,8 +1079,8 @@ it("named-race variants inherit the open-class model without joining the linear 
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
-    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
   });
   expect(
@@ -1089,16 +1089,16 @@ it("named-race variants inherit the open-class model without joining the linear 
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-chukyo-nisai-stakes-largefield-v3",
-    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2",
+    model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+    rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
   });
   expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.niigata_kinen).toStrictEqual({
     architecture: "catboost",
     base_variant: "joken_999",
     feature_count: 113,
-    model_version: "jra-named-niigata-kinen-draw-v2",
-    rerank_model_version: "jra-named-niigata-kinen-going-v2",
+    model_version: "jra-named-niigata-kinen-draw-v2-nowin1",
+    rerank_model_version: "jra-named-niigata-kinen-going-v2-nowin1",
     routing_mode: "jra_lock1_rerank_rest",
   });
   expect(

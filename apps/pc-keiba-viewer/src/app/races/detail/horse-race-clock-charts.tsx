@@ -24,6 +24,8 @@ import {
 } from "../../../lib/training-charts";
 
 interface ClockGalleryRunner {
+  sourceHorseId?: string | null;
+  bamei?: string | null;
   kettoTorokuBango: string | null;
   wakuban: string | null;
 }
@@ -305,7 +307,12 @@ export const HorseRaceClockGallery = ({
   runners,
   stats,
 }: HorseRaceClockGalleryProps) => {
-  const rows = buildClockAnalysisRows({ currentDistance, results, runners });
+  const rows = buildClockAnalysisRows({
+    currentDistance,
+    results,
+    runners,
+    includeMissingKohan: runners.some((runner) => runner.sourceHorseId != null),
+  });
   const scatter = buildScatterView(rows, clockParFromRaceTimeStats(stats));
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [hoverReferenceKind, setHoverReferenceKind] = useState<ClockReferenceKind | null>(null);
@@ -351,6 +358,11 @@ export const HorseRaceClockGallery = ({
   return (
     <figure aria-label="競走成績タイム散布図" className="training-chart race-clock-gallery">
       <h3>{scatter.title}</h3>
+      {scatter.xAxisTitle === "レース日" ? (
+        <p className="training-chart-note">
+          上がり3Fが未取得の履歴を含むため、レース日と距離換算した走破タイムを表示しています。馬体重・上がり3Fは補完していません。
+        </p>
+      ) : null}
       {scatter.references.length === 0 ? null : (
         <div className="race-clock-legend-groups">
           <ClockReferenceLegend lines={scatter.references.filter(isTimeReference)} />

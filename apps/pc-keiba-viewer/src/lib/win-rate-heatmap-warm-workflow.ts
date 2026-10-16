@@ -4,8 +4,8 @@
 // Heatmap warms used to share the detail-section queue. That queue backs up
 // (18k+ messages, consumer concurrency 2) and heatmap messages were retried
 // out of batches until max_retries dropped them, so most races of a day never
-// stored a heatmap. One Workflow instance per (date, venue) now warms races
-// sequentially, each race in its own durable step with retries.
+// stored a heatmap. Venue workflows now schedule per-destination owned work.
+// Only the SQLite execution owner can admit a producing request.
 
 import {
   buildDetailSectionApiPath,
@@ -13,6 +13,8 @@ import {
 } from "./race-detail-section-cache";
 
 export interface HeatmapWarmWorkflowParams {
+  query?: string;
+  ownerToken?: string;
   day: string;
   keibajoCode: string;
   month: string;
@@ -38,7 +40,7 @@ export interface HeatmapWarmStep {
 
 export type HeatmapWarmFetch = (request: Request) => Promise<Response>;
 
-export type HeatmapWarmRaceStatus = "failed" | "hit" | "stored";
+export type HeatmapWarmRaceStatus = "failed" | "hit" | "stored" | "pending";
 
 export interface HeatmapWarmRaceResult {
   raceNumber: string;
@@ -107,7 +109,8 @@ const HEATMAP_WARM_STEP_CONFIG: HeatmapWarmStepConfig = {
   timeout: "3 minutes",
 };
 // Instance ids are deterministic per slot so duplicate triggers inside one
-// slot are skipped by createBatch; a later slot re-sweeps after scratches.
+// slot share an id; these wrappers can only schedule owned work, never produce.
+// A later slot re-sweeps after scratches.
 const INSTANCE_SLOT_MS = 15 * 60 * 1000;
 const MAX_INSTANCES_PER_BATCH = 100;
 const DIGITS_2 = /^\d{2}$/u;
@@ -130,10 +133,15 @@ export const isHeatmapWarmWorkflowParams = (value: unknown): value is HeatmapWar
   KEIBAJO_CODE.test(value.keibajoCode) &&
   (value.source === "jra" || value.source === "nar") &&
   Array.isArray(value.raceNumbers) &&
-  value.raceNumbers.every(isDigits2);
+  value.raceNumbers.every(isDigits2) &&
+  (value.query === undefined || typeof value.query === "string") &&
+  (value.ownerToken === undefined ||
+    (typeof value.ownerToken === "string" &&
+      /^[a-f0-9-]{36}$/u.test(value.ownerToken) &&
+      value.raceNumbers.length === 1));
 
-const buildHeatmapUrl = (params: HeatmapWarmWorkflowParams, raceNumber: string): URL =>
-  new URL(
+const buildHeatmapUrl = (params: HeatmapWarmWorkflowParams, raceNumber: string): URL => {
+  const url = new URL(
     buildDetailSectionApiPath({
       day: params.day,
       keibajoCode: params.keibajoCode,
@@ -144,6 +152,9 @@ const buildHeatmapUrl = (params: HeatmapWarmWorkflowParams, raceNumber: string):
     }),
     INTERNAL_ORIGIN,
   );
+  url.search = params.query ?? "";
+  return url;
+};
 
 // Only status and cache header matter. Heatmap payloads exceed the 1 MiB
 // bounded drain, so cancel the body instead of reading it.
@@ -174,10 +185,13 @@ export const warmHeatmapRace = async (
 ): Promise<HeatmapWarmRaceStatus> => {
   const probeUrl = buildHeatmapUrl(params, raceNumber);
   probeUrl.searchParams.set(HEATMAP_CACHE_PROBE_PARAM, "1");
-  if (isHeatmapHit(await fetchHeatmap(fetchSelf, probeUrl))) return "hit";
+  if (params.ownerToken === undefined && isHeatmapHit(await fetchHeatmap(fetchSelf, probeUrl)))
+    return "hit";
   const url = buildHeatmapUrl(params, raceNumber);
   url.searchParams.set(DETAIL_SECTION_CACHE_WARM_PARAM, "1");
+  if (params.ownerToken !== undefined) url.searchParams.set("__heatmapOwner", params.ownerToken);
   const warmed = await fetchHeatmap(fetchSelf, url);
+  if (warmed.headers.get(HEATMAP_CACHE_HEADER) === "PENDING") return "pending";
   if (isHeatmapStored(warmed)) return "stored";
   throw new Error(
     `heatmap warm not stored: ${warmed.status} ${warmed.headers.get(HEATMAP_CACHE_HEADER) ?? "missing"} ${url.pathname}`,

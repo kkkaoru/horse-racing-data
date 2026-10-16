@@ -203,13 +203,13 @@ def test_group_quality_rows_separates_different_model_versions_same_race() -> No
     # different model_versions -- these must land in separate groups, not
     # be blended together.
     rows: list[subject.PredictionRow] = [
-        ("02", "01", "jra-cb-v9-sim-2013-clean", 1.4),
-        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269", 0.1),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.4),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1", 0.1),
     ]
     result = subject.group_quality_rows(rows, "2026", "0711")
     assert result == {
-        ("2026", "0711", "02", "01", "jra-cb-v9-sim-2013-clean"): [1.4],
-        ("2026", "0711", "02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269"): [0.1],
+        ("2026", "0711", "02", "01", "jra-cb-v9-sim-2013-clean-nowin1"): [1.4],
+        ("2026", "0711", "02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1"): [0.1],
     }
 
 
@@ -300,11 +300,11 @@ def test_rollup_quality_by_race_mixed_is_partially_degraded() -> None:
     groups = [
         subject.QualityGroupResult(
             kaisai_nen="2026", kaisai_tsukihi="0711", keibajo_code="02", race_bango="01",
-            model_version="jra-cb-v9-sim-2013-clean", sample_count=16, stddev=1.4, degraded=False,
+            model_version="jra-cb-v9-sim-2013-clean-nowin1", sample_count=16, stddev=1.4, degraded=False,
         ),
         subject.QualityGroupResult(
             kaisai_nen="2026", kaisai_tsukihi="0711", keibajo_code="02", race_bango="01",
-            model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269", sample_count=16,
+            model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1", sample_count=16,
             stddev=0.1, degraded=True,
         ),
     ]
@@ -585,9 +585,9 @@ def _sample_jra_routing_config() -> subject.CategoryRoutingConfig:
     return subject.CategoryRoutingConfig(
         default_variant="sim",
         variant_model_versions={
-            "sim": "jra-cb-v9-sim-2013-clean",
-            "jockey_pedigree_703": "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
-            "prior_corner_dirt_smallfield_005": "jra-cb-v10-prior-corner274-2013",
+            "sim": "jra-cb-v9-sim-2013-clean-nowin1",
+            "jockey_pedigree_703": "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+            "prior_corner_dirt_smallfield_005": "jra-cb-v10-prior-corner274-2013-nowin1",
         },
         rules=(
             subject.RoutingRule(
@@ -618,7 +618,7 @@ def test_resolve_expected_model_version_first_rule_matches() -> None:
     config = _sample_jra_routing_config()
     entry: dict[str, object] = {"kyoso_joken_code": "703", "keibajo_code": "05"}
     result = subject.resolve_expected_model_version(config, entry, "jra")
-    assert result == "jra-cb-v9-sim-2013-clean-jockey-pedigree269"
+    assert result == "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1"
 
 
 def test_resolve_expected_model_version_venue_rule_matches_when_earlier_rules_dont() -> None:
@@ -627,7 +627,7 @@ def test_resolve_expected_model_version_venue_rule_matches_when_earlier_rules_do
         "kyoso_joken_code": "016", "keibajo_code": "02", "track_code": "10", "shusso_tosu": 16,
     }
     result = subject.resolve_expected_model_version(config, entry, "jra")
-    assert result == "jra-cb-v9-sim-2013-clean-jockey-pedigree269"
+    assert result == "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1"
 
 
 def test_resolve_expected_model_version_no_rule_matches_returns_default() -> None:
@@ -636,7 +636,7 @@ def test_resolve_expected_model_version_no_rule_matches_returns_default() -> Non
         "kyoso_joken_code": "016", "keibajo_code": "05", "track_code": "10", "shusso_tosu": 16,
     }
     result = subject.resolve_expected_model_version(config, entry, "jra")
-    assert result == "jra-cb-v9-sim-2013-clean"
+    assert result == "jra-cb-v9-sim-2013-clean-nowin1"
 
 
 def test_resolve_expected_model_version_smallfield_dirt_rule_matches() -> None:
@@ -645,7 +645,7 @@ def test_resolve_expected_model_version_smallfield_dirt_rule_matches() -> None:
         "kyoso_joken_code": "005", "keibajo_code": "05", "track_code": "20", "shusso_tosu": 8,
     }
     result = subject.resolve_expected_model_version(config, entry, "jra")
-    assert result == "jra-cb-v10-prior-corner274-2013"
+    assert result == "jra-cb-v10-prior-corner274-2013-nowin1"
 
 
 # ── parse_cell_routing_config ─────────────────────────────────────────────────
@@ -661,9 +661,9 @@ def test_parse_cell_routing_config_parses_real_shape() -> None:
         "jra": {
             "default_variant": "sim",
             "variants": {
-                "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+                "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
                 "jockey_pedigree_703": {
-                    "model_version": "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+                    "model_version": "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
                     "feature_count": 269, "architecture": "catboost",
                 },
             },
@@ -679,8 +679,8 @@ def test_parse_cell_routing_config_parses_real_shape() -> None:
     assert config is not None
     assert config.default_variant == "sim"
     assert config.variant_model_versions == {
-        "sim": "jra-cb-v9-sim-2013-clean",
-        "jockey_pedigree_703": "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        "sim": "jra-cb-v9-sim-2013-clean-nowin1",
+        "jockey_pedigree_703": "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
     }
     assert len(config.rules) == 1
     assert config.rules[0].variant == "jockey_pedigree_703"
@@ -694,7 +694,7 @@ def test_parse_cell_routing_config_reads_real_repo_file() -> None:
     config = subject.parse_cell_routing_config(payload, "jra")
     assert config is not None
     assert config.default_variant == "sim"
-    assert "jra-cb-v9-sim-2013-clean" in config.variant_model_versions.values()
+    assert "jra-cb-v9-sim-2013-clean-nowin1" in config.variant_model_versions.values()
 
 
 # ── model_versions_by_race_key ───────────────────────────────────────────────
@@ -730,7 +730,7 @@ def test_find_routing_mismatches_expected_version_present_no_mismatch() -> None:
         ("2026", "0712", "02", "01", "1010", "10", 1200, 16, "A", "703"),
     ]
     model_versions_by_race = {
-        ("2026", "0712", "02", "01"): {"jra-cb-v9-sim-2013-clean-jockey-pedigree269"},
+        ("2026", "0712", "02", "01"): {"jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1"},
     }
     result = subject.find_routing_mismatches(confirmed, model_versions_by_race, config, "jra")
     assert result == []
@@ -745,7 +745,7 @@ def test_find_routing_mismatches_expected_version_missing_is_a_mismatch() -> Non
     assert result == [
         subject.RoutingMismatch(
             kaisai_nen="2026", kaisai_tsukihi="0712", keibajo_code="02", race_bango="01",
-            expected_model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+            expected_model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
         ),
     ]
 
@@ -755,7 +755,7 @@ def test_find_routing_mismatches_default_variant_present_no_mismatch() -> None:
     confirmed: list[subject.ConfirmedRaceRow] = [
         ("2026", "0712", "05", "01", "1010", "10", 1200, 16, "A", "016"),
     ]
-    model_versions_by_race = {("2026", "0712", "05", "01"): {"jra-cb-v9-sim-2013-clean"}}
+    model_versions_by_race = {("2026", "0712", "05", "01"): {"jra-cb-v9-sim-2013-clean-nowin1"}}
     result = subject.find_routing_mismatches(confirmed, model_versions_by_race, config, "jra")
     assert result == []
 
@@ -1015,9 +1015,9 @@ def test_build_health_check_report_fully_clean_day() -> None:
         ("2026", "0712", "05", "01", "1010", "10", 1200, 16, "A", "016"),
     ]
     predictions: list[subject.PredictionRow] = [
-        ("05", "01", "jra-cb-v9-sim-2013-clean", 0.2),
-        ("05", "01", "jra-cb-v9-sim-2013-clean", 0.9),
-        ("05", "01", "jra-cb-v9-sim-2013-clean", 1.6),
+        ("05", "01", "jra-cb-v9-sim-2013-clean-nowin1", 0.2),
+        ("05", "01", "jra-cb-v9-sim-2013-clean-nowin1", 0.9),
+        ("05", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.6),
     ]
     report = subject.build_health_check_report(
         "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), 2, [], now,
@@ -1052,10 +1052,10 @@ def test_build_health_check_report_mixed_quality_matches_07_11_shape() -> None:
         ("2026", "0711", "02", "01", "0950", "10", 1200, 16, "A", "016"),
     ]
     predictions: list[subject.PredictionRow] = [
-        ("02", "01", "jra-cb-v9-sim-2013-clean", 1.4),
-        ("02", "01", "jra-cb-v9-sim-2013-clean", 0.3),
-        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269", 0.10),
-        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269", 0.12),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.4),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 0.3),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1", 0.10),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1", 0.12),
     ]
     report = subject.build_health_check_report(
         "20260711", "jra", confirmed, predictions, [], _real_routing_payload(), 0, [], now,
@@ -1077,7 +1077,7 @@ def test_build_health_check_report_routing_mismatch_flips_exit_code() -> None:
         ("2026", "0712", "02", "01", "1010", "10", 1200, 16, "A", "016"),
     ]
     predictions: list[subject.PredictionRow] = [
-        ("02", "01", "jra-cb-v9-sim-2013-clean", 1.2),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.2),
     ]
     report = subject.build_health_check_report(
         "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), None, [], now,
@@ -1253,7 +1253,7 @@ def test_format_routing_section_lists_mismatches() -> None:
         routing_mismatches=(
             subject.RoutingMismatch(
                 kaisai_nen="2026", kaisai_tsukihi="0712", keibajo_code="02", race_bango="03",
-                expected_model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+                expected_model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
             ),
         ),
         burst_buckets=(), d1_gap_event_count=None,
@@ -1262,7 +1262,7 @@ def test_format_routing_section_lists_mismatches() -> None:
     lines = subject._format_routing_section(report)
     assert lines == [
         "[3] Routing parity: 1 mismatch(es) found",
-        "      - jra:2026:0712:02:03 expected=jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        "      - jra:2026:0712:02:03 expected=jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
     ]
 
 
@@ -1639,7 +1639,7 @@ def test_query_predictions_binds_source_category() -> None:
 
 
 def test_query_predictions_returns_fetchall_rows() -> None:
-    rows = [("02", "01", "jra-cb-v9-sim-2013-clean", 1.2)]
+    rows = [("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.2)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_predictions(mock_conn, "20260712", "jra")
     assert result == rows
@@ -1649,15 +1649,15 @@ def test_query_predictions_coerces_decimal_predicted_score_to_float() -> None:
     # psycopg returns a Postgres NUMERIC column (predicted_score) as
     # decimal.Decimal, not float -- this must be coerced at the fetch
     # boundary so every downstream consumer genuinely receives float.
-    rows = [("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("1.234"))]
+    rows = [("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", Decimal("1.234"))]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_predictions(mock_conn, "20260712", "jra")
-    assert result == [("02", "01", "jra-cb-v9-sim-2013-clean", 1.234)]
+    assert result == [("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", 1.234)]
     assert isinstance(result[0][3], float)
 
 
 def test_query_predictions_preserves_none_predicted_score() -> None:
-    rows = [("02", "01", "jra-cb-v9-sim-2013-clean", None)]
+    rows = [("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", None)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_predictions(mock_conn, "20260712", "jra")
     assert result[0][3] is None
@@ -1672,8 +1672,8 @@ def test_query_predictions_decimal_predicted_score_yields_json_serializable_repo
     # chain end to end with Decimal input, matching the incident's actual
     # data shape.
     rows = [
-        ("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("0.05")),
-        ("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("0.06")),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", Decimal("0.05")),
+        ("02", "01", "jra-cb-v9-sim-2013-clean-nowin1", Decimal("0.06")),
     ]
     mock_conn = _make_mock_conn(rows)
     predictions = subject.query_predictions(mock_conn, "20260712", "jra")
@@ -1986,7 +1986,7 @@ def test_run_clean_report_returns_exit_0(
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=1))
@@ -2010,7 +2010,7 @@ def test_run_anomaly_found_returns_exit_1(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
@@ -2032,7 +2032,7 @@ def test_run_json_output_prints_valid_json(
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
@@ -2056,7 +2056,7 @@ def test_run_r2_shard_gap_flips_exit_code_end_to_end(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
@@ -2087,7 +2087,7 @@ def test_run_resolves_r2_shard_query_args_from_date_and_bucket_default(
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
@@ -2111,7 +2111,7 @@ def test_run_uses_r2_bucket_env_var_override(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         subject, "load_cell_routing_json",
         MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
-            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean-nowin1", "feature_count": 250, "architecture": "catboost"},
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))

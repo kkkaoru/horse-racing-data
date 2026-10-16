@@ -248,7 +248,7 @@ interface CorrectionMasterCheckboxProps {
 interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
   combinedScoreLoading?: boolean;
-  evaluation: FinishPredictionEvaluationMetrics;
+  evaluation: FinishPredictionEvaluationMetrics | null;
   inputs: FinishPredictionBuildInputs;
   realtimeRequest: RealtimeRaceRequest;
 }
@@ -468,8 +468,11 @@ function FinishPredictionEvaluationPanel({
 export function WrappedFinishPredictionEvaluation({
   evaluation,
 }: {
-  evaluation: FinishPredictionEvaluationMetrics;
+  evaluation: FinishPredictionEvaluationMetrics | null;
 }) {
+  if (evaluation === null) {
+    return <output>このレースに適用できる検証結果はありません。</output>;
+  }
   return (
     <MobileCollapsibleSection title={FINISH_PREDICTION_EVALUATION_TITLE}>
       <FinishPredictionEvaluationPanel evaluation={evaluation} />

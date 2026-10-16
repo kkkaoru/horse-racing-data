@@ -1,3 +1,4 @@
+// Run with bun.
 import "server-only";
 import {
   getProductionAccessHeaders,
@@ -6,6 +7,12 @@ import {
 } from "./production-access.server";
 
 export { useProductionApiProxy };
+
+interface ProductionStreamRequest {
+  path: string;
+  searchParams: URLSearchParams;
+  signal: AbortSignal;
+}
 
 // Per-attempt timeout. Observed real-world response times for the upstream
 // trends / realtime endpoints range from ~0.3s (cache hit) to ~8s (Hyperdrive
@@ -108,20 +115,59 @@ const DEFAULT_SSE_CACHE_CONTROL = "no-cache, no-transform";
 const DEFAULT_SSE_CONTENT_TYPE = "text/event-stream";
 const STREAM_SOURCE_HEADER = "X-Horse-Weights-Stream-Source";
 const STREAM_SOURCE_PROXIED = "PROXIED-PRODUCTION";
+// Rotate before Node's five-minute idle body timeout. EventSource reconnects
+// automatically and the upstream sends the latest snapshot on every connect.
+const STREAM_MAX_AGE_MS = 240_000;
 
-export const proxyToProductionStream = async (
-  path: string,
-  searchParams: URLSearchParams,
-): Promise<Response> => {
+const relayProductionStream = (
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> => {
+  const relay = new TransformStream<Uint8Array, Uint8Array>();
+  const lifetime = new AbortController();
+  const timer = setTimeout(() => lifetime.abort(), STREAM_MAX_AGE_MS);
+  void body
+    .pipeTo(relay.writable, { preventAbort: true, signal: lifetime.signal })
+    .catch((error: unknown) => {
+      if (!lifetime.signal.aborted && !signal.aborted) {
+        console.error("Production event stream disconnected", error);
+      }
+    })
+    .finally(async () => {
+      clearTimeout(timer);
+      // A downstream cancellation may already have closed/errored this side.
+      await relay.writable.close().catch(() => undefined);
+    });
+  return relay.readable;
+};
+
+export const proxyToProductionStream = async ({
+  path,
+  searchParams,
+  signal,
+}: ProductionStreamRequest): Promise<Response> => {
   const query = searchParams.toString();
   const upstreamPath = query.length > 0 ? `${path}?${query}` : path;
-  const upstream = await fetchProductionApi(upstreamPath);
+  // Bound connection setup, not the lifetime of the event stream. Keep the
+  // browser's cancellation connected after headers arrive.
+  const connection = new AbortController();
+  const timeout = setTimeout(() => connection.abort(), ATTEMPT_TIMEOUT_MS);
+  const upstream = await fetchProductionApi(upstreamPath, {
+    signal: AbortSignal.any([signal, connection.signal]),
+  })
+    .catch((error: unknown) => {
+      throw toWritableError(error);
+    })
+    .finally(() => clearTimeout(timeout));
   const headers = {
     "Cache-Control": upstream.headers.get("Cache-Control") ?? DEFAULT_SSE_CACHE_CONTROL,
     "Content-Type": upstream.headers.get("Content-Type") ?? DEFAULT_SSE_CONTENT_TYPE,
     [STREAM_SOURCE_HEADER]: STREAM_SOURCE_PROXIED,
   };
   return upstream.body
-    ? new Response(upstream.body, { headers, status: upstream.status })
+    ? new Response(relayProductionStream(upstream.body, signal), {
+        headers,
+        status: upstream.status,
+      })
     : new Response(null, { headers, status: upstream.status });
 };

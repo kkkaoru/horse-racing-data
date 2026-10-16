@@ -7,7 +7,15 @@
   // Used only by `next dev` via initOpenNextCloudflareForDev/getPlatformProxy.
   // Durable Objects are accessed through the production API proxy in local dev.
   // Read the production R2 catalog directly when remote bindings are enabled.
-  "services": [{ "binding": "R2_CATALOG", "service": "pc-keiba-r2-catalog", "remote": true }],
+  "services": [
+    { "binding": "R2_CATALOG", "service": "pc-keiba-r2-catalog", "remote": true },
+    {
+      "binding": "R2_RACE_DETAIL",
+      "service": "pc-keiba-r2-catalog",
+      "entrypoint": "RaceDetailReadService",
+      "remote": true,
+    },
+  ],
   "kv_namespaces": [
     {
       "binding": "DETAIL_SECTION_CACHE_KV",

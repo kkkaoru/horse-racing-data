@@ -515,7 +515,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
           onShowAllWorkouts={changeShowAllWorkouts}
         />
       ) : (
-        <div className="training-table-wrap">
+        <section aria-label="調教データの横スクロール" className="training-table-wrap">
           <table className="training-table">
             <colgroup>
               <col className="training-col-runner-number" />
@@ -579,7 +579,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
               ))}
             </tbody>
           </table>
-        </div>
+        </section>
       )}
     </>
   );

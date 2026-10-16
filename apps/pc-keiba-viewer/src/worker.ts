@@ -1,3 +1,4 @@
+export { HeatmapExecutionOwner } from "./worker/heatmap-execution-owner";
 export { HeatmapWarmWorkflow } from "./worker/heatmap-warm-workflow";
 export { PaddockRoom } from "./worker/paddock-room";
 export { RaceTrendRoom } from "./worker/race-trend-room";
@@ -106,8 +107,10 @@ export default {
     }
     if (controller.cron === "*/15 0-14 * * *") {
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
-      // Re-sweep today's heatmaps: scratches change the runner signature and
-      // turn a stored heatmap into a miss. HIT races are skipped cheaply.
+    }
+    if (controller.cron === "*/15 * * * *") {
+      // Runner updates can invalidate tomorrow's heatmaps just after JST midnight.
+      // Re-sweep the whole day; HIT races only need a cache probe.
       ctx.waitUntil(
         scheduleTodayWinRateHeatmapWarm({
           ctx,

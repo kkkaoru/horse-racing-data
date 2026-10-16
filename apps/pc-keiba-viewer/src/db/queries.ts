@@ -277,7 +277,7 @@ const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v3-mssd";
 const RATE_PERCENT_DIVISOR = 10;
 const RATE_PERCENT_SCALE = 1000;
-const TIME_SCORE_QUERY_VERSION = "v4-mssd";
+const TIME_SCORE_QUERY_VERSION = "v5-catalog-history-fields";
 const CELL_CONDITION_LABEL_PAIRS = [
   ["005", "1勝クラス"],
   ["010", "2勝クラス"],
@@ -857,7 +857,9 @@ export const getRaceRunners = cache(
   ): Promise<Runner[]> => {
     return withDbQueryCache(
       [
-        /^[A-Z][0-9A-Z]$/u.test(keibajoCode) ? "getRaceRunners-overseas-v2" : "getRaceRunners",
+        /^[A-Z][0-9A-Z]$/u.test(keibajoCode)
+          ? "getRaceRunners-overseas-v4-source-mapping"
+          : "getRaceRunners",
         source,
         year,
         month,
@@ -3354,6 +3356,11 @@ const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
 };
 
 const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
+  // Win-odds-banned retrains (2026-10-16): category defaults now serve these.
+  "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+  // Win-odds-banned retrains (2026-10-16): category defaults now serve these.
+  "banei-cb-v9-sim-2011-nowin1",
+  "jra-cb-v9-sim-2013-clean-nowin1",
   "jra-cb-v9-sim-2013-clean",
   "iter12-nar-xgb-hpo-v8-clean188",
   "banei-cb-v9-sim-2011",
@@ -3367,6 +3374,59 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   // showed as missing in the viewer despite existing in Neon.
   "jra-cb-stage1-marketfree235-2013",
   "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+  // Superseded by their -nowin1 retrains (2026-10-16 win-odds ban). Kept so the
+  // predictions already written for past races under these versions still display.
+  "iter40-nar-settransformer-blend-v1",
+  "jra-cb-v10-prior-corner274-2013",
+  "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+  "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1",
+  "jra-joken-005-dirt-1700-summer-qsm-gated-v1",
+  "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1",
+  "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1",
+  "jra-joken-005-dirt-mile-autumn-yeti-gated-v1",
+  "jra-joken-005-dirt-mile-spring-qsm-gated-v1",
+  "jra-joken-005-pooled-yetirank-v2",
+  "jra-joken-005-turf-intermediate-spring-qsm-gated-v1",
+  "jra-joken-005-turf-long-hierarchical-qsm-gated-v2",
+  "jra-joken-005-turf-mile-yeti-gated-v1",
+  "jra-joken-010-dirt-intermediate-yeti-gated-v1",
+  "jra-joken-010-pooled-yetirank-v2",
+  "jra-joken-016-pooled-yetirank-v2",
+  "jra-joken-701-pooled-yetirank-v2",
+  "jra-joken-701-turf-intermediate-qsm-gated-v1",
+  "jra-joken-701-turf-long-qsm-gated-v1",
+  "jra-joken-701-turf-mile-qsm-gated-v1",
+  "jra-joken-703-dirt-intermediate-qsm-gated-v1",
+  "jra-joken-703-dirt-sprint-yeti-gated-v1",
+  "jra-joken-703-other-extended-qsm-gated-v1",
+  "jra-joken-703-pooled-yetirank-v2",
+  "jra-joken-703-querysoftmax-maxrange-v1",
+  "jra-joken-703-turf-1200-largefield-yeti-gated-v1",
+  "jra-joken-703-turf-1400-qsm-gated-v1",
+  "jra-joken-703-turf-intermediate-qsm-gated-v1",
+  "jra-joken-703-turf-long-spring-qsm-gated-v1",
+  "jra-joken-703-turf-long-summer-yeti-gated-v1",
+  "jra-joken-999-pooled-yetirank-v2",
+  "jra-named-chukyo-nisai-stakes-focal-v3",
+  "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4",
+  "jra-named-chukyo-nisai-stakes-largefield-v3",
+  "jra-named-chukyo-nisai-stakes-v2",
+  "jra-named-niigata-bsn-v1",
+  "jra-named-niigata-kinen-draw-v2",
+  "jra-named-niigata-kinen-going-v2",
+  "jra-named-sapporo-suzuran-v2",
+  "nar-cell-top1-30-c-sprint-summer-tc1-v1",
+  "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1",
+  "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1",
+  "nar-cell-top1-42-c-sprint-summer-tc1-v1",
+  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1",
+  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1",
+  "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1",
+  "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1",
+  "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1",
+  "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider",
+  "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface",
+  "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form",
   // Overseas market-free LightGBM trained on data_kubun='B' runners.
   "overseas-lgbm-fp-v1",
   // v2 drops Japan-catalogue identity-presence flags (has_jockey /
@@ -4538,7 +4598,10 @@ const buildCellHistoryRacePredicates = (
     and (
       ${settings.includeRaceTitle} = false
       or (
-        ${table}.grade_code in ('A', 'F')
+        (
+          ${race.gradeCode?.trim() ?? ""} not in ('A', 'F')
+          or ${table}.grade_code in ('A', 'F')
+        )
         and nullif(
           regexp_replace(${table}.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'),
           ''
@@ -5761,7 +5824,14 @@ export const getSimilarRaceStats = cache(
 export const getTimeScoreRows = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<TimeScoreRow[]> => {
     return withDbQueryCache(
-      ["getTimeScoreRows", TIME_SCORE_QUERY_VERSION, race, settings],
+      [
+        "getTimeScoreRows",
+        isOverseasKeibajoCode(race.keibajoCode)
+          ? "v6-overseas-source-mapping"
+          : TIME_SCORE_QUERY_VERSION,
+        race,
+        settings,
+      ],
       async () => {
         if (getDatabaseTarget() === "cloudflare") {
           const env = await safeGetCloudflareEnv();
@@ -5782,7 +5852,7 @@ export const getTimeScoreRows = cache(
           if (settings.includeMonthWindow) flags.push("includeMonthWindow");
           if (settings.includeRunnerCount) flags.push("includeRunnerCount");
           const matchedProfile = readCatalogRaceMatchedProfile(binding, {
-            source: race.source,
+            source: getSingleStatsSource(race, settings),
             date: raceDate,
             keibajoCode: race.keibajoCode,
             raceBango: race.raceBango,
@@ -5808,12 +5878,20 @@ export const getTimeScoreRows = cache(
           });
           const horses: CatalogTimeScoreHorse[] = [];
           const historyHorseIds: string[] = [];
+          const overseasHorseIds: string[] = [];
+          const domesticByHistoryId: Map<string, string> = new Map();
           for (const runner of runners) {
             const rawId: string = (runner.kettoTorokuBango ?? "").trim();
-            // An all-zero registration number is usable only through the
-            // overseas mapping, exactly like the SQL's current_horses CTE.
-            const historyHorseId: string | null =
-              rawId === "" ? null : /^0+$/u.test(rawId) ? (runner.sourceHorseId ?? null) : rawId;
+            const domesticId: string | null = /^(?!0{10}$)\d{10}$/u.test(rawId) ? rawId : null;
+            const providerId: string | null =
+              runner.sourceHorseId ?? (isOverseasKeibajoCode(race.keibajoCode) ? null : domesticId);
+            if (providerId !== null && !/^(?!0+$)[A-Za-z0-9]+$/u.test(providerId))
+              throw new Error("Invalid overseas provider horse identity");
+            const historyHorseId: string | null = providerId ?? domesticId;
+            if (domesticId !== null) historyHorseIds.push(domesticId);
+            if (providerId !== null) overseasHorseIds.push(providerId);
+            if (historyHorseId !== null && domesticId !== null)
+              domesticByHistoryId.set(historyHorseId, domesticId);
             horses.push({
               horseNumber: normaliseHorseNumber(runner.umaban),
               horseNumberSort: parseHorseNumberSort(runner.umaban),
@@ -5821,32 +5899,53 @@ export const getTimeScoreRows = cache(
               historyHorseId,
               currentAge: parseDigitsOnly(runner.barei),
             });
-            if (historyHorseId !== null && /^\d{10}$/u.test(historyHorseId)) {
-              historyHorseIds.push(historyHorseId);
-            }
           }
-          const [history, overseasRows, target] = await Promise.all([
+          const [jraHistory, narHistory, overseasRows, target] = await Promise.all([
             historyHorseIds.length === 0
               ? Promise.resolve([])
               : readCatalogRaceHistory(binding, {
-                  horseIds: historyHorseIds,
+                  source: "jra",
+                  horseIds: [...new Set(historyHorseIds)],
                   beforeDate: raceDate,
                   minDate: null,
                   limit: 4000,
                 }),
             historyHorseIds.length === 0
               ? Promise.resolve([])
+              : readCatalogRaceHistory(binding, {
+                  source: "nar",
+                  horseIds: [...new Set(historyHorseIds)],
+                  beforeDate: raceDate,
+                  minDate: null,
+                  limit: 4000,
+                }),
+            overseasHorseIds.length === 0
+              ? Promise.resolve([])
               : readCatalogOverseasRaceHistory(binding, {
-                  horseIds: historyHorseIds,
+                  horseIds: [...new Set(overseasHorseIds)],
                   beforeDate: raceDate,
                   minDate: null,
                   limit: 4000,
                 }),
             matchedProfile,
           ]);
-          const historyByHorseId: Map<string, TimeScoreHistoryRow[]> =
-            groupHistoryByHorseId(history);
+          const historyByHorseId: Map<string, TimeScoreHistoryRow[]> = groupHistoryByHorseId([
+            ...jraHistory,
+            ...narHistory,
+          ]);
+          // The published distance-only overseas projection has no event identity.
+          // Prefer existing domestic evidence for a horse; never double-weight overlap.
+          for (const [historyId, domesticId] of domesticByHistoryId) {
+            const domestic = historyByHorseId.get(domesticId);
+            if (domestic !== undefined) historyByHorseId.set(historyId, domestic);
+          }
+          const domesticHistoryIds: Set<string> = new Set(historyByHorseId.keys());
           for (const row of overseasRows) {
+            if (
+              isOverseasKeibajoCode(race.keibajoCode) &&
+              domesticHistoryIds.has(row.sourceHorseId)
+            )
+              continue;
             const bucket: TimeScoreHistoryRow[] = historyByHorseId.get(row.sourceHorseId) ?? [];
             bucket.push({
               horseNumber: "",
@@ -5861,7 +5960,7 @@ export const getTimeScoreRows = cache(
             });
             historyByHorseId.set(row.sourceHorseId, bucket);
           }
-          return toAppTimeScoreRows(
+          const computedRows = toAppTimeScoreRows(
             composeCatalogTimeScoreRows({
               raceDate,
               keibajoCode: race.keibajoCode,
@@ -5874,6 +5973,33 @@ export const getTimeScoreRows = cache(
             // mirrors its empty jockeyName rather than inventing one.
             new Map(),
           );
+          return computedRows.map((row) => {
+            if (!isOverseasKeibajoCode(race.keibajoCode)) return row;
+            const horse = horses.find((entry) => entry.horseNumber === row.horseNumber);
+            const historyId = horse?.historyHorseId ?? "";
+            const selectedHistory = historyByHorseId.get(historyId) ?? [];
+            // Neutral model defaults are not observed distance/venue rates.
+            const details = row.details.map((detail, index) => {
+              if (
+                (index === 2 && !selectedHistory.some((entry) => entry.distance !== null)) ||
+                (index === 3 && !selectedHistory.some((entry) => entry.keibajoCode !== null))
+              )
+                return Object.assign({}, detail, { value: null });
+              return detail;
+            });
+            return Object.assign({}, row, {
+              details,
+              historyEvidence: {
+                generation: "overseas-readers-v1",
+                historyHorseId: historyId,
+                selectedHistoryCount: (historyByHorseId.get(historyId) ?? []).length,
+                overseasHistoryCount: overseasRows.filter(
+                  (entry) => entry.sourceHorseId === historyId,
+                ).length,
+                selection: domesticHistoryIds.has(historyId) ? "domestic-preferred" : "overseas",
+              },
+            });
+          });
         }
         const statsSource = getSingleStatsSource(race, settings);
         const raceTable = statsSource === "jra" ? jvdRa : nvdRa;

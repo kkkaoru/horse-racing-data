@@ -21,6 +21,9 @@ declare global {
     blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
     getWebSockets(): WebSocket[];
     storage: {
+      sql?: {
+        exec(query: string, ...bindings: string[]): { toArray(): Record<string, unknown>[] };
+      };
       get<T = unknown>(key: string): Promise<T | undefined>;
       put(key: string, value: unknown): Promise<void>;
     };
@@ -147,6 +150,8 @@ declare global {
   }
 
   interface CloudflareEnv {
+    PC_KEIBA_INTERNAL_TOKEN?: string;
+    HEATMAP_EXECUTION_OWNER?: import("./src/lib/heatmap-execution").HeatmapExecutionNamespace;
     FINISH_POSITION_MODELS?: PcKeibaR2Bucket;
     DETAIL_SECTION_CACHE_KV?: PcKeibaKvNamespace;
     MCP_AUTH_TOKEN?: string;
@@ -165,7 +170,10 @@ declare global {
     PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS?: string;
     PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     RACE_TREND_ROOM?: PcKeibaDurableObjectNamespace;
-    R2_CATALOG?: { fetch: typeof fetch };
+    R2_CATALOG?: {
+      fetch: typeof fetch;
+      getGateMappingRevision?: (input: { date: string; keibajoCode: string }) => Promise<unknown>;
+    };
     R2_RACE_DETAIL?: { fetch: typeof fetch };
     REALTIME_DATA?: { fetch: typeof fetch };
     REALTIME_DB?: PcKeibaD1Database;

@@ -1,8 +1,10 @@
 "use client";
-
 import { useSearchParams } from "next/navigation";
+// Client component; checks run with bun.
 import { useEffect, useMemo, useState } from "react";
 
+import { isArcPredictionRace } from "../../../lib/arc-prediction";
+import type { ArcQualifiedStats } from "../../../lib/arc-qualified-stats";
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
@@ -27,6 +29,7 @@ import type {
   Training,
   WeightClassStatsRow,
 } from "../../../lib/race-types";
+import type { ArcHeatmapCohort } from "../../../lib/win-rate-heatmap";
 import {
   type WinRateHeatmapHorseRateRow,
   type WinRateHeatmapPartnershipRow,
@@ -35,6 +38,7 @@ import {
 } from "../../../lib/win-rate-heatmap";
 import type { HeatmapPresentation } from "../../../lib/win-rate-heatmap-presentation";
 import { AbilityTestTable } from "./ability-test-table";
+import { ArcPredictionTable } from "./arc-prediction-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
@@ -159,6 +163,8 @@ type SimilarPayload = {
 };
 
 type WinRateHeatmapPayload = {
+  arcQualifiedStats?: ArcQualifiedStats;
+  arcCohort?: ArcHeatmapCohort;
   presentation?: HeatmapPresentation;
   partnershipRows?: WinRateHeatmapPartnershipRow[];
   bloodlineRows: BloodlineStatsRow[];
@@ -203,7 +209,7 @@ const BLOODLINE_STATS_INCOMPLETE_NOTICE =
 
 type FinishPredictionPayload = {
   bucket: FinishPositionBucketSectionData;
-  evaluation: FinishPredictionEvaluationMetrics;
+  evaluation: FinishPredictionEvaluationMetrics | null;
   inputs: FinishPredictionBuildInputs;
   type: "finish-prediction";
 };
@@ -258,10 +264,12 @@ const SECTION_TITLES: Record<DetailSection, string> = {
 const RESULTS_CHART_SECTION_TITLE = "競走成績グラフ";
 const WIN_RATE_HEATMAP_SECTION_TITLE = "勝率ヒートマップ";
 
-const WinRateHeatmapHeading = () => (
+const WinRateHeatmapHeading = ({ arcCohort }: { arcCohort?: ArcHeatmapCohort }) => (
   <div className="section-heading compact">
     <h3>{WIN_RATE_HEATMAP_SECTION_TITLE}</h3>
-    <p className="win-rate-heatmap-bloodline-note">{WIN_RATE_HEATMAP_BLOODLINE_NOTE}</p>
+    {arcCohort === undefined && (
+      <p className="win-rate-heatmap-bloodline-note">{WIN_RATE_HEATMAP_BLOODLINE_NOTE}</p>
+    )}
   </div>
 );
 
@@ -472,10 +480,105 @@ interface SectionPayloadPromiseEntry {
   promise: Promise<SectionPayload>;
 }
 
+interface HeatmapState {
+  url: string;
+  section: SectionState;
+  waiting: boolean;
+}
+
+type HeatmapSectionState = SectionState & { waiting: boolean; retry: () => void };
+
+const HEATMAP_RETRY_FALLBACK_MS = 30_000;
+const HEATMAP_TRANSPORT_TIMEOUT_MS = 30_000;
+const HEATMAP_RETRY_MIN_MS = 1_000;
+const HEATMAP_RETRY_MAX_MS = 300_000;
+const HEATMAP_TRANSPORT_DELAYS = [5_000, 10_000, 20_000];
+const HEATMAP_FETCH_OPTIONS = { attempts: 1, retryStatuses: new Set<number>() };
+const EMPTY_SECTION_STATE: SectionState = { error: null, payload: null, status: "loading" };
+
+class HeatmapRequestError extends Error {
+  constructor(
+    message: string,
+    readonly kind: "pending" | "transport",
+    readonly delayMs: number,
+  ) {
+    super(message);
+  }
+}
+
+const heatmapRetryDelay = (value: string | null): number => {
+  const seconds = value !== null && /^\d+$/.test(value.trim()) ? Number(value) * 1000 : NaN;
+  const delay = Number.isFinite(seconds) ? seconds : Date.parse(value ?? "") - Date.now();
+  return Number.isFinite(delay)
+    ? Math.min(HEATMAP_RETRY_MAX_MS, Math.max(HEATMAP_RETRY_MIN_MS, delay))
+    : HEATMAP_RETRY_FALLBACK_MS;
+};
+
+const heatmapTransportError = (error: unknown): HeatmapRequestError =>
+  new HeatmapRequestError(
+    error instanceof Error ? error.message : "unknown error",
+    "transport",
+    HEATMAP_RETRY_FALLBACK_MS,
+  );
+
+const fetchHeatmapResponse = async (url: string, signal: AbortSignal): Promise<Response> => {
+  try {
+    return await fetchWithRetry(url, { signal }, HEATMAP_FETCH_OPTIONS);
+  } catch (error: unknown) {
+    throw heatmapTransportError(error);
+  }
+};
+
+const readHeatmapResponse = async (response: Response): Promise<SectionPayload> => {
+  // Read transport bytes separately so malformed JSON remains a terminal payload error.
+  const body: string = await response.text().catch((error: unknown) => {
+    throw heatmapTransportError(error);
+  });
+  const parsed: Promise<unknown> = Promise.resolve().then(() => JSON.parse(body));
+  const payload: unknown = response.ok ? await parsed : await parsed.catch(() => null);
+  if (!response.ok) {
+    const code =
+      typeof payload === "object" &&
+      payload !== null &&
+      "error" in payload &&
+      typeof payload.error === "string"
+        ? payload.error
+        : null;
+    if (response.status === 503 && code === "heatmap_not_warmed") {
+      throw new HeatmapRequestError(
+        code,
+        "pending",
+        heatmapRetryDelay(response.headers.get("Retry-After")),
+      );
+    }
+    throw new Error(`${response.status} ${code ?? response.statusText}`.trim());
+  }
+  if (!isSectionPayload(payload, "win-rate-heatmap")) throw new Error("Invalid section payload");
+  return payload;
+};
+
+const fetchHeatmapPayload = async (url: string): Promise<SectionPayload> => {
+  // The shared request owns its deadline; consumer cleanup must not abort it.
+  const controller: AbortController = new AbortController();
+  const deadline = Promise.withResolvers<never>();
+  const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    deadline.reject(heatmapTransportError(new Error("Heatmap request timed out")));
+    controller.abort();
+  }, HEATMAP_TRANSPORT_TIMEOUT_MS);
+  try {
+    return await Promise.race([
+      fetchHeatmapResponse(url, controller.signal).then(readHeatmapResponse),
+      deadline.promise,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const sectionPayloadPromises = new Map<string, SectionPayloadPromiseEntry>();
 
 const getSectionPayloadPromiseTtlMs = (section: DetailSection): number =>
-  section === "finish-prediction"
+  section === "finish-prediction" || section === "win-rate-heatmap"
     ? FINISH_PREDICTION_SECTION_PROMISE_TTL_MS
     : Number.POSITIVE_INFINITY;
 
@@ -485,7 +588,10 @@ const rememberSectionPayloadPromise = (
   promise: Promise<SectionPayload>,
 ): Promise<SectionPayload> => {
   const entry: SectionPayloadPromiseEntry = {
-    expiresAt: Date.now() + getSectionPayloadPromiseTtlMs(section),
+    expiresAt:
+      section === "win-rate-heatmap"
+        ? Number.POSITIVE_INFINITY
+        : Date.now() + getSectionPayloadPromiseTtlMs(section),
     promise,
   };
   sectionPayloadPromises.set(url, entry);
@@ -495,11 +601,21 @@ const rememberSectionPayloadPromise = (
       sectionPayloadPromises.delete(oldestUrl);
     }
   }
-  void promise.catch(() => {
-    if (sectionPayloadPromises.get(url) === entry) {
-      sectionPayloadPromises.delete(url);
-    }
-  });
+  void promise
+    .then(() => {
+      if (section === "win-rate-heatmap")
+        entry.expiresAt = Date.now() + FINISH_PREDICTION_SECTION_PROMISE_TTL_MS;
+      return undefined;
+    })
+    .catch((error: unknown) => {
+      if (sectionPayloadPromises.get(url) === entry) {
+        if (error instanceof HeatmapRequestError && error.kind === "pending") {
+          entry.expiresAt = Date.now() + error.delayMs;
+        } else {
+          sectionPayloadPromises.delete(url);
+        }
+      }
+    });
   return promise;
 };
 
@@ -516,16 +632,18 @@ const fetchSectionPayload = (section: DetailSection, url: string): Promise<Secti
   rememberSectionPayloadPromise(
     section,
     url,
-    fetchWithRetry(url).then(async (response) => {
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`.trim());
-      }
-      const payload: unknown = await response.json();
-      if (!isSectionPayload(payload, section)) {
-        throw new Error("Invalid section payload");
-      }
-      return payload;
-    }),
+    section === "win-rate-heatmap"
+      ? fetchHeatmapPayload(url)
+      : fetchWithRetry(url).then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`.trim());
+          }
+          const payload: unknown = await response.json();
+          if (!isSectionPayload(payload, section)) {
+            throw new Error("Invalid section payload");
+          }
+          return payload;
+        }),
   );
 
 const scheduleAfterNextPaint = (callback: () => void): (() => void) => {
@@ -602,6 +720,69 @@ const useSectionPayload = (
   }, [section, url]);
 
   return state;
+};
+
+const useHeatmapPayload = (
+  props: LazyDetailSectionsProps,
+  searchParams: URLSearchParams,
+): HeatmapSectionState => {
+  const url = getSectionUrl("win-rate-heatmap", props, searchParams);
+  const [generation, setGeneration] = useState(0);
+  const [state, setState] = useState<HeatmapState>({
+    url,
+    section: EMPTY_SECTION_STATE,
+    waiting: false,
+  });
+  useEffect(() => {
+    const lifecycle = { active: true, timer: 0, failures: 0 };
+    setState({ url, section: EMPTY_SECTION_STATE, waiting: false });
+    const load = async (): Promise<void> => {
+      try {
+        const payload = await fetchSectionPayload("win-rate-heatmap", url);
+        if (!lifecycle.active) return;
+        setState({ url, section: { error: null, payload, status: "ready" }, waiting: false });
+      } catch (error: unknown) {
+        if (!lifecycle.active) return;
+        const retryDelay =
+          error instanceof HeatmapRequestError && error.kind === "pending"
+            ? error.delayMs
+            : HEATMAP_TRANSPORT_DELAYS[lifecycle.failures++];
+        const delay = error instanceof HeatmapRequestError ? retryDelay : undefined;
+        if (delay !== undefined) {
+          if (error instanceof HeatmapRequestError && error.kind === "pending")
+            lifecycle.failures = 0;
+          setState({ url, section: EMPTY_SECTION_STATE, waiting: true });
+          lifecycle.timer = window.setTimeout(() => {
+            void load();
+          }, delay);
+          return;
+        }
+        setState({
+          url,
+          section: {
+            error: error instanceof Error ? error.message : "unknown error",
+            payload: null,
+            status: "error",
+          },
+          waiting: false,
+        });
+      }
+    };
+    const cancel = scheduleAfterNextPaint(() => {
+      void load();
+    });
+    return () => {
+      lifecycle.active = false;
+      cancel();
+      window.clearTimeout(lifecycle.timer);
+    };
+  }, [url, generation]);
+  const current = state.url === url ? state : { section: EMPTY_SECTION_STATE, waiting: false };
+  return {
+    ...current.section,
+    waiting: current.waiting,
+    retry: () => setGeneration((value) => value + 1),
+  };
 };
 
 const PREMIUM_DATA_TOP_POLL_INTERVAL_MS = 60_000;
@@ -710,7 +891,7 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
 }
 
 function LazyWinRateHeatmapSection(
-  props: LazyDetailSectionsProps & { heatmapState: SectionState },
+  props: LazyDetailSectionsProps & { heatmapState: HeatmapSectionState },
 ) {
   const state = props.heatmapState;
   if (state.status === "loading" && state.payload === null) {
@@ -720,6 +901,9 @@ function LazyWinRateHeatmapSection(
         aria-busy="true"
       >
         <WinRateHeatmapHeading />
+        {state.waiting && (
+          <output>勝率ヒートマップの取得を待機しています。自動で再確認します。</output>
+        )}
         <div className="detail-section-skeleton">
           <span />
           <span />
@@ -734,6 +918,9 @@ function LazyWinRateHeatmapSection(
       <section className="stats-category-section win-rate-heatmap-section lazy-detail-section">
         <WinRateHeatmapHeading />
         <p className="empty-state">データを取得できませんでした: {state.error}</p>
+        <button type="button" onClick={state.retry}>
+          勝率ヒートマップを再試行
+        </button>
       </section>
     );
   }
@@ -751,8 +938,10 @@ function LazyWinRateHeatmapSection(
       aria-busy={state.status === "loading"}
       className="stats-category-section win-rate-heatmap-section lazy-detail-section"
     >
-      <WinRateHeatmapHeading />
+      <WinRateHeatmapHeading arcCohort={payload.arcCohort} />
       <WinRateHeatmapSection
+        arcQualifiedStats={payload.arcQualifiedStats}
+        arcCohort={payload.arcCohort}
         bloodlineRows={payload.bloodlineRows}
         carriedWeightClassStats={payload.carriedWeightClassStats}
         frameStats={payload.frameStats}
@@ -923,6 +1112,9 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
       <SectionError error="Invalid section payload" title={SECTION_TITLES["finish-prediction"]} />
     );
   }
+  if (isArcPredictionRace(props)) {
+    return <ArcPredictionTable runners={payload.inputs.runners} />;
+  }
   return (
     <section
       aria-busy={state.status === "loading"}
@@ -1056,7 +1248,7 @@ function LazyAbilitySection(props: LazyDetailSectionsProps) {
 
 function LazyConditionSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
-  const heatmapState = useSectionPayload("win-rate-heatmap", props, searchParams);
+  const heatmapState = useHeatmapPayload(props, searchParams);
   const state = useSectionPayload("condition", props, searchParams);
   const heatmap = <LazyWinRateHeatmapSection {...props} heatmapState={heatmapState} />;
   if (state.status === "loading" && state.payload === null) {
