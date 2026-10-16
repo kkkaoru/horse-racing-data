@@ -742,12 +742,11 @@ const repairViewerPredictionCache = async (
     env,
     executionId: target.executionId,
     workKey: `focused-full:${target.runYmd}:${target.category}:${target.keibajoCode}:${target.raceBango}`,
-    commit: async () => {
-      const result = await warmViewerDisplayBestEffort(env, published, target, target.category);
-      if (!result && target.executionId !== undefined)
-        throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
-      return result;
-    },
+    // A failed best-effort warm is an idempotent cache refresh, not a write that
+    // can land later, so it releases the barrier and retries via the repair
+    // queue. Throwing here kept the barrier, which has no TTL and pinned the
+    // race's lane for every later race (10/17 incident).
+    commit: async () => warmViewerDisplayBestEffort(env, published, target, target.category),
   });
   return warmed ? "complete" : "retry";
 };

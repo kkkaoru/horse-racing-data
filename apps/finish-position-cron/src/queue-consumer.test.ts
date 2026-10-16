@@ -10054,3 +10054,43 @@ test("complete E with missing R2 picks up payload without creating a slot or sto
     status: "started",
   });
 });
+
+test("a failed viewer warm during cache repair releases the commit barrier and retries", async () => {
+  const h = makePersistedCoordinator();
+  h.storage.set("focused-full:20260603:jra:05:11", {
+    executionId: "A",
+    status: "success",
+    timestamp: 1,
+  });
+  publishFinishPositionPredictionCacheMock.mockResolvedValueOnce({
+    busted: true,
+    expectedGeneratedAt: "2026-06-03T01:00:00.000Z",
+    status: "written",
+  });
+  warmPredictionCacheForRaceMock.mockResolvedValueOnce(false);
+  await handleQueue(
+    {
+      messages: [
+        {
+          ack: ackMock,
+          attempts: 1,
+          body: {
+            category: "jra",
+            executionId: "A",
+            keibajoCode: "05",
+            raceBango: "11",
+            runYmd: "20260603",
+            type: "prediction-cache-repair",
+          },
+          id: "cache-repair-warm-false",
+          retry: retryMock,
+          timestamp: new Date("2026-06-03T00:00:00.000Z"),
+        },
+      ],
+    } as never,
+    h.env,
+  );
+  expect(h.storage.has("external-commit:focused-full:20260603:jra:05:11")).toBe(false);
+  expect(retryMock).toHaveBeenCalledOnce();
+  expect(ackMock).not.toHaveBeenCalled();
+});
