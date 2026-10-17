@@ -1,7 +1,7 @@
 // Run with bun (bunx vitest).
 import { expect, it } from "vitest";
 
-import { applyClefRerank, clefRerankResultKey } from "./clef-rerank";
+import { applyClefRerank, applyClefRerankToSection, clefRerankResultKey } from "./clef-rerank";
 
 const feature = (horseNumber: string, norm: number) => ({
   confidenceTier: null,
@@ -60,4 +60,38 @@ it("treats a single reranked horse as rank one", () => {
       }),
     ).map((row) => row.predictedFinishNorm),
   ).toStrictEqual([0]);
+});
+
+it("applies the rerank inside a finish-prediction section body", () => {
+  const rerank = JSON.stringify({
+    baseGeneratedAt: "2026-10-17T16:11:03.882Z",
+    predictions: [
+      { horseNumber: 3, rank: 1 },
+      { horseNumber: 1, rank: 2 },
+    ],
+  });
+  expect(
+    applyClefRerankToSection(
+      {
+        type: "finish-prediction",
+        inputs: { currentDistance: "1400", modelPredictionFeatures: served },
+      },
+      rerank,
+    ),
+  ).toStrictEqual({
+    type: "finish-prediction",
+    inputs: {
+      currentDistance: "1400",
+      modelPredictionFeatures: [
+        { ...served[0], predictedFinishNorm: 1 },
+        served[1],
+        { ...served[2], predictedFinishNorm: 0 },
+      ],
+    },
+  });
+  expect(
+    applyClefRerankToSection({ inputs: { modelPredictionFeatures: "x" } }, rerank),
+  ).toStrictEqual({ inputs: { modelPredictionFeatures: "x" } });
+  expect(applyClefRerankToSection({ inputs: [] }, rerank)).toStrictEqual({ inputs: [] });
+  expect(applyClefRerankToSection("text", rerank)).toBe("text");
 });

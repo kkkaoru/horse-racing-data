@@ -193,6 +193,30 @@ it("never serves or rewrites a legacy Arc pace cache when official history is re
   expect(getStaleDetailSectionBodyMock).not.toHaveBeenCalled();
   expect(putDetailSectionCacheMock).not.toHaveBeenCalled();
 });
+it("queue warm skips a section that is already cached", async () => {
+  stripDetailSectionCacheWarmParamsMock.mockReturnValue(new URLSearchParams());
+  isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getRaceDetailMock.mockResolvedValue({ source: "jra" });
+  getCachedDetailSectionResponseMock.mockResolvedValueOnce(Response.json({ type: "training" }));
+  const response = await GET(
+    new Request("https://example.com/api/races/2026/09/05/01/01/sections/training?__cacheWarm=1"),
+    {
+      params: Promise.resolve({
+        day: "05",
+        keibajoCode: "01",
+        month: "09",
+        raceNumber: "01",
+        section: "training",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
+  expect(putDetailSectionCacheMock).not.toHaveBeenCalled();
+});
+
 it("queue warm stores even oversized training data without returning its body to the consumer", async () => {
   stripDetailSectionCacheWarmParamsMock.mockReturnValue(new URLSearchParams());
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
@@ -219,7 +243,7 @@ it("queue warm stores even oversized training data without returning its body to
   );
   expect(response.status).toBe(204);
   expect(await response.text()).toBe("");
-  expect(getCachedDetailSectionResponseMock).not.toHaveBeenCalled();
+  expect(getCachedDetailSectionResponseMock).toHaveBeenCalledWith("unused-default-cache-key");
   expect(getStaleDetailSectionBodyMock).not.toHaveBeenCalled();
   expect(putDetailSectionCacheMock).toHaveBeenCalledTimes(1);
 });

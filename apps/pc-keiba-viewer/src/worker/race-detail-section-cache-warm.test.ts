@@ -290,6 +290,7 @@ it("schedule-today-posts-correct-url-with-date-query", async () => {
     ctx,
     env,
     openNextWorker: worker,
+    skipHeatmap: false,
     todayJstYmd: "2026-06-01",
   });
   expect(worker.fetch).toHaveBeenCalledTimes(1);
@@ -341,6 +342,7 @@ it("schedule-today-throws-on-non-ok-response", async () => {
       ctx,
       env,
       openNextWorker: worker,
+      skipHeatmap: false,
       todayJstYmd: "2026-06-01",
     }),
   ).rejects.toThrowError("race detail today cache schedule failed: 500");
@@ -694,6 +696,7 @@ it("authenticates all heatmap-producing scheduler paths using the existing secre
     env,
     ctx: buildCtx(),
     openNextWorker: worker,
+    skipHeatmap: false,
     todayJstYmd: "2026-10-04",
   });
   await scheduleTodayWinRateHeatmapWarm({
@@ -705,4 +708,19 @@ it("authenticates all heatmap-producing scheduler paths using the existing secre
   expect(
     worker.fetch.mock.calls.map(([request]) => request.headers.get("x-pc-keiba-internal-token")),
   ).toStrictEqual(["secret", "secret", "secret"]);
+});
+
+it("schedule-today-sweep-skips-heatmaps", async () => {
+  const response = new Response("ok", { status: 200 });
+  const worker = buildOpenNextWorker(response);
+  await scheduleTodayRaceDetailSectionCache({
+    ctx: buildCtx(),
+    env: buildEnv(),
+    openNextWorker: worker,
+    skipHeatmap: true,
+    todayJstYmd: "2026-10-18",
+  });
+  expect(getFirstRequest(worker).url).toBe(
+    "https://pc-keiba-viewer.local/api/cache-warm/race-detail-sections?date=2026-10-18&skipHeatmap=1",
+  );
 });

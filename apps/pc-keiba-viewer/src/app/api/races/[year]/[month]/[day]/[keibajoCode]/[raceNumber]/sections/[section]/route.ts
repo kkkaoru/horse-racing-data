@@ -1,4 +1,3 @@
-// Runs with Bun for tests and the Workers runtime in production.
 import { NextResponse } from "next/server";
 
 import {
@@ -9,6 +8,11 @@ import {
 import { enrichOfficialRunners } from "../../../../../../../../../../lib/arc-official-card";
 import { loadOfficialCard } from "../../../../../../../../../../lib/arc-official-card.server";
 import { isArcPredictionRace } from "../../../../../../../../../../lib/arc-prediction";
+// Runs with Bun for tests and the Workers runtime in production.
+import {
+  applyClefRerankToSection,
+  clefRerankResultKey,
+} from "../../../../../../../../../../lib/clef-rerank";
 import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
@@ -25,6 +29,7 @@ import {
 } from "../../../../../../../../../../lib/heatmap-execution.server";
 import { secretsEqual } from "../../../../../../../../../../lib/mcp-auth";
 import { normalizeExpectedPredictionGeneratedAt } from "../../../../../../../../../../lib/prediction-generation-freshness";
+import { readPredictionKvText } from "../../../../../../../../../../lib/prediction-kv-cache.server";
 import {
   buildDetailSectionCacheKey,
   DETAIL_SECTION_CACHE_WARM_PARAM,
@@ -98,6 +103,10 @@ const HEATMAP_SECTION_UNAVAILABLE = "unavailable";
 // body, so the caller never has to cancel a multi-MB payload (which Workers
 // logs as a "canceled" outcome).
 const HEATMAP_CACHE_PROBE_PARAM = "__cacheProbe";
+const QUEUE_WARM_RECOMPUTE_SECTIONS: ReadonlySet<string> = new Set([
+  "finish-prediction",
+  "pace-prediction",
+]);
 
 const isValidSection = (section: string): section is DetailSection =>
   SECTIONS.some((candidate) => candidate === section);
@@ -325,7 +334,7 @@ const loadHeatmapSectionPayload = async (
   }
 };
 
-export async function GET(request: Request, { params }: DetailSectionRouteProps) {
+async function handleSection(request: Request, { params }: DetailSectionRouteProps) {
   const { day, keibajoCode, month, raceNumber, section, year } = await params;
   if (!isValidSection(section) || !isValidParams(year, month, day, keibajoCode, raceNumber)) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -563,10 +572,17 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     : null;
   const skipPredictionRefresh =
     section === "finish-prediction" && requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM);
+  // Queue warms skip sections that are already cached so the race-day sweep can run often;
+  // predictions are still recomputed because they change with every model run.
+  const warmRecomputes = isQueueWarm && QUEUE_WARM_RECOMPUTE_SECTIONS.has(section);
   const cachedResponse =
-    cacheKey && !skipPredictionRefresh && !isQueueWarm
+    cacheKey && !skipPredictionRefresh && !warmRecomputes
       ? await getCachedDetailSectionResponse(cacheKey)
       : null;
+  if (cachedResponse && isQueueWarm) {
+    // Already warm: tell the consumer without sending the cached body back.
+    return new Response(null, { status: 204 });
+  }
   if (cachedResponse) {
     if (section === "premium-data-top") {
       const cachedBody = await cachedResponse.clone().text();
@@ -693,4 +709,23 @@ export async function DELETE(
   });
   await deleteFinishPredictionInputsCache(inputsCacheKey);
   return new Response(null, { status: HTTP_STATUS_NO_CONTENT });
+}
+
+// The clef rerank lands up to one cron tick after a prediction is cached, so it is applied to
+// every successful finish-prediction response instead of only when the section is rebuilt.
+export async function GET(request: Request, context: DetailSectionRouteProps) {
+  const response = await handleSection(request, context);
+  const { day, keibajoCode, month, raceNumber, section, year } = await context.params;
+  if (section !== "finish-prediction" || response.status !== 200) return response;
+  const rerankText = await readPredictionKvText(
+    clefRerankResultKey({ keibajoCode, mmdd: `${month}${day}`, raceBango: raceNumber, year }),
+    `${year}${month}${day}`,
+  );
+  if (rerankText === null) return response;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(JSON.stringify(applyClefRerankToSection(await response.json(), rerankText)), {
+    headers,
+    status: response.status,
+  });
 }

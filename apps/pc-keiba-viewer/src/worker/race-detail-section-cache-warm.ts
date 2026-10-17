@@ -57,6 +57,8 @@ export interface ScheduleTodayRaceDetailSectionCacheParams {
   env: CloudflareEnv;
   openNextWorker: OpenNextWorker;
   todayJstYmd: string;
+  // The race-day sweep leaves heatmaps to their own warm.
+  skipHeatmap: boolean;
 }
 
 const fetchSelf = (
@@ -94,6 +96,7 @@ export const scheduleTodayRaceDetailSectionCache = async (
 ): Promise<void> => {
   const url = new URL(SCHEDULE_PATH, INTERNAL_ORIGIN);
   url.searchParams.set("date", params.todayJstYmd);
+  if (params.skipHeatmap) url.searchParams.set("skipHeatmap", "1");
   const response = await fetchSelf(
     params.openNextWorker,
     new Request(url, {
@@ -159,7 +162,7 @@ export const scheduleRaceDetailSsrCacheWarm = async (
 };
 
 export const scheduleTodayWinRateHeatmapWarm = async (
-  params: ScheduleTodayRaceDetailSectionCacheParams,
+  params: Omit<ScheduleTodayRaceDetailSectionCacheParams, "skipHeatmap">,
 ): Promise<void> => {
   const url = new URL(WIN_RATE_HEATMAP_SCHEDULE_PATH, INTERNAL_ORIGIN);
   url.searchParams.set("date", params.todayJstYmd);

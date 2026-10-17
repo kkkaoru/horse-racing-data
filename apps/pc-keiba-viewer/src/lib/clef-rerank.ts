@@ -58,3 +58,21 @@ export const applyClefRerank = (
     return norm === undefined ? feature : { ...feature, predictedFinishNorm: norm };
   });
 };
+
+// Finish-prediction section bodies (fresh or cached) get the latest rerank at response time, so a
+// rerank written after the section was cached (for example after the weight rescore) still shows.
+export const applyClefRerankToSection = (body: unknown, rerankText: string | null): unknown => {
+  if (
+    !isRecord(body) ||
+    !isRecord(body.inputs) ||
+    !Array.isArray(body.inputs.modelPredictionFeatures)
+  )
+    return body;
+  return {
+    ...body,
+    inputs: {
+      ...body.inputs,
+      modelPredictionFeatures: applyClefRerank(body.inputs.modelPredictionFeatures, rerankText),
+    },
+  };
+};

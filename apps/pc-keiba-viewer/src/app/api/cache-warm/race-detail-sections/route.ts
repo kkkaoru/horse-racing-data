@@ -109,7 +109,8 @@ export async function POST(request: Request) {
   const workflow = env.HEATMAP_WARM_WORKFLOW;
   const [, heatmap] = await Promise.all([
     sendBatches(queue, messages),
-    workflow === undefined
+    // The race-day sweep passes skipHeatmap=1; heatmaps have their own 15-minute warm.
+    workflow === undefined || searchParams.get("skipHeatmap") === "1"
       ? Promise.resolve(null)
       : startHeatmapWarmWorkflows({ date: target, nowMs: Date.now(), races, workflow }),
   ]);

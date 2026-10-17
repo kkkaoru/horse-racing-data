@@ -178,11 +178,14 @@ it("cron-every-5-min-utc-warms-due-race-trend", () => {
 it("cron-every-15-min-utc-warms-ssr-cache-without-date", () => {
   const env = buildEnv();
   const ctx = buildCtx();
+  vi.setSystemTime(new Date("2026-10-18T00:15:00.000Z"));
   worker.scheduled({ cron: "*/15 0-14 * * *" }, env, ctx);
-  expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+  expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
   expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(1);
   const ssrOptions = scheduleRaceDetailSsrCacheWarmMock.mock.calls[0]?.[3];
   expect(ssrOptions).toBeUndefined();
+  expect(scheduleTodayRaceDetailSectionCacheMock.mock.calls[0]?.[0].skipHeatmap).toBe(true);
+  expect(scheduleTodayRaceDetailSectionCacheMock.mock.calls[0]?.[0].todayJstYmd).toBe("2026-10-18");
   expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(0);
 });
 

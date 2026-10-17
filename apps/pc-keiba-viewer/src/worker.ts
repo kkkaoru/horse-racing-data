@@ -109,6 +109,7 @@ export default {
           ctx,
           env,
           openNextWorker,
+          skipHeatmap: false,
           todayJstYmd: todayJst,
         }),
       );
@@ -119,6 +120,16 @@ export default {
     }
     if (controller.cron === "*/15 0-14 * * *") {
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
+      // Race-day sweep: fill any of today's detail sections missing since the 06:00 warm.
+      ctx.waitUntil(
+        scheduleTodayRaceDetailSectionCache({
+          ctx,
+          env,
+          openNextWorker,
+          skipHeatmap: true,
+          todayJstYmd: formatTodayJstDate(new Date()),
+        }),
+      );
     }
     if (controller.cron === "*/15 * * * *") {
       // Runner updates can invalidate tomorrow's heatmaps just after JST midnight.
