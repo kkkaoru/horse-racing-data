@@ -86,9 +86,16 @@ const MAX_QUERY_LENGTH = 2048;
 const MAX_FAILURES = 3;
 const FAILURE_BACKOFF_MS = 30_000;
 const REPEATED_FAILURE_BACKOFF_MS = 15 * 60_000;
-// A queued/running owner whose Worker or Workflow died never settles; after this
+// A queued/running owner whose message or build died never settles; after this
 // long without a transition it is re-queued instead of pinning the race forever.
-const STALE_OWNER_MS = 10 * 60_000;
+// Queued owners wait their turn behind the bounded build queue (a full day
+// drains in about an hour), so re-queuing them sooner would only send a new
+// message to the back of the queue. A running build is aborted after 10 min.
+const STALE_OWNER_MS: Readonly<Record<HeatmapExecutionState["phase"], number>> = {
+  queued: 90 * 60_000,
+  running: 15 * 60_000,
+  settled: 0,
+};
 
 export const canonicalHeatmapQuery = (params: URLSearchParams): string => {
   if (params.toString().length > MAX_QUERY_LENGTH) throw new Error("Invalid heatmap query");
@@ -133,7 +140,7 @@ const isState = (value: unknown): value is HeatmapExecutionState =>
 
 const isStaleUnsettled = (state: HeatmapExecutionState, now: number): boolean =>
   state.phase !== "settled" &&
-  (state.updatedAt === undefined || now - state.updatedAt >= STALE_OWNER_MS);
+  (state.updatedAt === undefined || now - state.updatedAt >= STALE_OWNER_MS[state.phase]);
 
 // Storage is synchronous SQLite. Every transition finishes before the first await.
 // Only the server route that claimed this token may acknowledge settled work.

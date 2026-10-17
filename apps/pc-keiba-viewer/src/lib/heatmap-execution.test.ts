@@ -456,64 +456,70 @@ it.each([undefined, "bad"])(
   },
 );
 
-it.each(["queued", "running"])(
-  "re-queues a %s owner that has not transitioned for ten minutes",
-  async (phase) => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
-    const stored: { value: unknown } = {
-      value: {
-        phase,
-        token: "dead",
-        failures: 1,
-        retryAt: 0,
-        updatedAt: new Date("2026-10-17T00:50:00.000Z").getTime(),
-      },
-    };
-    const send = vi.fn<() => Promise<void>>(async () => undefined);
-    const coordinator = new HeatmapExecutionCoordinator(
-      {
-        read: () => stored.value,
-        write: (value) => {
-          stored.value = value;
-        },
-      },
-      { send },
-    );
-    expect(await coordinator.ensure(request)).toBe("queued");
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(stored.value).toMatchObject({
-      failures: 1,
-      phase: "queued",
-      retryAt: 0,
-      updatedAt: new Date("2026-10-17T01:00:00.000Z").getTime(),
-    });
-    expect(coordinator.claim("dead")).toBe(false);
-    vi.useRealTimers();
-  },
-);
-
-it("keeps a running owner that transitioned less than ten minutes ago", async () => {
+it.each([
+  ["queued", "2026-10-16T23:30:00.000Z"],
+  ["running", "2026-10-17T00:45:00.000Z"],
+])("re-queues a %s owner that has not transitioned since %s", async (phase, updatedAt) => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
+  const stored: { value: unknown } = {
+    value: {
+      phase,
+      token: "dead",
+      failures: 1,
+      retryAt: 0,
+      updatedAt: new Date(updatedAt).getTime(),
+    },
+  };
   const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
-      read: () => ({
-        phase: "running",
-        token: "live",
-        failures: 0,
-        retryAt: 0,
-        updatedAt: new Date("2026-10-17T00:50:00.001Z").getTime(),
-      }),
-      write: vi.fn<() => void>(),
+      read: () => stored.value,
+      write: (value) => {
+        stored.value = value;
+      },
     },
     { send },
   );
-  expect(await coordinator.ensure(request)).toBe("running");
-  expect(send).not.toHaveBeenCalled();
+  expect(await coordinator.ensure(request)).toBe("queued");
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(stored.value).toMatchObject({
+    failures: 1,
+    phase: "queued",
+    retryAt: 0,
+    updatedAt: new Date("2026-10-17T01:00:00.000Z").getTime(),
+  });
+  expect(coordinator.claim("dead")).toBe(false);
   vi.useRealTimers();
 });
+
+it.each([
+  ["queued", "2026-10-16T23:30:00.001Z"],
+  ["running", "2026-10-17T00:45:00.001Z"],
+])(
+  "keeps a %s owner that transitioned after %s instead of re-sending it",
+  async (phase, updatedAt) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
+    const send = vi.fn<() => Promise<void>>(async () => undefined);
+    const coordinator = new HeatmapExecutionCoordinator(
+      {
+        read: () => ({
+          phase,
+          token: "live",
+          failures: 0,
+          retryAt: 0,
+          updatedAt: new Date(updatedAt).getTime(),
+        }),
+        write: vi.fn<() => void>(),
+      },
+      { send },
+    );
+    expect(await coordinator.ensure(request)).toBe(phase);
+    expect(send).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  },
+);
 
 it("re-queues a legacy unsettled owner written before transitions were timestamped", async () => {
   const stored: { value: unknown } = {
