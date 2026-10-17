@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 
 import { cacheRequestFor, conditionHistoryStatsDescriptor, kvKeyFor } from "./cache";
 import type { CacheStore, Env, Fetcher, KvStore, WorkerDependencies } from "./types";
-import { handleRequest } from "./worker";
+import { handleRequest, loadConditionAggregates } from "./worker";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -11,6 +11,9 @@ const conditionUrl =
   "https://catalog.test/v1/condition-history-stats?year=2026&month=08&day=22&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1";
 
 const queryKind = (query: string): string => {
+  if (query.startsWith("SELECT race_source") || query.includes("SELECT m.race_source"))
+    return "gate-mapping";
+  if (query.includes("GROUPING SETS ((frame_number)")) return "combined";
   if (query.includes("career_history")) return "correlation-career";
   if (query.includes("AS top3_count")) return "correlation-target";
   if (query.includes("AS horse_name") && query.includes("AS odds")) return "correlation-entries";
@@ -60,6 +63,77 @@ const createConditionHarness = () => {
     const kind = queryKind(query);
     fetchCalls.push(kind);
     inflight.current -= 1;
+    if (kind === "gate-mapping") {
+      return Response.json({ result: { rows: [] }, success: true });
+    }
+    if (kind === "combined") {
+      return Response.json({
+        result: {
+          rows: [
+            {
+              average_finish: 2,
+              average_popularity: 3,
+              count: 10,
+              frame_number: "1",
+              median_finish: 2,
+              median_popularity: 3,
+              quinella_count: 4,
+              runner_count: 16,
+              show_count: 5,
+              stats_set: "frame",
+              win_count: 2,
+            },
+            { count: 7, frame_number: null, stats_set: "frame", win_count: 1 },
+            {
+              body_class: "480-499",
+              // Ban-ei SQL has no carried-weight column at all.
+              carried_class: query.includes("AS carried_weight") ? "55.5-57" : null,
+              change_class: "minus5",
+              count: 2,
+              quinella_count: 1,
+              show_count: 1,
+              stats_set: "weights",
+              win_count: 0,
+            },
+            {
+              body_class: "480-499",
+              carried_class: null,
+              change_class: "minus5",
+              count: 2,
+              quinella_count: 0,
+              show_count: 1,
+              stats_set: "weights",
+              win_count: 1,
+            },
+            {
+              body_class: null,
+              carried_class: null,
+              change_class: "minus5",
+              count: 1,
+              quinella_count: 1,
+              show_count: 1,
+              stats_set: "weights",
+              win_count: 0,
+            },
+            {
+              average_kohan_3f: 35,
+              average_race_time: 1400,
+              fastest_kohan_3f: 34,
+              fastest_race_time: 1330,
+              median_kohan_3f: 35,
+              median_race_time: 1390,
+              race_count: 8,
+              stats_set: "race",
+              top3_average_odds: 6.5,
+              top3_average_popularity: 3.2,
+              top3_count: 30,
+              top3_win_count: 10,
+            },
+          ],
+        },
+        success: true,
+      });
+    }
     if (kind === "frame") {
       return Response.json({
         result: {
@@ -432,16 +506,12 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
       },
     ],
   });
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
-  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
     "correlation-entries",
     "target-races",
   ]);
-  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
-    "correlation-career",
-    "correlation-target",
-  ]);
+  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
     date: "20260822",
@@ -468,16 +538,12 @@ it("omits the carried-weight classes for Ban'ei venues", async () => {
     harness.dependencies,
   );
   expect(response.status).toBe(200);
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
-  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
     "correlation-entries",
     "target-races",
   ]);
-  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
-    "correlation-career",
-    "correlation-target",
-  ]);
+  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error("expected object");
@@ -492,16 +558,12 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   ]);
   expect(first.status).toBe(200);
   expect(second.status).toBe(200);
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
-  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
     "correlation-entries",
     "target-races",
   ]);
-  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
-    "correlation-career",
-    "correlation-target",
-  ]);
+  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
   expect(harness.inflight.max).toBe(2);
 });
 
@@ -581,13 +643,10 @@ it("reuses one day of career rows for another race of the same source and date",
   );
   expect(response.status).toBe(200);
   expect(harness.fetchCalls.toSorted()).toStrictEqual([
+    "combined",
     "correlation-entries",
-    "correlation-target",
     "finish",
-    "frame",
-    "race-time",
     "target-races",
-    "weights",
   ]);
   expect(harness.kvEntries.has("condition-day-career:v1:jra:20260822")).toBe(true);
 });
@@ -639,3 +698,29 @@ it.each(["not json", '{"requested":"x","rows":[]}', "null"])(
     ]);
   },
 );
+
+it("keeps overseas races on the separate frame, weight, race-time and top-3 queries", async () => {
+  const harness = createConditionHarness();
+  const aggregates = await loadConditionAggregates(harness.env, harness.dependencies, {
+    date: "20261004",
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "A8",
+    raceBango: "04",
+    source: "jra",
+    years: 10,
+  });
+  expect(harness.fetchCalls.toSorted()).toStrictEqual([
+    "correlation-target",
+    "finish",
+    "frame",
+    "race-time",
+    "weights",
+  ]);
+  expect(aggregates.correlationTargetRows).toStrictEqual([
+    { average_odds: 6.5, average_popularity: 3.2, top3_count: 30, win_count: 10 },
+  ]);
+  expect(aggregates.frameRows.length).toBe(1);
+});

@@ -321,7 +321,7 @@ const ungradedOpenFilterSql = (): string => `AND (
       OR ${effectiveGradeCodeSql("ra")} = ''
     )`;
 
-const historyKyoriIntSql = (): string =>
+export const historyKyoriIntSql = (): string =>
   "try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT)";
 
 export const exactHistoryKyoriFilterSql = (): string =>

@@ -11,8 +11,11 @@ import {
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
   buildConditionTargetRacesQuery,
+  buildConditionCombinedStatsQuery,
   buildConditionWeightClassStatsQuery,
+  splitConditionCombinedRows,
   splitConditionWeightClassRows,
+  usesCombinedConditionStats,
   normaliseTargetRaceRow,
   isBanEiKeibajo,
   aggregateFinishPositionStats,
@@ -1076,4 +1079,104 @@ it("does not apply the Chantilly exception to native or other overseas races", (
       raceBango: "04",
     }),
   ).not.toMatch("NOT IN ('2016', '2017')");
+});
+
+it("combines frame, weight-class, race-time and top-3 aggregates in one grouped scan", () => {
+  const sql = buildConditionCombinedStatsQuery(config, jraFilters);
+  expect(sql).toMatch(
+    "LEFT JOIN current_frames cf ON cf.frame_number = try_cast(nullif(btrim(coalesce(se.wakuban, '')), '00') AS INT)",
+  );
+  expect(sql).toMatch("CASE WHEN se.keibajo_code NOT IN ('81', '82', '83', '84') THEN CASE WHEN");
+  expect(sql).toMatch(
+    "CASE WHEN try_cast(nullif(btrim(coalesce(se.kakutei_chakujun, '')), '00') AS INT) <= 3 AND try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT) = cr.kyori_int AND cr.kyori_int IS NOT NULL THEN 1 ELSE 0 END AS top3",
+  );
+  expect(sql).toMatch("count(win_race_time) AS race_count");
+  expect(sql).toMatch("approx_percentile_cont(win_kohan_3f, 0.5) AS median_kohan_3f");
+  expect(sql).toMatch(
+    "GROUP BY GROUPING SETS ((frame_number), (body_class, carried_class, change_class), ())",
+  );
+  expect(sql).toMatch("WHEN grouping(body_class) = 0 THEN 'weights'");
+  expect(sql.match(/FROM pc_keiba\.jvd_se se\n  INNER JOIN/gu)?.length).toBe(1);
+});
+
+it("combines Ban-ei aggregates without a carried-weight class", () => {
+  const sql = buildConditionCombinedStatsQuery(config, {
+    ...jraFilters,
+    keibajoCode: "83",
+    source: "nar",
+  });
+  expect(sql).toMatch("GROUP BY GROUPING SETS ((frame_number), (body_class, change_class), ())");
+  expect(sql).toMatch("CASE WHEN se.keibajo_code IN ('81', '82', '83', '84') THEN CASE WHEN");
+  expect(sql).not.toMatch("carried_weight");
+});
+
+it("keeps Arc and overseas races on the separate condition queries", () => {
+  expect(usesCombinedConditionStats(jraFilters)).toBe(true);
+  expect(usesCombinedConditionStats({ ...jraFilters, keibajoCode: "A8" })).toBe(false);
+  expect(
+    usesCombinedConditionStats({
+      ...jraFilters,
+      date: "20261004",
+      keibajoCode: "A8",
+      raceBango: "05",
+    }),
+  ).toBe(false);
+});
+
+it("restores the four former row shapes from the combined grouping sets", () => {
+  expect(
+    splitConditionCombinedRows([
+      { count: 4, frame_number: 8, stats_set: "frame", win_count: 1 },
+      { count: 3, frame_number: 2, stats_set: "frame", win_count: 0 },
+      { count: 9, frame_number: null, stats_set: "frame", win_count: 2 },
+      { count: 9, stats_set: "frame", win_count: 2 },
+      {
+        body_class: "480-499",
+        carried_class: null,
+        change_class: "even",
+        count: 6,
+        quinella_count: 2,
+        show_count: 3,
+        stats_set: "weights",
+        win_count: 1,
+      },
+      {
+        race_count: 5,
+        stats_set: "race",
+        top3_average_odds: 7.5,
+        top3_average_popularity: 2.5,
+        top3_count: 12,
+        top3_win_count: 4,
+      },
+    ]),
+  ).toStrictEqual({
+    correlationTargetRows: [
+      { average_odds: 7.5, average_popularity: 2.5, top3_count: 12, win_count: 4 },
+    ],
+    frameRows: [
+      { count: 3, frame_number: 2, stats_set: "frame", win_count: 0 },
+      { count: 4, frame_number: 8, stats_set: "frame", win_count: 1 },
+    ],
+    raceTimeRows: [
+      {
+        race_count: 5,
+        stats_set: "race",
+        top3_average_odds: 7.5,
+        top3_average_popularity: 2.5,
+        top3_count: 12,
+        top3_win_count: 4,
+      },
+    ],
+    weightClassRows: [
+      {
+        body_class: "480-499",
+        carried_class: null,
+        change_class: "even",
+        quinella_count: 2,
+        show_count: 3,
+        starts: 6,
+        win_count: 1,
+      },
+    ],
+  });
 });

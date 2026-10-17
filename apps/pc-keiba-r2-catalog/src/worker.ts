@@ -89,8 +89,12 @@ import {
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
   buildConditionTargetRacesQuery,
+  buildConditionCombinedStatsQuery,
   buildConditionWeightClassStatsQuery,
+  splitConditionCombinedRows,
   splitConditionWeightClassRows,
+  usesCombinedConditionStats,
+  type ConditionCombinedRowGroups,
   normaliseConditionHistoryStatsPayload,
 } from "./condition-history-stats";
 import {
@@ -1381,38 +1385,62 @@ const loadDayCareerRows = async (input: {
   return decodeDayCareer(body).rows;
 };
 
+interface ConditionAggregates extends ConditionCombinedRowGroups {
+  finishRows: Record<string, unknown>[];
+}
+
+// Workers outbound TCP cap is 6, so R2 SQL runs in pairs. Ordinary races read
+// frame, weight-class, race-time and top-3 aggregates from one combined scan
+// (paired with the finish-position details); Arc and overseas races keep the
+// four separate queries.
+export const loadConditionAggregates = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: WinRateHeatmapStatsFilters,
+): Promise<ConditionAggregates> => {
+  const sql = (query: string): Promise<Record<string, unknown>[]> =>
+    executeR2Sql(env, query, dependencies.fetchImpl);
+  if (usesCombinedConditionStats(filters)) {
+    const [combinedRows, finishRows] = await Promise.all([
+      sql(buildConditionCombinedStatsQuery(env, filters)),
+      sql(buildConditionFinishPositionStatsQuery(env, filters)),
+    ]);
+    return { ...splitConditionCombinedRows(combinedRows), finishRows };
+  }
+  const [frameRows, weightClassRows] = await Promise.all([
+    sql(buildConditionFrameStatsQuery(env, filters)),
+    sql(buildConditionWeightClassStatsQuery({ env, filters })),
+  ]);
+  const [finishRows, raceTimeRows] = await Promise.all([
+    sql(buildConditionFinishPositionStatsQuery(env, filters)),
+    sql(buildConditionRaceTimeStatsQuery(env, filters)),
+  ]);
+  const correlationTargetRows = await sql(buildConditionCorrelationTargetQuery(env, filters));
+  return { correlationTargetRows, finishRows, frameRows, raceTimeRows, weightClassRows };
+};
+
 const conditionHistoryStatsBody = async (
   env: Env,
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
 ): Promise<string> => {
-  // Workers outbound TCP cap is 6. Run R2 SQL in pairs, like heatmap
-  // bloodline then similar, so a miss cannot stampede five sockets at once.
-  // Body weight, carried weight and weight change share one history scan.
-  const [frameRows, weightClassRows] = await Promise.all([
-    executeR2Sql(env, buildConditionFrameStatsQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(
-      env,
-      buildConditionWeightClassStatsQuery({ env, filters }),
-      dependencies.fetchImpl,
-    ),
-  ]);
-  const [finishRows, raceTimeRows] = await Promise.all([
-    executeR2Sql(env, buildConditionFinishPositionStatsQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildConditionRaceTimeStatsQuery(env, filters), dependencies.fetchImpl),
-  ]);
+  const aggregates = await loadConditionAggregates(env, dependencies, filters);
   // Race-time correlation inputs; without them the viewer recomputed the
   // correlation rows with an 11-25s PostgreSQL query for every race.
   const [targetRaceRows, correlationEntryRows] = await Promise.all([
     executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
     executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
   ]);
-  const [correlationTargetRows, correlationCareerRows] = await Promise.all([
-    executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
-    loadDayCareerRows({ dependencies, entryRows: correlationEntryRows, env, filters }),
-  ]);
-  const { carriedRows, weightChangeRows, weightRows } =
-    splitConditionWeightClassRows(weightClassRows);
+  const correlationCareerRows = await loadDayCareerRows({
+    dependencies,
+    entryRows: correlationEntryRows,
+    env,
+    filters,
+  });
+  const { carriedRows, weightChangeRows, weightRows } = splitConditionWeightClassRows(
+    aggregates.weightClassRows,
+  );
+  const { correlationTargetRows, finishRows, frameRows, raceTimeRows } = aggregates;
   return JSON.stringify(
     normaliseConditionHistoryStatsPayload({
       carriedRows,

@@ -24,6 +24,7 @@ import {
   finishPositionSql,
   rateFinishPositionSql,
   rateStartPredicateSql,
+  historyKyoriIntSql,
   historyTables,
   isBanEiKeibajo,
   cellRouterDistanceBandFilterSql,
@@ -94,8 +95,11 @@ const CARRIED_WEIGHT_CLASS_SQL: string = `CASE
     ELSE '57.5-59'
   END`;
 
-const BAN_EI_VENUE_ONLY_SQL: string = "AND se.keibajo_code IN ('81', '82', '83', '84')";
-const NON_BAN_EI_VENUE_SQL: string = "AND se.keibajo_code NOT IN ('81', '82', '83', '84')";
+const BAN_EI_VENUE_CONDITION: string = "se.keibajo_code IN ('81', '82', '83', '84')";
+const NON_BAN_EI_VENUE_CONDITION: string = "se.keibajo_code NOT IN ('81', '82', '83', '84')";
+const BAN_EI_VENUE_ONLY_SQL: string = `AND ${BAN_EI_VENUE_CONDITION}`;
+const NON_BAN_EI_VENUE_SQL: string = `AND ${NON_BAN_EI_VENUE_CONDITION}`;
+const CORRELATION_ODDS_SCALE: number = 10;
 const TRIMMED_BODY_WEIGHT_SQL: string = "upper(btrim(coalesce(se.bataiju, '')))";
 const DECIMAL_BODY_WEIGHT_SQL: string =
   "try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT)";
@@ -462,6 +466,157 @@ export const splitConditionWeightClassRows = (
     }),
     groups,
   );
+};
+
+export interface ConditionCombinedRowGroups {
+  correlationTargetRows: Record<string, unknown>[];
+  frameRows: Record<string, unknown>[];
+  raceTimeRows: Record<string, unknown>[];
+  weightClassRows: Record<string, unknown>[];
+}
+
+// Arc rates count DNF/DSQ starts and overseas frames come from gate mappings;
+// those races keep the separate frame, weight, race-time and top-3 queries.
+export const usesCombinedConditionStats = (filters: WinRateHeatmapStatsFilters): boolean =>
+  !isCurrentArc(filters) && !usesOverseasGate(filters);
+
+// Frame, weight-class, race-time and top-3 aggregates read the same matched
+// history. One scan projects each query's extra condition (current frames,
+// Ban-ei venue split, winner with a time at the exact distance, top three at
+// the exact distance) as nullable columns and aggregates them with GROUPING
+// SETS; splitConditionCombinedRows restores the four former result shapes.
+export const buildConditionCombinedStatsQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  const current = currentTables(checked.source);
+  const banEi = isBanEiKeibajo(checked.keibajoCode);
+  const columns = banEi ? BAN_EI_WEIGHT_CLASS_COLUMNS : WEIGHT_CLASS_COLUMNS;
+  const venue = banEi ? BAN_EI_VENUE_CONDITION : NON_BAN_EI_VENUE_CONDITION;
+  const frame = integerSelect("se.wakuban", "00");
+  const finish = finishPositionSql("se");
+  const raceTime = raceTimeTenthsSelect("se.soha_time");
+  const exactKyori = `${historyKyoriIntSql()} = cr.kyori_int AND cr.kyori_int IS NOT NULL`;
+  const winnerWithTime = `${finish} = 1 AND ${exactKyori} AND ${raceTime} IS NOT NULL`;
+  const topThree = `${finish} <= 3 AND ${exactKyori}`;
+  const classColumns = columns.map((column) => column.classColumn);
+  return `
+WITH ${currentRaceCteSql(env, checked)},
+current_frames AS (
+  SELECT DISTINCT ${frame} AS frame_number
+  FROM ${tableName(env, current.runnerTable)} se
+  WHERE ${currentRaceIdentitySql(checked, "se")}
+    AND ${frame} IS NOT NULL
+    AND ${frame} > 0
+),
+matched_history AS (
+  ${unionHistorySql(
+    historyTables(checked).map((tables) =>
+      matchedHistoryArmSql({
+        env,
+        extraJoin: `LEFT JOIN current_frames cf ON cf.frame_number = ${frame}`,
+        extraWhere: "",
+        filters: checked,
+        selectList: [
+          "cf.frame_number AS frame_number",
+          `${integerSelect("ra.shusso_tosu", "")} AS runner_count`,
+          `${finish} AS finish_position`,
+          `${integerSelect("se.tansho_ninkijun", "00")} AS popularity`,
+          ...columns.map(
+            (column) =>
+              `CASE WHEN ${venue} THEN ${column.valueExpr} ELSE NULL END AS ${column.valueColumn}`,
+          ),
+          `CASE WHEN ${winnerWithTime} THEN ${raceTime} ELSE NULL END AS win_race_time`,
+          `CASE WHEN ${winnerWithTime} THEN ${doubleSelect("se.kohan_3f")} ELSE NULL END AS win_kohan_3f`,
+          `CASE WHEN ${topThree} THEN 1 ELSE 0 END AS top3`,
+          `CASE WHEN ${topThree} THEN nullif(${doubleSelect("se.tansho_ninkijun")}, 0) ELSE NULL END AS top3_popularity`,
+          `CASE WHEN ${topThree} THEN nullif(${doubleSelect("se.tansho_odds")}, 0) / ${String(CORRELATION_ODDS_SCALE)}.0 ELSE NULL END AS top3_odds`,
+        ].join(",\n    "),
+        rateDenominator: true,
+        tables,
+      }),
+    ),
+  )}
+),
+classed AS (
+  SELECT
+    matched_history.*,
+    ${columns
+      .map(
+        (column) =>
+          `CASE WHEN ${column.valueColumn} IS NULL THEN NULL ELSE ${column.classExpr} END AS ${column.classColumn}`,
+      )
+      .join(",\n    ")}
+  FROM matched_history
+)
+SELECT
+  CASE
+    WHEN grouping(frame_number) = 0 THEN 'frame'
+    WHEN grouping(${classColumns[0]!}) = 0 THEN 'weights'
+    ELSE 'race'
+  END AS stats_set,
+  frame_number,
+  ${classColumns.join(",\n  ")},
+  max(runner_count) AS runner_count,
+  count(*) AS count,
+  sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
+  sum(CASE WHEN finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
+  sum(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) AS show_count,
+  avg(finish_position) AS average_finish,
+  approx_percentile_cont(finish_position, 0.5) AS median_finish,
+  avg(CASE WHEN popularity > 0 THEN popularity END) AS average_popularity,
+  approx_percentile_cont(CASE WHEN popularity > 0 THEN popularity END, 0.5) AS median_popularity,
+  count(win_race_time) AS race_count,
+  min(win_race_time) AS fastest_race_time,
+  min(win_kohan_3f) AS fastest_kohan_3f,
+  avg(win_race_time) AS average_race_time,
+  avg(win_kohan_3f) AS average_kohan_3f,
+  approx_percentile_cont(win_race_time, 0.5) AS median_race_time,
+  approx_percentile_cont(win_kohan_3f, 0.5) AS median_kohan_3f,
+  sum(top3) AS top3_count,
+  sum(CASE WHEN top3 = 1 AND finish_position = 1 THEN 1 ELSE 0 END) AS top3_win_count,
+  avg(top3_popularity) AS top3_average_popularity,
+  avg(top3_odds) AS top3_average_odds
+FROM classed
+GROUP BY GROUPING SETS ((frame_number), (${classColumns.join(", ")}), ())`;
+};
+
+const compareFrameRows = (left: Record<string, unknown>, right: Record<string, unknown>): number =>
+  Number(left.frame_number) - Number(right.frame_number);
+
+// Restores the frame, weight-class (combined-class triple), race-time and
+// top-3 row shapes the separate queries returned.
+export const splitConditionCombinedRows = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): ConditionCombinedRowGroups => {
+  const race = rows.filter((row) => row.stats_set === "race");
+  return {
+    correlationTargetRows: race.map((row) => ({
+      average_odds: row.top3_average_odds,
+      average_popularity: row.top3_average_popularity,
+      top3_count: row.top3_count,
+      win_count: row.top3_win_count,
+    })),
+    frameRows: rows
+      .filter(
+        (row) =>
+          row.stats_set === "frame" && row.frame_number !== null && row.frame_number !== undefined,
+      )
+      .toSorted(compareFrameRows),
+    raceTimeRows: race,
+    weightClassRows: rows
+      .filter((row) => row.stats_set === "weights")
+      .map((row) => ({
+        body_class: row.body_class,
+        carried_class: row.carried_class,
+        change_class: row.change_class,
+        quinella_count: row.quinella_count,
+        show_count: row.show_count,
+        starts: row.count,
+        win_count: row.win_count,
+      })),
+  };
 };
 
 export const buildConditionFinishPositionStatsQuery = (
