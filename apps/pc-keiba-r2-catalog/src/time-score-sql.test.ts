@@ -3,6 +3,7 @@ import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it } from "vitest";
 import {
   digitsOnlyNumericSql,
+  hexTripletSql,
   positiveDecimalSql,
   weightNumericSql,
   marginNumericSql,
@@ -29,6 +30,15 @@ it("builds the digits-only numeric expression", () => {
   expect(digitsOnlyNumericSql("se.kohan_3f")).toMatch(
     "try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE)",
   );
+});
+
+it("decodes hex triplets digit by digit instead of casting a 0x literal", () => {
+  const sql: string = hexTripletSql("raw");
+  expect(sql).toMatch("length(raw) = 3");
+  expect(sql).toMatch("(strpos('0123456789ABCDEF', substr(raw, 1, 1)) - 1) * 256");
+  expect(sql).toMatch("(strpos('0123456789ABCDEF', substr(raw, 2, 1)) - 1) * 16");
+  expect(sql).toMatch("(strpos('0123456789ABCDEF', substr(raw, 3, 1)) - 1) * 1");
+  expect(sql).not.toMatch("0x");
 });
 
 it("computes the three-month window in TypeScript", () => {

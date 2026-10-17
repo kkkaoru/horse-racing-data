@@ -10,9 +10,23 @@ interface WeightNumericSqlInput {
 }
 
 const MONTHS_IN_WINDOW: number = 1;
+const HEX_DIGITS: string = "0123456789ABCDEF";
+const HEX_TRIPLET_WIDTH: number = 3;
+const HEX_PLACE_VALUES: number[] = [256, 16, 1];
 
 const onlyCharactersSql = (expression: string, characters: string): string =>
   `${[...characters].reduce((sql, character) => `replace(${sql}, '${character}', '')`, expression)} = ''`;
+
+// Decodes a three-character upper-case JV-Data hex field ('3B4' = 948).
+// R2 SQL's try_cast never parses a '0x' literal (it always yields NULL), so
+// each digit is looked up by position instead.
+export const hexTripletSql = (cleaned: string): string =>
+  `CASE WHEN length(${cleaned}) = ${String(HEX_TRIPLET_WIDTH)} AND ${onlyCharactersSql(cleaned, HEX_DIGITS)}
+    THEN ${HEX_PLACE_VALUES.map(
+      (placeValue, index) =>
+        `(strpos('${HEX_DIGITS}', substr(${cleaned}, ${String(index + 1)}, 1)) - 1) * ${String(placeValue)}`,
+    ).join(" + ")}
+    ELSE NULL END`;
 
 // PostgreSQL `raceTimeTenthsSql`: the raw soha_time is a tenths-of-a-second
 // clock value whose fourth digit is the fraction, so "1234" is 83.4s. The SQL
@@ -46,11 +60,11 @@ export const positiveDecimalSql = (column: string): string => {
 
 export const weightNumericSql = (input: WeightNumericSqlInput): string => {
   const cleaned: string = `upper(btrim(coalesce(${input.column}, '')))`;
-  const hex: string = `try_cast(concat('0x', ${cleaned}) AS INTEGER)`;
+  const hex: string = hexTripletSql(cleaned);
   return `CASE WHEN btrim(${input.venueColumn}) = '83' THEN
     CASE WHEN ${cleaned} NOT IN ('', '000', 'FFF')
-      AND ${onlyCharactersSql(cleaned, "0123456789ABCDEF")} AND ${hex} > 0
-      THEN ${hex} * ${input.carried ? 10 : 1} ELSE NULL END
+      AND (${hex}) > 0
+      THEN (${hex}) * ${input.carried ? 10 : 1} ELSE NULL END
     ELSE ${positiveDecimalSql(input.column)} END`;
 };
 
