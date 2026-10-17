@@ -338,6 +338,25 @@ const HAPPY_METRICS: RunningStyleBucketMetrics = {
   weightedF1: 0.6,
 };
 
+const EMPTY_CATALOG_CONDITION = {
+  carriedWeightClassStats: [],
+  finishPositionStats: [],
+  frameStats: [],
+  raceTimeStats: {
+    averageKohan3f: null,
+    averageRaceTime: null,
+    correlationRows: [],
+    fastestDetail: null,
+    fastestKohan3f: null,
+    fastestRaceTime: null,
+    medianKohan3f: null,
+    medianRaceTime: null,
+    raceCount: 0,
+    targetRaces: [],
+  },
+  weightClassStats: [],
+};
+
 const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
   ndcgAt3Avg: 0.63,
   pairScoreAvg: 0.7,
@@ -358,7 +377,9 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 
 beforeEach(() => {
   fetchConditionHistoryStatsFromCatalogMock.mockReset();
-  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue(null);
+  // An incomplete Catalog answer (no race times): the condition section still
+  // uses its database path, while heatmaps read these Catalog counts only.
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue(EMPTY_CATALOG_CONDITION);
   fetchHorseRaceResultsFromCatalogMock.mockReset();
   fetchHorseRaceResultsFromCatalogMock.mockResolvedValue(null);
   fetchRaceTrainingsFromCatalogMock.mockReset();
@@ -3212,6 +3233,8 @@ it("refuses to publish a heatmap when the partnership catalog binding is unavail
 });
 
 it("reuses cached results and condition payloads for heatmap assembly", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3266,6 +3289,8 @@ it("reuses cached results and condition payloads for heatmap assembly", async ()
 });
 
 it("keeps frameStats from condition payloads that omit weight class arrays", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3372,6 +3397,8 @@ it("reuses cached condition payloads whose frameStats array is empty", async () 
 });
 
 it("rejects malformed condition payloads that omit frameStats", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3413,6 +3440,8 @@ it("rejects malformed condition payloads that omit frameStats", async () => {
 });
 
 it("keeps frameStats when carriedWeightClassStats is not an array", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3467,6 +3496,8 @@ it("keeps frameStats when carriedWeightClassStats is not an array", async () => 
 });
 
 it("keeps frameStats when weightClassStats is not an array", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3521,6 +3552,8 @@ it("keeps frameStats when weightClassStats is not an array", async () => {
 });
 
 it("defaults omitted carriedWeightClassStats and keeps present weightClassStats", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3574,6 +3607,8 @@ it("defaults omitted carriedWeightClassStats and keeps present weightClassStats"
 });
 
 it("defaults omitted weightClassStats and keeps present carriedWeightClassStats", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -3803,6 +3838,8 @@ it("returns null heatmap payload when race detail is missing", async () => {
 });
 
 it("assembles heatmap payload from Catalog stats, results, and condition sections", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -5349,6 +5386,8 @@ it("does not reuse any default section source for a filtered heatmap", async () 
 });
 
 it("waits for condition failures and results before rejecting the owned heatmap", async () => {
+  // Local databases keep the full condition section for heatmaps.
+  getDatabaseTargetMock.mockReturnValue("local");
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
     similarRows: [],
@@ -6659,6 +6698,7 @@ it("does not fall back to domestic frame SQL when overseas catalog fails", async
   expect(getFrameStatsMock).not.toHaveBeenCalled();
 });
 it("does not fall back when the overseas catalog binding is absent", async () => {
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue(null);
   getRaceDetailMock.mockResolvedValue({ ...JRA_RACE, keibajoCode: "A8" });
   await expect(
     getDetailSectionPayload("condition", {
@@ -7189,4 +7229,170 @@ it("keeps non-Arc overseas results on the Catalog path", async () => {
   });
   expect(payload).toMatchObject({ results: [{ umaban: "07" }] });
   expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
+});
+
+it("reads heatmap condition counts from the Catalog only in production", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    ...EMPTY_CATALOG_CONDITION,
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    frameStats: [{ count: 3, details: [], frameNumber: "2" }],
+    mappingRevision: "gate-v1-abc",
+    weightClassStats: [{ key: "480-499" }],
+  });
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "17",
+    keibajoCode: "08",
+    month: "10",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [{ key: "55.5-57" }],
+    frameStats: [{ count: 3, details: [], frameNumber: "2" }],
+    mappingRevision: "gate-v1-abc",
+    weightClassStats: [{ key: "480-499" }],
+  });
+  expect(fetchConditionHistoryStatsFromCatalogMock).toHaveBeenCalledTimes(1);
+  expect(getPayoutStatsMock).not.toHaveBeenCalled();
+  expect(getRaceTimeStatsMock).not.toHaveBeenCalled();
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+  expect(getWeightClassStatsMock).not.toHaveBeenCalled();
+});
+
+it("relaxes the Catalog condition query when the heatmap frame counts are empty", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock
+    .mockResolvedValueOnce(EMPTY_CATALOG_CONDITION)
+    .mockResolvedValueOnce({
+      ...EMPTY_CATALOG_CONDITION,
+      frameStats: [{ count: 9, details: [], frameNumber: "1" }],
+    });
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "17",
+    keibajoCode: "08",
+    month: "10",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({ frameStats: [{ count: 9, details: [], frameNumber: "1" }] });
+  expect(fetchConditionHistoryStatsFromCatalogMock).toHaveBeenCalledTimes(2);
+  expect(fetchConditionHistoryStatsFromCatalogMock).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ includeVenue: false }),
+  );
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("keeps the empty heatmap frame counts when the relaxed Catalog query also fails", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock
+    .mockResolvedValueOnce(EMPTY_CATALOG_CONDITION)
+    .mockRejectedValueOnce(new Error("catalog timeout"));
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "17",
+    keibajoCode: "08",
+    month: "10",
+    query: {},
+    raceNumber: "05",
+    raceSource: "jra",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({ frameStats: [] });
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+});
+
+it("fails the production heatmap instead of loading Neon when the condition Catalog is unavailable", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue(null);
+
+  await expect(
+    getDetailSectionPayload("win-rate-heatmap", {
+      day: "17",
+      keibajoCode: "08",
+      month: "10",
+      query: {},
+      raceNumber: "05",
+      raceSource: "jra",
+      year: "2026",
+    }),
+  ).rejects.toThrow("Heatmap condition catalog is unavailable");
+  expect(getFrameStatsMock).not.toHaveBeenCalled();
+  expect(getPayoutStatsMock).not.toHaveBeenCalled();
+});
+
+it("fills ban-ei heatmap weight classes from the database while the Catalog has none", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(BAN_EI_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  getWeightClassStatsMock.mockResolvedValue([{ key: "900-949" }]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    ...EMPTY_CATALOG_CONDITION,
+    carriedWeightClassStats: [{ key: "ignored" }],
+    frameStats: [{ count: 2, details: [], frameNumber: "1" }],
+  });
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "17",
+    keibajoCode: "83",
+    month: "10",
+    query: {},
+    raceNumber: "05",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({
+    carriedWeightClassStats: [],
+    weightClassStats: [{ key: "900-949" }],
+  });
+  expect(getWeightClassStatsMock).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Catalog ban-ei heatmap weight classes when they are present", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(BAN_EI_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchConditionHistoryStatsFromCatalogMock.mockResolvedValue({
+    ...EMPTY_CATALOG_CONDITION,
+    frameStats: [{ count: 2, details: [], frameNumber: "1" }],
+    weightClassStats: [{ key: "catalog-900" }],
+  });
+
+  const payload = await getDetailSectionPayload("win-rate-heatmap", {
+    day: "17",
+    keibajoCode: "83",
+    month: "10",
+    query: {},
+    raceNumber: "05",
+    raceSource: "nar",
+    year: "2026",
+  });
+
+  expect(payload).toMatchObject({ weightClassStats: [{ key: "catalog-900" }] });
+  expect(getWeightClassStatsMock).not.toHaveBeenCalled();
 });

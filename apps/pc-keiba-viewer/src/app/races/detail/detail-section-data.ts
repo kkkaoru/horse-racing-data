@@ -2444,6 +2444,49 @@ const isHeatmapBloodlineSource = (
 const readWeightClassStats = (value: unknown): WeightClassStatsRow[] =>
   isWeightClassStatsList(value) ? value : [];
 
+const hasFrameCounts = (stats: ConditionHistoryCatalogStats): boolean =>
+  stats.frameStats.some((row) => row.count > 0);
+
+// Heatmaps read only frame and weight-class counts. In production they come
+// from the Catalog alone: the full condition section additionally computed
+// Neon payout and race-time stats the heatmap never shows, and fell back to
+// Neon frame/weight queries whenever the Catalog was slow. A Catalog failure
+// now fails the owned heatmap run (it is retried) instead of loading Neon.
+// Local (non-Catalog) databases keep the full condition section.
+const loadHeatmapConditionSource = async (
+  params: DetailSectionParams,
+  context: NonNullable<Awaited<ReturnType<typeof getDetailStatsContext>>>,
+): Promise<unknown> => {
+  if (getDatabaseTarget() !== "cloudflare") return loadHeatmapSectionSource("condition", params);
+  const { race } = context;
+  const initial = await loadConditionHistoryCatalogStats(
+    params,
+    context.conditionAnalysisSettings,
+    race.source,
+  );
+  if (initial === null) throw new Error("Heatmap condition catalog is unavailable");
+  const stats =
+    hasFrameCounts(initial) || isOverseasKeibajoCode(race.keibajoCode)
+      ? initial
+      : ((await loadConditionHistoryCatalogStats(
+          params,
+          relaxAllConditionAnalysisSettings(context.conditionAnalysisSettings),
+          race.source,
+        )) ?? initial);
+  const banEiRace = isBanEiKeibajoCode(race.keibajoCode);
+  return {
+    carriedWeightClassStats: banEiRace ? [] : stats.carriedWeightClassStats,
+    frameStats: stats.frameStats,
+    ...(stats.mappingRevision === undefined ? {} : { mappingRevision: stats.mappingRevision }),
+    type: "condition",
+    // Ban-ei weight classes are not in the Catalog yet; Phase 3 removes this.
+    weightClassStats:
+      banEiRace && stats.weightClassStats.length === 0
+        ? await getWeightClassStats(race, context.conditionAnalysisSettings)
+        : stats.weightClassStats,
+  } satisfies HeatmapConditionSource;
+};
+
 const loadHeatmapSectionSource = async (
   section: "condition" | "results",
   params: DetailSectionParams,
@@ -2677,7 +2720,7 @@ export const getDetailSectionPayload = async (
       // Heatmaps need only Catalog condition counts, not payout/time computations
       // or a section cache produced before the current pedigree revision.
       arcCohort === undefined
-        ? loadHeatmapSectionSource("condition", params)
+        ? loadHeatmapConditionSource(params, context)
         : loadConditionHistoryCatalogStats(
             params,
             context.conditionAnalysisSettings,
