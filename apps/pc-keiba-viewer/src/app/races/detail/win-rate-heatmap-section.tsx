@@ -50,6 +50,10 @@ import {
   selectHeatmapDisplay,
   type HeatmapPresentation,
 } from "../../../lib/win-rate-heatmap-presentation";
+import {
+  applyWinRateHeatmapRaceClass,
+  type WinRateHeatmapRaceClass,
+} from "../../../lib/win-rate-heatmap-race-class";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-client";
 
@@ -64,6 +68,7 @@ interface WinRateHeatmapSectionProps {
   horseRateStats?: readonly WinRateHeatmapHorseRateRow[];
   horseResults: WinRateHeatmapHorseResult[];
   keibajoCode: string;
+  raceClass?: WinRateHeatmapRaceClass;
   realtimeRequest: RealtimeRaceRequest;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
@@ -233,7 +238,7 @@ const heatmapSwatchStartsClassName = (isZero: boolean): string =>
 const heatmapSwatchValueSuffix = (
   viewMode: WinRateHeatmapViewMode,
   valueLabel: string,
-): string | null => (viewMode === "all" || valueLabel === "-" ? null : "%");
+): string | null => (viewMode === "all" || valueLabel === "-" || valueLabel === "" ? null : "%");
 
 const heatmapSwatchNameLabel = (input: {
   frameNumber: string;
@@ -329,6 +334,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   keibajoCode,
   presentation,
   partnershipRows,
+  raceClass,
   realtimeRequest,
   runners,
   similarRows,
@@ -413,7 +419,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     () => indexLiveHorseWeightChangeKg(liveHorses ?? []),
     [liveHorses],
   );
-  const display =
+  const builtDisplay =
     presentation === undefined
       ? buildWinRateHeatmapDisplay({
           arcQualifiedStats,
@@ -436,6 +442,10 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
           weightClassStats,
         })
       : selectHeatmapDisplay(presentation, { showStarts, splitBloodlineLines, viewMode });
+  const display =
+    builtDisplay === null || raceClass === undefined
+      ? builtDisplay
+      : applyWinRateHeatmapRaceClass(builtDisplay, raceClass);
   if (display === null) {
     return <p className="empty-state">勝率ヒートマップの表示キャッシュを準備中です。</p>;
   }

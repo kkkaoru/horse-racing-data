@@ -37,6 +37,7 @@ import {
   WIN_RATE_HEATMAP_BLOODLINE_NOTE,
 } from "../../../lib/win-rate-heatmap";
 import type { HeatmapPresentation } from "../../../lib/win-rate-heatmap-presentation";
+import type { WinRateHeatmapRaceClass } from "../../../lib/win-rate-heatmap-race-class";
 import { AbilityTestTable } from "./ability-test-table";
 import { ArcPredictionTable } from "./arc-prediction-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
@@ -69,6 +70,7 @@ type DetailSection =
 
 interface LazyDetailSectionsProps {
   day: string;
+  heatmapRaceClass?: WinRateHeatmapRaceClass;
   keibajoCode: string;
   month: string;
   raceNumber: string;
@@ -951,6 +953,7 @@ function LazyWinRateHeatmapSection(
         partnershipRows={payload.partnershipRows}
         horseResults={payload.horseResults}
         keibajoCode={props.keibajoCode}
+        raceClass={props.heatmapRaceClass}
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
           day: props.day,

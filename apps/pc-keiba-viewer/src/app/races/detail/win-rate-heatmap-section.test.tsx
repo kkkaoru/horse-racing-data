@@ -1882,3 +1882,50 @@ it.each([
     expect(document.body.textContent).toMatch(/母母父/u);
   },
 );
+
+it("hides the horse columns for a debut race", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      raceClass="debut"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  expect(screen.queryByText("馬")).toBeNull();
+  expect(screen.queryByText("馬×騎手")).toBeNull();
+  expect(screen.getByText("騎手")).toBeDefined();
+  expect(screen.getAllByText("勝").length).toBe(16);
+});
+
+it("leaves the maiden horse columns empty in the win-rate view only", () => {
+  render(
+    <WinRateHeatmapSection
+      bloodlineRows={[bloodlineSire]}
+      frameStats={[frameOne]}
+      horseResults={[]}
+      keibajoCode="05"
+      raceClass="maiden"
+      realtimeRequest={heatmapRealtimeRequest}
+      runners={[runner]}
+      similarRows={[similarJockey, similarTrainer]}
+    />,
+  );
+  expect(screen.getByText("馬")).toBeDefined();
+  expect(screen.getByText("馬×騎手")).toBeDefined();
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-swatch-value")]
+      .slice(0, 4)
+      .map((node) => node.textContent),
+  ).toStrictEqual(["15.0%", "", "", "-"]);
+  fireEvent.click(screen.getByRole("radio", { name: /^連対率$/ }));
+  expect(
+    [...document.querySelectorAll(".win-rate-heatmap-swatch-value")]
+      .slice(0, 4)
+      .map((node) => node.textContent),
+  ).toStrictEqual(["30.0%", "-", "-", "-"]);
+});
