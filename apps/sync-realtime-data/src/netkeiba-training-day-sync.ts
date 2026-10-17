@@ -20,6 +20,12 @@ const DEFAULT_WORK_PATH = "/race/oikiri.html?race_id={sourceRaceId}";
 const PROCESSING_STALE_SECONDS = 30 * 60;
 const FINALIZE_DELAY_SECONDS = 60;
 const CONCURRENCY = 6;
+const IN_FLIGHT_STATUSES = new Set<string>(["catalog_pending", "processing"]);
+
+interface SyncStateRow {
+  attempted_at: string;
+  status: string;
+}
 
 interface PremiumLinkRow {
   race_key: string;
@@ -334,17 +340,37 @@ const markState = async (
     .run();
 };
 
-const shouldStart = async (db: D1Database, date: string): Promise<boolean> => {
-  const row = await db
+const loadSyncState = (db: D1Database, date: string): Promise<SyncStateRow | null> =>
+  db
     .prepare(
       "select status, attempted_at from netkeiba_training_day_sync_state where race_date = ?",
     )
     .bind(date)
-    .first<{ attempted_at: string; status: string }>();
+    .first<SyncStateRow>();
+
+const isStale = (attemptedAt: string): boolean =>
+  Date.parse(attemptedAt) < Date.now() - PROCESSING_STALE_SECONDS * 1000;
+
+const shouldStart = async (db: D1Database, date: string): Promise<boolean> => {
+  const row = await loadSyncState(db, date);
   if (row === null || row.status === "failed") return true;
   if (row.status === "succeeded") return false;
-  return Date.parse(row.attempted_at) < Date.now() - PROCESSING_STALE_SECONDS * 1000;
+  return isStale(row.attempted_at);
 };
+
+// True while another run owns the day and may still finish. A redelivered job
+// hitting this window must be re-checked after the stale window, because the
+// owning run can die without writing a terminal state.
+export const isNetkeibaTrainingDayInFlight = async (
+  db: D1Database,
+  date: string,
+): Promise<boolean> => {
+  const row = await loadSyncState(db, date);
+  if (row === null) return false;
+  return IN_FLIGHT_STATUSES.has(row.status) && !isStale(row.attempted_at);
+};
+
+export const NETKEIBA_TRAINING_RECHECK_DELAY_SECONDS = PROCESSING_STALE_SECONDS;
 
 export const syncNetkeibaTrainingDay = async (env: Env, date: string): Promise<number> => {
   if (!(await shouldStart(env.REALTIME_DB, date))) return 0;
@@ -481,12 +507,12 @@ const warmViewerRace = async (env: Env, link: PremiumLinkRow): Promise<void> => 
   const parts = raceParts(link.race_key);
   const date = parts.date;
   const basePath = `/api/races/${date.slice(0, 4)}/${date.slice(4, 6)}/${date.slice(6, 8)}/${parts.keibajoCode}/${parts.raceBango}/sections`;
+  // A plain GET (no __cacheWarm) returns the JSON body that is validated below.
+  // The viewer answers __cacheWarm with an empty 204, which broke JSON parsing.
   const responses = await Promise.all(
-    ["training", "premium-data-top"].map((section) => {
-      const url = new URL(`${basePath}/${section}`, VIEWER_ORIGIN);
-      url.searchParams.set("__cacheWarm", "1");
-      return env.PC_KEIBA_VIEWER!.fetch(new Request(url));
-    }),
+    ["training", "premium-data-top"].map((section) =>
+      env.PC_KEIBA_VIEWER!.fetch(new Request(new URL(`${basePath}/${section}`, VIEWER_ORIGIN))),
+    ),
   );
   const payloads = await Promise.all(
     responses.map(async (response) => {
@@ -498,26 +524,37 @@ const warmViewerRace = async (env: Env, link: PremiumLinkRow): Promise<void> => 
     throw new Error(`Viewer cache warm returned incomplete data for ${link.race_key}`);
 };
 
+const refreshRaceTraining = async (env: Env, date: string, link: PremiumLinkRow): Promise<void> => {
+  await purgeCatalogTrainingCache(env, date, link);
+  const parts = raceParts(link.race_key);
+  const bust = await triggerRaceCacheBust(
+    env,
+    {
+      keibajoCode: parts.keibajoCode,
+      mmdd: date.slice(4),
+      raceBango: parts.raceBango,
+      scope: "training",
+      source: "jra",
+      year: date.slice(0, 4),
+    },
+    { waitForCompletion: true },
+  );
+  if (bust.status !== "ok") throw new Error(`Viewer cache bust failed for ${link.race_key}`);
+  await warmViewerRace(env, link);
+};
+
+// One race's failure must not leave the other races on the day with stale
+// training caches, so every race is attempted and the first failure is rethrown.
 const purgeAndWarm = async (env: Env, date: string): Promise<void> => {
   const links = await listPremiumLinks(env.REALTIME_DB, date);
-  await mapWithConcurrency(links, async (link) => {
-    await purgeCatalogTrainingCache(env, date, link);
-    const parts = raceParts(link.race_key);
-    const bust = await triggerRaceCacheBust(
-      env,
-      {
-        keibajoCode: parts.keibajoCode,
-        mmdd: date.slice(4),
-        raceBango: parts.raceBango,
-        scope: "training",
-        source: "jra",
-        year: date.slice(0, 4),
-      },
-      { waitForCompletion: true },
-    );
-    if (bust.status !== "ok") throw new Error(`Viewer cache bust failed for ${link.race_key}`);
-    await warmViewerRace(env, link);
-  });
+  const outcomes = await mapWithConcurrency(links, (link) =>
+    refreshRaceTraining(env, date, link).then(
+      () => null,
+      (error: unknown) => error,
+    ),
+  );
+  const firstFailure = outcomes.find((outcome) => outcome !== null);
+  if (firstFailure !== undefined) throw firstFailure;
 };
 
 export const finalizeNetkeibaTrainingDay = async (

@@ -170,7 +170,12 @@ import { DAILY_FEATURE_BUILD_CRON } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
 import { probeNeonWritePool } from "./neon-write-pool-probe";
-import { finalizeNetkeibaTrainingDay, syncNetkeibaTrainingDay } from "./netkeiba-training-day-sync";
+import {
+  finalizeNetkeibaTrainingDay,
+  isNetkeibaTrainingDayInFlight,
+  NETKEIBA_TRAINING_RECHECK_DELAY_SECONDS,
+  syncNetkeibaTrainingDay,
+} from "./netkeiba-training-day-sync";
 import {
   parseRunningStylePostgresVerificationParams,
   runRunningStyleWorkerPostgresVerification,
@@ -5746,6 +5751,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     if (job.type === "sync-netkeiba-training-day") {
       try {
         const count = await syncNetkeibaTrainingDay(env, job.date);
+        // Acking a redelivery that finds the day mid-run would leave the day
+        // unsynced until the next discover cron, so schedule a re-check instead.
+        if (count === 0 && (await isNetkeibaTrainingDayInFlight(env.REALTIME_DB, job.date))) {
+          await env.REALTIME_JOBS.send(
+            { date: job.date, type: "sync-netkeiba-training-day" },
+            { delaySeconds: NETKEIBA_TRAINING_RECHECK_DELAY_SECONDS },
+          );
+          await logFetch(env.REALTIME_DB, job.type, "recheck", null, "run in flight");
+          return;
+        }
         await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} workouts staged`);
       } catch (error) {
         if (!shouldRetryNetkeibaTrainingDay(job.date, getNow(env))) throw error;

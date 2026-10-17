@@ -22,6 +22,7 @@ vi.mock("./premium-race", () => ({
 
 import {
   finalizeNetkeibaTrainingDay,
+  isNetkeibaTrainingDayInFlight,
   netkeibaTrainingDaySyncInternals,
   syncNetkeibaTrainingDay,
 } from "./netkeiba-training-day-sync";
@@ -585,8 +586,8 @@ it("purges Catalog and Viewer caches and warms only non-empty sections after suc
   );
   expect(env.PC_KEIBA_VIEWER?.fetch).toHaveBeenCalledTimes(2);
   expect(viewerRequests).toStrictEqual([
-    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/01/sections/training?__cacheWarm=1",
-    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/01/sections/premium-data-top?__cacheWarm=1",
+    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/01/sections/training",
+    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/01/sections/premium-data-top",
   ]);
   const state = await db
     .prepare("select status from netkeiba_training_day_sync_state where race_date = ?")
@@ -640,4 +641,73 @@ it("still fails and records a JRA day whose premium links are missing", async ()
       .bind("20260905")
       .first<{ status: string }>(),
   ).toStrictEqual({ status: "failed" });
+});
+
+it("reports a fresh processing run as in flight", async () => {
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, attempted_at)
+       values (?, 'processing', 0, ?)`,
+    )
+    .bind("20260905", new Date().toISOString())
+    .run();
+  expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(true);
+});
+
+it("reports a fresh catalog-pending run as in flight", async () => {
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, attempted_at)
+       values (?, 'catalog_pending', 1, ?)`,
+    )
+    .bind("20260905", new Date().toISOString())
+    .run();
+  expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(true);
+});
+
+it("does not report a stale processing run as in flight", async () => {
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, attempted_at)
+       values (?, 'processing', 0, ?)`,
+    )
+    .bind("20260905", "2026-09-01T00:00:00.000Z")
+    .run();
+  expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(false);
+});
+
+it("does not report a succeeded run as in flight", async () => {
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, attempted_at)
+       values (?, 'succeeded', 1, ?)`,
+    )
+    .bind("20260905", new Date().toISOString())
+    .run();
+  expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(false);
+});
+
+it("does not report a day with no sync state as in flight", async () => {
+  expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(false);
+});
+
+it("keeps refreshing other races when one race's Catalog purge fails", async () => {
+  dailyStatus = "succeeded";
+  await db
+    .prepare("insert into premium_race_links (race_key, source_race_id) values (?, ?)")
+    .bind("jra:2026:0905:01:02", "202601010102")
+    .run();
+  env.PC_KEIBA_R2_CATALOG.fetch = vi.fn(async (request: Request) => {
+    const url = new URL(request.url);
+    if (url.searchParams.get("raceBango") === "01") return new Response("error", { status: 503 });
+    return Response.json({ ok: true, purged: 1 });
+  });
+  await expect(
+    finalizeNetkeibaTrainingDay(env, "20260905", "12345678-1234-1234-1234-123456789abc"),
+  ).rejects.toThrow("R2 Catalog purge failed with HTTP 503");
+  expect(mocks.bust).toHaveBeenCalledTimes(1);
+  expect(viewerRequests).toStrictEqual([
+    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/02/sections/training",
+    "https://pc-keiba-viewer.internal/api/races/2026/09/05/01/02/sections/premium-data-top",
+  ]);
 });
