@@ -21,9 +21,13 @@ import {
 import type { HorseRaceResult, RaceTimeStats, RaceTimeTargetRace } from "./race-types";
 import { formatRunnerNumber } from "./runner-format";
 
+// Whether a past time was scaled from a shorter or longer race than today's.
+export type ClockDistanceConversion = "longer" | "same" | "shorter";
+
 export interface ClockAnalysisRow {
   dateLabel: string;
   dateValue: number;
+  distanceConversion: ClockDistanceConversion;
   distanceMeters: number | null;
   fill: string;
   finishRank: number | null;
@@ -52,6 +56,8 @@ export interface ClockAxisTick {
 
 export interface ClockScatterPoint {
   dateLabel: string;
+  distanceConversion: ClockDistanceConversion;
+  distanceLabel: string;
   fill: string;
   horseName: string;
   id: string;
@@ -130,6 +136,13 @@ interface BuildScaledWinnerParParams {
   races: RaceTimeTargetRace[];
 }
 
+interface ClockMarkerShapeParams {
+  conversion: ClockDistanceConversion;
+  r: number;
+  x: number;
+  y: number;
+}
+
 interface PlotBox {
   bottom: number;
   left: number;
@@ -156,6 +169,21 @@ const CLOCK_REFERENCE_STYLE_BY_KIND: Record<ClockReferenceKind, ClockReferenceSt
   medianKohan: { stroke: MEDIAN_STROKE, strokeDasharray: KOHAN_DASH },
   medianTime: { stroke: MEDIAN_STROKE, strokeDasharray: RACE_TIME_DASH },
 };
+// A triangle's circumradius is enlarged so its area reads like the circle's.
+const TRIANGLE_RADIUS_SCALE: number = 1.4;
+const TRIANGLE_HALF_WIDTH_RATIO: number = Math.sqrt(3) / 2;
+const TRIANGLE_BASE_OFFSET_RATIO: number = 0.5;
+const MARKER_COORDINATE_DIGITS: number = 2;
+export const CLOCK_DISTANCE_CONVERSION_LABELS: Record<ClockDistanceConversion, string> = {
+  longer: "長い距離から換算",
+  same: "同距離",
+  shorter: "短い距離から換算",
+};
+export const CLOCK_DISTANCE_CONVERSIONS: readonly ClockDistanceConversion[] = [
+  "same",
+  "shorter",
+  "longer",
+];
 const EMPTY_PAR: ClockPar = {
   averageKohan3f: null,
   averageRaceTime: null,
@@ -196,6 +224,38 @@ const compareClockRows = (left: ClockAnalysisRow, right: ClockAnalysisRow): numb
 const rowId = (row: ClockAnalysisRow): string =>
   `${row.umaban}-${row.dateValue}-${row.scaledTimeTenths}`;
 
+const clockDistanceConversion = (
+  distance: number | null,
+  targetDistance: number | null,
+): ClockDistanceConversion => {
+  if (distance === null || targetDistance === null || distance === targetDistance) {
+    return "same";
+  }
+  return distance < targetDistance ? "shorter" : "longer";
+};
+
+// ▼ for a time scaled from a shorter race, ▲ from a longer one. Same-distance
+// races keep the plain circle and need no polygon.
+const markerCoordinate = (value: number): number => Number(value.toFixed(MARKER_COORDINATE_DIGITS));
+
+export const clockMarkerTrianglePoints = ({
+  conversion,
+  r,
+  x,
+  y,
+}: ClockMarkerShapeParams): string => {
+  const size = r * TRIANGLE_RADIUS_SCALE;
+  const halfWidth = size * TRIANGLE_HALF_WIDTH_RATIO;
+  const direction = conversion === "shorter" ? -1 : 1;
+  const apexY = y - direction * size;
+  const baseY = y + direction * size * TRIANGLE_BASE_OFFSET_RATIO;
+  return [
+    `${markerCoordinate(x)},${markerCoordinate(apexY)}`,
+    `${markerCoordinate(x - halfWidth)},${markerCoordinate(baseY)}`,
+    `${markerCoordinate(x + halfWidth)},${markerCoordinate(baseY)}`,
+  ].join(" ");
+};
+
 const toScatterPoint = (
   row: ClockAnalysisRow,
   x: number,
@@ -204,6 +264,8 @@ const toScatterPoint = (
   timeLabel: string,
 ): ClockScatterPoint => ({
   dateLabel: row.dateLabel,
+  distanceConversion: row.distanceConversion,
+  distanceLabel: row.distanceMeters === null ? "-" : `${row.distanceMeters}m`,
   fill: row.fill,
   horseName: row.horseName,
   id: rowId(row),
@@ -304,6 +366,7 @@ export const buildClockAnalysisRows = ({
       {
         dateLabel: formatDate(result.kaisaiNen, result.kaisaiTsukihi),
         dateValue,
+        distanceConversion: clockDistanceConversion(distance, targetDistance),
         distanceMeters: distance,
         fill: paint.fill,
         finishRank: parseRaceFinishRank(result.kakuteiChakujun),
@@ -431,6 +494,9 @@ export const withScaledWinnerClockStats = (
 export const formatClockPointTooltip = (point: ClockScatterPoint): string[] => [
   `${point.umaban} ${point.horseName}`,
   `日付 ${point.dateLabel}`,
+  point.distanceConversion === "same"
+    ? `距離 ${point.distanceLabel}`
+    : `距離 ${point.distanceLabel}（${CLOCK_DISTANCE_CONVERSION_LABELS[point.distanceConversion]}）`,
   `換算タイム ${point.timeLabel}`,
   `上がり3F ${point.kohanLabel}`,
 ];

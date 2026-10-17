@@ -328,3 +328,53 @@ it("renders real overseas payload points with honest missing-dimension explanati
   expect(container.querySelector('[data-umaban="1"]')?.getAttribute("data-horse")).toBe("ダリズ");
   expect(screen.getByText(/上がり3Fが未取得の履歴を含むため/)).toBeDefined();
 });
+
+it("marks times scaled from shorter and longer races with triangles and a legend", () => {
+  render(
+    <HorseRaceClockGallery
+      currentDistance="1700"
+      results={[
+        result({ kaisaiTsukihi: "0301", kyori: "1400" }),
+        result({ kaisaiTsukihi: "0302", kyori: "1700" }),
+        result({ kaisaiTsukihi: "0303", kyori: "2000" }),
+      ]}
+      runners={[]}
+      stats={null}
+    />,
+  );
+  expect(
+    [...document.querySelectorAll("[data-distance-conversion]")].map((node) => [
+      node.tagName,
+      node.getAttribute("data-distance-conversion"),
+    ]),
+  ).toStrictEqual([
+    ["polygon", "shorter"],
+    ["circle", "same"],
+    ["polygon", "longer"],
+  ]);
+  expect(
+    [...screen.getByRole("list", { name: "距離換算" }).querySelectorAll("li")].map(
+      (node) => node.textContent,
+    ),
+  ).toStrictEqual(["同距離", "短い距離から換算", "長い距離から換算"]);
+  const shorter = document.querySelector('[data-distance-conversion="shorter"]');
+  if (shorter === null) {
+    throw new Error("expected a shorter-race point");
+  }
+  fireEvent.pointerEnter(shorter, { clientX: 40, clientY: 48 });
+  expect(screen.getByText("距離 1400m（短い距離から換算）")).toBeDefined();
+  fireEvent.pointerMove(shorter, { clientX: 44, clientY: 50 });
+  expect(screen.getByRole("tooltip")).toBeDefined();
+});
+
+it("omits the distance legend when every race matches today's distance", () => {
+  render(
+    <HorseRaceClockGallery
+      currentDistance="1700"
+      results={[result({ kyori: "1700" })]}
+      runners={[]}
+      stats={null}
+    />,
+  );
+  expect(screen.queryByRole("list", { name: "距離換算" })).toBeNull();
+});

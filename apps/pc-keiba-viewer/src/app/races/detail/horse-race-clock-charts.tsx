@@ -6,11 +6,15 @@ import type { PointerEvent } from "react";
 import { useRef, useState } from "react";
 
 import {
+  CLOCK_DISTANCE_CONVERSION_LABELS,
+  CLOCK_DISTANCE_CONVERSIONS,
   buildClockAnalysisRows,
+  clockMarkerTrianglePoints,
   clockParFromRaceTimeStats,
   buildScatterView,
   formatClockPointTooltip,
   formatClockReferenceTooltip,
+  type ClockDistanceConversion,
   type ClockReferenceKind,
   type ClockReferenceLine,
   type ClockScatterPoint,
@@ -61,6 +65,22 @@ interface ClockReferenceLegendProps {
   lines: ClockReferenceLine[];
 }
 
+interface ClockDistanceLegendProps {
+  points: ClockScatterPoint[];
+}
+
+interface ClockPointMarkerProps {
+  active: boolean;
+  dimmed: boolean;
+  onLeave: () => void;
+  onMovePoint: (event: PointerEvent<SVGElement>, point: ClockScatterPoint) => void;
+  point: ClockScatterPoint;
+}
+
+interface DistanceLegendMarkProps {
+  conversion: ClockDistanceConversion;
+}
+
 const AXIS_STROKE: string = "#8a9a90";
 const GRID_STROKE: string = "#d8e0da";
 const GRID_STROKE_OPACITY: number = 0.18;
@@ -84,6 +104,11 @@ const REFERENCE_HOVER_STROKE_OPACITY: number = 0.7;
 const REFERENCE_STROKE_WIDTH: number = 1.8;
 const REFERENCE_HIT_STROKE_WIDTH: number = 16;
 const LEGEND_MARK_STROKE_WIDTH: number = 2.4;
+const LEGEND_POINT_CENTER: number = 12;
+const LEGEND_POINT_RADIUS: number = 6;
+const LEGEND_POINT_FILL: string = "#64748b";
+const LEGEND_POINT_FILL_OPACITY: number = 0.3;
+const LEGEND_POINT_STROKE_WIDTH: number = 1.4;
 
 const pointRadius = (active: boolean, base: number): number =>
   active ? ACTIVE_POINT_RADIUS : base;
@@ -136,6 +161,92 @@ const ClockReferenceLegend = ({ lines }: ClockReferenceLegendProps) =>
       ))}
     </ul>
   );
+
+const DistanceLegendMark = ({ conversion }: DistanceLegendMarkProps) => (
+  <svg aria-hidden="true" className="training-chart-legend-mark" viewBox="0 0 24 24">
+    {conversion === "same" ? (
+      <circle
+        cx={LEGEND_POINT_CENTER}
+        cy={LEGEND_POINT_CENTER}
+        fill={LEGEND_POINT_FILL}
+        fillOpacity={LEGEND_POINT_FILL_OPACITY}
+        r={LEGEND_POINT_RADIUS}
+        stroke={LEGEND_POINT_FILL}
+        strokeWidth={LEGEND_POINT_STROKE_WIDTH}
+      />
+    ) : (
+      <polygon
+        fill={LEGEND_POINT_FILL}
+        fillOpacity={LEGEND_POINT_FILL_OPACITY}
+        points={clockMarkerTrianglePoints({
+          conversion,
+          r: LEGEND_POINT_RADIUS,
+          x: LEGEND_POINT_CENTER,
+          y: LEGEND_POINT_CENTER,
+        })}
+        stroke={LEGEND_POINT_FILL}
+        strokeWidth={LEGEND_POINT_STROKE_WIDTH}
+      />
+    )}
+  </svg>
+);
+
+// Shown only when some point was scaled, so same-distance fields stay uncluttered.
+const ClockDistanceLegend = ({ points }: ClockDistanceLegendProps) =>
+  points.every((point) => point.distanceConversion === "same") ? null : (
+    <ul aria-label="距離換算" className="training-chart-legend">
+      {CLOCK_DISTANCE_CONVERSIONS.filter((conversion) =>
+        points.some((point) => point.distanceConversion === conversion),
+      ).map((conversion) => (
+        <li key={conversion}>
+          <DistanceLegendMark conversion={conversion} />
+          {CLOCK_DISTANCE_CONVERSION_LABELS[conversion]}
+        </li>
+      ))}
+    </ul>
+  );
+
+const ClockPointMarker = ({
+  active,
+  dimmed,
+  onLeave,
+  onMovePoint,
+  point,
+}: ClockPointMarkerProps) => {
+  const shared = {
+    className: "training-chart-point",
+    "data-clock-point": point.id,
+    "data-distance-conversion": point.distanceConversion,
+    "data-horse": point.horseName,
+    "data-umaban": point.umaban,
+    fill: point.fill,
+    fillOpacity: fillOpacity(dimmed),
+    stroke: point.stroke,
+    strokeOpacity: strokeOpacity(active, dimmed),
+    strokeWidth: active ? 2.2 : 1.4,
+    onPointerEnter: (event: PointerEvent<SVGElement>) => {
+      onMovePoint(event, point);
+    },
+    onPointerLeave: onLeave,
+    onPointerMove: (event: PointerEvent<SVGElement>) => {
+      onMovePoint(event, point);
+    },
+  };
+  const r = pointRadius(active, point.r);
+  return point.distanceConversion === "same" ? (
+    <circle {...shared} cx={point.x} cy={point.y} r={r} />
+  ) : (
+    <polygon
+      {...shared}
+      points={clockMarkerTrianglePoints({
+        conversion: point.distanceConversion,
+        r,
+        x: point.x,
+        y: point.y,
+      })}
+    />
+  );
+};
 
 const ScatterPlot = ({
   hoverReferenceKind,
@@ -262,26 +373,12 @@ const ScatterPlot = ({
       const dimmed = hoverUmaban !== null && hoverUmaban !== point.umaban;
       return (
         <g key={point.id}>
-          <circle
-            className="training-chart-point"
-            cx={point.x}
-            cy={point.y}
-            data-clock-point={point.id}
-            data-horse={point.horseName}
-            data-umaban={point.umaban}
-            fill={point.fill}
-            fillOpacity={fillOpacity(dimmed)}
-            r={pointRadius(active, point.r)}
-            stroke={point.stroke}
-            strokeOpacity={strokeOpacity(active, dimmed)}
-            strokeWidth={active ? 2.2 : 1.4}
-            onPointerEnter={(event) => {
-              onMovePoint(event, point);
-            }}
-            onPointerLeave={onLeave}
-            onPointerMove={(event) => {
-              onMovePoint(event, point);
-            }}
+          <ClockPointMarker
+            active={active}
+            dimmed={dimmed}
+            onLeave={onLeave}
+            onMovePoint={onMovePoint}
+            point={point}
           />
           <text
             className="training-chart-umaban"
@@ -363,6 +460,7 @@ export const HorseRaceClockGallery = ({
           上がり3Fが未取得の履歴を含むため、レース日と距離換算した走破タイムを表示しています。馬体重・上がり3Fは補完していません。
         </p>
       ) : null}
+      <ClockDistanceLegend points={scatter.points} />
       {scatter.references.length === 0 ? null : (
         <div className="race-clock-legend-groups">
           <ClockReferenceLegend lines={scatter.references.filter(isTimeReference)} />

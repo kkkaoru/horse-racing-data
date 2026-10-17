@@ -7,6 +7,7 @@ import {
   buildScaledWinnerPar,
   buildScatterView,
   clockParFromRaceTimeStats,
+  clockMarkerTrianglePoints,
   clockParToRaceTimeFields,
   formatClockPointTooltip,
   formatClockReferenceTooltip,
@@ -396,6 +397,8 @@ it("formats a clock tooltip with horse, date, and both clocks", () => {
   expect(
     formatClockPointTooltip({
       dateLabel: "2026-03-22",
+      distanceConversion: "same",
+      distanceLabel: "1800m",
       fill: "#d71920",
       horseName: "テストホース",
       id: "1-1-1050",
@@ -407,7 +410,86 @@ it("formats a clock tooltip with horse, date, and both clocks", () => {
       x: 10,
       y: 20,
     }),
-  ).toStrictEqual(["1 テストホース", "日付 2026-03-22", "換算タイム 1:45.0", "上がり3F 35.1"]);
+  ).toStrictEqual([
+    "1 テストホース",
+    "日付 2026-03-22",
+    "距離 1800m",
+    "換算タイム 1:45.0",
+    "上がり3F 35.1",
+  ]);
+});
+
+it("names a shorter race the time was scaled from in the tooltip", () => {
+  expect(
+    formatClockPointTooltip({
+      dateLabel: "2026-03-22",
+      distanceConversion: "shorter",
+      distanceLabel: "1600m",
+      fill: "#d71920",
+      horseName: "テストホース",
+      id: "1-1-1050",
+      kohanLabel: "35.1",
+      r: 5,
+      stroke: "#d71920",
+      timeLabel: "1:45.0",
+      umaban: "1",
+      x: 10,
+      y: 20,
+    })[2],
+  ).toBe("距離 1600m（短い距離から換算）");
+});
+
+it("names a longer race the time was scaled from in the tooltip", () => {
+  expect(
+    formatClockPointTooltip({
+      dateLabel: "2026-03-22",
+      distanceConversion: "longer",
+      distanceLabel: "2000m",
+      fill: "#d71920",
+      horseName: "テストホース",
+      id: "1-1-1050",
+      kohanLabel: "35.1",
+      r: 5,
+      stroke: "#d71920",
+      timeLabel: "1:45.0",
+      umaban: "1",
+      x: 10,
+      y: 20,
+    })[2],
+  ).toBe("距離 2000m（長い距離から換算）");
+});
+
+it("draws a downward triangle for shorter races and an upward one for longer races", () => {
+  expect(clockMarkerTrianglePoints({ conversion: "shorter", r: 10, x: 50, y: 50 })).toBe(
+    "50,64 37.88,43 62.12,43",
+  );
+  expect(clockMarkerTrianglePoints({ conversion: "longer", r: 10, x: 50, y: 50 })).toBe(
+    "50,36 37.88,57 62.12,57",
+  );
+});
+
+it("classifies each past race against today's distance", () => {
+  const rows = buildClockAnalysisRows({
+    currentDistance: "1800",
+    results: [
+      result({ kaisaiTsukihi: "0301", kyori: "1600" }),
+      result({ kaisaiTsukihi: "0302", kyori: "1800" }),
+      result({ kaisaiTsukihi: "0303", kyori: "2000" }),
+    ],
+    runners: [],
+  });
+  expect(rows.map((row) => [row.distanceMeters, row.distanceConversion])).toStrictEqual([
+    [1600, "shorter"],
+    [1800, "same"],
+    [2000, "longer"],
+  ]);
+  expect(
+    buildClockAnalysisRows({
+      currentDistance: null,
+      results: [result({ kyori: "" })],
+      runners: [],
+    }).map((row) => [row.distanceMeters, row.distanceConversion]),
+  ).toStrictEqual([[null, "same"]]);
 });
 
 it("formats a same-condition reference-line tooltip", () => {
