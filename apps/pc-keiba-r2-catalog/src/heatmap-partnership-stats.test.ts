@@ -5,7 +5,7 @@ import { buildPartnershipEntriesQuery } from "./heatmap-partnership-sql";
 
 const request = (): PartnershipStatsRequest => ({
   raceBango: "01",
-  cache: { load: vi.fn(async () => ({ targetRaces: [], values: [] })) },
+  cache: { load: vi.fn(async () => ({ values: [] })) },
   cohort: {
     warm: true,
     cache: {
@@ -64,7 +64,6 @@ it("maps owner venue and exact triples without merging different owners", async 
     { umaban: 3, surface: "芝", owner_id: "o1", owner_name: "Owner" },
   ]);
   vi.mocked(input.cache.load).mockImplementation(async ({ query }) => ({
-    targetRaces: [],
     values:
       query.scope.kind === "ownerVenue"
         ? [{ partner_id: "o1", jockey_id: "owner", starts: 10, wins: 1, places: 2, shows: 3 }]
@@ -113,16 +112,14 @@ it("maps all three cohorts by stable identities and preserves genuine zero count
   const input = request();
   vi.mocked(input.cache.load)
     .mockResolvedValueOnce({
-      targetRaces: [],
       values: [
         { partner_id: "2023100001", jockey_id: "j1", starts: "10", wins: 2, places: 3, shows: 4 },
       ],
     })
     .mockResolvedValueOnce({
-      targetRaces: [],
       values: [{ partner_id: "j1", jockey_id: "j1", starts: 100, wins: 10, places: 20, shows: 30 }],
     })
-    .mockResolvedValueOnce({ targetRaces: [], values: [] });
+    .mockResolvedValueOnce({ values: [] });
   expect(await loadPartnershipStats(input)).toStrictEqual([
     {
       kind: "horseJockey",
@@ -188,7 +185,6 @@ it.each([null, true, "", -1, "not-number", 1.5])(
   async (starts) => {
     const input = request();
     vi.mocked(input.cache.load).mockResolvedValue({
-      targetRaces: [],
       values: [{ partner_id: "j1", jockey_id: "j1", starts, wins: 0, places: 0, shows: 0 }],
     });
     await expect(loadPartnershipStats(input)).rejects.toThrow("count is malformed");
@@ -202,7 +198,6 @@ it.each([
 ])("rejects inconsistent counts: %j", async (counts) => {
   const input = request();
   vi.mocked(input.cache.load).mockResolvedValue({
-    targetRaces: [],
     values: [{ partner_id: "j1", jockey_id: "j1", ...counts }],
   });
   await expect(loadPartnershipStats(input)).rejects.toThrow("counts are inconsistent");
@@ -299,7 +294,6 @@ it.each(["", "  ", "000000", "0000000000"])(
       },
     ]);
     vi.mocked(input.cache.load).mockImplementation(async ({ query }) => ({
-      targetRaces: [],
       values: [
         {
           partner_id: unknownId,

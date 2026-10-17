@@ -3,7 +3,6 @@ import { expect, it } from "vitest";
 import {
   buildPartnershipCountsQuery,
   buildPartnershipEntriesQuery,
-  buildPartnershipTargetRacesQuery,
   type PartnershipQueryInput,
 } from "./heatmap-partnership-sql";
 
@@ -54,13 +53,8 @@ it("selects owner-only venue history and all-venue exact triples for thirty year
   expect(triple).toMatch("FROM pc_keiba.jvd_ra ra");
   expect(triple).toMatch("FROM pc_keiba.nvd_ra ra");
   expect(triple).toMatch("UNION ALL");
-  const targets = buildPartnershipTargetRacesQuery({
-    ...input,
-    scope: { ...input.scope, kind: "jockeyTrainerOwner" },
-  });
-  expect(targets).toMatch("'jra' AS source");
-  expect(targets).toMatch("'nar' AS source");
-  expect(targets).toMatch("UNION ALL");
+  expect(triple).toMatch("'jra' AS source");
+  expect(triple).toMatch("'nar' AS source");
   expect(triple).toMatch("btrim(upcoming.kishu_code) = btrim(se.kishu_code)");
   expect(triple).toMatch("btrim(upcoming.chokyoshi_code) = btrim(se.chokyoshi_code)");
   expect(triple).not.toMatch("upcoming.keibajo_code =");
@@ -84,7 +78,7 @@ it("selects stable current partnership IDs for one target race", () => {
 });
 
 it("selects a shared three-year venue cohort matching the surface independently of other race conditions", () => {
-  const sql = buildPartnershipTargetRacesQuery(input);
+  const sql = buildPartnershipCountsQuery(input);
   expect(sql).toMatch("SELECT DISTINCT");
   expect(sql).toMatch("FROM pc_keiba.jvd_se se");
   expect(sql).toMatch("< '20260913'");
@@ -156,9 +150,6 @@ it("excludes zero-only person IDs from both history scans without changing the A
   expect(buildPartnershipCountsQuery(query)).toMatch(
     "AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL",
   );
-  expect(buildPartnershipTargetRacesQuery(query)).toMatch(
-    "AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL",
-  );
   expect(buildPartnershipCountsQuery(query)).toMatch("se.keibajo_code = 'A8'");
   expect(buildPartnershipCountsQuery(query)).toMatch(">= '19961004'");
   expect(buildPartnershipCountsQuery(query)).toMatch("< '20261004'");
@@ -199,7 +190,7 @@ it.each([
   "ownerVenue",
   "jockeyTrainerOwner",
 ] satisfies PartnershipQueryInput["scope"]["kind"][])(
-  "uses the Arc predicate for both %s queries without NAR",
+  "uses the Arc predicate for the %s cohort without NAR",
   (kind) => {
     const scoped: PartnershipQueryInput = {
       ...input,
@@ -215,10 +206,6 @@ it.each([
     expect(buildPartnershipCountsQuery(scoped)).toMatch(
       "btrim(replace(arc.kyosomei_hondai, chr(12288), '')) IN ('凱旋門賞', '凱旋門賞(GI)')",
     );
-    expect(buildPartnershipTargetRacesQuery(scoped)).toMatch(
-      "btrim(replace(arc.kyosomei_hondai, chr(12288), '')) IN ('凱旋門賞', '凱旋門賞(GI)')",
-    );
     expect(buildPartnershipCountsQuery(scoped)).not.toMatch(/nvd_/u);
-    expect(buildPartnershipTargetRacesQuery(scoped)).not.toMatch(/nvd_/u);
   },
 );

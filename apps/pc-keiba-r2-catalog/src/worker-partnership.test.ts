@@ -92,9 +92,10 @@ it("warms shared cohorts and exposes all three independent column rows", async (
       },
     ],
   });
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(11);
+  // One entries query plus one counts query per kind; no target-race scans.
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(6);
   expect((await handleRequest(new Request(url), test.env, test.dependencies)).status).toBe(200);
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(12);
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(7);
 });
 
 it("warms overseas partnership cohorts through URL parsing and all SQL scopes", async () => {
@@ -127,7 +128,7 @@ it("warms overseas partnership cohorts through URL parsing and all SQL scopes", 
       },
     ],
   });
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(13);
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(8);
   expect(test.dependencies.fetchImpl).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({ body: expect.stringMatching("keibajo_code = 'A8'") }),
@@ -136,7 +137,7 @@ it("warms overseas partnership cohorts through URL parsing and all SQL scopes", 
   expect((await handleRequest(new Request(overseasUrl), test.env, test.dependencies)).status).toBe(
     200,
   );
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(16);
+  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(11);
 });
 
 it("returns a cache-miss status without running history aggregation on reads", async () => {

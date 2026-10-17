@@ -39,23 +39,15 @@ const makeRequest = (): PartnershipCohortRequest => ({
 
 afterEach(() => vi.useRealTimers());
 
-it("coalesces shared warm work and reuses both target-race and value memory caches", async () => {
+it("coalesces shared warm work into one counts query and reuses its memory cache", async () => {
   const request = makeRequest();
   const cache = createPartnershipCohortCache();
   const results = await Promise.all([cache.load(request), cache.load(request)]);
-  expect(results[0]).toStrictEqual({
-    targetRaces: [{ starts: 10, wins: 1 }],
-    values: [{ starts: 10, wins: 1 }],
-  });
-  expect(request.execute).toHaveBeenCalledTimes(2);
-  expect(request.kv.put).toHaveBeenCalledTimes(2);
+  expect(results[0]).toStrictEqual({ values: [{ starts: 10, wins: 1 }] });
+  expect(request.execute).toHaveBeenCalledTimes(1);
+  expect(request.kv.put).toHaveBeenCalledTimes(1);
   expect(await cache.load({ ...request, warm: false })).not.toBeNull();
-  expect(request.cache.match).toHaveBeenCalledTimes(2);
-  expect(request.kv.put).toHaveBeenCalledWith(
-    expect.stringMatching(/:targets$/u),
-    expect.any(String),
-    { expirationTtl: 129600 },
-  );
+  expect(request.cache.match).toHaveBeenCalledTimes(1);
   expect(request.kv.put).toHaveBeenCalledWith(
     expect.stringMatching(/:values$/u),
     expect.any(String),
@@ -81,7 +73,7 @@ it("does not reuse a turf cohort for dirt or obstacle races", async () => {
       query: { ...request.query, scope: { ...request.query.scope, surface: "障害" } },
     }),
   ).toBeNull();
-  expect(request.execute).toHaveBeenCalledTimes(2);
+  expect(request.execute).toHaveBeenCalledTimes(1);
 });
 
 it("read-only misses never aggregate or write fictitious empty values", async () => {
@@ -95,7 +87,6 @@ it("prioritizes regional cache over KV and SQL", async () => {
   const request = makeRequest();
   vi.mocked(request.cache.match).mockImplementation(async () => Response.json([{ starts: 42 }]));
   expect(await createPartnershipCohortCache().load(request)).toStrictEqual({
-    targetRaces: [{ starts: 42 }],
     values: [{ starts: 42 }],
   });
   expect(request.kv.get).not.toHaveBeenCalled();
@@ -108,10 +99,9 @@ it("repairs malformed regional copies from KV despite regional write failures", 
   vi.mocked(request.cache.put).mockRejectedValue(new Error("Cache API unavailable"));
   vi.mocked(request.kv.get).mockResolvedValue('[{"starts":7}]');
   expect(await createPartnershipCohortCache().load(request)).toStrictEqual({
-    targetRaces: [{ starts: 7 }],
     values: [{ starts: 7 }],
   });
-  expect(request.cache.delete).toHaveBeenCalledTimes(2);
+  expect(request.cache.delete).toHaveBeenCalledTimes(1);
   expect(request.execute).not.toHaveBeenCalled();
 });
 
@@ -135,19 +125,19 @@ it("expires isolate entries and bounds large bodies without sacrificing durable 
   await cache.load(request);
   vi.advanceTimersByTime(60_001);
   await cache.load(request);
-  expect(request.execute).toHaveBeenCalledTimes(4);
+  expect(request.execute).toHaveBeenCalledTimes(2);
   vi.mocked(request.execute).mockResolvedValue([{ data: "x".repeat(300_000) }]);
   const large = createPartnershipCohortCache();
   await large.load(request);
   await large.load(request);
-  expect(request.execute).toHaveBeenCalledTimes(8);
+  expect(request.execute).toHaveBeenCalledTimes(4);
 });
 
 it("bounds entry count and isolates horse cohorts by sorted target horse IDs", async () => {
   const request = makeRequest();
   const cache = createPartnershipCohortCache();
   await Promise.all(
-    Array.from({ length: 33 }, (_, index) =>
+    Array.from({ length: 65 }, (_, index) =>
       cache.load({
         ...request,
         query: {
@@ -158,7 +148,7 @@ it("bounds entry count and isolates horse cohorts by sorted target horse IDs", a
       }),
     ),
   );
-  expect(request.execute).toHaveBeenCalledTimes(66);
+  expect(request.execute).toHaveBeenCalledTimes(65);
   await cache.load({
     ...request,
     query: {
@@ -167,7 +157,7 @@ it("bounds entry count and isolates horse cohorts by sorted target horse IDs", a
       scope: { ...request.query.scope, kind: "horseJockey" },
     },
   });
-  expect(request.execute).toHaveBeenCalledTimes(68);
+  expect(request.execute).toHaveBeenCalledTimes(66);
 });
 
 it("does not publish failures and permits retry after a failed singleflight", async () => {
@@ -178,5 +168,5 @@ it("does not publish failures and permits retry after a failed singleflight", as
   expect(request.kv.put).not.toHaveBeenCalled();
   vi.mocked(request.execute).mockResolvedValue([]);
   vi.mocked(request.cache.put).mockRejectedValue(new Error("Cache API unavailable"));
-  expect(await cache.load(request)).toStrictEqual({ targetRaces: [], values: [] });
+  expect(await cache.load(request)).toStrictEqual({ values: [] });
 });

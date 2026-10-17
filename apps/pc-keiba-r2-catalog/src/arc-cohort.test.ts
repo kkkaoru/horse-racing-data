@@ -2,10 +2,7 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it } from "vitest";
 import { arcTitleSql, isCurrentArc } from "./arc-cohort";
-import {
-  buildPartnershipCountsQuery,
-  buildPartnershipTargetRacesQuery,
-} from "./heatmap-partnership-sql";
+import { buildPartnershipCountsQuery } from "./heatmap-partnership-sql";
 import type { PartnershipKind, PartnershipScope } from "./heatmap-partnership";
 import {
   buildWinRateHeatmapBloodlineQuery,
@@ -85,9 +82,6 @@ it("executes all five partnership cohorts and their target races against the sam
         const counts = (
           await c.runAndReadAll(buildPartnershipCountsQuery(input))
         ).getRowObjectsJson();
-        const races = (
-          await c.runAndReadAll(buildPartnershipTargetRacesQuery(input))
-        ).getRowObjectsJson();
         return {
           kind,
           counts: counts.map((r) => [
@@ -96,7 +90,6 @@ it("executes all five partnership cohorts and their target races against the sam
             Number(r.places),
             Number(r.shows),
           ]),
-          races,
         };
       }),
     );
@@ -107,17 +100,6 @@ it("executes all five partnership cohorts and their target races against the sam
       [[1, 0, 1, 1]],
       [[1, 0, 1, 1]],
     ]);
-    expect(rows.map((r) => r.races)).toStrictEqual(
-      Array.from({ length: 5 }, () => [
-        {
-          source: "jra",
-          kaisai_nen: "2025",
-          kaisai_tsukihi: "1004",
-          keibajo_code: "A8",
-          race_bango: "05",
-        },
-      ]),
-    );
   } finally {
     c.closeSync();
     db.closeSync();

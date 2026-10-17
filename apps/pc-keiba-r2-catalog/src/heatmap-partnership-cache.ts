@@ -1,14 +1,9 @@
 // Run with bun (bunx vitest).
 import { partnershipCacheKey } from "./heatmap-partnership";
-import {
-  buildPartnershipCountsQuery,
-  buildPartnershipTargetRacesQuery,
-  type PartnershipQueryInput,
-} from "./heatmap-partnership-sql";
+import { buildPartnershipCountsQuery, type PartnershipQueryInput } from "./heatmap-partnership-sql";
 import type { CacheStore, KvStore } from "./types";
 
 export interface PartnershipCohort {
-  targetRaces: Record<string, unknown>[];
   values: Record<string, unknown>[];
 }
 
@@ -135,19 +130,14 @@ export const createPartnershipCohortCache = (): PartnershipCohortCache => {
       ]
         .map(encodeURIComponent)
         .join(":");
-      const [targetRaces, values] = await Promise.all([
-        shared({
-          key: `${key}:targets`,
-          request,
-          sql: () => buildPartnershipTargetRacesQuery(request.query),
-        }),
-        shared({
-          key: `${key}:values`,
-          request,
-          sql: () => buildPartnershipCountsQuery(request.query),
-        }),
-      ]);
-      return targetRaces === null || values === null ? null : { targetRaces, values };
+      // Only the counts feed partnership rates; the cohort's distinct target
+      // races were never read, so that second history scan is not run.
+      const values = await shared({
+        key: `${key}:values`,
+        request,
+        sql: () => buildPartnershipCountsQuery(request.query),
+      });
+      return values === null ? null : { values };
     },
   };
 };
