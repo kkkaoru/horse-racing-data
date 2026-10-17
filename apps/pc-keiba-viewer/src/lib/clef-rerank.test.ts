@@ -1,51 +1,63 @@
 // Run with bun (bunx vitest).
 import { expect, it } from "vitest";
 
-import { buildClefRerankUrl, formatRankChange, readClefRerank } from "./clef-rerank";
+import { applyClefRerank, clefRerankResultKey } from "./clef-rerank";
 
-const payload = {
-  modelVersion: "clef-rerank-jra-v1",
-  label: "clef-flash 補正",
-  raceKey: "jra:2026:1018:08:11",
-  baseModelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
-  baseGeneratedAt: "2026-10-18T00:00:00Z",
-  generatedAt: "2026-10-18T00:10:00Z",
-  predictions: [
-    { horseNumber: 3, rank: 1, baseRank: 2, score: 1.2, clefWin: 0.3, clefTop3: 0.7 },
-    { horseNumber: 1, rank: 2, baseRank: 1, score: 0.4, clefWin: 0.2, clefTop3: 0.5 },
-  ],
-};
+const feature = (horseNumber: string, norm: number) => ({
+  confidenceTier: null,
+  horseNumber,
+  modelVersion: "jra-joken-703-pooled-yetirank-v2-nowin1",
+  predictedFinishNorm: norm,
+  predictionGeneratedAt: "2026-10-17T16:11:03.882Z",
+  showProbability: null,
+  winProbability: null,
+});
 
-it("builds the same-origin Worker URL with padded parts", () => {
+const served = [feature("01", 0), feature("02", 0.5), feature("03", 1)];
+
+it("builds the Worker result key", () => {
   expect(
-    buildClefRerankUrl({ year: "2026", month: "1", day: "8", keibajoCode: "08", raceNumber: "1" }),
-  ).toBe("/api/clef-rerank/20260108/08/01");
+    clefRerankResultKey({ year: "2026", mmdd: "1018", keibajoCode: "04", raceBango: "01" }),
+  ).toBe("clefrr:v1:result:20261018:04:01");
 });
 
-it("decodes a valid payload and drops unused fields", () => {
-  expect(readClefRerank(payload)).toStrictEqual({
-    modelVersion: "clef-rerank-jra-v1",
-    label: "clef-flash 補正",
-    baseModelVersion: "jra-cb-v9-sim-2013-clean-nowin1",
-    baseGeneratedAt: "2026-10-18T00:00:00Z",
-    predictions: [
-      { horseNumber: 3, rank: 1, baseRank: 2, clefWin: 0.3, clefTop3: 0.7 },
-      { horseNumber: 1, rank: 2, baseRank: 1, clefWin: 0.2, clefTop3: 0.5 },
-    ],
+it("replaces the served order with the rerank for the same generation", () => {
+  const rerank = JSON.stringify({
+    baseGeneratedAt: "2026-10-17T16:11:03.882Z",
+    predictions: [{ horseNumber: 3, rank: 1 }, { horseNumber: 1, rank: 2 }, { bad: true }],
   });
+  expect(applyClefRerank(served, rerank).map((row) => row.predictedFinishNorm)).toStrictEqual([
+    1, 0.5, 0,
+  ]);
 });
 
-it("rejects malformed payloads", () => {
-  expect(readClefRerank({ ...payload, predictions: [] })).toBeNull();
-  expect(readClefRerank({ ...payload, predictions: [{ horseNumber: 1 }] })).toBeNull();
-  expect(readClefRerank({ ...payload, label: 1 })).toBeNull();
-  expect(readClefRerank({ error: "clef rerank is not available" })).toBeNull();
-  expect(readClefRerank([payload])).toBeNull();
-  expect(readClefRerank(null)).toBeNull();
+it("keeps the served order for another generation or an unusable result", () => {
+  expect(
+    applyClefRerank(
+      served,
+      JSON.stringify({ baseGeneratedAt: "old", predictions: [{ horseNumber: 3, rank: 1 }] }),
+    ),
+  ).toStrictEqual(served);
+  expect(
+    applyClefRerank(
+      served,
+      JSON.stringify({ baseGeneratedAt: "2026-10-17T16:11:03.882Z", predictions: "x" }),
+    ),
+  ).toStrictEqual(served);
+  expect(applyClefRerank(served, "[1]")).toStrictEqual(served);
+  expect(applyClefRerank(served, "{broken")).toStrictEqual(served);
+  expect(applyClefRerank(served, null)).toStrictEqual(served);
+  expect(applyClefRerank([], null)).toStrictEqual([]);
 });
 
-it("formats rank movement against the served model", () => {
-  expect(formatRankChange({ rank: 1, baseRank: 3 })).toBe("↑2");
-  expect(formatRankChange({ rank: 4, baseRank: 1 })).toBe("↓3");
-  expect(formatRankChange({ rank: 2, baseRank: 2 })).toBe("→");
+it("treats a single reranked horse as rank one", () => {
+  expect(
+    applyClefRerank(
+      [feature("1", 0.3)],
+      JSON.stringify({
+        baseGeneratedAt: "2026-10-17T16:11:03.882Z",
+        predictions: [{ horseNumber: 1, rank: 1 }],
+      }),
+    ).map((row) => row.predictedFinishNorm),
+  ).toStrictEqual([0]);
 });

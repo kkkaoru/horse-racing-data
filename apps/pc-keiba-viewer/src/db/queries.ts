@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
+import { applyClefRerank, clefRerankResultKey } from "../lib/clef-rerank";
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import {
@@ -3787,7 +3788,19 @@ export const getActiveFinishPositionPredictions = cache(
             expectedPredictionGeneratedAt,
           ));
       if (cacheGenerationMatches) {
-        return predictionFeatures;
+        // Races whose served model the clef rerank improves show the reranked order.
+        return applyClefRerank(
+          predictionFeatures,
+          await readPredictionKvText(
+            clefRerankResultKey({
+              keibajoCode: race.keibajoCode,
+              mmdd: race.kaisaiTsukihi,
+              raceBango: race.raceBango,
+              year: race.kaisaiNen,
+            }),
+            predictionWindowYmd,
+          ),
+        );
       }
     }
 

@@ -1,20 +1,6 @@
-// Run with bun (bunx vitest). Decoder for the finish-position-clef-rerank Worker payload.
-
-export interface ClefRerankRow {
-  horseNumber: number;
-  rank: number;
-  baseRank: number;
-  clefWin: number;
-  clefTop3: number;
-}
-
-export interface ClefRerankCard {
-  modelVersion: string;
-  label: string;
-  baseModelVersion: string;
-  baseGeneratedAt: string;
-  predictions: ClefRerankRow[];
-}
+// Run with bun (bunx vitest). Applies the finish-position-clef-rerank Worker result to the served
+// finish prediction so the regular 着順予測 table shows the reranked order.
+import type { FinishPositionModelPredictionFeature } from "./race-types";
 
 export interface ClefRerankRaceAddress {
   year: string;
@@ -24,59 +10,51 @@ export interface ClefRerankRaceAddress {
   raceNumber: string;
 }
 
-const CLEF_RERANK_ENDPOINT: string = "/api/clef-rerank";
-const TWO_DIGITS: number = 2;
+interface RerankRank {
+  horseNumber: number;
+  rank: number;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const isRank = (value: unknown): value is RerankRank =>
+  isRecord(value) && typeof value.horseNumber === "number" && typeof value.rank === "number";
 
-const isRow = (value: unknown): value is ClefRerankRow =>
-  isRecord(value) &&
-  isFiniteNumber(value.horseNumber) &&
-  isFiniteNumber(value.rank) &&
-  isFiniteNumber(value.baseRank) &&
-  isFiniteNumber(value.clefWin) &&
-  isFiniteNumber(value.clefTop3);
+export const clefRerankResultKey = (race: {
+  year: string;
+  mmdd: string;
+  keibajoCode: string;
+  raceBango: string;
+}): string => `clefrr:v1:result:${race.year}${race.mmdd}:${race.keibajoCode}:${race.raceBango}`;
 
-const pad = (value: string): string => value.padStart(TWO_DIGITS, "0");
+const parseText = (text: string | null): unknown => {
+  try {
+    return text === null ? null : JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
 
-export const buildClefRerankUrl = ({
-  year,
-  month,
-  day,
-  keibajoCode,
-  raceNumber,
-}: ClefRerankRaceAddress): string =>
-  `${CLEF_RERANK_ENDPOINT}/${year}${pad(month)}${pad(day)}/${keibajoCode}/${pad(raceNumber)}`;
-
-export const readClefRerank = (value: unknown): ClefRerankCard | null =>
-  isRecord(value) &&
-  typeof value.modelVersion === "string" &&
-  typeof value.label === "string" &&
-  typeof value.baseModelVersion === "string" &&
-  typeof value.baseGeneratedAt === "string" &&
-  Array.isArray(value.predictions) &&
-  value.predictions.length > 0 &&
-  value.predictions.every(isRow)
-    ? {
-        modelVersion: value.modelVersion,
-        label: value.label,
-        baseModelVersion: value.baseModelVersion,
-        baseGeneratedAt: value.baseGeneratedAt,
-        predictions: value.predictions.map((row) => ({
-          horseNumber: row.horseNumber,
-          rank: row.rank,
-          baseRank: row.baseRank,
-          clefWin: row.clefWin,
-          clefTop3: row.clefTop3,
-        })),
-      }
-    : null;
-
-export const formatRankChange = (row: Pick<ClefRerankRow, "rank" | "baseRank">): string =>
-  row.baseRank === row.rank
-    ? "→"
-    : `${row.baseRank > row.rank ? "↑" : "↓"}${String(Math.abs(row.baseRank - row.rank))}`;
+// The rerank only applies to the exact served generation it was computed from, so a newer
+// prediction (for example after the horse-weight rescore) is shown as served until re-ranked.
+export const applyClefRerank = (
+  features: FinishPositionModelPredictionFeature[],
+  rerankText: string | null,
+): FinishPositionModelPredictionFeature[] => {
+  const rerank = parseText(rerankText);
+  const generation = features[0]?.predictionGeneratedAt;
+  if (
+    !isRecord(rerank) ||
+    rerank.baseGeneratedAt !== generation ||
+    !Array.isArray(rerank.predictions)
+  )
+    return features;
+  const ranks = rerank.predictions.filter(isRank);
+  const field = Math.max(ranks.length - 1, 1);
+  const norms = new Map(ranks.map((row) => [String(row.horseNumber), (row.rank - 1) / field]));
+  return features.map((feature) => {
+    const norm = norms.get(String(Number(feature.horseNumber)));
+    return norm === undefined ? feature : { ...feature, predictedFinishNorm: norm };
+  });
+};

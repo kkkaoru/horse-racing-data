@@ -40,7 +40,6 @@ import type { HeatmapPresentation } from "../../../lib/win-rate-heatmap-presenta
 import type { WinRateHeatmapRaceClass } from "../../../lib/win-rate-heatmap-race-class";
 import { AbilityTestTable } from "./ability-test-table";
 import { ArcPredictionTable } from "./arc-prediction-table";
-import { ClefRerankTable } from "./clef-rerank-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
@@ -1139,14 +1138,6 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
           source={payload.bucket.bucketSource}
         />
       </MobileCollapsibleSection>
-      <ClefRerankTable
-        day={props.day}
-        keibajoCode={props.keibajoCode}
-        month={props.month}
-        raceNumber={props.raceNumber}
-        runners={payload.inputs.runners}
-        year={props.year}
-      />
       <FinishPositionPredictionTable
         combinedScoreData={
           scoreState.payload?.type === "time-score"
