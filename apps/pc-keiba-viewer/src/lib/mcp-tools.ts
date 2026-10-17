@@ -491,14 +491,14 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
-      "Recommended betting tickets for one race from Cloudflare clef-flash: bet type (単勝/複勝/馬連/ワイド/馬単/3連複/3連単), style (single, box, nagashi 軸流し, multi マルチ, formation), legs, and per-ticket horses with frame, name, jockey, trainer, owner, odds (min-max for 複勝/ワイド), stake and payout in yen. clef-flash weighs the served finish prediction, win-rate heatmap, odds, recent results, training and today's placings. budget is yen in 100-yen steps (default 2000). Returns an error before odds are published.",
+      "Recommended betting tickets for one race from Cloudflare clef-flash, split across at least two bet types sized to the budget. plans.plans lists each bet type (単勝/複勝/馬連/ワイド/馬単/3連複/3連単) with its style (single, box, nagashi 軸流し, multi マルチ, formation), legs (axis and partners or each formation column), and per-ticket horses with frame, name, jockey, trainer, owner, odds (min-max for 複勝/ワイド), stake and payout in yen. clef-flash weighs the served finish prediction, win-rate heatmap, odds, recent results, training and today's placings. budget is yen in 100-yen steps (default 2000). Returns an error before odds are published.",
     inputSchema: {
       additionalProperties: false,
       properties: {
         ...RACE_ROUTE_PROPERTIES,
         budget: {
           description:
-            "Total budget in yen, a multiple of 100 from 100 to 1000000. Defaults to 2000.",
+            "Total budget in yen, a multiple of 100 from 200 to 1000000. Defaults to 2000.",
           maximum: MAX_BET_BUDGET,
           minimum: MIN_BET_BUDGET,
           type: "integer",
@@ -1248,7 +1248,7 @@ const getBetSuggestions = async (
   }
   const budget = args.budget === undefined ? DEFAULT_BET_BUDGET : args.budget;
   if (typeof budget !== "number" || normalizeBudget(budget) !== budget) {
-    return errorResult("budget must be a multiple of 100 from 100 to 1000000");
+    return errorResult("budget must be a multiple of 100 from 200 to 1000000");
   }
   const fetched = await fetchSiteJson(
     fetchSite,

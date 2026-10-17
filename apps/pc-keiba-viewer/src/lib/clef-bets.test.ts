@@ -5,19 +5,45 @@ import {
   betStyleLabel,
   betTypeLabel,
   buildClefBetsUrl,
-  formatLegs,
-  formatOdds,
-  formatPayout,
+  describePlan,
+  formatPlanOdds,
+  formatPlanPayout,
+  formatPlanStake,
   formatYen,
   normalizeBudget,
+  planGroups,
   readClefBets,
-  summarizeSuggestion,
+  summarizePlanSet,
 } from "./clef-bets";
+
+const widePlan = {
+  betType: "wide",
+  style: "nagashi",
+  axis: 11,
+  legs: [[11], [4, 7]],
+  budget: 1200,
+  totalStake: 1200,
+  expectedReturn: 1300,
+  tickets: [
+    { horses: [4, 11], odds: 2.4, maxOdds: 2.7, stake: 600, payout: 1440, payoutMax: 1620 },
+    { horses: [7, 11], odds: 3.1, maxOdds: 3.6, stake: 600, payout: 1860, payoutMax: 2160 },
+  ],
+};
+
+const tanshoPlan = {
+  betType: "tansho",
+  style: "single",
+  axis: 11,
+  legs: [[11]],
+  budget: 800,
+  totalStake: 800,
+  expectedReturn: 900,
+  tickets: [{ horses: [11], odds: 4.3, maxOdds: null, stake: 800, payout: 3440, payoutMax: null }],
+};
 
 const payload = {
   raceKey: "20261018:08:03",
   oddsFetchedAt: "2026-10-18T06:55:31+09:00",
-  generatedAt: "2026-10-17T21:59:10.598Z",
   runners: [
     {
       horseNumber: 11,
@@ -26,30 +52,10 @@ const payload = {
       jockey: "騎手A",
       trainer: "調教師A",
       owner: "馬主A",
-      clefWin: 0.4,
-      clefTop3: 0.9,
     },
   ],
-  suggestion: {
-    betType: "wide",
-    style: "nagashi",
-    axis: 11,
-    legs: [[11], [4, 7]],
-    budget: 2000,
-    totalStake: 2000,
-    expectedReturn: 2100,
-    tickets: [
-      {
-        horses: [4, 11],
-        odds: 2.4,
-        maxOdds: 2.7,
-        probability: 0.4,
-        stake: 1000,
-        payout: 2400,
-        payoutMax: 2700,
-      },
-    ],
-  },
+  suggestion: widePlan,
+  plans: { budget: 2000, totalStake: 2000, expectedReturn: 2200, plans: [widePlan, tanshoPlan] },
 };
 
 it("builds the Worker URL with padded parts and the budget", () => {
@@ -61,29 +67,37 @@ it("builds the Worker URL with padded parts and the budget", () => {
   ).toBe("/api/clef-rerank/bets/20260108/08/03?budget=2500");
 });
 
-it("decodes a valid payload and drops unused fields", () => {
+it("decodes the multi-type plans and drops unused fields", () => {
   expect(readClefBets(payload)).toStrictEqual({
     oddsFetchedAt: "2026-10-18T06:55:31+09:00",
     runners: payload.runners,
-    suggestion: payload.suggestion,
+    plans: payload.plans,
   });
 });
 
-it("rejects malformed payloads", () => {
+it("rejects malformed payloads and single-type plans", () => {
   expect(readClefBets({ ...payload, oddsFetchedAt: 1 })).toBeNull();
   expect(readClefBets({ ...payload, runners: [{ horseNumber: 1 }] })).toBeNull();
+  expect(readClefBets({ ...payload, plans: { ...payload.plans, plans: [widePlan] } })).toBeNull();
+  expect(readClefBets({ ...payload, plans: { ...payload.plans, totalStake: "x" } })).toBeNull();
   expect(
-    readClefBets({ ...payload, suggestion: { ...payload.suggestion, tickets: [] } }),
-  ).toBeNull();
-  expect(
-    readClefBets({ ...payload, suggestion: { ...payload.suggestion, legs: [["1"]] } }),
+    readClefBets({
+      ...payload,
+      plans: { ...payload.plans, plans: [widePlan, { ...tanshoPlan, tickets: [] }] },
+    }),
   ).toBeNull();
   expect(
     readClefBets({
       ...payload,
-      suggestion: {
-        ...payload.suggestion,
-        tickets: [{ ...payload.suggestion.tickets[0], maxOdds: "x" }],
+      plans: { ...payload.plans, plans: [widePlan, { ...tanshoPlan, legs: [["1"]] }] },
+    }),
+  ).toBeNull();
+  expect(
+    readClefBets({
+      ...payload,
+      plans: {
+        ...payload.plans,
+        plans: [widePlan, { ...tanshoPlan, tickets: [{ ...tanshoPlan.tickets[0], maxOdds: "x" }] }],
       },
     }),
   ).toBeNull();
@@ -93,7 +107,7 @@ it("rejects malformed payloads", () => {
 
 it("snaps budgets onto the 100-yen grid within the accepted range", () => {
   expect(normalizeBudget(2549)).toBe(2500);
-  expect(normalizeBudget(20)).toBe(100);
+  expect(normalizeBudget(20)).toBe(200);
   expect(normalizeBudget(5_000_000)).toBe(1_000_000);
   expect(normalizeBudget(Number.NaN)).toBe(2000);
 });
@@ -103,26 +117,79 @@ it("labels bet types and styles in Japanese and keeps unknown codes", () => {
   expect(betTypeLabel("win5")).toBe("win5");
   expect(betStyleLabel("multi")).toBe("軸流しマルチ");
   expect(betStyleLabel("other")).toBe("other");
-});
-
-it("formats yen, odds ranges and payout ranges", () => {
   expect(formatYen(12000)).toBe("12,000円");
-  expect(formatOdds({ odds: 4.3, maxOdds: null })).toBe("4.3");
-  expect(formatOdds({ odds: 1.7, maxOdds: 2.4 })).toBe("1.7〜2.4");
-  expect(formatPayout({ payout: 3400, payoutMax: null })).toBe("3,400円");
-  expect(formatPayout({ payout: 3400, payoutMax: 4800 })).toBe("3,400円〜4,800円");
 });
 
-it("formats legs as columns except for boxes and single legs", () => {
-  expect(formatLegs({ style: "formation", legs: [[1], [2, 3], [2, 3, 4]] })).toBe(
-    "1列目: 1 ／ 2列目: 2, 3 ／ 3列目: 2, 3, 4",
+it("describes each ticket structure like a betting slip", () => {
+  expect(describePlan(tanshoPlan)).toBe("11番");
+  expect(describePlan(widePlan)).toBe("軸 11 → 相手 4・7");
+  expect(describePlan({ ...widePlan, betType: "umatan" })).toBe("1着軸 11 → 相手 4・7");
+  expect(describePlan({ ...widePlan, betType: "umatan", style: "multi" })).toBe(
+    "軸 11 マルチ → 相手 4・7",
   );
-  expect(formatLegs({ style: "box", legs: [[1, 2, 3]] })).toBe("1, 2, 3");
-  expect(formatLegs({ style: "single", legs: [[5]] })).toBe("5");
+  expect(describePlan({ ...widePlan, style: "box", legs: [[11, 4, 7]] })).toBe("ボックス 11・4・7");
+  expect(
+    describePlan({
+      betType: "3rentan",
+      style: "formation",
+      axis: 1,
+      legs: [[1], [2, 3], [2, 3, 4]],
+    }),
+  ).toBe("フォーメーション 1着 1 ／ 2着 2・3 ／ 3着 2・3・4");
+  expect(
+    describePlan({ betType: "3renpuku", style: "formation", axis: 1, legs: [[1], [2, 3]] }),
+  ).toBe("フォーメーション 1頭目 1 ／ 2頭目 2・3");
+  expect(describePlan({ ...widePlan, style: "nagashi", legs: [[11]] })).toBe("軸 11 → 相手 ");
+  expect(describePlan({ ...widePlan, style: "unknown" })).toBe("11番");
 });
 
-it("summarizes the suggestion in one line", () => {
-  expect(summarizeSuggestion(payload.suggestion)).toBe(
-    "ワイド 軸流し ／ 軸 11 ／ 1列目: 11 ／ 2列目: 4, 7 ／ 1点 ／ 合計 2,000円 ／ 期待払戻 2,100円",
-  );
+it("groups horses per leg for every structure", () => {
+  expect(planGroups(tanshoPlan)).toStrictEqual([{ label: "", horses: [11] }]);
+  expect(planGroups(widePlan)).toStrictEqual([
+    { label: "軸", horses: [11] },
+    { label: "相手", horses: [4, 7] },
+  ]);
+  expect(planGroups({ ...widePlan, betType: "umatan" })).toStrictEqual([
+    { label: "1着軸", horses: [11] },
+    { label: "相手", horses: [4, 7] },
+  ]);
+  expect(planGroups({ ...widePlan, betType: "umatan", style: "multi" })).toStrictEqual([
+    { label: "軸（マルチ）", horses: [11] },
+    { label: "相手", horses: [4, 7] },
+  ]);
+  expect(planGroups({ ...widePlan, style: "multi", legs: [[11]] })).toStrictEqual([
+    { label: "軸（マルチ）", horses: [11] },
+    { label: "相手", horses: [] },
+  ]);
+  expect(planGroups({ ...widePlan, style: "box", legs: [[11, 4, 7]] })).toStrictEqual([
+    { label: "ボックス", horses: [11, 4, 7] },
+  ]);
+  expect(
+    planGroups({ betType: "3rentan", style: "formation", axis: 1, legs: [[1], [2, 3]] }),
+  ).toStrictEqual([
+    { label: "1着", horses: [1] },
+    { label: "2着", horses: [2, 3] },
+  ]);
+});
+
+it("formats plan odds, stakes and payouts as ranges", () => {
+  expect(formatPlanOdds(widePlan)).toBe("2.4〜3.6");
+  expect(formatPlanOdds(tanshoPlan)).toBe("4.3");
+  expect(formatPlanStake(widePlan)).toBe("各600円 × 2点 = 1,200円");
+  expect(formatPlanStake(tanshoPlan)).toBe("800円");
+  expect(
+    formatPlanStake({
+      totalStake: 1000,
+      tickets: [
+        { horses: [4, 11], odds: 2.4, maxOdds: 2.7, stake: 700, payout: 1680, payoutMax: 1890 },
+        { horses: [7, 11], odds: 3.1, maxOdds: 3.6, stake: 300, payout: 930, payoutMax: 1080 },
+      ],
+    }),
+  ).toBe("2点 計1,000円");
+  expect(formatPlanPayout(widePlan)).toBe("1,440円〜2,160円");
+  expect(formatPlanPayout(tanshoPlan)).toBe("3,440円");
+});
+
+it("summarizes the plan set in one line", () => {
+  expect(summarizePlanSet(payload.plans)).toBe("2種類 ／ 3点 ／ 合計 2,000円 ／ 期待払戻 2,200円");
 });

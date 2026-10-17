@@ -30,15 +30,22 @@ export interface ClefBetSuggestion {
   tickets: ClefBetTicket[];
 }
 
+export interface ClefBetPlanSet {
+  budget: number;
+  totalStake: number;
+  expectedReturn: number;
+  plans: ClefBetSuggestion[];
+}
+
 export interface ClefBetCard {
   oddsFetchedAt: string;
   runners: ClefBetRunner[];
-  suggestion: ClefBetSuggestion;
+  plans: ClefBetPlanSet;
 }
 
 export const DEFAULT_BET_BUDGET: number = 2000;
 export const BET_BUDGET_STEP: number = 100;
-export const MIN_BET_BUDGET: number = 100;
+export const MIN_BET_BUDGET: number = 200;
 export const MAX_BET_BUDGET: number = 1_000_000;
 
 const CLEF_BETS_ENDPOINT: string = "/api/clef-rerank/bets";
@@ -104,6 +111,18 @@ const isSuggestion = (value: unknown): value is ClefBetSuggestion =>
   value.tickets.length > 0 &&
   value.tickets.every(isTicket);
 
+const MIN_PLANS: number = 2;
+const ORDERED_BET_TYPES: ReadonlySet<string> = new Set(["umatan", "3rentan"]);
+
+const isPlanSet = (value: unknown): value is ClefBetPlanSet =>
+  isRecord(value) &&
+  isFiniteNumber(value.budget) &&
+  isFiniteNumber(value.totalStake) &&
+  isFiniteNumber(value.expectedReturn) &&
+  Array.isArray(value.plans) &&
+  value.plans.length >= MIN_PLANS &&
+  value.plans.every(isSuggestion);
+
 const pad = (value: string): string => value.padStart(TWO_DIGITS, "0");
 
 export const buildClefBetsUrl = (race: ClefRerankRaceAddress, budget: number): string =>
@@ -114,11 +133,11 @@ export const readClefBets = (value: unknown): ClefBetCard | null =>
   typeof value.oddsFetchedAt === "string" &&
   Array.isArray(value.runners) &&
   value.runners.every(isRunner) &&
-  isSuggestion(value.suggestion)
+  isPlanSet(value.plans)
     ? {
         oddsFetchedAt: value.oddsFetchedAt,
         runners: value.runners,
-        suggestion: value.suggestion,
+        plans: value.plans,
       }
     : null;
 
@@ -137,29 +156,82 @@ export const betStyleLabel = (style: string): string => STYLE_LABELS[style] ?? s
 
 export const formatYen = (value: number): string => `${value.toLocaleString("ja-JP")}円`;
 
-export const formatOdds = (ticket: Pick<ClefBetTicket, "odds" | "maxOdds">): string =>
-  ticket.maxOdds === null
-    ? ticket.odds.toFixed(1)
-    : `${ticket.odds.toFixed(1)}〜${ticket.maxOdds.toFixed(1)}`;
+const joinHorses = (horses: readonly number[]): string => horses.join("・");
 
-export const formatPayout = (ticket: Pick<ClefBetTicket, "payout" | "payoutMax">): string =>
-  ticket.payoutMax === null
-    ? formatYen(ticket.payout)
-    : `${formatYen(ticket.payout)}〜${formatYen(ticket.payoutMax)}`;
+const legName = (ordered: boolean, index: number): string =>
+  ordered ? `${String(index + 1)}着` : `${String(index + 1)}頭目`;
 
-export const formatLegs = (suggestion: Pick<ClefBetSuggestion, "legs" | "style">): string =>
-  suggestion.style === "box" || suggestion.legs.length === 1
-    ? suggestion.legs.flat().join(", ")
-    : suggestion.legs
-        .map((leg, index) => `${String(index + 1)}列目: ${leg.join(", ")}`)
-        .join(" ／ ");
+// Spells out the ticket structure the way a betting slip names it: 軸流し, マルチ, フォーメーション, ボックス.
+export const describePlan = (
+  plan: Pick<ClefBetSuggestion, "betType" | "style" | "axis" | "legs">,
+): string => {
+  const ordered = ORDERED_BET_TYPES.has(plan.betType);
+  const partners = joinHorses(plan.legs[1] ?? []);
+  const descriptions: Record<string, () => string> = {
+    single: () => `${String(plan.axis)}番`,
+    box: () => `ボックス ${joinHorses(plan.legs.flat())}`,
+    nagashi: () => `${ordered ? "1着軸" : "軸"} ${String(plan.axis)} → 相手 ${partners}`,
+    multi: () => `軸 ${String(plan.axis)} マルチ → 相手 ${partners}`,
+    formation: () =>
+      `フォーメーション ${plan.legs.map((leg, index) => `${legName(ordered, index)} ${joinHorses(leg)}`).join(" ／ ")}`,
+  };
+  return descriptions[plan.style]?.() ?? `${String(plan.axis)}番`;
+};
 
-export const summarizeSuggestion = (suggestion: ClefBetSuggestion): string =>
+export interface ClefBetLegGroup {
+  label: string;
+  horses: number[];
+}
+
+// Horse groups shown in each column: one block per leg, labelled like a betting slip.
+export const planGroups = (
+  plan: Pick<ClefBetSuggestion, "betType" | "style" | "axis" | "legs">,
+): ClefBetLegGroup[] => {
+  const ordered = ORDERED_BET_TYPES.has(plan.betType);
+  const partners = plan.legs[1] ?? [];
+  const groups: Record<string, () => ClefBetLegGroup[]> = {
+    box: () => [{ label: "ボックス", horses: plan.legs.flat() }],
+    nagashi: () => [
+      { label: ordered ? "1着軸" : "軸", horses: [plan.axis] },
+      { label: "相手", horses: partners },
+    ],
+    multi: () => [
+      { label: "軸（マルチ）", horses: [plan.axis] },
+      { label: "相手", horses: partners },
+    ],
+    formation: () =>
+      plan.legs.map((leg, index) => ({ label: legName(ordered, index), horses: leg })),
+  };
+  return groups[plan.style]?.() ?? [{ label: "", horses: [plan.axis] }];
+};
+
+export const formatPlanOdds = (plan: Pick<ClefBetSuggestion, "tickets">): string => {
+  const low = Math.min(...plan.tickets.map((ticket) => ticket.odds));
+  const high = Math.max(...plan.tickets.map((ticket) => ticket.maxOdds ?? ticket.odds));
+  return low === high ? low.toFixed(1) : `${low.toFixed(1)}〜${high.toFixed(1)}`;
+};
+
+export const formatPlanStake = (
+  plan: Pick<ClefBetSuggestion, "tickets" | "totalStake">,
+): string => {
+  const stakes = new Set(plan.tickets.map((ticket) => ticket.stake));
+  const [only] = stakes;
+  if (plan.tickets.length === 1) return formatYen(plan.totalStake);
+  return stakes.size === 1 && only !== undefined
+    ? `各${formatYen(only)} × ${String(plan.tickets.length)}点 = ${formatYen(plan.totalStake)}`
+    : `${String(plan.tickets.length)}点 計${formatYen(plan.totalStake)}`;
+};
+
+export const formatPlanPayout = (plan: Pick<ClefBetSuggestion, "tickets">): string => {
+  const low = Math.min(...plan.tickets.map((ticket) => ticket.payout));
+  const high = Math.max(...plan.tickets.map((ticket) => ticket.payoutMax ?? ticket.payout));
+  return low === high ? formatYen(low) : `${formatYen(low)}〜${formatYen(high)}`;
+};
+
+export const summarizePlanSet = (set: ClefBetPlanSet): string =>
   [
-    `${betTypeLabel(suggestion.betType)} ${betStyleLabel(suggestion.style)}`,
-    `軸 ${String(suggestion.axis)}`,
-    formatLegs(suggestion),
-    `${String(suggestion.tickets.length)}点`,
-    `合計 ${formatYen(suggestion.totalStake)}`,
-    `期待払戻 ${formatYen(suggestion.expectedReturn)}`,
+    `${String(set.plans.length)}種類`,
+    `${String(set.plans.reduce((sum, plan) => sum + plan.tickets.length, 0))}点`,
+    `合計 ${formatYen(set.totalStake)}`,
+    `期待払戻 ${formatYen(set.expectedReturn)}`,
   ].join(" ／ ");

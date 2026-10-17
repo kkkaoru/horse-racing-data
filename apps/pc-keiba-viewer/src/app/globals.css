@@ -10501,3 +10501,127 @@ fieldset.race-results-chart-view-toggle {
   display: block;
   line-height: var(--number-1-5-25);
 }
+
+/* 推奨馬券: one row per bet plan, legs stacked inside each cell. */
+.clef-bet-section {
+  display: grid;
+  gap: var(--space-12px-9);
+  margin-bottom: var(--space-24px-50);
+}
+
+.clef-bet-budget {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-8px-28);
+  padding: var(--space-12px-9);
+}
+
+.clef-bet-budget-value {
+  font-size: var(--space-24px-50);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-700-14);
+}
+
+.clef-bet-budget-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.clef-bet-budget-controls input[type="range"] {
+  accent-color: var(--accent);
+  flex: var(--number-1-7) var(--number-1-7) auto;
+  min-height: var(--space-44px-23);
+  min-width: var(--space-180px-85);
+}
+
+.clef-bet-budget button {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-32);
+  min-height: var(--space-44px-23);
+  min-width: var(--space-44px-23);
+  padding: var(--space-4px-18) var(--space-12px-9);
+}
+
+.clef-bet-budget button:focus-visible,
+.clef-bet-budget input:focus-visible {
+  outline: var(--space-2px-25) solid var(--accent-strong);
+  outline-offset: var(--space-2px-25);
+}
+
+.clef-bet-budget-input {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8px-28);
+}
+
+.clef-bet-budget-input input {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-32);
+  font-size: var(--space-15px-1);
+  font-variant-numeric: tabular-nums;
+  min-height: var(--space-44px-23);
+  padding: var(--space-4px-18) var(--space-8px-28);
+  text-align: right;
+}
+
+.clef-bet-table {
+  border-collapse: collapse;
+  width: var(--space-100pct-12);
+}
+
+.clef-bet-table caption {
+  color: var(--muted);
+  padding: var(--space-8px-28);
+  text-align: left;
+}
+
+.clef-bet-table th,
+.clef-bet-table td {
+  border-bottom: var(--space-1px-7) solid var(--line);
+  padding: var(--space-11px-110) var(--space-10px-27);
+  text-align: left;
+  vertical-align: top;
+}
+
+.clef-bet-table thead th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+  white-space: nowrap;
+}
+
+.clef-bet-table tbody tr:nth-child(even) {
+  background: var(--surface-muted);
+}
+
+.clef-bet-table tbody th {
+  display: grid;
+  gap: var(--space-4px-18);
+}
+
+.clef-bet-type {
+  font-weight: var(--number-700-14);
+}
+
+.clef-bet-style,
+.clef-bet-structure,
+.clef-bet-leg-label {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+}
+
+.clef-bet-leg + .clef-bet-leg {
+  border-top: var(--space-1px-7) dashed var(--line);
+  margin-top: var(--space-4px-18);
+  padding-top: var(--space-4px-18);
+}
+
+.clef-bet-number {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}

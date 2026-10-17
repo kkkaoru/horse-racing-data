@@ -2418,16 +2418,35 @@ const betPayload = {
       owner: "馬主A",
     },
   ],
-  suggestion: {
-    betType: "fukusho",
-    style: "single",
-    axis: 11,
-    legs: [[11]],
+  plans: {
     budget: 2000,
     totalStake: 2000,
     expectedReturn: 2178,
-    tickets: [
-      { horses: [11], odds: 1.7, maxOdds: 2.4, stake: 2000, payout: 3400, payoutMax: 4800 },
+    plans: [
+      {
+        betType: "fukusho",
+        style: "single",
+        axis: 11,
+        legs: [[11]],
+        budget: 1200,
+        totalStake: 1200,
+        expectedReturn: 1300,
+        tickets: [
+          { horses: [11], odds: 1.7, maxOdds: 2.4, stake: 1200, payout: 2040, payoutMax: 2880 },
+        ],
+      },
+      {
+        betType: "tansho",
+        style: "single",
+        axis: 11,
+        legs: [[11]],
+        budget: 800,
+        totalStake: 800,
+        expectedReturn: 878,
+        tickets: [
+          { horses: [11], odds: 4.3, maxOdds: null, stake: 800, payout: 3440, payoutMax: null },
+        ],
+      },
     ],
   },
 };
@@ -2442,9 +2461,9 @@ it("exposes get_bet_suggestions with an optional budget", () => {
     "raceNumber",
   ]);
   expect(definition?.inputSchema.properties.budget).toStrictEqual({
-    description: "Total budget in yen, a multiple of 100 from 100 to 1000000. Defaults to 2000.",
+    description: "Total budget in yen, a multiple of 100 from 200 to 1000000. Defaults to 2000.",
     maximum: 1_000_000,
-    minimum: 100,
+    minimum: 200,
     type: "integer",
   });
 });
@@ -2476,7 +2495,7 @@ it("get_bet_suggestions rejects budgets off the 100-yen grid", async () => {
   );
   expect(result.isError).toBe(true);
   expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
-    error: { message: "budget must be a multiple of 100 from 100 to 1000000" },
+    error: { message: "budget must be a multiple of 100 from 200 to 1000000" },
   });
   expect(
     (await callMcpTool("get_bet_suggestions", { ...betRaceArgs, budget: "2000" }, jsonFetch({})))
