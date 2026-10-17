@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import type { ArcQualifiedStats } from "../../../lib/arc-qualified-stats";
+import { indexLiveHorseWeightChangeKg } from "../../../lib/horse-weight-change-class";
 import { indexLiveHorseWeightKg } from "../../../lib/horse-weight-class";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type {
@@ -66,6 +67,7 @@ interface WinRateHeatmapSectionProps {
   realtimeRequest: RealtimeRaceRequest;
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
+  weightChangeClassStats?: readonly WeightClassStatsRow[];
   weightClassStats?: readonly WeightClassStatsRow[];
 }
 
@@ -330,6 +332,7 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
   realtimeRequest,
   runners,
   similarRows,
+  weightChangeClassStats,
   weightClassStats,
 }: WinRateHeatmapSectionProps) {
   const [openTooltipKey, setOpenTooltipKey] = useState<string | null>(null);
@@ -404,12 +407,11 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
     source: realtimeRequest.source,
     year: realtimeRequest.year,
   });
-  const liveWeightKgByHorse = useMemo(
-    () =>
-      indexLiveHorseWeightKg(
-        horseWeightSnapshot?.horses ?? realtimePayload?.horseWeights?.horses ?? [],
-      ),
-    [horseWeightSnapshot, realtimePayload],
+  const liveHorses = horseWeightSnapshot?.horses ?? realtimePayload?.horseWeights?.horses;
+  const liveWeightKgByHorse = useMemo(() => indexLiveHorseWeightKg(liveHorses ?? []), [liveHorses]);
+  const liveWeightChangeKgByHorse = useMemo(
+    () => indexLiveHorseWeightChangeKg(liveHorses ?? []),
+    [liveHorses],
   );
   const display =
     presentation === undefined
@@ -423,12 +425,14 @@ export const WinRateHeatmapSection = memo(function WinRateHeatmapSection({
           partnershipRows,
           horseResults,
           keibajoCode,
+          liveWeightChangeKgByHorse,
           liveWeightKgByHorse,
           runners,
           showStarts,
           similarRows,
           splitBloodlineLines,
           viewMode,
+          weightChangeClassStats,
           weightClassStats,
         })
       : selectHeatmapDisplay(presentation, { showStarts, splitBloodlineLines, viewMode });

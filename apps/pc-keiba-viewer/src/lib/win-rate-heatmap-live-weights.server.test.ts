@@ -18,7 +18,7 @@ beforeEach(() => {
   mocks.latest.mockResolvedValue(null);
   mocks.resolve.mockResolvedValue(null);
 });
-it("loads only live weights and strips unrelated snapshot fields", async () => {
+it("loads live weights with their change and strips unrelated snapshot fields", async () => {
   const realtimeData = { fetch: vi.fn<typeof fetch>() };
   const db = {};
   const snapshot = {
@@ -39,7 +39,7 @@ it("loads only live weights and strips unrelated snapshot fields", async () => {
       raceNumber: "01",
       source: "jra",
     }),
-  ).toStrictEqual([{ horseNumber: "01", weight: 488 }]);
+  ).toStrictEqual([{ changeAmount: 2, changeSign: "+", horseNumber: "01", weight: 488 }]);
   expect(mocks.resolve).toHaveBeenCalledWith({
     db,
     fromDO: snapshot,
@@ -49,7 +49,9 @@ it("loads only live weights and strips unrelated snapshot fields", async () => {
 });
 it("uses D1 fallback when the live binding is absent", async () => {
   mocks.env.mockResolvedValue({ REALTIME_DB: {} });
-  mocks.resolve.mockResolvedValue({ horses: [{ horseNumber: "1", weight: 510 }] });
+  mocks.resolve.mockResolvedValue({
+    horses: [{ changeAmount: 4, changeSign: "-", horseNumber: "1", weight: 510 }],
+  });
   expect(
     await fetchHeatmapLiveWeights({
       day: "13",
@@ -59,7 +61,7 @@ it("uses D1 fallback when the live binding is absent", async () => {
       raceNumber: "1",
       source: "nar",
     }),
-  ).toStrictEqual([{ horseNumber: "1", weight: 510 }]);
+  ).toStrictEqual([{ changeAmount: 4, changeSign: "-", horseNumber: "1", weight: 510 }]);
   expect(mocks.latest).not.toHaveBeenCalled();
   expect(mocks.resolve).toHaveBeenCalledWith({
     db: {},
@@ -83,7 +85,9 @@ it("retains the realtime route's unavailable snapshot policy", async () => {
 });
 it("falls back after the DO reader reports an unavailable snapshot", async () => {
   mocks.env.mockResolvedValue({ REALTIME_DATA: { fetch: vi.fn<typeof fetch>() }, REALTIME_DB: {} });
-  mocks.resolve.mockResolvedValue({ horses: [{ horseNumber: "1", weight: null }] });
+  mocks.resolve.mockResolvedValue({
+    horses: [{ changeAmount: null, changeSign: null, horseNumber: "1", weight: null }],
+  });
   expect(
     await fetchHeatmapLiveWeights({
       day: "13",
@@ -93,7 +97,7 @@ it("falls back after the DO reader reports an unavailable snapshot", async () =>
       raceNumber: "01",
       source: "jra",
     }),
-  ).toStrictEqual([{ horseNumber: "1", weight: null }]);
+  ).toStrictEqual([{ changeAmount: null, changeSign: null, horseNumber: "1", weight: null }]);
   expect(mocks.resolve).toHaveBeenCalledWith({
     db: {},
     fromDO: null,

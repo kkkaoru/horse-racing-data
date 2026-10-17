@@ -1,6 +1,7 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 
 import { KEIBAJO_NAMES } from "./codes";
+import { indexLiveHorseWeightChangeKg } from "./horse-weight-change-class";
 import { indexLiveHorseWeightKg, type LiveHorseWeight } from "./horse-weight-class";
 import { resolveMcpApiPath, resolveMcpPaddockWritePath } from "./mcp-allowlist";
 import {
@@ -21,6 +22,7 @@ import {
   buildWinRateHeatmapRows,
   DEFAULT_WIN_RATE_HEATMAP_SHOW_STARTS,
   DEFAULT_WIN_RATE_HEATMAP_VIEW_MODE,
+  type BuildWinRateHeatmapRowsInput,
   type WinRateHeatmapViewMode,
 } from "./win-rate-heatmap";
 import { isWinRateHeatmapSectionPayload } from "./win-rate-heatmap-cache";
@@ -1067,27 +1069,38 @@ const buildPaddockAction = (args: Record<string, unknown>): PaddockAction | stri
     : "score requires horseName, horseNumber, category, and delta 1 or -1";
 };
 
-const readLiveWeights = (realtime: unknown): Map<string, number> => {
+const readLiveHorseWeights = (realtime: unknown): LiveHorseWeight[] => {
   if (!isRecord(realtime)) {
-    return new Map();
+    return [];
   }
   const horseWeights = realtime.horseWeights;
   if (!isRecord(horseWeights) || !Array.isArray(horseWeights.horses)) {
-    return new Map();
+    return [];
   }
-  const horses: LiveHorseWeight[] = horseWeights.horses.flatMap((entry) => {
+  return horseWeights.horses.flatMap((entry) => {
     if (!isRecord(entry) || typeof entry.horseNumber !== "string") {
       return [];
     }
-    const weight = entry.weight;
+    const { changeAmount, changeSign, weight } = entry;
     return [
       {
+        changeAmount: typeof changeAmount === "number" ? changeAmount : null,
+        changeSign: typeof changeSign === "string" ? changeSign : null,
         horseNumber: entry.horseNumber,
         weight: typeof weight === "number" ? weight : null,
       },
     ];
   });
-  return indexLiveHorseWeightKg(horses);
+};
+
+const readLiveWeightIndexes = (
+  realtime: unknown,
+): Pick<BuildWinRateHeatmapRowsInput, "liveWeightChangeKgByHorse" | "liveWeightKgByHorse"> => {
+  const horses = readLiveHorseWeights(realtime);
+  return {
+    liveWeightChangeKgByHorse: indexLiveHorseWeightChangeKg(horses),
+    liveWeightKgByHorse: indexLiveHorseWeightKg(horses),
+  };
 };
 
 const finiteNumberOrNull = (value: unknown): number | null =>
@@ -1406,9 +1419,10 @@ export const callMcpTool = async (
         partnershipRows: section.value.partnershipRows,
         horseResults: section.value.horseResults,
         keibajoCode: parsed.keibajoCode,
-        liveWeightKgByHorse: readLiveWeights(realtime.value),
+        ...readLiveWeightIndexes(realtime.value),
         runners: section.value.runners,
         similarRows: section.value.similarRows,
+        weightChangeClassStats: section.value.weightChangeClassStats,
         weightClassStats: section.value.weightClassStats,
       }),
       options,
@@ -1461,11 +1475,12 @@ export const callMcpTool = async (
       partnershipRows: section.value.partnershipRows,
       horseResults: section.value.horseResults,
       keibajoCode: parsed.keibajoCode,
-      liveWeightKgByHorse: readLiveWeights(realtime.value),
+      ...readLiveWeightIndexes(realtime.value),
       runners: section.value.runners,
       showStarts,
       similarRows: section.value.similarRows,
       viewMode,
+      weightChangeClassStats: section.value.weightChangeClassStats,
       weightClassStats: section.value.weightClassStats,
     });
     return okChunkedJson(display, responseCursor);

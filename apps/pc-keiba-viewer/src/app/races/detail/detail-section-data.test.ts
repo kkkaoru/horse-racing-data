@@ -3338,6 +3338,7 @@ it("keeps frameStats from condition payloads that omit weight class arrays", asy
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
   expect(getFrameStatsMock).not.toHaveBeenCalled();
@@ -3391,6 +3392,7 @@ it("reuses cached condition payloads whose frameStats array is empty", async () 
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
   expect(getFrameStatsMock).not.toHaveBeenCalled();
@@ -3490,6 +3492,7 @@ it("keeps frameStats when carriedWeightClassStats is not an array", async () => 
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
   expect(getFrameStatsMock).not.toHaveBeenCalled();
@@ -3546,6 +3549,7 @@ it("keeps frameStats when weightClassStats is not an array", async () => {
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
   expect(getFrameStatsMock).not.toHaveBeenCalled();
@@ -3602,6 +3606,7 @@ it("defaults omitted carriedWeightClassStats and keeps present weightClassStats"
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [{ key: "480-499" }],
   });
 });
@@ -3657,6 +3662,7 @@ it("defaults omitted weightClassStats and keeps present carriedWeightClassStats"
     liveHorseWeights: [],
     type: "win-rate-heatmap",
     producerDataRevision: 1,
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
 });
@@ -7241,6 +7247,7 @@ it("reads heatmap condition counts from the Catalog only in production", async (
     carriedWeightClassStats: [{ key: "55.5-57" }],
     frameStats: [{ count: 3, details: [], frameNumber: "2" }],
     mappingRevision: "gate-v1-abc",
+    weightChangeClassStats: [{ key: "minus2" }],
     weightClassStats: [{ key: "480-499" }],
   });
 
@@ -7258,6 +7265,7 @@ it("reads heatmap condition counts from the Catalog only in production", async (
     carriedWeightClassStats: [{ key: "55.5-57" }],
     frameStats: [{ count: 3, details: [], frameNumber: "2" }],
     mappingRevision: "gate-v1-abc",
+    weightChangeClassStats: [{ key: "minus2" }],
     weightClassStats: [{ key: "480-499" }],
   });
   expect(fetchConditionHistoryStatsFromCatalogMock).toHaveBeenCalledTimes(1);

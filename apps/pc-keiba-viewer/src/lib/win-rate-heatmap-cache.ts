@@ -32,6 +32,7 @@ const WIN_RATE_HEATMAP_CACHE_QUERY_DEFAULT = "default";
 export const WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS = [
   "frame",
   "weight",
+  "weightChange",
   "carriedWeight",
   "horse",
   "horseJockey",
@@ -80,6 +81,7 @@ export interface WinRateHeatmapSectionPayload {
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
   type: "win-rate-heatmap";
+  weightChangeClassStats?: WeightClassStatsRow[];
   weightClassStats: WeightClassStatsRow[];
 }
 
@@ -299,6 +301,7 @@ export const isWinRateHeatmapSectionPayload = (
     Array.isArray(value.horseResults) &&
     Array.isArray(value.runners) &&
     Array.isArray(value.similarRows) &&
+    (value.weightChangeClassStats === undefined || Array.isArray(value.weightChangeClassStats)) &&
     Array.isArray(value.weightClassStats)
   );
 };

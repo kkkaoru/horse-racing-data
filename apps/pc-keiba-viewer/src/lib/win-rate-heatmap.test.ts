@@ -28,6 +28,7 @@ import {
   getWinRateHeatmapColorScaleTracks,
   resolveWinRateHeatmapColorScale,
   getWinRateHeatmapTooltipName,
+  shouldShowWinRateHeatmapWeightChangeColumn,
   shouldShowWinRateHeatmapWeightColumn,
   BAN_EI_WIN_RATE_HEATMAP_QUINELLA_MAX_RATE,
   BAN_EI_WIN_RATE_HEATMAP_QUINELLA_TICKS,
@@ -600,6 +601,7 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
   expect(WIN_RATE_HEATMAP_COLUMNS).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "weight", label: "馬体重" },
+    { key: "weightChange", label: "馬体重増減" },
     { key: "carriedWeight", label: "斤量" },
     { key: "horse", label: "馬" },
     { key: "horseJockey", label: "馬×騎手" },
@@ -624,10 +626,12 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
       keibajoCode: "05",
       showCarriedWeight: true,
       showWeight: true,
+      showWeightChange: true,
     }),
   ).toStrictEqual([
     { key: "frame", label: "枠" },
     { key: "weight", label: "馬体重" },
+    { key: "weightChange", label: "馬体重増減" },
     { key: "carriedWeight", label: "斤量" },
     { key: "horse", label: "馬" },
     { key: "horseJockey", label: "馬×騎手" },
@@ -652,6 +656,7 @@ it("exports heatmap columns for frame, weight, carried weight, horse, jockey, tr
       keibajoCode: "05",
       showCarriedWeight: false,
       showWeight: false,
+      showWeightChange: false,
     }),
   ).toStrictEqual([
     { key: "frame", label: "枠" },
@@ -681,6 +686,7 @@ it("limits ばんえい heatmap bloodline columns to 父 and 母父", () => {
       keibajoCode: "83",
       showCarriedWeight: false,
       showWeight: true,
+      showWeightChange: false,
     }),
   ).toStrictEqual([
     { key: "frame", label: "枠" },
@@ -701,9 +707,9 @@ it("limits ばんえい heatmap bloodline columns to 父 and 母父", () => {
 });
 
 it("places 騎手枠別 immediately left of 騎手 in the heatmap column order", () => {
-  expect(WIN_RATE_HEATMAP_COLUMNS[3]).toStrictEqual({ key: "horse", label: "馬" });
-  expect(WIN_RATE_HEATMAP_COLUMNS[5]).toStrictEqual({ key: "jockeyFrame", label: "騎手枠別" });
-  expect(WIN_RATE_HEATMAP_COLUMNS[6]).toStrictEqual({ key: "jockey", label: "騎手" });
+  expect(WIN_RATE_HEATMAP_COLUMNS[4]).toStrictEqual({ key: "horse", label: "馬" });
+  expect(WIN_RATE_HEATMAP_COLUMNS[6]).toStrictEqual({ key: "jockeyFrame", label: "騎手枠別" });
+  expect(WIN_RATE_HEATMAP_COLUMNS[7]).toStrictEqual({ key: "jockey", label: "騎手" });
 });
 
 it("maps jockeyFrame similar stats onto 騎手枠別 instead of reusing generic jockey stats", () => {
@@ -947,6 +953,16 @@ it("maps jockeyFrame similar stats onto 騎手枠別 instead of reusing generic 
       winCount: null,
       winRate: null,
     },
+    weightChange: {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
   });
 });
 
@@ -994,6 +1010,7 @@ it("keeps 騎手枠別 visible for ばんえい races", () => {
       keibajoCode: "83",
       showCarriedWeight: false,
       showWeight: false,
+      showWeightChange: false,
     }),
   ).toStrictEqual([
     { key: "frame", label: "枠" },
@@ -1459,6 +1476,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           winCount: null,
           winRate: null,
         },
+        weightChange: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -1657,6 +1684,16 @@ it("maps horse, jockey, trainer, and bloodline rates onto each horse", () => {
           winRate: 50,
         },
         weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        weightChange: {
           name: null,
           quinellaCount: null,
           quinellaRate: null,
@@ -1902,6 +1939,16 @@ it("looks up frame rates by wakuban when the stored frame number is zero-padded"
           winCount: null,
           winRate: null,
         },
+        weightChange: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -2126,6 +2173,16 @@ it("treats non-finite frame rates as missing heatmap values", () => {
           winRate: null,
         },
         weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        weightChange: {
           name: null,
           quinellaCount: null,
           quinellaRate: null,
@@ -2426,6 +2483,16 @@ it("ignores frame stats whose frame number cannot be displayed", () => {
           winCount: null,
           winRate: null,
         },
+        weightChange: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -2639,6 +2706,16 @@ it("skips horse results whose current number cannot be displayed", () => {
           winRate: null,
         },
         weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        weightChange: {
           name: null,
           quinellaCount: null,
           quinellaRate: null,
@@ -2874,6 +2951,16 @@ it("treats blank, zero, and non-numeric finish positions as missing horse rates"
           winCount: null,
           winRate: null,
         },
+        weightChange: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
       },
       frameNumber: "1",
       horseName: "Alpha",
@@ -3087,6 +3174,16 @@ it("uses a dash when the runner has no displayable horse name", () => {
           winRate: null,
         },
         weight: {
+          name: null,
+          quinellaCount: null,
+          quinellaRate: null,
+          showCount: null,
+          showRate: null,
+          starts: null,
+          winCount: null,
+          winRate: null,
+        },
+        weightChange: {
           name: null,
           quinellaCount: null,
           quinellaRate: null,
@@ -4793,4 +4890,176 @@ it("does not infer Arc from A8 and preserves career horse aggregates and weight 
   expect(rows[0]?.cells.horse).toMatchObject({ starts: 10, winRate: 20 });
   expect(rows[0]?.cells.weight).toMatchObject({ starts: 1, winRate: 100 });
   expect(rows[0]?.cells.carriedWeight).toMatchObject({ starts: 1, winRate: 100 });
+});
+
+it("maps the current weight change onto Catalog weight-change class rates", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [],
+      runners: [
+        { ...runnerOne, zogenFugo: "-", zogenSa: "006" },
+        { ...runnerTwo, zogenFugo: " ", zogenSa: "   " },
+      ],
+      similarRows: [],
+      weightChangeClassStats: [
+        {
+          key: "minus5",
+          quinellaCount: 9,
+          quinellaRate: 18,
+          showCount: 14,
+          showRate: 28,
+          starts: 50,
+          winCount: 4,
+          winRate: 8,
+        },
+      ],
+    }).map((row) => row.cells.weightChange),
+  ).toStrictEqual([
+    {
+      name: "-5kg未満-10kg以上",
+      quinellaCount: 9,
+      quinellaRate: 18,
+      showCount: 14,
+      showRate: 28,
+      starts: 50,
+      winCount: 4,
+      winRate: 8,
+    },
+    {
+      name: null,
+      quinellaCount: null,
+      quinellaRate: null,
+      showCount: null,
+      showRate: null,
+      starts: null,
+      winCount: null,
+      winRate: null,
+    },
+  ]);
+});
+
+it("prefers the live weight change over the stored runner change", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightChangeKgByHorse: new Map([["1", 22]]),
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [],
+      runners: [{ ...runnerOne, zogenFugo: "-", zogenSa: "006" }],
+      similarRows: [],
+      weightChangeClassStats: [
+        {
+          key: "plus20",
+          quinellaCount: 1,
+          quinellaRate: 10,
+          showCount: 2,
+          showRate: 20,
+          starts: 10,
+          winCount: 0,
+          winRate: 0,
+        },
+      ],
+    }).map((row) => row.cells.weightChange.name),
+  ).toStrictEqual(["+20kg以上"]);
+});
+
+it("falls back to this field's past weight changes when Catalog rows are missing", () => {
+  expect(
+    buildWinRateHeatmapRows({
+      keibajoCode: "05",
+      liveWeightKgByHorse: new Map(),
+      bloodlineRows: [],
+      frameStats: [],
+      horseResults: [
+        { ...horseWin, kakuteiChakujun: "01", zogenFugo: "+", zogenSa: "003" },
+        { ...horseWin, kakuteiChakujun: "04", zogenFugo: "+", zogenSa: "004" },
+        { ...horseWin, kakuteiChakujun: "02", zogenFugo: " ", zogenSa: "999" },
+        { ...horseWin, kakuteiChakujun: "00", zogenFugo: "+", zogenSa: "002" },
+      ],
+      runners: [{ ...runnerOne, zogenFugo: "+", zogenSa: "002" }],
+      similarRows: [],
+      weightChangeClassStats: [],
+    }).map((row) => row.cells.weightChange),
+  ).toStrictEqual([
+    {
+      name: "+5kg未満+2kg以上",
+      quinellaCount: 1,
+      quinellaRate: 50,
+      showCount: 1,
+      showRate: 50,
+      starts: 2,
+      winCount: 1,
+      winRate: 50,
+    },
+  ]);
+});
+
+it("hides the weight-change column for overseas venues and when no runner has a change", () => {
+  expect(
+    shouldShowWinRateHeatmapWeightChangeColumn({
+      keibajoCode: "A8",
+      runners: [{ ...runnerOne, zogenFugo: "+", zogenSa: "004" }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapWeightChangeColumn({
+      keibajoCode: "05",
+      runners: [{ ...runnerOne, zogenFugo: " ", zogenSa: "   " }],
+    }),
+  ).toBe(false);
+  expect(
+    shouldShowWinRateHeatmapWeightChangeColumn({
+      keibajoCode: "05",
+      runners: [{ ...runnerOne, zogenFugo: " ", zogenSa: "000" }],
+    }),
+  ).toBe(true);
+  expect(
+    shouldShowWinRateHeatmapWeightChangeColumn({
+      keibajoCode: "05",
+      liveWeightChangeKgByHorse: new Map([["1", -4]]),
+      runners: [runnerOne],
+    }),
+  ).toBe(true);
+});
+
+it("shows the weight-change column right of the horse-weight column in the display", () => {
+  const display = buildWinRateHeatmapDisplay({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [{ ...runnerOne, bataiju: "480", zogenFugo: "+", zogenSa: "008" }],
+    showStarts: false,
+    similarRows: [],
+    viewMode: "winRate",
+    weightChangeClassStats: [
+      {
+        key: "plus5",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 5,
+        showRate: 50,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
+  });
+  expect(display.showWeightChange).toBe(true);
+  expect(display.visibleColumns.slice(0, 3)).toStrictEqual([
+    { key: "frame", label: "枠" },
+    { key: "weight", label: "馬体重" },
+    { key: "weightChange", label: "馬体重増減" },
+  ]);
+  const swatch = display.rows[0]?.swatches.find((item) => item.columnKey === "weightChange");
+  expect(swatch?.columnLabel).toBe("馬体重増減");
+  expect(swatch?.name).toBe("+10kg未満+5kg以上");
+  expect(swatch?.valueLabel).toBe("10.0");
 });

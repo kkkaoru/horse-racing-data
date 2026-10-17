@@ -15,6 +15,8 @@ export interface ParseHorseWeightKgInput {
 }
 
 export interface LiveHorseWeight {
+  changeAmount?: number | null;
+  changeSign?: string | null;
   horseNumber: string;
   weight: number | null;
 }

@@ -5,6 +5,7 @@ import { foreignOwnerMetadata, type ForeignOwnerMetadata } from "./foreign-owner
 import { hasCurrentGateMappingRevision } from "./gate-mapping-revision.server";
 import "server-only";
 
+import { indexLiveHorseWeightChangeKg } from "./horse-weight-change-class";
 import { indexLiveHorseWeightKg } from "./horse-weight-class";
 import type {
   BloodlineStatsRow,
@@ -38,6 +39,11 @@ import {
 import { buildHeatmapPresentation, isHeatmapPresentation } from "./win-rate-heatmap-presentation";
 
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
+const WEIGHT_CLASS_FRAGMENT_KINDS: ReadonlySet<WinRateHeatmapCacheFragmentKind> = new Set([
+  "weight",
+  "weightChange",
+  "carriedWeight",
+]);
 
 interface CompactRateRow extends ForeignOwnerMetadata {
   category: string;
@@ -235,7 +241,7 @@ const parseFragment = (
   const rowIsValid =
     kind === "frame"
       ? isCompactFrameRow
-      : kind === "weight" || kind === "carriedWeight"
+      : WEIGHT_CLASS_FRAGMENT_KINDS.has(kind)
         ? isCompactWeightRow
         : kind === "horse"
           ? (row: unknown) =>
@@ -391,6 +397,7 @@ const assemblePayload = (
     runners,
     similarRows: similarKinds.flatMap((kind) => restoreSimilarRows(fragments.get(kind)!, kind)),
     type: "win-rate-heatmap",
+    weightChangeClassStats: restoreWeightRows(fragments.get("weightChange")!),
     weightClassStats: restoreWeightRows(fragments.get("weight")!),
   };
 };
@@ -564,6 +571,7 @@ const buildFragments = (
   const rowsByKind = new Map<WinRateHeatmapCacheFragmentKind, unknown[]>([
     ["frame", payload.frameStats.map(compactFrameRow)],
     ["weight", payload.weightClassStats.map(compactWeightRow)],
+    ["weightChange", (payload.weightChangeClassStats ?? []).map(compactWeightRow)],
     ["carriedWeight", payload.carriedWeightClassStats.map(compactWeightRow)],
     [
       "horse",
@@ -661,6 +669,7 @@ export const putWinRateHeatmapCache = async ({
     const presentation = buildHeatmapPresentation({
       ...payload,
       keibajoCode,
+      liveWeightChangeKgByHorse: indexLiveHorseWeightChangeKg(payload.liveHorseWeights ?? []),
       liveWeightKgByHorse: indexLiveHorseWeightKg(payload.liveHorseWeights ?? []),
     });
     const presentationKey = `${cacheKey}:presentation:${generation}`;

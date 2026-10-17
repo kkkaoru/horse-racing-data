@@ -86,3 +86,20 @@ it("does not synthesize an unwarmed display variant", () => {
     heatmapDisplayKey({ showStarts: false, splitBloodlineLines: true, viewMode: "winRate" }),
   ).toBe("winRate:0:1");
 });
+
+it("rejects a display warmed before the weight-change column existed", () => {
+  const presentation = buildHeatmapPresentation({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "06",
+    liveWeightKgByHorse: new Map(),
+    runners: [],
+    similarRows: [],
+  });
+  const { showWeightChange, ...legacyDisplay } = presentation.displays["winRate:0:0"]!;
+  expect(showWeightChange).toBe(false);
+  expect(
+    isHeatmapPresentation({ ...presentation, displays: { "winRate:0:0": legacyDisplay } }),
+  ).toBe(false);
+});

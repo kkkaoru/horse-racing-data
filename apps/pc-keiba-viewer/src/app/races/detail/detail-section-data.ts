@@ -2421,6 +2421,7 @@ interface HeatmapConditionSource {
   carriedWeightClassStats?: unknown;
   frameStats: FrameStatsRow[];
   type: "condition";
+  weightChangeClassStats?: unknown;
   weightClassStats?: unknown;
 }
 
@@ -2479,6 +2480,7 @@ const loadHeatmapConditionSource = async (
     frameStats: stats.frameStats,
     ...(stats.mappingRevision === undefined ? {} : { mappingRevision: stats.mappingRevision }),
     type: "condition",
+    weightChangeClassStats: stats.weightChangeClassStats,
     // Ban-ei weight classes are not in the Catalog yet; Phase 3 removes this.
     weightClassStats:
       banEiRace && stats.weightClassStats.length === 0
@@ -2780,6 +2782,7 @@ export const getDetailSectionPayload = async (
       catalogStats.foreignOwnerVenueRows ?? [],
     ),
     liveHorseWeights,
+    weightChangeClassStats: readWeightClassStats(conditionSource.weightChangeClassStats),
     weightClassStats: readWeightClassStats(conditionSource.weightClassStats),
   };
 };

@@ -22,5 +22,12 @@ export const fetchHeatmapLiveWeights = async (
     fromDO,
     raceKey: buildRaceKey(request),
   });
-  return snapshot?.horses.map(({ horseNumber, weight }) => ({ horseNumber, weight })) ?? [];
+  return (
+    snapshot?.horses.map(({ changeAmount, changeSign, horseNumber, weight }) => ({
+      changeAmount,
+      changeSign,
+      horseNumber,
+      weight,
+    })) ?? []
+  );
 };

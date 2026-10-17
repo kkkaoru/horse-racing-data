@@ -26,7 +26,7 @@ const GENERATION = "123e4567-e89b-12d3-a456-426614174000";
 it("uses v24 to invalidate falsely bounded carried-weight presentations", () => {
   expect(WIN_RATE_HEATMAP_CACHE_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v24");
   expect(WIN_RATE_HEATMAP_CACHE_FALLBACK_NAMESPACE).toBe("pc-keiba-viewer:win-rate-heatmap:v19");
-  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(20);
+  expect(WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS).toHaveLength(21);
 });
 
 it("uses a 36 hour heatmap cache TTL", () => {

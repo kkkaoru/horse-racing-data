@@ -132,6 +132,18 @@ const catalogPayload = {
       },
     ],
   },
+  weightChangeClassStats: [
+    {
+      key: "minus5",
+      quinellaCount: 3,
+      quinellaRate: 30,
+      showCount: 4,
+      showRate: 40,
+      starts: 10,
+      winCount: 1,
+      winRate: 10,
+    },
+  ],
   weightClassStats: [
     {
       key: "480-499",
@@ -288,6 +300,18 @@ it("maps Catalog condition history aggregates onto viewer stats including finish
         },
       ],
     },
+    weightChangeClassStats: [
+      {
+        key: "minus5",
+        quinellaCount: 3,
+        quinellaRate: 30,
+        showCount: 4,
+        showRate: 40,
+        starts: 10,
+        winCount: 1,
+        winRate: 10,
+      },
+    ],
     weightClassStats: [
       {
         key: "480-499",
@@ -429,6 +453,7 @@ it("accepts numeric Catalog fields and omitted optional arrays", async () => {
       raceCount: 0,
       targetRaces: [],
     },
+    weightChangeClassStats: [],
     weightClassStats: [
       {
         key: "480-499",
@@ -470,6 +495,12 @@ it("throws when Catalog HTTP, payload, or rows are invalid", async () => {
       Response.json({
         ...catalogPayload,
         weightClassStats: [{ ...catalogPayload.weightClassStats[0], key: "" }],
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        ...catalogPayload,
+        weightChangeClassStats: [{ ...catalogPayload.weightChangeClassStats[0], key: "" }],
       }),
     )
     .mockResolvedValueOnce(
@@ -538,6 +569,9 @@ it("throws when Catalog HTTP, payload, or rows are invalid", async () => {
   );
   await expect(fetchConditionHistoryStatsFromCatalog(query)).rejects.toThrow(
     "R2 Catalog condition history stats payload is malformed",
+  );
+  await expect(fetchConditionHistoryStatsFromCatalog(query)).rejects.toThrow(
+    "R2 Catalog condition history stats rows are malformed",
   );
   await expect(fetchConditionHistoryStatsFromCatalog(query)).rejects.toThrow(
     "R2 Catalog condition history stats rows are malformed",

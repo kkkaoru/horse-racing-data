@@ -356,6 +356,58 @@ it("refreshes precomputed weight cells without changing runner identities", asyn
   ).toBe(true);
 });
 
+it("round trips weight-change rows and warms the live change into the presentation", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "weight-change-display",
+    keibajoCode: "06",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      liveHorseWeights: [{ changeAmount: 12, changeSign: "-", horseNumber: "01", weight: 476 }],
+      weightChangeClassStats: [
+        {
+          key: "minus10",
+          quinellaCount: 2,
+          quinellaRate: 20,
+          showCount: 3,
+          showRate: 30,
+          starts: 10,
+          winCount: 1,
+          winRate: 10,
+        },
+      ],
+    },
+  });
+  cache.values.clear();
+  const restored = await getCachedWinRateHeatmapPayload("weight-change-display", [RUNNER]);
+  expect(restored?.weightChangeClassStats).toStrictEqual([
+    {
+      key: "minus10",
+      quinellaCount: 2,
+      quinellaRate: 20,
+      showCount: 3,
+      showRate: 30,
+      starts: 10,
+      winCount: 1,
+      winRate: 10,
+    },
+  ]);
+  expect(restored?.presentation?.rows[0]?.cells.weightChange.name).toBe("-10kg未満-20kg以上");
+  expect(restored?.presentation?.rows[0]?.cells.weightChange.winRate).toBe(10);
+  expect(restored?.presentation?.displays["winRate:0:1"]?.showWeightChange).toBe(true);
+});
+
+it("restores an empty weight-change fragment for payloads produced without the rows", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  await storePayload(cache, kv);
+  const hit = await getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER]);
+  expect(hit?.weightChangeClassStats).toStrictEqual([]);
+});
+
 it("publishes durable presentation despite an unavailable regional cache", async () => {
   const cache = buildCacheStub();
   const kv = buildKvStub();

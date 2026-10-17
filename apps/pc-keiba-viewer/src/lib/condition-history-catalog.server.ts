@@ -40,6 +40,7 @@ export interface ConditionHistoryCatalogStats {
   finishPositionStats: FinishPositionStatsRow[];
   frameStats: FrameStatsRow[];
   raceTimeStats: RaceTimeStats;
+  weightChangeClassStats: WeightClassStatsRow[];
   weightClassStats: WeightClassStatsRow[];
 }
 
@@ -451,11 +452,17 @@ export const fetchConditionHistoryStatsFromCatalog = async (
     payload.finishPositionStats,
     parseFinishPositionStatsRow,
   );
+  // Catalog entries cached before the weight-change rows existed omit them.
+  const weightChangeClassStats =
+    payload.weightChangeClassStats === undefined
+      ? []
+      : parseRowList(payload.weightChangeClassStats, parseWeightClassStatsRow);
   const raceTimeStats = parseRaceTimeStats(payload.raceTimeStats);
   if (
     frameStats === null ||
     weightClassStats === null ||
     carriedWeightClassStats === null ||
+    weightChangeClassStats === null ||
     finishPositionStats === null ||
     raceTimeStats === null
   ) {
@@ -469,6 +476,7 @@ export const fetchConditionHistoryStatsFromCatalog = async (
     finishPositionStats,
     frameStats,
     raceTimeStats,
+    weightChangeClassStats,
     weightClassStats,
   };
 };

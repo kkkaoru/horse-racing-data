@@ -175,6 +175,7 @@ type WinRateHeatmapPayload = {
   runners: Runner[];
   similarRows: SimilarRaceStatsRow[];
   type: "win-rate-heatmap";
+  weightChangeClassStats?: WeightClassStatsRow[];
   weightClassStats: WeightClassStatsRow[];
 };
 
@@ -961,6 +962,7 @@ function LazyWinRateHeatmapSection(
         }}
         runners={payload.runners}
         similarRows={payload.similarRows}
+        weightChangeClassStats={payload.weightChangeClassStats}
         weightClassStats={payload.weightClassStats}
       />
     </section>

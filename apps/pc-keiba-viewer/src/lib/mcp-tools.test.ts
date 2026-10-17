@@ -981,6 +981,52 @@ it("get_win_rate_heatmap_display uses the same display builder as the table when
   );
 });
 
+it("get_win_rate_heatmap_display classifies the live weight change", async () => {
+  const result = await collectDisplayText(
+    {
+      viewMode: "winRate",
+      day: "20",
+      keibajoCode: "05",
+      month: "08",
+      raceNumber: "01",
+      year: "2026",
+    },
+    jsonFetch({
+      "/api/races/2026/08/20/05/01/realtime": {
+        horseWeights: {
+          fetchedAt: "2026-08-20T00:00:00.000Z",
+          horses: [
+            { changeAmount: 12, changeSign: "-", horseNumber: "1", weight: 480 },
+            { changeAmount: "4", changeSign: 1, horseNumber: "2", weight: 470 },
+          ],
+        },
+      },
+      "/api/races/2026/08/20/05/01/sections/win-rate-heatmap": {
+        ...heatmapPayload,
+        weightChangeClassStats: [
+          {
+            key: "minus10",
+            quinellaCount: 2,
+            quinellaRate: 20,
+            showCount: 3,
+            showRate: 30,
+            starts: 10,
+            winCount: 1,
+            winRate: 10,
+          },
+        ],
+      },
+    }),
+  );
+  const display = JSON.parse(result);
+  expect(display.showWeightChange).toBe(true);
+  expect(
+    display.rows[0].swatches.find(
+      (swatch: { columnKey: string }) => swatch.columnKey === "weightChange",
+    ).name,
+  ).toBe("-10kg未満-20kg以上");
+});
+
 it.each(["get_win_rate_heatmap_compact", "get_win_rate_heatmap_display"])(
   "%s returns warmed values without requesting realtime data",
   async (tool) => {

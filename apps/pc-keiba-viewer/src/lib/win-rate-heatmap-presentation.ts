@@ -51,6 +51,7 @@ export const isHeatmapPresentation = (value: unknown): value is HeatmapPresentat
       typeof display.entityColSpan === "number" &&
       typeof display.showWeight === "boolean" &&
       typeof display.showCarriedWeight === "boolean" &&
+      typeof display.showWeightChange === "boolean" &&
       VIEW_MODES.some((mode) => display.viewMode === mode),
   );
 
