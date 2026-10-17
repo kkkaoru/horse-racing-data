@@ -1,3 +1,4 @@
+import { gatedR2SqlFetcher } from "./r2-sql-gate";
 import {
   aggregateArcBloodlines,
   arcBloodlineProfilesQuery,
@@ -1632,6 +1633,16 @@ const handlePartnershipStats = async (
     : jsonResponse({ partnershipRows: rows });
 };
 
+// Heavy aggregation endpoints share the account-wide R2 SQL gate; light
+// per-race reads stay ungated so page rendering never queues behind them.
+const heavyR2SqlDependencies = (
+  env: Env,
+  dependencies: WorkerDependencies,
+): WorkerDependencies => ({
+  ...dependencies,
+  fetchImpl: gatedR2SqlFetcher(dependencies.fetchImpl, env.R2_SQL_GATE),
+});
+
 export const handleRequest = async (
   request: Request,
   env: Env,
@@ -1665,16 +1676,16 @@ export const handleRequest = async (
       return await handleRunningStyleFeatures(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/heatmap-partnership-stats") {
-      return await handlePartnershipStats(url, env, dependencies);
+      return await handlePartnershipStats(url, env, heavyR2SqlDependencies(env, dependencies));
     }
     if (request.method === "GET" && url.pathname === "/v1/win-rate-heatmap-stats") {
-      return await handleWinRateHeatmapStats(url, env, dependencies);
+      return await handleWinRateHeatmapStats(url, env, heavyR2SqlDependencies(env, dependencies));
     }
     if (request.method === "GET" && url.pathname === "/v1/horse-race-results") {
       return await handleHorseRaceResults(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/condition-history-stats") {
-      return await handleConditionHistoryStats(url, env, dependencies);
+      return await handleConditionHistoryStats(url, env, heavyR2SqlDependencies(env, dependencies));
     }
     if (request.method === "GET" && url.pathname === "/v1/race-entity-recent-results") {
       return await handleRaceEntityRecentResults(url, env, dependencies);

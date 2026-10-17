@@ -826,3 +826,17 @@ it("qualified Arc failure does not serve native or old cached stats", async () =
   expect(response.status).toBe(502);
   expect(harness.cacheEntries.size).toBe(0);
 });
+
+it("holds the account-wide R2 SQL gate for heatmap queries but not for light reads", async () => {
+  const harness = createHeatmapHarness();
+  const acquire = vi.fn<() => Promise<string | null>>(async () => "slot");
+  const release = vi.fn<(token: string) => Promise<void>>(async () => undefined);
+  const env: Env = { ...harness.env, R2_SQL_GATE: { getByName: () => ({ acquire, release }) } };
+  const response = await handleRequest(new Request(heatmapUrl), env, harness.dependencies);
+  expect(response.status).toBe(200);
+  expect(acquire).toHaveBeenCalledTimes(harness.fetchCalls.length + 1);
+  expect(release).toHaveBeenCalledTimes(acquire.mock.calls.length);
+  acquire.mockClear();
+  await handleRequest(new Request("https://catalog.test/health"), env, harness.dependencies);
+  expect(acquire).not.toHaveBeenCalled();
+});

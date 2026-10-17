@@ -100,6 +100,8 @@ export interface R2SqlCatalogConfig {
 
 export interface Env extends R2SqlCatalogConfig {
   ADMIN_TOKEN?: string;
+  // Account-wide cap on concurrent heavy R2 SQL queries (src/r2-sql-gate.ts).
+  R2_SQL_GATE?: import("./r2-sql-gate").R2SqlGateNamespace;
   CACHE_TTL_SECONDS?: string;
   CATALOG_KV: KvStore;
   CATALOG_OBJECTS?: ObjectStore;

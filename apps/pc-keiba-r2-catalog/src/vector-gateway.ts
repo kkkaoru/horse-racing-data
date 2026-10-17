@@ -1,6 +1,7 @@
 // Runs with bun; deployed as the Cloudflare Worker entrypoint.
 export { IngestionInbox } from "./ingestion-inbox";
 export { IngestionArchiveJournal } from "./ingestion-archive-journal";
+export { R2SqlGate } from "./r2-sql-gate";
 export { IngestionBufferService } from "./ingestion-service";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { loadGateMappingRevision, parseGateMappingRevisionInput } from "./gate-mapping-revision";

@@ -42,11 +42,13 @@
     "bindings": [
       { "name": "INGESTION_INBOX", "class_name": "IngestionInbox" },
       { "name": "INGESTION_ARCHIVE_JOURNAL", "class_name": "IngestionArchiveJournal" },
+      { "name": "R2_SQL_GATE", "class_name": "R2SqlGate" },
     ],
   },
   "migrations": [
     { "tag": "ingestion-inbox-v1", "new_sqlite_classes": ["IngestionInbox"] },
     { "tag": "ingestion-archive-journal-v1", "new_sqlite_classes": ["IngestionArchiveJournal"] },
+    { "tag": "r2-sql-gate-v1", "new_sqlite_classes": ["R2SqlGate"] },
   ],
   "kv_namespaces": [
     {
