@@ -10,8 +10,8 @@
   "routes": [
     { "pattern": "pc-keiba-viewer.kkk4oru.com/api/clef-rerank/*", "zone_name": "kkk4oru.com" },
   ],
-  // Race-day prewarm, every 10 minutes from 08:00 to 17:50 JST.
-  "triggers": { "crons": ["*/10 23,0-8 * * *"] },
+  // Race-day prewarm (rerank + bets after each prediction), every 10 minutes 08:00-21:50 JST.
+  "triggers": { "crons": ["*/10 23,0-12 * * *"] },
   "ai": { "binding": "AI" },
   // Bet suggestions read the viewer's race APIs without going through Access.
   "services": [{ "binding": "VIEWER", "service": "pc-keiba-viewer" }],

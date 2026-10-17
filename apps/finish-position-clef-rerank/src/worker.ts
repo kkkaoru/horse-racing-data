@@ -1,5 +1,11 @@
 // Run checks with bun run check; deployed as a Cloudflare Worker behind the viewer's Access host.
-import { fetchViewer, parseBudget, suggestRaceBets, type ServiceFetcher } from "./bets-route";
+import {
+  fetchViewer,
+  parseBudget,
+  suggestRaceBets,
+  warmRaceBets,
+  type ServiceFetcher,
+} from "./bets-route";
 import {
   buildClefInput,
   fuseRanks,
@@ -159,7 +165,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 // Post times (発走時刻) keyed by "kj:rb" from the viewer's upcoming/finished race list.
-const loadPostTimes = async (env: Env, ymd: string): Promise<Map<string, string>> => {
+export const loadPostTimes = async (env: Env, ymd: string): Promise<Map<string, string>> => {
   try {
     const body = await fetchViewer(env, "/api/top-races");
     const rows = isRecord(body) ? Object.values(body).flat().filter(isRecord) : [];
@@ -194,6 +200,31 @@ export const warmDay = async (env: Env, ymd: string): Promise<number[]> => {
     statuses.push(...outcomes.map((outcome) => outcome.status));
   }, Promise.resolve());
   return statuses;
+};
+
+// Bets for every race of the day (JRA and NAR) whose post time is still ahead, earliest first.
+export const warmBetsDay = async (env: Env, nowMs: number): Promise<number[]> => {
+  const ymd = jstYmd(nowMs);
+  const nowHhmm = new Date(nowMs + JST_OFFSET_MS).toISOString().slice(11, 16).replace(":", "");
+  const races = [...(await loadPostTimes(env, ymd))]
+    .filter(([, time]) => time >= nowHhmm)
+    .toSorted(([, a], [, b]) => a.localeCompare(b))
+    .map(([key]) => ({ ymd, keibajoCode: key.slice(0, 2), raceBango: key.slice(3) }));
+  const statuses: number[] = [];
+  await chunk(races, CRON_CONCURRENCY).reduce(async (previous, group) => {
+    await previous;
+    statuses.push(...(await Promise.all(group.map((race) => safeWarmBets(env, race)))));
+  }, Promise.resolve());
+  return statuses;
+};
+
+const safeWarmBets = async (env: Env, race: RaceAddress): Promise<number> => {
+  try {
+    return await warmRaceBets(env, race);
+  } catch (error) {
+    console.error("clef bets warm failed", raceSuffix(race), String(error));
+    return 503;
+  }
 };
 
 export const jstYmd = (nowMs: number): string =>
@@ -251,5 +282,6 @@ export default {
   async scheduled(controller: ScheduledEvent, env: Env): Promise<void> {
     const statuses = await warmDay(env, jstYmd(controller.scheduledTime));
     console.log("clef rerank warm", JSON.stringify(statuses));
+    console.log("clef bets warm", JSON.stringify(await warmBetsDay(env, controller.scheduledTime)));
   },
 };

@@ -7,6 +7,7 @@ import worker, {
   jstYmd,
   rerankRace,
   resultKey,
+  warmBetsDay,
   warmDay,
   type Env,
 } from "./worker";
@@ -213,6 +214,7 @@ it("warms every indexed race in bounded groups from the cron", async () => {
   expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
   await worker.scheduled({ scheduledTime: Date.parse("2026-10-18T00:10:00Z") }, env);
   expect(console.log).toHaveBeenCalledWith("clef rerank warm", "[200,404]");
+  expect(console.log).toHaveBeenCalledWith("clef bets warm", "[]");
 });
 
 it("warms races in post-time order from the viewer race list", async () => {
@@ -266,6 +268,48 @@ it("keeps index order when the race list is not an object or the viewer is down"
   expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
 });
 
+it("warms bets for races still ahead of the clock in post-time order", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const env = makeEnv({});
+  vi.mocked(env.VIEWER.fetch).mockResolvedValue(
+    Response.json({
+      upcoming: [
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1018",
+          keibajoCode: "45",
+          raceBango: "11",
+          hassoJikoku: "2030",
+        },
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1018",
+          keibajoCode: "08",
+          raceBango: "11",
+          hassoJikoku: "1540",
+        },
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1018",
+          keibajoCode: "08",
+          raceBango: "01",
+          hassoJikoku: "0955",
+        },
+      ],
+    }),
+  );
+  vi.mocked(env.DETAIL_SECTION_CACHE_KV.get).mockImplementation(async (key: string) => {
+    if (key === "pred:fp:v1:20261018:45:11") throw new Error("kv down");
+    return null;
+  });
+  expect(await warmBetsDay(env, Date.parse("2026-10-18T05:00:00Z"))).toStrictEqual([304, 503]);
+  expect(console.error).toHaveBeenCalledWith(
+    "clef bets warm failed",
+    "20261018:45:11",
+    "Error: kv down",
+  );
+});
+
 it("converts the cron time to the JST race date", () => {
   expect(jstYmd(Date.parse("2026-10-17T23:00:00Z"))).toBe("20261018");
 });
@@ -316,6 +360,7 @@ it("serves bet suggestions with the requested budget", async () => {
                 { combination: "1", odds: 2 },
                 { combination: "2", odds: 3 },
               ],
+              fukusho: [{ combination: "1", minOdds: 1.1, maxOdds: 1.4 }],
             },
           },
         }),
@@ -343,17 +388,17 @@ it("serves bet suggestions with the requested budget", async () => {
     style: "single",
     axis: 1,
     legs: [[1]],
-    budget: 300,
-    totalStake: 300,
-    expectedReturn: 361,
+    budget: 200,
+    totalStake: 200,
+    expectedReturn: 241,
     tickets: [
       {
         horses: [1],
         odds: 2,
         maxOdds: null,
         probability: 0.6021800615402064,
-        stake: 300,
-        payout: 600,
+        stake: 200,
+        payout: 400,
         payoutMax: null,
       },
     ],

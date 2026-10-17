@@ -9,6 +9,7 @@ import {
   readOdds,
   readRunners,
   suggestBets,
+  suggestPlans,
   ticketProbability,
   winProbabilities,
   type OddsBook,
@@ -753,4 +754,234 @@ it("keeps a training row without a workout index", () => {
       },
     ],
   });
+});
+
+const planOdds = (): OddsBook => ({
+  tansho: [
+    { combination: "1", odds: 2, minOdds: null, maxOdds: null },
+    { combination: "2", odds: 4, minOdds: null, maxOdds: null },
+    { combination: "3", odds: 8, minOdds: null, maxOdds: null },
+  ],
+  fukusho: [{ combination: "1", odds: 1.3, minOdds: 1.2, maxOdds: 1.5 }],
+  umaren: [
+    { combination: "1-2", odds: 5, minOdds: null, maxOdds: null },
+    { combination: "1-3", odds: 9, minOdds: null, maxOdds: null },
+    { combination: "1-4", odds: 20, minOdds: null, maxOdds: null },
+    { combination: "2-3", odds: 12, minOdds: null, maxOdds: null },
+    { combination: "2-4", odds: 30, minOdds: null, maxOdds: null },
+    { combination: "3-4", odds: 40, minOdds: null, maxOdds: null },
+  ],
+  "3rentan": [{ combination: "1-2-3", odds: 30, minOdds: null, maxOdds: null }],
+});
+
+it("suggests two bet types for a small budget", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 0.7, box: 0.3 },
+      betType: { umaren: 0.5, tansho: 0.3, fukusho: 0.2 },
+    },
+    budget: 500,
+  });
+  expect(result?.totalStake).toBe(500);
+  expect(result?.expectedReturn).toBe(982);
+  expect(
+    result?.plans.map((plan) => [plan.betType, plan.style, plan.legs, plan.totalStake]),
+  ).toStrictEqual([
+    ["umaren", "nagashi", [[1], [2, 3, 4]], 400],
+    ["tansho", "single", [[1]], 100],
+  ]);
+});
+
+it("suggests three bet types from ten units", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 0.7, box: 0.3 },
+      betType: { umaren: 0.5, tansho: 0.3, fukusho: 0.2 },
+    },
+    budget: 1000,
+  });
+  expect(
+    result?.plans.map((plan) => [plan.betType, plan.style, plan.legs, plan.totalStake]),
+  ).toStrictEqual([
+    ["umaren", "nagashi", [[1], [2, 3, 4]], 500],
+    ["tansho", "single", [[1]], 300],
+    ["fukusho", "single", [[1]], 200],
+  ]);
+});
+
+it("suggests four bet types from thirty units and rotates the multi-horse styles", () => {
+  const book = planOdds();
+  const result = suggestPlans({
+    race: {
+      runners: runners(),
+      odds: {
+        ...book,
+        wide: [
+          { combination: "1-2", odds: 5, minOdds: 5, maxOdds: 6 },
+          { combination: "1-3", odds: 9, minOdds: 9, maxOdds: 10 },
+          { combination: "1-4", odds: 20, minOdds: 20, maxOdds: 21 },
+          { combination: "2-3", odds: 12, minOdds: 12, maxOdds: 13 },
+          { combination: "2-4", odds: 30, minOdds: 30, maxOdds: 31 },
+          { combination: "3-4", odds: 40, minOdds: 40, maxOdds: 41 },
+        ],
+      },
+      ranks: ranks(),
+    },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 0.6, formation: 0.4 },
+      betType: { umaren: 0.4, tansho: 0.3, fukusho: 0.2, wide: 0.1 },
+    },
+    budget: 3000,
+  });
+  expect(result?.totalStake).toBe(3000);
+  expect(
+    result?.plans.map((plan) => [plan.betType, plan.style, plan.legs, plan.totalStake]),
+  ).toStrictEqual([
+    ["umaren", "nagashi", [[1], [2, 3, 4]], 1200],
+    ["tansho", "single", [[1]], 900],
+    ["fukusho", "single", [[1]], 600],
+    [
+      "wide",
+      "formation",
+      [
+        [1, 2],
+        [1, 2, 3],
+      ],
+      300,
+    ],
+  ]);
+});
+
+it("skips the multi style for unordered bet types", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { multi: 0.9, box: 0.1 },
+      betType: { umaren: 0.5, tansho: 0.3, fukusho: 0.2 },
+    },
+    budget: 3000,
+  });
+  expect(result?.plans[0]).toStrictEqual(
+    expect.objectContaining({ betType: "umaren", style: "box", legs: [[1, 2, 3, 4]] }),
+  );
+});
+
+it("shrinks the partner pool so every ticket gets at least 100 yen", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 1 },
+      betType: { umaren: 0.6, tansho: 0.4 },
+    },
+    budget: 300,
+  });
+  expect(
+    result?.plans.map((plan) => [plan.betType, plan.legs, plan.tickets.length, plan.totalStake]),
+  ).toStrictEqual([
+    ["umaren", [[1], [2, 3]], 2, 200],
+    ["tansho", [[1]], 1, 100],
+  ]);
+});
+
+it("carries the units of a bet type without odds for every ticket to the next type", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 1 },
+      betType: { "3rentan": 0.6, tansho: 0.3, fukusho: 0.1 },
+    },
+    budget: 1000,
+  });
+  expect(result?.plans.map((plan) => [plan.betType, plan.totalStake])).toStrictEqual([
+    ["tansho", 900],
+    ["fukusho", 100],
+  ]);
+});
+
+it("returns null when fewer than two bet types fit", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: { tansho: planOdds().tansho }, ranks: ranks() },
+      answers: {
+        winner: { "1": 1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 1 },
+        betType: { tansho: 1 },
+      },
+      budget: 1000,
+    }),
+  ).toBeNull();
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 1 },
+        betType: { tansho: 0.5, fukusho: 0.5 },
+      },
+      budget: 100,
+    }),
+  ).toBeNull();
+});
+
+it("splits units evenly when clef-flash gives the bet types no weight", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: { winner: { "1": 0.5 }, top3: {}, axis: {}, style: {}, betType: {} },
+    budget: 400,
+  });
+  expect(result?.plans.map((plan) => [plan.betType, plan.style, plan.totalStake])).toStrictEqual([
+    ["tansho", "single", 200],
+    ["fukusho", "single", 200],
+  ]);
+});
+
+it("orders tied styles by name and falls back to a flow without any style answer", () => {
+  const tied = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 0.5, box: 0.5 },
+      betType: { umaren: 0.6, tansho: 0.4 },
+    },
+    budget: 1000,
+  });
+  expect(tied?.plans[0].style).toBe("box");
+  const none = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: {},
+      betType: { umaren: 0.6, tansho: 0.4 },
+    },
+    budget: 1000,
+  });
+  expect(none?.plans[0].style).toBe("nagashi");
 });

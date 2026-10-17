@@ -666,3 +666,162 @@ export const suggestBets = ({ race, answers, budget }: SuggestInput): BetSuggest
     tickets,
   };
 };
+
+export interface BetPlanSet {
+  budget: number;
+  totalStake: number;
+  expectedReturn: number;
+  plans: [BetSuggestion, BetSuggestion, ...BetSuggestion[]];
+}
+
+interface PlanContext {
+  race: Pick<BetRace, "odds">;
+  p: ReadonlyMap<number, number>;
+  order: readonly number[];
+  axis: number;
+}
+
+interface PlanSlot {
+  betType: BetType;
+  style: BetStyle;
+  units: number;
+}
+
+interface PlanAccumulator {
+  plans: BetSuggestion[];
+  carry: number;
+}
+
+// Plan count grows with the budget (100-yen units); a single bet type is never suggested.
+const PLAN_COUNT_STEPS: readonly (readonly [number, number])[] = [
+  [30, 4],
+  [10, 3],
+  [0, 2],
+];
+const MIN_PARTNER_POOL: number = 3;
+
+const compareEntryDesc = (a: [string, number], b: [string, number]): number =>
+  b[1] - a[1] || a[0].localeCompare(b[0]);
+
+const rankedTypes = (race: Pick<BetRace, "odds">, answers: BetAnswers): BetType[] =>
+  BET_TYPES.filter((type) => (race.odds[type]?.length ?? 0) > 0).toSorted(
+    (a, b) => (answers.betType[b] ?? 0) - (answers.betType[a] ?? 0),
+  );
+
+const rankedStyles = (answers: BetAnswers): Exclude<BetStyle, "single">[] =>
+  Object.entries(answers.style)
+    .toSorted(compareEntryDesc)
+    .map(([style]) => style)
+    .filter(isStyle);
+
+const toSuggestion = (
+  slot: PlanSlot & { axis: number; legs: number[][] },
+  candidates: readonly Candidate[],
+): BetSuggestion => {
+  const tickets = allocateUnits(candidates, slot.units).map(({ candidate, units: count }) => ({
+    horses: candidate.horses,
+    odds: candidate.odds,
+    maxOdds: candidate.maxOdds,
+    probability: candidate.probability,
+    stake: count * UNIT_YEN,
+    payout: Math.floor(count * UNIT_YEN * candidate.odds),
+    payoutMax: candidate.maxOdds === null ? null : Math.floor(count * UNIT_YEN * candidate.maxOdds),
+  }));
+  return {
+    betType: slot.betType,
+    style: slot.style,
+    axis: slot.axis,
+    legs: slot.legs,
+    budget: slot.units * UNIT_YEN,
+    totalStake: tickets.reduce((sum, ticket) => sum + ticket.stake, 0),
+    expectedReturn: Math.round(
+      tickets.reduce((sum, ticket) => sum + ticket.probability * ticket.payout, 0),
+    ),
+    tickets,
+  };
+};
+
+// Shrinks the partner pool until every ticket of the structure can get at least 100 yen, so the
+// displayed legs always match the tickets bought.
+const buildPlan = (context: PlanContext, slot: PlanSlot): BetSuggestion | null => {
+  const pools = Array.from(
+    { length: Math.max(context.order.length - MIN_PARTNER_POOL + 1, 1) },
+    (_, index) => context.order.length - index,
+  );
+  const fitted = pools
+    .map((size) => {
+      const plan = planTickets({
+        betType: slot.betType,
+        style: slot.style,
+        axis: context.axis,
+        order: context.order.slice(0, size),
+      });
+      const candidates = plan.combos
+        .map((horses) => toCandidate(context.race, context.p, slot.betType, horses))
+        .filter((candidate) => candidate !== null);
+      return { plan, candidates };
+    })
+    .find(
+      ({ plan, candidates }) =>
+        candidates.length > 0 &&
+        candidates.length === plan.combos.length &&
+        candidates.length <= slot.units,
+    );
+  return fitted === undefined
+    ? null
+    : toSuggestion({ ...slot, axis: context.axis, legs: fitted.plan.legs }, fitted.candidates);
+};
+
+const splitUnits = (weights: readonly number[], units: number): number[] => {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const base = weights.map((weight) =>
+    Math.max(1, Math.floor(units * (total > 0 ? weight / total : 1 / weights.length))),
+  );
+  const used = base.reduce((sum, value) => sum + value, 0);
+  return base.map((value, index) => (index === 0 ? value + units - used : value));
+};
+
+export const suggestPlans = ({ race, answers, budget }: SuggestInput): BetPlanSet | null => {
+  const p = winProbabilities(race, answers.winner);
+  const order = [...p].toSorted(compareWinDesc).map(([horse]) => horse);
+  const chosenAxis = Number(argmax(answers.axis));
+  const axis = p.has(chosenAxis) ? chosenAxis : (order[0] ?? 0);
+  const units = Math.floor(budget / UNIT_YEN);
+  const types = rankedTypes(race, answers);
+  const styles = rankedStyles(answers);
+  const target = Math.min(
+    types.length,
+    units,
+    PLAN_COUNT_STEPS.find(([threshold]) => units >= threshold)?.[1] ?? 2,
+  );
+  const shares = splitUnits(
+    types.slice(0, target).map((type) => answers.betType[type] ?? 0),
+    units,
+  );
+  const context: PlanContext = { race, p, order, axis };
+  const { plans } = types.reduce<PlanAccumulator>(
+    (acc, betType, index) => {
+      const slotUnits = (shares[index] ?? 0) + acc.carry;
+      if (acc.plans.length >= target || slotUnits < 1) return acc;
+      const fitting = styles.filter((style) => style !== "multi" || ORDERED_TYPES.has(betType));
+      const multiHorse = acc.plans.filter((plan) => plan.style !== "single").length;
+      const style = SINGLE_TYPES.has(betType)
+        ? "single"
+        : (fitting[multiHorse % Math.max(fitting.length, 1)] ?? "nagashi");
+      const plan = buildPlan(context, { betType, style, units: slotUnits });
+      return plan === null
+        ? { plans: acc.plans, carry: slotUnits }
+        : { plans: [...acc.plans, plan], carry: 0 };
+    },
+    { plans: [], carry: 0 },
+  );
+  const [first, second, ...rest] = plans;
+  return first === undefined || second === undefined
+    ? null
+    : {
+        budget,
+        totalStake: plans.reduce((sum, plan) => sum + plan.totalStake, 0),
+        expectedReturn: plans.reduce((sum, plan) => sum + plan.expectedReturn, 0),
+        plans: [first, second, ...rest],
+      };
+};
