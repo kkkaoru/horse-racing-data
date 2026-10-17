@@ -58,7 +58,7 @@ const NV_RAW_STAGE_QUEUE = "daily-keiba-sync-nv-raw-stage-jobs";
 const R2_CATALOG_QUEUE = "daily-keiba-sync-r2-catalog-jobs";
 const STALE_RUN_MS = 20 * 60 * 1000;
 const EXTERNAL_TABLE_NAME = "netkeiba_training_workouts";
-const MAX_EXTERNAL_STAGE_RECORDS = 2_000;
+const MAX_EXTERNAL_STAGE_RECORDS = 5_000;
 
 const isAuthorized = (request: Request, token: string): boolean => {
   const header = request.headers.get("Authorization");

@@ -1123,6 +1123,24 @@ describe("daily sync Worker", () => {
     expect(invalid.status).toBe(400);
   });
 
+  test("rejects an external stage above the record cap before parsing rows", async () => {
+    const headers = { Authorization: "Bearer realtime-admin", "Content-Type": "application/json" };
+    const oversized = await fetchHandler(
+      new Request("https://daily.test/internal/stage-netkeiba-training", {
+        body: JSON.stringify({
+          records: Array.from({ length: 5001 }, () => ({})),
+          runDate: "20260905",
+          tableName: "netkeiba_training_workouts",
+        }),
+        headers,
+        method: "POST",
+      }),
+      env,
+    );
+    expect(oversized.status).toBe(400);
+    expect(mocks.markParsed).not.toHaveBeenCalled();
+  });
+
   test("rejects empty and partition-mismatched external stages", async () => {
     const headers = { Authorization: "Bearer realtime-admin", "Content-Type": "application/json" };
     const empty = await fetchHandler(
