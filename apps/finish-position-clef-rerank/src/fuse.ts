@@ -1,10 +1,16 @@
 // Run with bun (bunx vitest). Pure clef-flash rerank helpers shared by the Worker.
 
+export type ClefComponentSource = "winner" | "second" | "top3" | "top5";
+
+export interface ClefComponent {
+  source: ClefComponentSource;
+  weight: number;
+}
+
 export interface FuseWeights {
   base: number;
   feature: number;
-  clefTop3: number;
-  clefWin: number;
+  clef: ClefComponent[];
 }
 
 export interface BundleRunner {
@@ -57,8 +63,10 @@ export interface BaseRank {
 
 export interface ClefAnswer {
   horseNumber: number;
-  win: number;
+  winner: number;
+  second: number;
   top3: number;
+  top5: number;
 }
 
 export interface RerankRow {
@@ -90,10 +98,7 @@ interface JoinedRunner {
   horseNumber: number;
   baseRank: number;
   feature: number;
-  top3: number;
-  win: number;
-  clefWin: number;
-  clefTop3: number;
+  answer: ClefAnswer;
 }
 
 interface ScoredRunner {
@@ -105,6 +110,7 @@ interface ScoredRunner {
 }
 
 const PROBABILITY_FLOOR: number = 1e-4;
+const CHOICE_SOURCES: readonly ClefComponentSource[] = ["winner", "second"];
 const MODEL_SELECTOR: string = "clef-flash";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -123,12 +129,18 @@ const isBasePrediction = (value: unknown): value is BasePrediction =>
 const isBundleRunner = (value: unknown): value is BundleRunner =>
   isRecord(value) && isFiniteNumber(value.horseNumber) && isFiniteNumber(value.featureScore);
 
+const isComponentSource = (value: unknown): value is ClefComponentSource =>
+  typeof value === "string" && Object.hasOwn(COMPONENT_TRANSFORMS, value);
+
+const isComponent = (value: unknown): value is ClefComponent =>
+  isRecord(value) && isComponentSource(value.source) && isFiniteNumber(value.weight);
+
 const isWeights = (value: unknown): value is FuseWeights =>
   isRecord(value) &&
   isFiniteNumber(value.base) &&
   isFiniteNumber(value.feature) &&
-  isFiniteNumber(value.clefTop3) &&
-  isFiniteNumber(value.clefWin);
+  Array.isArray(value.clef) &&
+  value.clef.every(isComponent);
 
 const isStateRunner = (value: unknown): value is ClefStateRunner =>
   isRecord(value) && isFiniteNumber(value.no);
@@ -178,6 +190,19 @@ const laterBase = (latest: BasePrediction, row: BasePrediction): BasePrediction 
 export const latestBase = (rows: readonly BasePrediction[]): BasePrediction =>
   rows.reduce(laterBase);
 
+const keepQuestion = (id: string, kept: ReadonlySet<string>): boolean =>
+  CHOICE_SOURCES.some((source) => source === id) || kept.has(id.slice(id.indexOf("_") + 1));
+
+const filterCriteria = (question: ClefQuestion, kept: ReadonlySet<string>): ClefQuestion =>
+  question.criteria === undefined
+    ? question
+    : {
+        ...question,
+        criteria: Object.fromEntries(
+          Object.entries(question.criteria).filter(([no]) => kept.has(no)),
+        ),
+      };
+
 export const buildClefInput = (
   bundle: RerankBundle,
   baseRanks: readonly BaseRank[],
@@ -188,23 +213,10 @@ export const buildClefInput = (
     return rank === undefined ? [] : [{ ...runner, br: rank }];
   });
   const kept = new Set(runners.map((runner) => String(runner.no)));
-  const winner = bundle.request.questions.winner;
   const questions = Object.fromEntries(
     Object.entries(bundle.request.questions)
-      .filter(([id]) => id === "winner" || kept.has(id.replace("top3_", "")))
-      .map(([id, question]) =>
-        id === "winner" && winner?.criteria !== undefined
-          ? [
-              id,
-              {
-                ...question,
-                criteria: Object.fromEntries(
-                  Object.entries(winner.criteria).filter(([no]) => kept.has(no)),
-                ),
-              },
-            ]
-          : [id, question],
-      ),
+      .filter(([id]) => keepQuestion(id, kept))
+      .map(([id, question]) => [id, filterCriteria(question, kept)]),
   );
   return {
     model: MODEL_SELECTOR,
@@ -220,21 +232,39 @@ const answersOf = (value: unknown): Record<string, unknown> | null =>
 const readAnswers = (value: unknown): Record<string, unknown> | null =>
   answersOf(value) ?? (isRecord(value) ? answersOf(value.result) : null);
 
+const choiceProbability = (
+  answers: Record<string, unknown>,
+  id: string,
+  horseNumber: number,
+): number | null => {
+  const question = answers[id];
+  const probabilities = isRecord(question) ? question.probabilities : null;
+  const value = isRecord(probabilities) ? probabilities[String(horseNumber)] : null;
+  return isFiniteNumber(value) ? value : null;
+};
+
+const noulProbability = (answers: Record<string, unknown>, id: string): number | null => {
+  const question = answers[id];
+  return isRecord(question) && isFiniteNumber(question.noul) ? question.noul : null;
+};
+
+const readAnswer = (answers: Record<string, unknown>, horseNumber: number): ClefAnswer | null => {
+  const winner = choiceProbability(answers, "winner", horseNumber);
+  const second = choiceProbability(answers, "second", horseNumber);
+  const top3 = noulProbability(answers, `top3_${String(horseNumber)}`);
+  const top5 = noulProbability(answers, `top5_${String(horseNumber)}`);
+  return winner === null || second === null || top3 === null || top5 === null
+    ? null
+    : { horseNumber, winner, second, top3, top5 };
+};
+
 export const parseClefAnswers = (
   value: unknown,
   horseNumbers: readonly number[],
 ): ClefAnswer[] | null => {
   const answers = readAnswers(value);
-  const winner = answers?.winner;
-  const probabilities = isRecord(winner) ? winner.probabilities : null;
-  if (answers === null || !isRecord(probabilities)) return null;
-  const rows = horseNumbers.map((horseNumber) => {
-    const top3 = answers[`top3_${String(horseNumber)}`];
-    const win = probabilities[String(horseNumber)];
-    return isRecord(top3) && isFiniteNumber(top3.noul) && isFiniteNumber(win)
-      ? { horseNumber, top3: top3.noul, win }
-      : null;
-  });
+  if (answers === null) return null;
+  const rows = horseNumbers.map((horseNumber) => readAnswer(answers, horseNumber));
   return rows.every((row) => row !== null) ? rows : null;
 };
 
@@ -252,6 +282,17 @@ const clampProbability = (value: number): number =>
 
 const logit = (value: number): number => Math.log(value / (1 - value));
 
+// Choice probabilities enter as log-probabilities, yes/no answers as logits.
+const COMPONENT_TRANSFORMS: Record<ClefComponentSource, (answer: ClefAnswer) => number> = {
+  winner: (answer: ClefAnswer): number => Math.log(clampProbability(answer.winner)),
+  second: (answer: ClefAnswer): number => Math.log(clampProbability(answer.second)),
+  top3: (answer: ClefAnswer): number => logit(clampProbability(answer.top3)),
+  top5: (answer: ClefAnswer): number => logit(clampProbability(answer.top5)),
+};
+
+const componentValue = (source: ClefComponentSource, answer: ClefAnswer): number =>
+  COMPONENT_TRANSFORMS[source](answer);
+
 const compareScored = (a: ScoredRunner, b: ScoredRunner): number =>
   b.score - a.score || a.baseRank - b.baseRank || a.horseNumber - b.horseNumber;
 
@@ -263,18 +304,24 @@ const joinEvidence = ({ bundle, baseRanks, answers }: FuseInput): JoinedRunner[]
     const answer = clef.get(row.horseNumber);
     return feature === undefined || answer === undefined
       ? []
-      : [
-          {
-            horseNumber: row.horseNumber,
-            baseRank: row.rank,
-            feature,
-            top3: logit(clampProbability(answer.top3)),
-            win: Math.log(clampProbability(answer.win)),
-            clefWin: answer.win,
-            clefTop3: answer.top3,
-          },
-        ];
+      : [{ horseNumber: row.horseNumber, baseRank: row.rank, feature, answer }];
   });
+};
+
+const clefScore = (
+  rows: readonly JoinedRunner[],
+  components: readonly ClefComponent[],
+): ((row: JoinedRunner) => number) => {
+  const scorers = components.map((component) => ({
+    component,
+    z: zScorer(rows.map((row) => componentValue(component.source, row.answer))),
+  }));
+  return (row: JoinedRunner): number =>
+    scorers.reduce(
+      (sum, { component, z }) =>
+        sum + component.weight * z(componentValue(component.source, row.answer)),
+      0,
+    );
 };
 
 export const fuseRanks = (input: FuseInput): RerankRow[] => {
@@ -283,20 +330,16 @@ export const fuseRanks = (input: FuseInput): RerankRow[] => {
   const baseValue = (row: JoinedRunner): number => -(row.baseRank - 1) / field;
   const base = zScorer(rows.map(baseValue));
   const feature = zScorer(rows.map((row) => row.feature));
-  const top3 = zScorer(rows.map((row) => row.top3));
-  const win = zScorer(rows.map((row) => row.win));
   const { weights } = input.bundle;
+  const clef = clefScore(rows, weights.clef);
   return rows
     .map((row) => ({
       horseNumber: row.horseNumber,
       baseRank: row.baseRank,
       score:
-        weights.base * base(baseValue(row)) +
-        weights.feature * feature(row.feature) +
-        weights.clefTop3 * top3(row.top3) +
-        weights.clefWin * win(row.win),
-      clefWin: row.clefWin,
-      clefTop3: row.clefTop3,
+        weights.base * base(baseValue(row)) + weights.feature * feature(row.feature) + clef(row),
+      clefWin: row.answer.winner,
+      clefTop3: row.answer.top3,
     }))
     .toSorted(compareScored)
     .map((row, index) => ({ ...row, rank: index + 1 }));

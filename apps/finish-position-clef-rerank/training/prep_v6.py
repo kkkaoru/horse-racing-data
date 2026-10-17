@@ -1,0 +1,15 @@
+import pandas as pd, duckdb, json
+W="/Users/kkk4oru/models/clef-work/data"; R=f"{W}/raw"
+con = duckdb.connect(f"{W}/keiba.duckdb", read_only=True)
+jn = pd.read_csv(f"{R}/jockey_names_jra.tsv", sep="\t", header=None, names=["jockey","jockey_name"], dtype=str)
+tn = pd.read_csv(f"{R}/trainer_names_jra.tsv", sep="\t", header=None, names=["trainer","trainer_name"], dtype=str)
+gap = pd.read_json(f"{R}/jvd_se_gap.json", dtype=str)
+jn = pd.concat([jn, gap[["kishu_code","kishumei_ryakusho"]].rename(columns={"kishu_code":"jockey","kishumei_ryakusho":"jockey_name"})]).drop_duplicates("jockey", keep="last")
+tn = pd.concat([tn, gap[["chokyoshi_code","chokyoshimei_ryakusho"]].rename(columns={"chokyoshi_code":"trainer","chokyoshimei_ryakusho":"trainer_name"})]).drop_duplicates("trainer", keep="last")
+jn.to_csv(f"{W}/jockey_names.csv", index=False); tn.to_csv(f"{W}/trainer_names.csv", index=False)
+f = pd.read_parquet(f"{W}/jra_v5.parquet")
+b = con.execute("select race_id, umaban, jockey, trainer, sire_name, damsire_name from jra_base where d >= DATE '2026-01-01'").df()
+f = f.merge(b, on=["race_id","umaban"], how="left").merge(jn, on="jockey", how="left").merge(tn, on="trainer", how="left")
+f.to_parquet(f"{W}/jra_v6.parquet"); print(f[["jockey_name","trainer_name","sire_name","damsire_name"]].notna().mean().round(3).to_dict())
+q = json.load(open(f"{W}/queue_v5_jra.json")); h2 = set(f[f.d >= pd.Timestamp("2026-07-01")].race_id)
+json.dump([x for x in q if x[1] in h2], open(f"{W}/queue_v6_jra_h2.json","w")); print(len(h2))

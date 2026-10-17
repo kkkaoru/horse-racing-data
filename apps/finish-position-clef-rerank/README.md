@@ -16,7 +16,9 @@ Race-day rerank of the served finish-position prediction with Cloudflare-hosted
    - the anonymized clef-flash System One request, with no names, dates, odds or popularity.
 2. The Worker reads the served prediction (`pred:fp:v1:...`) and injects its ranks into the
    request. It then calls clef-flash and fuses the within-race z-scores:
-   `base·z(served rank) + feature·z(feature score) + clefTop3·z(logit P(top3)) + clefWin·z(log P(win))`.
+   `base·z(served rank) + feature·z(feature score) + Σ weight·z(clef answer)`. The clef answers are
+   P(win) and P(second) from choice questions, used as log-probabilities, and P(top3) and P(top5)
+   from yes/no questions, used as logits.
    The result is stored in `clefrr:v1:result:...`. A cached result is reused until the
    served prediction is regenerated, for example by the post-weight rescore.
 3. A cron trigger warms every indexed race every 10 minutes from 08:00 to 17:50 JST. The
@@ -62,3 +64,28 @@ Results recorded on 2026-10-18 (JRA, served nowin1 rank = base):
 - **Fitted clef weight:** P(top3) gets about 0.2 relative to the base rank. On 777 races this gave a small held-out gain, which is why r1 uses `clefTop3 = 0.2`.
 - **10/17 JRA (36 races):** top-1 win went from 11.1% (served) to 19.4% (r1).
 - **Local vs hosted parity:** clef-flash answers differ by a mean of 0.04 and a maximum of 0.30. The top-1 pick agrees in 10 of 12 races.
+
+### v2 (2026-10-18 05:40): Plackett-Luce fusion aimed at box5 / box3 / exacta
+
+The request now asks four things: the winner (choice), the runner-up (choice), and for each runner
+whether it finishes in the top three and in the top five (yes/no). Weights come from a top-5
+Plackett-Luce fit on all 2,610 JRA races of 2026, with answers from hosted clef-flash: base 0.388,
+feature 0.514, and clef winner −0.065, second 0.018, top3 −0.032, top5 0.086.
+
+Expanding-window CV (test months March–October, 2,052 JRA races):
+
+| Configuration                       | box5  | box3  | exacta |
+| ----------------------------------- | ----- | ----- | ------ |
+| Served base                         | 3.90% | 8.28% | 6.82%  |
+| PL base + feature + clef (deployed) | 4.19% | 8.33% | 6.82%  |
+| Base + feature, no clef             | 4.19% | 8.38% | 6.77%  |
+
+The held-out top-5 PL NLL improves by only 0.001 per race when clef is added, so clef's incremental
+information is close to zero and the gain comes from the features.
+
+Other attempts, none of which beat the served base on these metrics:
+
+- NAR (3,000 races; base sum 39.00 vs 37.5–38.6 for every fusion);
+- ban-ei (1,279 races);
+- the hierarchical P5/P3/P1/P2 composition;
+- giving clef the jockey, trainer, sire and damsire names, which made it worse.

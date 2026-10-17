@@ -133,3 +133,34 @@ def build_request_v4(race, runners, today, model="clef-flash"):
 
 def parse_answers_v4(answers, nos):
     return {int(n): {f"clef_{k}": float(answers[f"{k}_{n}"]["noul"]) for k in V4_QUESTIONS} for n in nos}
+
+def build_request_v5(race, runners, model="clef-flash"):
+    """v1 evidence table plus questions aimed at exacta, top-3 and top-5 sets."""
+    req = build_request(race, runners, model)
+    nos = [str(x["no"]) for x in req["state"]["runners"]]
+    q = {"winner": req["questions"]["winner"],
+         "second": {"type": "choice", "instructions": "Which horse number is most likely to finish exactly second?",
+                    "criteria": {n: f"Horse number {n} finishes second" for n in nos}}}
+    for n in nos:
+        q[f"top3_{n}"] = {"type": "noul", "instructions": f"Will horse number {n} finish in the top three?"}
+        q[f"top5_{n}"] = {"type": "noul", "instructions": f"Will horse number {n} finish in the top five?"}
+    req["questions"] = q
+    return req
+
+def parse_answers_v5(answers, nos):
+    win = answers["winner"]["probabilities"]; sec = answers["second"]["probabilities"]
+    return {int(n): {"clef_win": float(win.get(str(n), 0.0)), "clef_second": float(sec.get(str(n), 0.0)),
+                     "clef_top3": float(answers[f"top3_{n}"]["noul"]), "clef_top5": float(answers[f"top5_{n}"]["noul"])} for n in nos}
+
+def build_request_v6(race, runners, model="clef-flash"):
+    """v5 plus jockey/trainer/sire/damsire names so the backbone can use its racing knowledge."""
+    req = build_request_v5(race, runners, model)
+    names = {int(r["umaban"]): r for r in runners}
+    for row in req["state"]["runners"]:
+        r = names[row["no"]]
+        row["jockey"] = (r.get("jockey_name") or "").strip() or None
+        row["trainer"] = (r.get("trainer_name") or "").strip() or None
+        row["sire"] = (r.get("sire_name") or "").strip() or None
+        row["damsire"] = (r.get("damsire_name") or "").strip() or None
+    req["state"]["legend"] += " jockey/trainer/sire/damsire are names (Japanese racing)."
+    return req

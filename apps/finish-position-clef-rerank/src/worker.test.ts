@@ -18,7 +18,7 @@ const bundleJson = (): string =>
     modelVersion: "clef-rerank-v1",
     raceKey: "jra:2026:1018:08:11",
     label: "clef-flash 補正",
-    weights: { base: 1, feature: 0, clefTop3: 2, clefWin: 0 },
+    weights: { base: 1, feature: 0, clef: [{ source: "top3", weight: 2 }] },
     runners: [
       { horseNumber: 1, featureScore: 0 },
       { horseNumber: 2, featureScore: 0 },
@@ -32,8 +32,11 @@ const bundleJson = (): string =>
       },
       questions: {
         winner: { type: "choice", instructions: "w", criteria: { "1": "a", "2": "b" } },
+        second: { type: "choice", instructions: "s", criteria: { "1": "a", "2": "b" } },
         top3_1: { type: "noul", instructions: "1" },
         top3_2: { type: "noul", instructions: "2" },
+        top5_1: { type: "noul", instructions: "5-1" },
+        top5_2: { type: "noul", instructions: "5-2" },
       },
     },
   });
@@ -57,8 +60,11 @@ const baseJson = (at: string): string =>
 const clefAnswer = {
   answers: {
     winner: { probabilities: { "1": 0.1, "2": 0.9 } },
+    second: { probabilities: { "1": 0.6, "2": 0.4 } },
     top3_1: { noul: 0.2 },
     top3_2: { noul: 0.9 },
+    top5_1: { noul: 0.5 },
+    top5_2: { noul: 0.95 },
   },
 };
 
@@ -100,8 +106,11 @@ it("scores a race with clef-flash and stores the fused order", async () => {
     },
     questions: {
       winner: { type: "choice", instructions: "w", criteria: { "1": "a", "2": "b" } },
+      second: { type: "choice", instructions: "s", criteria: { "1": "a", "2": "b" } },
       top3_1: { type: "noul", instructions: "1" },
       top3_2: { type: "noul", instructions: "2" },
+      top5_1: { type: "noul", instructions: "5-1" },
+      top5_2: { type: "noul", instructions: "5-2" },
     },
   });
   expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(1);
@@ -208,8 +217,11 @@ it("forwards probe requests to hosted clef-flash and rejects non-object bodies",
   expect(await ok.json()).toStrictEqual({
     answers: {
       winner: { probabilities: { "1": 0.1, "2": 0.9 } },
+      second: { probabilities: { "1": 0.6, "2": 0.4 } },
       top3_1: { noul: 0.2 },
       top3_2: { noul: 0.9 },
+      top5_1: { noul: 0.5 },
+      top5_2: { noul: 0.95 },
     },
   });
   const bad = await worker.fetch(

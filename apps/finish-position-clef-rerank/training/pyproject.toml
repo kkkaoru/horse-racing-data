@@ -16,4 +16,5 @@ dependencies = [
   "scikit-learn",
   "duckdb",
   "torchvision>=0.29.1",
+  "xgboost>=3.4.1",
 ]

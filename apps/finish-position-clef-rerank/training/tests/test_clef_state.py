@@ -10,9 +10,11 @@ from clef_state import (  # noqa: E402
     build_request,
     build_request_v3,
     build_request_v4,
+    build_request_v5,
     parse_answers,
     parse_answers_v3,
     parse_answers_v4,
+    parse_answers_v5,
     runner_row,
 )
 
@@ -65,3 +67,14 @@ def test_v4_asks_three_evidence_questions_per_runner():
     assert sorted(req["questions"]) == ["cls_1", "fit_1", "form_1"]
     answers = {"cls_1": {"noul": 0.1}, "fit_1": {"noul": 0.2}, "form_1": {"noul": 0.3}}
     assert parse_answers_v4(answers, ["1"]) == {1: {"clef_form": 0.3, "clef_fit": 0.2, "clef_cls": 0.1}}
+
+
+def test_v5_asks_winner_second_top3_and_top5():
+    req = build_request_v5(RACE, [runner(1), runner(2)])
+    assert sorted(req["questions"]) == ["second", "top3_1", "top3_2", "top5_1", "top5_2", "winner"]
+    answers = {"winner": {"probabilities": {"1": 0.7, "2": 0.3}}, "second": {"probabilities": {"1": 0.2, "2": 0.8}},
+               "top3_1": {"noul": 0.9}, "top3_2": {"noul": 0.6}, "top5_1": {"noul": 0.95}, "top5_2": {"noul": 0.8}}
+    assert parse_answers_v5(answers, ["1", "2"]) == {
+        1: {"clef_win": 0.7, "clef_second": 0.2, "clef_top3": 0.9, "clef_top5": 0.95},
+        2: {"clef_win": 0.3, "clef_second": 0.8, "clef_top3": 0.6, "clef_top5": 0.8},
+    }

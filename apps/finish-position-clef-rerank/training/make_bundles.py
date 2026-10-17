@@ -1,7 +1,7 @@
 """Build per-race clef rerank bundles for one race day and write a wrangler KV bulk file."""
 import sys, json, pandas as pd, numpy as np, lightgbm as lgb, duckdb
 sys.path.insert(0, "/Users/kkk4oru/models/clef-work")
-from clef_state import build_request
+from clef_state import build_request_v5
 W = "/Users/kkk4oru/models/clef-work/data"
 ymd = sys.argv[1]; out = sys.argv[2]
 weights_cfg = json.load(open(f"{W}/fuse_weights.json"))
@@ -30,7 +30,7 @@ for cat in weights_cfg["categories"]:
         cfg = weights_cfg.get(f"{cat}:{ymd}:{key}") or weights_cfg[cat]
         if cfg.get("skip"): continue
         r0 = g.iloc[0]
-        req = build_request({"surface": r0.surface, "dist": r0.dist, "going": r0.going, "field": len(g), "grade_c": r0.grade_c, "joken": r0.joken}, g.to_dict("records"))
+        req = build_request_v5({"surface": r0.surface, "dist": r0.dist, "going": r0.going, "field": len(g), "grade_c": r0.grade_c, "joken": r0.joken}, g.to_dict("records"))
         bundle = {"modelVersion": cfg["modelVersion"], "label": cfg["label"], "raceKey": f"{cat}:{ymd[:4]}:{ymd[4:]}:{kj}:{rb}",
                   "weights": cfg["weights"], "runners": [{"horseNumber": int(u), "featureScore": float(s)} for u, s in zip(g.umaban, g[cfg["featureColumn"]])],
                   "request": {"state": req["state"], "questions": req["questions"]}}
