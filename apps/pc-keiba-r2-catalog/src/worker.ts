@@ -594,10 +594,13 @@ const withRequestTimeout =
   (input, init) =>
     fetchImpl(input, {
       ...init,
-      signal:
-        cancel === undefined
-          ? AbortSignal.timeout(timeoutMs)
-          : AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]),
+      // Keep the caller's own signal (R2 SQL per-attempt timeout) alongside
+      // this bound and the optional cancel.
+      signal: AbortSignal.any([
+        AbortSignal.timeout(timeoutMs),
+        ...(cancel === undefined ? [] : [cancel]),
+        ...(init?.signal ? [init.signal] : []),
+      ]),
     });
 
 const parseKnownBloodlineCount = (rows: ReadonlyArray<Record<string, unknown>>): number | null => {

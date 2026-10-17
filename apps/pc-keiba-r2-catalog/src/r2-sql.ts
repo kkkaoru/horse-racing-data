@@ -19,7 +19,14 @@ const CODE_PATTERN = /^\d{2}$/u;
 const KETTO_TOROKU_BANGO_PATTERN = /^\d{10}$/u;
 const MIN_UMABAN: number = 1;
 const MAX_UMABAN: number = 18;
-const R2_SQL_REQUEST_TIMEOUT_MS: number = 120_000;
+// R2 SQL sometimes never answers a query that normally returns within
+// seconds, and far more often under concurrent load: on 2026-10-17 four
+// concurrent heatmap bloodline queries lost 25-50% of runs to a 60s timeout,
+// while every answered run (cache warm or not) took under 10s. Waiting out
+// one long timeout turned each silent attempt into a failed heatmap, so a
+// silent attempt is abandoned early and retried (16/16 answered in tests).
+// The total stays within the former 120s bound.
+const R2_SQL_ATTEMPT_TIMEOUTS_MS: ReadonlyArray<number> = [20_000, 20_000, 40_000];
 const FRESH_VENUE_PREDICATES: Readonly<Record<FreshRaceEntryFilters["source"], string>> = {
   "ban-ei": "keibajo_code = '83'",
   jra: "try_cast(btrim(keibajo_code) AS INT) BETWEEN 1 AND 10",
@@ -576,6 +583,27 @@ export const normaliseBulkFreshRaceEntries = (
   return [...entries].sort(compareBulkFreshRaceEntries);
 };
 
+const fetchR2SqlAttempt = async (params: {
+  attempt: number;
+  endpoint: string;
+  fetchImpl: Fetcher;
+  init: RequestInit;
+}): Promise<Response> => {
+  const timeoutMs = R2_SQL_ATTEMPT_TIMEOUTS_MS[params.attempt];
+  if (timeoutMs === undefined) throw new Error("R2 SQL did not answer any attempt");
+  const attemptSignal = AbortSignal.timeout(timeoutMs);
+  // Call the fetcher unbound: workerd rejects fetch invoked as an object method.
+  const { fetchImpl } = params;
+  try {
+    return await fetchImpl(params.endpoint, { ...params.init, signal: attemptSignal });
+  } catch (error) {
+    // Only this attempt's own silence is retried; a caller abort or a
+    // network failure propagates unchanged.
+    if (!attemptSignal.aborted) throw error;
+    return fetchR2SqlAttempt({ ...params, attempt: params.attempt + 1 });
+  }
+};
+
 export const executeR2Sql = async (
   env: R2SqlCatalogConfig,
   query: string,
@@ -583,18 +611,18 @@ export const executeR2Sql = async (
 ): Promise<Record<string, unknown>[]> => {
   const warehouse = `${env.R2_SQL_ACCOUNT_ID}_${env.R2_SQL_BUCKET_NAME}`;
   const endpoint = `https://api.sql.cloudflarestorage.com/api/v1/accounts/${encodeURIComponent(env.R2_SQL_ACCOUNT_ID)}/r2-sql/query/${encodeURIComponent(env.R2_SQL_BUCKET_NAME)}`;
-  const response = await fetchImpl(endpoint, {
-    body: JSON.stringify({ query, warehouse }),
-    headers: {
-      Authorization: `Bearer ${env.R2_SQL_TOKEN}`,
-      "Content-Type": "application/json",
+  const response = await fetchR2SqlAttempt({
+    attempt: 0,
+    endpoint,
+    fetchImpl,
+    init: {
+      body: JSON.stringify({ query, warehouse }),
+      headers: {
+        Authorization: `Bearer ${env.R2_SQL_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
     },
-    method: "POST",
-    // R2 SQL occasionally never answers (condition-history-stats and
-    // win-rate-heatmap-stats were canceled at ~930s on 2026-09-22/23, and the
-    // same queries later succeeded). Bound every request; a caller-provided
-    // fetch wrapper with a shorter signal (heatmap: 60s) still takes precedence.
-    signal: AbortSignal.timeout(R2_SQL_REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
   if (!response.ok) {

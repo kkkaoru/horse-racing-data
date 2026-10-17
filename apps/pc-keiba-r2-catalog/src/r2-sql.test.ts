@@ -421,14 +421,65 @@ it("posts a query to the R2 SQL REST API and returns object rows", async () => {
   expect(signal instanceof AbortSignal).toBe(true);
 });
 
-it("bounds every R2 SQL request with a 120 second default abort timeout", async () => {
+it("bounds the first R2 SQL attempt with a 20 second abort timeout", async () => {
   const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
   const fetchMock = vi.fn<Fetcher>(async () =>
     Response.json({ result: { rows: [] }, success: true }),
   );
   await executeR2Sql(env(), "SELECT 1", fetchMock);
-  expect(timeoutSpy.mock.calls).toStrictEqual([[120_000]]);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[20_000]]);
   timeoutSpy.mockRestore();
+});
+
+it("retries an R2 SQL attempt that stayed silent until its own timeout", async () => {
+  const controllers: AbortController[] = [];
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  const fetchMock = vi
+    .fn<Fetcher>()
+    .mockImplementationOnce(async () => {
+      controllers[0]?.abort();
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    })
+    .mockImplementationOnce(async () =>
+      Response.json({ result: { rows: [{ n: 1 }] }, success: true }),
+    );
+  await expect(executeR2Sql(env(), "SELECT 1", fetchMock)).resolves.toStrictEqual([{ n: 1 }]);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[20_000], [20_000]]);
+  timeoutSpy.mockRestore();
+});
+
+it("gives up after three silent R2 SQL attempts", async () => {
+  const controllers: AbortController[] = [];
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  const fetchMock = vi.fn<Fetcher>(async () => {
+    controllers.at(-1)?.abort();
+    throw new DOMException("The operation timed out.", "TimeoutError");
+  });
+  await expect(executeR2Sql(env(), "SELECT 1", fetchMock)).rejects.toThrow(
+    "R2 SQL did not answer any attempt",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(timeoutSpy.mock.calls).toStrictEqual([[20_000], [20_000], [40_000]]);
+  timeoutSpy.mockRestore();
+});
+
+it("does not retry an R2 SQL failure that is not its own attempt timeout", async () => {
+  const fetchMock = vi.fn<Fetcher>(async () => {
+    throw new TypeError("network connection lost");
+  });
+  await expect(executeR2Sql(env(), "SELECT 1", fetchMock)).rejects.toThrow(
+    "network connection lost",
+  );
+  expect(fetchMock).toHaveBeenCalledOnce();
 });
 
 it("rejects R2 SQL HTTP and payload failures", async () => {
