@@ -158,6 +158,7 @@ declare global {
     MCP_OAUTH_KV?: PcKeibaKvNamespace;
     MCP_OAUTH_SIGNING_KEY?: string;
     DETAIL_SECTION_CACHE_QUEUE?: PcKeibaQueue;
+    HEATMAP_BUILD_QUEUE?: PcKeibaQueue<import("./src/lib/heatmap-execution").HeatmapBuildMessage>;
     HEATMAP_WARM_WORKFLOW?: PcKeibaWorkflow;
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;

@@ -53,10 +53,22 @@ vi.mock("./worker/paddock-room", () => ({
   },
 }));
 
+const { createSelfFetchMock, handleHeatmapBuildQueueMock, selfFetch } = vi.hoisted(() => ({
+  createSelfFetchMock: vi.fn<(env: unknown) => unknown>(),
+  handleHeatmapBuildQueueMock: vi.fn<(batch: unknown, fetchSelf: unknown) => Promise<void>>(),
+  selfFetch: vi.fn<() => Promise<Response>>(),
+}));
+
 vi.mock("./worker/heatmap-warm-workflow", () => ({
   HeatmapWarmWorkflow: class FakeHeatmapWarmWorkflow {
     public readonly name = "fake-heatmap-warm";
   },
+  createSelfFetch: createSelfFetchMock,
+}));
+
+vi.mock("./worker/heatmap-build-queue", () => ({
+  HEATMAP_BUILD_QUEUE_NAME: "pc-keiba-heatmap-build",
+  handleHeatmapBuildQueue: handleHeatmapBuildQueueMock,
 }));
 
 vi.mock("./worker/race-trend-room", () => ({
@@ -203,6 +215,18 @@ it("queue-handler-delegates-to-cache-queue-worker", async () => {
   handleRaceDetailSectionCacheQueueMock.mockResolvedValue(undefined);
   await worker.queue(emptyBatch(), env, ctx);
   expect(handleRaceDetailSectionCacheQueueMock).toHaveBeenCalledTimes(1);
+});
+
+it("routes owned heatmap builds to their own consumer, not the detail-section handler", async () => {
+  const env = buildEnv();
+  const ctx = buildCtx();
+  handleHeatmapBuildQueueMock.mockResolvedValue(undefined);
+  createSelfFetchMock.mockReturnValue(selfFetch);
+  const batch = { messages: [], queue: "pc-keiba-heatmap-build" };
+  await worker.queue(batch, env, ctx);
+  expect(handleHeatmapBuildQueueMock).toHaveBeenCalledWith(batch, selfFetch);
+  expect(createSelfFetchMock).toHaveBeenCalledWith(env);
+  expect(handleRaceDetailSectionCacheQueueMock).not.toHaveBeenCalled();
 });
 
 it("fetch-delegates-to-open-next-worker", async () => {

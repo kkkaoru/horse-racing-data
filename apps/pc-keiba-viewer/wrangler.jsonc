@@ -59,6 +59,10 @@
         "binding": "DETAIL_SECTION_CACHE_QUEUE",
         "queue": "pc-keiba-detail-section-cache-warm",
       },
+      {
+        "binding": "HEATMAP_BUILD_QUEUE",
+        "queue": "pc-keiba-heatmap-build",
+      },
     ],
     "consumers": [
       {
@@ -71,6 +75,17 @@
         "max_retries": 5,
         "max_concurrency": 2,
         "retry_delay": 30,
+      },
+      {
+        "queue": "pc-keiba-heatmap-build",
+        // One owned heatmap build per message, two at a time across the whole
+        // account: matches the R2 SQL gate's two heavy-query slots, so builds
+        // queue here instead of piling up behind the gate and timing out.
+        // Every message is acked after one attempt (see heatmap-build-queue).
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 0,
+        "max_concurrency": 2,
       },
     ],
   },

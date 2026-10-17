@@ -163,11 +163,15 @@ const discardResponseBody = async (response: Response): Promise<Response> => {
   return response;
 };
 
-const fetchHeatmap = (fetchSelf: HeatmapWarmFetch, url: URL): Promise<Response> =>
+const fetchHeatmap = (
+  fetchSelf: HeatmapWarmFetch,
+  url: URL,
+  timeoutMs: number,
+): Promise<Response> =>
   fetchSelf(
     new Request(url, {
       headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE },
-      signal: AbortSignal.timeout(HEATMAP_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     }),
   ).then(discardResponseBody);
 
@@ -178,19 +182,37 @@ const isHeatmapStored = (response: Response): boolean =>
   response.ok &&
   HEATMAP_STORED_HEADERS.some((value) => value === response.headers.get(HEATMAP_CACHE_HEADER));
 
-export const warmHeatmapRace = async (
+export interface WarmHeatmapRaceInput {
+  fetchSelf: HeatmapWarmFetch;
+  params: HeatmapWarmWorkflowParams;
+  raceNumber: string;
+  timeoutMs: number;
+}
+
+export const warmHeatmapRace = (
   fetchSelf: HeatmapWarmFetch,
   params: HeatmapWarmWorkflowParams,
   raceNumber: string,
-): Promise<HeatmapWarmRaceStatus> => {
+): Promise<HeatmapWarmRaceStatus> =>
+  warmHeatmapRaceWithin({ fetchSelf, params, raceNumber, timeoutMs: HEATMAP_FETCH_TIMEOUT_MS });
+
+export const warmHeatmapRaceWithin = async ({
+  fetchSelf,
+  params,
+  raceNumber,
+  timeoutMs,
+}: WarmHeatmapRaceInput): Promise<HeatmapWarmRaceStatus> => {
   const probeUrl = buildHeatmapUrl(params, raceNumber);
   probeUrl.searchParams.set(HEATMAP_CACHE_PROBE_PARAM, "1");
-  if (params.ownerToken === undefined && isHeatmapHit(await fetchHeatmap(fetchSelf, probeUrl)))
+  if (
+    params.ownerToken === undefined &&
+    isHeatmapHit(await fetchHeatmap(fetchSelf, probeUrl, timeoutMs))
+  )
     return "hit";
   const url = buildHeatmapUrl(params, raceNumber);
   url.searchParams.set(DETAIL_SECTION_CACHE_WARM_PARAM, "1");
   if (params.ownerToken !== undefined) url.searchParams.set("__heatmapOwner", params.ownerToken);
-  const warmed = await fetchHeatmap(fetchSelf, url);
+  const warmed = await fetchHeatmap(fetchSelf, url, timeoutMs);
   if (warmed.headers.get(HEATMAP_CACHE_HEADER) === "PENDING") return "pending";
   if (isHeatmapStored(warmed)) return "stored";
   throw new Error(

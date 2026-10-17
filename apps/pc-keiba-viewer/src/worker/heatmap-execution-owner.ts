@@ -12,8 +12,8 @@ export class HeatmapExecutionOwner extends DurableObject<CloudflareEnv> {
   constructor(ctx: PcKeibaDurableObjectState, env: CloudflareEnv) {
     super(ctx, env);
     const sql = ctx.storage.sql;
-    const workflow = env.HEATMAP_WARM_WORKFLOW;
-    if (sql === undefined || workflow === undefined)
+    const queue = env.HEATMAP_BUILD_QUEUE;
+    if (sql === undefined || queue === undefined)
       throw new Error("Heatmap execution bindings unavailable");
     sql.exec(
       "CREATE TABLE IF NOT EXISTS heatmap_owner (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)",
@@ -36,7 +36,7 @@ export class HeatmapExecutionOwner extends DurableObject<CloudflareEnv> {
           );
         },
       },
-      workflow,
+      { send: (message) => queue.send(message) },
     );
   }
 

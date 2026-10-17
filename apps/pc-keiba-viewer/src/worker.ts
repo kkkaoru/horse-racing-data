@@ -18,6 +18,8 @@ import type {
 } from "./lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
 import { routeWebSocketUpgradeToDurableObject } from "./lib/websocket-do-router";
+import { HEATMAP_BUILD_QUEUE_NAME, handleHeatmapBuildQueue } from "./worker/heatmap-build-queue";
+import { createSelfFetch } from "./worker/heatmap-warm-workflow";
 import { formatTodayJstDate, formatTomorrowJstDate } from "./worker/jst-date";
 import {
   handleRaceDetailSectionCacheQueue,
@@ -79,7 +81,11 @@ export default {
     env: CloudflareEnv,
     ctx: PcKeibaExecutionContext,
   ) {
-    return handleRaceDetailSectionCacheQueue(openNextWorker, batch, env, ctx);
+    // The detail-section handler acks heatmap-shaped messages without warming
+    // them, so owned builds must be routed before reaching it.
+    return batch.queue === HEATMAP_BUILD_QUEUE_NAME
+      ? handleHeatmapBuildQueue(batch, createSelfFetch(env))
+      : handleRaceDetailSectionCacheQueue(openNextWorker, batch, env, ctx);
   },
   scheduled(controller: { cron?: string }, env: CloudflareEnv, ctx: PcKeibaExecutionContext) {
     if (controller.cron === "0 12 * * *") {

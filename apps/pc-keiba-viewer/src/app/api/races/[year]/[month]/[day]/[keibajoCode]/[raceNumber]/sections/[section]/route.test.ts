@@ -2187,7 +2187,7 @@ it("recovers one settled overseas owner through the ordinary route and private C
   const state: { value: unknown } = {
     value: { phase: "settled", token: "old", failures: 3, retryAt: 0 },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => state.value,
@@ -2195,7 +2195,7 @@ it("recovers one settled overseas owner through the ordinary route and private C
         state.value = value;
       },
     },
-    { createBatch },
+    { send },
   );
   const rpc = vi.fn<() => Promise<unknown>>(
     async () => "gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2233,7 +2233,7 @@ it("recovers one settled overseas owner through the ordinary route and private C
   expect(getByName).toHaveBeenCalledWith(
     "pc-keiba-viewer:win-rate-heatmap:v22:overseas-readers-v1:2026:10:04:A8:05:default",
   );
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
   expect(state.value).toMatchObject({
     failures: 0,
     phase: "queued",

@@ -37,8 +37,15 @@ export interface HeatmapExecutionStorage {
   read(): unknown;
   write(state: HeatmapExecutionState): void;
 }
-export interface HeatmapExecutionWorkflow {
-  createBatch(batch: { id: string; params: HeatmapWarmWorkflowParams }[]): Promise<unknown[]>;
+export interface HeatmapBuildMessage {
+  params: HeatmapWarmWorkflowParams;
+}
+// Owned builds go through a Queue whose consumer concurrency bounds how many
+// heatmaps compute at once. Starting one Workflow per owner let every missing
+// race of a sweep compute in parallel (50+ at 22:00 on 2026-10-17), and the
+// shared R2 SQL gate turned that into 120s timeouts and 503s.
+export interface HeatmapBuildDispatcher {
+  send(message: HeatmapBuildMessage): Promise<void>;
 }
 const FLAGS: readonly string[] = [
   "Age",
@@ -133,7 +140,7 @@ const isStaleUnsettled = (state: HeatmapExecutionState, now: number): boolean =>
 export class HeatmapExecutionCoordinator {
   constructor(
     private readonly storage: HeatmapExecutionStorage,
-    private readonly workflow: HeatmapExecutionWorkflow,
+    private readonly dispatcher: HeatmapBuildDispatcher,
   ) {}
 
   async ensure(request: HeatmapExecutionRequest): Promise<string> {
@@ -165,17 +172,14 @@ export class HeatmapExecutionCoordinator {
       token,
       updatedAt: now,
     });
-    // Ambiguous creation errors retain ownership, including retention holes.
-    await this.workflow.createBatch([
-      {
-        id: `heatmap-${token}`,
-        params: {
-          ...workflowRequest,
-          raceNumbers: [request.raceNumber],
-          ownerToken: token,
-        },
+    // Ambiguous send errors retain ownership; stale recovery re-queues it.
+    await this.dispatcher.send({
+      params: {
+        ...workflowRequest,
+        raceNumbers: [request.raceNumber],
+        ownerToken: token,
       },
-    ]);
+    });
     return "queued";
   }
 

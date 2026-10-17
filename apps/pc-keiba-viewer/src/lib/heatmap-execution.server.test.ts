@@ -125,7 +125,7 @@ it("keeps a real coordinator running after caller loss until the producing route
         state.value = value;
       },
     },
-    { createBatch: async () => [] },
+    { send: async () => undefined },
   );
   const request = {
     year: "2026",

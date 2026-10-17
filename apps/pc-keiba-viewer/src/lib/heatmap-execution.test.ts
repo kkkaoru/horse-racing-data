@@ -63,12 +63,12 @@ it("serializes simultaneous misses, survives re-instantiation and never steals a
       stored.value = value;
     },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
-  const coordinator = new HeatmapExecutionCoordinator(storage, { createBatch });
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
+  const coordinator = new HeatmapExecutionCoordinator(storage, { send });
   expect(
     await Promise.all([coordinator.ensure(request), coordinator.ensure(request)]),
   ).toStrictEqual(["queued", "queued"]);
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
   const state = storage.read();
   if (
     typeof state !== "object" ||
@@ -79,14 +79,14 @@ it("serializes simultaneous misses, survives re-instantiation and never steals a
     throw new Error("missing token");
   expect(coordinator.claim(state.token)).toBe(true);
   expect(coordinator.claim(state.token)).toBe(false);
-  const recreated = new HeatmapExecutionCoordinator(storage, { createBatch });
+  const recreated = new HeatmapExecutionCoordinator(storage, { send });
   expect(await recreated.ensure(request)).toBe("running");
   expect(recreated.settle("stale", true)).toBe(false);
   expect(recreated.claim("stale")).toBe(false);
   expect(recreated.settle(state.token, true)).toBe(true);
   expect(await recreated.ensure(request)).toBe("queued");
   expect(recreated.settle(state.token, false)).toBe(false);
-  expect(createBatch).toHaveBeenCalledTimes(2);
+  expect(send).toHaveBeenCalledTimes(2);
 });
 it("holds queued ownership on ambiguous workflow creation failure", async () => {
   const stored: { value: unknown } = { value: undefined };
@@ -96,15 +96,13 @@ it("holds queued ownership on ambiguous workflow creation failure", async () => 
       stored.value = value;
     },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => {
+  const send = vi.fn<() => Promise<void>>(async () => {
     throw new Error("timeout after accepted");
   });
-  const coordinator = new HeatmapExecutionCoordinator(storage, { createBatch });
+  const coordinator = new HeatmapExecutionCoordinator(storage, { send });
   await expect(coordinator.ensure(request)).rejects.toThrow("timeout after accepted");
-  expect(await new HeatmapExecutionCoordinator(storage, { createBatch }).ensure(request)).toBe(
-    "queued",
-  );
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(await new HeatmapExecutionCoordinator(storage, { send }).ensure(request)).toBe("queued");
+  expect(send).toHaveBeenCalledTimes(1);
 });
 it.each([
   null,
@@ -112,10 +110,10 @@ it.each([
   { phase: "unknown" },
   { phase: "running", token: "x", failures: -1, retryAt: 0 },
 ])("fails closed on unknown persisted state %j", (value) => {
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     { read: () => value, write: vi.fn<(...args: never[]) => unknown>() },
-    { createBatch },
+    { send },
   );
   expect(coordinator.claim("x")).toBe(false);
   expect(coordinator.settle("x", true)).toBe(false);
@@ -130,7 +128,7 @@ it("backs off settled failures without consulting Workflow status", async () => 
         stored.value = value;
       },
     },
-    { createBatch: vi.fn<() => Promise<unknown[]>>(async () => []) },
+    { send: vi.fn<() => Promise<void>>(async () => undefined) },
   );
   expect(coordinator.settle("x", false)).toBe(true);
   expect(await coordinator.ensure(request)).toBe("backoff");
@@ -149,20 +147,20 @@ it.each([2, 3, 10])(
           stored.value = value;
         },
       };
-      const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
-      const coordinator = new HeatmapExecutionCoordinator(storage, { createBatch });
+      const send = vi.fn<() => Promise<void>>(async () => undefined);
+      const coordinator = new HeatmapExecutionCoordinator(storage, { send });
       expect(coordinator.settle("old", false)).toBe(true);
       expect(stored.value.failures).toBe(3);
       expect(stored.value.retryAt).toBe(901000);
       now.mockReturnValue(900999);
       expect(await coordinator.ensure(request)).toBe("backoff");
-      expect(createBatch).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
       now.mockReturnValue(901000);
-      const recreated = new HeatmapExecutionCoordinator(storage, { createBatch });
+      const recreated = new HeatmapExecutionCoordinator(storage, { send });
       expect(
         await Promise.all([recreated.ensure(request), recreated.ensure(request)]),
       ).toStrictEqual(["queued", "queued"]);
-      expect(createBatch).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
       expect(stored.value.failures).toBe(3);
       expect(recreated.claim("old")).toBe(false);
       expect(recreated.settle("old", true)).toBe(false);
@@ -187,7 +185,7 @@ it.each([2, 3, 10])(
 
 it("recovers legacy permanently blocked state without resetting active ownership", async () => {
   const stored = { value: { phase: "settled", token: "legacy", failures: 3, retryAt: 0 } };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => stored.value,
@@ -195,11 +193,11 @@ it("recovers legacy permanently blocked state without resetting active ownership
         stored.value = value;
       },
     },
-    { createBatch },
+    { send },
   );
   expect(await coordinator.ensure(request)).toBe("queued");
   expect(await coordinator.ensure(request)).toBe("queued");
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
   expect(stored.value.failures).toBe(3);
   expect(coordinator.claim("legacy")).toBe(false);
   expect(coordinator.settle("legacy", true)).toBe(false);
@@ -208,7 +206,7 @@ it("recovers legacy permanently blocked state without resetting active ownership
 it("rejects a noncanonical direct scheduler request", async () => {
   const coordinator = new HeatmapExecutionCoordinator(
     { read: () => undefined, write: vi.fn<(...args: never[]) => unknown>() },
-    { createBatch: vi.fn<() => Promise<unknown[]>>(async () => []) },
+    { send: vi.fn<() => Promise<void>>(async () => undefined) },
   );
   await expect(
     coordinator.ensure({ ...request, query: "statsYears=1&statsVenue=0" }),
@@ -220,14 +218,11 @@ it.each([3, 4])(
   async (failures) => {
     const state = { phase: "settled", token: "x", failures, retryAt: Number.MAX_SAFE_INTEGER };
     const write = vi.fn<() => void>();
-    const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
-    const coordinator = new HeatmapExecutionCoordinator(
-      { read: () => state, write },
-      { createBatch },
-    );
+    const send = vi.fn<() => Promise<void>>(async () => undefined);
+    const coordinator = new HeatmapExecutionCoordinator({ read: () => state, write }, { send });
     expect(await coordinator.ensure(request)).toBe("backoff");
     expect(write).not.toHaveBeenCalled();
-    expect(createBatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   },
 );
 
@@ -238,17 +233,17 @@ it("admits a successor only after settled failure backoff expires", async () => 
     const write = vi.fn<(value: typeof stored.value) => void>((value) => {
       stored.value = value;
     });
-    const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+    const send = vi.fn<() => Promise<void>>(async () => undefined);
     const coordinator = new HeatmapExecutionCoordinator(
       { read: () => stored.value, write },
-      { createBatch },
+      { send },
     );
     expect(await coordinator.ensure(request)).toBe("backoff");
     expect(write).not.toHaveBeenCalled();
-    expect(createBatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
     now.mockReturnValue(1001);
     expect(await coordinator.ensure(request)).toBe("queued");
-    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
     expect(stored.value.failures).toBe(2);
   } finally {
     now.mockRestore();
@@ -260,14 +255,11 @@ it.each(["queued", "running"])(
   async (phase) => {
     const state = { phase, token: "x", failures: 3, retryAt: 0, updatedAt: Date.now() };
     const write = vi.fn<() => void>();
-    const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
-    const coordinator = new HeatmapExecutionCoordinator(
-      { read: () => state, write },
-      { createBatch },
-    );
+    const send = vi.fn<() => Promise<void>>(async () => undefined);
+    const coordinator = new HeatmapExecutionCoordinator({ read: () => state, write }, { send });
     expect(await coordinator.ensure(request)).toStrictEqual(phase);
     expect(write).not.toHaveBeenCalled();
-    expect(createBatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   },
 );
 
@@ -284,7 +276,7 @@ it.each([
       ...(dependencyRevision === undefined ? {} : { dependencyRevision }),
     },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => state.value,
@@ -292,7 +284,7 @@ it.each([
         state.value = value;
       },
     },
-    { createBatch },
+    { send },
   );
   const input = {
     ...request,
@@ -304,7 +296,7 @@ it.each([
     "queued",
     "queued",
   ]);
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
   const saved = state.value;
   if (
     typeof saved !== "object" ||
@@ -327,7 +319,7 @@ it.each([
   expect(await coordinator.ensure(input)).toBe("backoff");
   state.value = { ...saved, phase: "settled", failures: 3, retryAt: Number.MAX_SAFE_INTEGER };
   expect(await coordinator.ensure(input)).toBe("backoff");
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
 });
 it.each([
   undefined,
@@ -336,7 +328,7 @@ it.each([
   "qualified-frame-sql-v2:gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 ])("does not reset same or invalid dependency %s", async (dependencyRevision) => {
   const write = vi.fn<() => void>();
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => ({
@@ -349,13 +341,13 @@ it.each([
       }),
       write,
     },
-    { createBatch },
+    { send },
   );
   expect(await coordinator.ensure({ ...request, keibajoCode: "A8", dependencyRevision })).toBe(
     "backoff",
   );
   expect(write).not.toHaveBeenCalled();
-  expect(createBatch).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
 });
 it.each(["queued", "running", "unknown"])(
   "retains %s ownership on revision change",
@@ -366,7 +358,7 @@ it.each(["queued", "running", "unknown"])(
         read: () => ({ phase, token: "old", failures: 3, retryAt: 0, updatedAt: Date.now() }),
         write,
       },
-      { createBatch: vi.fn<() => Promise<unknown[]>>() },
+      { send: vi.fn<() => Promise<void>>() },
     );
     expect(
       await coordinator.ensure({
@@ -392,7 +384,7 @@ it("retains malformed persisted provenance and domestic counters", async () => {
   };
   const coordinator = new HeatmapExecutionCoordinator(
     { read: () => stored.value, write },
-    { createBatch: vi.fn<() => Promise<unknown[]>>() },
+    { send: vi.fn<() => Promise<void>>() },
   );
   const dependencyRevision =
     "qualified-frame-sql-v2:gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -416,7 +408,7 @@ it("waits for actual active settlement before adopting a changed algorithm revis
         "qualified-frame-sql-v2:gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => stored.value,
@@ -424,7 +416,7 @@ it("waits for actual active settlement before adopting a changed algorithm revis
         stored.value = value;
       },
     },
-    { createBatch },
+    { send },
   );
   const input = {
     ...request,
@@ -433,17 +425,17 @@ it("waits for actual active settlement before adopting a changed algorithm revis
       "qualified-frame-sql-v3:gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   };
   expect(await coordinator.ensure(input)).toBe("running");
-  expect(createBatch).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
   expect(coordinator.settle("old", false)).toBe(true);
   expect(await coordinator.ensure(input)).toBe("queued");
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
   expect(coordinator.settle("old", true)).toBe(false);
 });
 it.each([undefined, "bad"])(
   "never clears legacy overseas counters without verified provenance %s",
   async (dependencyRevision) => {
     const write = vi.fn<() => void>();
-    const createBatch = vi.fn<() => Promise<unknown[]>>();
+    const send = vi.fn<() => Promise<void>>();
     const coordinator = new HeatmapExecutionCoordinator(
       {
         read: () => ({
@@ -454,13 +446,13 @@ it.each([undefined, "bad"])(
         }),
         write,
       },
-      { createBatch },
+      { send },
     );
     expect(await coordinator.ensure({ ...request, keibajoCode: "A8", dependencyRevision })).toBe(
       "backoff",
     );
     expect(write).not.toHaveBeenCalled();
-    expect(createBatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   },
 );
 
@@ -478,7 +470,7 @@ it.each(["queued", "running"])(
         updatedAt: new Date("2026-10-17T00:50:00.000Z").getTime(),
       },
     };
-    const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+    const send = vi.fn<() => Promise<void>>(async () => undefined);
     const coordinator = new HeatmapExecutionCoordinator(
       {
         read: () => stored.value,
@@ -486,10 +478,10 @@ it.each(["queued", "running"])(
           stored.value = value;
         },
       },
-      { createBatch },
+      { send },
     );
     expect(await coordinator.ensure(request)).toBe("queued");
-    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
     expect(stored.value).toMatchObject({
       failures: 1,
       phase: "queued",
@@ -504,7 +496,7 @@ it.each(["queued", "running"])(
 it("keeps a running owner that transitioned less than ten minutes ago", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => ({
@@ -516,10 +508,10 @@ it("keeps a running owner that transitioned less than ten minutes ago", async ()
       }),
       write: vi.fn<() => void>(),
     },
-    { createBatch },
+    { send },
   );
   expect(await coordinator.ensure(request)).toBe("running");
-  expect(createBatch).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
   vi.useRealTimers();
 });
 
@@ -527,7 +519,7 @@ it("re-queues a legacy unsettled owner written before transitions were timestamp
   const stored: { value: unknown } = {
     value: { phase: "queued", token: "legacy", failures: 0, retryAt: 0 },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const send = vi.fn<() => Promise<void>>(async () => undefined);
   const coordinator = new HeatmapExecutionCoordinator(
     {
       read: () => stored.value,
@@ -535,10 +527,10 @@ it("re-queues a legacy unsettled owner written before transitions were timestamp
         stored.value = value;
       },
     },
-    { createBatch },
+    { send },
   );
   expect(await coordinator.ensure(request)).toBe("queued");
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
 });
 
 it("treats a state with a non-numeric updatedAt as unknown", async () => {
@@ -547,7 +539,7 @@ it("treats a state with a non-numeric updatedAt as unknown", async () => {
       read: () => ({ phase: "running", token: "x", failures: 0, retryAt: 0, updatedAt: "now" }),
       write: vi.fn<() => void>(),
     },
-    { createBatch: vi.fn<() => Promise<unknown[]>>() },
+    { send: vi.fn<() => Promise<void>>() },
   );
   expect(await coordinator.ensure(request)).toBe("unknown");
 });

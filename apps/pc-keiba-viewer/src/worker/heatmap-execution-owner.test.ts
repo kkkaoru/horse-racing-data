@@ -17,8 +17,10 @@ it("persists ownership before scheduling and preserves it across instances", asy
     getWebSockets: () => [],
     storage: { get: async () => undefined, put: async () => undefined, sql: { exec } },
   };
-  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
-  const env: CloudflareEnv = { HEATMAP_WARM_WORKFLOW: { createBatch } };
+  const send = vi.fn<(message: unknown) => Promise<void>>(async () => undefined);
+  const env: CloudflareEnv = {
+    HEATMAP_BUILD_QUEUE: { send, sendBatch: vi.fn<() => Promise<void>>() },
+  };
   const request = {
     year: "2026",
     month: "10",
@@ -33,11 +35,23 @@ it("persists ownership before scheduling and preserves it across instances", asy
   expect(await new HeatmapExecutionOwner(ctx, env).ensure(request)).toBe("queued");
   expect(await owner.claim("wrong")).toBe(false);
   expect(await owner.settle("wrong", true)).toBe(false);
-  expect(createBatch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
+  const message: unknown = send.mock.calls[0]?.[0];
+  expect(message).toMatchObject({
+    params: {
+      day: "04",
+      keibajoCode: "08",
+      month: "10",
+      query: "",
+      raceNumbers: ["01"],
+      source: "jra",
+      year: "2026",
+    },
+  });
   rows[0] = { state: "malformed" };
   expect(await new HeatmapExecutionOwner(ctx, env).ensure(request)).toBe("unknown");
 });
-it("requires SQLite and Workflow bindings", () => {
+it("requires SQLite and build queue bindings", () => {
   const ctx: PcKeibaDurableObjectState = {
     acceptWebSocket: vi.fn<(...args: never[]) => unknown>(),
     blockConcurrencyWhile: async (callback) => callback(),
