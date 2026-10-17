@@ -89,3 +89,27 @@ Other attempts, none of which beat the served base on these metrics:
 - ban-ei (1,279 races);
 - the hierarchical P5/P3/P1/P2 composition;
 - giving clef the jockey, trainer, sire and damsire names, which made it worse.
+
+### v3 (2026-10-18 06:45): apply the rerank only to served base models it improves
+
+`training/eval_per_model.py jra` splits the out-of-month CV (2,052 races) by the served base model. A model is
+approved only with at least 30 CV races, box5 / box3 / exacta each no worse than the served order, and a positive
+sum. Bundles carry the approved list as `baseModels`; the Worker returns 404 without calling clef-flash when the
+served model is not on it, so the viewer keeps the served order.
+
+| Served base model (approved)                   | CV races | Δbox5 | Δbox3 | Δexacta |
+| ---------------------------------------------- | -------- | ----- | ----- | ------- |
+| jra-joken-703-pooled-yetirank-v2               | 177      | +0.56 | 0.00  | +1.13   |
+| jra-joken-005-turf-mile-yeti-gated-v1          | 73       | 0.00  | +1.37 | +1.37   |
+| jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1 | 62       | +3.23 | 0.00  | 0.00    |
+| jra-joken-703-turf-long-spring-qsm-gated-v1    | 47       | 0.00  | 0.00  | +2.13   |
+| jra-joken-703-other-extended-qsm-gated-v1      | 43       | +2.33 | 0.00  | 0.00    |
+| jra-joken-703-querysoftmax-maxrange-v1         | 35       | +2.86 | 0.00  | 0.00    |
+| jra-joken-005-dirt-1700-summer-qsm-gated-v1    | 35       | 0.00  | +2.86 | 0.00    |
+| jra-joken-703-turf-1400-qsm-gated-v1           | 31       | 0.00  | +3.23 | 0.00    |
+
+Not approved: jra-cb-v9-sim-2013-clean (508 races, box3 −0.20) and every other model. The 秋華賞 specialist was
+also dropped: on 132 cohort races it gains box3 (5.30→6.82) but loses exacta (7.58→6.82). No single model's gain
+is significant (bootstrap P(no gain) ≥ 0.12), and selecting on months ≤6 then testing months 7–9 kept box5 (+1.4
+pt) but not box3 / exacta, so treat the approved list as provisional. On 2026-10-18 this covers 8 races: Tokyo
+1/2/7R, Niigata 1/3/6R, Kyoto 1/3R.

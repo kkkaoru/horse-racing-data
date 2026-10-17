@@ -44,6 +44,8 @@ export interface RerankBundle {
   modelVersion: string;
   raceKey: string;
   label: string;
+  // Served base models whose CV accuracy the rerank improved; other models keep the served order.
+  baseModels: string[];
   weights: FuseWeights;
   runners: BundleRunner[];
   request: ClefRequest;
@@ -157,6 +159,8 @@ export const parseBundle = (value: unknown): RerankBundle | null =>
   typeof value.modelVersion === "string" &&
   typeof value.raceKey === "string" &&
   typeof value.label === "string" &&
+  Array.isArray(value.baseModels) &&
+  value.baseModels.every((model) => typeof model === "string") &&
   isWeights(value.weights) &&
   Array.isArray(value.runners) &&
   value.runners.every(isBundleRunner) &&
@@ -165,6 +169,7 @@ export const parseBundle = (value: unknown): RerankBundle | null =>
         modelVersion: value.modelVersion,
         raceKey: value.raceKey,
         label: value.label,
+        baseModels: value.baseModels,
         weights: value.weights,
         runners: value.runners,
         request: value.request,

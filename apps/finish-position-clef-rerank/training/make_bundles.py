@@ -13,6 +13,7 @@ for cat in weights_cfg["categories"]:
     df = pd.read_parquet(f"{W}/{cat}_frame.parquet")
     df = df[df.race_id.str.startswith(ymd)].copy()
     if df.empty: continue
+    approved = json.load(open(f"{W}/per_model_{cat}.json"))["approved"]  # written by eval_per_model.py
     feats = json.load(open(f"{W}/{cat}_sfeat_feats.json"))
     df["sfeat"] = lgb.Booster(model_file=f"{W}/{cat}_sfeat.txt").predict(df[feats], num_threads=10)
     f2 = pd.read_parquet(f"{W}/{cat}_frame2.parquet"); f2 = f2[f2.race_id.str.startswith(ymd)].copy()
@@ -31,7 +32,7 @@ for cat in weights_cfg["categories"]:
         if cfg.get("skip"): continue
         r0 = g.iloc[0]
         req = build_request_v5({"surface": r0.surface, "dist": r0.dist, "going": r0.going, "field": len(g), "grade_c": r0.grade_c, "joken": r0.joken}, g.to_dict("records"))
-        bundle = {"modelVersion": cfg["modelVersion"], "label": cfg["label"], "raceKey": f"{cat}:{ymd[:4]}:{ymd[4:]}:{kj}:{rb}",
+        bundle = {"modelVersion": cfg["modelVersion"], "label": cfg["label"], "baseModels": approved, "raceKey": f"{cat}:{ymd[:4]}:{ymd[4:]}:{kj}:{rb}",
                   "weights": cfg["weights"], "runners": [{"horseNumber": int(u), "featureScore": float(s)} for u, s in zip(g.umaban, g[cfg["featureColumn"]])],
                   "request": {"state": req["state"], "questions": req["questions"]}}
         entries.append({"key": f"clefrr:v1:bundle:{ymd}:{kj}:{rb}", "value": json.dumps(bundle, ensure_ascii=False, default=lambda o: None if o != o else (int(o) if float(o).is_integer() else float(o))), "expiration_ttl": 259200})

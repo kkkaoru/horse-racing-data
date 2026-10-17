@@ -18,6 +18,7 @@ const bundleJson = (): string =>
     modelVersion: "clef-rerank-v1",
     raceKey: "jra:2026:1018:08:11",
     label: "clef-flash 補正",
+    baseModels: ["base-v1"],
     weights: { base: 1, feature: 0, clef: [{ source: "top3", weight: 2 }] },
     runners: [
       { horseNumber: 1, featureScore: 0 },
@@ -114,6 +115,18 @@ it("scores a race with clef-flash and stores the fused order", async () => {
     },
   });
   expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the served order for a base model the rerank was not approved for", async () => {
+  const env = makeEnv({
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z").replaceAll("base-v1", "base-v2"),
+  });
+  expect(await rerankRace(env, race)).toStrictEqual({
+    status: 404,
+    body: { error: "clef rerank is not available" },
+  });
+  expect(env.AI.run).toHaveBeenCalledTimes(0);
 });
 
 it("reuses a cached result while the base generation is unchanged", async () => {

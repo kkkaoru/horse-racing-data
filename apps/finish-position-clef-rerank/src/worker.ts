@@ -78,7 +78,11 @@ const loadRace = async (env: Env, race: RaceAddress): Promise<LoadedRace | null>
   ]);
   const bundle = parseBundle(parseJson(bundleText));
   const base = parseBasePredictions(parseJson(baseText));
-  return bundle === null || base === null ? null : { bundle, base };
+  return bundle === null ||
+    base === null ||
+    !bundle.baseModels.includes(latestBase(base).modelVersion)
+    ? null
+    : { bundle, base };
 };
 
 const isFresh = (cached: unknown, loaded: LoadedRace): cached is RerankResult =>

@@ -16,6 +16,7 @@ const bundle = (): RerankBundle => ({
   modelVersion: "clef-rerank-v1",
   raceKey: "jra:2026:1018:08:11",
   label: "clef-flash 補正",
+  baseModels: ["jra-cb-v9-sim-2013-clean-nowin1"],
   weights: {
     base: 1,
     feature: 0.5,
@@ -77,6 +78,8 @@ const answer = (horseNumber: number, winner: number, top3: number) => ({
 it("parses a valid bundle and rejects malformed ones", () => {
   expect(parseBundle(bundle())?.modelVersion).toBe("clef-rerank-v1");
   expect(parseBundle({ ...bundle(), weights: { base: 1 } })).toBeNull();
+  expect(parseBundle({ ...bundle(), baseModels: "jra" })).toBeNull();
+  expect(parseBundle({ ...bundle(), baseModels: [1] })).toBeNull();
   expect(
     parseBundle({
       ...bundle(),
