@@ -215,6 +215,57 @@ it("warms every indexed race in bounded groups from the cron", async () => {
   expect(console.log).toHaveBeenCalledWith("clef rerank warm", "[200,404]");
 });
 
+it("warms races in post-time order from the viewer race list", async () => {
+  const env = makeEnv({
+    "clefrr:v1:index:20261018": JSON.stringify(["08:11", "08:10", "05:01"]),
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+  });
+  vi.mocked(env.VIEWER.fetch).mockResolvedValue(
+    Response.json({
+      finished: [
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1017",
+          keibajoCode: "08",
+          raceBango: "10",
+          hassoJikoku: "0900",
+        },
+      ],
+      upcoming: [
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1018",
+          keibajoCode: "08",
+          raceBango: "11",
+          hassoJikoku: "1540",
+        },
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "1018",
+          keibajoCode: "08",
+          raceBango: "10",
+          hassoJikoku: "1500",
+        },
+        "noise",
+      ],
+    }),
+  );
+  expect(await warmDay(env, "20261018")).toStrictEqual([404, 200, 404]);
+});
+
+it("keeps index order when the race list is not an object or the viewer is down", async () => {
+  const env = makeEnv({
+    "clefrr:v1:index:20261018": JSON.stringify(["08:11", "08:10"]),
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+  });
+  vi.mocked(env.VIEWER.fetch).mockResolvedValueOnce(Response.json([1]));
+  expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
+  vi.mocked(env.VIEWER.fetch).mockRejectedValueOnce(new Error("offline"));
+  expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
+});
+
 it("converts the cron time to the JST race date", () => {
   expect(jstYmd(Date.parse("2026-10-17T23:00:00Z"))).toBe("20261018");
 });

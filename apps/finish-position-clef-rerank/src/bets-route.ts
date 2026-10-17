@@ -93,7 +93,7 @@ const sourceOf = (keibajoCode: string): string =>
 export const viewerPath = (race: BetRaceAddress, suffix: string): string =>
   `/api/races/${race.ymd.slice(0, 4)}/${race.ymd.slice(4, 6)}/${race.ymd.slice(6, 8)}/${race.keibajoCode}/${race.raceBango}/${suffix}?source=${sourceOf(race.keibajoCode)}`;
 
-const fetchViewer = async (env: BetEnv, path: string): Promise<unknown> => {
+export const fetchViewer = async (env: BetEnv, path: string): Promise<unknown> => {
   const response = await env.VIEWER.fetch(new Request(`${VIEWER_ORIGIN}${path}`));
   return response.ok ? response.json() : null;
 };

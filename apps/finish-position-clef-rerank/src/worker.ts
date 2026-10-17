@@ -1,5 +1,5 @@
 // Run checks with bun run check; deployed as a Cloudflare Worker behind the viewer's Access host.
-import { parseBudget, suggestRaceBets, type ServiceFetcher } from "./bets-route";
+import { fetchViewer, parseBudget, suggestRaceBets, type ServiceFetcher } from "./bets-route";
 import {
   buildClefInput,
   fuseRanks,
@@ -54,6 +54,7 @@ const BET_ROUTE_PATTERN: RegExp = /^\/api\/clef-rerank\/bets\/(\d{8})\/([0-9A-Z]
 const INDEX_ROUTE_PATTERN: RegExp = /^\/api\/clef-rerank\/(\d{8})$/u;
 const RESULT_TTL_SECONDS: number = 259_200;
 const CRON_CONCURRENCY: number = 4;
+const UNKNOWN_POST_TIME: string = "9999";
 const JST_OFFSET_MS: number = 32_400_000;
 const RESPONSE_HEADERS: Record<string, string> = { "Cache-Control": "no-store" };
 const NOT_FOUND: Outcome = { status: 404, body: { error: "clef rerank is not available" } };
@@ -154,8 +155,38 @@ const chunk = <T>(items: readonly T[], size: number): T[][] =>
     items.slice(index * size, index * size + size),
   );
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Post times (発走時刻) keyed by "kj:rb" from the viewer's upcoming/finished race list.
+const loadPostTimes = async (env: Env, ymd: string): Promise<Map<string, string>> => {
+  try {
+    const body = await fetchViewer(env, "/api/top-races");
+    const rows = isRecord(body) ? Object.values(body).flat().filter(isRecord) : [];
+    return new Map(
+      rows
+        .filter((row) => `${String(row.kaisaiNen)}${String(row.kaisaiTsukihi)}` === ymd)
+        .map((row) => [
+          `${String(row.keibajoCode)}:${String(row.raceBango)}`,
+          String(row.hassoJikoku),
+        ]),
+    );
+  } catch {
+    return new Map();
+  }
+};
+
+const byPostTime =
+  (times: ReadonlyMap<string, string>) =>
+  (a: RaceAddress, b: RaceAddress): number =>
+    (times.get(`${a.keibajoCode}:${a.raceBango}`) ?? UNKNOWN_POST_TIME).localeCompare(
+      times.get(`${b.keibajoCode}:${b.raceBango}`) ?? UNKNOWN_POST_TIME,
+    );
+
+// Earlier post times are generated first; races without a known time keep index order at the end.
 export const warmDay = async (env: Env, ymd: string): Promise<number[]> => {
-  const races = await readIndex(env, ymd);
+  const [indexed, times] = await Promise.all([readIndex(env, ymd), loadPostTimes(env, ymd)]);
+  const races = indexed.toSorted(byPostTime(times));
   const statuses: number[] = [];
   await chunk(races, CRON_CONCURRENCY).reduce(async (previous, group) => {
     await previous;
