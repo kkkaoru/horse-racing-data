@@ -75,6 +75,7 @@ const makeEnv = (store: Record<string, string>): Env => ({
     get: vi.fn(async (key: string) => store[key] ?? null),
     put: vi.fn(async () => undefined),
   },
+  VIEWER: { fetch: vi.fn(async () => new Response("missing", { status: 404 })) },
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -244,4 +245,89 @@ it("forwards probe requests to hosted clef-flash and rejects non-object bodies",
   expect(bad.status).toBe(400);
   const get = await worker.fetch(new Request("https://x/api/clef-rerank/probe"), env);
   expect(get.status).toBe(404);
+});
+
+it("serves bet suggestions with the requested budget", async () => {
+  const env = makeEnv({});
+  vi.mocked(env.VIEWER.fetch).mockImplementation(async (request: Request) =>
+    request.url.includes("win-rate-heatmap")
+      ? Response.json({
+          runners: [
+            { umaban: "01", wakuban: "1", bamei: "A" },
+            { umaban: "02", wakuban: "2", bamei: "B" },
+          ],
+        })
+      : Response.json({
+          odds: {
+            fetchedAt: "t",
+            latest: {
+              tansho: [
+                { combination: "1", odds: 2 },
+                { combination: "2", odds: 3 },
+              ],
+            },
+          },
+        }),
+  );
+  vi.mocked(env.AI.run).mockResolvedValue({
+    answers: {
+      winner: { probabilities: { "1": 0.7, "2": 0.3 } },
+      bet_type: { probabilities: { tansho: 1 } },
+      bet_style: { probabilities: { box: 1 } },
+      axis: { probabilities: { "1": 1 } },
+      top3_1: { noul: 0.9 },
+      top3_2: { noul: 0.8 },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300"),
+    env,
+  );
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(
+    typeof body === "object" && body !== null && "suggestion" in body ? body.suggestion : null,
+  ).toStrictEqual({
+    betType: "tansho",
+    style: "single",
+    axis: 1,
+    legs: [[1]],
+    budget: 300,
+    totalStake: 300,
+    expectedReturn: 361,
+    tickets: [
+      {
+        horses: [1],
+        odds: 2,
+        maxOdds: null,
+        probability: 0.6021800615402064,
+        stake: 300,
+        payout: 600,
+        payoutMax: null,
+      },
+    ],
+  });
+});
+
+it("rejects a budget that is not a multiple of 100", async () => {
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=250"),
+    makeEnv({}),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({
+    error: "budget must be a multiple of 100 from 100 to 1000000",
+  });
+});
+
+it("fails closed when the viewer cannot be reached", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const env = makeEnv({});
+  vi.mocked(env.VIEWER.fetch).mockRejectedValue(new Error("offline"));
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11"),
+    env,
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toStrictEqual({ error: "clef bet suggestion failed" });
 });

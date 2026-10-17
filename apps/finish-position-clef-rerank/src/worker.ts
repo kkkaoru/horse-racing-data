@@ -1,4 +1,5 @@
 // Run checks with bun run check; deployed as a Cloudflare Worker behind the viewer's Access host.
+import { parseBudget, suggestRaceBets, type ServiceFetcher } from "./bets-route";
 import {
   buildClefInput,
   fuseRanks,
@@ -23,6 +24,7 @@ export interface AiBinding {
 export interface Env {
   AI: AiBinding;
   DETAIL_SECTION_CACHE_KV: KvStore;
+  VIEWER: ServiceFetcher;
 }
 
 export interface RaceAddress {
@@ -48,6 +50,7 @@ interface LoadedRace {
 const CLEF_MODEL: string = "@cf/cloudflare/clef-flash";
 const ROUTE_PATTERN: RegExp = /^\/api\/clef-rerank\/(\d{8})\/([0-9A-Z]{2})\/(\d{2})$/u;
 const PROBE_PATH: string = "/api/clef-rerank/probe";
+const BET_ROUTE_PATTERN: RegExp = /^\/api\/clef-rerank\/bets\/(\d{8})\/([0-9A-Z]{2})\/(\d{2})$/u;
 const INDEX_ROUTE_PATTERN: RegExp = /^\/api\/clef-rerank\/(\d{8})$/u;
 const RESULT_TTL_SECONDS: number = 259_200;
 const CRON_CONCURRENCY: number = 4;
@@ -173,7 +176,27 @@ const probe = async (env: Env, request: Request): Promise<Outcome> => {
     : { status: 400, body: { error: "probe body must be a JSON object" } };
 };
 
-const route = async (env: Env, pathname: string): Promise<Outcome> => {
+const safeBets = async (env: Env, url: URL, match: RegExpExecArray): Promise<Outcome> => {
+  const budget = parseBudget(url.searchParams.get("budget"));
+  if (budget === null)
+    return { status: 400, body: { error: "budget must be a multiple of 100 from 100 to 1000000" } };
+  try {
+    return await suggestRaceBets(env, {
+      ymd: String(match[1]),
+      keibajoCode: String(match[2]),
+      raceBango: String(match[3]),
+      budget,
+    });
+  } catch (error) {
+    console.error("clef bets failed", url.pathname, String(error));
+    return { status: 503, body: { error: "clef bet suggestion failed" } };
+  }
+};
+
+const route = async (env: Env, url: URL): Promise<Outcome> => {
+  const pathname = url.pathname;
+  const bets = BET_ROUTE_PATTERN.exec(pathname);
+  if (bets !== null) return safeBets(env, url, bets);
   const race = ROUTE_PATTERN.exec(pathname);
   if (race !== null)
     return safeRerank(env, {
@@ -187,11 +210,11 @@ const route = async (env: Env, pathname: string): Promise<Outcome> => {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const pathname = new URL(request.url).pathname;
+    const url = new URL(request.url);
     const outcome =
-      request.method === "POST" && pathname === PROBE_PATH
+      request.method === "POST" && url.pathname === PROBE_PATH
         ? await probe(env, request)
-        : await route(env, pathname);
+        : await route(env, url);
     return Response.json(outcome.body, { status: outcome.status, headers: RESPONSE_HEADERS });
   },
   async scheduled(controller: ScheduledEvent, env: Env): Promise<void> {

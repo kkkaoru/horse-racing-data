@@ -1,0 +1,263 @@
+// Run with bun (bunx vitest).
+import { afterEach, expect, it, vi } from "vitest";
+
+import { parseBudget, suggestRaceBets, viewerPath, type BetEnv } from "./bets-route";
+
+const race = { ymd: "20261018", keibajoCode: "08", raceBango: "11", budget: 500 };
+
+const heatmapPath = "/api/races/2026/10/18/08/11/sections/win-rate-heatmap?source=jra";
+const realtimePath = "/api/races/2026/10/18/08/11/realtime?source=jra";
+
+const heatmap = {
+  runners: [
+    {
+      umaban: "01",
+      wakuban: "1",
+      bamei: "アルファ",
+      kishumeiRyakusho: "騎手A",
+      chokyoshimeiRyakusho: "調教A",
+      banushimei: "馬主A",
+    },
+    {
+      umaban: "02",
+      wakuban: "2",
+      bamei: "ベータ",
+      kishumeiRyakusho: "騎手B",
+      chokyoshimeiRyakusho: "調教B",
+      banushimei: "馬主B",
+    },
+  ],
+};
+
+const realtime = {
+  odds: {
+    fetchedAt: "2026-10-18T09:00:00+09:00",
+    latest: {
+      tansho: [
+        { combination: "1", odds: 2 },
+        { combination: "2", odds: 3 },
+      ],
+    },
+  },
+};
+
+const clefAnswers = {
+  answers: {
+    winner: { probabilities: { "1": 0.7, "2": 0.3 } },
+    bet_type: { probabilities: { tansho: 1 } },
+    bet_style: { probabilities: { box: 1 } },
+    axis: { probabilities: { "1": 1 } },
+    top3_1: { noul: 0.9 },
+    top3_2: { noul: 0.8 },
+  },
+};
+
+const makeViewer = (pages: Record<string, unknown>): BetEnv["VIEWER"] => ({
+  fetch: vi.fn(async (request: Request) => {
+    const url = new URL(request.url);
+    const page = pages[`${url.pathname}${url.search}`];
+    return page === undefined ? new Response("missing", { status: 500 }) : Response.json(page);
+  }),
+});
+
+const makeEnv = (store: Record<string, string>, pages: Record<string, unknown>): BetEnv => ({
+  AI: { run: vi.fn(async () => clefAnswers) },
+  DETAIL_SECTION_CACHE_KV: {
+    get: vi.fn(async (key: string) => store[key] ?? null),
+    put: vi.fn(async () => undefined),
+  },
+  VIEWER: makeViewer(pages),
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+it("parses budgets in 100-yen steps and defaults to 2,000 yen", () => {
+  expect(parseBudget(null)).toBe(2000);
+  expect(parseBudget("500")).toBe(500);
+  expect(parseBudget("1000000")).toBe(1000000);
+  expect(parseBudget("150")).toBeNull();
+  expect(parseBudget("0")).toBeNull();
+  expect(parseBudget("1000100")).toBeNull();
+  expect(parseBudget("abc")).toBeNull();
+});
+
+it("builds viewer paths with the race source", () => {
+  expect(viewerPath(race, "realtime")).toBe("/api/races/2026/10/18/08/11/realtime?source=jra");
+  expect(viewerPath({ ...race, keibajoCode: "44" }, "trends")).toBe(
+    "/api/races/2026/10/18/44/11/trends?source=nar",
+  );
+  expect(viewerPath({ ...race, keibajoCode: "00" }, "trends")).toBe(
+    "/api/races/2026/10/18/00/11/trends?source=nar",
+  );
+});
+
+it("asks clef-flash, caches the answers and returns the suggestion", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-18T00:00:00Z"));
+  const env = makeEnv(
+    {
+      "clefrr:v1:result:20261018:08:11": JSON.stringify({
+        predictions: [{ horseNumber: 2, rank: 1 }, { horseNumber: 1, rank: 2 }, { bad: true }],
+      }),
+    },
+    { [heatmapPath]: heatmap, [realtimePath]: realtime },
+  );
+  expect(await suggestRaceBets(env, race)).toStrictEqual({
+    status: 200,
+    body: {
+      raceKey: "20261018:08:11",
+      oddsFetchedAt: "2026-10-18T09:00:00+09:00",
+      generatedAt: "2026-10-18T00:00:00.000Z",
+      runners: [
+        {
+          horseNumber: 1,
+          frameNumber: 1,
+          horseName: "アルファ",
+          jockey: "騎手A",
+          trainer: "調教A",
+          owner: "馬主A",
+          clefWin: 0.7,
+          clefTop3: 0.9,
+        },
+        {
+          horseNumber: 2,
+          frameNumber: 2,
+          horseName: "ベータ",
+          jockey: "騎手B",
+          trainer: "調教B",
+          owner: "馬主B",
+          clefWin: 0.3,
+          clefTop3: 0.8,
+        },
+      ],
+      suggestion: {
+        betType: "tansho",
+        style: "single",
+        axis: 1,
+        legs: [[1]],
+        budget: 500,
+        totalStake: 500,
+        expectedReturn: 584,
+        tickets: [
+          {
+            horses: [1],
+            odds: 2,
+            maxOdds: null,
+            probability: 0.5840829135794368,
+            stake: 500,
+            payout: 1000,
+            payoutMax: null,
+          },
+        ],
+      },
+    },
+  });
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledWith(
+    "clefbet:v1:answers:20261018:08:11:2026-10-18T09:00:00+09:00",
+    JSON.stringify(clefAnswers),
+    { expirationTtl: 259200 },
+  );
+});
+
+it("reuses cached answers and falls back to served ranks", async () => {
+  const env = makeEnv(
+    {
+      "clefbet:v1:answers:20261018:08:11:2026-10-18T09:00:00+09:00": JSON.stringify(clefAnswers),
+      "clefrr:v1:result:20261018:08:11": JSON.stringify({ predictions: "none" }),
+      "pred:fp:v1:20261018:08:11": JSON.stringify([
+        {
+          horseNumber: "1",
+          modelVersion: "base",
+          predictedFinishNorm: 0,
+          predictionGeneratedAt: "a",
+        },
+        {
+          horseNumber: "2",
+          modelVersion: "base",
+          predictedFinishNorm: 1,
+          predictionGeneratedAt: "a",
+        },
+      ]),
+    },
+    { [heatmapPath]: heatmap, [realtimePath]: realtime },
+  );
+  const outcome = await suggestRaceBets(env, race);
+  expect(outcome.status).toBe(200);
+  expect(env.AI.run).toHaveBeenCalledTimes(0);
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(0);
+});
+
+it("returns 404 before odds or runners are published", async () => {
+  const env = makeEnv({ "clefrr:v1:result:20261018:08:11": "{broken" }, { [heatmapPath]: heatmap });
+  expect(await suggestRaceBets(env, race)).toStrictEqual({
+    status: 404,
+    body: { error: "runners or odds are not available yet" },
+  });
+  const noRunners = makeEnv({}, { [realtimePath]: realtime });
+  expect((await suggestRaceBets(noRunners, race)).status).toBe(404);
+  expect(env.AI.run).toHaveBeenCalledTimes(0);
+});
+
+it("returns 502 for a malformed clef-flash answer without caching it", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  vi.mocked(env.AI.run).mockResolvedValue({ answers: {} });
+  expect(await suggestRaceBets(env, race)).toStrictEqual({
+    status: 502,
+    body: { error: "clef-flash answer was malformed" },
+  });
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(0);
+});
+
+it("returns 404 when no planned ticket has odds", async () => {
+  const env = makeEnv(
+    {},
+    {
+      [heatmapPath]: heatmap,
+      [realtimePath]: {
+        odds: { fetchedAt: "t", latest: { tansho: [{ combination: "1", odds: 2 }] } },
+      },
+    },
+  );
+  vi.mocked(env.AI.run).mockResolvedValue({
+    answers: { ...clefAnswers.answers, axis: { probabilities: { "2": 1 } } },
+  });
+  expect(await suggestRaceBets(env, race)).toStrictEqual({
+    status: 404,
+    body: { error: "no ticket has published odds" },
+  });
+});
+
+it("reports a missing clef win probability as null", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  vi.mocked(env.AI.run).mockResolvedValue({
+    answers: { ...clefAnswers.answers, winner: { probabilities: { "1": 1 } } },
+  });
+  const outcome = await suggestRaceBets(env, race);
+  const body = outcome.body;
+  expect(
+    typeof body === "object" && body !== null && "runners" in body ? body.runners : null,
+  ).toStrictEqual([
+    {
+      horseNumber: 1,
+      frameNumber: 1,
+      horseName: "アルファ",
+      jockey: "騎手A",
+      trainer: "調教A",
+      owner: "馬主A",
+      clefWin: 1,
+      clefTop3: 0.9,
+    },
+    {
+      horseNumber: 2,
+      frameNumber: 2,
+      horseName: "ベータ",
+      jockey: "騎手B",
+      trainer: "調教B",
+      owner: "馬主B",
+      clefWin: null,
+      clefTop3: 0.8,
+    },
+  ]);
+});

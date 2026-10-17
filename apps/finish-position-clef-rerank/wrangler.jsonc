@@ -13,6 +13,8 @@
   // Race-day prewarm, every 10 minutes from 08:00 to 17:50 JST.
   "triggers": { "crons": ["*/10 23,0-8 * * *"] },
   "ai": { "binding": "AI" },
+  // Bet suggestions read the viewer's race APIs without going through Access.
+  "services": [{ "binding": "VIEWER", "service": "pc-keiba-viewer" }],
   "kv_namespaces": [
     { "binding": "DETAIL_SECTION_CACHE_KV", "id": "a013fdf6e7224c3ab0c227be3c899073" },
   ],
