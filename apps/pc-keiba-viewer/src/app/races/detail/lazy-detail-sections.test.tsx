@@ -26,6 +26,7 @@ afterEach(() => {
 // score calculation still runs via the time-score payload used by finish prediction
 // and the win-rate heatmap.
 
+vi.mock("./clef-rerank-table", () => ({ ClefRerankTable: () => null }));
 vi.mock("./arc-prediction-table", () => ({
   ArcPredictionTable: ({ runners }: { runners: unknown[] }) => (
     <div data-testid="arc-prediction-stub" data-runner-count={runners.length} />
