@@ -156,7 +156,7 @@ const RANK_WEIGHT: number = 0.25;
 const CLEF_WEIGHT: number = 0.25;
 const RANK_DECAY: number = 0.3;
 const MODEL_SELECTOR: string = "clef-flash";
-const FULL_WIDTH_SPACE: RegExp = /[　\s]+$/u;
+const EDGE_SPACES: RegExp = /^[\u3000\s]+|[\u3000\s]+$/gu;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -167,7 +167,7 @@ const records = (value: unknown): Record<string, unknown>[] =>
 const field = (value: unknown, key: string): unknown => (isRecord(value) ? value[key] : undefined);
 
 const text = (value: unknown): string =>
-  typeof value === "string" ? value.replace(FULL_WIDTH_SPACE, "").trim() : "";
+  typeof value === "string" ? value.replace(EDGE_SPACES, "") : "";
 
 const finite = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
