@@ -105,9 +105,37 @@ stop_colima_if_started() {
   fi
 }
 
+is_deploy_command() {
+  local arg
+  for arg in "${WRAPPED_COMMAND[@]}"; do
+    [[ "$arg" == *deploy* ]] && return 0
+  done
+  return 1
+}
+
+# Wrangler pushes each deploy's images to the Cloudflare registry, so local
+# copies from earlier deploys only fill the VM disk. Keep what this run used
+# (the next build's cache) and return freed blocks to macOS via fstrim.
+prune_after_deploy() {
+  if ! is_deploy_command || ! docker_info_ok; then
+    return 0
+  fi
+  local age="until=$((SECONDS + 60))s"
+  echo "Pruning Docker data older than this deploy..." >&2
+  docker container prune -f --filter "$age" >/dev/null 2>&1 || true
+  docker image prune -a -f --filter "$age" >/dev/null 2>&1 || true
+  docker builder prune -a -f --filter "$age" >/dev/null 2>&1 || true
+  if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
+    colima ssh -- sudo fstrim -a >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup_colima() {
   local exit_code=$?
   trap - EXIT
+  if [[ "$exit_code" == "0" ]]; then
+    prune_after_deploy
+  fi
   stop_colima_if_started || exit_code=$?
   exit "$exit_code"
 }
@@ -153,4 +181,5 @@ if [[ "$#" -eq 0 ]]; then
   exit 2
 fi
 
+WRAPPED_COMMAND=("$@")
 run_with_docker_compat "$@"
