@@ -62,6 +62,7 @@ import { getRunnerDisplayNames } from "../../../lib/runner-display";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
 import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import { getWinRateHeatmapRaceClass } from "../../../lib/win-rate-heatmap-race-class";
+import { ClefBetSection } from "./clef-bet-section";
 import {
   LazyDetailSections,
   LazyFinishPredictionSection,
@@ -769,6 +770,14 @@ export async function RaceDetailView({
           raceNumber={raceNumber}
           runners={runners}
           source={raceSource}
+          year={year}
+        />
+
+        <ClefBetSection
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
           year={year}
         />
 

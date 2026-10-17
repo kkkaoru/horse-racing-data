@@ -30,6 +30,8 @@ import {
   scheduleTomorrowRaceDetailSectionCache,
 } from "./worker/race-detail-section-cache-warm";
 
+const CLEF_RERANK_PREFIX: string = "/api/clef-rerank/";
+
 export default {
   ...openNextWorker,
   async fetch(
@@ -51,17 +53,21 @@ export default {
       }
     }
     const mcpResponse = await handlePcKeibaMcpRequest({
+      // The clef-flash bet Worker owns /api/clef-rerank/*; reach it over its service binding.
       fetchSite: (pathWithQuery: string, init?: McpSiteFetchInit) =>
-        openNextWorker.fetch(
-          new Request(new URL(pathWithQuery, request.url), {
-            body: init?.body,
-            headers: init?.body === undefined ? undefined : { "content-type": "application/json" },
-            method: init?.method === undefined ? "GET" : init.method,
-            signal: init?.signal,
-          }),
-          env,
-          ctx,
-        ),
+        pathWithQuery.startsWith(CLEF_RERANK_PREFIX) && env.CLEF_RERANK !== undefined
+          ? env.CLEF_RERANK.fetch(new Request(new URL(pathWithQuery, request.url)))
+          : openNextWorker.fetch(
+              new Request(new URL(pathWithQuery, request.url), {
+                body: init?.body,
+                headers:
+                  init?.body === undefined ? undefined : { "content-type": "application/json" },
+                method: init?.method === undefined ? "GET" : init.method,
+                signal: init?.signal,
+              }),
+              env,
+              ctx,
+            ),
       mcpAuthToken: readMcpAuthToken(env),
       nowSeconds: Math.floor(Date.now() / 1000),
       oauthSigningKey: readMcpOauthSigningKey(env),

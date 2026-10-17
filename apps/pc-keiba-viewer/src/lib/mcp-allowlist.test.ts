@@ -60,3 +60,12 @@ it("resolveMcpPaddockWritePath allows only the paddock state POST path", () => {
   expect(resolveMcpPaddockWritePath("/api/races/2026/08/20/45/12/paddock/discord")).toBe(null);
   expect(resolveMcpPaddockWritePath("/api/races/2026/08/20/45/12/realtime")).toBe(null);
 });
+
+it("allows the clef-flash bet suggestion API only for a well-formed race", () => {
+  expect(isMcpAllowedApiPath("/api/clef-rerank/bets/20261018/08/03")).toBe(true);
+  expect(isMcpAllowedApiPath("/api/clef-rerank/bets/2026101/08/03")).toBe(false);
+  expect(isMcpAllowedApiPath("/api/clef-rerank/20261018/08/03")).toBe(false);
+  expect(resolveMcpApiPath("/api/clef-rerank/bets/20261018/08/03?budget=2000")).toBe(
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000",
+  );
+});

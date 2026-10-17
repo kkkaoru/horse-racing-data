@@ -10,6 +10,7 @@ const RACE_API_ROOT: RegExp =
   /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/(?:entity-recent-results|paddock|premium|realtime|recent-results|running-styles|trends|weight-futan|sections\/[a-z0-9-]+)$/;
 const PADDOCK_STATE_API: RegExp =
   /^\/api\/races\/\d{4}\/\d{2}\/\d{2}\/[0-9A-Z]{2}\/\d{2}\/paddock$/;
+const CLEF_BETS_API: RegExp = /^\/api\/clef-rerank\/bets\/\d{8}\/[0-9A-Z]{2}\/\d{2}$/;
 const HORSE_RUNNING_STYLES_API: RegExp = /^\/api\/horses\/[0-9]{6,16}\/running-styles$/;
 
 const parseAbsoluteApiPath = (pathWithQuery: string): URL | null => {
@@ -40,6 +41,9 @@ export const isMcpAllowedApiPath = (pathname: string): boolean => {
     return true;
   }
   if (RACE_API_ROOT.test(pathname)) {
+    return true;
+  }
+  if (CLEF_BETS_API.test(pathname)) {
     return true;
   }
   return HORSE_RUNNING_STYLES_API.test(pathname);

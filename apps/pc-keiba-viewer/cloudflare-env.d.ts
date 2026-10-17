@@ -181,6 +181,7 @@ declare global {
     REALTIME_FEATURES?: { fetch: typeof fetch };
     REALTIME_FEATURES_DB?: PcKeibaD1Database;
     REALTIME_HOT?: { fetch: typeof fetch };
+    CLEF_RERANK?: { fetch: typeof fetch };
     REALTIME_HOT_DB?: PcKeibaD1Database;
   }
 }

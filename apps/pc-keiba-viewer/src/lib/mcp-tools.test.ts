@@ -154,11 +154,12 @@ it("recovers all 18 synthetic runners and all three rates through JSON continuat
     payload.rows.every((row: { heatmap: Record<string, Record<string, unknown>> }) =>
       Object.values(row.heatmap).every(
         (cell) =>
-          Object.keys(cell).toSorted().join(",") === "name,quinellaRate,showRate,starts,winRate",
+          Object.keys(cell).toSorted().join(",") ===
+          "name,quinellaCount,quinellaRate,showCount,showRate,starts,winCount,winRate",
       ),
     ),
   ).toBe(true);
-  expect(text.length).toBeLessThan(50000);
+  expect(text.length).toBeLessThan(65000);
 });
 
 it.each(["get_win_rate_heatmap_display", "get_win_rate_heatmap_compact"])(
@@ -332,7 +333,11 @@ it("compact tool returns an empty terminal page past the last horse", async () =
       "/api/races/2026/09/12/09/04/sections/win-rate-heatmap?source=jra": eighteenHorsePayload,
     }),
   );
-  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  expect(payload.columns.length).toBe(21);
+  expect(payload.columns[0]).toStrictEqual({ key: "frame", label: "枠" });
+  expect({ ...payload, columns: [] }).toStrictEqual({
+    columns: [],
     rows: [],
     total: 18,
     offset: 18,
@@ -360,6 +365,7 @@ it("compact heatmap returns numeric rates, counts, and nulls without rendering f
   expect(payload.total).toBe(1);
   expect(payload.nextOffset).toBe(null);
   expect(Object.keys(payload.rows[0]).toSorted()).toStrictEqual([
+    "frameNumber",
     "heatmap",
     "horseName",
     "horseNumber",
@@ -369,15 +375,21 @@ it("compact heatmap returns numeric rates, counts, and nulls without rendering f
   expect(payload.rows[0].heatmap.jockey).toStrictEqual({
     name: "Jockey A",
     starts: 80,
+    winCount: 16,
     winRate: 20,
+    quinellaCount: 20,
     quinellaRate: 25,
+    showCount: 30,
     showRate: 37.5,
   });
   expect(payload.rows[0].heatmap.horse).toStrictEqual({
     name: "Alpha",
     starts: null,
+    winCount: null,
     winRate: null,
+    quinellaCount: null,
     quinellaRate: null,
+    showCount: null,
     showRate: null,
   });
 });
@@ -2383,5 +2395,108 @@ it("fetch rejects blank, malformed, missing, and failed ids", async () => {
   const failedApi = await callMcpTool("fetch", { id: "/api/spec" }, failingFetch);
   expect(JSON.parse(failedApi.content[0]?.text ?? "{}")).toStrictEqual({
     error: { message: "fetch failed with status 500" },
+  });
+});
+
+const betRaceArgs = {
+  year: "2026",
+  month: "10",
+  day: "18",
+  keibajoCode: "08",
+  raceNumber: "03",
+};
+
+const betPayload = {
+  oddsFetchedAt: "2026-10-18T06:55:31+09:00",
+  runners: [
+    {
+      horseNumber: 11,
+      frameNumber: 8,
+      horseName: "イレブン",
+      jockey: "騎手A",
+      trainer: "調教師A",
+      owner: "馬主A",
+    },
+  ],
+  suggestion: {
+    betType: "fukusho",
+    style: "single",
+    axis: 11,
+    legs: [[11]],
+    budget: 2000,
+    totalStake: 2000,
+    expectedReturn: 2178,
+    tickets: [
+      { horses: [11], odds: 1.7, maxOdds: 2.4, stake: 2000, payout: 3400, payoutMax: 4800 },
+    ],
+  },
+};
+
+it("exposes get_bet_suggestions with an optional budget", () => {
+  const definition = MCP_TOOL_DEFINITIONS.find((tool) => tool.name === "get_bet_suggestions");
+  expect(definition?.inputSchema.required).toStrictEqual([
+    "year",
+    "month",
+    "day",
+    "keibajoCode",
+    "raceNumber",
+  ]);
+  expect(definition?.inputSchema.properties.budget).toStrictEqual({
+    description: "Total budget in yen, a multiple of 100 from 100 to 1000000. Defaults to 2000.",
+    maximum: 1_000_000,
+    minimum: 100,
+    type: "integer",
+  });
+});
+
+it("get_bet_suggestions returns the Worker suggestion for the default budget", async () => {
+  const result = await callMcpTool(
+    "get_bet_suggestions",
+    betRaceArgs,
+    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=2000": betPayload }),
+  );
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual(betPayload);
+});
+
+it("get_bet_suggestions forwards an explicit budget", async () => {
+  const result = await callMcpTool(
+    "get_bet_suggestions",
+    { ...betRaceArgs, budget: 5000 },
+    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=5000": betPayload }),
+  );
+  expect(result.isError).toBe(false);
+});
+
+it("get_bet_suggestions rejects budgets off the 100-yen grid", async () => {
+  const result = await callMcpTool(
+    "get_bet_suggestions",
+    { ...betRaceArgs, budget: 250 },
+    jsonFetch({}),
+  );
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "budget must be a multiple of 100 from 100 to 1000000" },
+  });
+  expect(
+    (await callMcpTool("get_bet_suggestions", { ...betRaceArgs, budget: "2000" }, jsonFetch({})))
+      .isError,
+  ).toBe(true);
+});
+
+it("get_bet_suggestions rejects a malformed race", async () => {
+  const result = await callMcpTool(
+    "get_bet_suggestions",
+    { ...betRaceArgs, year: "26" },
+    jsonFetch({}),
+  );
+  expect(result.isError).toBe(true);
+});
+
+it("get_bet_suggestions reports an unavailable suggestion with the status", async () => {
+  const result = await callMcpTool("get_bet_suggestions", betRaceArgs, jsonFetch({}));
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual({
+    error: { message: "get_bet_suggestions is unavailable (status 404)" },
   });
 });

@@ -25,6 +25,7 @@ export default defineConfig({
         "src/app/races/detail/runners-table.tsx",
         "src/app/races/detail/finish-position-bucket-section.tsx",
         "src/app/races/detail/arc-prediction-table.tsx",
+        "src/app/races/detail/clef-bet-section.tsx",
       ],
       exclude: [
         "src/lib/paddock-server.ts",

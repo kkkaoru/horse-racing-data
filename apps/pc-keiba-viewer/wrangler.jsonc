@@ -15,6 +15,11 @@
       "service": "pc-keiba-viewer",
     },
     {
+      // MCP get_bet_suggestions reaches the clef-flash bet Worker without Access.
+      "binding": "CLEF_RERANK",
+      "service": "finish-position-clef-rerank",
+    },
+    {
       "binding": "REALTIME_DATA",
       "service": "sync-realtime-data",
     },

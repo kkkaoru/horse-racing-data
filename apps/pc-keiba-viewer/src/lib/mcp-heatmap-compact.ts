@@ -1,5 +1,10 @@
 // Run with bun run test / bun run tsc.
-import type { WinRateHeatmapCell, WinRateHeatmapRow } from "./win-rate-heatmap";
+import {
+  WIN_RATE_HEATMAP_COLUMNS,
+  type WinRateHeatmapCell,
+  type WinRateHeatmapColumn,
+  type WinRateHeatmapRow,
+} from "./win-rate-heatmap";
 
 export interface CompactHeatmapOptions {
   horseNumbers: readonly string[] | null;
@@ -7,18 +12,18 @@ export interface CompactHeatmapOptions {
   limit: number | null;
 }
 
-export type CompactHeatmapCell = Pick<
-  WinRateHeatmapCell,
-  "name" | "starts" | "winRate" | "quinellaRate" | "showRate"
->;
+// Every value the race-detail heatmap renders, including the counts behind each rate.
+export type CompactHeatmapCell = WinRateHeatmapCell;
 
 export interface CompactHeatmapRow {
+  frameNumber: string;
   horseNumber: string;
   horseName: string;
   heatmap: Record<string, CompactHeatmapCell>;
 }
 
 export interface CompactHeatmapPage {
+  columns: readonly WinRateHeatmapColumn[];
   rows: CompactHeatmapRow[];
   total: number;
   offset: number;
@@ -68,21 +73,11 @@ export const parseCompactHeatmapOptions = (
   };
 };
 
-const compactCell = ([key, cell]: [string, WinRateHeatmapCell]): [string, CompactHeatmapCell] => [
-  key,
-  {
-    name: cell.name,
-    starts: cell.starts,
-    winRate: cell.winRate,
-    quinellaRate: cell.quinellaRate,
-    showRate: cell.showRate,
-  },
-];
-
 const compactRow = (row: WinRateHeatmapRow): CompactHeatmapRow => ({
+  frameNumber: row.frameNumber,
   horseNumber: row.horseNumber,
   horseName: row.horseName,
-  heatmap: Object.fromEntries(Object.entries(row.cells).map(compactCell)),
+  heatmap: { ...row.cells },
 });
 
 export const buildCompactHeatmap = (
@@ -98,6 +93,7 @@ export const buildCompactHeatmap = (
     horseNumbers === null ? rows : rows.filter((row) => horseNumbers.includes(row.horseNumber));
   const end: number = options.limit === null ? selected.length : options.offset + options.limit;
   return {
+    columns: WIN_RATE_HEATMAP_COLUMNS,
     rows: selected.slice(options.offset, end).map(compactRow),
     total: selected.length,
     offset: options.offset,

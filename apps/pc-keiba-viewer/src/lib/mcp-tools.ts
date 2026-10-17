@@ -1,5 +1,13 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
 
+import {
+  DEFAULT_BET_BUDGET,
+  MAX_BET_BUDGET,
+  MIN_BET_BUDGET,
+  buildClefBetsUrl,
+  normalizeBudget,
+  readClefBets,
+} from "./clef-bets";
 import { KEIBAJO_NAMES } from "./codes";
 import { indexLiveHorseWeightChangeKg } from "./horse-weight-change-class";
 import { indexLiveHorseWeightKg, type LiveHorseWeight } from "./horse-weight-class";
@@ -246,7 +254,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   {
     name: "get_win_rate_heatmap_compact",
     description:
-      "Get all three heatmap rates as numbers (percent), names and starts only, using the same row builder as the UI. Missing values remain null. horseNumbers omitted selects all runners; selection happens after statistics are built. Defaults to one horse per page; repeat with nextOffset until null. Set limit: 99 explicitly for all selected horses. If dataChunk is returned, repeat identical arguments with nextResponseCursor as responseCursor and concatenate chunks before parsing JSON. Refresh the client tool definitions after upgrading the server.",
+      "Get every win-rate heatmap value shown on the race detail page: for each column (listed in columns with Japanese labels) the name, starts, win/quinella/show counts and rates (percent) and provenance, plus each horse's frame number, using the same row builder as the UI. Missing values remain null. horseNumbers omitted selects all runners; selection happens after statistics are built. Defaults to one horse per page; repeat with nextOffset until null. Set limit: 99 explicitly for all selected horses. If dataChunk is returned, repeat identical arguments with nextResponseCursor as responseCursor and concatenate chunks before parsing JSON. Refresh the client tool definitions after upgrading the server.",
     inputSchema: {
       additionalProperties: false,
       properties: {
@@ -483,6 +491,26 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
+      "Recommended betting tickets for one race from Cloudflare clef-flash: bet type (単勝/複勝/馬連/ワイド/馬単/3連複/3連単), style (single, box, nagashi 軸流し, multi マルチ, formation), legs, and per-ticket horses with frame, name, jockey, trainer, owner, odds (min-max for 複勝/ワイド), stake and payout in yen. clef-flash weighs the served finish prediction, win-rate heatmap, odds, recent results, training and today's placings. budget is yen in 100-yen steps (default 2000). Returns an error before odds are published.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        ...RACE_ROUTE_PROPERTIES,
+        budget: {
+          description:
+            "Total budget in yen, a multiple of 100 from 100 to 1000000. Defaults to 2000.",
+          maximum: MAX_BET_BUDGET,
+          minimum: MIN_BET_BUDGET,
+          type: "integer",
+        },
+      },
+      required: ["year", "month", "day", "keibajoCode", "raceNumber"],
+      type: "object",
+    },
+    name: "get_bet_suggestions",
+  },
+  {
+    description:
       "Fetch a compact finish-position prediction summary for LLM use. Omits inputs.results and other UI-only history, joins current runner names by normalized horse number, and ranks lower predictedFinishNorm first.",
     inputSchema: {
       additionalProperties: false,
@@ -534,7 +562,7 @@ export const MCP_TOOL_DEFINITIONS: readonly McpToolDefinition[] = [
   },
   {
     description:
-      "Get heatmap rates with minimal output by default: compact numeric rates, names and starts, one horse per page. Repeat with nextOffset until null. Explicit viewMode or showStarts opts into the large UI display model; prefer get_win_rate_heatmap_compact for analysis.",
+      "Get heatmap values by default in the same full numeric form as get_win_rate_heatmap_compact (names, starts, counts, rates, provenance, frame number), one horse per page. Repeat with nextOffset until null. Explicit viewMode or showStarts opts into the large UI display model; prefer get_win_rate_heatmap_compact for analysis.",
     inputSchema: {
       additionalProperties: false,
       properties: {
@@ -1210,6 +1238,37 @@ const getWeightFutanDiff = async (
   return okJson(fetched.value);
 };
 
+const getBetSuggestions = async (
+  args: Record<string, unknown>,
+  fetchSite: McpSiteFetch,
+): Promise<McpToolResult> => {
+  const parsed = parseRaceRoute(args);
+  if (typeof parsed === "string") {
+    return errorResult(parsed);
+  }
+  const budget = args.budget === undefined ? DEFAULT_BET_BUDGET : args.budget;
+  if (typeof budget !== "number" || normalizeBudget(budget) !== budget) {
+    return errorResult("budget must be a multiple of 100 from 100 to 1000000");
+  }
+  const fetched = await fetchSiteJson(
+    fetchSite,
+    buildClefBetsUrl(
+      {
+        day: parsed.day,
+        keibajoCode: parsed.keibajoCode,
+        month: parsed.month,
+        raceNumber: parsed.raceNumber,
+        year: parsed.year,
+      },
+      budget,
+    ),
+  );
+  const card = fetched.ok ? readClefBets(fetched.value) : null;
+  return card === null
+    ? errorResult(`get_bet_suggestions is unavailable (status ${fetched.status})`)
+    : okJson(card);
+};
+
 export const callMcpTool = async (
   name: string,
   rawArgs: unknown,
@@ -1379,6 +1438,9 @@ export const callMcpTool = async (
   }
   if (name === "get_weight_futan_diff") {
     return getWeightFutanDiff(args, fetchSite);
+  }
+  if (name === "get_bet_suggestions") {
+    return getBetSuggestions(args, fetchSite);
   }
   if (name === "get_finish_prediction_summary") {
     return getFinishPredictionSummary(args, fetchSite, responseCursor);
