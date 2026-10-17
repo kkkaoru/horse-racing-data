@@ -10046,9 +10046,17 @@ body .win-rate-heatmap-table .win-rate-heatmap-swatch-starts {
     touch-action: pan-x pan-y;
   }
 
+  /* 勝率 / 連対率 / 複勝率 alone: keep each column readable and scroll sideways instead of squeezing. */
+  .stats-table.win-rate-heatmap-table,
   .stats-table.win-rate-heatmap-table-combined {
     min-width: max-content;
+    table-layout: auto;
     width: max-content;
+  }
+
+  body .win-rate-heatmap-table .win-rate-heatmap-rate-heading,
+  body .win-rate-heatmap-table td.win-rate-heatmap-swatch {
+    min-width: var(--space-64px-48);
   }
 
   body .win-rate-heatmap-table-combined th,
