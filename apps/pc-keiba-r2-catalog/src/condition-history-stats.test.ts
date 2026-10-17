@@ -12,6 +12,7 @@ import {
   buildConditionRaceTimeStatsQuery,
   buildConditionTargetRacesQuery,
   buildConditionWeightClassStatsQuery,
+  splitConditionWeightClassRows,
   normaliseTargetRaceRow,
   isBanEiKeibajo,
   aggregateFinishPositionStats,
@@ -62,76 +63,99 @@ it("unions JRA and NAR frame history when venue matching is off", () => {
   expect(sql).not.toMatch("AND ra.keibajo_code = '05'");
 });
 
-it("builds body and carried weight class SQL with Ban'ei venue excluded", () => {
-  const body = buildConditionWeightClassStatsQuery({
-    env: config,
-    filters: jraFilters,
-    kind: "body",
-  });
-  const carried = buildConditionWeightClassStatsQuery({
-    env: config,
-    filters: jraFilters,
-    kind: "carried",
-  });
-  expect(body).toMatch("AS body_weight");
-  expect(body).toMatch("'le399'");
-  expect(body).toMatch("'ge540'");
-  expect(body).toMatch("NOT IN ('81', '82', '83', '84')");
-  expect(carried).toMatch("AS carried_weight");
-  expect(carried).toMatch("'le49'");
-  expect(carried).toMatch("'57.5-59'");
-  expect(carried).toMatch("/ 10.0");
-  expect(body).not.toMatch("jsonb_agg");
-  expect(carried).not.toMatch("jsonb_agg");
-});
-
-it("builds Ban-ei body-weight class SQL with hex decode and Ban-ei buckets", () => {
-  const body = buildConditionWeightClassStatsQuery({
-    env: config,
-    filters: { ...jraFilters, keibajoCode: "83", source: "nar" },
-    kind: "body",
-  });
-  expect(body).toMatch(
-    "(strpos('0123456789ABCDEF', substr(upper(btrim(coalesce(se.bataiju, ''))), 3, 1)) - 1) * 1",
+it("builds one flat-race weight SQL classifying body, carried and change per history row", () => {
+  const sql = buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters });
+  expect(sql).toMatch(
+    "CASE WHEN try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0 THEN try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) ELSE NULL END AS body_weight",
   );
-  expect(body).not.toMatch("0x");
-  expect(body).toMatch("'le899'");
-  expect(body).toMatch("'ge1200'");
-  expect(body).not.toMatch("NOT IN ('81', '82', '83', '84')");
-  expect(body).toMatch("AND se.keibajo_code IN ('81', '82', '83', '84')");
-});
-
-it("builds decimal weight-change class SQL excluding debut and unmeasured changes", () => {
-  const change = buildConditionWeightClassStatsQuery({
-    env: config,
-    filters: jraFilters,
-    kind: "change",
-  });
-  expect(change).toMatch("AS weight_change");
-  expect(change).toMatch(
+  expect(sql).toMatch("AS carried_weight");
+  expect(sql).toMatch("/ 10.0");
+  expect(sql).toMatch(
     "CASE WHEN btrim(coalesce(se.zogen_fugo, '')) = '-' THEN -(try_cast(upper(btrim(coalesce(se.zogen_sa, ''))) AS INT)) ELSE (try_cast(upper(btrim(coalesce(se.zogen_sa, ''))) AS INT)) END",
   );
-  expect(change).toMatch("NOT IN ('', '999')");
-  expect(change).toMatch("WHEN weight_change >= 20 THEN 'plus20'");
-  expect(change).toMatch("WHEN weight_change >= -2 THEN 'even'");
-  expect(change).toMatch("ELSE 'minus20'");
-  expect(change).toMatch("NOT IN ('81', '82', '83', '84')");
-  expect(change).not.toMatch("strpos");
+  expect(sql).toMatch("NOT IN ('', '999')");
+  expect(sql).toMatch("'le399'");
+  expect(sql).toMatch("'ge540'");
+  expect(sql).toMatch("'le49'");
+  expect(sql).toMatch("'57.5-59'");
+  expect(sql).toMatch("WHEN weight_change >= 20 THEN 'plus20'");
+  expect(sql).toMatch("WHEN weight_change >= -2 THEN 'even'");
+  expect(sql).toMatch("ELSE 'minus20'");
+  expect(sql).toMatch(
+    "WHERE body_weight IS NOT NULL OR carried_weight IS NOT NULL OR weight_change IS NOT NULL",
+  );
+  expect(sql).toMatch("GROUP BY body_class, carried_class, change_class");
+  expect(sql).toMatch("NOT IN ('81', '82', '83', '84')");
+  expect(sql).not.toMatch("strpos");
+  expect(sql).not.toMatch("jsonb_agg");
 });
 
-it("builds Ban-ei weight-change class SQL with hex decode", () => {
-  const change = buildConditionWeightClassStatsQuery({
+it("builds one Ban-ei weight SQL with hex decode, Ban-ei venues and no carried weight", () => {
+  const sql = buildConditionWeightClassStatsQuery({
     env: config,
     filters: { ...jraFilters, keibajoCode: "83", source: "nar" },
-    kind: "change",
   });
-  expect(change).toMatch(
+  expect(sql).toMatch(
+    "(strpos('0123456789ABCDEF', substr(upper(btrim(coalesce(se.bataiju, ''))), 3, 1)) - 1) * 1",
+  );
+  expect(sql).toMatch(
     "(strpos('0123456789ABCDEF', substr(upper(btrim(coalesce(se.zogen_sa, ''))), 1, 1)) - 1) * 256",
   );
-  expect(change).toMatch("NOT IN ('', 'FFF')");
-  expect(change).toMatch("WHEN weight_change >= 10 THEN 'plus10'");
-  expect(change).not.toMatch("NOT IN ('81', '82', '83', '84')");
-  expect(change).toMatch("AND se.keibajo_code IN ('81', '82', '83', '84')");
+  expect(sql).toMatch("NOT IN ('', '000', 'FFF')");
+  expect(sql).toMatch("NOT IN ('', 'FFF')");
+  expect(sql).not.toMatch("0x");
+  expect(sql).toMatch("'le899'");
+  expect(sql).toMatch("'ge1200'");
+  expect(sql).toMatch("GROUP BY body_class, change_class");
+  expect(sql).not.toMatch("carried_weight");
+  expect(sql).not.toMatch("NOT IN ('81', '82', '83', '84')");
+  expect(sql).toMatch("AND se.keibajo_code IN ('81', '82', '83', '84')");
+});
+
+it("totals combined weight rows per kind and skips null or blank classes", () => {
+  expect(
+    splitConditionWeightClassRows([
+      {
+        body_class: "480-499",
+        carried_class: "55.5-57",
+        change_class: "plus2",
+        quinella_count: 1,
+        show_count: 2,
+        starts: 3,
+        win_count: 1,
+      },
+      {
+        body_class: "480-499",
+        carried_class: null,
+        change_class: "even",
+        quinella_count: "2",
+        show_count: "2",
+        starts: "4",
+        win_count: "0",
+      },
+      {
+        body_class: "400-419",
+        carried_class: "55.5-57",
+        change_class: "",
+        quinella_count: 0,
+        show_count: 1,
+        starts: 2,
+        win_count: 0,
+      },
+    ]),
+  ).toStrictEqual({
+    carriedRows: [
+      { class_key: "55.5-57", quinella_count: 1, show_count: 3, starts: 5, win_count: 1 },
+    ],
+    weightChangeRows: [
+      { class_key: "even", quinella_count: 2, show_count: 2, starts: 4, win_count: 0 },
+      { class_key: "plus2", quinella_count: 1, show_count: 2, starts: 3, win_count: 1 },
+    ],
+    weightRows: [
+      { class_key: "400-419", quinella_count: 0, show_count: 1, starts: 2, win_count: 0 },
+      { class_key: "480-499", quinella_count: 3, show_count: 4, starts: 7, win_count: 1 },
+    ],
+  });
 });
 
 it("builds finish-position horse-level SQL and race-time aggregate SQL without jsonb_agg", () => {
@@ -260,7 +284,6 @@ it("rejects unsafe namespace and invalid heatmap filters", () => {
     buildConditionWeightClassStatsQuery({
       env: config,
       filters: { ...jraFilters, date: "20260231" },
-      kind: "body",
     }),
   ).toThrow("date must be a valid calendar date");
   expect(() => buildConditionFinishPositionStatsQuery(config, { ...jraFilters, years: 0 })).toThrow(
@@ -833,9 +856,9 @@ it("keeps non-rate queries positive-only and domestic rate SQL unchanged", () =>
   expect(buildConditionTargetRacesQuery(config, filters)).not.toMatch("ijo_kubun_code");
   expect(buildConditionFrameStatsQuery(config, jraFilters)).not.toMatch("ijo_kubun_code");
   expect(buildConditionFrameStatsQuery(config, jraFilters)).toMatch("avg(finish_position)");
-  expect(
-    buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters, kind: "body" }),
-  ).toMatch("WHEN finish_position <= 2 THEN");
+  expect(buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters })).toMatch(
+    "WHEN finish_position <= 2 THEN",
+  );
 });
 
 it("executes Arc native DNF/DSQ denominators without inventing placed horses or zero finishing places", async () => {
@@ -866,7 +889,7 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
         '2020100001' AS ketto_toroku_bango, rank AS kakutei_chakujun, code AS ijo_kubun_code,
         'Known jockey' AS kishumei_ryakusho, 'Known trainer' AS chokyoshimei_ryakusho,
         '500' AS bataiju, '580' AS futan_juryo, '00' AS wakuban, '01' AS tansho_ninkijun,
-        'Horse' AS bamei, '2300' AS soha_time, '100' AS tansho_odds
+        '-' AS zogen_fugo, '006' AS zogen_sa, 'Horse' AS bamei, '2300' AS soha_time, '100' AS tansho_odds
         FROM (VALUES ('01','01','0'), ('02','02','0'), ('03','00','4'), ('04','00','5'),
           ('05','01','1'), ('06','02','2'), ('07','00','0'), ('08',NULL,'9')) t(num,rank,code);
       INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2026' AS kaisai_nen) FROM pc_keiba.jvd_se WHERE umaban='01';
@@ -894,11 +917,14 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
         r.median_finish,
       ]),
     ).toStrictEqual([[16, 4, 1, 2, 2, 1.5, 1.5]]);
-    const body = (
-      await connection.runAndReadAll(
-        buildConditionWeightClassStatsQuery({ env: config, filters, kind: "body" }),
-      )
-    ).getRowObjectsJson();
+    const weights = splitConditionWeightClassRows(
+      (
+        await connection.runAndReadAll(
+          buildConditionWeightClassStatsQuery({ env: config, filters }),
+        )
+      ).getRowObjectsJson(),
+    );
+    const body = weights.weightRows;
     expect(
       body.map((r) => [
         r.class_key,
@@ -908,11 +934,7 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
         Number(r.show_count),
       ]),
     ).toStrictEqual([["500-519", 4, 1, 2, 2]]);
-    const carried = (
-      await connection.runAndReadAll(
-        buildConditionWeightClassStatsQuery({ env: config, filters, kind: "carried" }),
-      )
-    ).getRowObjectsJson();
+    const carried = weights.carriedRows;
     expect(
       carried.map((r) => [
         r.class_key,
@@ -922,6 +944,15 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
         Number(r.show_count),
       ]),
     ).toStrictEqual([["57.5-59", 4, 1, 2, 2]]);
+    expect(
+      weights.weightChangeRows.map((r) => [
+        r.class_key,
+        Number(r.starts),
+        Number(r.win_count),
+        Number(r.quinella_count),
+        Number(r.show_count),
+      ]),
+    ).toStrictEqual([["minus5", 4, 1, 2, 2]]);
     const similar = (
       await connection.runAndReadAll(buildWinRateHeatmapSimilarQuery(config, filters))
     ).getRowObjectsJson();
@@ -993,25 +1024,24 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
       INSERT INTO pc_keiba.oversea_runner_source_id SELECT * REPLACE ('2016' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.oversea_runner_source_id WHERE kaisai_nen='2026';
       INSERT INTO pc_keiba.oversea_runner_source_id SELECT * REPLACE ('2017' AS kaisai_nen, '1010' AS kaisai_tsukihi) FROM pc_keiba.oversea_runner_source_id WHERE kaisai_nen='2026';
     `);
-    const sameVenue = (
-      await connection.runAndReadAll(
-        buildConditionWeightClassStatsQuery({
-          env: config,
-          filters: { ...filters, includeVenue: true },
-          kind: "carried",
-        }),
-      )
-    ).getRowObjectsJson();
+    const sameVenue = splitConditionWeightClassRows(
+      (
+        await connection.runAndReadAll(
+          buildConditionWeightClassStatsQuery({
+            env: config,
+            filters: { ...filters, includeVenue: true },
+          }),
+        )
+      ).getRowObjectsJson(),
+    ).carriedRows;
     expect(sameVenue.map((r) => [Number(r.starts), Number(r.win_count)])).toStrictEqual([[1, 0]]);
-    const allVenues = (
-      await connection.runAndReadAll(
-        buildConditionWeightClassStatsQuery({
-          env: config,
-          filters,
-          kind: "carried",
-        }),
-      )
-    ).getRowObjectsJson();
+    const allVenues = splitConditionWeightClassRows(
+      (
+        await connection.runAndReadAll(
+          buildConditionWeightClassStatsQuery({ env: config, filters }),
+        )
+      ).getRowObjectsJson(),
+    ).carriedRows;
     expect(allVenues.map((r) => [Number(r.starts), Number(r.win_count)])).toStrictEqual([[3, 2]]);
     const forcedVenue = (
       await connection.runAndReadAll(buildConditionFrameStatsQuery(config, filters))
@@ -1035,9 +1065,9 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
 
 it("does not apply the Chantilly exception to native or other overseas races", () => {
   expect(buildConditionFrameStatsQuery(config, jraFilters)).not.toMatch("NOT IN ('2016', '2017')");
-  expect(
-    buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters, kind: "carried" }),
-  ).not.toMatch("NOT IN ('2016', '2017')");
+  expect(buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters })).not.toMatch(
+    "NOT IN ('2016', '2017')",
+  );
   expect(
     buildConditionFrameStatsQuery(config, {
       ...jraFilters,

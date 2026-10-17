@@ -14,9 +14,7 @@ const queryKind = (query: string): string => {
   if (query.includes("career_history")) return "correlation-career";
   if (query.includes("AS top3_count")) return "correlation-target";
   if (query.includes("AS horse_name") && query.includes("AS odds")) return "correlation-entries";
-  if (query.includes("AS weight_change")) return "weight-change";
-  if (query.includes("AS body_weight")) return "weight";
-  if (query.includes("AS carried_weight")) return "carried";
+  if (query.includes("AS body_weight")) return "weights";
   if (query.includes("IN (1, 2, 3, 4, 5)")) return "finish";
   if (query.includes("AS target_race_date")) return "target-races";
   if (query.includes("AS race_count")) return "race-time";
@@ -83,47 +81,36 @@ const createConditionHarness = () => {
         success: true,
       });
     }
-    if (kind === "weight") {
+    if (kind === "weights") {
       return Response.json({
         result: {
           rows: [
             {
-              class_key: "480-499",
-              quinella_count: 1,
-              show_count: 2,
-              starts: 4,
-              win_count: 1,
-            },
-          ],
-        },
-        success: true,
-      });
-    }
-    if (kind === "weight-change") {
-      return Response.json({
-        result: {
-          rows: [
-            {
-              class_key: "minus5",
-              quinella_count: 2,
-              show_count: 3,
-              starts: 5,
-              win_count: 1,
-            },
-          ],
-        },
-        success: true,
-      });
-    }
-    if (kind === "carried") {
-      return Response.json({
-        result: {
-          rows: [
-            {
-              class_key: "55.5-57",
+              body_class: "480-499",
+              // Ban-ei SQL has no carried-weight column at all.
+              carried_class: query.includes("AS carried_weight") ? "55.5-57" : null,
+              change_class: "minus5",
               quinella_count: 1,
               show_count: 1,
               starts: 2,
+              win_count: 0,
+            },
+            {
+              body_class: "480-499",
+              carried_class: null,
+              change_class: "minus5",
+              quinella_count: 0,
+              show_count: 1,
+              starts: 2,
+              win_count: 1,
+            },
+            {
+              body_class: null,
+              carried_class: null,
+              change_class: "minus5",
+              quinella_count: 1,
+              show_count: 1,
+              starts: 1,
               win_count: 0,
             },
           ],
@@ -441,16 +428,15 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
       },
     ],
   });
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual(["race-time", "target-races"]);
-  expect(harness.fetchCalls.slice(6, 8).toSorted()).toStrictEqual([
-    "correlation-entries",
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
+  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
     "correlation-target",
+    "target-races",
   ]);
-  expect(harness.fetchCalls.slice(8).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "weight-change",
+    "correlation-entries",
   ]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
@@ -468,7 +454,7 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
   expect(cached?.headers.get("Cache-Control")).toBe("public, max-age=129600");
 });
 
-it("omits the carried-weight query for Ban'ei venues", async () => {
+it("omits the carried-weight classes for Ban'ei venues", async () => {
   const harness = createConditionHarness();
   const response = await handleRequest(
     new Request(
@@ -478,16 +464,15 @@ it("omits the carried-weight query for Ban'ei venues", async () => {
     harness.dependencies,
   );
   expect(response.status).toBe(200);
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
-  expect(harness.fetchCalls.slice(2, 3)).toStrictEqual(["finish"]);
-  expect(harness.fetchCalls.slice(3, 5).toSorted()).toStrictEqual(["race-time", "target-races"]);
-  expect(harness.fetchCalls.slice(5, 7).toSorted()).toStrictEqual([
-    "correlation-entries",
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
+  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
     "correlation-target",
+    "target-races",
   ]);
-  expect(harness.fetchCalls.slice(7).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "weight-change",
+    "correlation-entries",
   ]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
@@ -503,16 +488,15 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   ]);
   expect(first.status).toBe(200);
   expect(second.status).toBe(200);
-  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weight"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["carried", "finish"]);
-  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual(["race-time", "target-races"]);
-  expect(harness.fetchCalls.slice(6, 8).toSorted()).toStrictEqual([
-    "correlation-entries",
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
+  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
+  expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
     "correlation-target",
+    "target-races",
   ]);
-  expect(harness.fetchCalls.slice(8).toSorted()).toStrictEqual([
+  expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "weight-change",
+    "correlation-entries",
   ]);
   expect(harness.inflight.max).toBe(2);
 });

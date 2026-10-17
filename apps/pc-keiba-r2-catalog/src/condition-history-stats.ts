@@ -85,70 +85,6 @@ const WEIGHT_CHANGE_CLASS_SQL: string = `CASE
     ELSE 'minus20'
   END`;
 
-const BAN_EI_VENUE_ONLY_SQL: string = "AND se.keibajo_code IN ('81', '82', '83', '84')";
-const NON_BAN_EI_VENUE_SQL: string = "AND se.keibajo_code NOT IN ('81', '82', '83', '84')";
-const TRIMMED_WEIGHT_CHANGE_SQL: string = "upper(btrim(coalesce(se.zogen_sa, '')))";
-// Ban-ei records the change in hex ('00A' = 10kg); JRA and NAR use decimal.
-const BAN_EI_HEX_WEIGHT_CHANGE_SQL: string = hexTripletSql(TRIMMED_WEIGHT_CHANGE_SQL);
-const DECIMAL_WEIGHT_CHANGE_SQL: string = `try_cast(${TRIMMED_WEIGHT_CHANGE_SQL} AS INT)`;
-
-interface WeightClassSqlParts {
-  classExpr: string;
-  venueFilter: string;
-  weightExpr: string;
-  weightFilter: string;
-}
-
-const signedWeightChangeSql = (magnitude: string): string =>
-  `CASE WHEN btrim(coalesce(se.zogen_fugo, '')) = '-' THEN -(${magnitude}) ELSE (${magnitude}) END AS weight_change`;
-
-// Blank is a debut or missing weigh-in; '999' (decimal) and 'FFF' (hex) mark
-// an unmeasured change.
-const weightChangeSqlParts = (banEi: boolean): WeightClassSqlParts =>
-  banEi
-    ? {
-        classExpr: WEIGHT_CHANGE_CLASS_SQL,
-        venueFilter: BAN_EI_VENUE_ONLY_SQL,
-        weightExpr: signedWeightChangeSql(BAN_EI_HEX_WEIGHT_CHANGE_SQL),
-        weightFilter: `AND ${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', 'FFF') AND (${BAN_EI_HEX_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
-      }
-    : {
-        classExpr: WEIGHT_CHANGE_CLASS_SQL,
-        venueFilter: NON_BAN_EI_VENUE_SQL,
-        weightExpr: signedWeightChangeSql(DECIMAL_WEIGHT_CHANGE_SQL),
-        weightFilter: `AND ${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', '999') AND (${DECIMAL_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
-      };
-
-const weightClassSqlParts = (input: {
-  kind: WeightClassKind;
-  keibajoCode: string;
-}): WeightClassSqlParts => {
-  if (input.kind === "change") return weightChangeSqlParts(isBanEiKeibajo(input.keibajoCode));
-  if (input.kind === "body" && isBanEiKeibajo(input.keibajoCode)) {
-    return {
-      classExpr: BAN_EI_BODY_WEIGHT_CLASS_SQL,
-      venueFilter: BAN_EI_VENUE_ONLY_SQL,
-      weightExpr: `(${BAN_EI_HEX_BODY_WEIGHT_SQL}) AS body_weight`,
-      weightFilter: `AND (${BAN_EI_HEX_BODY_WEIGHT_SQL}) > 0 AND upper(btrim(coalesce(se.bataiju, ''))) NOT IN ('', '000', 'FFF')`,
-    };
-  }
-  if (input.kind === "body") {
-    return {
-      classExpr: BODY_WEIGHT_CLASS_SQL,
-      venueFilter: NON_BAN_EI_VENUE_SQL,
-      weightExpr: `${integerSelect("se.bataiju", "000")} AS body_weight`,
-      weightFilter: "AND try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0",
-    };
-  }
-  return {
-    classExpr: CARRIED_WEIGHT_CLASS_SQL,
-    venueFilter: NON_BAN_EI_VENUE_SQL,
-    weightExpr: `${doubleSelect("se.futan_juryo")} / 10.0 AS carried_weight`,
-    weightFilter:
-      "AND try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0 > 0",
-  };
-};
-
 const CARRIED_WEIGHT_CLASS_SQL: string = `CASE
     WHEN carried_weight <= 49 THEN 'le49'
     WHEN carried_weight <= 51 THEN '49.5-51'
@@ -157,6 +93,120 @@ const CARRIED_WEIGHT_CLASS_SQL: string = `CASE
     WHEN carried_weight <= 57 THEN '55.5-57'
     ELSE '57.5-59'
   END`;
+
+const BAN_EI_VENUE_ONLY_SQL: string = "AND se.keibajo_code IN ('81', '82', '83', '84')";
+const NON_BAN_EI_VENUE_SQL: string = "AND se.keibajo_code NOT IN ('81', '82', '83', '84')";
+const TRIMMED_BODY_WEIGHT_SQL: string = "upper(btrim(coalesce(se.bataiju, '')))";
+const DECIMAL_BODY_WEIGHT_SQL: string =
+  "try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT)";
+const CARRIED_WEIGHT_SQL: string =
+  "try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0";
+const TRIMMED_WEIGHT_CHANGE_SQL: string = "upper(btrim(coalesce(se.zogen_sa, '')))";
+// Ban-ei records the change in hex ('00A' = 10kg); JRA and NAR use decimal.
+const BAN_EI_HEX_WEIGHT_CHANGE_SQL: string = hexTripletSql(TRIMMED_WEIGHT_CHANGE_SQL);
+const DECIMAL_WEIGHT_CHANGE_SQL: string = `try_cast(${TRIMMED_WEIGHT_CHANGE_SQL} AS INT)`;
+
+interface WeightClassColumn {
+  classColumn: string;
+  classExpr: string;
+  kind: WeightClassKind;
+  valueColumn: string;
+  valueExpr: string;
+}
+
+interface WeightClassCounts {
+  quinellaCount: number;
+  showCount: number;
+  starts: number;
+  winCount: number;
+}
+
+export interface ConditionWeightClassRowGroups {
+  carriedRows: Record<string, unknown>[];
+  weightChangeRows: Record<string, unknown>[];
+  weightRows: Record<string, unknown>[];
+}
+
+const validValueSql = (condition: string, value: string): string =>
+  `CASE WHEN ${condition} THEN ${value} ELSE NULL END`;
+
+const signedWeightChangeSql = (magnitude: string): string =>
+  `CASE WHEN btrim(coalesce(se.zogen_fugo, '')) = '-' THEN -(${magnitude}) ELSE (${magnitude}) END`;
+
+const BODY_WEIGHT_COLUMN: WeightClassColumn = {
+  classColumn: "body_class",
+  classExpr: BODY_WEIGHT_CLASS_SQL,
+  kind: "body",
+  valueColumn: "body_weight",
+  valueExpr: validValueSql(`${DECIMAL_BODY_WEIGHT_SQL} > 0`, DECIMAL_BODY_WEIGHT_SQL),
+};
+
+const BAN_EI_BODY_WEIGHT_COLUMN: WeightClassColumn = {
+  classColumn: "body_class",
+  classExpr: BAN_EI_BODY_WEIGHT_CLASS_SQL,
+  kind: "body",
+  valueColumn: "body_weight",
+  valueExpr: validValueSql(
+    `${TRIMMED_BODY_WEIGHT_SQL} NOT IN ('', '000', 'FFF') AND (${BAN_EI_HEX_BODY_WEIGHT_SQL}) > 0`,
+    `(${BAN_EI_HEX_BODY_WEIGHT_SQL})`,
+  ),
+};
+
+const CARRIED_WEIGHT_COLUMN: WeightClassColumn = {
+  classColumn: "carried_class",
+  classExpr: CARRIED_WEIGHT_CLASS_SQL,
+  kind: "carried",
+  valueColumn: "carried_weight",
+  valueExpr: validValueSql(`${CARRIED_WEIGHT_SQL} > 0`, CARRIED_WEIGHT_SQL),
+};
+
+// Blank is a debut or missing weigh-in; '999' (decimal) and 'FFF' (hex) mark
+// an unmeasured change.
+const WEIGHT_CHANGE_COLUMN: WeightClassColumn = {
+  classColumn: "change_class",
+  classExpr: WEIGHT_CHANGE_CLASS_SQL,
+  kind: "change",
+  valueColumn: "weight_change",
+  valueExpr: validValueSql(
+    `${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', '999') AND (${DECIMAL_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
+    signedWeightChangeSql(DECIMAL_WEIGHT_CHANGE_SQL),
+  ),
+};
+
+const BAN_EI_WEIGHT_CHANGE_COLUMN: WeightClassColumn = {
+  classColumn: "change_class",
+  classExpr: WEIGHT_CHANGE_CLASS_SQL,
+  kind: "change",
+  valueColumn: "weight_change",
+  valueExpr: validValueSql(
+    `${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', 'FFF') AND (${BAN_EI_HEX_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
+    signedWeightChangeSql(BAN_EI_HEX_WEIGHT_CHANGE_SQL),
+  ),
+};
+
+// Ban-ei has no carried-weight classes and only Ban-ei venues share its
+// weight scale; flat races never mix Ban-ei rows into their bands.
+const BAN_EI_WEIGHT_CLASS_COLUMNS: readonly WeightClassColumn[] = [
+  BAN_EI_BODY_WEIGHT_COLUMN,
+  BAN_EI_WEIGHT_CHANGE_COLUMN,
+];
+const WEIGHT_CLASS_COLUMNS: readonly WeightClassColumn[] = [
+  BODY_WEIGHT_COLUMN,
+  CARRIED_WEIGHT_COLUMN,
+  WEIGHT_CHANGE_COLUMN,
+];
+const WEIGHT_CLASS_ROW_GROUPS: ReadonlyArray<
+  [WeightClassKind, keyof ConditionWeightClassRowGroups]
+> = [
+  ["body", "weightRows"],
+  ["carried", "carriedRows"],
+  ["change", "weightChangeRows"],
+];
+const WEIGHT_CLASS_COLUMN_BY_KIND: ReadonlyMap<WeightClassKind, string> = new Map([
+  ["body", "body_class"],
+  ["carried", "carried_class"],
+  ["change", "change_class"],
+]);
 
 const roundTo = (value: number, scale: number): number => Math.round(value * scale) / scale;
 
@@ -251,16 +301,6 @@ export const matchedHistoryArmSql = (input: {
     }
     ${input.extraWhere}`;
 
-const classCountSelectSql = (groupColumn: string, arc: boolean): string => `SELECT
-    ${groupColumn} AS class_key,
-    count(*) AS starts,
-    sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
-    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
-    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
-  FROM classed
-  GROUP BY ${groupColumn}
-  ORDER BY ${groupColumn}`;
-
 export const buildConditionFrameStatsQuery = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
@@ -318,13 +358,18 @@ GROUP BY frame_number
 ORDER BY frame_number`;
 };
 
+// One history scan classifies every runner by body weight, carried weight and
+// weight change at once. Grouping on the class triple keeps the result small
+// (at most a few hundred rows); splitConditionWeightClassRows totals each kind.
 export const buildConditionWeightClassStatsQuery = (input: {
   env: R2SqlCatalogConfig;
   filters: WinRateHeatmapStatsFilters;
-  kind: WeightClassKind;
 }): string => {
   const checked = validateFilters(input.filters);
-  const parts = weightClassSqlParts({ keibajoCode: checked.keibajoCode, kind: input.kind });
+  const banEi = isBanEiKeibajo(checked.keibajoCode);
+  const columns = banEi ? BAN_EI_WEIGHT_CLASS_COLUMNS : WEIGHT_CLASS_COLUMNS;
+  const arc: boolean = isCurrentArc(checked);
+  const classColumns = columns.map((column) => column.classColumn).join(", ");
   return `
 WITH ${currentRaceCteSql(input.env, checked)},
 matched_history AS (
@@ -333,11 +378,12 @@ matched_history AS (
       matchedHistoryArmSql({
         env: input.env,
         extraJoin: "",
-        extraWhere: `${parts.venueFilter}
-    ${parts.weightFilter}`,
+        extraWhere: banEi ? BAN_EI_VENUE_ONLY_SQL : NON_BAN_EI_VENUE_SQL,
         filters: checked,
-        selectList: `${rateFinishPositionSql(checked)} AS finish_position,
-    ${parts.weightExpr}`,
+        selectList: [
+          `${rateFinishPositionSql(checked)} AS finish_position`,
+          ...columns.map((column) => `${column.valueExpr} AS ${column.valueColumn}`),
+        ].join(",\n    "),
         rateDenominator: true,
         tables,
       }),
@@ -346,11 +392,76 @@ matched_history AS (
 ),
 classed AS (
   SELECT
-    ${parts.classExpr} AS class_key,
+    ${columns
+      .map(
+        (column) =>
+          `CASE WHEN ${column.valueColumn} IS NULL THEN NULL ELSE ${column.classExpr} END AS ${column.classColumn}`,
+      )
+      .join(",\n    ")},
     finish_position
   FROM matched_history
+  WHERE ${columns.map((column) => `${column.valueColumn} IS NOT NULL`).join(" OR ")}
 )
-${classCountSelectSql("class_key", isCurrentArc(checked))}`;
+SELECT
+    ${classColumns},
+    count(*) AS starts,
+    sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
+    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 2 THEN 1 ELSE 0 END) AS quinella_count,
+    sum(CASE WHEN ${arc ? "finish_position > 0 AND " : ""}finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
+  FROM classed
+  GROUP BY ${classColumns}`;
+};
+
+const addWeightClassCounts = (
+  current: WeightClassCounts | undefined,
+  row: Record<string, unknown>,
+): WeightClassCounts => ({
+  quinellaCount:
+    (current?.quinellaCount ?? 0) + requiredInteger(row.quinella_count, "quinella_count"),
+  showCount: (current?.showCount ?? 0) + requiredInteger(row.show_count, "show_count"),
+  starts: (current?.starts ?? 0) + requiredInteger(row.starts, "starts"),
+  winCount: (current?.winCount ?? 0) + requiredInteger(row.win_count, "win_count"),
+});
+
+const compareClassKeys = (left: string, right: string): number => (left < right ? -1 : 1);
+
+const totalWeightClassRows = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+  classColumn: string,
+): Record<string, unknown>[] => {
+  const totals = rows.reduce((index, row) => {
+    const key = row[classColumn];
+    return typeof key === "string" && key !== ""
+      ? index.set(key, addWeightClassCounts(index.get(key), row))
+      : index;
+  }, new Map<string, WeightClassCounts>());
+  return [...totals.keys()].toSorted(compareClassKeys).map((key) => {
+    const counts = totals.get(key)!;
+    return {
+      class_key: key,
+      quinella_count: counts.quinellaCount,
+      show_count: counts.showCount,
+      starts: counts.starts,
+      win_count: counts.winCount,
+    };
+  });
+};
+
+export const splitConditionWeightClassRows = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): ConditionWeightClassRowGroups => {
+  const groups: ConditionWeightClassRowGroups = {
+    carriedRows: [],
+    weightChangeRows: [],
+    weightRows: [],
+  };
+  return WEIGHT_CLASS_ROW_GROUPS.reduce(
+    (result, [kind, group]) => ({
+      ...result,
+      [group]: totalWeightClassRows(rows, WEIGHT_CLASS_COLUMN_BY_KIND.get(kind)!),
+    }),
+    groups,
+  );
 };
 
 export const buildConditionFinishPositionStatsQuery = (

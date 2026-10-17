@@ -87,7 +87,7 @@ import {
   buildConditionRaceTimeStatsQuery,
   buildConditionTargetRacesQuery,
   buildConditionWeightClassStatsQuery,
-  isBanEiKeibajo,
+  splitConditionWeightClassRows,
   normaliseConditionHistoryStatsPayload,
 } from "./condition-history-stats";
 import {
@@ -1270,42 +1270,31 @@ const conditionHistoryStatsBody = async (
 ): Promise<string> => {
   // Workers outbound TCP cap is 6. Run R2 SQL in pairs, like heatmap
   // bloodline then similar, so a miss cannot stampede five sockets at once.
-  const [frameRows, weightRows] = await Promise.all([
+  // Body weight, carried weight and weight change share one history scan.
+  const [frameRows, weightClassRows] = await Promise.all([
     executeR2Sql(env, buildConditionFrameStatsQuery(env, filters), dependencies.fetchImpl),
     executeR2Sql(
       env,
-      buildConditionWeightClassStatsQuery({ env, filters, kind: "body" }),
+      buildConditionWeightClassStatsQuery({ env, filters }),
       dependencies.fetchImpl,
     ),
   ]);
-  const [carriedRows, finishRows] = await Promise.all([
-    isBanEiKeibajo(filters.keibajoCode)
-      ? Promise.resolve<Record<string, unknown>[]>([])
-      : executeR2Sql(
-          env,
-          buildConditionWeightClassStatsQuery({ env, filters, kind: "carried" }),
-          dependencies.fetchImpl,
-        ),
+  const [finishRows, raceTimeRows] = await Promise.all([
     executeR2Sql(env, buildConditionFinishPositionStatsQuery(env, filters), dependencies.fetchImpl),
-  ]);
-  const [raceTimeRows, targetRaceRows] = await Promise.all([
     executeR2Sql(env, buildConditionRaceTimeStatsQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
   ]);
   // Race-time correlation inputs; without them the viewer recomputed the
   // correlation rows with an 11-25s PostgreSQL query for every race.
-  const [correlationTargetRows, correlationEntryRows] = await Promise.all([
+  const [targetRaceRows, correlationTargetRows] = await Promise.all([
+    executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
     executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
+  ]);
+  const [correlationEntryRows, correlationCareerRows] = await Promise.all([
     executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
-  ]);
-  const [correlationCareerRows, weightChangeRows] = await Promise.all([
     executeR2Sql(env, buildConditionCorrelationCareerQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(
-      env,
-      buildConditionWeightClassStatsQuery({ env, filters, kind: "change" }),
-      dependencies.fetchImpl,
-    ),
   ]);
+  const { carriedRows, weightChangeRows, weightRows } =
+    splitConditionWeightClassRows(weightClassRows);
   return JSON.stringify(
     normaliseConditionHistoryStatsPayload({
       carriedRows,
