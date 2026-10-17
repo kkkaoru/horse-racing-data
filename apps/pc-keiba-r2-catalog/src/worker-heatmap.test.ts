@@ -202,7 +202,13 @@ it("returns similar rows and flags bloodline when only the bloodline query fails
   ]);
   expect(isRecord(body) && Array.isArray(body.similarRows) ? body.similarRows.length : 0).toBe(1);
   expect(harness.cacheEntries.size).toBe(0);
-  expect([...harness.kvEntries.keys()]).toStrictEqual([DAY_KNOWN_KEY]);
+  // Only the similar query's answer is kept for a retry; no heatmap is cached.
+  expect(
+    [...harness.kvEntries.keys()].filter((key) => !key.startsWith("r2sql-result:")),
+  ).toStrictEqual([DAY_KNOWN_KEY]);
+  expect(
+    [...harness.kvEntries.keys()].filter((key) => key.startsWith("r2sql-result:")).length,
+  ).toBe(1);
   consoleError.mockRestore();
 });
 
@@ -236,7 +242,9 @@ it("returns empty bloodline rows without waiting when no runner has a known pedi
     [],
   ]);
   expect(bloodlineSignals.map((signal) => signal?.aborted)).toStrictEqual([true]);
-  expect(harness.kvEntries.size).toBe(2);
+  expect(
+    [...harness.kvEntries.keys()].filter((key) => !key.startsWith("r2sql-result:")).length,
+  ).toBe(2);
 });
 
 it("waits for the bloodline query when the known pedigree count fails", async () => {

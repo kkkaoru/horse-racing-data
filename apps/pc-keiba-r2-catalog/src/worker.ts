@@ -1,4 +1,5 @@
 import { gatedR2SqlFetcher } from "./r2-sql-gate";
+import { cachedR2SqlFetcher } from "./r2-sql-result-cache";
 import {
   aggregateArcBloodlines,
   arcBloodlineProfilesQuery,
@@ -1774,13 +1775,24 @@ const handlePartnershipStats = async (
 
 // Heavy aggregation endpoints share the account-wide R2 SQL gate; light
 // per-race reads stay ungated so page rendering never queues behind them.
+// Overseas results also depend on gate mappings whose content can change
+// without changing the SQL text, so their queries are never reused.
+const OVERSEAS_KEIBAJO_PATTERN: RegExp = /^[A-Z][0-9A-Z]$/u;
+
 const heavyR2SqlDependencies = (
   env: Env,
   dependencies: WorkerDependencies,
-): WorkerDependencies => ({
-  ...dependencies,
-  fetchImpl: gatedR2SqlFetcher(dependencies.fetchImpl, env.R2_SQL_GATE),
-});
+  url: URL,
+): WorkerDependencies => {
+  const gated = gatedR2SqlFetcher(dependencies.fetchImpl, env.R2_SQL_GATE);
+  return {
+    ...dependencies,
+    // Cache hits are served before the gate, so they never wait for a slot.
+    fetchImpl: OVERSEAS_KEIBAJO_PATTERN.test(url.searchParams.get("keibajoCode") ?? "")
+      ? gated
+      : cachedR2SqlFetcher(gated, env.CATALOG_KV),
+  };
+};
 
 export const handleRequest = async (
   request: Request,
@@ -1815,16 +1827,24 @@ export const handleRequest = async (
       return await handleRunningStyleFeatures(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/heatmap-partnership-stats") {
-      return await handlePartnershipStats(url, env, heavyR2SqlDependencies(env, dependencies));
+      return await handlePartnershipStats(url, env, heavyR2SqlDependencies(env, dependencies, url));
     }
     if (request.method === "GET" && url.pathname === "/v1/win-rate-heatmap-stats") {
-      return await handleWinRateHeatmapStats(url, env, heavyR2SqlDependencies(env, dependencies));
+      return await handleWinRateHeatmapStats(
+        url,
+        env,
+        heavyR2SqlDependencies(env, dependencies, url),
+      );
     }
     if (request.method === "GET" && url.pathname === "/v1/horse-race-results") {
       return await handleHorseRaceResults(url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/condition-history-stats") {
-      return await handleConditionHistoryStats(url, env, heavyR2SqlDependencies(env, dependencies));
+      return await handleConditionHistoryStats(
+        url,
+        env,
+        heavyR2SqlDependencies(env, dependencies, url),
+      );
     }
     if (request.method === "GET" && url.pathname === "/v1/race-entity-recent-results") {
       return await handleRaceEntityRecentResults(url, env, dependencies);

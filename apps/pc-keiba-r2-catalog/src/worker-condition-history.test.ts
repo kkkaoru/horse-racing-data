@@ -724,3 +724,27 @@ it("keeps overseas races on the separate frame, weight, race-time and top-3 quer
   ]);
   expect(aggregates.frameRows.length).toBe(1);
 });
+
+it("reruns only the failed query when a condition-history request is retried", async () => {
+  const harness = createConditionHarness();
+  const failing: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const text = typeof init?.body === "string" ? init.body : "";
+      return text.includes("IN (1, 2, 3, 4, 5)")
+        ? new Response("unavailable", { status: 503 })
+        : harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const failed = await handleRequest(new Request(conditionUrl), harness.env, failing);
+  expect(failed.ok).toBe(false);
+  harness.fetchCalls.length = 0;
+  const retried = await handleRequest(new Request(conditionUrl), harness.env, harness.dependencies);
+  expect(retried.status).toBe(200);
+  expect(harness.fetchCalls.toSorted()).toStrictEqual([
+    "correlation-career",
+    "correlation-entries",
+    "finish",
+    "target-races",
+  ]);
+});

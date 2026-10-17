@@ -244,7 +244,7 @@ it("queries JRA and NAR race keys independently and writes both cache tiers", as
   expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toMatch("pc_keiba.jvd_ra");
   expect(String(fetchImpl.mock.calls[1]?.[1]?.body)).toMatch("pc_keiba.nvd_ra");
   expect(harness.cacheCalls.puts).toHaveLength(1);
-  expect(harness.kvCalls.puts).toHaveLength(1);
+  expect(harness.kvCalls.puts.filter((key) => !key.startsWith("r2sql-result:"))).toHaveLength(1);
 });
 
 it("does not cache partial race keys when the second partition-local query fails", async () => {
@@ -679,7 +679,7 @@ it("queries and caches race trainings with the Training-compatible envelope", as
     "FROM pc_keiba.netkeiba_training_workouts n",
   );
   expect(harness.cacheCalls.puts).toHaveLength(1);
-  expect(harness.kvCalls.puts).toHaveLength(1);
+  expect(harness.kvCalls.puts.filter((key) => !key.startsWith("r2sql-result:"))).toHaveLength(1);
 });
 
 it("serves overseas training without normalizing away the venue letter", async () => {
@@ -1981,7 +1981,7 @@ it("queries R2 SQL for heatmap stats and maps empty details arrays", async () =>
   expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("'jockey' AS kind");
   expect(String(harness.fetchCalls[2]?.init?.body)).toMatch("SELECT count(*) AS known");
   expect(harness.cacheCalls.puts).toHaveLength(1);
-  expect(harness.kvCalls.puts).toHaveLength(1);
+  expect(harness.kvCalls.puts.filter((key) => !key.startsWith("r2sql-result:"))).toHaveLength(1);
 });
 
 it("reads cached heatmap stats from Cache API and KV", async () => {
@@ -2140,7 +2140,7 @@ it.each(["cache-api", "kv"])(
       buildWinRateHeatmapKnownBloodlineCountQuery(harness.env, filters),
     ]);
     expect(harness.cacheCalls.puts).toHaveLength(1);
-    expect(harness.kvCalls.puts).toHaveLength(1);
+    expect(harness.kvCalls.puts.filter((key) => !key.startsWith("r2sql-result:"))).toHaveLength(1);
   },
 );
 
