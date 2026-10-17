@@ -30,7 +30,9 @@ const realtimeResponse = await fetch(`${baseUrl}/realtime`, {
 });
 const realtime = (await realtimeResponse.json()) as { records?: string[]; status?: number };
 if (!realtimeResponse.ok || realtime.status !== 0 || realtime.records?.length !== 22)
-  throw new Error("Production realtime smoke test failed");
+  throw new Error(
+    `Production realtime smoke test failed httpStatus=${realtimeResponse.status} jvStatus=${String(realtime.status)} records=${String(realtime.records?.length)}`,
+  );
 
 const unauthorized = await fetch(`${baseUrl}/realtime`, {
   body: JSON.stringify({ dataSpec: "0B14", key: "20260830" }),
