@@ -79,6 +79,12 @@ pre-commit:
     test-finish-position-cron:
       glob: "apps/finish-position-cron/**/*.ts"
       run: bun run --filter finish-position-cron test:coverage
+    tsc-finish-position-clef-rerank:
+      glob: "apps/finish-position-clef-rerank/**/*.ts"
+      run: bun run --filter finish-position-clef-rerank tsc
+    test-finish-position-clef-rerank:
+      glob: "apps/finish-position-clef-rerank/**/*.ts"
+      run: bun run --filter finish-position-clef-rerank test:coverage
     tsc-horse-racing-duckdb:
       glob: "apps/horse-racing-duckdb/**/*.ts"
       run: bun run --filter horse-racing-duckdb tsc

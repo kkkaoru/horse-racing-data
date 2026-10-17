@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "lib": ["ESNext", "DOM"], "resolveJsonModule": true, "types": ["bun"] },
+  "include": ["src/**/*.ts", "src/**/*.json", "vitest.config.ts"]
+}

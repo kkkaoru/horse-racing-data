@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "finish-position-clef-rerank",
+  "main": "src/worker.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "pc-keiba-viewer.kkk4oru.com/api/clef-rerank/*", "zone_name": "kkk4oru.com" },
+  ],
+  // Race-day prewarm, every 10 minutes from 08:00 to 17:50 JST.
+  "triggers": { "crons": ["*/10 23,0-8 * * *"] },
+  "ai": { "binding": "AI" },
+  "kv_namespaces": [
+    { "binding": "DETAIL_SECTION_CACHE_KV", "id": "a013fdf6e7224c3ab0c227be3c899073" },
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}

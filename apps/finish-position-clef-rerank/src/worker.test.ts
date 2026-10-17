@@ -1,0 +1,222 @@
+// Run with bun (bunx vitest).
+import { afterEach, expect, it, vi } from "vitest";
+
+import worker, {
+  bundleKey,
+  indexKey,
+  jstYmd,
+  rerankRace,
+  resultKey,
+  warmDay,
+  type Env,
+} from "./worker";
+
+const race = { ymd: "20261018", keibajoCode: "08", raceBango: "11" };
+
+const bundleJson = (): string =>
+  JSON.stringify({
+    modelVersion: "clef-rerank-v1",
+    raceKey: "jra:2026:1018:08:11",
+    label: "clef-flash 補正",
+    weights: { base: 1, feature: 0, clefTop3: 2, clefWin: 0 },
+    runners: [
+      { horseNumber: 1, featureScore: 0 },
+      { horseNumber: 2, featureScore: 0 },
+    ],
+    request: {
+      state: {
+        runners: [
+          { no: 1, br: null },
+          { no: 2, br: null },
+        ],
+      },
+      questions: {
+        winner: { type: "choice", instructions: "w", criteria: { "1": "a", "2": "b" } },
+        top3_1: { type: "noul", instructions: "1" },
+        top3_2: { type: "noul", instructions: "2" },
+      },
+    },
+  });
+
+const baseJson = (at: string): string =>
+  JSON.stringify([
+    {
+      horseNumber: "1",
+      modelVersion: "base-v1",
+      predictedFinishNorm: 0,
+      predictionGeneratedAt: at,
+    },
+    {
+      horseNumber: "2",
+      modelVersion: "base-v1",
+      predictedFinishNorm: 1,
+      predictionGeneratedAt: at,
+    },
+  ]);
+
+const clefAnswer = {
+  answers: {
+    winner: { probabilities: { "1": 0.1, "2": 0.9 } },
+    top3_1: { noul: 0.2 },
+    top3_2: { noul: 0.9 },
+  },
+};
+
+const makeEnv = (store: Record<string, string>): Env => ({
+  AI: { run: vi.fn(async () => clefAnswer) },
+  DETAIL_SECTION_CACHE_KV: {
+    get: vi.fn(async (key: string) => store[key] ?? null),
+    put: vi.fn(async () => undefined),
+  },
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+it("builds stable KV keys", () => {
+  expect(bundleKey(race)).toBe("clefrr:v1:bundle:20261018:08:11");
+  expect(resultKey(race)).toBe("clefrr:v1:result:20261018:08:11");
+  expect(indexKey("20261018")).toBe("clefrr:v1:index:20261018");
+});
+
+it("scores a race with clef-flash and stores the fused order", async () => {
+  const env = makeEnv({
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+  });
+  const outcome = await rerankRace(env, race);
+  expect(outcome.status).toBe(200);
+  expect(
+    (outcome.body as { predictions: { horseNumber: number }[] }).predictions.map(
+      (row) => row.horseNumber,
+    ),
+  ).toStrictEqual([2, 1]);
+  expect(env.AI.run).toHaveBeenCalledWith("@cf/cloudflare/clef-flash", {
+    model: "clef-flash",
+    state: {
+      runners: [
+        { no: 1, br: 1 },
+        { no: 2, br: 2 },
+      ],
+    },
+    questions: {
+      winner: { type: "choice", instructions: "w", criteria: { "1": "a", "2": "b" } },
+      top3_1: { type: "noul", instructions: "1" },
+      top3_2: { type: "noul", instructions: "2" },
+    },
+  });
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(1);
+});
+
+it("reuses a cached result while the base generation is unchanged", async () => {
+  const cached = { modelVersion: "clef-rerank-v1", baseGeneratedAt: "2026-10-18T00:00:00Z" };
+  const env = makeEnv({
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+    "clefrr:v1:result:20261018:08:11": JSON.stringify(cached),
+  });
+  expect(await rerankRace(env, race)).toStrictEqual({ status: 200, body: cached });
+  expect(env.AI.run).not.toHaveBeenCalled();
+});
+
+it("rescoring happens after the base prediction is regenerated", async () => {
+  const env = makeEnv({
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T05:00:00Z"),
+    "clefrr:v1:result:20261018:08:11": JSON.stringify({
+      modelVersion: "clef-rerank-v1",
+      baseGeneratedAt: "2026-10-18T00:00:00Z",
+    }),
+  });
+  expect((await rerankRace(env, race)).status).toBe(200);
+  expect(env.AI.run).toHaveBeenCalledTimes(1);
+});
+
+it("returns 404 without a bundle or a base prediction", async () => {
+  expect((await rerankRace(makeEnv({}), race)).status).toBe(404);
+  expect(
+    (await rerankRace(makeEnv({ "clefrr:v1:bundle:20261018:08:11": "{broken" }), race)).status,
+  ).toBe(404);
+});
+
+it("returns 502 when clef-flash answers are malformed", async () => {
+  const env: Env = {
+    ...makeEnv({
+      "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+      "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+    }),
+    AI: { run: vi.fn(async () => ({ answers: {} })) },
+  };
+  expect((await rerankRace(env, race)).status).toBe(502);
+});
+
+it("serves race and index routes and fails closed on errors", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const env = makeEnv({
+    "clefrr:v1:index:20261018": JSON.stringify(["08:11", "bad", 3]),
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+  });
+  const index = await worker.fetch(new Request("https://x/api/clef-rerank/20261018"), env);
+  expect(await index.json()).toStrictEqual([
+    { ymd: "20261018", keibajoCode: "08", raceBango: "11" },
+  ]);
+  const ok = await worker.fetch(new Request("https://x/api/clef-rerank/20261018/08/11"), env);
+  expect(ok.status).toBe(200);
+  const down: Env = {
+    ...env,
+    AI: { run: vi.fn(async () => Promise.reject(new Error("AI down"))) },
+  };
+  const failed = await worker.fetch(new Request("https://x/api/clef-rerank/20261018/08/11"), down);
+  expect(failed.status).toBe(503);
+  const missing = await worker.fetch(new Request("https://x/api/clef-rerank/other"), env);
+  expect(missing.status).toBe(404);
+});
+
+it("returns an empty index when none was uploaded", async () => {
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/20261019"),
+    makeEnv({ "clefrr:v1:index:20261019": "{}" }),
+  );
+  expect(await response.json()).toStrictEqual([]);
+});
+
+it("warms every indexed race in bounded groups from the cron", async () => {
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const env = makeEnv({
+    "clefrr:v1:index:20261018": JSON.stringify(["08:11", "08:10"]),
+    "clefrr:v1:bundle:20261018:08:11": bundleJson(),
+    "pred:fp:v1:20261018:08:11": baseJson("2026-10-18T00:00:00Z"),
+  });
+  expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
+  await worker.scheduled({ scheduledTime: Date.parse("2026-10-18T00:10:00Z") }, env);
+  expect(console.log).toHaveBeenCalledWith("clef rerank warm", "[200,404]");
+});
+
+it("converts the cron time to the JST race date", () => {
+  expect(jstYmd(Date.parse("2026-10-17T23:00:00Z"))).toBe("20261018");
+});
+
+it("forwards probe requests to hosted clef-flash and rejects non-object bodies", async () => {
+  const env = makeEnv({});
+  const ok = await worker.fetch(
+    new Request("https://x/api/clef-rerank/probe", {
+      method: "POST",
+      body: '{"model":"clef-flash"}',
+    }),
+    env,
+  );
+  expect(await ok.json()).toStrictEqual({
+    answers: {
+      winner: { probabilities: { "1": 0.1, "2": 0.9 } },
+      top3_1: { noul: 0.2 },
+      top3_2: { noul: 0.9 },
+    },
+  });
+  const bad = await worker.fetch(
+    new Request("https://x/api/clef-rerank/probe", { method: "POST", body: "[1]" }),
+    env,
+  );
+  expect(bad.status).toBe(400);
+  const get = await worker.fetch(new Request("https://x/api/clef-rerank/probe"), env);
+  expect(get.status).toBe(404);
+});
