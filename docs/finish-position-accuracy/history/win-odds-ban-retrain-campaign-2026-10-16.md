@@ -140,3 +140,34 @@ high-payout-specialist235、NAR stage1-marketfree-184、NAR consensus pedigree/p
   model still read win odds at the time. The flag stays supported (with tests) but is unset.
 - `finish_position_active_models` now points at the `-nowin1` defaults for jra / ban-ei / nar.
   The viewer allow-list keeps the superseded versions so past races' predictions still show.
+
+## 10/17 race-day redo and incidents
+
+- Every 10/17 race (JRA 36, ban-ei 12, NAR 22) was re-predicted on `-nowin1` models; the
+  last one landed at 07:42 JST. JRA races previously served by
+  `jra-cb-stage1-marketfree235-2013` were included in the redo because that model reads
+  `sim_fav_win_rate`, which is derived from popularity.
+- NAR running-style model: `nar-running-style-lgbm-prod-v3-nowin1` replaced prod-v3 in R2.
+  On 2026 data, calibrated accuracy went from 52.23% to 52.40%. The old objects are kept
+  under `running-style/models/nar/backup-prod-v3-20261017/`.
+  - The 10/17 running-style rows were scored with prod-v3 before the swap. Its
+    popularity/odds inputs are nulled at serve time.
+  - `running_style_active_models` still names prod-v3. The viewer falls back to the latest
+    model when the active one has no rows, and only prod-v3 has evaluation rows.
+- Stall from 06:15 to 06:50 JST:
+  - Cause: `repairViewerPredictionCache` threw `FOCUSED_FULL_COMMIT_UNRESOLVED` inside
+    `withFocusedFullCommit` whenever the best-effort viewer warm returned false. The
+    external-commit barrier has no TTL, so each finished race pinned its lane, and every
+    later race on that lane stayed `queued`; force could not override it.
+  - Fix: a failed warm now releases the barrier (b842f85c). Operator routes
+    `GET /api/admin/focused-full-diagnostics` and
+    `POST /api/admin/clear-focused-full-commits` were added (98e02c5f).
+  - Re-sending force for every race at once did not help. Force only takes over a lane
+    whose active race has neither a lease nor a barrier.
+- CI (`Production`) had been failing on every push. Each run stopped before any production
+  mutation, for these reasons:
+  - The new `-nowin1` artifacts were missing from `ci-artifacts/sha256/` in
+    `pc-keiba-features-archive`; they are now uploaded.
+  - The runner's Node 20 lacks `node:sqlite`; the deploy job now uses Node 24.
+  - The wine-staging pin conflicted after WineHQ published 11.19; all three wine packages
+    are now pinned.
