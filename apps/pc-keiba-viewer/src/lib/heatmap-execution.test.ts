@@ -258,7 +258,7 @@ it("admits a successor only after settled failure backoff expires", async () => 
 it.each(["queued", "running"])(
   "does not infer %s completion from elapsed time or failure count",
   async (phase) => {
-    const state = { phase, token: "x", failures: 3, retryAt: 0 };
+    const state = { phase, token: "x", failures: 3, retryAt: 0, updatedAt: Date.now() };
     const write = vi.fn<() => void>();
     const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
     const coordinator = new HeatmapExecutionCoordinator(
@@ -362,7 +362,10 @@ it.each(["queued", "running", "unknown"])(
   async (phase) => {
     const write = vi.fn<() => void>();
     const coordinator = new HeatmapExecutionCoordinator(
-      { read: () => ({ phase, token: "old", failures: 3, retryAt: 0 }), write },
+      {
+        read: () => ({ phase, token: "old", failures: 3, retryAt: 0, updatedAt: Date.now() }),
+        write,
+      },
       { createBatch: vi.fn<() => Promise<unknown[]>>() },
     );
     expect(
@@ -408,6 +411,7 @@ it("waits for actual active settlement before adopting a changed algorithm revis
       token: "old",
       failures: 2,
       retryAt: 0,
+      updatedAt: Date.now(),
       dependencyRevision:
         "qualified-frame-sql-v2:gate-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
@@ -459,3 +463,91 @@ it.each([undefined, "bad"])(
     expect(createBatch).not.toHaveBeenCalled();
   },
 );
+
+it.each(["queued", "running"])(
+  "re-queues a %s owner that has not transitioned for ten minutes",
+  async (phase) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
+    const stored: { value: unknown } = {
+      value: {
+        phase,
+        token: "dead",
+        failures: 1,
+        retryAt: 0,
+        updatedAt: new Date("2026-10-17T00:50:00.000Z").getTime(),
+      },
+    };
+    const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+    const coordinator = new HeatmapExecutionCoordinator(
+      {
+        read: () => stored.value,
+        write: (value) => {
+          stored.value = value;
+        },
+      },
+      { createBatch },
+    );
+    expect(await coordinator.ensure(request)).toBe("queued");
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(stored.value).toMatchObject({
+      failures: 1,
+      phase: "queued",
+      retryAt: 0,
+      updatedAt: new Date("2026-10-17T01:00:00.000Z").getTime(),
+    });
+    expect(coordinator.claim("dead")).toBe(false);
+    vi.useRealTimers();
+  },
+);
+
+it("keeps a running owner that transitioned less than ten minutes ago", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-17T01:00:00.000Z"));
+  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const coordinator = new HeatmapExecutionCoordinator(
+    {
+      read: () => ({
+        phase: "running",
+        token: "live",
+        failures: 0,
+        retryAt: 0,
+        updatedAt: new Date("2026-10-17T00:50:00.001Z").getTime(),
+      }),
+      write: vi.fn<() => void>(),
+    },
+    { createBatch },
+  );
+  expect(await coordinator.ensure(request)).toBe("running");
+  expect(createBatch).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+it("re-queues a legacy unsettled owner written before transitions were timestamped", async () => {
+  const stored: { value: unknown } = {
+    value: { phase: "queued", token: "legacy", failures: 0, retryAt: 0 },
+  };
+  const createBatch = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const coordinator = new HeatmapExecutionCoordinator(
+    {
+      read: () => stored.value,
+      write: (value) => {
+        stored.value = value;
+      },
+    },
+    { createBatch },
+  );
+  expect(await coordinator.ensure(request)).toBe("queued");
+  expect(createBatch).toHaveBeenCalledTimes(1);
+});
+
+it("treats a state with a non-numeric updatedAt as unknown", async () => {
+  const coordinator = new HeatmapExecutionCoordinator(
+    {
+      read: () => ({ phase: "running", token: "x", failures: 0, retryAt: 0, updatedAt: "now" }),
+      write: vi.fn<() => void>(),
+    },
+    { createBatch: vi.fn<() => Promise<unknown[]>>() },
+  );
+  expect(await coordinator.ensure(request)).toBe("unknown");
+});

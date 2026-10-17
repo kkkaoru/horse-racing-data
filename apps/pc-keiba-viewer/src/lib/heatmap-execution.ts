@@ -30,6 +30,8 @@ export interface HeatmapExecutionState {
   phase: "queued" | "running" | "settled";
   retryAt: number;
   token: string;
+  // Last transition time. Absent on states written before stale recovery existed.
+  updatedAt?: number;
 }
 export interface HeatmapExecutionStorage {
   read(): unknown;
@@ -77,6 +79,9 @@ const MAX_QUERY_LENGTH = 2048;
 const MAX_FAILURES = 3;
 const FAILURE_BACKOFF_MS = 30_000;
 const REPEATED_FAILURE_BACKOFF_MS = 15 * 60_000;
+// A queued/running owner whose Worker or Workflow died never settles; after this
+// long without a transition it is re-queued instead of pinning the race forever.
+const STALE_OWNER_MS = 10 * 60_000;
 
 export const canonicalHeatmapQuery = (params: URLSearchParams): string => {
   if (params.toString().length > MAX_QUERY_LENGTH) throw new Error("Invalid heatmap query");
@@ -115,7 +120,13 @@ const isState = (value: unknown): value is HeatmapExecutionState =>
   Number(value.failures) >= 0 &&
   "retryAt" in value &&
   typeof value.retryAt === "number" &&
-  Number.isFinite(value.retryAt);
+  Number.isFinite(value.retryAt) &&
+  (!("updatedAt" in value) ||
+    (typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt)));
+
+const isStaleUnsettled = (state: HeatmapExecutionState, now: number): boolean =>
+  state.phase !== "settled" &&
+  (state.updatedAt === undefined || now - state.updatedAt >= STALE_OWNER_MS);
 
 // Storage is synchronous SQLite. Every transition finishes before the first await.
 // Only the server route that claimed this token may acknowledge settled work.
@@ -130,7 +141,10 @@ export class HeatmapExecutionCoordinator {
       throw new Error("Noncanonical heatmap query");
     const previous = this.storage.read();
     if (previous !== undefined && !isState(previous)) return "unknown";
-    if (previous !== undefined && previous.phase !== "settled") return previous.phase;
+    const now = Date.now();
+    if (previous !== undefined && previous.phase !== "settled" && !isStaleUnsettled(previous, now))
+      return previous.phase;
+    const stale = previous !== undefined && previous.phase !== "settled";
     const { dependencyRevision: suppliedRevision, ...workflowRequest } = request;
     const dependencyRevision =
       /^[A-Z][0-9A-Z]$/u.test(request.keibajoCode) && validDependencyRevision(suppliedRevision)
@@ -140,7 +154,7 @@ export class HeatmapExecutionCoordinator {
       previous !== undefined &&
       dependencyRevision !== undefined &&
       dependencyRevision !== previous.dependencyRevision;
-    if (!changed && previous !== undefined && previous.retryAt > Date.now()) return "backoff";
+    if (!changed && !stale && previous !== undefined && previous.retryAt > now) return "backoff";
     const token = crypto.randomUUID();
     const revision = dependencyRevision ?? previous?.dependencyRevision;
     this.storage.write({
@@ -149,6 +163,7 @@ export class HeatmapExecutionCoordinator {
       phase: "queued",
       retryAt: 0,
       token,
+      updatedAt: now,
     });
     // Ambiguous creation errors retain ownership, including retention holes.
     await this.workflow.createBatch([
@@ -167,7 +182,7 @@ export class HeatmapExecutionCoordinator {
   claim(token: string): boolean {
     const state = this.storage.read();
     if (!isState(state) || state.phase !== "queued" || state.token !== token) return false;
-    this.storage.write({ ...state, phase: "running" });
+    this.storage.write({ ...state, phase: "running", updatedAt: Date.now() });
     return true;
   }
 
@@ -182,6 +197,7 @@ export class HeatmapExecutionCoordinator {
       failures,
       phase: "settled",
       retryAt: success ? 0 : Date.now() + backoff,
+      updatedAt: Date.now(),
     });
     return true;
   }
