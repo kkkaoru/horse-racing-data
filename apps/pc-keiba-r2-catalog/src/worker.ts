@@ -1298,11 +1298,14 @@ const conditionHistoryStatsBody = async (
     executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
     executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
   ]);
-  const correlationCareerRows = await executeR2Sql(
-    env,
-    buildConditionCorrelationCareerQuery(env, filters),
-    dependencies.fetchImpl,
-  );
+  const [correlationCareerRows, weightChangeRows] = await Promise.all([
+    executeR2Sql(env, buildConditionCorrelationCareerQuery(env, filters), dependencies.fetchImpl),
+    executeR2Sql(
+      env,
+      buildConditionWeightClassStatsQuery({ env, filters, kind: "change" }),
+      dependencies.fetchImpl,
+    ),
+  ]);
   return JSON.stringify(
     normaliseConditionHistoryStatsPayload({
       carriedRows,
@@ -1315,6 +1318,7 @@ const conditionHistoryStatsBody = async (
       frameRows,
       raceTimeRows,
       targetRaceRows,
+      weightChangeRows,
       weightRows,
     }),
   );

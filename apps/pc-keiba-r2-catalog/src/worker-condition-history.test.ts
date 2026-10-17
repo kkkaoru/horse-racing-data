@@ -14,6 +14,7 @@ const queryKind = (query: string): string => {
   if (query.includes("career_history")) return "correlation-career";
   if (query.includes("AS top3_count")) return "correlation-target";
   if (query.includes("AS horse_name") && query.includes("AS odds")) return "correlation-entries";
+  if (query.includes("AS weight_change")) return "weight-change";
   if (query.includes("AS body_weight")) return "weight";
   if (query.includes("AS carried_weight")) return "carried";
   if (query.includes("IN (1, 2, 3, 4, 5)")) return "finish";
@@ -91,6 +92,22 @@ const createConditionHarness = () => {
               quinella_count: 1,
               show_count: 2,
               starts: 4,
+              win_count: 1,
+            },
+          ],
+        },
+        success: true,
+      });
+    }
+    if (kind === "weight-change") {
+      return Response.json({
+        result: {
+          rows: [
+            {
+              class_key: "minus5",
+              quinella_count: 2,
+              show_count: 3,
+              starts: 5,
               win_count: 1,
             },
           ],
@@ -399,6 +416,18 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
         },
       ],
     },
+    weightChangeClassStats: [
+      {
+        key: "minus5",
+        quinellaCount: 2,
+        quinellaRate: 40,
+        showCount: 3,
+        showRate: 60,
+        starts: 5,
+        winCount: 1,
+        winRate: 20,
+      },
+    ],
     weightClassStats: [
       {
         key: "480-499",
@@ -419,7 +448,10 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
     "correlation-entries",
     "correlation-target",
   ]);
-  expect(harness.fetchCalls.slice(8)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(8).toSorted()).toStrictEqual([
+    "correlation-career",
+    "weight-change",
+  ]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
     date: "20260822",
@@ -453,7 +485,10 @@ it("omits the carried-weight query for Ban'ei venues", async () => {
     "correlation-entries",
     "correlation-target",
   ]);
-  expect(harness.fetchCalls.slice(7)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(7).toSorted()).toStrictEqual([
+    "correlation-career",
+    "weight-change",
+  ]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error("expected object");
@@ -475,7 +510,10 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
     "correlation-entries",
     "correlation-target",
   ]);
-  expect(harness.fetchCalls.slice(8)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(8).toSorted()).toStrictEqual([
+    "correlation-career",
+    "weight-change",
+  ]);
   expect(harness.inflight.max).toBe(2);
 });
 

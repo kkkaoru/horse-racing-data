@@ -106,6 +106,8 @@ const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v1";
 // v2 excludes zero-sentinel odds/popularity from condition aggregates and
 // correlation rows in both Cache API and KV; v1 numerical values are stale.
 const CORRELATION_CACHE_TOKEN: string = "v2";
+// Bumped when condition-history-stats gained weightChangeClassStats.
+const WEIGHT_CHANGE_CACHE_TOKEN: string = "v1";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -186,6 +188,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("finishDetails", FINISH_DETAILS_CACHE_TOKEN);
     url.searchParams.set("raceTimeEncoding", RACE_TIME_ENCODING_CACHE_TOKEN);
     url.searchParams.set("correlation", CORRELATION_CACHE_TOKEN);
+    url.searchParams.set("weightChange", WEIGHT_CHANGE_CACHE_TOKEN);
     appendCellClassCacheParams(url, descriptor);
   }
   if (

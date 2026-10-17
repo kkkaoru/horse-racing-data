@@ -354,6 +354,7 @@ export interface ConditionHistoryStatsPayload {
   finishPositionStats: ConditionFinishPositionStatsRow[];
   frameStats: ConditionFrameStatsRow[];
   raceTimeStats: ConditionRaceTimeStats;
+  weightChangeClassStats: ConditionWeightClassStatsRow[];
   weightClassStats: ConditionWeightClassStatsRow[];
 }
 

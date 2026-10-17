@@ -91,10 +91,47 @@ it("builds Ban-ei body-weight class SQL with hex decode and Ban-ei buckets", () 
     filters: { ...jraFilters, keibajoCode: "83", source: "nar" },
     kind: "body",
   });
-  expect(body).toMatch("0x");
+  expect(body).toMatch(
+    "(strpos('0123456789ABCDEF', substr(upper(btrim(coalesce(se.bataiju, ''))), 3, 1)) - 1) * 1",
+  );
+  expect(body).not.toMatch("0x");
   expect(body).toMatch("'le899'");
   expect(body).toMatch("'ge1200'");
   expect(body).not.toMatch("NOT IN ('81', '82', '83', '84')");
+  expect(body).toMatch("AND se.keibajo_code IN ('81', '82', '83', '84')");
+});
+
+it("builds decimal weight-change class SQL excluding debut and unmeasured changes", () => {
+  const change = buildConditionWeightClassStatsQuery({
+    env: config,
+    filters: jraFilters,
+    kind: "change",
+  });
+  expect(change).toMatch("AS weight_change");
+  expect(change).toMatch(
+    "CASE WHEN btrim(coalesce(se.zogen_fugo, '')) = '-' THEN -(try_cast(upper(btrim(coalesce(se.zogen_sa, ''))) AS INT)) ELSE (try_cast(upper(btrim(coalesce(se.zogen_sa, ''))) AS INT)) END",
+  );
+  expect(change).toMatch("NOT IN ('', '999')");
+  expect(change).toMatch("WHEN weight_change >= 20 THEN 'plus20'");
+  expect(change).toMatch("WHEN weight_change >= -2 THEN 'even'");
+  expect(change).toMatch("ELSE 'minus20'");
+  expect(change).toMatch("NOT IN ('81', '82', '83', '84')");
+  expect(change).not.toMatch("strpos");
+});
+
+it("builds Ban-ei weight-change class SQL with hex decode", () => {
+  const change = buildConditionWeightClassStatsQuery({
+    env: config,
+    filters: { ...jraFilters, keibajoCode: "83", source: "nar" },
+    kind: "change",
+  });
+  expect(change).toMatch(
+    "(strpos('0123456789ABCDEF', substr(upper(btrim(coalesce(se.zogen_sa, ''))), 1, 1)) - 1) * 256",
+  );
+  expect(change).toMatch("NOT IN ('', 'FFF')");
+  expect(change).toMatch("WHEN weight_change >= 10 THEN 'plus10'");
+  expect(change).not.toMatch("NOT IN ('81', '82', '83', '84')");
+  expect(change).toMatch("AND se.keibajo_code IN ('81', '82', '83', '84')");
 });
 
 it("builds finish-position horse-level SQL and race-time aggregate SQL without jsonb_agg", () => {
@@ -472,6 +509,15 @@ it("normalises the combined payload and min-max frame scores", () => {
       ],
       raceTimeRows: [{ race_count: 3, average_race_time: 1400 }],
       targetRaceRows: [],
+      weightChangeRows: [
+        {
+          class_key: "plus2",
+          quinella_count: 1,
+          show_count: 2,
+          starts: 4,
+          win_count: 1,
+        },
+      ],
       weightRows: [
         {
           class_key: "480-499",
@@ -569,6 +615,18 @@ it("normalises the combined payload and min-max frame scores", () => {
       raceCount: 3,
       targetRaces: [],
     },
+    weightChangeClassStats: [
+      {
+        key: "plus2",
+        quinellaCount: 1,
+        quinellaRate: 25,
+        showCount: 2,
+        showRate: 50,
+        starts: 4,
+        winCount: 1,
+        winRate: 25,
+      },
+    ],
     weightClassStats: [
       {
         key: "480-499",
@@ -616,6 +674,7 @@ it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
       ],
       raceTimeRows: [],
       targetRaceRows: [],
+      weightChangeRows: [],
       weightRows: [],
     }).frameStats,
   ).toStrictEqual([
@@ -675,6 +734,7 @@ it("assigns equal positive frame scores to 1 and zero scores to 0", () => {
       ],
       raceTimeRows: [],
       targetRaceRows: [],
+      weightChangeRows: [],
       weightRows: [],
     }).frameStats,
   ).toStrictEqual([
@@ -736,6 +796,7 @@ it("rejects incomplete aggregate rows", () => {
       ],
       raceTimeRows: [],
       targetRaceRows: [],
+      weightChangeRows: [],
       weightRows: [],
     }),
   ).toThrow("R2 SQL row is missing frame_number");

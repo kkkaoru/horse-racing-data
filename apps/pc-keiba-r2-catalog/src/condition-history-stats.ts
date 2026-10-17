@@ -14,6 +14,7 @@ import type {
 } from "./types";
 import { isCurrentArc } from "./arc-cohort";
 import { encodedRaceTimeTenthsSql } from "./race-time";
+import { hexTripletSql } from "./time-score-sql";
 import {
   overseasGateJoinSql,
   usesOverseasGate,
@@ -36,7 +37,7 @@ import {
 
 export { isBanEiKeibajo };
 
-type WeightClassKind = "body" | "carried";
+type WeightClassKind = "body" | "carried" | "change";
 
 const RATE_SCALE: number = 10;
 const SCORE_SCALE: number = 100;
@@ -68,39 +69,80 @@ const BAN_EI_BODY_WEIGHT_CLASS_SQL: string = `CASE
     ELSE 'ge1200'
   END`;
 
-const BAN_EI_HEX_BODY_WEIGHT_SQL: string =
-  "try_cast(concat('0x', upper(btrim(coalesce(se.bataiju, '')))) AS INTEGER)";
+const BAN_EI_HEX_BODY_WEIGHT_SQL: string = hexTripletSql("upper(btrim(coalesce(se.bataiju, '')))");
+
+// Body weight change bands, lower bound inclusive: +20 and over, +10 to
+// under +20, ... -2 to under +2, ... -20 to under -10, under -20.
+const WEIGHT_CHANGE_CLASS_SQL: string = `CASE
+    WHEN weight_change >= 20 THEN 'plus20'
+    WHEN weight_change >= 10 THEN 'plus10'
+    WHEN weight_change >= 5 THEN 'plus5'
+    WHEN weight_change >= 2 THEN 'plus2'
+    WHEN weight_change >= -2 THEN 'even'
+    WHEN weight_change >= -5 THEN 'minus2'
+    WHEN weight_change >= -10 THEN 'minus5'
+    WHEN weight_change >= -20 THEN 'minus10'
+    ELSE 'minus20'
+  END`;
+
+const BAN_EI_VENUE_ONLY_SQL: string = "AND se.keibajo_code IN ('81', '82', '83', '84')";
+const NON_BAN_EI_VENUE_SQL: string = "AND se.keibajo_code NOT IN ('81', '82', '83', '84')";
+const TRIMMED_WEIGHT_CHANGE_SQL: string = "upper(btrim(coalesce(se.zogen_sa, '')))";
+// Ban-ei records the change in hex ('00A' = 10kg); JRA and NAR use decimal.
+const BAN_EI_HEX_WEIGHT_CHANGE_SQL: string = hexTripletSql(TRIMMED_WEIGHT_CHANGE_SQL);
+const DECIMAL_WEIGHT_CHANGE_SQL: string = `try_cast(${TRIMMED_WEIGHT_CHANGE_SQL} AS INT)`;
 
 interface WeightClassSqlParts {
   classExpr: string;
-  venueExclude: string;
+  venueFilter: string;
   weightExpr: string;
   weightFilter: string;
 }
 
+const signedWeightChangeSql = (magnitude: string): string =>
+  `CASE WHEN btrim(coalesce(se.zogen_fugo, '')) = '-' THEN -(${magnitude}) ELSE (${magnitude}) END AS weight_change`;
+
+// Blank is a debut or missing weigh-in; '999' (decimal) and 'FFF' (hex) mark
+// an unmeasured change.
+const weightChangeSqlParts = (banEi: boolean): WeightClassSqlParts =>
+  banEi
+    ? {
+        classExpr: WEIGHT_CHANGE_CLASS_SQL,
+        venueFilter: BAN_EI_VENUE_ONLY_SQL,
+        weightExpr: signedWeightChangeSql(BAN_EI_HEX_WEIGHT_CHANGE_SQL),
+        weightFilter: `AND ${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', 'FFF') AND (${BAN_EI_HEX_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
+      }
+    : {
+        classExpr: WEIGHT_CHANGE_CLASS_SQL,
+        venueFilter: NON_BAN_EI_VENUE_SQL,
+        weightExpr: signedWeightChangeSql(DECIMAL_WEIGHT_CHANGE_SQL),
+        weightFilter: `AND ${TRIMMED_WEIGHT_CHANGE_SQL} NOT IN ('', '999') AND (${DECIMAL_WEIGHT_CHANGE_SQL}) IS NOT NULL`,
+      };
+
 const weightClassSqlParts = (input: {
-  isBody: boolean;
+  kind: WeightClassKind;
   keibajoCode: string;
 }): WeightClassSqlParts => {
-  if (input.isBody && isBanEiKeibajo(input.keibajoCode)) {
+  if (input.kind === "change") return weightChangeSqlParts(isBanEiKeibajo(input.keibajoCode));
+  if (input.kind === "body" && isBanEiKeibajo(input.keibajoCode)) {
     return {
       classExpr: BAN_EI_BODY_WEIGHT_CLASS_SQL,
-      venueExclude: "",
-      weightExpr: `${BAN_EI_HEX_BODY_WEIGHT_SQL} AS body_weight`,
-      weightFilter: `AND ${BAN_EI_HEX_BODY_WEIGHT_SQL} > 0 AND upper(btrim(coalesce(se.bataiju, ''))) NOT IN ('', '000', 'FFF')`,
+      venueFilter: BAN_EI_VENUE_ONLY_SQL,
+      weightExpr: `(${BAN_EI_HEX_BODY_WEIGHT_SQL}) AS body_weight`,
+      weightFilter: `AND (${BAN_EI_HEX_BODY_WEIGHT_SQL}) > 0 AND upper(btrim(coalesce(se.bataiju, ''))) NOT IN ('', '000', 'FFF')`,
     };
   }
-  if (input.isBody) {
+  if (input.kind === "body") {
     return {
       classExpr: BODY_WEIGHT_CLASS_SQL,
-      venueExclude: "AND se.keibajo_code NOT IN ('81', '82', '83', '84')",
+      venueFilter: NON_BAN_EI_VENUE_SQL,
       weightExpr: `${integerSelect("se.bataiju", "000")} AS body_weight`,
       weightFilter: "AND try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0",
     };
   }
   return {
     classExpr: CARRIED_WEIGHT_CLASS_SQL,
-    venueExclude: "AND se.keibajo_code NOT IN ('81', '82', '83', '84')",
+    venueFilter: NON_BAN_EI_VENUE_SQL,
     weightExpr: `${doubleSelect("se.futan_juryo")} / 10.0 AS carried_weight`,
     weightFilter:
       "AND try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0 > 0",
@@ -282,10 +324,7 @@ export const buildConditionWeightClassStatsQuery = (input: {
   kind: WeightClassKind;
 }): string => {
   const checked = validateFilters(input.filters);
-  const parts = weightClassSqlParts({
-    isBody: input.kind === "body",
-    keibajoCode: checked.keibajoCode,
-  });
+  const parts = weightClassSqlParts({ keibajoCode: checked.keibajoCode, kind: input.kind });
   return `
 WITH ${currentRaceCteSql(input.env, checked)},
 matched_history AS (
@@ -294,7 +333,7 @@ matched_history AS (
       matchedHistoryArmSql({
         env: input.env,
         extraJoin: "",
-        extraWhere: `${parts.venueExclude}
+        extraWhere: `${parts.venueFilter}
     ${parts.weightFilter}`,
         filters: checked,
         selectList: `${rateFinishPositionSql(checked)} AS finish_position,
@@ -703,6 +742,7 @@ export const normaliseConditionHistoryStatsPayload = (input: {
   frameRows: ReadonlyArray<Record<string, unknown>>;
   raceTimeRows: ReadonlyArray<Record<string, unknown>>;
   targetRaceRows: ReadonlyArray<Record<string, unknown>>;
+  weightChangeRows: ReadonlyArray<Record<string, unknown>>;
   weightRows: ReadonlyArray<Record<string, unknown>>;
 }): ConditionHistoryStatsPayload => ({
   carriedWeightClassStats: input.carriedRows.map(normaliseWeightClassRow),
@@ -713,5 +753,6 @@ export const normaliseConditionHistoryStatsPayload = (input: {
     input.targetRaceRows.map(normaliseTargetRaceRow),
     input.correlationRows,
   ),
+  weightChangeClassStats: input.weightChangeRows.map(normaliseWeightClassRow),
   weightClassStats: input.weightRows.map(normaliseWeightClassRow),
 });
