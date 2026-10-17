@@ -23,15 +23,33 @@ if (
 )
   throw new Error("Production compatibility attestation failed");
 
-const realtimeResponse = await fetch(`${baseUrl}/realtime`, {
-  body: JSON.stringify({ dataSpec: "0B14", key: "20260830" }),
-  headers: authorization,
-  method: "POST",
-});
-const realtime = (await realtimeResponse.json()) as { records?: string[]; status?: number };
-if (!realtimeResponse.ok || realtime.status !== 0 || realtime.records?.length !== 22)
+// JRA-VAN only keeps realtime data for recent days, so a pinned historical key
+// eventually returns an error envelope. Probe the last week (JST) and require
+// at least one day with a successful, non-empty realtime response.
+const REALTIME_LOOKBACK_DAYS = 8;
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const realtimeKeys = Array.from({ length: REALTIME_LOOKBACK_DAYS }, (_, daysAgo) =>
+  new Date(Date.now() + JST_OFFSET_MS - daysAgo * DAY_MS)
+    .toISOString()
+    .slice(0, 10)
+    .replaceAll("-", ""),
+);
+const realtimeResults = await Promise.all(
+  realtimeKeys.map(async (key) => {
+    const response = await fetch(`${baseUrl}/realtime`, {
+      body: JSON.stringify({ dataSpec: "0B14", key }),
+      headers: authorization,
+      method: "POST",
+    });
+    const body = (await response.json()) as { records?: string[]; status?: number };
+    return { key, ok: response.ok && body.status === 0, records: body.records?.length ?? 0 };
+  }),
+);
+const realtime = realtimeResults.find((result) => result.ok && result.records > 0);
+if (realtime === undefined)
   throw new Error(
-    `Production realtime smoke test failed httpStatus=${realtimeResponse.status} jvStatus=${String(realtime.status)} records=${String(realtime.records?.length)}`,
+    `Production realtime smoke test failed results=${JSON.stringify(realtimeResults)}`,
   );
 
 const unauthorized = await fetch(`${baseUrl}/realtime`, {
@@ -45,7 +63,8 @@ console.log(
   JSON.stringify({
     coreVersion: compatibility.rustCoreVersion,
     deploymentCompatibility: true,
-    realtimeRecords: realtime.records.length,
+    realtimeKey: realtime.key,
+    realtimeRecords: realtime.records,
     unauthorizedStatus: unauthorized.status,
     verified: true,
   }),
