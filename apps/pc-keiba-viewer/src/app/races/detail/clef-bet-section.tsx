@@ -67,6 +67,12 @@ const LARGE_STEP: number = 1000;
 const FETCH_DELAY_MS: number = 400;
 const MISSING: string = "-";
 const MOBILE_QUERY: string = "(max-width: 760px)";
+const FRAME_COLUMN: string = "枠番";
+const FRAME_BET_TYPES: ReadonlySet<string> = new Set(["wakuren", "wakufuku", "wakutan"]);
+
+// Multi-horse structures (軸, マルチ, フォーメーション, ボックス) only show frames for frame bets.
+const hidesFrame = (column: PickColumn, plan: ClefBetSuggestion): boolean =>
+  column.label === FRAME_COLUMN && plan.style !== "single" && !FRAME_BET_TYPES.has(plan.betType);
 const PICK_COLUMNS: readonly PickColumn[] = [
   { label: "枠番", pick: (runner) => String(runner.frameNumber) },
   { label: "馬番", pick: (runner) => String(runner.horseNumber) },
@@ -174,9 +180,18 @@ function BetBody({ state, hidden }: BetBodyProps) {
                   <span className="clef-bet-style">{betStyleLabel(plan.style)}</span>
                   <span className="clef-bet-structure">{describePlan(plan)}</span>
                 </th>
-                {columns.map((column) => (
-                  <GroupCell key={column.label} pick={column.pick} plan={plan} runners={runners} />
-                ))}
+                {columns.map((column) =>
+                  hidesFrame(column, plan) ? (
+                    <td aria-label="枠番は組み合わせ馬券では表示しません" key={column.label} />
+                  ) : (
+                    <GroupCell
+                      key={column.label}
+                      pick={column.pick}
+                      plan={plan}
+                      runners={runners}
+                    />
+                  ),
+                )}
                 <td className="clef-bet-number">{formatPlanOdds(plan)}</td>
                 <td className="clef-bet-number">{formatPlanStake(plan)}</td>
                 <td className="clef-bet-number">{formatPlanPayout(plan)}</td>

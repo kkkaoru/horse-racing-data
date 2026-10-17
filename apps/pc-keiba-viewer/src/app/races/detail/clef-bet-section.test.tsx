@@ -92,7 +92,7 @@ it("renders one row per bet plan with legs grouped inside each column", async ()
   expect(screen.getByText("2種類 ／ 3点 ／ 合計 2,000円 ／ 期待払戻 2,100円")).toBeTruthy();
   expect(screen.getAllByRole("row").map((row) => row.textContent)).toStrictEqual([
     "馬券枠番馬番馬名騎手調教師馬主オッズ購入金額払戻額",
-    "ワイド軸流し軸 11 → 相手 4・9軸8相手3-軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
+    "ワイド軸流し軸 11 → 相手 4・9軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
     "単勝通常11番811イレブン騎手イレブン調教師イレブン馬主イレブン4.3800円3,440円",
   ]);
   expect(fetcher).toHaveBeenCalledWith(
@@ -285,4 +285,24 @@ it("trims half- and full-width spaces from jockey, trainer and owner names", asy
   expect(await screen.findAllByText("騎手イレブン", {}, { timeout: 2000 })).toHaveLength(2);
   expect(screen.getAllByText("調教師イレブン")).toHaveLength(2);
   expect(screen.getAllByText("馬主イレブン")).toHaveLength(2);
+});
+
+it("keeps frame numbers for frame bets with a multi-horse structure", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        ...payload,
+        plans: {
+          ...payload.plans,
+          plans: [{ ...payload.plans.plans[0], betType: "wakuren" }, payload.plans.plans[1]],
+        },
+      }),
+    ),
+  );
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  expect(screen.getAllByRole("row")[1]?.textContent).toBe(
+    "wakuren軸流し軸 11 → 相手 4・9軸8相手3-軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
+  );
 });
